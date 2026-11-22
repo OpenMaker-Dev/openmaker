@@ -1490,13 +1490,14 @@ impl<'a> WorkerHost<'a> {
         let pending = self.s.file.window.pending();
         let committed = {
             let set = self.current_set_name();
-            let (window, provider) = self.wp();
-            window.commit(
-                provider,
+            let file = &mut self.s.file;
+            file.window.commit(
+                self.provider.get_mut().as_mut(),
                 &|name| ids.get(name).copied(),
                 skip_validation,
                 set,
                 &numbers,
+                file.transaction.as_mut(),
             )
         };
         *self.s.file.cache.borrow_mut() = CalcData::default();
@@ -4401,8 +4402,10 @@ impl Records for WorkerHost<'_> {
             self.confirm("", crate::app::DELETE_RECORD_MESSAGE.into(), "Delete")?;
         }
         let deleted = self.deleted_entry();
-        let (window, provider) = self.wp();
-        window.delete(provider).map_err(data_error)?;
+        let file = &mut self.s.file;
+        file.window
+            .delete(self.provider.get_mut().as_mut(), file.transaction.as_mut())
+            .map_err(data_error)?;
         *self.s.file.cache.borrow_mut() = CalcData::default();
         self.committed_records(deleted.into_iter().collect());
         self.after(TriggerEvent::RecordLoad, None);
@@ -4576,7 +4579,7 @@ impl Records for WorkerHost<'_> {
         self.p()
             .begin_transaction(options)
             .map_err(|e| self.failed(e))?;
-        self.s.file.transaction = Some(Vec::new());
+        self.s.file.transaction = Some(transaction::Staged::default());
         Ok(())
     }
 
@@ -4587,24 +4590,30 @@ impl Records for WorkerHost<'_> {
         // fails (#1103).
         let apart = self.record_apart();
         let drafts = self.s.file.window.state.drafts.clone();
-        let committed = self.commit_window();
+        let committed = self.commit_window().and_then(|()| {
+            let staged = self.s.file.transaction.as_ref();
+            let validation = staged.map_or(Ok(()), transaction::Staged::validate_related_parents);
+            validation.map_err(|e| self.failed(e))
+        });
+        let removed = self.p().transaction_created();
         // A commit across files that failed after a file was committed, or
         // may have been (#1006).
         let mut partly = false;
+        let mut rolled_back = false;
         let result = match committed {
             Ok(()) => self.p().commit_transaction(skip_validation).map_err(|e| {
                 partly = partly_applied(&e);
+                rolled_back = !partly;
                 let e = if partly { with_file_outcomes(e) } else { e };
                 self.failed(e)
             }),
             Err(e) => {
-                let _ = self.p().revert_transaction();
+                rolled_back = self.p().revert_transaction().is_ok();
                 Err(e)
             }
         };
         // A failed commit aborts the transaction (script-runtime.md 8.2),
         // unless the connection went first.
-        let mut rolled_back = false;
         if result.is_err() {
             if self.p().connection_lost().is_some() {
                 // Whether the host applied the commit is unknown: the
@@ -4612,16 +4621,12 @@ impl Records for WorkerHost<'_> {
                 // still read them, and a reconnect is refused.
                 self.s.file.window.state.drafts = drafts;
                 self.s.file.lost_transaction = true;
+                rolled_back = false;
             } else if partly {
                 // Some of it is stored: what it created is not all gone,
                 // and the window keeps what was typed, as the error's
                 // report names each file's outcome.
                 self.s.file.window.state.drafts = drafts;
-            } else {
-                if !apart {
-                    self.s.file.window.state.drafts.clear();
-                }
-                rolled_back = true;
             }
         }
         self.s.file.window.state.focus = None;
@@ -4631,7 +4636,7 @@ impl Records for WorkerHost<'_> {
         self.s.file.window.found = None;
         *self.s.file.cache.borrow_mut() = CalcData::default();
         // OnWindowTransaction names every record the transaction wrote.
-        let entries = self.s.file.transaction.take().unwrap_or_default();
+        let entries = self.s.file.transaction.take().unwrap_or_default().entries;
         if result.is_ok() {
             let entries = transaction::merged(entries)
                 .into_iter()
@@ -4646,7 +4651,9 @@ impl Records for WorkerHost<'_> {
                 .collect();
             self.committed_records(entries);
         } else if rolled_back {
-            self.release_records(&entries, transaction::Operation::New);
+            // A position refresh can fail after the revert has completed.
+            // Keep the original commit error as the step's result.
+            let _ = self.discard_rolled_back_transaction(&entries, removed, apart);
         }
         result
     }
@@ -4657,12 +4664,11 @@ impl Records for WorkerHost<'_> {
         // (#1103).
         let apart = self.record_apart();
         if !apart {
-            self.s.file.window.state.drafts.clear();
             self.s.file.window.state.focus = None;
             self.s.file.window.state.object = None;
             self.s.file.window.state.portal = None;
         }
-        let held = self.s.file.transaction.take().unwrap_or_default();
+        let held = self.s.file.transaction.take().unwrap_or_default().entries;
         // The records this revert removes, by identity: the ones the
         // provider's transaction created, whichever window made them and
         // whether or not a commit logged them. A window's flags cannot
@@ -4671,26 +4677,7 @@ impl Records for WorkerHost<'_> {
         let removed = self.p().transaction_created();
         let mut result = self.p().revert_transaction().map_err(|e| self.failed(e));
         if result.is_ok() {
-            // The records the transaction created are gone, with what any
-            // window of the file still has pending on them; one held apart
-            // in its window's record session is not the transaction's and
-            // stays.
-            self.release_records(&held, transaction::Operation::New);
-            let created: Vec<(u64, i64)> = held
-                .iter()
-                .filter(|e| e.operation == transaction::Operation::New)
-                .map(|e| (e.table, e.record))
-                .chain(removed)
-                .collect();
-            for other in &mut self.s.file.others {
-                other.forget_reverted_record_waiting(&created);
-            }
-            if !apart {
-                let (window, provider) = self.wp();
-                result = window
-                    .forget_reverted_record(provider, &created)
-                    .map_err(data_error);
-            }
+            result = self.discard_rolled_back_transaction(&held, removed, apart);
         }
         // The held writes went with the connection, not by this revert.
         self.s.file.lost_transaction |= self.p().connection_lost().is_some();
@@ -4714,6 +4701,36 @@ impl Records for WorkerHost<'_> {
         }
         self.change(FoundSetChange::ShowAll)?;
         self.delete_all_records(false)
+    }
+}
+
+impl WorkerHost<'_> {
+    fn discard_rolled_back_transaction(
+        &mut self,
+        entries: &[transaction::Entry],
+        removed: Vec<(u64, i64)>,
+        apart: bool,
+    ) -> HostResult {
+        // The records the transaction created are gone, with what any
+        // window of the file still has pending on them.
+        self.release_records(entries, transaction::Operation::New);
+        let created: Vec<(u64, i64)> = entries
+            .iter()
+            .filter(|e| e.operation == transaction::Operation::New)
+            .map(|e| (e.table, e.record))
+            .chain(removed)
+            .collect();
+        for other in &mut self.s.file.others {
+            other.forget_reverted_record_waiting(&created);
+        }
+        if !apart {
+            let (window, provider) = self.wp();
+            window.discard_transaction_drafts(provider);
+            window
+                .forget_reverted_record(provider, &created)
+                .map_err(data_error)?;
+        }
+        Ok(())
     }
 }
 

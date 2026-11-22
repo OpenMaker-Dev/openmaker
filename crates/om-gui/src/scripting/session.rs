@@ -134,9 +134,8 @@ pub(crate) struct FileState {
     pub next_callback: u32,
     /// Data files scripts opened (until Close Data File or the file closes).
     pub data_files: super::files::DataFiles,
-    /// An open transaction's committed records, for OnWindowTransaction
-    /// at Commit Transaction.
-    pub transaction: Option<Vec<host::transaction::Entry>>,
+    /// The open script transaction's staged records and related dependencies.
+    pub transaction: Option<host::transaction::Staged>,
     /// The connection was lost with a transaction open, or while one was
     /// committed or reverted: what became of its writes is unknown, after
     /// `transaction` is gone too. A reconnect is refused.

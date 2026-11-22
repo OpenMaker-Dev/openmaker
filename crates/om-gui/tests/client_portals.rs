@@ -1958,7 +1958,8 @@ fn set_field_copies_a_calculated_middle_key_and_shows_the_pending_row() {
             note("$set", "Get ( LastError )"),
             go_to_portal_row(2),
             show(
-                "\"draft \" & $set & \":\" & Get ( LastError ) & \":\" & +                 Get ( ActivePortalRowNumber ) & \":\" & Get ( ActiveFieldContents )",
+                "\"draft \" & $set & \":\" & Get ( LastError ) & \":\" & \
+                 Get ( ActivePortalRowNumber ) & \":\" & Get ( ActiveFieldContents )",
             ),
         ],
     );
@@ -2038,36 +2039,11 @@ fn a_multi_hop_draft_cannot_commit_with_its_parent_deleted() {
         } else {
             "create-first"
         };
-        let hosted = host_note_tasks(tag, &[fixture::script(1, "Remove parent", steps)], |root| {
-            // The first note leads to Task 2 (Ship) in the portal, and
-            // Ship's Code links to the otherwise empty Follow up notes.
-            root.put(
-                &[
-                    &uint_segment(NOTES),
-                    &[5],
-                    &serial::encode(2),
-                    &uint_segment(BODY),
-                ],
-                text_node(&[], "Ship"),
-            );
-            root.put(
-                &[
-                    &uint_segment(TABLE),
-                    &[5],
-                    &serial::encode(2),
-                    &uint_segment(CODE),
-                ],
-                text_node(&[], "key"),
-            );
-            fixture::add_occurrence(root, FOLLOW_UP_NOTES, "Follow up notes", NOTES);
-            fixture::add_relationship(root, 7, (NOTE_TASKS, CODE), 0, (FOLLOW_UP_NOTES, TASK));
-            allow_creation_through(root, 7);
-            add_portal_layout(root);
-            root.put(
-                &[&[4], &[5], &uint_segment(PORTALS), &[7]],
-                OwnedNode::leaf(Vec::new(), portal_only_store(NOTE_TASKS, NAME)),
-            );
-        });
+        let hosted = host_note_tasks(
+            tag,
+            &[fixture::script(1, "Remove parent", steps)],
+            add_follow_up_notes,
+        );
         let mut app = open(&hosted);
         let expected = if delete_first {
             "parent 0:415:0"
@@ -2083,6 +2059,120 @@ fn a_multi_hop_draft_cannot_commit_with_its_parent_deleted() {
             !delete_first,
             "{tag}"
         );
+        if !delete_first {
+            common::wait_until(&mut app, "the refused ordinary drafts", common::unsaved);
+        }
+    }
+}
+
+fn add_follow_up_notes(root: &mut OwnedNode) {
+    // The first note leads to Task 2 (Ship) in the portal, and
+    // Ship's Code links to the otherwise empty Follow up notes.
+    root.put(
+        &[
+            &uint_segment(NOTES),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(BODY),
+        ],
+        text_node(&[], "Ship"),
+    );
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(CODE),
+        ],
+        text_node(&[], "key"),
+    );
+    fixture::add_occurrence(root, FOLLOW_UP_NOTES, "Follow up notes", NOTES);
+    fixture::add_relationship(root, 7, (NOTE_TASKS, CODE), 0, (FOLLOW_UP_NOTES, TASK));
+    allow_creation_through(root, 7);
+    add_portal_layout(root);
+    root.put(
+        &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+        OwnedNode::leaf(Vec::new(), portal_only_store(NOTE_TASKS, NAME)),
+    );
+}
+
+#[test]
+fn rolling_back_a_multi_hop_creation_clears_its_related_drafts() {
+    for (tag, stage_child, revert, expected) in [
+        ("staged", true, false, "transaction 0:0:0:415"),
+        ("pending", false, false, "transaction 0:-:0:415"),
+        ("reverted", true, true, "transaction 0:0:0:0"),
+    ] {
+        let mut steps = vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            ScriptStep::new(205),
+            set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
+            note("$created", "Get ( LastError )"),
+        ];
+        if stage_child {
+            steps.extend([without_dialog(75), note("$staged", "Get ( LastError )")]);
+        } else {
+            steps.push(note("$staged", "\"-\""));
+        }
+        steps.extend([
+            go_to_portal_row(1),
+            without_dialog(104),
+            note("$deleted", "Get ( LastError )"),
+        ]);
+        if revert {
+            steps.push(ScriptStep::new(207));
+        }
+        let commit_at = u16::try_from(steps.len()).unwrap();
+        steps[3].value = commit_at;
+        let mut commit = ScriptStep::new(206);
+        commit.value = commit_at;
+        steps.extend([
+            commit,
+            show(
+                "\"transaction \" & $created & \":\" & $staged & \":\" & $deleted & \":\" & \
+                 Get ( LastError )",
+            ),
+        ]);
+
+        let mut open_transaction = ScriptStep::new(205);
+        open_transaction.value = 4;
+        let mut commit = ScriptStep::new(206);
+        commit.value = 4;
+        let retry = fixture::script(
+            2,
+            "Retry with parent",
+            vec![
+                fixture::on(86, true),
+                open_transaction,
+                set_field(FOLLOW_UP_NOTES, BODY, 0, "\"linked\""),
+                note("$set", "Get ( LastError )"),
+                commit,
+                show("\"retry \" & $set & \":\" & Get ( LastError )"),
+            ],
+        );
+        let hosted = host_note_tasks(
+            tag,
+            &[fixture::script(1, "Remove parent", steps), retry],
+            add_follow_up_notes,
+        );
+        let tasks = stored(&hosted, TABLE, &[(NAME, 1)]);
+        let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+        let mut app = open(&hosted);
+        expect(&mut app, "Remove parent", expected);
+        wait_saved(&mut app);
+        common::wait_for_label(&mut app, "Portal Row 1");
+        assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), tasks, "{tag}");
+        assert_eq!(
+            stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
+            notes,
+            "{tag}"
+        );
+        expect(&mut app, "Retry with parent", "retry 0:0");
+        let saved = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+        assert_eq!(saved.len(), notes.len() + 1, "{tag}");
+        assert_eq!(saved.last().unwrap().1, ["linked", "key"], "{tag}");
     }
 }
 

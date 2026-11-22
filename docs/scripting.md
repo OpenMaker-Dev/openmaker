@@ -582,6 +582,11 @@ Open items:
     Set Field returns 415 when no candidate survives that check. If the
     selected parent is marked for deletion after the draft was made,
     Commit Records returns 415 and keeps both changes pending.
+    Inside a script transaction, the dependency survives a successful
+    Commit Records. Commit Transaction returns 415 and rolls back if
+    the transaction would delete the parent while keeping the new child.
+    A rollback discards the active record's transaction drafts, including
+    related edits and deletions. A record session held apart keeps its edits.
   - At creation, OpenMaker reads an unstored equality key in the source
     record's occurrence with the relationship evaluator. It copies a
     single nonempty, single-line text value into an ordinary text match
