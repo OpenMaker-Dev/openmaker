@@ -359,38 +359,57 @@ fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
                     .push(replacement);
             }
         }
-        if replace_trigger {
+        let replace_paused_trigger = if replace_trigger {
             // The button exits the paused trigger and starts a new script
             // before the held Print runs. Print still belongs to its caller.
             let mut button = ScriptStep::new(1);
             button.reserved[..4].copy_from_slice(&[2, 1, 2, 0xbe]);
             button.value = 2; // Exit current script.
             let window = dirty();
-            c._keep_jobs
-                .send(Job {
-                    epoch: 1,
-                    window: window.id,
-                    ctx: Default::default(),
-                    request: Request::Script(Box::new(ScriptJob {
-                        start: Start::Button {
-                            step: Box::new(button),
-                            formula: None,
-                            literal: String::new(),
-                            portal: None,
-                        },
-                        window,
-                        others: Vec::new(),
-                        context: SessionContext {
-                            host: "host.invalid".into(),
-                            file: "Root.fmp12".into(),
-                            account: "root-account".into(),
-                            local: None,
-                        },
-                    })),
-                })
-                .unwrap();
-        }
+            let job = Job {
+                epoch: 1,
+                window: window.id,
+                ctx: Default::default(),
+                request: Request::Script(Box::new(ScriptJob {
+                    start: Start::Button {
+                        step: Box::new(button),
+                        formula: None,
+                        literal: String::new(),
+                        portal: None,
+                    },
+                    window,
+                    others: Vec::new(),
+                    context: SessionContext {
+                        host: "host.invalid".into(),
+                        file: "Root.fmp12".into(),
+                        account: "root-account".into(),
+                        local: None,
+                    },
+                })),
+            };
+            let events = std::mem::replace(&mut c.events, mpsc::channel().1);
+            let jobs = c._keep_jobs.clone();
+            let abort = c.session.s.abort.clone();
+            Some(std::thread::spawn(move || {
+                while let Ok(event) = events.recv_timeout(std::time::Duration::from_secs(30)) {
+                    if matches!(
+                        event.reply,
+                        worker::Reply::Script(ScriptEvent::Paused { .. })
+                    ) {
+                        jobs.send(job).unwrap();
+                        return;
+                    }
+                }
+                abort.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("The Print trigger did not pause");
+            }))
+        } else {
+            None
+        };
         c.run_in(dirty());
+        if let Some(button) = replace_paused_trigger {
+            button.join().unwrap();
+        }
         assert_eq!(c.result(), expected);
         assert_eq!(fake.jobs.lock().unwrap().len(), jobs);
         if !proceed {
