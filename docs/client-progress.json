@@ -193,7 +193,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Auto-enter, validation with calculated custom messages, and serial numbers reserved on the host (op72). Exact-match lookups copy text, numbers and dates through one relationship, also one sorted by the related table's own fields and one with calculated match keys ([limits](record-writes.md#limits), [lookups](re/auto-entry.md#lookups)).",
-      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents fails [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
+      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents runs only in desktop scripts, not on OpenMaker Server or from the Records menu [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
       "issues": [
         39,
         87
@@ -210,10 +210,10 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Open, Commit and Revert Transaction hold changes and commit them together; a script's transaction across files is prepared in every file before any data goes ([transactions](record-writes.md#transactions)). The runtime's transaction traces are compared with FileMaker Server's script engine.",
-      "remaining": "Once one file's commit has gone, a later loss leaves that file committed. Delete Record on another file's layout is refused inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312), and a transaction refuses a record whose calculation reads a related record changed after it [#276](https://github.com/OpenMaker-Dev/openmaker/issues/276).",
+      "remaining": "Once one file's commit has gone, a later loss leaves that file committed. The user's own edits and deletions on another file's layout while a script is paused inside a transaction are refused [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411), and a transaction refuses a record whose calculation reads a related record changed after it [#276](https://github.com/OpenMaker-Dev/openmaker/issues/276).",
       "issues": [
         276,
-        312
+        411
       ],
       "docs": [
         "record-writes.md#transactions"
@@ -226,10 +226,10 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Session globals and repetitions take part in calculations and edits; Browse types into text, number, date, time and timestamp globals and into repetitions 2 to 255 ([limits](record-writes.md#limits)).",
-      "remaining": "Number, date and time globals with validation [#301](https://github.com/OpenMaker-Dev/openmaker/issues/301) and container globals [#302](https://github.com/OpenMaker-Dev/openmaker/issues/302) take no typing; repetitions above 255 are not written; another file's related globals and repetitions are refused [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43). Native readback is unmeasured.",
+      "remaining": "Globals validated by calculation, unique or existing value, a related-values list or another file's field [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424) and container globals [#302](https://github.com/OpenMaker-Dev/openmaker/issues/302) take no typing, and a global's validation runs at the commit, not as its field is left [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424); repetitions above 255 are not written; another file's related globals and repetitions are refused [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43). Native readback is unmeasured.",
       "issues": [
         43,
-        301,
+        424,
         302
       ],
       "docs": [
@@ -243,7 +243,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Stored containers are read, replaced from the Insert menu and scripts, also in portal rows, and exported byte for byte. Browse draws pictures and a PDF's first page, an interactive container shows every page of a PDF, and Preview and PDF print pictures ([Browse mode](desktop-client.md#browse-mode), [container fields in reports](portable-pdf.md#container-fields)).",
-      "remaining": "Insert > PDF and Audio/Video and \"Store only a reference\" are not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
+      "remaining": "Insert asks for a typed path instead of a file dialog on Linux and Windows (the system's open panel on macOS), and \"Store only a reference\" is not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
       "issues": [
         9,
         50
@@ -391,10 +391,10 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
-      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
+      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so are the user's own edits and deletions there while a script is paused inside a transaction [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
       "issues": [
         43,
-        312
+        411
       ],
       "docs": [
         "record-writes.md#limits"
@@ -406,7 +406,7 @@
       "feature": "Script flow / variables / calls",
       "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 129 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
+      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 131 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
       "remaining": "A step without an implementation stops the script with error 3 ([scripts](desktop-client.md#scripts)). Native traces of pause, abort and event order are not compared. Several desktop behaviors are inferred [#105](https://github.com/OpenMaker-Dev/openmaker/issues/105).",
       "issues": [
         105
@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],
@@ -533,7 +533,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Form, List and Table views of native records and layout geometry, with virtualized rows, List sub-summary groups, sideways scrolling in Table view, the view kept per layout, and container pictures in Browse ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147), every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270), and no header or footer [#306](https://github.com/OpenMaker-Dev/openmaker/issues/306); zoom works only in Form view [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36).",
+      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147), every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270), and no header or footer [#306](https://github.com/OpenMaker-Dev/openmaker/issues/306).",
       "issues": [
         36,
         147,
@@ -551,7 +551,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Themes, styles, borders, merge text, data formats and pictures render, with per-field text insets; one text placement is recorded as matching FileMaker Pro ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
+      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
       "issues": [
         231,
         295
@@ -634,7 +634,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Zoom and the wheel, Freeze Window and scripted Scroll Window use queued focus and fresh geometry; Table view scrolls sideways ([Zoom](desktop-client.md#zoom)).",
-      "remaining": "List, Table, Layout mode and focused editors are not zoomed, and Set Zoom Level's lock is ignored [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
+      "remaining": "Layout mode is not zoomed [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
       "issues": [
         36
       ],
@@ -938,10 +938,9 @@
       "feature": "Web viewer and JavaScript bridge",
       "previous_status": "Partial",
       "status": "Partial",
-      "scope": "With the `web-viewer` build on Linux, WebKitGTK views show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
-      "remaining": "Not on macOS [#304](https://github.com/OpenMaker-Dev/openmaker/issues/304) or Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
+      "scope": "With the `web-viewer` build, WebKitGTK views on Linux and WKWebView views on macOS show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
+      "remaining": "Not on Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
       "issues": [
-        304,
         305,
         319,
         323
@@ -955,14 +954,16 @@
       "domain": "Integrations",
       "feature": "Send Mail and platform automation",
       "previous_status": "Unavailable",
-      "status": "Unavailable",
-      "scope": "Send Mail's options can be edited in Script Workspace, but the step does not run; no AppleScript, Send Event or Speak host exists.",
-      "remaining": "Send Mail [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
+      "status": "Partial",
+      "scope": "Send Mail through the email client with dialog opens a new message in the system's mail client on the desktop (a `mailto:` URL), for the user to send, and by SMTP sends it through the step's server on the desktop and on OpenMaker Server ([scripting](scripting.md)); no AppleScript, Send Event or Speak host exists.",
+      "remaining": "Send Mail by OAuth, through the email client without a dialog, with attachments, one email per record, or with addresses collected across several records [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
       "issues": [
         89,
         92
       ],
-      "docs": []
+      "docs": [
+        "scripting.md"
+      ]
     },
     {
       "id": "C58",
@@ -1093,13 +1094,13 @@
       "previous_status": "Unavailable",
       "status": "Partial",
       "scope": "File > Create New makes a blank file, as `om-author create-file` does; FileMaker Pro 26.0.3 opened such files with no alert and its consistency check found no bad block ([checks](new-files.md#checks)).",
-      "remaining": "Save a Copy As [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion of older files [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) are not available; a new file has one plain theme [#222](https://github.com/OpenMaker-Dev/openmaker/issues/222) and refuses new scripts [#274](https://github.com/OpenMaker-Dev/openmaker/issues/274) ([limits](new-files.md#limits)).",
+      "remaining": "Save a Copy As [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion of older files [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) are not available; a new file has one plain theme [#222](https://github.com/OpenMaker-Dev/openmaker/issues/222), and FileMaker Pro has not opened one holding a script OpenMaker added [#407](https://github.com/OpenMaker-Dev/openmaker/issues/407) ([limits](new-files.md#limits)).",
       "issues": [
         63,
         64,
         65,
         222,
-        274
+        407
       ],
       "docs": [
         "new-files.md#checks",

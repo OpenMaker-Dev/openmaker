@@ -344,6 +344,10 @@ pub(crate) struct Reconnected {
     /// (`DataProvider::take_recreated_records`, #152), by window and the
     /// lost connection's id: its id now, or why it could not be.
     pub recreated: Vec<(u32, u64, i64, Result<i64, String>)>,
+    /// The windows whose record sessions the reconnect carried to the new
+    /// connection (`DataProvider::carried_record_sessions`): any other
+    /// window's record session went with the lost one.
+    pub carried: Vec<u32>,
 }
 
 /// A related record read back after a reconnect: by window, base table and
@@ -542,17 +546,24 @@ pub(crate) enum Reply {
     },
     /// [`Request::BuildValueList`]'s list (`crate::list_build::Built`):
     /// `None` when there is nothing to show yet, with when to ask again
-    /// when a related host could not be reached.
+    /// when a related host could not be reached, and the data generation
+    /// its reads were of; `related`: a list of related values for one
+    /// record (`crate::calc::RelatedBuild`).
     ValueListBuilt {
         list: u64,
         ticket: u64,
+        related: bool,
         result: Option<Result<Arc<om_data::choice::Choices>, om_data::choice::ChoiceError>>,
         retry_after: Option<std::time::Duration>,
+        generation: Option<u64>,
     },
     /// What a running script tells the window.
     Script(crate::scripting::ScriptEvent),
     /// The open file's connection to the host was lost.
     ConnectionLost(DataError),
+    /// What the host's administrator sent the file's session, read while
+    /// idle ([`DataProvider::take_host_messages`]), oldest first.
+    HostMessages(Vec<om_data::HostMessage>),
     Reconnected(Box<Result<Reconnected, DataError>>),
     /// What [`Request::Recreate`] did: the record's old and new id, and
     /// its place in the window's found set, when it was made again; `None`
@@ -575,6 +586,15 @@ pub(crate) enum Reply {
 }
 
 impl Reply {
+    /// The reply to the request itself, inside any [`Reply::Grown`] the
+    /// worker wrapped it in.
+    pub(crate) fn answered(&self) -> &Reply {
+        match self {
+            Reply::Grown { then, .. } => then.answered(),
+            reply => reply,
+        }
+    }
+
     /// The provider's error in this reply, if it failed.
     pub(crate) fn error(&self) -> Option<&DataError> {
         match self {
@@ -621,6 +641,7 @@ impl Reply {
             Reply::ValueListBuilt { .. } => None,
             Reply::RecordEditPrepared(_, _, result) => result.as_ref().err(),
             Reply::ConnectionLost(error) => Some(error),
+            Reply::HostMessages(_) => None,
             Reply::Reconnected(result) => result.as_ref().as_ref().err(),
             Reply::Recreated(result) => result.as_ref().err(),
             // Each record's read carries its own error.
@@ -876,10 +897,19 @@ fn serve(
     // The epoch and the egui context of the UI's last request: a loss
     // noticed while idle is told as of it, and wakes that context.
     let (mut epoch, mut ctx) = (0, None::<egui::Context>);
+    // When the hosts' calls were last read between requests: once a second
+    // at most, so that a request does not wait for that read after the one
+    // before it (each file's read waits for up to its first message).
+    let mut host_messages_read = std::time::Instant::now();
     loop {
-        let wait = scripts
+        let mut wait = scripts
             .next_wake(&files)
             .map_or(CONNECTION_POLL, |wait| wait.min(CONNECTION_POLL));
+        // The next read of the hosts' calls is due a second after the last,
+        // not a second after the last request.
+        if ctx.is_some() {
+            wait = wait.min(CONNECTION_POLL.saturating_sub(host_messages_read.elapsed()));
+        }
         let job = match jobs.recv_timeout(wait) {
             Ok(job) => Some(job),
             Err(RecvTimeoutError::Timeout) => None,
@@ -924,6 +954,10 @@ fn serve(
         }
         if let Some(ctx) = &ctx {
             scripts.notice_loss(provider.as_ref(), responses, epoch, ctx, &mut files);
+            if host_messages_read.elapsed() >= CONNECTION_POLL {
+                scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx, &mut files);
+                host_messages_read = std::time::Instant::now();
+            }
         }
     }
     files.close_all();
@@ -990,16 +1024,144 @@ pub(crate) fn handle(
     request: Request,
 ) -> Reply {
     let reply = answer(provider, store, request);
-    if !provider.take_grown_schema() {
+    // The request is answered: a panic after it never loses the answer
+    // (#313). One asking whether the schema grew is a schema read that
+    // failed, so the file's calculations stop rather than go on with a
+    // schema that may be stale.
+    let grew = panic::catch_unwind(AssertUnwindSafe(|| provider.take_grown_schema()));
+    let grown = match grew {
+        Ok(false) => return reply,
+        Ok(true) => GrownSchema {
+            result: contain(provider, |p| p.calc_schema()),
+            warnings: panic::catch_unwind(AssertUnwindSafe(|| provider.related_file_warnings()))
+                .unwrap_or_default(),
+            sign_ins: panic::catch_unwind(AssertUnwindSafe(|| provider.related_sign_ins()))
+                .unwrap_or_default(),
+        },
+        Err(payload) => GrownSchema {
+            result: Err(panicked(payload.as_ref())),
+            warnings: Vec::new(),
+            sign_ins: Vec::new(),
+        },
+    };
+    Reply::Grown {
+        grown,
+        then: Box::new(reply),
+    }
+}
+
+/// [`handle`] in window `window`, the window the request is about: the
+/// provider acts on it. A panic while it switches there leaves a save
+/// (Commit Record's update, a deletion) or a list's build with its own
+/// failure reply, as a failed provider call answers it, so the window does
+/// not wait for good (#313). Any other request panics on as before: its reply is not one the
+/// window can take as a plain failure (a save's settling, a page and its
+/// access mask, a cancellation), so the scripts are stopped instead.
+pub(crate) fn handle_in(
+    provider: &mut dyn DataProvider,
+    store: &mut dyn LicenseStore,
+    window: u32,
+    request: Request,
+) -> Reply {
+    match panic::catch_unwind(AssertUnwindSafe(|| provider.use_window(window))) {
+        Ok(()) => handle(provider, store, request),
+        Err(payload) => {
+            // The loss probe is best effort: a second panic here must not
+            // lose the save's reply either.
+            let lost =
+                panic::catch_unwind(AssertUnwindSafe(|| provider.connection_lost().is_some()))
+                    .unwrap_or(false);
+            let error = || {
+                let mut error = panicked(payload.as_ref());
+                error.lost |= lost;
+                error
+            };
+            match request {
+                Request::UpdateRecord {
+                    layout_id,
+                    record_id,
+                    ..
+                } => Reply::Updated {
+                    layout_id,
+                    record_id,
+                    result: Err(error()),
+                },
+                Request::DeleteRecord {
+                    layout_id,
+                    record_id,
+                } => Reply::Deleted {
+                    layout_id,
+                    record_id,
+                    result: Err(error()),
+                },
+                // A list's build fails: the window's request is answered,
+                // rather than waited for while it stays asked.
+                Request::BuildValueList { build, .. } => Reply::ValueListBuilt {
+                    list: build.list,
+                    ticket: build.ticket,
+                    related: build.related.is_some(),
+                    result: Some(Err(crate::list_build::failed(&error()))),
+                    retry_after: None,
+                    generation: None,
+                },
+                _ => panic::resume_unwind(payload),
+            }
+        }
+    }
+}
+
+/// Whether `provider`, the one that just answered a request, holds its
+/// changes in a script transaction (open, not apart in a record session):
+/// asked before switching back to the scripts' window, which may be
+/// another file's provider. A panic asking counts as held.
+pub(crate) fn holds_in_transaction(provider: &dyn DataProvider) -> bool {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        provider.transaction_open() && !provider.record_session_open()
+    }))
+    .unwrap_or(true)
+}
+
+/// `reply`, once switching the provider back to the scripts' window after
+/// it panicked: the scripts stop, and their cleanup reverts a script
+/// transaction still open (`ScriptSession::revert_abandoned`). A save the
+/// answering provider `held` in such a transaction
+/// ([`holds_in_transaction`]) is then answered as failed, also inside a
+/// [`Reply::Grown`], so the window keeps its draft, rather than as kept
+/// (#313).
+pub(crate) fn unkept_save(held: bool, reply: Reply) -> Reply {
+    if !held {
         return reply;
     }
-    Reply::Grown {
-        grown: GrownSchema {
-            result: contain(provider, |p| p.calc_schema()),
-            warnings: provider.related_file_warnings(),
-            sign_ins: provider.related_sign_ins(),
+    let unkept = || {
+        DataError::new(
+            "The scripts stopped when the data provider failed unexpectedly, and the open \
+             transaction that held this change was reverted: it was not saved.",
+        )
+    };
+    match reply {
+        Reply::Grown { grown, then } => Reply::Grown {
+            grown,
+            then: Box::new(unkept_save(held, *then)),
         },
-        then: Box::new(reply),
+        Reply::Updated {
+            layout_id,
+            record_id,
+            result: Ok(_),
+        } => Reply::Updated {
+            layout_id,
+            record_id,
+            result: Err(unkept()),
+        },
+        Reply::Deleted {
+            layout_id,
+            record_id,
+            result: Ok(()),
+        } => Reply::Deleted {
+            layout_id,
+            record_id,
+            result: Err(unkept()),
+        },
+        reply => reply,
     }
 }
 
@@ -1235,18 +1397,22 @@ fn answer(
                     p,
                     build.list,
                     (today, info),
+                    build.related.as_ref(),
                     &cancel,
                 ))
             })
             .unwrap_or_else(|error| crate::list_build::Built {
                 result: Some(Err(crate::list_build::failed(&error))),
                 retry_after: None,
+                generation: None,
             });
             Reply::ValueListBuilt {
                 list: build.list,
                 ticket: build.ticket,
+                related: build.related.is_some(),
                 result: built.result,
                 retry_after: built.retry_after,
+                generation: built.generation,
             }
         }
         // The script session handles these itself.
@@ -1353,12 +1519,16 @@ fn contain_apart<T>(
     provider: &mut dyn DataProvider,
     call: impl FnOnce(&mut dyn DataProvider) -> Result<T, DataError>,
 ) -> Result<T, DataError> {
-    panic::catch_unwind(AssertUnwindSafe(|| call(&mut *provider))).unwrap_or_else(|payload| {
-        Err(DataError::new(format!(
-            "The data provider failed unexpectedly: {}",
-            panic_message(payload.as_ref())
-        )))
-    })
+    panic::catch_unwind(AssertUnwindSafe(|| call(&mut *provider)))
+        .unwrap_or_else(|payload| Err(panicked(payload.as_ref())))
+}
+
+/// The error a provider panic becomes.
+fn panicked(payload: &(dyn Any + Send)) -> DataError {
+    DataError::new(format!(
+        "The data provider failed unexpectedly: {}",
+        panic_message(payload)
+    ))
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> &str {
@@ -1378,11 +1548,41 @@ mod tests {
     use om_data::HostedFile;
     use std::time::{Duration, Instant};
 
-    struct PanickingProvider;
+    /// Panics listing files; once `grown` is set, on the next question
+    /// whether the schema grew; switching windows while `windows` is.
+    #[derive(Default)]
+    struct PanickingProvider {
+        grown: Arc<AtomicBool>,
+        windows: Arc<AtomicBool>,
+        /// The next loss probe panics.
+        lost: Arc<AtomicBool>,
+        /// A script's transaction is open.
+        held: Arc<AtomicBool>,
+    }
 
     impl DataProvider for PanickingProvider {
         fn list_files(&mut self, _: &str, _: u16) -> Result<Vec<HostedFile>, DataError> {
             panic!("list_files exploded")
+        }
+        fn use_window(&mut self, _: u32) {
+            if self.windows.load(Ordering::SeqCst) {
+                panic!("use_window exploded")
+            }
+        }
+        fn take_grown_schema(&mut self) -> bool {
+            if self.grown.swap(false, Ordering::SeqCst) {
+                panic!("take_grown_schema exploded")
+            }
+            false
+        }
+        fn connection_lost(&self) -> Option<DataError> {
+            if self.lost.swap(false, Ordering::SeqCst) {
+                panic!("connection_lost exploded")
+            }
+            None
+        }
+        fn transaction_open(&self) -> bool {
+            self.held.load(Ordering::SeqCst)
         }
         fn open(&mut self, _: &Connection) -> Result<(), DataError> {
             Ok(())
@@ -1632,7 +1832,17 @@ mod tests {
     #[test]
     fn a_panicking_provider_becomes_an_error_and_the_worker_survives() {
         let ctx = egui::Context::default();
-        let worker = Worker::spawn(Box::new(PanickingProvider));
+        let (grown, windows, lost) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let worker = Worker::spawn(Box::new(PanickingProvider {
+            grown: Arc::clone(&grown),
+            windows: Arc::clone(&windows),
+            lost: Arc::clone(&lost),
+            ..PanickingProvider::default()
+        }));
         let request = Request::ListFiles {
             token: 7,
             host: "h".into(),
@@ -1651,5 +1861,90 @@ mod tests {
         }
         worker.send(&ctx, 1, 1, Request::Layouts).unwrap();
         assert!(matches!(wait(&worker).reply, Reply::Layouts(Ok(_))));
+
+        // A panic after the provider answered still sends the answer, with
+        // the schema read failed (#313).
+        grown.store(true, Ordering::SeqCst);
+        worker.send(&ctx, 1, 1, Request::Layouts).unwrap();
+        let reply = wait(&worker).reply;
+        // What the request itself was answered, for a session that keeps
+        // an open's endpoint.
+        assert!(matches!(reply.answered(), Reply::Layouts(Ok(_))));
+        match reply {
+            Reply::Grown { grown, then } => {
+                let error = grown.result.unwrap_err();
+                assert!(
+                    error.message.contains("take_grown_schema exploded"),
+                    "{error:?}"
+                );
+                assert!(matches!(*then, Reply::Layouts(Ok(_))));
+            }
+            other => panic!("unexpected reply {other:?}"),
+        }
+        // One switching to a save's window is the save's own failure, which
+        // ends the window's wait for it, also when the loss probe that
+        // follows panics too.
+        windows.store(true, Ordering::SeqCst);
+        lost.store(true, Ordering::SeqCst);
+        let update = Request::UpdateRecord {
+            layout_id: 1,
+            record_id: 2,
+            values: FieldChanges::new(),
+        };
+        worker.send(&ctx, 1, 1, update).unwrap();
+        match wait(&worker).reply {
+            Reply::Updated {
+                layout_id: 1,
+                record_id: 2,
+                result: Err(err),
+            } => assert!(err.message.contains("use_window exploded"), "{err:?}"),
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+
+    /// A switch back that panics after a save stops the scripts, whose
+    /// cleanup reverts a script transaction still open: a save it held is
+    /// answered as not kept, one outside a transaction as kept (#313).
+    #[test]
+    fn a_save_a_reverted_transaction_held_is_not_answered_as_kept() {
+        let held = Arc::new(AtomicBool::new(true));
+        let provider = PanickingProvider {
+            held: Arc::clone(&held),
+            ..PanickingProvider::default()
+        };
+        let deleted = || Reply::Deleted {
+            layout_id: 1,
+            record_id: 2,
+            result: Ok(()),
+        };
+        assert!(holds_in_transaction(&provider));
+        match unkept_save(true, deleted()) {
+            Reply::Deleted {
+                result: Err(err), ..
+            } => {
+                assert!(err.message.contains("not saved"), "{err:?}")
+            }
+            other => panic!("unexpected reply {other:?}"),
+        }
+        // Inside the schema the worker grew answering it, too.
+        let grown = Reply::Grown {
+            grown: GrownSchema {
+                result: Err(DataError::new("schema")),
+                warnings: Vec::new(),
+                sign_ins: Vec::new(),
+            },
+            then: Box::new(deleted()),
+        };
+        assert!(matches!(
+            unkept_save(true, grown).answered(),
+            Reply::Deleted { result: Err(_), .. }
+        ));
+        // A provider with no script transaction kept the save.
+        held.store(false, Ordering::SeqCst);
+        assert!(!holds_in_transaction(&provider));
+        assert!(matches!(
+            unkept_save(false, deleted()),
+            Reply::Deleted { result: Ok(()), .. }
+        ));
     }
 }

@@ -376,7 +376,7 @@ impl WorkerHost<'_> {
         };
         if matches!(
             profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc | FileType::Excel2003
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
         ) {
             return Err(HostError::Unsupported);
         }
@@ -819,21 +819,20 @@ impl ExportSource for GuiExport<'_, '_> {
                 .map_or_else(ExportValue::empty, ExportValue::Computed));
         }
         let (bo, bf) = (occurrence, field);
-        self.host
-            .summary(
-                &Context {
-                    occurrence: Some(self.occurrence),
-                    record: Some(first),
-                    ..Context::new()
-                },
-                FieldId { occurrence, field },
-                FieldId {
-                    occurrence: bo,
-                    field: bf,
-                },
-            )
-            .map(ExportValue::Computed)
-            .map_err(calc_error)
+        om_data::summary::or_invalid(self.host.summary(
+            &Context {
+                occurrence: Some(self.occurrence),
+                record: Some(first),
+                ..Context::new()
+            },
+            FieldId { occurrence, field },
+            FieldId {
+                occurrence: bo,
+                field: bf,
+            },
+        ))
+        .map(ExportValue::Computed)
+        .map_err(calc_error)
     }
 
     /// Each record's value as the window's found set shows it, the current
@@ -925,8 +924,14 @@ impl GuiImport<'_, '_> {
     }
 }
 
+/// A row's write error as the import takes it: one whose rule OpenMaker
+/// does not support checking ([`om_data::DataError::unsupported`]) ends the
+/// import; any other refuses the row.
 fn write_error(e: om_data::DataError) -> TransferError {
-    TransferError::new(e.code.unwrap_or(3), e.message)
+    match e.unsupported {
+        true => TransferError::unsupported(e.message),
+        false => TransferError::new(e.code.unwrap_or(3), e.message),
+    }
 }
 
 impl ImportTarget for GuiImport<'_, '_> {

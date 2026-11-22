@@ -819,6 +819,13 @@ impl NativeProvider {
         };
         if delta < 0 {
             self.begin_asset_release(table, &member, delta.saturating_neg())?;
+            // A release whose reply is lost (a timeout) may still have been
+            // applied: it leaves the references this window or transaction
+            // would release or revert before it is sent, as a direct write's
+            // acquisitions do (`store_pending_assets`), so that no later
+            // join or revert releases it again. One that was not applied
+            // leaves the count one high: the member is kept, never lost.
+            self.count_container(table, &member, delta);
         } else if delta > 0 {
             self.check_asset_acquisition(table, None)?;
         }
@@ -842,15 +849,25 @@ impl NativeProvider {
         Ok(())
     }
 
+    /// A reference to `member` of `table`'s library was taken (`delta` > 0)
+    /// or released, as its library answered. A release has left the counts
+    /// before it was sent ([`Self::adjust_table_container`]).
     fn note_container_taken(&mut self, table: u64, member: &[u8], delta: i32) {
         if delta > 0 {
             self.note_asset_acquisition(table, member);
             if let Some(asset) = self.acquired_asset(table, member, delta) {
                 self.add_asset_receipt(table, asset);
             }
+            self.count_container(table, member, delta);
         } else if delta < 0 {
             self.acknowledge_asset_release(table, member, delta.saturating_neg());
         }
+    }
+
+    /// The references to `member` of `table`'s library the window's
+    /// records or its transaction hold, which their commit keeps and their
+    /// revert releases, changed by `delta`.
+    fn count_container(&mut self, table: u64, member: &[u8], delta: i32) {
         let counts = match self.transaction.as_mut() {
             Some(t) => &mut t.containers,
             None => self.pending_assets.entry(self.window).or_default(),

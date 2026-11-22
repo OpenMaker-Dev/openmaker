@@ -27,6 +27,7 @@ pub mod file_refs;
 pub mod formula_editor;
 pub mod found;
 pub mod host;
+pub mod layout_arrange;
 pub mod layout_catalog;
 pub mod layout_objects;
 pub mod layout_placement;
@@ -103,6 +104,31 @@ pub struct Record {
 /// Changed fields by their schema names. `None` clears a value. Providers
 /// reject unknown fields rather than silently changing another column.
 pub type FieldChanges = std::collections::BTreeMap<String, Option<String>>;
+
+/// Typed edits to a session's global values, keyed by field and repetition.
+pub type GlobalChanges = std::collections::BTreeMap<(u64, u32), String>;
+/// What a host's administrator asks of a session (FileMaker Server's Admin
+/// Console and Admin API; network-protocol.md 6.5, admin-console.md 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostMessageKind {
+    /// Send Message: a message to show (`0x0810`).
+    Message,
+    /// A request to close a file (`0x0040`) or every file (`0x0850`), which
+    /// FileMaker Pro closes after a countdown.
+    CloseFiles,
+    /// The notice that the host disconnects the session now (`0x0870`).
+    Disconnected,
+}
+
+/// A message from the host's administrator ([`DataProvider::take_host_messages`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostMessage {
+    pub kind: HostMessageKind,
+    /// The administrator's text.
+    pub text: String,
+    /// The host's name, as it names itself (`remoteName`).
+    pub server_name: String,
+}
 
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
@@ -423,7 +449,9 @@ pub struct ObjectGeom {
     /// Bounds in layout coordinates (points). Absolute: a contained object's
     /// bounds are already offset by its containers'.
     pub rect: GeomRect,
-    /// For a field object, the name of the field it shows, when known.
+    /// For a field object, the name of the field it shows, when known: the
+    /// bare name for a field of the layout's own occurrence, and
+    /// `Occurrence::Field` for one another occurrence shows.
     pub field_name: Option<String>,
     /// The object's key in the layout's object store (0 when it is not a
     /// stored object).
@@ -559,6 +587,11 @@ pub struct DataError {
     /// partly applied. The window then keeps every change it made and
     /// sends none again by itself.
     pub commit: Vec<FileCommit>,
+    /// A write refused because OpenMaker does not support checking one of
+    /// its rules (code 3), such as a value list whose source field it
+    /// cannot key (#571): an import ends at such a row rather than
+    /// skipping it as a row FileMaker refused.
+    pub unsupported: bool,
 }
 
 /// What a commit did in one file whose records it held (#1006).
@@ -610,6 +643,7 @@ impl DataError {
             code: None,
             lost: false,
             commit: Vec::new(),
+            unsupported: false,
         }
     }
 
@@ -620,6 +654,16 @@ impl DataError {
             code: Some(code),
             lost: false,
             commit: Vec::new(),
+            unsupported: false,
+        }
+    }
+
+    /// A write refused with 3 because OpenMaker does not support checking
+    /// one of its rules ([`Self::unsupported`]).
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            unsupported: true,
+            ..Self::with_code(3, message)
         }
     }
 
@@ -630,6 +674,7 @@ impl DataError {
             code: None,
             lost: true,
             commit: Vec::new(),
+            unsupported: false,
         }
     }
 }
@@ -891,10 +936,16 @@ pub trait DataProvider: Send {
     }
 
     /// Enter a user's `text` into a global field, applying the supported
-    /// type's entry parsing before changing this session's value. Unlike
-    /// [`Self::set_global`], this is not a script's permissive assignment.
-    /// The native provider supports the defined repetitions of plain Date,
-    /// Time and Timestamp data globals; unsupported targets/providers refuse with error 3.
+    /// type's entry parsing and the field's entry validation (maximum
+    /// characters, strict data type, range, value list, not empty) before
+    /// changing this session's value. Unlike [`Self::set_global`], this is
+    /// not a script's permissive assignment. The native provider supports
+    /// the defined repetitions of Text, Number, Date, Time and Timestamp
+    /// data globals, their first 255 repetitions; a field whose rules it
+    /// cannot check (validation by calculation, unique, existing value, a
+    /// related-values list or another file's field's values) or that
+    /// prohibits modification is 201, other targets and providers without
+    /// typed entry refuse with error 3 ([`Self::enters_typed_globals`]).
     fn set_typed_global(
         &mut self,
         _table: u64,
@@ -906,6 +957,31 @@ pub trait DataProvider: Send {
             found::code::UNSUPPORTED,
             "This connection cannot enter typed global values.",
         ))
+    }
+
+    /// Validate the complete proposed values before publishing any changes.
+    /// A provider that supports only a single typed entry refuses a batch.
+    fn set_typed_globals(&mut self, table: u64, changes: &GlobalChanges) -> Result<(), DataError> {
+        let mut values = changes.iter();
+        match (values.next(), values.next()) {
+            (None, _) => Ok(()),
+            (Some((&(field, repetition), text)), None) => {
+                self.set_typed_global(table, field, repetition, text)
+            }
+            _ => Err(DataError::with_code(
+                found::code::UNSUPPORTED,
+                "This connection cannot enter multiple typed global values together.",
+            )),
+        }
+    }
+
+    /// Whether [`Self::set_typed_global`] checks a user's typing (the
+    /// native provider's does): Browse then enters every global it offers
+    /// through it, and its refusals stand. Without it, Browse sets a text
+    /// or number global's text as typed ([`Self::set_global`]), and a date,
+    /// time or timestamp global's is error 3.
+    fn enters_typed_globals(&self) -> bool {
+        false
     }
 
     fn value_list(&mut self, _id: u64) -> Result<Vec<String>, DataError> {
@@ -1126,6 +1202,14 @@ pub trait DataProvider: Send {
         ))
     }
 
+    /// The records the open transaction created and still holds, as (base
+    /// table, record id), whichever window made them: what
+    /// [`Self::revert_transaction`] removes. None from a provider that
+    /// does not tell.
+    fn transaction_created(&self) -> Vec<(u64, i64)> {
+        Vec::new()
+    }
+
     /// The results of scripts started with a callback, waiting up to `wait`
     /// for the first; oldest first.
     fn server_script_results(
@@ -1209,6 +1293,45 @@ pub trait DataProvider: Send {
         Err(DataError::new(
             "This provider does not support deleting records.",
         ))
+    }
+
+    /// Relookup Field Contents (40) over records `ids` of layout
+    /// `layout_id`'s table: the lookups that match through `field` (by
+    /// name) copy their values again, as a script's write of each record's
+    /// own value of the field fires them (auto-entry.md, Lookups, battery
+    /// s41), with a script's rules and the step's privilege set; inside a
+    /// script's transaction each write is held there. The field itself
+    /// keeps its value. Checked before any record is written: the field is
+    /// one a script sets and a lookup matches through
+    /// (`RecordPlan::relookup_target`), and no record stores it with
+    /// character styles, which a plain write would drop, and none is held
+    /// in the open transaction, whose held value the stored one would
+    /// replace. A record refused ends the step there, the records before it
+    /// written. Records already gone when it reads them are skipped; one
+    /// deleted after that ends the step (101). With no `ids` it checks the
+    /// target alone.
+    fn relookup(
+        &mut self,
+        _layout_id: u32,
+        _field: &str,
+        _ids: &[i64],
+        _privilege_set: Option<String>,
+    ) -> Result<(), DataError> {
+        Err(DataError::with_code(
+            found::code::UNSUPPORTED,
+            "This provider does not relook up field contents.",
+        ))
+    }
+
+    /// Delete Record as a script step runs it. Inside a script's
+    /// transaction, a record of another file's table is held in that
+    /// file's part (record-writes.md, "A script's transaction across
+    /// files"). The user's own [`Self::delete_record`] of such a record is
+    /// refused while a script is paused inside the transaction, as the
+    /// user's edits there are: the transaction would hold a change no
+    /// step of it made.
+    fn delete_record_in_script(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
+        self.delete_record(layout_id, record_id)
     }
 
     /// Refuse a commit through layout `layout_id` whose records the
@@ -2168,6 +2291,14 @@ pub trait DataProvider: Send {
     /// host. Cheap: callers poll it while idle.
     fn connection_lost(&self) -> Option<DataError> {
         None
+    }
+
+    /// What the host's administrator sent this session since the last
+    /// call, oldest first ([`HostMessage`]; network-protocol.md 6.5): the
+    /// host's calls that have arrived are read first, without waiting.
+    /// Cheap: callers poll it while idle. The default has none.
+    fn take_host_messages(&mut self) -> Vec<HostMessage> {
+        Vec::new()
     }
 
     /// The windows whose record sessions a reconnect of this file carries

@@ -425,6 +425,12 @@ const WINDOW_STYLES: [(u32, &str); 3] = [
     (WindowOptions::CARD_WORD, "Card"),
 ];
 
+/// Replace Field Contents (91) and Replace Field Contents by Name (249),
+/// which store its options alike (script-steps.md 12.4).
+fn replaces(id: u16) -> bool {
+    matches!(id, 91 | 249)
+}
+
 /// The label of the step's Restore option where Claris names it.
 fn restore_label(id: u16) -> &'static str {
     match id {
@@ -535,7 +541,7 @@ impl StepOptions {
         // A calculated result needs its calculation: without one the
         // runtime refuses the step (error 5). Whether FileMaker's dialog
         // lets it be left empty is not measured.
-        if step.id() == 91 && step.number(1) == Some(3) && step.calculation(0).is_none() {
+        if replaces(step.id()) && step.number(1) == Some(3) && step.calculation(0).is_none() {
             return Err("Calculated result needs its calculation.".into());
         }
         // A Show Custom Dialog button labelled here gets its "Commit data"
@@ -585,7 +591,7 @@ impl StepOptions {
     fn apply(&self, step: &mut ScriptStep, row: &Row) -> Result<(), String> {
         match &row.edit {
             // Read-only (`enabled`): never written.
-            edit if step.id() == 91 && read_only_replace_option(edit) => {}
+            edit if read_only_option(step.id(), edit) => {}
             Edit::Flag { location, on, was } if on != was => match *location {
                 Location::Flag { bits, inverted } => step.set_flag(bits, *on != inverted),
                 Location::Slot { slot, .. } => step.set_number_bool(slot, Some(*on)),
@@ -926,12 +932,7 @@ impl StepOptions {
     /// file's, as FileMaker Pro greys it out for this file's (#771's Pro
     /// check); a checked box, stored or just checked, stays clearable.
     fn enabled(&self, i: usize) -> bool {
-        // Replace Field Contents' "Update serial number in Entry Options"
-        // and "Perform auto-enter options for fields" show what is stored
-        // and take no input: FileMaker Pro 26.0.3 greys the first out for a
-        // field without an auto-entered serial number, and what its own
-        // editor writes for either is not measured (#798's Pro check).
-        if self.original.id() == 91 && read_only_replace_option(&self.rows[i].edit) {
+        if read_only_option(self.original.id(), &self.rows[i].edit) {
             return false;
         }
         // Print (#843): its records take a choice only beside stored
@@ -1564,23 +1565,39 @@ fn requests_editable(node: &OwnedNode) -> Option<Vec<StoredRequest>> {
     (cells == criteria).then_some(requests)
 }
 
-/// A row before its condition is known.
-/// Replace Field Contents' checkboxes shown read-only: "Update serial
-/// number in Entry Options" (`[00 4, 03]`) and "Perform auto-enter options
-/// for fields" (`[00 6, 03]` with `kRestore`).
-fn read_only_replace_option(edit: &Edit) -> bool {
-    matches!(
-        edit,
-        Edit::Flag {
-            location: Location::Slot {
-                slot: 4 | 6,
-                kind: SlotKind::Number,
-            },
-            ..
-        }
-    )
+/// Options that show what is stored and take no input:
+///
+/// - Replace Field Contents' (and by Name's, [`replaces`]) "Update serial
+///   number in Entry Options" (`[00 4, 03]`) and "Perform auto-enter
+///   options for fields" (`[00 6, 03]` with `kRestore`): FileMaker Pro
+///   26.0.3 greys the first out for a field without an auto-entered serial
+///   number, and what its own editor writes for either is not measured
+///   (#798's Pro check).
+/// - Show Custom Dialog's "Close after" (`[00 6, 03]`) and its seconds
+///   (slot 13), FileMaker Pro 26.1's: known from the binaries only
+///   (script-steps.md 12.4), the Boolean's byte width unmeasured, so
+///   OpenMaker writes neither.
+fn read_only_option(step: u16, edit: &Edit) -> bool {
+    let number = |slots: &[u16]| {
+        matches!(
+            edit,
+            Edit::Flag {
+                location: Location::Slot {
+                    slot,
+                    kind: SlotKind::Number,
+                },
+                ..
+            } if slots.contains(slot)
+        )
+    };
+    match step {
+        id if replaces(id) => number(&[4, 6]),
+        87 => number(&[6]) || matches!(edit, Edit::Calculation { slot: 13, .. }),
+        _ => false,
+    }
 }
 
+/// A row before its condition is known.
 fn row(label: impl Into<String>, edit: Edit) -> Row {
     Row {
         label: label.into(),
@@ -1830,7 +1847,8 @@ fn rows(step: &ScriptStep, names: &Option<Arc<CalcSchema>>) -> Vec<Row> {
             // choice, or "Use Entry Options" (`[00 5, 03]` set: the field's
             // own serial settings, which these rows do not offer and which
             // would override them), keeps the parameter as stored.
-            ParamKind::Compound if id == 91 && p.name == "Replace with" => match step.number(1) {
+            ParamKind::Compound if replaces(id) && p.name == "Replace with" => match step.number(1)
+            {
                 Some(n) if !(0..=3).contains(&n) => rows.extend(kept),
                 _ if step.number(5).is_some_and(|n| n != 0) => rows.extend(kept),
                 stored => {
@@ -2568,6 +2586,13 @@ fn rows(step: &ScriptStep, names: &Option<Arc<CalcSchema>>) -> Vec<Row> {
                             was: value,
                         },
                     ));
+                } else if id == 74 && step.has_flag(flag::OPTION3) {
+                    // Go to Related Record's Table by Calculation (26.1,
+                    // `0x400` with slot 8, script-steps.md 12.4): the
+                    // dialog cannot switch between the two forms yet, and
+                    // a picked occurrence would be stored beside the
+                    // calculation the runtime follows. Kept as stored.
+                    rows.push(row(label, Edit::Kept));
                 } else {
                     match slot_of(p, SlotKind::Aliases).map(|s| (s, aliases_occurrence(step, s))) {
                         Some((slot, Ok(value))) => rows.push(row(

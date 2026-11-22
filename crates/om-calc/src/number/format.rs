@@ -10,6 +10,17 @@ impl Number {
     /// 0 < |x| < 10^-9, which use the scientific form `1.5E+20`. Empty is
     /// the empty string and `?` is `?`.
     pub fn to_text_with(&self, decimal: char) -> String {
+        self.text_with(decimal, true)
+    }
+
+    /// [`Self::to_text_with`] with every digit written out, never the
+    /// scientific form: `1000000000`, not `1.0E+9`, which a find criterion
+    /// reads as another number.
+    pub fn to_plain_text_with(&self, decimal: char) -> String {
+        self.text_with(decimal, false)
+    }
+
+    fn text_with(&self, decimal: char, scientific_form: bool) -> String {
         let fin = match &self.0 {
             Repr::Empty => return String::new(),
             Repr::NaN => return "?".to_string(),
@@ -28,11 +39,12 @@ impl Number {
         };
         let frac_part = frac_part.trim_end_matches('0');
         let sign = if fin.neg { "-" } else { "" };
-        let scientific = if int_part.len() >= 10 {
-            int_part.ends_with("000000000")
-        } else {
-            int_part.is_empty() && frac_part.len() >= 10 && frac_part.starts_with("000000000")
-        };
+        let scientific = scientific_form
+            && if int_part.len() >= 10 {
+                int_part.ends_with("000000000")
+            } else {
+                int_part.is_empty() && frac_part.len() >= 10 && frac_part.starts_with("000000000")
+            };
         if !scientific {
             let mut out = format!("{sign}{int_part}");
             if !frac_part.is_empty() {
@@ -100,6 +112,15 @@ mod tests {
             Number::from_literal("1,5", ',').unwrap().to_text_with(','),
             "1,5"
         );
+        // Written out in full for a find criterion.
+        let plain = |s: &str| {
+            Number::from_literal(s, '.')
+                .unwrap()
+                .to_plain_text_with('.')
+        };
+        assert_eq!(plain("1000000000"), "1000000000");
+        assert_eq!(plain("0.0000000001"), ".0000000001");
+        assert_eq!(plain("1500000000"), "1500000000");
     }
 
     #[test]

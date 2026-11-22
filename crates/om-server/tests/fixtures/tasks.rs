@@ -66,6 +66,10 @@ pub const NEWCOMER_PASSWORD: &str = "temporary";
 /// (security catalog record 6), and its password.
 pub const READER: &str = "Reader";
 pub const READER_PASSWORD: &str = "reader's secret";
+/// An account in a custom set in a file with [`add_custom_clerk`]
+/// (security catalog record 7), and its password.
+pub const TEMP: &str = "Temp";
+pub const TEMP_PASSWORD: &str = "temp's secret";
 pub const INTERNAL_CREATION: u32 = 0x0102_0304;
 
 /// Fields [`add_calculated`] adds to Tasks: Status (text); Label, an
@@ -602,6 +606,57 @@ pub fn set_field_language(root: &mut OwnedNode, table: u64, field: u64, language
 /// Change a field's validation word in a tree [`tree`] built.
 pub fn set_field_validation(root: &mut OwnedNode, table: u64, field: u64, validation: u32) {
     change_definition(root, table, field, 12, validation);
+}
+
+/// Tasks::Code must be a member of value list 5, "Names", the values of
+/// Tasks::Name with no second field, validated always (script-runtime.md
+/// 13.21), in a tree [`tree`] built.
+pub fn code_in_names_list(root: &mut OwnedNode) {
+    code_in_list_of(root, NAME);
+}
+
+/// [`code_in_names_list`] with the values of Tasks' field `field` (an id
+/// below 128).
+pub fn code_in_list_of(root: &mut OwnedNode, field: u64) {
+    set_field_validation(root, TABLE, CODE, 0x500);
+    let (t, code) = (uint_segment(TABLE), uint_segment(CODE));
+    let reference = vec![2, 1, 5, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff];
+    root.put(
+        &[&t, &[3], &[5], &code, &[0x07]],
+        OwnedNode::leaf(Vec::new(), reference),
+    );
+    root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
+    // Kind 1: Tasks::`field` (occurrence d0 00 01), no second field. Then
+    // the counted separator text " " (one unit, SCSU as ASCII), spelled
+    // out: om-author includes this fixture without om-scsu.
+    let list = vec![
+        1,
+        0,
+        0,
+        4,
+        3,
+        0xd0,
+        0,
+        1,
+        2,
+        1,
+        field as u8,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        b' ',
+    ];
+    root.put(
+        &[&[0x21], &[5], &[5], &[2]],
+        OwnedNode::leaf(Vec::new(), list),
+    );
 }
 
 /// Change a field's serial number increment (`mSerialIncrement`) in a
@@ -1202,6 +1257,36 @@ pub fn add_reader(root: &mut OwnedNode) {
     put_account(root, 6, READER_PASSWORD, None, 3);
 }
 
+/// Add [`TEMP`], in set 4 "Clerks", a custom set OpenMaker enforces
+/// (session-identity.md 2.1-2.3, the members `om_data`'s
+/// `custom_sets_are_enforced_only_with_plain_record_and_field_limits`
+/// decodes): records of Tasks viewed, created and edited but not deleted
+/// (`54 03`), every other table's view only (`10 03`); every layout,
+/// script and value list modifiable; every other privilege; no password
+/// lifetime. A server admits it only with `Server::admitting_custom_sets`.
+pub fn add_custom_clerk(root: &mut OwnedNode) {
+    let set: &[u8] = &[4];
+    root.put(&[&[23], &[2], &[5], set, &[16]], text_node(&[], "Clerks"));
+    for (member, value) in [(2u8, [0x10u8, 0x03]), (0x0a, [0x9f, 0xff]), (0x0c, [0, 0])] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[member]],
+            OwnedNode::leaf(Vec::new(), value.to_vec()),
+        );
+    }
+    root.put(
+        &[&[23], &[2], &[5], set, &[5], &uint_segment(TABLE), &[2]],
+        OwnedNode::leaf(Vec::new(), vec![0x54, 0x03]),
+    );
+    for catalog in [0x04u8, 0x11, 0x21] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[9], &[catalog]],
+            OwnedNode::leaf(Vec::new(), vec![if catalog == 4 { 0xdf } else { 0xd7 }]),
+        );
+    }
+    root.put(&[&[23], &[1], &[5], &[7], &[16]], text_node(&[], TEMP));
+    put_account(root, 7, TEMP_PASSWORD, None, 4);
+}
+
 /// Store account `record`'s password as FileMaker does (`[23, 1, 5, A,
 /// 06]`, `om_crypto::account`), its status when given and its set
 /// reference (`0b`).
@@ -1307,4 +1392,94 @@ impl Drop for TempFile {
         save.push(".omsave");
         let _ = std::fs::remove_file(save);
     }
+}
+
+/// A loopback SMTP server for one session per entry of `sessions`, each
+/// the replies to give: the greeting, then one per command (DATA's
+/// message ends at its `.` line). What each session read comes back.
+pub fn smtp_server(
+    sessions: Vec<Vec<&'static str>>,
+) -> (u16, std::thread::JoinHandle<Vec<Vec<String>>>) {
+    use std::io::{BufRead, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let mut all = Vec::new();
+        for replies in sessions {
+            let (socket, _) = listener.accept().unwrap();
+            let mut writer = socket.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(socket);
+            let mut replies = replies.into_iter();
+            writer
+                .write_all(replies.next().unwrap().as_bytes())
+                .unwrap();
+            let (mut read, mut in_data) = (Vec::new(), false);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                read.push(line.clone());
+                if in_data && line != ".\r\n" {
+                    continue;
+                }
+                in_data = line == "DATA\r\n";
+                let Some(reply) = replies.next() else { break };
+                writer.write_all(reply.as_bytes()).unwrap();
+                if line == "QUIT\r\n" {
+                    break;
+                }
+            }
+            all.push(read);
+        }
+        all
+    });
+    (port, handle)
+}
+
+/// Send Mail [Send via SMTP Server] to `port` on loopback, From Pat,
+/// To kim@example.org; with `login`, a plain password login.
+pub fn smtp_mail(port: u16, login: bool) -> ScriptStep {
+    let mut step = ScriptStep::new(63);
+    step.set_flag(om_scripts::flag::NO_INTERACT, true);
+    step.set_number_bool(4, Some(true));
+    let port = port.to_string();
+    let mut calculations = vec![
+        (0, "\"kim@example.org\""),
+        (3, "\"Weekly report\""),
+        (4, "\"See you\" & ¶ & \"Pat\""),
+        (5, "\"Pat\""),
+        (6, "\"pat@example.org\""),
+        (8, "\"127.0.0.1\""),
+        (9, port.as_str()),
+    ];
+    if login {
+        step.set_number_u16(6, Some(2));
+        calculations.extend([(10, "\"pat\""), (11, "\"wrong\"")]);
+    }
+    for (slot, text) in calculations {
+        step.set_calculation(slot, Some(&calc(text)));
+    }
+    step
+}
+
+/// [`smtp_server`]'s replies for two sessions: one that takes a message
+/// without a login, and one that refuses the password (535).
+pub fn smtp_sent_then_refused() -> Vec<Vec<&'static str>> {
+    vec![
+        vec![
+            "220 mail.example.org ESMTP\r\n",
+            "250 mail.example.org\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "354 Go ahead\r\n",
+            "250 OK queued\r\n",
+            "221 Bye\r\n",
+        ],
+        vec![
+            "220 mail.example.org ESMTP\r\n",
+            "250-mail.example.org\r\n250 AUTH PLAIN\r\n",
+            "535 5.7.8 Authentication credentials invalid\r\n",
+        ],
+    ]
 }

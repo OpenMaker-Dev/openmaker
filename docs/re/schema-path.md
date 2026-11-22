@@ -290,10 +290,13 @@ time; the host was on CDT). The 8 key bytes are the timestamp index key of
 query-program.md 7.3: date `0x800000 | year << 10 | month << 6 | day` in
 three bytes (`9f aa 9c` = 2026-10-28), then the time as a number key of the
 seconds since midnight (`80 05 65 87 30` = digits 5 4 7 6 2 = 54762 s =
-15:12:42; each nibble is digit + 1). Whole seconds only (bin
-`RCHostTimeStamp::Perform`, linux 0xf33980: `DateTime::Now()` ->
-`DBDateTimeKey::Set`). Three calls within two seconds returned the same
-value. A server must answer from its own clock in its local time zone.
+15:12:42; each nibble is digit + 1). The time part is as long as its
+digits, so the key is 8 bytes only from 10,000 seconds (02:46:40) on and
+5 bytes at midnight (`80 00`, no digits; inferred from 7.3, not captured).
+Whole seconds only (bin `RCHostTimeStamp::Perform`, linux 0xf33980:
+`DateTime::Now()` -> `DBDateTimeKey::Set`). Three calls within two seconds
+returned the same value. A server must answer from its own clock in its
+local time zone.
 
 Client use (bin `mac:RCHostTimeStamp::Call` 0x1a1a93e): FileMaker Pro asks
 for the host time when it stamps catalog mod info (8.2) and for
@@ -2217,7 +2220,7 @@ of the value (query-program.md 7.2).
 | `fc` (`KModCount`) | key string of a serial key, `01 nn` | `[3, 16, 1, fc]` = `01 02` |
 | `fc01` (`KModUser`) | text, the user name of the client (`Get(UserName)`, from FileMaker Pro's preferences) | "Duc Ha" (the template's author) |
 | `fc02` (`KModAccount`) | text, the account name | "Admin" |
-| `fc03` (`KModTimestamp`) | `08` + the 8-byte date-time key of 3.1 (9 bytes) | `08 9f 91 03 80 05 51 91 50` = 2020-04-03 11:20:04 |
+| `fc03` (`KModTimestamp`) | key string of the date-time key of 3.1: its length, then the key. The key is 8 bytes from 02:46:40 on; before that its time part has fewer digits, so the key is 5 to 7 bytes (inferred from 3.1 and query-program.md 7.3: no stamp written before 02:46:40 was captured) | `08 9f 91 03 80 05 51 91 50` = 2020-04-03 11:20:04 |
 
 `DBCatalogCommon::IncrementModCount(isNew)` (bin 0x190bad0) writes them for a
 catalog index or a member on every commit: unless the object is new it reads
@@ -2443,7 +2446,12 @@ change never makes another table's stored values stale.
 **How.** `Recalculation` plans per field with the record rules' evaluator
 (auto-entry.md, docs/record-writes.md): the formula's own table, stored data and
 stored calculation inputs, the `Get` selectors record rules allow, custom
-functions that read no fields. A container input is read from the
+functions that read no fields, and the Design functions, which answer as
+FileMaker Server's engine answers them in file context: empty, but
+`DatabaseNames` the file's name (calc-functions.md, "Design functions on
+FileMaker Server"; inf that op73's walk is that context). Before, a
+calculation calling one was skipped with the plug-in functions, which the
+Polish stream stores them as (`FMDR`, calc-encoding.md 7). A container input is read from the
 table's library: the field's data, as FileMaker Server's engine reads it
 when a commit computes such a calculation (script oracle
 s34-containers-calc: file name, length, Base64 of the data; inf for
@@ -2451,14 +2459,27 @@ op73's walk, which was not measured). A container cell naming a member
 the library lacks is no data to read: the calculation fails on that
 record, which keeps its value, rather than reading the reference's own
 text (OpenMaker's choice; FileMaker Server's answer is unmeasured). A
-calculation it cannot evaluate (a related, global, summary or
-unstored-calculation input, a plug-in, a selector that needs a window,
-repetitions, a container result, a formula that names a deleted field) is
-skipped: its values stay as they were and the server logs the field and
-why. A calculation that fails on a
-record keeps that record's value; failures are counted and logged once per
-field. With "do not evaluate if all referenced fields are empty" the value
-is empty when they all are. Auto-enter calculations are not recomputed
+repeating calculation (up to
+255 repetitions, the most a record's cells hold) is computed in each
+repetition, as calc-values.md 8.6 measured it: repetition n of a
+repeating input, a plain input that does not repeat read empty above
+repetition 1, `Extend` and `GetRepetition` as written,
+`Get ( CalculationRepetitionNumber )` n. A calculation it cannot evaluate
+(a related, global, summary or unstored-calculation input, a plug-in or
+mobile function, a selector that needs a window, a container result, a formula that names a
+deleted field) is skipped: its values stay as they were and the server
+logs the field and why. A calculation that fails on a record keeps that
+record's value; failures are counted and logged once per field. With "do
+not evaluate if all referenced fields are empty" the value is empty when
+they all are; in repetition n each input counts as the formula reads it
+there, by the operation that reads it (calc-values.md 8.6): read
+plainly, or as one of several aggregate arguments, repetition n, or
+nothing above 1 for one that does not repeat; through `Extend` its first
+repetition; as `GetRepetition`'s or `f[n]`'s field, computed or not, as
+an aggregate's only argument (`Extend` of it too), or as the field
+parameter of a function that takes one (`NPV`, `Last`), any of its
+repetitions, as the evaluator expands them. That reading of the option is inferred: FileMaker's check is
+unmeasured. Auto-enter calculations are not recomputed
 (they apply when data is entered) and nothing is validated (inf). `Get`
 answers for the account that sent op73 (also as the user name), the
 server's clock, and a fresh UUID per record when a formula asks for one.
@@ -2514,4 +2535,4 @@ Test: `crates/om-server/tests/recalc.rs` (FileMaker Pro's save sequence of
 2.3a with a formula change, a new dependent calculation, a calculation the
 server cannot evaluate, a rename, a deleted input, and a file left with
 deferred work; a script paused across a formula change; new calculations
-over a container).
+over a container; repeating calculations).

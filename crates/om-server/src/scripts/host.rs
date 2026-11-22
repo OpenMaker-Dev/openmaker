@@ -47,6 +47,7 @@ use om_calc::eval::{
 };
 use om_calc::{CalcError, Ctx, Date, Locale, Time, TimeStyle, Timestamp, Value, ValueType};
 use om_data::found::Findable;
+use om_data::host::security::SetAccess;
 use om_data::host::sql::FileSql;
 use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues, SessionInfo, Vars};
 use om_data::rules::{self, Entry, RecordEnvironment, RecordPlan, WriteMode};
@@ -66,8 +67,8 @@ use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
+    StepCall, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -87,6 +88,7 @@ mod containers;
 mod design;
 mod files;
 mod get;
+mod mail;
 mod related;
 mod requests;
 mod sort;
@@ -239,9 +241,18 @@ impl Schema {
             let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
             let mut calc = rules::schema::calc_schema(&tree, &catalog, stem);
             calc.locale = store.locale();
+            // The record rules refuse a unique check in language 0 when
+            // the file's language is unknown.
+            calc.locale_unreadable = store.file_language().is_none();
+            om_data::host::device::withhold_server_lacks(calc.names_mut());
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
+        // FileMaker Server's engine compiles no location function (s48):
+        // `Evaluate` text naming one fails with 1208, also in a branch it
+        // never takes. The rules', Design and privilege schemas withhold
+        // them too.
+        om_data::host::device::withhold_server_lacks(&mut names);
         let mut occurrences = HashMap::new();
         for occurrence in &catalog.table_occurrences {
             if let Some(table) = occurrence.base_table() {
@@ -407,6 +418,36 @@ struct OpenRecord {
     /// access (Commit Transaction, #187).
     /// Boxed: an open record is held in a transaction's [`Change`].
     context: Box<rules::WriteContext>,
+    /// A new record's creation clock (#474): the date, time, timestamp and
+    /// UUID its rules read, at New Record for what a script reads of it
+    /// before the commit, and again at the commit, which so stores what
+    /// was read. `None` for an existing record or an imported row.
+    created: Option<Box<CreatedClock>>,
+    /// A new record's values as its rules would compute them now
+    /// ([`ServerHost::preview_new_record`]), by cell: what a script reads of
+    /// the open record over `node`, and only that. They are not the
+    /// record's: its commit computes them again, and nothing else reads
+    /// them (a duplicate, a transaction's other records, its unique
+    /// values), so `node` holds only what the steps set.
+    preview: BTreeMap<u64, String>,
+}
+
+/// A row's write mode, the values it holds, the changes made to it and how
+/// they were entered: what its lookups and rules are read from.
+type RowInputs<'a> = (
+    WriteMode,
+    &'a BTreeMap<u64, String>,
+    &'a BTreeMap<u64, Option<String>>,
+    Entry,
+);
+
+/// What a new record's rules read of the clock (#474).
+#[derive(Clone, Debug)]
+struct CreatedClock {
+    date: String,
+    time: String,
+    timestamp: String,
+    uuid: String,
 }
 
 /// The record rules' state of an [`OpenRecord`] they already ran on.
@@ -661,6 +702,18 @@ fn cell_id(field: u64, repetition: u32) -> Option<u64> {
     }
 }
 
+/// A script find's failed query as the step's error: what OpenMaker cannot
+/// do (an index it cannot key, #572) is 3, as FileMaker reports a criterion
+/// it cannot use; another failure is the query's own code.
+fn find_failure(error: om_query::QueryError) -> FindError {
+    match error {
+        om_query::QueryError::Unimplemented(_)
+        | om_query::QueryError::Unsupported(..)
+        | om_query::QueryError::UnkeyedIndex => FindError::Unsupported,
+        error => FindError::Query(error.code()),
+    }
+}
+
 /// A server script session.
 pub(crate) struct ServerHost {
     shared: Arc<Shared>,
@@ -671,7 +724,14 @@ pub(crate) struct ServerHost {
     /// What other users see as the holder of the session's locks.
     holder: String,
     account: String,
+    /// The record key of the account the session logged in with, when it
+    /// did: Change Password changes that account's password, whatever its
+    /// name is by then. A session without one changes none.
+    account_key: Option<Vec<u8>>,
     locale: Locale,
+    /// The file's own language, `None` when its locale record does not
+    /// decode ([`Store::file_language`]).
+    file_language: Option<u32>,
     today: Date,
     schema: Schema,
     window: Option<Window>,
@@ -699,6 +759,10 @@ pub(crate) struct ServerHost {
     pub log: ErrorLog,
     /// What the account may do.
     privileges: Privileges,
+    /// The account's privilege set as its login verified it, for the
+    /// scripts it may run (session-identity.md 2.2); `None`: as
+    /// [`Self::privileges`] says.
+    access: Option<SetAccess>,
     /// A step of a script set to run with full access privileges is
     /// executing (script-runtime.md 9.1).
     elevated: bool,
@@ -730,9 +794,13 @@ impl ServerHost {
     ) -> Self {
         // The file's formats (file-metadata.md 2): FileMaker Server
         // evaluates with the file's locale record.
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = hosted.read_store();
-            (Schema::load(&store, &hosted.name), store.locale())
+            (
+                Schema::load(&store, &hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         let mut host = ServerHost {
             holder: format!("{} (script engine, {account})", shared.identity.name),
@@ -743,7 +811,9 @@ impl ServerHost {
                 txn: 1,
             },
             account: account.to_string(),
+            account_key: None,
             locale,
+            file_language,
             today: today(),
             schema,
             window: None,
@@ -759,6 +829,7 @@ impl ServerHost {
             request_open: false,
             log: ErrorLog::default(),
             privileges,
+            access: None,
             elevated: false,
             control: Control::unlimited(),
             calc_limits: SCRIPT_CALC_LIMITS,
@@ -803,6 +874,11 @@ impl ServerHost {
         self.window.is_some()
     }
 
+    /// The record key of the account the session logged in with.
+    pub fn set_account_key(&mut self, key: &[u8]) {
+        self.account_key = Some(key.to_vec());
+    }
+
     /// The script's abort flag and time limit.
     pub fn set_control(&mut self, control: Control) {
         self.control = control;
@@ -811,6 +887,11 @@ impl ServerHost {
     /// What one calculation of the script may build.
     pub fn set_calc_limits(&mut self, limits: CalcLimits) {
         self.calc_limits = limits;
+    }
+
+    /// The account's privilege set, which decides the scripts it may run.
+    pub fn set_access(&mut self, access: Option<SetAccess>) {
+        self.access = access;
     }
 
     /// End the session: revert an unfinished transaction, commit the open
@@ -933,12 +1014,16 @@ impl ServerHost {
     /// changed over what the file now stores: op73 may have recomputed
     /// their stored calculations or dropped a deleted field's values.
     pub fn refresh_schema(&mut self) {
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = self.hosted.read_store();
             if store.schema_generation() == self.schema.generation {
                 return;
             }
-            (Schema::load(&store, &self.hosted.name), store.locale())
+            (
+                Schema::load(&store, &self.hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         info!(
             "{:?}: script session reads the file's changed schema",
@@ -951,11 +1036,13 @@ impl ServerHost {
             .map(|l| l.id);
         self.schema = schema;
         self.locale = locale;
+        self.file_language = file_language;
         self.plans.clear();
         self.place_window(layout);
         if let Some(mut record) = self.record.take() {
             self.rebase(&mut record);
             self.record = Some(record);
+            self.preview_new_record();
         }
         if let Some(mut transaction) = self.transaction.take() {
             transaction.rebase_each(|record| self.rebase(record));
@@ -1142,21 +1229,47 @@ impl ServerHost {
         self.with_record(table, id, |node| node?.child(&field).cloned())
     }
 
+    /// `read` of the record as [`Self::record_node`] finds it, without a
+    /// copy. For the file's record it runs under the store's read guard,
+    /// so it must not read the store again: a second read guard on this
+    /// thread waits behind a writer queued meanwhile, which waits for the
+    /// first (#421).
     fn with_record<T>(&self, table: u64, id: u64, read: impl FnOnce(Option<&OwnedNode>) -> T) -> T {
+        self.with_record_view(table, id, |node, _| read(node))
+    }
+
+    /// [`Self::with_record`], also given the store the file's record was
+    /// read from, its guard held (`None` for a record the session holds):
+    /// what `read` needs of the store it reads from that, never by a guard
+    /// of its own (#421).
+    fn with_record_view<T>(
+        &self,
+        table: u64,
+        id: u64,
+        read: impl FnOnce(Option<&OwnedNode>, Option<&Store>) -> T,
+    ) -> T {
         if let Some(open) = self
             .record
             .as_ref()
             .filter(|r| r.table == table && r.id == id)
         {
-            return read(Some(&open.node));
+            if open.preview.is_empty() {
+                return read(Some(&open.node), None);
+            }
+            let mut view = open.node.clone();
+            for (cell, text) in &open.preview {
+                view.set_child(values::cell(&uint_segment(*cell), text));
+            }
+            return read(Some(&view), None);
         }
         match self.pending(table, id) {
-            Some(Change::Write(record)) => return read(Some(&record.node)),
-            Some(Change::Delete) => return read(None),
+            Some(Change::Write(record)) => return read(Some(&record.node), None),
+            Some(Change::Delete) => return read(None, None),
             None => {}
         }
         let path = record_path(table, id);
-        read(self.hosted.read_store().node(&segments(&path)))
+        let store = self.hosted.read_store();
+        read(store.node(&segments(&path)), Some(&store))
     }
 
     /// The record as the file holds it.
@@ -1211,7 +1324,13 @@ impl ServerHost {
         match self.pending(table, id) {
             Some(Change::Write(record)) => {
                 let record = record.clone();
-                return Ok(self.record.insert(record));
+                let new = record.new;
+                self.record = Some(record);
+                // Its preview is computed again, with what it reads now.
+                if new {
+                    self.preview_new_record();
+                }
+                return Ok(self.record.as_mut().expect("reopened"));
             }
             Some(Change::Delete) => return Err(ErrorCode::RECORD_MISSING.into()),
             None => {}
@@ -1231,6 +1350,8 @@ impl ServerHost {
             ruled: None,
             serials: BTreeMap::new(),
             context,
+            created: None,
+            preview: BTreeMap::new(),
         }))
     }
 
@@ -1344,6 +1465,175 @@ impl ServerHost {
         }
     }
 
+    /// The rules' environment for `record`: the session's, with the context
+    /// of the step that last changed the record (not the one committing it),
+    /// the session's global values when a formula reads one (schema-path.md
+    /// 5.17), the serial numbers the record took, and for a new record the
+    /// clock it was created with (#474).
+    fn rules_environment(&self, record: &OpenRecord, plan: &RecordPlan) -> RecordEnvironment {
+        let mut environment = self.record_environment();
+        environment.context = rules::WriteContext {
+            host_timestamp: environment.context.host_timestamp.take(),
+            ..(*record.context).clone()
+        };
+        if let Some(clock) = record.created.as_deref() {
+            environment.date.clone_from(&clock.date);
+            environment.time.clone_from(&clock.time);
+            environment.timestamp.clone_from(&clock.timestamp);
+            environment.uuid.clone_from(&clock.uuid);
+            environment.context.host_timestamp = Some(clock.timestamp.clone());
+        }
+        if plan.reads_globals() {
+            environment.globals = Some(self.session_globals(record.table));
+        }
+        environment.serials = record.serials.clone();
+        environment
+    }
+
+    /// `compute` (the rules over `record`'s cells) once the write's lookups,
+    /// read from the session's records as the script's calculations read
+    /// them, are in `environment`. Calculated lookup keys are read only once
+    /// their dependencies have settled: the provider's bounded demand
+    /// protocol, where an exhausted or unsupported demand keeps the
+    /// evaluator's explicit error.
+    fn with_lookups<T>(
+        &self,
+        plan: &RecordPlan,
+        record: &OpenRecord,
+        (mode, existing, changes, entry): RowInputs<'_>,
+        environment: &mut RecordEnvironment,
+        compute: impl Fn(&RecordEnvironment) -> Result<T, DataError>,
+    ) -> Result<T, DataError> {
+        let needs = Arc::new(rules::RelatedNeeds::default());
+        environment.related_needs = Some(Arc::clone(&needs));
+        let mut keyed = BTreeMap::new();
+        let mut rounds = 4;
+        loop {
+            environment.lookups = plan.read_lookups_with(
+                mode,
+                existing,
+                changes,
+                entry,
+                &related::SessionSource { host: self },
+                // Its own row is left out of its table's self-joins (#1035).
+                // An imported row's rules see what the import left, not its
+                // stored row: it names no record, and answers no self-join.
+                (
+                    &keyed,
+                    match record.ruled {
+                        Some(_) => rules::Written::Unknown,
+                        None => rules::Written::held(mode, record.id),
+                    },
+                ),
+            )?;
+            let computed = compute(environment);
+            let more = needs.take();
+            if more.is_empty() || rounds == 0 {
+                return computed;
+            }
+            rounds -= 1;
+            keyed.extend(more);
+        }
+    }
+
+    /// A new record's values as its rules compute them now (#474): its
+    /// auto-entered values and stored calculations over the cells the steps
+    /// set, kept as the open record's [`OpenRecord::preview`] so that a
+    /// script reads them before the commit, as FileMaker Server's engine
+    /// gives an auto-entered value right after New Record (script oracle
+    /// s46). With the record's creation clock, which its commit keeps.
+    /// Validation is left to the commit, and a value the preview cannot know
+    /// (a serial number not taken yet, a formula it cannot answer) is left
+    /// out. Run after New Record, after a change of a cell the rules compute
+    /// from, and when the record is opened again.
+    fn preview_new_record(&mut self) {
+        let Some(record) = self.record.as_mut() else {
+            return;
+        };
+        // An existing record, or one an import's rules already ran on (its
+        // node holds their values), has no preview.
+        if !record.new || record.ruled.is_some() {
+            record.preview.clear();
+            return;
+        }
+        let table = record.table;
+        let Ok(plan) = self.plan(table) else {
+            if let Some(record) = self.record.as_mut() {
+                record.preview.clear();
+            }
+            return;
+        };
+        let record = self.record.as_ref().expect("the new record");
+        let options = self.transaction.as_ref().map(|t| t.options);
+        let entry = Entry::script(
+            options.is_some_and(|o| o.skip_validation),
+            options.is_some_and(|o| o.skip_auto_enter),
+        );
+        let existing = BTreeMap::new();
+        let changes: BTreeMap<u64, Option<String>> = record
+            .changed
+            .iter()
+            .map(|cell| {
+                let text = record
+                    .node
+                    .child(&uint_segment(*cell))
+                    .and_then(values::cell_text);
+                (*cell, text)
+            })
+            .collect();
+        let mut environment = self.rules_environment(record, &plan);
+        let unknown: rules::UnknownValue<'_> = &|_, _, _| false;
+        let preview = self.with_lookups(
+            &plan,
+            record,
+            (WriteMode::Create, &existing, &changes, entry),
+            &mut environment,
+            |environment| {
+                plan.pending_row(
+                    WriteMode::Create,
+                    &existing,
+                    &changes,
+                    environment,
+                    (entry, (true, true), unknown),
+                )
+            },
+        );
+        let fields = self.schema.catalog.table(table).cloned();
+        let record = self.record.as_mut().expect("the new record");
+        record.preview.clear();
+        let Ok((row, unknown)) = preview else {
+            return;
+        };
+        let field_of = |cell: u64| match fields.as_ref().and_then(|t| t.field(cell)) {
+            Some(_) => cell,
+            None => cell >> 8,
+        };
+        for (cell, text) in row {
+            if record.serials.contains_key(&cell) || unknown.contains(&field_of(cell)) {
+                continue;
+            }
+            // An entered value reads as entered, unless the field's own rules
+            // give it another (an auto-entered calculation that replaces it,
+            // such as the UUID Duplicate Record copied): then as the commit
+            // will store it. The commit writes only a nonempty one over a new
+            // record (`changed_values` compares with its empty base), so an
+            // empty one leaves the entered value, and so reads.
+            if record.changed.contains(&cell) {
+                let entered = record
+                    .node
+                    .child(&uint_segment(cell))
+                    .and_then(values::cell_text);
+                if !plan.has_rules(cell)
+                    || text.is_empty()
+                    || entered.as_deref() == Some(text.as_str())
+                {
+                    continue;
+                }
+            }
+            record.preview.insert(cell, text);
+        }
+    }
+
     /// Apply the table's rules to a record about to be written: auto-enter
     /// values, stored calculations, validation and unique values
     /// (`om_data::rules`, auto-entry.md); the computed cells go into the
@@ -1380,22 +1670,9 @@ impl ServerHost {
                 (*field, text)
             })
             .collect();
-        // What the write's lookups copy, read from the session's records as
-        // the script's calculations read them.
-        let mut environment = self.record_environment();
-        // The step that last changed the record, not the one committing it.
-        environment.context = rules::WriteContext {
-            host_timestamp: environment.context.host_timestamp.take(),
-            ..(*record.context).clone()
-        };
-        // The session's global values, which an auto-entered or validation
-        // formula reads of a global field (schema-path.md 5.17).
-        if plan.reads_globals() {
-            environment.globals = Some(self.session_globals(record.table));
-        }
+        let mut environment = self.rules_environment(record, &plan);
         // Serials not taken yet: a new record's on creation were taken by
         // New Record.
-        environment.serials = record.serials.clone();
         let missing: Vec<_> = plan
             .serials_for(mode, entry)
             .into_iter()
@@ -1404,55 +1681,21 @@ impl ServerHost {
         environment
             .serials
             .extend(self.reserve_serials(record.table, missing)?);
-        // Read calculated lookup keys only once their dependencies have
-        // settled. Match the provider's bounded demand protocol; exhausted
-        // or unsupported demands preserve the evaluator's explicit error.
-        let needs = Arc::new(rules::RelatedNeeds::default());
-        environment.related_needs = Some(Arc::clone(&needs));
-        let mut keyed = BTreeMap::new();
-        let mut rounds = 4;
-        let computed = loop {
-            environment.lookups = plan
-                .read_lookups_with(
-                    mode,
-                    &existing,
-                    &changes,
-                    entry,
-                    &related::SessionSource { host: self },
-                    // Its own row is left out of its table's self-joins (#1035).
-                    // An imported row's rules see what the import left, not its
-                    // stored row: it names no record, and answers no self-join.
-                    (
-                        &keyed,
-                        match record.ruled {
-                            Some(_) => rules::Written::Unknown,
-                            None => rules::Written::held(mode, record.id),
-                        },
-                    ),
-                )
-                .map_err(|e| {
-                    info!(
-                        "{:?}: record {} of table {:#x} refused: {e}",
-                        self.hosted.name, record.id, record.table
-                    );
-                    rule_error(&e)
-                })?;
-            let computed = plan
-                .compute(mode, &existing, &changes, &environment, entry)
-                .map_err(|e| {
-                    info!(
-                        "{:?}: record {} of table {:#x} refused: {e}",
-                        self.hosted.name, record.id, record.table
-                    );
-                    rule_error(&e)
-                });
-            let more = needs.take();
-            if more.is_empty() || rounds == 0 {
-                break computed?;
-            }
-            rounds -= 1;
-            keyed.extend(more);
-        };
+        let computed = self
+            .with_lookups(
+                &plan,
+                record,
+                (mode, &existing, &changes, entry),
+                &mut environment,
+                |environment| plan.compute(mode, &existing, &changes, environment, entry),
+            )
+            .map_err(|e| {
+                info!(
+                    "{:?}: record {} of table {:#x} refused: {e}",
+                    self.hosted.name, record.id, record.table
+                );
+                rule_error(&e)
+            })?;
         for (field, text) in &computed {
             let key = uint_segment(*field);
             match text {
@@ -1480,7 +1723,10 @@ impl ServerHost {
                     continue;
                 };
                 if let Some((occurrence, source)) = plan.value_list_field(*cell, entry) {
-                    if !self.field_holds(occurrence, source, text) {
+                    let holds = self
+                        .field_holds(occurrence, source, text)
+                        .ok_or_else(unkeyed_list_refused)?;
+                    if !holds {
                         let is_field = self
                             .schema
                             .catalog
@@ -1585,38 +1831,93 @@ impl ServerHost {
         Ok(reserved)
     }
 
+    /// The file's own language (`Locale::Type`), which an index in language
+    /// 0 keys text in (query-program.md 7.2): `None` when the file's locale
+    /// record does not decode, so that a check in language 0 is refused.
+    fn file_language(&self) -> Option<u32> {
+        self.file_language
+    }
+
     /// Whether field `field` of `occurrence`'s table holds `text` in some
     /// record and repetition (a value list of the field's values): its
     /// value index when it has one, else its stored values, as committed.
     /// Text compares as index keys, so case does not matter in English
-    /// (script oracle s18); keyed as the field's index keys it, English
-    /// where OpenMaker has no exact form (#159).
-    fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> bool {
+    /// (script oracle s18); keyed as the field's index keys it. `None` when
+    /// a text field's index language has no key form OpenMaker builds (the
+    /// tailored ones, #299): the check is then refused (3) rather than
+    /// keyed in English, which can both miss the index's key and match
+    /// another value (#571). A number, date, time or timestamp field keys
+    /// `text` as its type, whatever its language (query-program.md 7.3,
+    /// dates in the file's order), and its stored values the same (#591);
+    /// a value its type does not read as one OpenMaker keys (a decimal
+    /// comma, digits among other characters, until #415) is looked up as
+    /// text, as before.
+    fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
-            return false;
+            return Some(false);
         };
-        let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
-            .unwrap_or(TextKeys::Collated);
-        let key = keys.key(text).unwrap_or_default();
+        let order = self.locale.date_order;
+        // A number in a file whose decimal separator is not a point is not
+        // keyed as the file reads it, neither here nor by the index builder
+        // (`1.000` is 1000 in German, keyed as 1), until #415: it is looked
+        // up as text, as before #591.
+        let typed = match def.data_type {
+            DataType::Number => self.locale.decimal_separator == '.',
+            DataType::Date | DataType::Time | DataType::Timestamp => true,
+            _ => false,
+        };
+        let typed_keys = |value: &str| {
+            om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
+        };
+        let typed_key = |value: &str| {
+            if !typed {
+                return None;
+            }
+            typed_keys(value).into_iter().find(|key| {
+                key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
+            })
+        };
+        let text_form = FieldOptions::decode(&def.options)
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
+        let (key, text_keys) = match typed_key(text) {
+            Some(key) => (key, None),
+            None => {
+                let keys = match def.data_type {
+                    DataType::Text => text_form?,
+                    _ => text_form.unwrap_or(TextKeys::Collated),
+                };
+                (keys.key(text).unwrap_or_default(), Some(keys))
+            }
+        };
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
         if let Some(index) = store.node(&[&t, &[INDEXES], &f, &[VALUE_INDEX]]) {
-            return index.child(&key).is_some();
+            return Some(index.child(&key).is_some());
         }
         let cells: Vec<u64> = (1..=Self::repetitions(def))
             .filter_map(|rep| cell_id(field, rep))
             .collect();
-        store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
+        // A stored value its type gives no key OpenMaker builds compares as
+        // text with the checked value, as before #591: a stored `5` and a
+        // zero-width space holds `5`.
+        let as_text = TextKeys::Collated.key(text);
+        let holds = |value: &str| match text_keys {
+            Some(keys) => keys.key(value).as_ref() == Some(&key),
+            None => match typed_key(value) {
+                Some(_) => typed_keys(value).contains(&key),
+                None => as_text.is_some() && TextKeys::Collated.key(value) == as_text,
+            },
+        };
+        Some(store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
             records.children.iter().any(|record| {
                 cells.iter().any(|cell| {
                     record
                         .child(&uint_segment(*cell))
                         .and_then(values::cell_text)
-                        .is_some_and(|v| keys.key(&v).as_ref() == Some(&key))
+                        .is_some_and(|v| holds(&v))
                 })
             })
-        })
+        }))
     }
 
     /// Whether a record other than `record` holds `text` in a repetition
@@ -1632,15 +1933,15 @@ impl ServerHost {
         text: &str,
     ) -> bool {
         let table = record.table;
-        // The record rules plan such a field only in a language whose keys
-        // `checked_text_keys` builds.
+        // The record rules plan such a field only in a language whose value
+        // keys `value_text_keys` builds.
         let keys = self
             .schema
             .catalog
             .table(table)
             .and_then(|t| t.field(field))
             .and_then(|f| f.decoded_options())
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let holds = |node: &OwnedNode| {
@@ -1888,7 +2189,10 @@ impl ServerHost {
                 return Err(related_list_refused());
             }
             if let Some((occurrence, source)) = plan.value_list_field(cell, entry) {
-                if !self.field_holds(occurrence, source, text) {
+                let holds = self
+                    .field_holds(occurrence, source, text)
+                    .ok_or_else(unkeyed_list_refused)?;
+                if !holds {
                     info!(
                         "{:?}: Set Field refused: field {} must hold a value of its value list",
                         self.hosted.name, field.field
@@ -1914,6 +2218,7 @@ impl ServerHost {
         let key = uint_segment(cell);
         let before = record.node.child(&key).cloned();
         record.before_change();
+        let context_changed = *record.context != context;
         *record.context = context;
         match stored {
             Some(text) => record.node.set_child(values::cell(&key, &text)),
@@ -1921,8 +2226,23 @@ impl ServerHost {
                 record.node.remove(&[&key]);
             }
         }
-        if record.node.child(&key) != before.as_ref() || lookup_match {
+        // A value written over the preview is entered, also one the preview
+        // shows (#474): clearing a previewed lookup clears it.
+        let changed = record.node.child(&key) != before.as_ref()
+            || lookup_match
+            || record.preview.contains_key(&cell);
+        if changed {
             record.changed_cell(cell);
+        }
+        // A new record's values computed from the cell, or from the step's
+        // layout or privilege set, are computed again.
+        let new = record.new;
+        let again = self.plan(table).map_or(true, |plan| {
+            changed && plan.computes_from(cell)
+                || context_changed && !plan.context_reads().is_empty()
+        });
+        if new && again {
+            self.preview_new_record();
         }
         Ok(())
     }
@@ -2041,8 +2361,17 @@ impl ServerHost {
                 .schema
                 .field(occurrence, *field)
                 .ok_or(FindError::Unsupported)?;
-            let criterion = find::Criterion::parse(text, def.data_type, &context)
-                .map_err(|_| FindError::Unsupported)?;
+            // Text keyed as the field's index keys it (query-program.md 7.2).
+            let form = match def.decoded_options() {
+                Some(options) if def.data_type == DataType::Text => rules::read_text_keys(
+                    options.index_language(),
+                    u32::from(self.locale.language.id()),
+                ),
+                _ => TextKeys::Collated,
+            };
+            let criterion =
+                find::Criterion::parse(text, def.data_type, &context.with_text_keys(form))
+                    .map_err(|_| FindError::Unsupported)?;
             let Some(criterion) = criterion else {
                 continue;
             };
@@ -2267,7 +2596,7 @@ impl ServerHost {
         let outcome = om_query::execute(&scratch, &program, &context);
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         let matched = find::found(&outcome.slots).ok_or(FindError::Query(0xffff))?;
         Ok(found.or(&matched))
@@ -2293,9 +2622,21 @@ impl ServerHost {
         }
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         find::found(&outcome.slots).ok_or(FindError::Query(0xffff))
+    }
+
+    /// The window's layout's Quick Find fields (`om_data::quick_find`); none
+    /// when the layout cannot be read or has Quick Find turned off.
+    fn quick_find_fields(&self) -> Vec<om_data::quick_find::QuickFindField> {
+        let Some(schema) = self.design() else {
+            return Vec::new();
+        };
+        self.window_layout(&schema)
+            .and_then(|entry| entry.layout)
+            .and_then(|layout| om_data::quick_find::fields(&layout, &schema))
+            .unwrap_or_default()
     }
 
     /// A field by `Table::Field` name, or a field of the window's table.
@@ -2351,6 +2692,47 @@ fn rule_error(error: &DataError) -> HostError {
 /// OpenMaker Server does not compute for a written record.
 fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
+}
+
+/// A value list of a field's values whose field is indexed in a language
+/// OpenMaker does not key (#571): the value is not looked up. Set Field
+/// reports it as error 3; an import ends at its row rather than skipping
+/// it (`transfer_error`), unlike a row's ordinary error 3.
+fn unkeyed_list_refused() -> HostError {
+    HostError::Unsupported
+}
+
+/// `value` as Find Matching Records writes it for the server's finds, as
+/// exactly as they read: a number written out in full with `.` as its
+/// decimal separator, as the server's criteria read numbers (not
+/// `1.0E+9`); a time or timestamp with its seconds even when they are
+/// zero, since the display form drops them and would read as the whole
+/// minute. `None` for a time with a fraction of a second: the server's
+/// criteria compare whole seconds, so no criterion holds it (and a whole
+/// second's criterion also finds the fractions within it). A time past 24
+/// hours is no time of day and fails as a criterion (3).
+fn matching_text(value: &Value, cx: &Ctx) -> Option<String> {
+    let clock = |micros: i128| {
+        let seconds = micros.div_euclid(1_000_000);
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    };
+    let whole = |micros: i128| micros.rem_euclid(1_000_000) == 0;
+    Some(match value {
+        Value::Number(n) | Value::NumberText(n, _) => n.to_plain_text_with('.'),
+        Value::Time(t) if whole(t.micros()) => clock(t.micros()),
+        Value::Timestamp(t) if whole(t.time_of_day().micros()) => format!(
+            "{} {}",
+            t.date().format(cx.locale),
+            clock(t.time_of_day().micros())
+        ),
+        Value::Time(_) | Value::Timestamp(_) => return None,
+        other => other.to_text(cx).into_string(),
+    })
 }
 
 /// Today in the server's time zone.
@@ -2448,6 +2830,24 @@ impl ServerHost {
     }
 }
 
+impl ServerHost {
+    /// `GetRecordIDsFromFoundSet` over the session's window's found set, as
+    /// FileMaker Server's script engine answers it (calc-functions.md,
+    /// "GetRecordIDsFromFoundSet on FileMaker Server").
+    pub(super) fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        let Some((_, schema)) = self.schema.rules.clone() else {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        };
+        let source = SessionSource::new(self, &schema);
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
+    }
+}
+
 /// The records a server session's query reads: the open record, then an
 /// open transaction's version, then the file's ([`ServerHost::with_record`]),
 /// decoded by field type once per query; the session's global values;
@@ -2473,7 +2873,7 @@ impl<'h> SessionSource<'h> {
         }
     }
 
-    fn values(&self, table: u64, node: &OwnedNode) -> RecordValues {
+    fn values(&self, table: u64, node: &OwnedNode, store: Option<&Store>) -> RecordValues {
         let cx = self.host.cx();
         let mut values = RecordValues {
             mod_count: Some(modcount::serial_value(node.child(&[modcount::MOD_COUNT]))),
@@ -2495,7 +2895,7 @@ impl<'h> SessionSource<'h> {
                     continue;
                 };
                 if let Some(cell) = node.child(&uint_segment(key)) {
-                    values.set(f.id, rep, self.decode(table, f, cell, &cx));
+                    values.set(f.id, rep, self.decode(table, f, cell, &cx, store));
                 }
             }
         }
@@ -2506,21 +2906,35 @@ impl<'h> SessionSource<'h> {
 impl SessionSource<'_> {
     /// A stored cell of field `f` of `table` as a query reads it: a
     /// container field as its file name alone (execute-sql.md 8.1, what
-    /// the column shows), without loading its data for every row.
-    fn decode(&self, table: u64, f: &om_data::host::FieldDef, cell: &OwnedNode, cx: &Ctx) -> Value {
+    /// the column shows), without loading its data for every row. The name
+    /// comes from `store`, the store the row was read from, under the
+    /// guard already held (a second guard on this thread would wait behind
+    /// a writer queued meanwhile, which waits for the first: #421), so
+    /// that the row and its library agree; a row the session holds reads
+    /// the store itself.
+    fn decode(
+        &self,
+        table: u64,
+        f: &om_data::host::FieldDef,
+        cell: &OwnedNode,
+        cx: &Ctx,
+        store: Option<&Store>,
+    ) -> Value {
         if f.value_type != ValueType::Container {
             return values::decode(f.value_type, Some(cell), cx);
         }
         match values::cell_text(cell).filter(|t| !t.is_empty()) {
-            Some(text) => Value::Container(om_calc::Container {
-                text: om_calc::Text::plain(
-                    self.host
-                        .hosted
-                        .read_store()
-                        .container_name(&uint_segment(table), &text),
-                ),
-                ..Default::default()
-            }),
+            Some(text) => {
+                let name = |store: &Store| store.container_name(&uint_segment(table), &text);
+                let name = match store {
+                    Some(store) => name(store),
+                    None => name(&self.host.hosted.read_store()),
+                };
+                Value::Container(om_calc::Container {
+                    text: om_calc::Text::plain(name),
+                    ..Default::default()
+                })
+            }
             None => Value::empty(ValueType::Container),
         }
     }
@@ -2533,7 +2947,9 @@ impl CalcSource for SessionSource<'_> {
         }
         let values = self
             .host
-            .with_record(table, record, |node| node.map(|n| self.values(table, n)))
+            .with_record_view(table, record, |node, store| {
+                node.map(|n| self.values(table, n, store))
+            })
             .map(Arc::new);
         self.records
             .borrow_mut()
@@ -3044,22 +3460,53 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account in a verified built-in set may run every script (its
-    /// scripts modifiable or executable only, session-identity.md 2.7);
-    /// one in a custom set ([`Privileges::Unknown`]) only scripts set to
-    /// run with full access privileges, whose steps then have full access
-    /// (script-runtime.md 2.2, 9.1): a custom set's script privileges are
-    /// not read here.
+    /// The scripts the account's set lets it run (session-identity.md
+    /// 2.2): every script under a verified built-in set, and under a custom
+    /// set those it makes executable. A script the set gives no access is
+    /// not executable, and being set to run with full access privileges
+    /// does not make it so: only a caller running with full access lets it
+    /// run, and then with the account's own privileges (script-runtime.md
+    /// 3.7, 9.1). The runtime admits a script with either flag, so the flag
+    /// is given only for a script the account may run.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = match &self.access {
+            Some(access) => access.runs_script(script),
+            None => self.privileges.runs_scripts(),
+        };
         ScriptAccess {
-            executable: self.privileges.runs_scripts(),
-            full_access: file == FILE && self.schema.full_access.contains(&script),
+            executable,
+            full_access: executable && file == FILE && self.schema.full_access.contains(&script),
         }
     }
 
     fn set_full_access(&mut self, _file: FileId, on: bool) {
         self.elevated = on;
     }
+
+    /// Print Setup (42), which FileMaker Server runs in its own step
+    /// handler (script-runtime.md 10.2); every other step without a method
+    /// is 3.
+    fn other_step(&mut self, call: &StepCall<'_>) -> HostResult<Option<Value>> {
+        match call.id {
+            42 => print_setup(call).map(|()| None),
+            _ => Err(HostError::Unsupported),
+        }
+    }
+}
+
+/// Print Setup (42) in a server script. With neither Restore nor its
+/// dialog it sets nothing and gives 0, as on the desktop. A restored setup
+/// configures later PDF output (Claris, Print Setup), which OpenMaker Server
+/// cannot make yet (Save Records as PDF is 3 here, #104), so it gives 3
+/// rather than claim a setup nothing would apply. With its dialog on it
+/// gives 3 too: a server shows no dialog, and what FileMaker Server answers
+/// then is unmeasured.
+fn print_setup(call: &StepCall<'_>) -> HostResult {
+    if !call.step.has_flag(om_data::flag::RESTORE) && call.step.has_flag(om_data::flag::NO_INTERACT)
+    {
+        return Ok(());
+    }
+    Err(HostError::Unsupported)
 }
 
 impl Navigation for ServerHost {
@@ -3135,19 +3582,14 @@ impl Navigation for ServerHost {
         self.go_to_related(request)
     }
 
-    fn go_to_list_of_records(
-        &mut self,
-        ids: &str,
-        layout: Option<&LayoutTarget>,
-        _animation: Option<u32>,
-        new_window: bool,
-    ) -> HostResult {
-        if new_window {
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        if request.new_window.is_some() {
             return Err(HostError::Unsupported);
         }
-        if let Some(layout) = layout {
+        if let Some(layout) = &request.layout {
             self.go_to_layout(layout, None)?;
         }
+        let ids = &request.ids;
         self.leave()?;
         let table = self.window()?.table;
         let existing: BTreeSet<u64> = self.all_records(table).into_iter().collect();
@@ -3261,6 +3703,8 @@ impl Records for ServerHost {
         for (field, text) in &serials {
             node.set_child(values::cell(&uint_segment(*field), text));
         }
+        // The clock its rules read now and at its commit (#474).
+        let clock = crate::recalc::record_environment(&self.account, self.uuid());
         self.record = Some(OpenRecord {
             table,
             id,
@@ -3270,12 +3714,20 @@ impl Records for ServerHost {
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
+            created: Some(Box::new(CreatedClock {
+                date: clock.date,
+                time: clock.time,
+                timestamp: clock.timestamp,
+                uuid: clock.uuid,
+            })),
+            preview: BTreeMap::new(),
         });
         let window = self.window_mut()?;
         window.found.push(id);
         window.current = window.found.len() - 1;
         // The first field of the tab order gets the focus (s31, s33).
         self.focus_first_field();
+        self.preview_new_record();
         Ok(())
     }
 
@@ -3296,9 +3748,19 @@ impl Records for ServerHost {
             window.table,
             window.record().ok_or(ErrorCode::RECORD_MISSING)?,
         );
-        let source = self
-            .record_node(table, id)
-            .ok_or(ErrorCode::RECORD_MISSING)?;
+        // An open new record's preview is not its own (it is computed again
+        // at its commit), so not the copy's either: the copy's own preview
+        // and commit compute those values for it.
+        let source = match self
+            .record
+            .as_ref()
+            .filter(|r| r.table == table && r.id == id)
+        {
+            Some(open) => open.node.clone(),
+            None => self
+                .record_node(table, id)
+                .ok_or(ErrorCode::RECORD_MISSING)?,
+        };
         self.new_record()?;
         // The copied values of normal fields are the new record's entries;
         // the rules compute its calculations and creation values again
@@ -3332,6 +3794,7 @@ impl Records for ServerHost {
             }
             record.node.set_child(cell);
         }
+        self.preview_new_record();
         Ok(())
     }
 
@@ -3490,15 +3953,17 @@ impl FieldSteps for ServerHost {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
+        let field = self.field_by_name(name)?;
+        self.store_value(field, value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self.field_named(name).ok_or(ErrorCode::FIELD_MISSING)?;
-        self.store_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -3564,6 +4029,66 @@ impl FieldSteps for ServerHost {
         self.hosted
             .save_commit(&mut store, journal)
             .map_err(|e| HostError::Error(ErrorCode(i32::from(crate::hosting::save_error(&e)))))
+    }
+}
+
+impl ServerHost {
+    /// Run `requests` as Perform Find, Constrain or Extend Found Set
+    /// (`kind`), from Find mode when `in_find_mode`: see
+    /// [`FoundSets::perform_find`].
+    fn find_with(
+        &mut self,
+        kind: FindKind,
+        requests: Vec<Request>,
+        in_find_mode: bool,
+    ) -> HostResult {
+        self.request_count = requests.len();
+        let window = self.window()?;
+        let current: RidList = window.found.iter().copied().collect();
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let master = if kind == FindKind::Constrain {
+            &current
+        } else {
+            &all
+        };
+        let matched = match self.find_within(&requests, master) {
+            Ok(found) => found,
+            Err(e) if e.code() == NO_CRITERIA.0 => {
+                // Without criteria FileMaker's engine is back in Browse
+                // mode, the found set and current record as they were
+                // (script-runtime.md 13.19, 13.21).
+                self.requests.clear();
+                let window = self.window_mut()?;
+                if window.mode == Mode::Find {
+                    window.current = window
+                        .browse_current
+                        .min(window.found.len().saturating_sub(1));
+                }
+                window.mode = Mode::Browse;
+                return Err(NO_CRITERIA.into());
+            }
+            Err(e) => {
+                if in_find_mode && self.requests.is_empty() {
+                    self.requests = requests;
+                }
+                return Err(ErrorCode(e.code()).into());
+            }
+        };
+        self.last_find = requests;
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let found = match kind {
+            FindKind::Replace | FindKind::Constrain => matched,
+            FindKind::Extend => current.or(&matched),
+        };
+        window.found = found.iter().collect();
+        window.current = 0;
+        window.mode = Mode::Browse;
+        window.sort = None;
+        if window.found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        Ok(())
     }
 }
 
@@ -3645,6 +4170,88 @@ impl FoundSets for ServerHost {
         Ok(())
     }
 
+    /// Perform Quick Find (query-program.md 6.6), by the desktop's rules
+    /// (`om_data::quick_find`): the window's layout's Quick Find fields;
+    /// each word or quoted phrase finds the records one of them matches,
+    /// among all the table's records, and the words narrow one another.
+    /// The current record stays current when it is found, the first found
+    /// record is current otherwise, and the found set is unsorted. A text
+    /// with no word is 400; no match is 401 and keeps the found set, its
+    /// sort and the current record (6.6, reported). A layout with Quick
+    /// Find turned off searches no field (401). A word a field of another
+    /// occurrence would be searched for is a related criterion, which
+    /// server finds do not support (3, script-steps.md 11.2.5); a related
+    /// field whose type cannot read the word is not searched for it, as on
+    /// the desktop, and needs no join.
+    fn perform_quick_find(&mut self, text: &str) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let fields = self.quick_find_fields();
+        let (year, month, day) = self.today.ymd();
+        let today = (year as i32, month, day);
+        let change = om_data::quick_find::change_in(text, &fields, today, self.locale.date_order)
+            .map_err(|e| ErrorCode(e.code.unwrap_or(3)))?;
+        let om_data::found::FoundSetChange::QuickFind(terms) = change else {
+            return Err(HostError::Unsupported);
+        };
+        let own = self.window()?.occurrence;
+        let mut words = Vec::with_capacity(terms.len());
+        for term in terms {
+            let mut requests = Vec::with_capacity(term.len());
+            for found in term {
+                let mut request = Request::default();
+                for (name, criterion) in found.criteria {
+                    let (occurrence, field) =
+                        self.field_named(&name).ok_or(ErrorCode::FIELD_MISSING)?;
+                    if occurrence != own {
+                        return Err(ErrorCode(3).into());
+                    }
+                    request.set(field, criterion);
+                }
+                requests.push(request);
+            }
+            words.push(requests);
+        }
+        self.leave()?;
+        let window = self.window()?;
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let mut found = all.clone();
+        for requests in &words {
+            // A word no field can read finds nothing.
+            if requests.is_empty() {
+                found = RidList::new();
+                break;
+            }
+            let matched = self
+                .find_within(requests, &all)
+                .map_err(|e| ErrorCode(e.code()))?;
+            found = found.and(&matched);
+        }
+        if found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        // Leaving Find mode, `Get ( RequestCount )` keeps its requests'
+        // count, as Enter Browse Mode does (s31, s33).
+        if self.window()?.mode == Mode::Find {
+            self.request_count = self.requests.len();
+        }
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let at = if window.mode == Mode::Find {
+            window.browse_current
+        } else {
+            window.current
+        };
+        let current = window.found.get(at).copied();
+        window.found = found.iter().collect();
+        window.current = current
+            .and_then(|record| window.found.iter().position(|&id| id == record))
+            .unwrap_or(0);
+        window.mode = Mode::Browse;
+        window.sort = None;
+        Ok(())
+    }
+
     /// Perform Find, Constrain and Extend Found Set, with the stored
     /// requests or the window's (script-steps.md 11.2.4): Constrain finds
     /// within the found set, Perform Find and Extend within all records,
@@ -3662,53 +4269,61 @@ impl FoundSets for ServerHost {
             None if in_find_mode => std::mem::take(&mut self.requests),
             None => self.last_find.clone(),
         };
-        self.request_count = requests.len();
+        self.find_with(kind, requests, in_find_mode)
+    }
+
+    /// Find Matching Records (155): the records whose `field`, or the
+    /// field with the focus, holds the current record's value, by the
+    /// desktop's request (`om_data::found::matching_criterion`, the value
+    /// written by [`matching_text`]), found, constrained or extended as
+    /// Perform Find does with that one request. Without a field it is 102,
+    /// as on the desktop. The step runs in Browse mode: from Find mode it
+    /// switches first, as Enter Browse Mode does (Claris, "Find Matching
+    /// Records"), and takes the value of the record current when Find mode
+    /// was entered. That is inferred: this server's Enter Browse Mode
+    /// returns to the first record, and FileMaker's record after Find mode
+    /// is not measured. A field of another occurrence is a related criterion,
+    /// which server finds do not support (3); a global or summary field is
+    /// no criterion at all (3; FileMaker's answer is not measured).
+    fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
         let window = self.window()?;
-        let current: RidList = window.found.iter().copied().collect();
-        let all: RidList = self.all_records(window.table).into_iter().collect();
-        let master = if kind == FindKind::Constrain {
-            &current
-        } else {
-            &all
-        };
-        let matched = match self.find_within(&requests, master) {
-            Ok(found) => found,
-            Err(e) if e.code() == NO_CRITERIA.0 => {
-                // Without criteria FileMaker's engine is back in Browse
-                // mode, the found set and current record as they were
-                // (script-runtime.md 13.19, 13.21).
-                self.requests.clear();
-                let window = self.window_mut()?;
-                if window.mode == Mode::Find {
-                    window.current = window
-                        .browse_current
-                        .min(window.found.len().saturating_sub(1));
-                }
-                window.mode = Mode::Browse;
-                return Err(NO_CRITERIA.into());
-            }
-            Err(e) => {
-                if in_find_mode && self.requests.is_empty() {
-                    self.requests = requests;
-                }
-                return Err(ErrorCode(e.code()).into());
-            }
-        };
-        self.last_find = requests;
-        self.requests.clear();
-        let window = self.window_mut()?;
-        let found = match kind {
-            FindKind::Replace | FindKind::Constrain => matched,
-            FindKind::Extend => current.or(&matched),
-        };
-        window.found = found.iter().collect();
-        window.current = 0;
-        window.mode = Mode::Browse;
-        window.sort = None;
-        if window.found.is_empty() {
-            return Err(NO_RECORDS_MATCH.into());
+        if field.occurrence != window.occurrence
+            || om_data::found::findable(&def) == Findable::Ignored
+        {
+            return Err(HostError::Unsupported);
         }
-        Ok(())
+        if window.mode == Mode::Find {
+            let before = window.browse_current;
+            self.enter_mode(Mode::Browse, false, None)?;
+            let window = self.window_mut()?;
+            window.current = before.min(window.found.len().saturating_sub(1));
+        }
+        let value = self.value_of(field)?;
+        let field_kind = match value.value_type() {
+            ValueType::Text => om_data::FieldKind::Text,
+            ValueType::Number => om_data::FieldKind::Number,
+            ValueType::Date => om_data::FieldKind::Date,
+            ValueType::Time => om_data::FieldKind::Time,
+            ValueType::Timestamp => om_data::FieldKind::Timestamp,
+            ValueType::Container => om_data::FieldKind::Container,
+        };
+        let text = matching_text(&value, &self.cx()).ok_or(HostError::Unsupported)?;
+        let mut request = Request::default();
+        request.set(
+            field.field,
+            om_data::found::matching_criterion(&text, Some(field_kind)),
+        );
+        self.leave()?;
+        self.find_with(kind, vec![request], false)
     }
 
     /// Sort Records with its stored order (script-steps.md 11.1); without
@@ -3819,6 +4434,211 @@ impl Network for ServerHost {
     ) -> HostResult<om_scripts::runtime::UrlResponse> {
         self.fetch_url_step(request)
     }
+
+    fn send_mail(&mut self, mail: &om_scripts::runtime::Mail) -> HostResult {
+        self.send_mail_step(mail)
+    }
 }
-impl Accounts for ServerHost {}
+/// FileMaker's error 310, "Cannot modify items because another user is
+/// modifying them": Reset Account Password's code when the account catalog
+/// is locked (script-runtime.md 2.3, its 8003).
+const ACCOUNTS_IN_USE: i32 = 310;
+
+/// The attention code of a catalog change (`kDBAttnCatalog`,
+/// schema-path.md 9).
+const ATTENTION_CATALOG: u32 = 2;
+
+/// `text` cut to at most `units` UTF-16 code units, as Change Password cuts
+/// its passwords (local-files.md 2.4); a character that would be split
+/// goes whole.
+fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut counted = 0;
+    for (at, c) in text.char_indices() {
+        counted += c.len_utf16();
+        if counted > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
+impl ServerHost {
+    /// Run `edit` while the session holds the write lock FileMaker Pro's
+    /// Manage Security takes on the account catalog `[23, 1]`
+    /// (local-files.md 2.4), so that a client saving accounts and a script
+    /// do not change them at once: 310 while another user holds it
+    /// (FileMaker's code for Reset Account Password, inferred for the
+    /// other account steps). `edit` gets the modification stamp to write
+    /// and says whether it wrote; once it has, the other clients are told
+    /// the catalog changed, as a
+    /// client's commit tells them. A file the server hosts read-only
+    /// changes nothing: 3 (OpenMaker's choice).
+    fn edit_accounts(
+        &self,
+        step: &str,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
+    ) -> HostResult {
+        if self.hosted.read_only {
+            info!(
+                "{:?}: {step} changed nothing: the file is hosted read-only",
+                self.hosted.name
+            );
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let catalog = vec![vec![23], vec![1]];
+        self.hosted
+            .lock_table()
+            .lock(&catalog, self.user, LOCK_WRITE, &self.holder)
+            .map_err(|conflict| {
+                info!(
+                    "{:?}: {step} refused: the accounts are in use by {}",
+                    self.hosted.name, conflict.users
+                );
+                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+            })?;
+        let time = crate::connection::host_time_key();
+        // `Get ( UserName )` of a server script is its account's name.
+        let stamp = crate::hosting::ModStamp {
+            user: &self.account,
+            account: &self.account,
+            time: &time,
+        };
+        let result = edit(&stamp);
+        self.hosted.lock_table().release_path(&catalog, self.user);
+        if result == Ok(true) {
+            writes::notify(
+                &self.hosted,
+                &self.shared.mailboxes,
+                self.user.connection,
+                &[
+                    writes::Change {
+                        path: catalog.clone(),
+                        code: ATTENTION_CATALOG,
+                    },
+                    writes::Change {
+                        path: vec![vec![23], vec![1], vec![1]],
+                        code: ATTENTION_CATALOG,
+                    },
+                ],
+            );
+        }
+        result.map(|_| ())
+    }
+}
+
+impl Accounts for ServerHost {
+    /// Change Password (83), as FileMaker's `DoChangePassword` runs it
+    /// (local-files.md 2.4): the password of the account the session
+    /// logged in with, found by its record key so that a rename since
+    /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
+    /// and 3 for [Guest] or an account of another kind. Then
+    /// [`crate::hosting::Hosted::change_password`] sets it with
+    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
+    /// does not allow it, 208 shorter than the set's minimum, 209 the same
+    /// password, 210 an inactive account), skipping the set's checks for a
+    /// step with full access, and saves it before the step ends. With its
+    /// dialog the step is refused with 3: FileMaker Server's handling of
+    /// that dialog is not measured.
+    fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
+        if with_dialog {
+            return Err(HostError::Unsupported);
+        }
+        let Some(key) = self.account_key.clone() else {
+            return Err(HostError::Unsupported);
+        };
+        let is_file_account =
+            self.hosted.accounts().iter().any(|a| {
+                a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+            });
+        if key == [1] || !is_file_account {
+            return Err(HostError::Unsupported);
+        }
+        let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
+        let manager = self.privileged();
+        self.edit_accounts("Change Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .change_password(
+                    crate::hosting::AccountRef::Key(&key),
+                    old,
+                    new,
+                    manager,
+                    Some(stamp),
+                    now,
+                )
+                .map(|()| true)
+                .map_err(|e| {
+                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                        warn!(
+                            "{:?}: Change Password changed nothing: {reason}",
+                            self.hosted.name
+                        );
+                    }
+                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+                })
+        })
+    }
+
+    /// Reset Account Password (136): only a session with full access
+    /// privileges (9), as FileMaker's `DoResetAccount`;
+    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
+    /// "Expire password" it is refused (3) before anything changes: the
+    /// account could then sign in to a hosted file only with a new
+    /// password, which this server does not take at login yet
+    /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
+    fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
+        self.require_full_access()?;
+        if expire {
+            info!(
+                "{:?}: Reset Account Password with Expire password is not supported yet",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
+        self.edit_accounts("Reset Account Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .reset_account_password(name, password, false, Some(stamp), now)
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
+        })
+    }
+
+    /// Delete Account (135): only a session with full access privileges
+    /// (9), as FileMaker's `DoDeleteAccount`;
+    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    fn delete_account(&mut self, name: &str) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Delete Account", |stamp| {
+            self.hosted
+                .delete_account(name, Some(stamp))
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Delete Account", &e))
+        })
+    }
+
+    /// Enable Account (137): only a session with full access privileges
+    /// (9), as FileMaker's `DoEnableAccount`;
+    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Enable Account", |stamp| {
+            self.hosted
+                .enable_account(name, active, Some(stamp))
+                .map_err(|e| self.account_edit_error("Enable Account", &e))
+        })
+    }
+}
+
+impl ServerHost {
+    /// The step error for Reset Account Password's or Enable Account's
+    /// `e`: its FileMaker code, or 3 for an account or file that could not
+    /// be written, logged.
+    fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
+        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
+            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        }
+        ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+    }
+}
 impl Platform for ServerHost {}

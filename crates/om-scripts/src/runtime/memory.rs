@@ -96,6 +96,8 @@ pub struct MemoryScriptHost {
     /// Answers to custom dialogs in order; when empty the default button
     /// with the inputs unchanged.
     pub dialog_answers: VecDeque<DialogResponse>,
+    /// Send Mail's messages, in order; none is sent.
+    pub mails: Vec<Mail>,
     /// Layout triggers: (layout, event) -> (file, script).
     pub layout_triggers: HashMap<(u64, TriggerEvent), (FileId, u64)>,
     /// Calculation functions by lowercase name, answered before
@@ -142,6 +144,12 @@ pub struct MemoryScriptHost {
     pub pending_opens: u32,
     /// Commit Transaction returns [`HostError::Pending`] this many times.
     pub pending_commits: u32,
+    /// Go to List of Records' requests, in order; the found set stays.
+    pub record_lists: Vec<RecordList>,
+    /// Scripts the Script Debugger runs whole without showing their
+    /// steps, as FileMaker runs an "Executable Only" script: (file,
+    /// script). It shows every other script.
+    pub executable_only: HashSet<(FileId, u64)>,
 }
 
 impl MemoryScriptHost {
@@ -160,6 +168,7 @@ impl MemoryScriptHost {
             log: Vec::new(),
             dialogs: Vec::new(),
             dialog_answers: VecDeque::new(),
+            mails: Vec::new(),
             layout_triggers: HashMap::new(),
             functions: HashMap::new(),
             queued: Vec::new(),
@@ -184,6 +193,8 @@ impl MemoryScriptHost {
             pending_new_records: 0,
             pending_opens: 0,
             pending_commits: 0,
+            record_lists: Vec::new(),
+            executable_only: HashSet::new(),
         }
     }
 
@@ -583,6 +594,10 @@ impl ScriptHost for MemoryScriptHost {
             .cloned()
     }
 
+    fn script_debuggable(&mut self, file: FileId, script: u64) -> bool {
+        !self.executable_only.contains(&(file, script))
+    }
+
     fn script_named(&mut self, file: FileId, name: &str) -> Option<u64> {
         self.files
             .get(&file)?
@@ -675,6 +690,13 @@ impl ScriptHost for MemoryScriptHost {
 }
 
 impl Navigation for MemoryScriptHost {
+    /// Keeps the request in [`MemoryScriptHost::record_lists`].
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        self.call("go_to_list_of_records");
+        self.record_lists.push(request.clone());
+        Ok(())
+    }
+
     fn go_to_layout(&mut self, layout: &LayoutTarget, _animation: Option<u32>) -> HostResult {
         self.call(format!("go_to_layout {layout:?}"));
         let current = self.window().map(|w| w.layout);
@@ -718,8 +740,8 @@ impl Navigation for MemoryScriptHost {
     }
 
     /// No relationships are followed: no related records.
-    fn go_to_related_record(&mut self, _request: &RelatedRecords<'_>) -> HostResult {
-        self.call("go_to_related_record");
+    fn go_to_related_record(&mut self, request: &RelatedRecords<'_>) -> HostResult {
+        self.call(format!("go_to_related_record {:?}", request.occurrence));
         Err(ErrorCode::RECORD_MISSING.into())
     }
 
@@ -884,17 +906,72 @@ impl Fields for MemoryScriptHost {
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
         self.call(format!("set_field_by_name {name}"));
+        let field = self.field_by_name(name)?;
+        self.set_value(field, value)
+    }
+
+    /// Every record of the found set, each made current in turn; the
+    /// active field is not modelled, so a field is needed.
+    fn replace_field_contents(
+        &mut self,
+        field: Option<FieldRef>,
+        with: &mut Replacement<'_>,
+        _with_dialog: bool,
+    ) -> HostResult {
+        let field = field.ok_or(HostError::Unsupported)?;
+        self.call(format!(
+            "replace_field_contents {}:{}",
+            field.occurrence, field.field
+        ));
+        let (count, current) = (self.window())
+            .map(|w| (w.found.len(), w.current))
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        let contents = self.field_value_of(field)?;
+        // Serial numbers that cannot all be counted write none of them.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            let last = u64::try_from(count.saturating_sub(1)).unwrap_or(u64::MAX);
+            if serial_text(initial, *increment, last).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
+        let mut result = Ok(());
+        for i in 0..count {
+            if let Some(window) = self.window_mut() {
+                window.current = i;
+            }
+            let value = match with {
+                Replacement::CurrentContents => contents.clone(),
+                Replacement::Calculation(evaluate) => evaluate(self),
+                Replacement::Serial {
+                    initial, increment, ..
+                } => match serial_text(initial, *increment, i as u64) {
+                    Some(text) => Value::text(text),
+                    None => return Err(HostError::Error(ErrorCode::UNAVAILABLE)),
+                },
+            };
+            result = self.set_value(field, value);
+            if result.is_err() {
+                break;
+            }
+        }
+        if let Some(window) = self.window_mut() {
+            window.current = current;
+        }
+        result
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self
             .field_named(name)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-        self.set_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -1242,6 +1319,13 @@ impl Files for MemoryScriptHost {
 impl Network for MemoryScriptHost {
     fn open_url(&mut self, url: &str, _with_dialog: bool, _external: bool) -> HostResult {
         self.call(format!("open_url {url}"));
+        Ok(())
+    }
+
+    /// Keeps the message in [`MemoryScriptHost::mails`].
+    fn send_mail(&mut self, mail: &Mail) -> HostResult {
+        self.call("send_mail");
+        self.mails.push(mail.clone());
         Ok(())
     }
 
