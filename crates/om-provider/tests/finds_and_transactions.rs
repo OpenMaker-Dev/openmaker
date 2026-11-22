@@ -92,6 +92,188 @@ fn open(port: u16, ca_pem: &[u8]) -> NativeProvider {
     provider
 }
 
+/// An Open the host refuses because it blocks new users says what
+/// FileMaker Pro's alert says, with its error 1638 (#156), not the
+/// protocol's status.
+#[test]
+fn an_open_refused_under_block_new_users_says_what_filemaker_says() {
+    let file = file_with("provider-block-new-users", &[], |_| {});
+    let mut handle = None;
+    let (port, ca_pem) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    handle.unwrap().set_block_new_users(true);
+    let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let mut provider = NativeProvider::new(NativeConfig {
+        client_cert_pem: client.cert.pem().into_bytes(),
+        client_key_pem: client.key_pair.serialize_pem().into_bytes(),
+        additional_ca_pem: ca_pem,
+        callback_host: "127.0.0.1".into(),
+        machine: MachineInfo::default(),
+    });
+    let error = provider
+        .open(&Connection {
+            host: "127.0.0.1".into(),
+            port,
+            file: FILE.into(),
+            account: ACCOUNT.into(),
+            password: PASSWORD.into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, Some(1638));
+    assert_eq!(error.message, om_provider::HOST_BLOCKS_NEW_USERS);
+}
+
+/// The host administrator's Send Message reaches the open file's provider
+/// while it is idle, read as it is polled, with the host's name (#156).
+#[test]
+fn a_host_message_is_taken_while_the_provider_is_idle() {
+    let file = file_with("provider-host-message", &[], |_| {});
+    let mut handle = None;
+    let (port, ca_pem) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    let handle = handle.unwrap();
+    let mut provider = open(port, &ca_pem);
+    assert!(provider.take_host_messages().is_empty());
+    let client = handle
+        .clients()
+        .into_iter()
+        .find(|client| !client.files.is_empty())
+        .expect("the provider's session")
+        .id;
+    handle
+        .send_message(client, "Back in five minutes.")
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let messages = loop {
+        let messages = provider.take_host_messages();
+        if !messages.is_empty() || std::time::Instant::now() > deadline {
+            break messages;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(
+        messages,
+        [om_data::HostMessage {
+            kind: om_data::HostMessageKind::Message,
+            text: "Back in five minutes.".into(),
+            server_name: "openmaker-test".into(),
+        }]
+    );
+    assert!(provider.take_host_messages().is_empty());
+    assert!(provider.connection_lost().is_none());
+    // A close with no time to leave is the forced notice at once, naming
+    // the file by the host's id: the provider's file is let go of, and lost.
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|info| info.name == FILE)
+        .expect("the hosted file")
+        .id;
+    handle
+        .close_file(
+            id,
+            &om_server::Notice {
+                message: "Closing for the night.".into(),
+                grace: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let messages = loop {
+        let messages = provider.take_host_messages();
+        if !messages.is_empty() || std::time::Instant::now() > deadline {
+            break messages;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(
+        messages,
+        [om_data::HostMessage {
+            kind: om_data::HostMessageKind::Disconnected,
+            text: "Closing for the night.".into(),
+            server_name: "openmaker-test".into(),
+        }]
+    );
+    let lost = provider.connection_lost().expect("the file is lost");
+    assert!(
+        lost.message.contains(om_session::HOST_DISCONNECTED_FILE),
+        "{lost:?}"
+    );
+}
+
+/// A file the host disconnected is lost to that open of it only (#156):
+/// reopened on the host and opened again on the same connection, through
+/// another handle, it is a new open, not lost, and the host's second
+/// disconnect of it is released again.
+#[test]
+fn a_file_the_host_disconnected_and_reopened_opens_again_on_the_connection() {
+    use std::time::{Duration, Instant};
+    let file = file_with("forced-reopen", &[], |_| {});
+    let mut handle = None;
+    let (port, _) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    let handle = handle.unwrap();
+    let id = handle.files()[0].id;
+    let force = || {
+        handle
+            .close_file(
+                id,
+                &om_server::Notice {
+                    message: String::new(),
+                    grace: Duration::ZERO,
+                },
+            )
+            .unwrap();
+    };
+    let disconnected = |session: &mut om_session::Session| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let taken = session.try_take_admin_messages().unwrap_or_default();
+            if taken.iter().any(|message| message.code == 0x0870) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "no forced notice");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let closed = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.files()[0].status != om_server::FileStatus::Closed {
+            assert!(Instant::now() < deadline, "the file stays open");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let mut first = raw_session(port);
+    // Keeps the connection, with no file open.
+    let mut second = first.share();
+    force();
+    disconnected(&mut first);
+    assert!(first.file_disconnected());
+    closed();
+
+    handle.open_file(id).unwrap();
+    second.open_file("127.0.0.1", FILE).unwrap();
+    let creation = second.fetch_internal_creation().unwrap();
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    assert!(second
+        .login(ACCOUNT, PASSWORD, creation, &environment)
+        .unwrap()
+        .is_success());
+    assert!(!second.file_disconnected(), "a new open of the file");
+    assert!(first.file_disconnected(), "the first open stays lost");
+
+    force();
+    disconnected(&mut second);
+    assert!(second.file_disconnected());
+    closed();
+}
+
 /// A session of its own, for what the provider does not expose.
 fn raw_session(port: u16) -> om_session::Session {
     let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
@@ -1501,8 +1683,9 @@ fn a_first_whole_value_find_compares_index_keys() {
 
 /// A join back on a value index the host has not built yet relates the
 /// keys that index holds (query-program.md 7.1, 9.2): empty text is the
-/// key `01`, so Tasks::Name ≠ Notes::Body relates a task without a name to
-/// note 1 "Hi", and " Hi " keys its spaces, so it is not = "Hi".
+/// key `01`, which relates to nothing through Tasks::Name ≠ Notes::Body
+/// (file-metadata.md 4), so a task without a name is not related to note 1
+/// "Hi"; " Hi " keys its spaces, so it is ≠ "Hi" and not = "Hi".
 #[test]
 fn a_first_join_back_relates_the_keys_of_the_value_index() {
     let relate = |op: u8| {
@@ -1519,7 +1702,7 @@ fn a_first_join_back_relates_the_keys_of_the_value_index() {
     let rows = [("", "1", ""), (" Hi ", "1", "")];
     let find = || vec![request("Notes::Body", "==Hi")];
     let not_equal = cold_and_warm_in("cold-join-ne", &rows, relate(1), find());
-    assert_eq!(not_equal, (Ok(vec![1, 2, 3, 4]), Ok(vec![1, 2, 3, 4])));
+    assert_eq!(not_equal, (Ok(vec![1, 2, 4]), Ok(vec![1, 2, 4])));
     let equal = cold_and_warm_in("cold-join-eq", &rows, relate(0), find());
     assert_eq!(equal, (Err(Some(401)), Err(Some(401))));
 }
@@ -1684,6 +1867,26 @@ fn a_field_in_an_unknown_index_language_is_neither_found_nor_changed_by_guessing
     assert_eq!(text(&after, 2, "Count"), Some("7"));
     assert_eq!(text(&after, 2, "Name"), text(&before, 2, "Name"));
     provider.close();
+}
+
+/// In a language FileMaker leaves untailored (French, 24), whose value keys
+/// are English's (query-program.md 7.2), a whole-value find runs without
+/// the host's index, the first time and again; a word find, whose word
+/// breaks are French's, still fails rather than guessing
+/// ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46),
+/// [#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
+#[test]
+fn an_untailored_language_finds_whole_values_without_the_hosts_index() {
+    let french = |root: &mut OwnedNode| fixture::set_field_language(root, TABLE, NAME, 24);
+    let values = cold_and_warm_in("cold-french", &[], french, vec![request("Name", "==Ship")]);
+    assert_eq!(values, (Ok(vec![2]), Ok(vec![2])));
+    let words = cold_and_warm_in(
+        "cold-french-words",
+        &[],
+        french,
+        vec![request("Name", "ship")],
+    );
+    assert_eq!(words, (Err(Some(3)), Err(Some(3))));
 }
 
 /// The missing target index of a related find must obey its own language
@@ -2968,8 +3171,13 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         (1, 77, 0, ACCEPTED),
         // Unicode raw keys keep case (query-program.md 7.2).
         (1, 2, 0, [Some(506), None]),
+        // French is untailored: its value keys are English's.
+        (1, 24, 0, ACCEPTED),
+        // Finnish is a tailoring OpenMaker does not key.
         (1, 22, 0, UNSUPPORTED),
-        (1, 0, 0, UNSUPPORTED),
+        // Language 0 is the file's own, English here: the fixture has no
+        // locale record.
+        (1, 0, 0, ACCEPTED),
         (2, 21, 0, UNSUPPORTED),
         (3, 21, 0, UNSUPPORTED),
         (4, 21, 0, UNSUPPORTED),
@@ -3601,6 +3809,110 @@ fn typing_into_a_global_field_sets_the_sessions_value() {
         let mut other = open(port, &ca);
         assert_eq!(global(&mut other), "");
         other.close();
+        provider.close();
+    }
+}
+
+/// A number global validated "Not empty" and "Strict data type: Numeric
+/// only" takes typing, checked by those rules as it is applied: what they
+/// refuse keeps the session's value. One validated by calculation is not
+/// offered (its check is not implemented for globals).
+#[test]
+fn typing_into_a_validated_global_checks_its_entry_rules() {
+    use fixture::SETTING;
+    use om_data::host::CalcNeed;
+    for (validation, offered) in [(0x8 | 0x1000, true), (0x1, false)] {
+        let file = file_with(
+            &format!("provider-validated-global-{validation}"),
+            &[],
+            |root| {
+                fixture::add_field(
+                    root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, validation,
+                );
+                // Validated by calculation: its formula, so the table's other
+                // fields are planned and only the global is left out.
+                if validation & 0x1 == 0 {
+                    fixture::set_field_repetitions(root, TABLE, SETTING, 2);
+                } else {
+                    let mut names = fixture::names();
+                    names.add_field(TABLE, SETTING, "Setting");
+                    let (table, setting) = ((TABLE, OCCURRENCE), SETTING);
+                    fixture::add_formula(root, &names, table, setting, 0x19, "Setting > 0");
+                }
+            },
+        );
+        let (port, ca) = host(&file.0);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let capabilities = provider.record_capabilities(tasks).unwrap();
+        assert_eq!(
+            capabilities.editable_fields.unwrap().contains("Setting"),
+            offered
+        );
+        let global = |provider: &mut NativeProvider, repetition| {
+            let data = provider
+                .calc_data(&[CalcNeed::Globals { table: TABLE }])
+                .unwrap();
+            let locale = om_data::calc::Locale::en_us();
+            let cx = om_data::calc::Ctx::new(
+                &locale,
+                om_data::calc::Date::from_ymd(2026, 10, 29).unwrap(),
+            );
+            data.globals[&TABLE]
+                .get(SETTING, repetition)
+                .map(|v| v.to_text(&cx).into_string())
+                .unwrap_or_default()
+        };
+        let typed = |provider: &mut NativeProvider, text: &str| {
+            provider
+                .set_typed_global(TABLE, SETTING, 1, text)
+                .map_err(|error| error.code)
+        };
+        if offered {
+            assert_eq!(typed(&mut provider, "12"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "12");
+            assert_eq!(typed(&mut provider, "12abc"), Err(Some(502)));
+            assert_eq!(typed(&mut provider, ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "12");
+            // Browse's ordinary save of the record checks it too.
+            for (text, code) in [("12abc", 502), ("", 509)] {
+                let saved = provider.update_record(tasks, 1, values(&[("Setting", text)]));
+                assert_eq!(saved.map(|_| ()).map_err(|e| e.code), Err(Some(code)));
+            }
+            assert_eq!(global(&mut provider, 1), "12");
+            assert!(provider
+                .update_record(tasks, 1, values(&[("Setting", "7")]))
+                .is_ok());
+            assert_eq!(global(&mut provider, 1), "7");
+            // Not empty holds while another repetition has a value, as at a
+            // record's commit.
+            let second = |provider: &mut NativeProvider, text: &str| {
+                provider
+                    .set_typed_global(TABLE, SETTING, 2, text)
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(second(&mut provider, ""), Ok(()));
+            let batch = |provider: &mut NativeProvider, first: &str, second: &str| {
+                provider
+                    .set_typed_globals(
+                        TABLE,
+                        &[((SETTING, 1), first.into()), ((SETTING, 2), second.into())].into(),
+                    )
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(batch(&mut provider, "", "3"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, "7"), Ok(()));
+            assert_eq!(batch(&mut provider, "", ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "7");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, ""), Ok(()));
+            assert_eq!(second(&mut provider, ""), Err(Some(509)));
+        } else {
+            assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
+            assert_eq!(global(&mut provider, 1), "");
+        }
         provider.close();
     }
 }

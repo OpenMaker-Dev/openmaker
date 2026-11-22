@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use om_calc::eval::CalcHost;
 use om_calc::{Ctx, Value};
+use om_data::host::security::SetAccess;
 use om_protocol::script::{
     self, PerformScript, PerformScriptReply, PsosResult, RESULT_TOO_LONG, TEXT_LIMIT,
 };
@@ -411,8 +412,13 @@ pub(crate) struct Request {
     pub hosted: Arc<Hosted>,
     /// The account the client logged in with; the script session uses it.
     pub account: String,
+    /// That account's record key under `[23, 1, 5]`, which identifies it
+    /// however it is renamed later.
+    pub account_key: Vec<u8>,
     /// What the account may do.
     pub privileges: Privileges,
+    /// The account's privilege set as its login verified it.
+    pub access: Option<SetAccess>,
     /// The requesting connection, which gets the op105.
     pub requester: u32,
     pub script: PerformScript,
@@ -560,7 +566,9 @@ fn run_request(shared: &Arc<Shared>, request: &Request, slot: &Slot) -> Outcome 
         shared,
         &request.hosted,
         &request.account,
+        &request.account_key,
         request.privileges,
+        request.access.clone(),
         ScriptRef::Key(&request.script.script),
         &request.script.parameter,
         slot,
@@ -578,12 +586,16 @@ fn run_request(shared: &Arc<Shared>, request: &Request, slot: &Slot) -> Outcome 
 }
 
 /// Run `script` of `hosted` with `parameter` in a session of its own, as
-/// `account` with `privileges`, under `slot`'s abort flag and limits.
+/// `account` (record key `account_key`) with `privileges` and its set
+/// `access`, under `slot`'s abort flag and limits.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     shared: &Arc<Shared>,
     hosted: &Arc<Hosted>,
     account: &str,
+    account_key: &[u8],
     privileges: Privileges,
+    access: Option<SetAccess>,
     script: ScriptRef<'_>,
     parameter: &str,
     slot: &Slot,
@@ -598,6 +610,8 @@ pub(crate) fn run(
     );
     host.set_control(slot.control.clone());
     host.set_calc_limits(slot.calc_limits);
+    host.set_account_key(account_key);
+    host.set_access(access);
     let outcome = execute(&mut host, script, parameter, slot);
     host.close();
     // (The session's locks go with it, before another can get its id.)
@@ -671,6 +685,9 @@ fn execute(host: &mut ServerHost, script: ScriptRef<'_>, parameter: &str, slot: 
             RunState::Paused { .. } => runtime.resume(),
             RunState::Waiting => runtime.complete_step(ErrorCode::UNAVAILABLE),
             RunState::Yielded => {}
+            // The server has no Script Debugger; a runtime that had one
+            // open runs on without it.
+            RunState::Debugger(_) => runtime.stop_debugging(),
         }
     }
     let cx = Ctx::new(host.locale(), host.today());
@@ -769,6 +786,7 @@ mod tests {
             no_get_file_list: Default::default(),
             no_authoring: Default::default(),
             upload_memory: crate::uploads::UploadMemory::new(usize::MAX),
+            download_memory: crate::transfer::DownloadMemory::new(usize::MAX),
             #[cfg(debug_assertions)]
             test_panic: Default::default(),
             #[cfg(debug_assertions)]
@@ -801,7 +819,9 @@ mod tests {
         Request {
             hosted: hosted(shared),
             account: fixture::ACCOUNT.into(),
+            account_key: vec![2],
             privileges: Privileges::FullAccess,
+            access: None,
             requester: CLIENT,
             script: PerformScript {
                 flags,

@@ -115,11 +115,20 @@ fn value_index_keys_match() {
 #[ignore = "requires the git-ignored FileMaker Server samples and test project copy"]
 fn word_index_keys_match() {
     let (checked, mismatches) = compare(1, |data_type, value, english, _| {
+        // Apostrophes separate, as when this test last passed: the French
+        // sample separates there, while English joins (the probe,
+        // query-program.md 7.1), which these files' text did not need.
         (english && data_type == DataType::Text).then(|| {
-            om_collate::words(value)
-                .into_iter()
-                .map(om_collate::text_key)
-                .collect()
+            om_collate::words_in(
+                value,
+                om_collate::WordBreaks {
+                    apostrophe_letters: false,
+                    ..om_collate::WordBreaks::ENGLISH
+                },
+            )
+            .into_iter()
+            .map(om_collate::text_key)
+            .collect()
         })
     });
     println!("word index: {checked} values checked");
@@ -127,20 +136,27 @@ fn word_index_keys_match() {
     assert!(checked >= 100);
 }
 
-/// Number, date, time and timestamp value indexes: an empty value is not
-/// indexed; any other value sits under its typed key.
+/// Number, date, time and timestamp value indexes: an empty value sits under
+/// `01`, a value with no digit under `fe ff`, any other under its typed key
+/// (query-program.md 7.3; `om_query::keys::typed_value_keys`).
 #[test]
 #[ignore = "requires the git-ignored FileMaker Server samples and test project copy"]
 fn typed_value_index_keys_match() {
     let (checked, mismatches) = compare(0, |data_type, value, _, order| {
+        let typed = matches!(
+            data_type,
+            DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
+        );
         let key = match data_type {
+            _ if typed && value.trim().is_empty() => Some(vec![0x01]),
             DataType::Number => om_collate::number_key(value),
             DataType::Date => om_collate::date_key(value, order),
             DataType::Time => om_collate::time_key(value),
             DataType::Timestamp => om_collate::timestamp_key(value, order),
             _ => return None,
         };
-        Some(key.into_iter().collect())
+        let invalid = || (!value.bytes().any(|b| b.is_ascii_digit())).then(|| vec![0xfe, 0xff]);
+        Some(key.or_else(invalid).into_iter().collect())
     });
     println!("typed value index: {checked} values checked");
     assert!(mismatches.is_empty(), "{mismatches:#?}");

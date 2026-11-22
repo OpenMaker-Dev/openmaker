@@ -29,6 +29,120 @@ fn list(root: &mut OwnedNode, occurrence: u64, field: u64) {
     );
 }
 
+/// Value list 5 from Tasks' `field`, with `options` and a second field
+/// (file-metadata.md 6.2).
+fn list_with_second(root: &mut OwnedNode, field: u64, options: u16, second: u64) {
+    let key = |id| {
+        let bytes = uint_segment(id);
+        [vec![bytes.len() as u8 + 1, bytes.len() as u8], bytes].concat()
+    };
+    let mut definition = vec![1];
+    definition.extend(options.to_be_bytes());
+    definition.extend(key(OCCURRENCE));
+    definition.extend(key(field));
+    definition.extend([0, 1]);
+    definition.extend(key(OCCURRENCE));
+    definition.extend(key(second));
+    definition.extend([0, 1, 0, 0, 0]);
+    definition.extend(om_scsu::encode_counted(" "));
+    root.put(
+        &[&[0x21], &[5], &[5], &[2]],
+        OwnedNode::leaf(Vec::new(), definition),
+    );
+}
+
+/// A sort by a value list that "sorts by the second field" orders the first
+/// field's values by the second's, and one of related values only is
+/// refused: it has no record to start from (file-metadata.md 6.2).
+#[test]
+fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
+    // Records 1 and 2 hold Alpha and Bravo; record 3, Charlie, is a row.
+    let charlie = [("Charlie".to_string(), "2".to_string(), String::new())];
+    let records = [(1, "Alpha", "3"), (2, "Bravo", "1")];
+    for (options, expected) in [
+        (0x2, ["Bravo", "Charlie", "Alpha"]),
+        // Shown beside the first field, the second does not change the order.
+        (0x0, ["Alpha", "Bravo", "Charlie"]),
+    ] {
+        let file = file_with(&format!("vl-second-{options}"), &charlie, |root| {
+            for (id, name, count) in records {
+                put(root, fixture::NAME, id, name);
+                put(root, fixture::COUNT, id, count);
+            }
+            list_with_second(root, fixture::NAME, options, fixture::COUNT);
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        assert_eq!(provider.value_list(5).unwrap(), expected, "{options}");
+        provider.close();
+    }
+    // One item per distinct second value, the first record winning
+    // (file-metadata.md 6.4): Zebra and Bravo, Alpha left out.
+    let bravo = [("Bravo".to_string(), "2".to_string(), String::new())];
+    let file = file_with("vl-second-distinct", &bravo, |root| {
+        for (id, name, count) in [(1, "Zebra", "1"), (2, "Alpha", "1")] {
+            put(root, fixture::NAME, id, name);
+            put(root, fixture::COUNT, id, count);
+        }
+        list_with_second(root, fixture::NAME, 0x2, fixture::COUNT);
+    });
+    let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+    let mut provider = open(port, &ca);
+    assert_eq!(provider.value_list(5).unwrap(), ["Zebra", "Bravo"]);
+    provider.close();
+    // Each distinct second value keeps its item, a first value repeating;
+    // a number of spaces alone ranks as the empty value, first; and a text
+    // second field indexed in language 0 is keyed in the file's language
+    // (query-program.md 7.2), not left without keys.
+    let cases = [
+        (
+            "vl-second-repeat",
+            [(1, "Alpha", "1"), (2, "Bravo", "2")],
+            "3",
+            fixture::COUNT,
+            ["Alpha", "Bravo", "Alpha"],
+        ),
+        (
+            "vl-second-spaces",
+            [(1, "Alpha", "2"), (2, "Bravo", " ")],
+            "3",
+            fixture::COUNT,
+            ["Bravo", "Alpha", "Alpha"],
+        ),
+        (
+            "vl-second-language-0",
+            [(1, "Zebra", "B"), (2, "Alpha", "A")],
+            "C",
+            fixture::CODE,
+            ["Alpha", "Zebra", "Alpha"],
+        ),
+    ];
+    for (tag, records, third, second, expected) in cases {
+        let row = [("Alpha".to_string(), "3".to_string(), String::new())];
+        let file = file_with(tag, &row, |root| {
+            for (id, name, value) in records {
+                put(root, fixture::NAME, id, name);
+                put(root, second, id, value);
+            }
+            put(root, second, 3, third);
+            fixture::set_field_language(root, TABLE, fixture::CODE, 0);
+            list_with_second(root, fixture::NAME, 0x2, second);
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        assert_eq!(provider.value_list(5).unwrap(), expected, "{tag}");
+        provider.close();
+    }
+    let file = file_with("vl-related-only", &[], |root| {
+        put(root, fixture::NAME, 1, "Alpha");
+        list_with_second(root, fixture::NAME, 0x1, fixture::COUNT);
+    });
+    let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+    let mut provider = open(port, &ca);
+    assert_eq!(provider.value_list(5).unwrap_err().code, Some(3));
+    provider.close();
+}
+
 fn literal_index(root: &mut OwnedNode, field: u64, entries: &[(&[u8], &[u64])]) {
     for (key, ids) in entries {
         root.put(
@@ -157,7 +271,8 @@ fn repetitions_include_256_and_multiline_values_but_exclude_empty_keys() {
 #[test]
 fn text_forms_use_declared_language_and_unestablished_languages_fail() {
     for (language, expected) in [
-        (0, vec![]),
+        // Language 0 is the file's own, English here (7.2).
+        (0, vec!["a", "Test"]),
         // System and Unicode standard keep accents (query-program.md 7.2).
         (1, vec!["a", "Test", "tést"]),
         (2, vec!["Test", "a", "tést"]),
@@ -166,6 +281,11 @@ fn text_forms_use_declared_language_and_unestablished_languages_fail() {
         (77, vec!["a", "Test"]),
     ] {
         let file = file_with(&format!("vl-language-{language}"), &[], |root| {
+            // A stored locale, so that language 0 is read from it.
+            root.put(
+                &[&[2], &[13]],
+                OwnedNode::leaf(Vec::new(), om_calc::Locale::en_us().to_record()),
+            );
             fixture::set_field_language(root, TABLE, NAME, language);
             put(root, NAME, 1, "Test\ra");
             put(root, NAME, 2, "tést");
@@ -190,6 +310,34 @@ fn text_forms_use_declared_language_and_unestablished_languages_fail() {
     assert_eq!(error.code, Some(3));
     assert!(error.message.contains("index language (25)"));
     provider.close();
+    // Language 0 in a German file is German, which OpenMaker does not key;
+    // a locale record that does not decode refuses language 0, but not
+    // Unicode raw, whose keys need no locale.
+    let unreadable = vec![0, 0, 0, 21];
+    for (case, (language, locale, expected)) in [
+        (0, om_calc::Locale::de_de().to_record(), None),
+        (0, unreadable.clone(), None),
+        (2, unreadable, Some(vec!["Test", "a", "tést"])),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = file_with(&format!("vl-locale-{case}"), &[], |root| {
+            root.put(&[&[2], &[13]], OwnedNode::leaf(Vec::new(), locale));
+            fixture::set_field_language(root, TABLE, NAME, language);
+            put(root, NAME, 1, "Test\ra");
+            put(root, NAME, 2, "tést");
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let values = provider.index_values(tasks, "Name");
+        match expected {
+            Some(expected) => assert_eq!(values.unwrap(), expected, "case {case}"),
+            None => assert_eq!(values.unwrap_err().code, Some(3), "case {case}"),
+        }
+        provider.close();
+    }
 }
 
 #[test]
@@ -257,13 +405,13 @@ fn established_typed_keys_and_file_date_orders_preserve_index_order() {
 }
 
 #[test]
-fn fallback_rejects_unknown_numeric_forms_and_unreadable_values_instead_of_skipping() {
+fn fallback_rejects_unread_values_instead_of_skipping() {
+    // Digits among other characters
+    // (https://github.com/OpenMaker-Dev/openmaker/issues/246) and text
+    // that is no value.
     for (kind, value) in [
-        (2, "-2"),
-        (2, "2.5"),
         (2, "1,5"),
         (3, "not a date"),
-        (4, "12:00:00.5"),
         (5, "not a timestamp"),
         (6, "data"),
     ] {
@@ -278,6 +426,19 @@ fn fallback_rejects_unknown_numeric_forms_and_unreadable_values_instead_of_skipp
             provider.index_values(tasks, "Unknown").unwrap_err().code,
             Some(3)
         );
+        provider.close();
+    }
+    // Negative and fractional numbers and fractions of a second have
+    // FileMaker's keys (query-program.md 7.3).
+    for (kind, value) in [(2, "-2"), (2, "2.5"), (4, "12:00:00.5")] {
+        let file = file_with(&format!("vl-keyed-{kind}-{value}"), &[], |root| {
+            fixture::add_field(root, TABLE, 90, "Keyed", 1, kind, 0, 0, 0);
+            put(root, 90, 1, value);
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        assert_eq!(provider.index_values(tasks, "Keyed").unwrap(), [value]);
         provider.close();
     }
 }

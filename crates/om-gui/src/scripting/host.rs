@@ -134,6 +134,7 @@ pub(crate) enum Act {
 
 mod containers;
 mod databases;
+mod mail;
 mod page_setup;
 mod pdf;
 mod pdf_text;
@@ -203,7 +204,7 @@ pub(crate) struct WorkerHost<'a> {
     /// The file whose script step runs with full access, while `elevated`.
     elevated_file: Option<FileId>,
     /// Evaluation of a report row does not navigate the user's window.
-    report_record: Option<(u64, usize, usize)>,
+    pub(super) report_record: Option<(u64, usize, usize)>,
     /// One report session snapshot reaches nested field/summary hosts.
     report_session: Option<SessionInfo>,
     /// The UUID of the layout object whose calculation a report evaluates
@@ -233,6 +234,13 @@ impl<'a> WorkerHost<'a> {
             report_session: None,
             report_object: None,
         }
+    }
+
+    /// A copy of the variables this host's own calculations read
+    /// (`variables`), for what `FileCalc` evaluates itself: a summary's
+    /// inputs and a sort's keys (#615). `None` without any.
+    pub(super) fn variable_snapshot(&self) -> Option<om_data::host::VariableSnapshot> {
+        om_data::host::VariableSnapshot::of(&self.s.file.variables, &self.s.file.variables)
     }
 
     /// The open file window `window` belongs to.
@@ -427,6 +435,11 @@ impl<'a> WorkerHost<'a> {
                 Some(_) => match self.jobs.recv_timeout(worker::CONNECTION_POLL) {
                     Ok(job) => job,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // A host's notice is read while the dialog waits:
+                        // a file the host disconnected is let go of.
+                        let provider = &mut ***self.provider.get_mut();
+                        self.s
+                            .host_messages_while_waiting(provider, self.files, self.responses);
                         if self.connection_lost() {
                             return None;
                         }
@@ -463,19 +476,34 @@ impl<'a> WorkerHost<'a> {
                     self.s.observe(&request);
                     let current = self.s.file.window.id();
                     let provider = self.provider.get_mut().as_mut();
-                    provider.use_window(job.window);
-                    let reply = worker::handle(provider, self.store, request);
-                    provider.use_window(current);
-                    self.files.select(file, self.provider.get_mut(), self.s);
-                    if self
+                    let reply = worker::handle_in(provider, self.store, job.window, request);
+                    // Asked of the provider that answered, before the switch
+                    // back may make another file's current.
+                    let held = worker::holds_in_transaction(provider);
+                    // The switch back, whose panic ends the running
+                    // scripts, comes before the reply, which says whether
+                    // a save outlives it (#313).
+                    let back = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.provider.get_mut().use_window(current);
+                        self.files.select(file, self.provider.get_mut(), self.s);
+                    }))
+                    .err();
+                    let reply = match back {
+                        Some(_) => worker::unkept_save(held, reply),
+                        None => reply,
+                    };
+                    let sent = self
                         .responses
                         .send(Response {
                             epoch: job.epoch,
                             window: job.window,
                             reply,
                         })
-                        .is_err()
-                    {
+                        .is_ok();
+                    if let Some(payload) = back {
+                        std::panic::resume_unwind(payload);
+                    }
+                    if !sent {
                         self.s.interrupted = true;
                         return None;
                     }
@@ -795,6 +823,7 @@ impl<'a> WorkerHost<'a> {
                 password: false,
                 value: Value::text(count.max(1).to_string()),
             }],
+            close_after: None,
         };
         let Some(Answer::Dialog(DialogResponse { button: 1, inputs })) =
             self.ask(Prompt::Dialog(dialog))
@@ -1594,6 +1623,26 @@ impl<'a> WorkerHost<'a> {
         provider.record_session_held() && !provider.record_session_open()
     }
 
+    /// The user's typing into a global, checked by the field's entry rules
+    /// (`DataProvider::set_typed_global`), whose refusal stands. A provider
+    /// without typed entry (`enters_typed_globals`) takes a text or number
+    /// global's text as it is, as before, and refuses a date, time or
+    /// timestamp global's (3).
+    fn enter_global(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        temporal: bool,
+        text: &str,
+    ) -> Result<(), om_data::DataError> {
+        if temporal || self.p().enters_typed_globals() {
+            self.p().set_typed_global(table, field, repetition, text)
+        } else {
+            self.p().set_global(table, field, repetition, text)
+        }
+    }
+
     /// The user's typing into a global field of the layout's table sets
     /// the session's value, as `DataProvider::update_record` does: it is
     /// no change of the record.
@@ -1604,19 +1653,20 @@ impl<'a> WorkerHost<'a> {
         let Some(table) = self.s.file.occurrence.and_then(|o| schema.table_of(o)) else {
             return Ok(());
         };
-        let globals: Vec<(String, u64, bool)> = self
+        let first: Vec<_> = self
             .s
             .file
             .window
             .state
             .drafts
-            .keys()
-            .filter_map(|name| {
+            .iter()
+            .filter_map(|(name, text)| {
                 let field = table.fields.values().find(|f| f.name == *name)?;
                 field.global.then(|| {
                     (
                         name.clone(),
                         field.id,
+                        text.clone().unwrap_or_default(),
                         matches!(
                             field.value_type,
                             om_data::calc::ValueType::Date
@@ -1627,27 +1677,6 @@ impl<'a> WorkerHost<'a> {
                 })
             })
             .collect();
-        for (name, field, temporal) in globals {
-            let text = self
-                .s
-                .file
-                .window
-                .state
-                .drafts
-                .get(&name)
-                .cloned()
-                .flatten()
-                .unwrap_or_default();
-            let result = if temporal {
-                self.p().set_typed_global(table.id, field, 1, &text)
-            } else {
-                self.p().set_global(table.id, field, 1, &text)
-            };
-            result.map_err(|e| self.failed(e))?;
-            self.s.file.window.state.drafts.remove(&name);
-            *self.s.file.cache.borrow_mut() = CalcData::default();
-            self.s.file.window.changed_data();
-        }
         // Later repetitions keep their cell keys in the same draft store as
         // related editors. Globals still change only this session's values.
         let mut globals = Vec::new();
@@ -1691,19 +1720,38 @@ impl<'a> WorkerHost<'a> {
                 }
             }
         }
-        for (index, cell, field, repetition, temporal, text) in globals {
-            let result = if temporal {
-                self.p()
-                    .set_typed_global(table.id, field, repetition, &text)
-            } else {
-                self.p().set_global(table.id, field, repetition, &text)
-            };
-            result.map_err(|error| self.failed(error))?;
+        if self.p().enters_typed_globals() {
+            let changes = first
+                .iter()
+                .map(|(_, field, text, _)| ((*field, 1), text.clone()))
+                .chain(globals.iter().map(|(_, _, field, repetition, _, text)| {
+                    ((*field, *repetition), text.clone())
+                }))
+                .collect();
+            self.p()
+                .set_typed_globals(table.id, &changes)
+                .map_err(|e| self.failed(e))?;
+        } else {
+            for (_, field, text, temporal) in &first {
+                self.enter_global(table.id, *field, 1, *temporal, text)
+                    .map_err(|e| self.failed(e))?;
+            }
+            for (_, _, field, repetition, temporal, text) in &globals {
+                self.enter_global(table.id, *field, *repetition, *temporal, text)
+                    .map_err(|e| self.failed(e))?;
+            }
+        }
+        if !first.is_empty() || !globals.is_empty() {
+            *self.s.file.cache.borrow_mut() = CalcData::default();
+            self.s.file.window.changed_data();
+        }
+        for (name, ..) in first {
+            self.s.file.window.state.drafts.remove(&name);
+        }
+        for (index, cell, ..) in globals {
             let draft = &mut self.s.file.window.state.uncommitted.related[index];
             draft.cells.remove(&cell);
             draft.typed.remove(&cell);
-            *self.s.file.cache.borrow_mut() = CalcData::default();
-            self.s.file.window.changed_data();
         }
         self.s
             .file
@@ -1869,8 +1917,14 @@ impl<'a> WorkerHost<'a> {
                     .collect(),
             )
         });
-        // A serial number is not copied: the copy takes the next one
-        // (`duplicate-record-request.html`).
+        // An auto-entered value is not copied: the copy's own is entered
+        // as it is created, a serial number the next one, a replacing
+        // calculation evaluated on the copy (`FieldDef::duplicate_copies`,
+        // #473). In a transaction that skips auto-entry the copy enters
+        // none, and takes the record's values, as before [I: FileMaker's
+        // duplicate there is unmeasured].
+        let skips_entry =
+            self.s.file.transaction.is_some() && self.s.file.transaction_skips_auto_entry;
         let stored_fields: Option<BTreeSet<String>> = self.schema().and_then(|schema| {
             Some(
                 schema
@@ -1878,10 +1932,16 @@ impl<'a> WorkerHost<'a> {
                     .fields
                     .values()
                     .filter(|f| {
-                        f.class == FieldClass::Data
-                            && f.stored
-                            && !f.global
-                            && !f.auto_enters_serial()
+                        if skips_entry {
+                            // A serial number is not copied: the copy takes
+                            // none there, as before #473.
+                            f.class == FieldClass::Data
+                                && f.stored
+                                && !f.global
+                                && !f.auto_enters_serial()
+                        } else {
+                            f.duplicate_copies()
+                        }
                     })
                     .map(|f| f.name.clone())
                     .collect(),
@@ -1953,7 +2013,24 @@ impl<'a> WorkerHost<'a> {
         let privilege_set = self.current_set_name();
         let made = {
             let (window, provider) = self.wp();
-            window.make_new_record(provider, session, (values, cells), privilege_set)
+            // The copy's place in the found set, which a calculation it
+            // enters reads as Get ( RecordNumber ): after the records of an
+            // unsorted found set (script oracle s46-record-number-ae: a
+            // duplicate of the first of nine stores 10), from the
+            // provider's found set as it is now, not the window's last
+            // read of it. A sorted found set's is unmeasured: the copy has
+            // none, and such a calculation refuses the save (3).
+            let layout = window.state.layout.unwrap_or_default();
+            let record_number = match provider.records_with_summary(layout, 0, 0, &[]) {
+                Ok((_, Some(found))) if !found.sorted => Some(found.found + 1),
+                _ => None,
+            };
+            window.make_new_record(
+                provider,
+                session,
+                (values, cells),
+                (privilege_set, record_number),
+            )
         };
         let made = match made {
             Ok(made) => made,
@@ -2972,10 +3049,10 @@ impl<'a> WorkerHost<'a> {
     /// (its kind and summarized field from the calculation schema).
     fn sort_fields(&mut self, spec: om_data::specs::SortSpec) -> Result<Vec<SortField>, HostError> {
         // Check actual occurrences before spec_field can collapse another
-        // occurrence of the same imported table to a bare base-field name,
-        // and before resolving any value-list/summary options.
+        // occurrence of the same table to a bare base-field name, and before
+        // resolving any value-list/summary options.
         for entry in &spec.fields {
-            self.check_imported_sort_field(entry.field.occurrence, entry.field.repetition.into())?;
+            self.check_sort_field(entry.field.occurrence, entry.field.repetition.into())?;
         }
         let mut sort = Vec::new();
         for entry in spec.fields {
@@ -3010,26 +3087,24 @@ impl<'a> WorkerHost<'a> {
         Ok(sort)
     }
 
-    /// Imported sorts are bounded to the layout's base occurrence. A stored
-    /// base-table key (or none) still means that occurrence, as in spec_field.
-    /// An actual occurrence must retain its identity even for a self join.
-    fn check_imported_sort_field(
-        &mut self,
-        occurrence: Option<u64>,
-        repetition: u32,
-    ) -> HostResult {
+    /// Sorts are bounded to the layout's own occurrence. A stored base-table
+    /// key (or none) still means that occurrence, as in spec_field. An
+    /// actual occurrence keeps its identity, a self join's included: a field
+    /// of another occurrence would be sorted by its first related record's
+    /// value (query-program.md 10, #47), which is not built, so the sort is
+    /// refused with 3 rather than sorted by the record's own field. Imported
+    /// tables also refuse repetitions past the first.
+    fn check_sort_field(&mut self, occurrence: Option<u64>, repetition: u32) -> HostResult {
         let base = self.occurrence();
         if let (Some(schema), Some(base)) = (self.schema(), base) {
             let imported = schema
                 .table_of(base)
                 .is_some_and(|table| schema.table_context(table.id).is_some());
-            if imported
-                && (repetition > 1
-                    || occurrence.is_some_and(|occurrence| {
-                        occurrence != base
-                            && (schema.occurrence(occurrence).is_some() || occurrence >= 0xd0_0000)
-                    }))
-            {
+            let other = occurrence.is_some_and(|occurrence| {
+                occurrence != base
+                    && (schema.occurrence(occurrence).is_some() || occurrence >= 0xd0_0000)
+            });
+            if other || imported && repetition > 1 {
                 return Err(ErrorCode(code::UNSUPPORTED).into());
             }
         }
@@ -3387,8 +3462,13 @@ impl CalcHost for WorkerHost<'_> {
                 return Ok(Value::text(criterion));
             }
         }
+        // Only a summary reads unstored calculations itself (#615).
+        let summary = (self.schema().and_then(|s| s.field(occurrence, field)))
+            .is_some_and(|def| def.class == om_data::host::FieldClass::Summary);
+        let snapshot = summary.then(|| self.variable_snapshot()).flatten();
         self.file(|file| {
-            file.field_value_in_context(context, occurrence, record, field, repetition)
+            file.with_variables(snapshot.as_ref())
+                .field_value_in_context(context, occurrence, record, field, repetition)
         })
         .unwrap_or_else(|| self.field_value(occurrence, record, field, repetition))
     }
@@ -3489,8 +3569,12 @@ impl CalcHost for WorkerHost<'_> {
         break_field: FieldId,
     ) -> Result<Value, CalcError> {
         let context = without_begun(context);
-        self.file(|f| f.summary(&context, summary, break_field))
-            .unwrap_or(Err(CalcError::NOT_SUPPORTED))
+        let snapshot = self.variable_snapshot();
+        self.file(|f| {
+            f.with_variables(snapshot.as_ref())
+                .summary(&context, summary, break_field)
+        })
+        .unwrap_or(Err(CalcError::NOT_SUPPORTED))
     }
 
     fn base_table_name(&self, occurrence: u64) -> Option<&str> {
@@ -3546,7 +3630,10 @@ impl CalcHost for WorkerHost<'_> {
                 om_data::host::session::selector::PAGE_NUMBER => {
                     return Ok(Value::number(page as i64 + 1))
                 }
-                RECORD_NUMBER => return Ok(Value::number(index as i64 + 1)),
+                // In a portal row, the row's number, as below.
+                RECORD_NUMBER if context.portal_row_number.is_none() => {
+                    return Ok(Value::number(index as i64 + 1))
+                }
                 RECORD_ID => return Ok(Value::number(record as i64)),
                 _ => (),
             }
@@ -3681,6 +3768,12 @@ impl CalcHost for WorkerHost<'_> {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
+        // FileMaker Go's sensor and location functions, as a desktop answers
+        // them (`om_data::host::device`).
+        let cx = Ctx::new(CalcHost::locale(self), self.today);
+        if let Some(answer) = om_data::host::device::answer(function, args, &cx, false) {
+            return answer;
+        }
         if let HostFunction::Builtin(builtin) = function {
             // With the window's session: its windows and the other open
             // files.
@@ -3708,6 +3801,14 @@ impl CalcHost for WorkerHost<'_> {
                 return Ok(Value::text(
                     om_data::host::layout_objects::owner_info_not_found(),
                 ));
+            }
+            // The window's found set, in its order (calc-functions.md
+            // 5.8.1).
+            if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") {
+                let limit = self.limits().text;
+                return self
+                    .file(|f| f.record_ids_from_found_set(args, context, limit))
+                    .unwrap_or(Err(CalcError::TABLE_MISSING));
             }
         }
         default_call(function)
@@ -3783,12 +3884,20 @@ impl ScriptHost for WorkerHost<'_> {
         self.s.active_files.extend(files.iter().copied());
     }
 
+    /// A script the account's set gives no access is not executable, and
+    /// being set to run with full access privileges does not make it so:
+    /// only a caller running with full access lets it run, and then with
+    /// the account's own privileges (script-runtime.md 3.7, 9.1). The
+    /// runtime admits a script with either flag, so the flag is given only
+    /// for a script the account may run (#408).
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = self.script_executable(file, script);
         ScriptAccess {
-            executable: self.script_executable(file, script),
-            full_access: self
-                .script(file, script)
-                .is_some_and(|s| s.runs_with_full_access()),
+            executable,
+            full_access: executable
+                && self
+                    .script(file, script)
+                    .is_some_and(|s| s.runs_with_full_access()),
         }
     }
 
@@ -3969,6 +4078,7 @@ impl ScriptHost for WorkerHost<'_> {
                     message: "No records match this find criteria.".into(),
                     buttons: vec![button("Modify Find"), button("Cancel")],
                     inputs: Vec::new(),
+                    close_after: None,
                 })),
                 Some(Answer::Dialog(DialogResponse { button: 1, .. }))
             );
@@ -4411,7 +4521,7 @@ impl Records for WorkerHost<'_> {
                 .zip(u64::try_from(id).ok())
                 .map(|(table, record)| self.transaction_content(table, record))
                 .unwrap_or_default();
-            if let Err(e) = self.p().delete_record(layout, id) {
+            if let Err(e) = self.p().delete_record_in_script(layout, id) {
                 self.committed_records(deleted);
                 self.s.file.window.changed_data();
                 return Err(data_error(e));
@@ -4546,6 +4656,7 @@ impl Records for WorkerHost<'_> {
             .begin_transaction(options)
             .map_err(|e| self.failed(e))?;
         self.s.file.transaction = Some(Vec::new());
+        self.s.file.transaction_skips_auto_entry = options.skip_auto_enter;
         Ok(())
     }
 
@@ -4624,17 +4735,42 @@ impl Records for WorkerHost<'_> {
         // The active record is exited without OnRecordRevert (8.3), unless
         // the window holds it apart from the transaction: its typing stays
         // (#1103).
-        if !self.record_apart() {
+        let apart = self.record_apart();
+        if !apart {
             self.s.file.window.state.drafts.clear();
             self.s.file.window.state.focus = None;
             self.s.file.window.state.object = None;
             self.s.file.window.state.portal = None;
         }
         let held = self.s.file.transaction.take().unwrap_or_default();
-        let result = self.p().revert_transaction().map_err(|e| self.failed(e));
+        // The records this revert removes, by identity: the ones the
+        // provider's transaction created, whichever window made them and
+        // whether or not a commit logged them. A window's flags cannot
+        // tell: one whose record an earlier transaction saved may still
+        // read as new there.
+        let removed = self.p().transaction_created();
+        let mut result = self.p().revert_transaction().map_err(|e| self.failed(e));
         if result.is_ok() {
-            // The records the transaction created are gone.
+            // The records the transaction created are gone, with what any
+            // window of the file still has pending on them; one held apart
+            // in its window's record session is not the transaction's and
+            // stays.
             self.release_records(&held, transaction::Operation::New);
+            let created: Vec<(u64, i64)> = held
+                .iter()
+                .filter(|e| e.operation == transaction::Operation::New)
+                .map(|e| (e.table, e.record))
+                .chain(removed)
+                .collect();
+            for other in &mut self.s.file.others {
+                other.forget_reverted_record_waiting(&created);
+            }
+            if !apart {
+                let (window, provider) = self.wp();
+                result = window
+                    .forget_reverted_record(provider, &created)
+                    .map_err(data_error);
+            }
         }
         // The held writes went with the connection, not by this revert.
         self.s.file.lost_transaction |= self.p().connection_lost().is_some();
@@ -4690,24 +4826,30 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
-        let Some(schema) = self.schema().cloned() else {
+        if self.schema().is_none() {
             let field = name.rsplit_once("::").map_or(name, |(_, f)| f).to_owned();
             let text = self.text(&value);
             return self.write_named(&field, text);
-        };
+        }
+        let field = self.field_by_name(name)?;
+        self.write_field(field, &value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
+        let schema = self.schema().cloned().ok_or(HostError::Unsupported)?;
         // `Occurrence::Field`, or a field of the layout's occurrence.
         let (occurrence, field) = match name.rsplit_once("::") {
             Some((occurrence, field)) => (
                 schema
                     .occurrences()
-                    .find(|o| o.name == occurrence)
+                    .find(|o| same_name(&o.name, occurrence))
                     .map(|o| o.id)
                     // One of a related file not open yet, opened below
                     // (#1149).
                     .or_else(|| {
                         schema
                             .external_occurrences()
-                            .find(|o| o.name == occurrence)
+                            .find(|o| same_name(&o.name, occurrence))
                             .map(|o| o.id)
                     })
                     .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?,
@@ -4724,17 +4866,14 @@ impl Fields for WorkerHost<'_> {
         let schema = self.open_pending(&schema, occurrence)?;
         let id = schema
             .table_of(occurrence)
-            .and_then(|t| t.fields.values().find(|f| f.name == field))
+            .and_then(|t| t.fields.values().find(|f| same_name(&f.name, field)))
             .map(|f| f.id)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-        self.write_field(
-            FieldRef {
-                occurrence,
-                field: id,
-                repetition: 1,
-            },
-            &value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field: id,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -4887,6 +5026,9 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn select_all(&mut self) -> HostResult {
+        // All of the field's text, over a selection read from its editor
+        // or a step's (`insert` takes `select` without one).
+        self.s.file.window.state.selection = None;
         self.s.file.window.state.select = true;
         self.s.file.window.touch();
         Ok(())
@@ -4910,12 +5052,71 @@ impl Fields for WorkerHost<'_> {
         Ok(())
     }
 
+    /// Relookup Field Contents (40): the lookups that match through
+    /// `field` copy their values again in every record of the found set,
+    /// through the provider's operation (`DataProvider::relookup`), which
+    /// checks the target and every record before writing any and writes
+    /// each by id. The window keeps its current record and found set. A
+    /// field reached through a relationship, a self-join's too, is the
+    /// related records', as for Replace Field Contents: 3. The dialog's
+    /// words and Find mode's 3 are OpenMaker's, unmeasured
+    /// (script-runtime.md, the desktop notes).
+    fn relookup(&mut self, field: Option<FieldRef>, with_dialog: bool) -> HostResult {
+        if field.is_some_and(|f| self.is_related(f.occurrence)) {
+            return Err(HostError::Unsupported);
+        }
+        let name = self.target_name(field)?;
+        if self.s.file.window.state.mode != Mode::Browse {
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let layout = self
+            .s
+            .file
+            .window
+            .state
+            .layout
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        // The target first, before the window's record is committed for a
+        // step that would refuse it.
+        let set = self.privilege_set_name();
+        self.p()
+            .relookup(layout, &name, &[], set.clone())
+            .map_err(|e| self.failed(e))?;
+        self.commit_window()?;
+        let ids = {
+            let (window, provider) = self.wp();
+            window.found_ids(provider).map_err(data_error)?
+        };
+        if with_dialog {
+            self.confirm(
+                om_data::scripts::relookup::LABEL,
+                om_data::scripts::relookup::message(&name, ids.len()),
+                "OK",
+            )?;
+        }
+        let result = self
+            .p()
+            .relookup(layout, &name, &ids, set)
+            .map_err(|e| self.failed(e));
+        // The written records, the lookups' values among them, are read
+        // again; the window stays on its record.
+        self.s.file.window.changed_data();
+        *self.s.file.cache.borrow_mut() = CalcData::default();
+        result
+    }
+
     fn replace_field_contents(
         &mut self,
         field: Option<FieldRef>,
         with: &mut Replacement<'_>,
         with_dialog: bool,
     ) -> HostResult {
+        // A field reached through a relationship, a self-join's too, is
+        // the related records' (as Set Field writes it): not replaced in
+        // the found set's own records.
+        if field.is_some_and(|f| self.is_related(f.occurrence)) {
+            return Err(HostError::Unsupported);
+        }
         let name = self.target_name(field)?;
         // Every target would need an owned typed value and its own +1.
         // Refuse before committing or changing any record in the set.
@@ -4944,13 +5145,23 @@ impl Fields for WorkerHost<'_> {
                 .map_err(data_error)?
                 .unwrap_or_default()
         };
+        // Serial numbers that cannot all be counted write none of them.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            if serial_text(initial, *increment, found.saturating_sub(1)).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
         for index in 0..found {
             self.s.file.window.go_to(index);
             let text = match with {
                 Replacement::CurrentContents => current_value.clone(),
                 Replacement::Serial {
                     initial, increment, ..
-                } => serial_text(initial, *increment, index),
+                } => serial_text(initial, *increment, index)
+                    .ok_or(HostError::Error(ErrorCode::UNAVAILABLE))?,
                 Replacement::Calculation(evaluate) => {
                     let value = evaluate(self);
                     self.text(&value)
@@ -4993,46 +5204,21 @@ impl WorkerHost<'_> {
             Some(Answer::Index(Some(value))) => value,
             _ => return Err(ErrorCode::CANCELED.into()),
         };
-        let text = if target.select_all {
-            chosen
-        } else {
-            let (window, provider) = self.wp();
-            let current = window
-                .value(provider, &name)
-                .map_err(data_error)?
-                .unwrap_or_default();
-            current + &chosen
-        };
-        self.write_named(&name, text)
+        // "Select entire contents" replaces the field's text, a Find
+        // request's criterion too, without reading it first. Otherwise
+        // pasted as Insert Text pastes: at the insertion point of the field
+        // entered, its end otherwise.
+        if target.select_all {
+            return self.write_named(&name, chosen);
+        }
+        self.insert(target, Value::text(chosen))
     }
 }
 
-/// The `index`th serial number from `initial`: its last run of digits
-/// counts up, the rest stays ("INV0009" + 1 = "INV0010").
-fn serial_text(initial: &str, increment: i64, index: u64) -> String {
-    let end = initial
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_ascii_digit())
-        .map(|(i, c)| i + c.len_utf8());
-    let Some(end) = end else {
-        return initial.to_owned();
-    };
-    let start = initial[..end]
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_ascii_digit())
-        .last()
-        .map_or(end, |(i, _)| i);
-    let digits = &initial[start..end];
-    let number: i128 = digits.parse().unwrap_or(0) + i128::from(increment) * index as i128;
-    format!(
-        "{}{:0width$}{}",
-        &initial[..start],
-        number,
-        &initial[end..],
-        width = digits.len()
-    )
+/// Whether two names are the same name: without regard to case, as
+/// calculations' names match (`om_formula::NameTable`).
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 impl FoundSets for WorkerHost<'_> {
@@ -5123,21 +5309,24 @@ impl FoundSets for WorkerHost<'_> {
 
     fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
         let name = self.target_name(field)?;
-        let value = {
+        let (value, field_kind) = {
             let (window, provider) = self.wp();
-            window
+            let field_kind = window
+                .current(provider)
+                .map_err(data_error)?
+                .and_then(|(fields, _)| fields.iter().find(|f| f.name == name).map(|f| f.kind));
+            let value = window
                 .value(provider, &name)
                 .map_err(data_error)?
-                .unwrap_or_default()
+                .unwrap_or_default();
+            (value, field_kind)
         };
         let mut request = FindRequest::default();
         request.set(
             &name,
-            if value.is_empty() {
-                "=".into()
-            } else {
-                format!("=={value}")
-            },
+            // A field the record page does not list (a related one) is
+            // matched by its value as typed, as before: its kind is unknown.
+            om_data::found::matching_criterion(&value, field_kind),
         );
         self.commit_window()?;
         self.change(FoundSetChange::Find {
@@ -5151,7 +5340,14 @@ impl FoundSets for WorkerHost<'_> {
             Some(node) => {
                 let spec = om_data::specs::SortSpec::from_node(node)
                     .ok_or(HostError::Error(ErrorCode::INVALID))?;
-                (self.sort_fields(spec.clone())?, Some(spec))
+                // With the dialog, the order the user chooses is checked,
+                // so a stored key this host cannot sort by can be replaced.
+                let sort = if with_dialog {
+                    Vec::new()
+                } else {
+                    self.sort_fields(spec.clone())?
+                };
+                (sort, Some(spec))
             }
             None => {
                 // Another table's stored order is not this table's.
@@ -5161,7 +5357,26 @@ impl FoundSets for WorkerHost<'_> {
                     .clone()
                     .filter(|(table, _)| *table == window.table)
                     .map(|(_, spec)| spec);
-                (window.last_sort.clone(), spec)
+                let sort = window.last_sort.clone();
+                // The order was accepted on a layout of this table, so a key
+                // of another occurrence of it named that layout's own field:
+                // it is this layout's own field now.
+                let own = self.occurrence();
+                let spec = match (spec, own, self.schema()) {
+                    (Some(mut spec), Some(own), Some(schema)) => {
+                        let table_of = |o: u64| schema.table_of(o).map(|t| t.id);
+                        for entry in &mut spec.fields {
+                            if entry.field.occurrence.is_some_and(|o| {
+                                o != own && table_of(o).is_some() && table_of(o) == table_of(own)
+                            }) {
+                                entry.field.occurrence = Some(own);
+                            }
+                        }
+                        Some(spec)
+                    }
+                    (spec, _, _) => spec,
+                };
+                (sort, spec)
             }
         };
         if with_dialog {
@@ -5200,7 +5415,7 @@ impl FoundSets for WorkerHost<'_> {
 
     fn sort_by_field(&mut self, field: Option<FieldRef>, direction: u16) -> HostResult {
         if let Some(field) = field {
-            self.check_imported_sort_field(Some(field.occurrence), field.repetition)?;
+            self.check_sort_field(Some(field.occurrence), field.repetition)?;
         }
         let name = self.target_name(field)?;
         self.commit_window()?;
@@ -5414,7 +5629,7 @@ impl Windows for WorkerHost<'_> {
         self.s.file.window.scroll(choice)
     }
 
-    fn set_zoom_level(&mut self, choice: u16, _lock: bool) -> HostResult {
+    fn set_zoom_level(&mut self, choice: u16, lock: bool) -> HostResult {
         let zoom = &mut self.s.file.window.state.zoom;
         *zoom = match choice {
             1 => 25,
@@ -5437,6 +5652,7 @@ impl Windows for WorkerHost<'_> {
             }
             _ => return Err(ErrorCode::INVALID.into()),
         };
+        self.s.file.window.state.zoom_locked = lock;
         self.s.file.window.touch();
         Ok(())
     }
@@ -5669,6 +5885,57 @@ impl Network for WorkerHost<'_> {
         Ok(())
     }
 
+    /// Send Mail through the email client, with dialog: a new message in
+    /// the system's mail client, handed over as a `mailto:` URL to the
+    /// application the system registers for `mailto:`
+    /// ([`mail::open_mailto`]; refused on Windows for now), for the user to
+    /// look over and send. What a `mailto:` URL cannot
+    /// carry is 3, as FileMaker fails a step it cannot run: SMTP and OAuth,
+    /// no dialog (sending unseen), attachments, one email per record, and
+    /// addresses collected across a found set of more than one record. So
+    /// are an address whose quote does not end, a message too long for the
+    /// URL, and a handler that does not take it (OpenMaker's choices).
+    fn send_mail(&mut self, mail: &om_data::runtime::Mail) -> HostResult {
+        use om_data::runtime::MailVia;
+        // The email client takes a message the user sees; SMTP sends it
+        // unseen.
+        let shown = mail.via == MailVia::Client && mail.with_dialog;
+        if !(shown || mail.via == MailVia::Smtp)
+            || mail.one_per_record
+            || !mail.attachments.trim().is_empty()
+        {
+            return Err(HostError::Unsupported);
+        }
+        if mail.collect.iter().any(|&c| c) {
+            let (window, provider) = self.wp();
+            if window.found_count(provider).map_err(data_error)? > 1 {
+                return Err(HostError::Unsupported);
+            }
+        }
+        let failed = |host: &mut Self, code: ErrorCode, message: String| {
+            host.s.failure = Some(message);
+            HostError::Error(code)
+        };
+        if mail.via == MailVia::Smtp {
+            let (account, message) =
+                om_url::smtp_parts(mail).map_err(|e| failed(self, e.code(), e.to_string()))?;
+            // Esc, Cmd-. and a closing window end the step at any point of
+            // the session, as for Insert from URL.
+            let mut cancelled = || {
+                self.pump(None);
+                self.connection_lost()
+                    || self.s.abort.load(Ordering::SeqCst)
+                    || self.s.interrupted
+                    || self.s.halt
+            };
+            let sent = om_url::send_smtp(&account, &message, None, &mut cancelled);
+            return sent.map_err(|e| failed(self, e.code(), e.to_string()));
+        }
+        let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message)
+            .map_err(|e| failed(self, ErrorCode::UNAVAILABLE, e.to_string()))?;
+        mail::open_mailto(&url).map_err(|message| failed(self, ErrorCode::UNAVAILABLE, message))
+    }
+
     /// Insert from URL (`om_url`): into a container field as container
     /// data, another field as text; a `file:` URL reads a local file.
     fn fetch_url(&mut self, request: &UrlRequest) -> HostResult<UrlResponse> {
@@ -5771,19 +6038,5 @@ pub(crate) fn parameter(stored: &om_layout::triggers::StoredFormula) -> Calculat
         context: stored.context.clone(),
         formatted: None,
         polish: Some(stored.polish.clone()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serial_numbers_count_up_the_last_digits() {
-        assert_eq!(serial_text("1", 1, 0), "1");
-        assert_eq!(serial_text("1", 1, 4), "5");
-        assert_eq!(serial_text("INV0009", 1, 1), "INV0010");
-        assert_eq!(serial_text("A-10-x", 5, 2), "A-20-x");
-        assert_eq!(serial_text("none", 1, 3), "none");
     }
 }

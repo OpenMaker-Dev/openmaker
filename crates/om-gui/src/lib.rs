@@ -33,6 +33,7 @@ mod database_relationship;
 mod database_summary;
 mod desktop;
 mod document;
+mod file_panel;
 mod icons;
 mod inspector;
 pub mod keypad;

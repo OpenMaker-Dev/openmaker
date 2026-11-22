@@ -15,6 +15,7 @@ mod server;
 use om_collate::DateOrder;
 use om_hbam::DataType;
 use om_query::find::{self, IndexKind};
+use om_query::keys::TextKeys;
 use om_server::Server;
 
 /// Two finds of Tasks::Name `==Ship` in a row, each checking that the
@@ -452,5 +453,383 @@ fn long_values_and_finds_leave_the_file_saveable() {
     let index = name_index_on_disk(&file);
     assert!(index.contains(&(vec![0xff, 0x80], vec![2])), "{index:?}");
     assert!(index.contains(&(om_collate::text_key("Short"), vec![1])));
+    session.disconnect().unwrap();
+}
+
+/// In an index written under other key rules (an earlier OpenMaker
+/// build's, or FileMaker's where OpenMaker's still differ), a record a
+/// write changes leaves every entry its new value does not give (#448).
+/// Here Name's value index lists record 2, "Ship", under a key the current
+/// rules do not give, and not under "Ship"'s. Changing it to "Shipped"
+/// would otherwise leave it under the old key, where a find would still
+/// return it. Other records keep their entries as stored, and a commit
+/// whose save fails puts the stored index back exactly.
+#[test]
+fn a_changed_record_leaves_entries_another_rule_wrote() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{OwnedNode, RidList};
+    let stale = vec![0x01, 0x10, 0x20];
+    let written = om_collate::text_key("Write tests");
+    let mut root = fixture::tree(&[], true);
+    let entry = |key: &[u8], id: u64| [id].into_iter().collect::<RidList>().to_node(key.to_vec());
+    root.put(
+        &[
+            &uint_segment(fixture::TABLE),
+            &[1],
+            &uint_segment(fixture::NAME),
+            &[0],
+        ],
+        // In key order, as a file stores them; `ff 80` holds record 1 as
+        // FileMaker lists a long key there too, which OpenMaker's rules
+        // would not give "Write tests".
+        OwnedNode::list(
+            vec![0],
+            vec![
+                entry(&stale, 2),
+                entry(&written, 1),
+                entry(&[0xff, 0x80], 1),
+            ],
+        ),
+    );
+    let file = fixture::TempFile::from_tree("stale-index", &root);
+    let as_stored = field_index_on_disk(&file, fixture::NAME);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let path = std::path::absolute(&file.0).unwrap();
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|f| f.path == path)
+        .unwrap()
+        .id;
+    let (mut session, _) = server::logged_in(port, "stale index");
+
+    // A failed save: the rebuilt index goes back with the record. A
+    // commit that leaves Name as it was then saves Name's whole index
+    // subtree, its keys and counts, as it was stored.
+    assert!(handle.failing_commit_saves(id, true));
+    assert!(commit_cells(&mut session, 2, &[(fixture::NAME, "Shipped")]).is_err());
+    assert!(handle.failing_commit_saves(id, false));
+    commit_cells(
+        &mut session,
+        1,
+        &[(fixture::NAME, "Write tests"), (fixture::COUNT, "9")],
+    )
+    .unwrap();
+    assert_eq!(field_index_on_disk(&file, fixture::NAME), as_stored);
+    // The same commit, saved, is accepted: the failure was the save's.
+
+    // Saved, the write leaves record 2 under "Shipped" only. Record 1, which
+    // no write touched, keeps every entry as stored, `ff 80` included.
+    commit_name(&mut session, 2, "Shipped");
+    assert_eq!(
+        name_index_on_disk(&file),
+        [
+            (om_collate::text_key("Shipped"), vec![2]),
+            (written, vec![1]),
+            (vec![0xff, 0x80], vec![1]),
+        ]
+    );
+    session.disconnect().unwrap();
+}
+
+/// A node of a subtree: its path below the subtree's root, and its value.
+type Flat = (Vec<Vec<u8>>, Option<Vec<u8>>);
+
+/// Every node under `field`'s index subtree `[Tasks, 01, field]` in the
+/// saved file, keys, counts and record lists, as (path, value) pairs.
+fn field_index_on_disk(file: &fixture::TempFile, field: u64) -> Vec<Flat> {
+    use om_hbam::slot::uint_segment;
+    fn flatten(node: &om_hbam::Node<'_>, path: &mut Vec<Vec<u8>>, out: &mut Vec<Flat>) {
+        for child in &node.children {
+            path.push(child.segment.0.to_vec());
+            out.push((path.clone(), child.value.map(<[u8]>::to_vec)));
+            flatten(child, path, out);
+            path.pop();
+        }
+    }
+    let hbam = om_hbam::HbamFile::open(&file.0).unwrap();
+    let path: [&[u8]; 3] = [&uint_segment(fixture::TABLE), &[1], &uint_segment(field)];
+    let mut out = Vec::new();
+    if let Some(index) = hbam.subtree(&path).unwrap() {
+        flatten(&index, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
+/// A record deleted with a value the current rules give no key (a number
+/// among letters, #246) leaves the entry FileMaker wrote for it (#448):
+/// the deletion's computed keys name nothing, and the record would stay
+/// listed under 1234 after it no longer exists.
+#[test]
+fn a_deleted_record_leaves_entries_another_rule_wrote() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let delete = fixture::script(
+        1,
+        "Delete the last record",
+        vec![
+            fixture::go_to_record(2),
+            om_scripts::ScriptStep::new(9),
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    );
+    let mut root = fixture::tree(&[delete], true);
+    let table = uint_segment(fixture::TABLE);
+    let count = uint_segment(fixture::COUNT);
+    root.put(
+        &[&table, &[5], &serial::encode(2), &count],
+        om_scripts::text_node(&[], "12abc34"),
+    );
+    let entry = |value: &str, id: u64| {
+        let key = om_collate::number_key(value).unwrap();
+        [id].into_iter().collect::<RidList>().to_node(key)
+    };
+    root.put(
+        &[&table, &[1], &count, &[0]],
+        OwnedNode::list(vec![0], vec![entry("3", 1), entry("1234", 2)]),
+    );
+    // Counts of a shape this server does not write are left as they are.
+    root.put(
+        &[&table, &[1], &count, &[0x10], &[7]],
+        OwnedNode::leaf(Vec::new(), vec![1, 2, 3]),
+    );
+    let file = fixture::TempFile::from_tree("purged-index", &root);
+    let counts = |file: &fixture::TempFile| -> Vec<Flat> {
+        field_index_on_disk(file, fixture::COUNT)
+            .into_iter()
+            .filter(|(path, _)| path[0] == [0x10])
+            .collect()
+    };
+    let stored_counts = counts(&file);
+    assert!(!stored_counts.is_empty());
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "purged index");
+    let reply = session.perform_script_on_server(1, "", true).unwrap();
+    assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
+    let keys: Vec<(Vec<u8>, Option<Vec<u8>>)> = field_index_on_disk(&file, fixture::COUNT)
+        .into_iter()
+        .filter(|(path, _)| path.len() == 2 && path[0] == [0])
+        .map(|(path, value)| (path[1].clone(), value))
+        .collect();
+    assert_eq!(keys, [(om_collate::number_key("3").unwrap(), None)]);
+    assert_eq!(counts(&file), stored_counts);
+    session.disconnect().unwrap();
+}
+
+/// One commit of several records (Commit Transaction) keeps an index the
+/// first record emptied, though it has no counts leaf yet: the second
+/// record is indexed in it (#448). Name's word index (which has no key for
+/// an empty value) holds only record 1's words; record 1's Name is cleared,
+/// which empties it, and record 2's set to "Beta".
+#[test]
+fn a_batch_keeps_an_index_its_first_record_emptied() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode};
+    let batch = fixture::script(
+        1,
+        "Batch",
+        vec![
+            om_scripts::ScriptStep::new(205),
+            fixture::go_to_record(1),
+            fixture::set_field(fixture::NAME, "\"\""),
+            fixture::go_to_record(2),
+            fixture::set_field(fixture::NAME, "\"Beta\""),
+            om_scripts::ScriptStep::new(206),
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    );
+    let mut root = fixture::tree(&[batch], true);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    root.remove(&[&table, &[5], &serial::encode(2), &name]);
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], words_of(&[(1, "Write tests")], TextKeys::Collated)),
+    );
+    let file = fixture::TempFile::from_tree("batch-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "batch index");
+    let reply = session.perform_script_on_server(1, "", true).unwrap();
+    assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
+    let words: Vec<Vec<Vec<u8>>> = field_index_on_disk(&file, fixture::NAME)
+        .into_iter()
+        .filter(|(path, _)| path.len() == 2 && path[0] == [1])
+        .map(|(path, _)| path)
+        .collect();
+    assert_eq!(words, [vec![vec![1], om_collate::text_key("Beta")]]);
+    session.disconnect().unwrap();
+}
+
+/// Word-index entries (`[key] = records`) for `records`' texts in `form`,
+/// in key order.
+fn words_of(records: &[(u64, &str)], form: TextKeys) -> Vec<om_hbam::OwnedNode> {
+    let mut index: std::collections::BTreeMap<Vec<u8>, om_hbam::RidList> = Default::default();
+    for (id, text) in records {
+        for key in om_query::keys::word_entries(&[text.to_string()], form) {
+            index.entry(key).or_default().insert(*id);
+        }
+    }
+    index
+        .into_iter()
+        .map(|(key, ids)| ids.to_node(key))
+        .collect()
+}
+
+/// The entries of Tasks::`field`'s index `kind` in the saved file, each
+/// key with its records.
+fn index_on_disk(file: &fixture::TempFile, field: u64, kind: u8) -> Vec<(Vec<u8>, Vec<u64>)> {
+    use om_hbam::slot::uint_segment;
+    let hbam = om_hbam::HbamFile::open(&file.0).unwrap();
+    let path: [&[u8]; 4] = [
+        &uint_segment(fixture::TABLE),
+        &[1],
+        &uint_segment(field),
+        &[kind],
+    ];
+    hbam.subtree(&path)
+        .unwrap()
+        .map(|index| {
+            index
+                .children
+                .iter()
+                .map(|e| {
+                    let ids = om_hbam::RidList::from_node(e).unwrap().iter().collect();
+                    (e.segment.0.to_vec(), ids)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A failed save of a commit that empties a word index with no counts
+/// leaf puts the field's whole index subtree back as it was (#448): the
+/// emptied node is kept, so the record has its index to go back into.
+#[test]
+fn a_failed_save_puts_an_emptied_index_back() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode};
+    let mut root = fixture::tree(&[], true);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    root.remove(&[&table, &[5], &serial::encode(2), &name]);
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], words_of(&[(1, "Write tests")], TextKeys::Collated)),
+    );
+    let file = fixture::TempFile::from_tree("emptied-index", &root);
+    let as_stored = field_index_on_disk(&file, fixture::NAME);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let path = std::path::absolute(&file.0).unwrap();
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|f| f.path == path)
+        .unwrap()
+        .id;
+    let (mut session, _) = server::logged_in(port, "emptied index");
+    assert!(handle.failing_commit_saves(id, true));
+    assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "")]).is_err());
+    assert!(handle.failing_commit_saves(id, false));
+    commit_cells(&mut session, 2, &[(fixture::COUNT, "9")]).unwrap();
+    assert_eq!(field_index_on_disk(&file, fixture::NAME), as_stored);
+    assert_eq!(name_on_disk(&file, 1).as_deref(), Some("Write tests"));
+    session.disconnect().unwrap();
+}
+
+/// In a Unicode raw word index whose words FileMaker broke otherwise
+/// (`a_b` one word, query-program.md 7.1), a record edited to a value whose
+/// computed words did not change is still put under them: the sweep adds
+/// what the move did not (#448).
+#[test]
+fn a_record_whose_keys_did_not_move_gets_them_in_a_disagreeing_index() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let mut root = fixture::tree(&[], true);
+    fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 2);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    root.put(
+        &[&table, &[5], &serial::encode(1), &name],
+        om_scripts::text_node(&[], "a_b"),
+    );
+    // FileMaker's one word for record 1, "Ship"'s for record 2.
+    let raw = |word: &str| TextKeys::Raw.key(word).unwrap();
+    let mut entries = vec![
+        [1u64].into_iter().collect::<RidList>().to_node(raw("a_b")),
+        [2u64].into_iter().collect::<RidList>().to_node(raw("Ship")),
+    ];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], entries),
+    );
+    let file = fixture::TempFile::from_tree("raw-words", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "raw words");
+    commit_name(&mut session, 1, "a b");
+    let mut expected: Vec<(Vec<u8>, Vec<u64>)> =
+        om_query::keys::word_entries(&["a b".to_string()], TextKeys::Raw)
+            .into_iter()
+            .map(|key| (key, vec![1]))
+            .collect();
+    expected.push((raw("Ship"), vec![2]));
+    expected.sort();
+    assert_eq!(index_on_disk(&file, fixture::NAME, 1), expected);
+    session.disconnect().unwrap();
+}
+
+#[test]
+fn a_commit_refuses_a_noncanonical_destination_posting() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let mut root = fixture::tree(&[], true);
+    fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 2);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let raw = |word: &str| TextKeys::Raw.key(word).unwrap();
+    for (id, text) in [(1, "a_b"), (2, "b")] {
+        root.put(
+            &[&table, &[5], &serial::encode(id), &name],
+            om_scripts::text_node(&[], text),
+        );
+    }
+    // The reader accepts this one-bit bitmap for record 2. The writer
+    // would emit a singleton, so it cannot round-trip the stored posting.
+    let bitmap = OwnedNode::list(
+        raw("b"),
+        vec![OwnedNode::leaf(vec![0], 4u32.to_be_bytes().to_vec())],
+    );
+    let stale = [1].into_iter().collect::<RidList>().to_node(raw("a_b"));
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], vec![stale, bitmap]),
+    );
+    let file = fixture::TempFile::from_tree("noncanonical-posting", &root);
+    let before = std::fs::read(&file.0).unwrap();
+    let index = field_index_on_disk(&file, fixture::NAME);
+    assert_eq!(
+        index_on_disk(&file, fixture::NAME, 1),
+        [(raw("a_b"), vec![1]), (raw("b"), vec![2])]
+    );
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "noncanonical posting");
+    // Both values compute {a, b}, so only the sweep would add record 1
+    // to b. Refuse the commit before replacing any of its memberships.
+    assert!(matches!(
+        commit_cells(&mut session, 1, &[(fixture::NAME, "a b")]),
+        Err(om_session::SessionError::Protocol(_))
+    ));
+    assert!(std::fs::read(&file.0).unwrap() == before);
+
+    // Publish an unrelated change to check the in-memory state too.
+    commit_cells(
+        &mut session,
+        2,
+        &[(fixture::NAME, "b"), (fixture::COUNT, "9")],
+    )
+    .unwrap();
+    assert!(std::fs::read(&file.0).unwrap() != before);
+    assert_eq!(field_index_on_disk(&file, fixture::NAME), index);
+    assert_eq!(name_on_disk(&file, 1).as_deref(), Some("a_b"));
     session.disconnect().unwrap();
 }

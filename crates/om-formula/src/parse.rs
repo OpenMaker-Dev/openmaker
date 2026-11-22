@@ -360,7 +360,9 @@ fn resolve(
                 return Ok(Token::CustomFunction(Key::from_id(id)));
             }
         }
-        if let Some(b) = catalog::find_builtin(text).filter(|b| callable(b.min_args)) {
+        if let Some(b) = catalog::find_builtin(text)
+            .filter(|b| callable(b.min_args) && ctx.names.builtin_known(b.id))
+        {
             return Ok(Token::PluginFunction(b.id));
         }
         if let Some(id) = ctx.names.find_plugin_function(text) {
