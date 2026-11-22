@@ -66,6 +66,8 @@ const OTHER_TASKS: u64 = 0xd0_0005;
 /// ([`add_note_tasks`]).
 const NOTE_TASKS: u64 = 0xd0_0006;
 const BARE_NOTE_TASKS: u64 = 0xd0_0007;
+/// A Notes occurrence three relationships away, through Note tasks.
+const FOLLOW_UP_NOTES: u64 = 0xd0_0008;
 /// The script OnObjectExit of the portal's Body field runs.
 const KEEP: u64 = 18;
 /// A button in the portal's rows, labeled [`ROW_ACTION`]: Perform Script
@@ -268,9 +270,9 @@ fn add_portal_layout(root: &mut OwnedNode) {
 
 /// The Notes portal (three rows of Notes::Body, Notes::Extra and the row
 /// button), its option word `flags`, at `bounds` in its container.
-fn portal_object(flags: u64, bounds: Vec<u8>) -> Vec<u8> {
+fn portal_object(occurrence: u64, flags: u64, bounds: Vec<u8>) -> Vec<u8> {
     let mut portal_obj = Vec::new();
-    uint(2, alias(NOTES_OCCURRENCE), &mut portal_obj);
+    uint(2, alias(occurrence), &mut portal_obj);
     uint(3, flags, &mut portal_obj);
     double(6, 3.0, &mut portal_obj);
     let mut portal = Vec::new();
@@ -320,7 +322,7 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
     uint(1, TASK_SETTING, &mut store);
     bytes(
         2,
-        &portal_object(flags, rect(60.0, 10.0, 130.0, 410.0)),
+        &portal_object(NOTES_OCCURRENCE, flags, rect(60.0, 10.0, 130.0, 410.0)),
         &mut store,
     );
     bytes(
@@ -362,20 +364,20 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
 
 /// The Portals layout's objects with the portal alone: none of the
 /// layout's own fields.
-fn portal_only_store() -> Vec<u8> {
+fn portal_only_store(occurrence: u64, field: u64) -> Vec<u8> {
     let mut store = Vec::new();
     uint(1, PORTAL, &mut store);
     bytes(
         2,
-        &portal_object(PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
+        &portal_object(occurrence, PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
         &mut store,
     );
     bytes(
         2,
         &shown_field_object(
             PORTAL_BODY,
-            NOTES_OCCURRENCE,
-            BODY,
+            occurrence,
+            field,
             rect(0.0, 0.0, 20.0, 300.0),
             0,
         ),
@@ -482,19 +484,28 @@ fn two_hops_host(middle: bool) -> hosted::Hosted {
             show("\"missing \" & Get ( LastError )"),
         ],
     );
-    let mut root = fixture::tree(&[two_hops, missing], true);
-    // Notes::Task and relationship 1, Tasks to Notes.
-    fixture::add_calculated(&mut root);
-    add_notes(&mut root);
-    add_note_tasks(&mut root);
-    if middle {
-        allow_creation(&mut root);
-    }
     let tag = if middle {
         "two-hops"
     } else {
         "two-hops-closed"
     };
+    host_note_tasks(tag, &[two_hops, missing], |root| {
+        if middle {
+            allow_creation(root);
+        }
+    })
+}
+
+fn host_note_tasks(
+    tag: &str,
+    scripts: &[Script],
+    change: impl FnOnce(&mut OwnedNode),
+) -> hosted::Hosted {
+    let mut root = fixture::tree(scripts, true);
+    fixture::add_calculated(&mut root);
+    add_notes(&mut root);
+    add_note_tasks(&mut root);
+    change(&mut root);
     let file = fixture::TempFile::from_tree(&format!("gui-portals-{tag}"), &root);
     hosted::host_file_with(
         &format!("portals-{tag}"),
@@ -1932,6 +1943,178 @@ fn set_field_creates_a_record_two_relationships_away() {
             "middle={middle}: {tasks:?}"
         );
     }
+}
+
+#[test]
+fn set_field_copies_a_calculated_middle_key_and_shows_the_pending_row() {
+    let create = fixture::script(
+        1,
+        "Create from calculated key",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            set_field(NOTE_TASKS, CODE, 0, "\"key\""),
+            note("$set", "Get ( LastError )"),
+            go_to_portal_row(2),
+            show(
+                "\"draft \" & $set & \":\" & Get ( LastError ) & \":\" & +                 Get ( ActivePortalRowNumber ) & \":\" & Get ( ActiveFieldContents )",
+            ),
+        ],
+    );
+    let read = fixture::script(
+        2,
+        "Read calculated relationship",
+        vec![
+            go_to_portal_row(1),
+            show("\"linked \" & Get ( LastError ) & \":\" & Get ( ActiveFieldContents )"),
+        ],
+    );
+    let hosted = host_note_tasks("calculated-middle-key", &[create, read], |root| {
+        const JOIN_KEY: u64 = 3;
+        let mut names = fixture::calculated_names();
+        names.add_field(NOTES, JOIN_KEY, "Join key");
+        fixture::add_field(root, NOTES, JOIN_KEY, "Join key", 2, 1, 0, 0x2_0000, 0);
+        fixture::add_formula(
+            root,
+            &names,
+            (NOTES, NOTES_OCCURRENCE),
+            JOIN_KEY,
+            5,
+            "\"K-\" & Body",
+        );
+        fixture::add_field(root, TABLE, NAME, "Name", 1, 1, 0, 0x8000_0000, 0);
+        fixture::add_relationship(root, 5, (NOTES_OCCURRENCE, JOIN_KEY), 0, (NOTE_TASKS, NAME));
+        allow_creation_through(root, 5);
+        add_portal_layout(root);
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), portal_only_store(NOTE_TASKS, CODE)),
+        );
+    });
+    let mut app = open(&hosted);
+    expect(&mut app, "Create from calculated key", "draft 0:0:1:key");
+    common::wait_for_label(&mut app, "Portal Row 1");
+    assert!(app.query(By::new().label("Portal Row 2")).is_none());
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    assert_eq!(
+        stored(&hosted, TABLE, &[(NAME, 1), (CODE, 1)]).last(),
+        Some(&(3, vec!["K-first".to_owned(), "key".to_owned()]))
+    );
+    expect(&mut app, "Read calculated relationship", "linked 0:key");
+}
+
+#[test]
+fn a_multi_hop_draft_cannot_commit_with_its_parent_deleted() {
+    for delete_first in [true, false] {
+        let mut steps = vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+        ];
+        let create = [
+            set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
+            note("$created", "Get ( LastError )"),
+        ];
+        let delete = [
+            go_to_portal_row(1),
+            without_dialog(104),
+            note("$deleted", "Get ( LastError )"),
+        ];
+        if delete_first {
+            steps.extend(delete);
+            steps.extend(create);
+        } else {
+            steps.extend(create);
+            steps.extend(delete);
+        }
+        steps.extend([
+            without_dialog(75),
+            show("\"parent \" & $deleted & \":\" & $created & \":\" & Get ( LastError )"),
+        ]);
+        let tag = if delete_first {
+            "delete-first"
+        } else {
+            "create-first"
+        };
+        let hosted = host_note_tasks(tag, &[fixture::script(1, "Remove parent", steps)], |root| {
+            // The first note leads to Task 2 (Ship) in the portal, and
+            // Ship's Code links to the otherwise empty Follow up notes.
+            root.put(
+                &[
+                    &uint_segment(NOTES),
+                    &[5],
+                    &serial::encode(2),
+                    &uint_segment(BODY),
+                ],
+                text_node(&[], "Ship"),
+            );
+            root.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[5],
+                    &serial::encode(2),
+                    &uint_segment(CODE),
+                ],
+                text_node(&[], "key"),
+            );
+            fixture::add_occurrence(root, FOLLOW_UP_NOTES, "Follow up notes", NOTES);
+            fixture::add_relationship(root, 7, (NOTE_TASKS, CODE), 0, (FOLLOW_UP_NOTES, TASK));
+            allow_creation_through(root, 7);
+            add_portal_layout(root);
+            root.put(
+                &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+                OwnedNode::leaf(Vec::new(), portal_only_store(NOTE_TASKS, NAME)),
+            );
+        });
+        let mut app = open(&hosted);
+        let expected = if delete_first {
+            "parent 0:415:0"
+        } else {
+            "parent 0:0:415"
+        };
+        expect(&mut app, "Remove parent", expected);
+        assert_eq!(stored(&hosted, NOTES, &[(BODY, 1)]).len(), 3, "{tag}");
+        assert_eq!(
+            stored(&hosted, TABLE, &[(NAME, 1)])
+                .iter()
+                .any(|(id, _)| *id == 2),
+            !delete_first,
+            "{tag}"
+        );
+    }
+}
+
+#[test]
+fn set_field_refuses_an_uncommitted_middle_record_even_with_a_key() {
+    let script = fixture::script(
+        1,
+        "Use draft as parent",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(2),
+            set_field(NOTES_OCCURRENCE, BODY, 0, "\"draft key\""),
+            show("\"middle \" & Get ( LastError )"),
+            set_field(NOTE_TASKS, CODE, 0, "\"bad\""),
+            without_dialog(75),
+        ],
+    );
+    let hosted = host_note_tasks("draft-middle", &[script], allow_creation);
+    let mut app = open(&hosted);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Use draft as parent");
+    common::wait_for_label(&mut app, "middle 0");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the unsupported related write", |app| {
+        !app.state().script_running()
+            && app
+                .state()
+                .error()
+                .is_some_and(|e| e.contains("not supported here yet"))
+    });
+    assert_eq!(stored(&hosted, TABLE, &[]).len(), 2);
+    assert_eq!(stored(&hosted, NOTES, &[]).len(), 3);
 }
 
 #[test]
@@ -3572,7 +3755,7 @@ fn tab_the_portal(root: &mut OwnedNode) {
         control,
         panel(FIRST_TAB, 0, &[]),
         panel(NOTES_TAB, 100, &[PORTAL]),
-        portal_object(PORTAL_FLAGS, rect(1.0, 5.0, 71.0, 405.0)),
+        portal_object(NOTES_OCCURRENCE, PORTAL_FLAGS, rect(1.0, 5.0, 71.0, 405.0)),
     ];
     let store = om_layout::encode::append_to_store(&store, &[TABS], &objects);
     root.put(
@@ -5826,7 +6009,7 @@ fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
     let hosted = host_with("held-new-auto-key", |root| {
         root.put(
             &[&[4], &[5], &uint_segment(PORTALS), &[7]],
-            OwnedNode::leaf(Vec::new(), portal_only_store()),
+            OwnedNode::leaf(Vec::new(), portal_only_store(NOTES_OCCURRENCE, BODY)),
         );
         fixture::add_relationship(root, 1, (OCCURRENCE, CREATOR), 0, (NOTES_OCCURRENCE, TASK));
         for note in [2u64, 3] {

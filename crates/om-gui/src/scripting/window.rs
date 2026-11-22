@@ -55,6 +55,9 @@ pub(crate) struct RelatedDraft {
     /// a script's later Set Field of one too. The user's begun records
     /// take theirs at the save (`match_begun_records`).
     pub matched: bool,
+    /// The stored parent (base table and record) of a script-created
+    /// draft reached through an intermediate occurrence.
+    pub creation_parent: Option<(u64, u64)>,
     /// Delete Portal Row deleted the record.
     pub deleted: bool,
     /// The cells of `typed` whose field object's OnObjectSave already ran,
@@ -805,6 +808,16 @@ impl Window {
             record_numbers,
         } = write;
         let open = &self.state.uncommitted;
+        if open.related.iter().any(|draft| {
+            draft
+                .creation_parent
+                .is_some_and(|(table, record)| open.deletes(table, record))
+        }) {
+            return Err(DataError::with_code(
+                415,
+                "A required parent of a new related record is pending deletion.",
+            ));
+        }
         let mut committed = Vec::new();
         // Repetition editors retain numeric cell identities in related drafts.
         // The layout's own repetitions belong to the same record write as its

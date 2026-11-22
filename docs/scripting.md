@@ -570,11 +570,25 @@ Open items:
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
   are inferred, not measured on FileMaker Pro. On the desktop:
-  - Set Field two or more relationships away creates the far record only
-    under a related record that exists on the way. FileMaker also creates a
-    missing record on the way when its relationship allows creation (s49);
-    there the script stops instead, before it changes anything
+  - Set Field two or more relationships away creates the far record under
+    the first available stored record at each hop. FileMaker's s49 runs
+    measured two hops with at most one middle record. A missing middle
+    record gives 415 when creation through its relationship is off. When
+    creation is on, FileMaker creates it too. OpenMaker stops the script
+    as unsupported. It also stops if the middle record exists only as a
+    pending draft, even with an explicit key
     ([#41](https://github.com/OpenMaker-Dev/openmaker/issues/41)).
+    OpenMaker skips records pending deletion by base table and record ID.
+    Set Field returns 415 when no candidate survives that check. If the
+    selected parent is marked for deletion after the draft was made,
+    Commit Records returns 415 and keeps both changes pending.
+  - At creation, OpenMaker reads an unstored equality key in the source
+    record's occurrence with the relationship evaluator. It copies a
+    single nonempty, single-line text value into an ordinary text match
+    field. Unsupported key shapes and failed reads refuse creation.
+    Browse shows already-staged rows in a multi-hop portal, as script
+    navigation does. A blank creation row still requires a direct
+    relationship. FileMaker parity for these cases is unmeasured.
   - A running summary or
   fraction on a record outside the found set reads empty (unconfirmed);
   related-field criteria in server scripts; sorts by
