@@ -689,13 +689,14 @@ mod tests {
                 ..Default::default()
             };
             input.viewports.entry(viewport_id).or_default();
-            let _ = ctx.run_ui(input, |ui| {
+            let mut output = ctx.run_ui(input, |ui| {
                 assert_eq!(ui.ctx().viewport_id(), viewport_id);
                 assert_eq!(
                     ui.input(|input| input.events.clone()),
                     [Event::Paste("clipboard".into()), tab.clone()],
                 );
             });
+            output.textures_delta.clear();
         }
     }
 
