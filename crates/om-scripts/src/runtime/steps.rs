@@ -1645,6 +1645,17 @@ impl Runtime {
                 } else {
                     field
                 };
+                // Options no host carries out are refused before any record
+                // changes (3), never run without them (script-steps.md 11.8):
+                // updating the field's next serial value (`[00 4, 03]`) and
+                // Skip auto-enter options (`kRestore` with `[00 6, 03]` = 0).
+                // Entry Options' serials are refused below.
+                let update_serial =
+                    step.number(1) == Some(2) && step.number(4).is_some_and(|n| n != 0);
+                let skip_auto_enter = step.has_flag(flag::RESTORE) && step.number(6) == Some(0);
+                if update_serial || skip_auto_enter {
+                    return Exec::error(ErrorCode::UNAVAILABLE);
+                }
                 let mut evaluate;
                 let mut with = match step.number(1) {
                     Some(3) => {
@@ -1663,7 +1674,6 @@ impl Runtime {
                     Some(2) => Replacement::Serial {
                         initial: step.text(3).unwrap_or_else(|| "1".into()),
                         increment: step.number(2).unwrap_or(1),
-                        update_serial: step.number(4).is_some_and(|n| n != 0),
                     },
                     _ => Replacement::CurrentContents,
                 };

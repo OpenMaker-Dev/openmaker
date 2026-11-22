@@ -3980,8 +3980,18 @@ Steps
   table is 3).
 - Replace Field Contents: every found record in order, the calculation
   evaluated on each record made current, serial numbers counting up the
-  last run of digits of the initial value; each record is committed; no
-  triggers fire.
+  last run of digits of the initial value (`om_scripts::runtime::serial_text`),
+  or the original record's field value. The step commits each replacement
+  without firing record triggers, or stages it in an open transaction. A
+  serial run outside 0 through `i128::MAX` is refused (3) before replacing
+  any row and, on the desktop, before confirmation. The runtime also
+  refuses (3) Entry Options' serials, updating the next serial value, and
+  Skip auto-enter options. The desktop first commits the open record. When
+  an open record is new or has edits, OpenMaker Server refuses the step
+  (3), keeping the draft available to calculations and to Commit or Revert
+  Record. FileMaker leaves the active record uncommitted (Claris,
+  "Committing data in records"). See [scripting.md](../scripting.md) for
+  how each host handles failure and for the behavior yet to be measured.
 - Relookup Field Contents
   ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse
   mode, the provider's operation (`DataProvider::relookup`) writes each

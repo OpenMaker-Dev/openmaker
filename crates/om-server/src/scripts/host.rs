@@ -63,13 +63,14 @@ use om_hbam::{
 };
 use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_INCREMENT};
 use om_query::keys::TextKeys;
+use om_scripts::runtime::serial_text;
 use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
     Accounts, Bar, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files,
     FindKind, FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation,
     Network, NewWindow, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords,
-    ScriptAccess, ScriptHost, StepCall, TransactionOptions, Visibility, WindowId, WindowTarget,
-    Windows,
+    Replacement, ScriptAccess, ScriptHost, StepCall, TransactionOptions, Visibility, WindowId,
+    WindowTarget, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -4424,9 +4425,152 @@ impl FieldSteps for ServerHost {
             .save_commit(&mut store, journal)
             .map_err(|e| HostError::Error(ErrorCode(i32::from(crate::hosting::save_error(&e)))))
     }
+
+    /// Replace Field Contents (91) in a server script
+    /// (script-runtime.md, "Steps"): each distinct record in found-set order
+    /// is made current and opened (locked, so the value is computed from
+    /// what it holds now), takes the current record's value, a serial
+    /// number or the calculation evaluated on it through Set Field's checks,
+    /// and is committed. The first failure stops the step: the records
+    /// before it stay replaced, the failed one's draft is reverted, and the
+    /// record current before is current again. A transaction keeps its
+    /// staged changes and locks until it ends. Outside a transaction, a
+    /// failed record's lock is released. An abort or the script's time
+    /// limit stops it before the next record is written.
+    ///
+    /// Refused before any record changes: no field and no focus (102); a
+    /// container, global or related field, Find mode, or a serial run
+    /// outside 0 through `i128::MAX` (3); a calculation or summary field
+    /// (201).
+    /// FileMaker does not commit the active record ("Replace Field Contents
+    /// ... do not commit the active record"), which the server, holding one
+    /// open record, cannot do while it commits the others: a record with
+    /// uncommitted changes when the step starts is refused (3), its draft
+    /// kept for Commit or Revert Record
+    /// ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)). The
+    /// dialog option is not shown on the server (Claris: as if With dialog
+    /// were off).
+    fn replace_field_contents(
+        &mut self,
+        field: Option<FieldRef>,
+        with: &mut Replacement<'_>,
+        _with_dialog: bool,
+    ) -> HostResult {
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
+        let window = self.window()?;
+        if def.data_type == DataType::Container
+            || Self::is_global(&def)
+            || window.mode == Mode::Find
+            || window.occurrence != field.occurrence
+        {
+            return Err(HostError::Unsupported);
+        }
+        if def.kind != FieldKind::Normal {
+            return Err(FIELD_LOCKED.into());
+        }
+        // Go to List of Records can repeat an ID. Keep the window's found
+        // set intact and use only the first position of each record here.
+        let mut seen = BTreeSet::new();
+        let positions: Vec<usize> = window
+            .found
+            .iter()
+            .enumerate()
+            .filter_map(|(index, id)| seen.insert(*id).then_some(index))
+            .collect();
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            let last = positions.len().saturating_sub(1) as u64;
+            if serial_text(initial, *increment, 0).is_none()
+                || serial_text(initial, *increment, last).is_none()
+            {
+                return Err(HostError::Unsupported);
+            }
+        }
+        if self
+            .record
+            .as_ref()
+            .is_some_and(|r| r.new || !r.changed.is_empty())
+        {
+            return Err(HostError::Unsupported);
+        }
+        self.require_edit()?;
+        self.leave()?;
+        let current = match with {
+            Replacement::CurrentContents => Some(self.value_of(field)?),
+            _ => None,
+        };
+        let window = self.window()?;
+        let original = window.current;
+        let portal = window.portal.clone();
+        let mut result = Ok(());
+        for (serial_index, position) in positions.into_iter().enumerate() {
+            let window = self.window_mut()?;
+            window.current = position;
+            // Recheck the starting row independently on each record.
+            window.portal.clone_from(&portal);
+            result = self.replace_one(field, with, current.as_ref(), serial_index);
+            if result.is_err() {
+                // Drop the failed draft. An open transaction keeps its
+                // earlier staged version and releases locks when it ends.
+                if self.record.is_some() {
+                    let _ = self.revert_record(false);
+                }
+                break;
+            }
+        }
+        if let Some(window) = self.window.as_mut() {
+            window.current = original.min(window.found.len().saturating_sub(1));
+            window.portal = portal;
+        }
+        // A write may have changed the original record's join key, even
+        // if a later write failed.
+        self.revalidate_portal();
+        result
+    }
 }
 
 impl ServerHost {
+    /// Open the current record, compute its replacement, set and commit
+    /// it. `serial_index` counts the distinct records visited so far.
+    fn replace_one(
+        &mut self,
+        field: FieldRef,
+        with: &mut Replacement<'_>,
+        current: Option<&Value>,
+        serial_index: usize,
+    ) -> HostResult {
+        if self.aborted() {
+            return Err(ErrorCode::CANCELED.into());
+        }
+        self.open_current()?;
+        self.revalidate_portal();
+        let value = match with {
+            Replacement::CurrentContents => current.cloned().unwrap_or_else(Value::empty_text),
+            Replacement::Serial {
+                initial, increment, ..
+            } => {
+                let text = serial_text(initial, *increment, serial_index as u64)
+                    .ok_or(HostError::Unsupported)?;
+                Value::text(text)
+            }
+            Replacement::Calculation(evaluate) => evaluate(self),
+        };
+        // A calculation stopped by the abort gives `?`: nothing is written.
+        if self.aborted() {
+            return Err(ErrorCode::CANCELED.into());
+        }
+        self.store_value(field, value)?;
+        self.leave()
+    }
+
     /// Run `requests` as Perform Find, Constrain or Extend Found Set
     /// (`kind`), from Find mode when `in_find_mode`: see
     /// [`FoundSets::perform_find`].

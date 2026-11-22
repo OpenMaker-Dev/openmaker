@@ -591,13 +591,10 @@ pub struct UrlResponse {
 pub enum Replacement<'a> {
     /// The current record's value of the field, into every record.
     CurrentContents,
-    /// Serial numbers from `initial`, by `increment`; `update_serial`
-    /// moves the field's next serial value past the last one.
-    Serial {
-        initial: String,
-        increment: i64,
-        update_serial: bool,
-    },
+    /// Serial numbers from the custom `initial`, by `increment`. The
+    /// runtime refuses Entry Options' serials and updating the field's next
+    /// serial value (3) before calling the host.
+    Serial { initial: String, increment: i64 },
     /// The calculation, evaluated on each record after the host made it
     /// current.
     Calculation(&'a mut dyn FnMut(&mut dyn ScriptHost) -> Value),
@@ -606,7 +603,10 @@ pub enum Replacement<'a> {
 /// The `index`th of [`Replacement::Serial`]'s numbers from `initial`: its
 /// last run of digits counts up by `increment`, keeping its width, and the
 /// rest stays ("INV0009" + 1 = "INV0010"); text without a digit stays as
-/// it is. `None` when the digits or the result do not fit an `i128`.
+/// it is. `None` when the digits or the result do not fit an `i128`, or
+/// the result is below zero: how FileMaker spells a negative serial number
+/// is not measured, so a run counting down past zero is refused, not
+/// guessed.
 pub fn serial_text(initial: &str, increment: i64, index: u64) -> Option<String> {
     let end = initial
         .char_indices()
@@ -624,7 +624,11 @@ pub fn serial_text(initial: &str, increment: i64, index: u64) -> Option<String> 
         .map_or(end, |(i, _)| i);
     let digits = &initial[start..end];
     let step = i128::from(increment).checked_mul(i128::from(index))?;
-    let number = digits.parse::<i128>().ok()?.checked_add(step)?;
+    let number = digits
+        .parse::<i128>()
+        .ok()?
+        .checked_add(step)
+        .filter(|n| *n >= 0)?;
     Some(format!(
         "{}{:0width$}{}",
         &initial[..start],
@@ -1676,5 +1680,8 @@ mod serial_tests {
         let max = i128::MAX.to_string();
         assert_eq!(serial_text(&max, 1, 1), None);
         assert_eq!(serial_text(&format!("{max}0"), 1, 0), None);
+        // Counting down to zero, then below it, refused rather than spelled.
+        assert_eq!(serial_text("INV0003", -1, 3).as_deref(), Some("INV0000"));
+        assert_eq!(serial_text("3", -2, 2), None);
     }
 }
