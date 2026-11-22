@@ -499,6 +499,47 @@ fn server_scripts_sort_with_stored_orders() {
             "3,5,7,1|0",
         ]
     );
+
+    // By a self join's field (`Tasks::Count ≠ Mates::Count`), which would
+    // sort by each task's first related task: refused with 3, the found set
+    // left as it was, rather than sorted by each task's own Name (#610). An
+    // occurrence of Tasks that no relationship leads to, as a sort kept from
+    // a layout of it names, sorts by the record's own Name.
+    const MATES: u64 = 0xd0_0030;
+    const ALIAS: u64 = 0xd0_0031;
+    let mut joined = tree();
+    fixture::add_occurrence(&mut joined, MATES, "Mates", TABLE);
+    fixture::add_occurrence(&mut joined, ALIAS, "Alias", TABLE);
+    fixture::add_relationship(&mut joined, 30, (OCCURRENCE, COUNT), 1, (MATES, COUNT));
+    joined.put(
+        &[&[17], &[5], &uint_segment(13)],
+        script(
+            13,
+            "Alias",
+            vec![
+                sort(&spec(false, vec![entry(ALIAS, NAME, false, None)])),
+                exit_with(&format!("Get ( LastError ) & \"|\" & {COUNTS}")),
+            ],
+        )
+        .encode(),
+    );
+    joined.put(
+        &[&[17], &[5], &uint_segment(12)],
+        script(
+            12,
+            "Mates",
+            vec![
+                sort(&spec(false, vec![entry(MATES, NAME, true, None)])),
+                exit_with(&format!("Get ( LastError ) & \"|\" & {COUNTS}")),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-sort-self-join", &joined);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 12), (3, "3|3,5,7,1".to_string()));
+    assert_eq!(run(&mut client, 13), (0, "0|1,7,5,3".to_string()));
 }
 
 #[test]
@@ -1013,4 +1054,60 @@ fn lookup_tree() -> OwnedNode {
         OwnedNode::leaf(Vec::new(), unsorted),
     );
     root
+}
+
+/// A related sort can loop: a sort field of another table's occurrence is
+/// read from its first related record, whose relationship may be sorted by
+/// a field leading back. Here both of `Tasks::Name ≠ Pages::Body`'s sort
+/// orders name a field of each side, so sorting tasks by a page's Body
+/// needs the pages sorted by a task's Name, and so on. The sorts nested
+/// inside one another stop with 3 (`om_data::host::SortNesting`) instead of
+/// overflowing the server's stack.
+#[test]
+fn a_related_sort_that_loops_stops_with_3() {
+    const PAGES: u64 = 0xd0_0032;
+    let mut looping = tree();
+    fixture::add_occurrence(&mut looping, PAGES, "Pages", NOTES);
+    fixture::add_relationship(&mut looping, 30, (OCCURRENCE, NAME), 1, (PAGES, BODY));
+    // Each order names both sides, so it loops whichever direction it
+    // applies to.
+    let both = spec(
+        false,
+        vec![
+            entry(PAGES, BODY, false, None),
+            entry(OCCURRENCE, NAME, false, None),
+        ],
+    );
+    let key = |id: u64| {
+        let segment = uint_segment(id);
+        [vec![segment.len() as u8 + 1, segment.len() as u8], segment].concat()
+    };
+    let mut definition = key(OCCURRENCE);
+    definition.extend(key(PAGES));
+    definition.extend(both.encode());
+    definition.extend(both.encode());
+    // Sorted in both directions (`SORT_LEFT_TO_RIGHT` 0x40,
+    // `SORT_RIGHT_TO_LEFT` 0x80).
+    definition.extend(0xc0u32.to_be_bytes());
+    looping.put(
+        &[&[3], &[0xfb], &[5], &[30], &[2]],
+        OwnedNode::leaf(Vec::new(), definition),
+    );
+    looping.put(
+        &[&[17], &[5], &uint_segment(12)],
+        script(
+            12,
+            "Loop",
+            vec![
+                fixture::on(86, true),
+                sort(&spec(false, vec![entry(PAGES, BODY, false, None)])),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-sort-loop", &looping);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 12), (3, "3".to_string()));
 }

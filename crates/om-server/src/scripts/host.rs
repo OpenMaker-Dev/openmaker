@@ -68,7 +68,7 @@ use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
     PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    StepCall, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -88,6 +88,7 @@ mod containers;
 mod design;
 mod files;
 mod get;
+mod mail;
 mod related;
 mod requests;
 mod sort;
@@ -240,6 +241,9 @@ impl Schema {
             let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
             let mut calc = rules::schema::calc_schema(&tree, &catalog, stem);
             calc.locale = store.locale();
+            // The record rules refuse a unique check in language 0 when
+            // the file's language is unknown.
+            calc.locale_unreadable = store.file_language().is_none();
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
@@ -707,6 +711,9 @@ pub(crate) struct ServerHost {
     /// name is by then. A session without one changes none.
     account_key: Option<Vec<u8>>,
     locale: Locale,
+    /// The file's own language, `None` when its locale record does not
+    /// decode ([`Store::file_language`]).
+    file_language: Option<u32>,
     today: Date,
     schema: Schema,
     window: Option<Window>,
@@ -769,9 +776,13 @@ impl ServerHost {
     ) -> Self {
         // The file's formats (file-metadata.md 2): FileMaker Server
         // evaluates with the file's locale record.
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = hosted.read_store();
-            (Schema::load(&store, &hosted.name), store.locale())
+            (
+                Schema::load(&store, &hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         let mut host = ServerHost {
             holder: format!("{} (script engine, {account})", shared.identity.name),
@@ -784,6 +795,7 @@ impl ServerHost {
             account: account.to_string(),
             account_key: None,
             locale,
+            file_language,
             today: today(),
             schema,
             window: None,
@@ -984,12 +996,16 @@ impl ServerHost {
     /// changed over what the file now stores: op73 may have recomputed
     /// their stored calculations or dropped a deleted field's values.
     pub fn refresh_schema(&mut self) {
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = self.hosted.read_store();
             if store.schema_generation() == self.schema.generation {
                 return;
             }
-            (Schema::load(&store, &self.hosted.name), store.locale())
+            (
+                Schema::load(&store, &self.hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         info!(
             "{:?}: script session reads the file's changed schema",
@@ -1002,6 +1018,7 @@ impl ServerHost {
             .map(|l| l.id);
         self.schema = schema;
         self.locale = locale;
+        self.file_language = file_language;
         self.plans.clear();
         self.place_window(layout);
         if let Some(mut record) = self.record.take() {
@@ -1793,6 +1810,13 @@ impl ServerHost {
         Ok(reserved)
     }
 
+    /// The file's own language (`Locale::Type`), which an index in language
+    /// 0 keys text in (query-program.md 7.2): `None` when the file's locale
+    /// record does not decode, so that a check in language 0 is refused.
+    fn file_language(&self) -> Option<u32> {
+        self.file_language
+    }
+
     /// Whether field `field` of `occurrence`'s table holds `text` in some
     /// record and repetition (a value list of the field's values): its
     /// value index when it has one, else its stored values, as committed.
@@ -1804,7 +1828,7 @@ impl ServerHost {
             return false;
         };
         let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let store = self.hosted.read_store();
@@ -1840,15 +1864,15 @@ impl ServerHost {
         text: &str,
     ) -> bool {
         let table = record.table;
-        // The record rules plan such a field only in a language whose keys
-        // `checked_text_keys` builds.
+        // The record rules plan such a field only in a language whose value
+        // keys `value_text_keys` builds.
         let keys = self
             .schema
             .catalog
             .table(table)
             .and_then(|t| t.field(field))
             .and_then(|f| f.decoded_options())
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let holds = |node: &OwnedNode| {
@@ -2598,6 +2622,39 @@ fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
 }
 
+/// `value` as Find Matching Records writes it for the server's finds, as
+/// exactly as they read: a number written out in full with `.` as its
+/// decimal separator, as the server's criteria read numbers (not
+/// `1.0E+9`); a time or timestamp with its seconds even when they are
+/// zero, since the display form drops them and would read as the whole
+/// minute. `None` for a time with a fraction of a second: the server's
+/// criteria compare whole seconds, so no criterion holds it (and a whole
+/// second's criterion also finds the fractions within it). A time past 24
+/// hours is no time of day and fails as a criterion (3).
+fn matching_text(value: &Value, cx: &Ctx) -> Option<String> {
+    let clock = |micros: i128| {
+        let seconds = micros.div_euclid(1_000_000);
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    };
+    let whole = |micros: i128| micros.rem_euclid(1_000_000) == 0;
+    Some(match value {
+        Value::Number(n) | Value::NumberText(n, _) => n.to_plain_text_with('.'),
+        Value::Time(t) if whole(t.micros()) => clock(t.micros()),
+        Value::Timestamp(t) if whole(t.time_of_day().micros()) => format!(
+            "{} {}",
+            t.date().format(cx.locale),
+            clock(t.time_of_day().micros())
+        ),
+        Value::Time(_) | Value::Timestamp(_) => return None,
+        other => other.to_text(cx).into_string(),
+    })
+}
+
 /// Today in the server's time zone.
 fn today() -> Date {
     let now = jiff::Zoned::now();
@@ -3345,6 +3402,31 @@ impl ScriptHost for ServerHost {
     fn set_full_access(&mut self, _file: FileId, on: bool) {
         self.elevated = on;
     }
+
+    /// Print Setup (42), which FileMaker Server runs in its own step
+    /// handler (script-runtime.md 10.2); every other step without a method
+    /// is 3.
+    fn other_step(&mut self, call: &StepCall<'_>) -> HostResult<Option<Value>> {
+        match call.id {
+            42 => print_setup(call).map(|()| None),
+            _ => Err(HostError::Unsupported),
+        }
+    }
+}
+
+/// Print Setup (42) in a server script. With neither Restore nor its
+/// dialog it sets nothing and gives 0, as on the desktop. A restored setup
+/// configures later PDF output (Claris, Print Setup), which OpenMaker Server
+/// cannot make yet (Save Records as PDF is 3 here, #104), so it gives 3
+/// rather than claim a setup nothing would apply. With its dialog on it
+/// gives 3 too: a server shows no dialog, and what FileMaker Server answers
+/// then is unmeasured.
+fn print_setup(call: &StepCall<'_>) -> HostResult {
+    if !call.step.has_flag(om_data::flag::RESTORE) && call.step.has_flag(om_data::flag::NO_INTERACT)
+    {
+        return Ok(());
+    }
+    Err(HostError::Unsupported)
 }
 
 impl Navigation for ServerHost {
@@ -3870,6 +3952,66 @@ impl FieldSteps for ServerHost {
     }
 }
 
+impl ServerHost {
+    /// Run `requests` as Perform Find, Constrain or Extend Found Set
+    /// (`kind`), from Find mode when `in_find_mode`: see
+    /// [`FoundSets::perform_find`].
+    fn find_with(
+        &mut self,
+        kind: FindKind,
+        requests: Vec<Request>,
+        in_find_mode: bool,
+    ) -> HostResult {
+        self.request_count = requests.len();
+        let window = self.window()?;
+        let current: RidList = window.found.iter().copied().collect();
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let master = if kind == FindKind::Constrain {
+            &current
+        } else {
+            &all
+        };
+        let matched = match self.find_within(&requests, master) {
+            Ok(found) => found,
+            Err(e) if e.code() == NO_CRITERIA.0 => {
+                // Without criteria FileMaker's engine is back in Browse
+                // mode, the found set and current record as they were
+                // (script-runtime.md 13.19, 13.21).
+                self.requests.clear();
+                let window = self.window_mut()?;
+                if window.mode == Mode::Find {
+                    window.current = window
+                        .browse_current
+                        .min(window.found.len().saturating_sub(1));
+                }
+                window.mode = Mode::Browse;
+                return Err(NO_CRITERIA.into());
+            }
+            Err(e) => {
+                if in_find_mode && self.requests.is_empty() {
+                    self.requests = requests;
+                }
+                return Err(ErrorCode(e.code()).into());
+            }
+        };
+        self.last_find = requests;
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let found = match kind {
+            FindKind::Replace | FindKind::Constrain => matched,
+            FindKind::Extend => current.or(&matched),
+        };
+        window.found = found.iter().collect();
+        window.current = 0;
+        window.mode = Mode::Browse;
+        window.sort = None;
+        if window.found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        Ok(())
+    }
+}
+
 impl FoundSets for ServerHost {
     fn show_all_records(&mut self) -> HostResult {
         self.leave()?;
@@ -4047,53 +4189,61 @@ impl FoundSets for ServerHost {
             None if in_find_mode => std::mem::take(&mut self.requests),
             None => self.last_find.clone(),
         };
-        self.request_count = requests.len();
+        self.find_with(kind, requests, in_find_mode)
+    }
+
+    /// Find Matching Records (155): the records whose `field`, or the
+    /// field with the focus, holds the current record's value, by the
+    /// desktop's request (`om_data::found::matching_criterion`, the value
+    /// written by [`matching_text`]), found, constrained or extended as
+    /// Perform Find does with that one request. Without a field it is 102,
+    /// as on the desktop. The step runs in Browse mode: from Find mode it
+    /// switches first, as Enter Browse Mode does (Claris, "Find Matching
+    /// Records"), and takes the value of the record current when Find mode
+    /// was entered. That is inferred: this server's Enter Browse Mode
+    /// returns to the first record, and FileMaker's record after Find mode
+    /// is not measured. A field of another occurrence is a related criterion,
+    /// which server finds do not support (3); a global or summary field is
+    /// no criterion at all (3; FileMaker's answer is not measured).
+    fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
         let window = self.window()?;
-        let current: RidList = window.found.iter().copied().collect();
-        let all: RidList = self.all_records(window.table).into_iter().collect();
-        let master = if kind == FindKind::Constrain {
-            &current
-        } else {
-            &all
-        };
-        let matched = match self.find_within(&requests, master) {
-            Ok(found) => found,
-            Err(e) if e.code() == NO_CRITERIA.0 => {
-                // Without criteria FileMaker's engine is back in Browse
-                // mode, the found set and current record as they were
-                // (script-runtime.md 13.19, 13.21).
-                self.requests.clear();
-                let window = self.window_mut()?;
-                if window.mode == Mode::Find {
-                    window.current = window
-                        .browse_current
-                        .min(window.found.len().saturating_sub(1));
-                }
-                window.mode = Mode::Browse;
-                return Err(NO_CRITERIA.into());
-            }
-            Err(e) => {
-                if in_find_mode && self.requests.is_empty() {
-                    self.requests = requests;
-                }
-                return Err(ErrorCode(e.code()).into());
-            }
-        };
-        self.last_find = requests;
-        self.requests.clear();
-        let window = self.window_mut()?;
-        let found = match kind {
-            FindKind::Replace | FindKind::Constrain => matched,
-            FindKind::Extend => current.or(&matched),
-        };
-        window.found = found.iter().collect();
-        window.current = 0;
-        window.mode = Mode::Browse;
-        window.sort = None;
-        if window.found.is_empty() {
-            return Err(NO_RECORDS_MATCH.into());
+        if field.occurrence != window.occurrence
+            || om_data::found::findable(&def) == Findable::Ignored
+        {
+            return Err(HostError::Unsupported);
         }
-        Ok(())
+        if window.mode == Mode::Find {
+            let before = window.browse_current;
+            self.enter_mode(Mode::Browse, false, None)?;
+            let window = self.window_mut()?;
+            window.current = before.min(window.found.len().saturating_sub(1));
+        }
+        let value = self.value_of(field)?;
+        let field_kind = match value.value_type() {
+            ValueType::Text => om_data::FieldKind::Text,
+            ValueType::Number => om_data::FieldKind::Number,
+            ValueType::Date => om_data::FieldKind::Date,
+            ValueType::Time => om_data::FieldKind::Time,
+            ValueType::Timestamp => om_data::FieldKind::Timestamp,
+            ValueType::Container => om_data::FieldKind::Container,
+        };
+        let text = matching_text(&value, &self.cx()).ok_or(HostError::Unsupported)?;
+        let mut request = Request::default();
+        request.set(
+            field.field,
+            om_data::found::matching_criterion(&text, Some(field_kind)),
+        );
+        self.leave()?;
+        self.find_with(kind, vec![request], false)
     }
 
     /// Sort Records with its stored order (script-steps.md 11.1); without
@@ -4203,6 +4353,10 @@ impl Network for ServerHost {
         request: &om_scripts::runtime::UrlRequest,
     ) -> HostResult<om_scripts::runtime::UrlResponse> {
         self.fetch_url_step(request)
+    }
+
+    fn send_mail(&mut self, mail: &om_scripts::runtime::Mail) -> HostResult {
+        self.send_mail_step(mail)
     }
 }
 /// FileMaker's error 310, "Cannot modify items because another user is

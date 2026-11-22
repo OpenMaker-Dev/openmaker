@@ -139,8 +139,9 @@ pub(crate) struct WindowState {
     pub title: Option<String>,
     pub toolbar: bool,
     pub menubar: bool,
-    /// Set Zoom Level, in percent.
+    /// Set Zoom Level, in percent, and whether the user may change it.
     pub zoom: u16,
+    pub zoom_locked: bool,
     /// The focused field's selection, 1-based start and length; `None`
     /// puts the insertion point after its text (`Get (
     /// ActiveSelectionStart )`).
@@ -260,6 +261,7 @@ impl Default for WindowState {
             toolbar: true,
             menubar: true,
             zoom: 100,
+            zoom_locked: false,
             selection: None,
             typing: None,
             requests: 0,

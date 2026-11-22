@@ -892,6 +892,56 @@ fn a_sub_script_cannot_change_the_record_its_elevated_caller_opened() {
 }
 
 /// Set Variable [name; ExecuteSQL ( sql ; "|" ; "," )].
+/// Send Mail by SMTP from a server script (#89): the message reaches the
+/// server named in the step, a refused password is 1501, and the email
+/// client, which a server has not, is 3.
+#[test]
+fn send_mail_sends_through_the_steps_smtp_server() {
+    use fixture::{exit_with, on, script, set_variable};
+    let (smtp, mail) = fixture::smtp_server(fixture::smtp_sent_then_refused());
+    let mut client_mail = fixture::smtp_mail(smtp, false);
+    client_mail.set_number_bool(4, Some(false));
+    let scripts = [script(
+        4,
+        "Mail",
+        vec![
+            on(86, true),
+            fixture::smtp_mail(smtp, false),
+            set_variable("$sent", "Get ( LastError )"),
+            fixture::smtp_mail(smtp, true),
+            set_variable("$refused", "Get ( LastError )"),
+            client_mail,
+            exit_with("$sent & \"/\" & $refused & \"/\" & Get ( LastError )"),
+        ],
+    )];
+    let file = TempFile::from_tree("smtp", &fixture::tree(&scripts, true));
+    let port = start(&file, None);
+    let mut client = logged_in(port, "smtp");
+    assert_eq!(run(&mut client, 4), (3, "0/1501/3".to_string()));
+    let sessions = mail.join().unwrap();
+    let sent = sessions[0].concat();
+    assert!(
+        sent.contains("MAIL FROM:<pat@example.org>\r\nRCPT TO:<kim@example.org>\r\nDATA\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains(
+            "\r\nFrom: Pat <pat@example.org>\r\nTo: kim@example.org\r\nSubject: Weekly report\r\n"
+        ),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("\r\n\r\nSee you\r\nPat\r\n.\r\nQUIT\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sessions[1][1].starts_with("AUTH PLAIN "),
+        "{:?}",
+        sessions[1]
+    );
+    client.disconnect().unwrap();
+}
+
 fn query(name: &str, sql: &str) -> ScriptStep {
     fixture::set_variable(name, &format!("ExecuteSQL ( {sql:?} ; \"|\" ; \",\" )"))
 }
@@ -1668,4 +1718,38 @@ fn delete_account_removes_the_account_and_its_index_entries() {
     let value = |key: u8| index.child(&[key]).and_then(|n| n.value);
     assert_eq!(value(4), Some(&1u32.to_be_bytes()[..]));
     assert_eq!(value(0), Some(&[1, 3][..]));
+}
+
+/// Print Setup (42) in a server script: with neither Restore nor its
+/// dialog it sets nothing (0). A restored setup, which would configure PDF
+/// output OpenMaker Server cannot make yet, and one with its dialog on are
+/// 3, and so is Save Records as PDF (144, #104).
+#[test]
+fn print_setup_sets_nothing_on_the_server_and_pdf_is_3() {
+    use fixture::{exit_with, on, script, set_variable};
+    use om_data::flag;
+    // A4 portrait at 100%, 8.5 pt insets (script-steps.md 11.6).
+    const A4: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x08\x00\x00\xc1\x08\x00\x00\x44\x12\xb1\x48\x44\x50\x57\x0a\x44\x10\x91\x48\x44\x4e\x37\x0a";
+    let setup = |flags: u32| {
+        let mut step = ScriptStep::new(42);
+        step.flags = flags;
+        step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], A4)));
+        step
+    };
+    let steps = vec![
+        on(86, true),
+        setup(flag::RESTORE | flag::NO_INTERACT),
+        set_variable("$restored", "Get ( LastError )"),
+        setup(flag::NO_INTERACT),
+        set_variable("$nothing", "Get ( LastError )"),
+        setup(0),
+        set_variable("$dialog", "Get ( LastError )"),
+        ScriptStep::new(144),
+        exit_with("$restored & \"/\" & $nothing & \"/\" & $dialog & \"/\" & Get ( LastError )"),
+    ];
+    let tree = fixture::tree(&[script(4, "Print", steps)], true);
+    let file = TempFile::from_tree("print-setup", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "print-setup");
+    assert_eq!(run(&mut client, 4), (3, "3/0/3/3".into()));
 }

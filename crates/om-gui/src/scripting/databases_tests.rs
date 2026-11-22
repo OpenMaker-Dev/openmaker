@@ -2133,6 +2133,35 @@ fn opening_a_peer_evaluates_its_trigger_parameter_in_the_peer_namespace() {
     assert_eq!(c.result(), "Root");
 }
 
+#[test]
+fn set_zoom_level_sets_and_clears_the_windows_zoom_lock() {
+    for locked in [true, false] {
+        let mut zoom = ScriptStep::new(97);
+        zoom.value = 5;
+        if locked {
+            zoom.flags |= om_data::scripts::flag::LOCK;
+        }
+        let mut client = Client::new(vec![zoom], vec![]);
+        client.run_in(WindowState {
+            layout: Some(1),
+            record: Some(1),
+            zoom_locked: !locked,
+            ..Default::default()
+        });
+        let state = client
+            .events()
+            .into_iter()
+            .rev()
+            .find_map(|event| match event {
+                ScriptEvent::Window(update) => Some(update.state),
+                _ => None,
+            })
+            .expect("Set Zoom Level publishes the window");
+        assert_eq!(state.zoom, 150);
+        assert_eq!(state.zoom_locked, locked);
+    }
+}
+
 /// Adjust Window [Resize to Fit] before the window's content area was
 /// drawn (#1115): the worker sends the window what the step fits, at the
 /// step's zoom and bars, after the window update with what the script
@@ -3020,6 +3049,10 @@ pub(super) fn button_group_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec
 
 pub(super) fn conditional_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
     report_fixture(false, Some(pdf_tests::conditional_document()))
+}
+
+pub(super) fn symbols_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
+    report_fixture(false, Some(pdf_tests::symbols_document()))
 }
 
 /// The rows sorted by Region (East, North, West) with sub-summary parts.
