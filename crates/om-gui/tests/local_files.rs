@@ -611,6 +611,21 @@ fn a_local_files_script_saves_copies_of_it() {
     fixture::add_local_accounts(&mut root);
     add_name_field(&mut root);
     fixture::write_tree(&folder.file(), &root);
+    let cert = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let host = om_server::LocalHost::open(&folder.file(), cert.cert.pem().as_bytes()).unwrap();
+    let can_publish = match host.prepare_copy(&made("Copy"), om_data::CopyKind::Copy) {
+        Ok(_) => true,
+        Err(err)
+            if err.kind() == std::io::ErrorKind::Unsupported
+                && err
+                    .to_string()
+                    .starts_with("copy destinations require ext2") =>
+        {
+            false
+        }
+        Err(err) => panic!("prepare copy: {err}"),
+    };
+    assert!(host.close());
     let mut app = app();
     common::open_menu(&mut app, "File");
     common::click(&mut app, "Open...");
@@ -624,6 +639,19 @@ fn a_local_files_script_saves_copies_of_it() {
     assert_eq!(std::fs::read(folder.file()).unwrap(), before);
     assert!(!folder.0.join("Missing").exists());
     common::click(&mut app, "OK");
+    if !can_publish {
+        common::wait_until(&mut app, "unsupported copy to stop", |a| {
+            !a.state().script_running()
+        });
+        let stopped = app.state().error().unwrap_or_default();
+        assert!(
+            stopped.contains("Save a Copy as") && stopped.contains("not supported"),
+            "{stopped}"
+        );
+        assert!(!made("Copy").exists() && !made("Compacted").exists());
+        assert_eq!(std::fs::read(folder.file()).unwrap(), before);
+        return;
+    }
     common::wait_for_label(&mut app, "0,0,800");
     let decode = |name: &str| om_hbam::HbamFile::open(made(name)).map(|_| ());
     let copies = [decode("Copy"), decode("Compacted")];
