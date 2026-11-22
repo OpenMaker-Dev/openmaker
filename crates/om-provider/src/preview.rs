@@ -729,6 +729,7 @@ impl NativeProvider {
                 keep_written: create,
                 skip_data_entry_validation: transaction.skips_validation(),
                 skip_auto_enter: transaction.skips_auto_enter(),
+                mapped_cells: None,
             },
             None => records::script_entry(false, create),
         };
@@ -887,6 +888,7 @@ impl NativeProvider {
                 keep_written: true,
                 skip_data_entry_validation: transaction.skips_validation(),
                 skip_auto_enter: transaction.skips_auto_enter(),
+                mapped_cells: None,
             },
             None => records::script_entry(write.skip_validation, true),
         };

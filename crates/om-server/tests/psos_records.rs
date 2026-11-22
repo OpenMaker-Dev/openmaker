@@ -834,6 +834,65 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
     assert_eq!(server::records_of(&mut client, NOTES), notes);
 }
 
+#[test]
+fn a_duplicates_empty_replacement_clears_the_copied_value() {
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        NUMBER,
+        5,
+        "If ( Get ( RecordNumber ) <= 4 ; \"source\" ; \"\" )",
+    );
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(1),
+            &uint_segment(NUMBER),
+        ],
+        text_node(&[], "source"),
+    );
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Duplicate with an empty replacement",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(23),
+                fixture::go_to_record(1),
+                set_var("$source", "Tasks::Number"),
+                ScriptStep::new(8),
+                set_var("$preview", "Tasks::Number"),
+                ScriptStep::new(75),
+                exit_with(
+                    "$source & \"|\" & $preview & \"|\" & Tasks::Number & \"|\" & Get ( LastError )",
+                ),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-empty-replacement", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+
+    let before = server::records_of(&mut client, TABLE);
+    assert_eq!(before.len(), 4);
+    assert_eq!(server::cell(&before, 1, NUMBER), Some("source"));
+    assert_eq!(run(&mut client, 8), (0, "source|||0".into()));
+    let after = server::records_of(&mut client, TABLE);
+    assert_eq!(after.len(), 5);
+    assert_eq!(server::cell(&after, 1, NUMBER), Some("source"));
+    let (duplicate, _) = after
+        .iter()
+        .find(|(id, _)| before.iter().all(|(old, _)| old != id))
+        .expect("duplicate committed");
+    assert_eq!(server::cell(&after, *duplicate, NUMBER), None);
+}
+
 /// A new record's auto-entered value read before its commit (#474) is not
 /// one the script entered: Set Field of Stamp to the value it previews
 /// (`A`, from Name) enters it, and Stamp, which does not replace an

@@ -966,11 +966,15 @@ record's place in what the rules read:
   row in the commit, counting all tables and imports. A rule that
   needs an unavailable number refuses the write with 3. The server
   stages a duplicate with its copied values. The effective write rules
-  replace calculated auto-entry values such as the record number when
-  they compute a new value. When auto-entry is skipped, including in
-  an import that updates the staged duplicate, an unmapped copied
-  value stays. The desktop's Duplicate Record behavior is described
-  above under the window's record session.
+  replace a copied calculated auto-entry value in the preview and at
+  commit, including when the result is empty. An import updating a
+  staged duplicate protects the cells it maps from auto-entry. With
+  auto-entry off it also keeps unmapped copied values. With auto-entry
+  on an unmapped calculation that needs the unavailable record number
+  refuses the import row (reported by Import Records as 729). These
+  import combinations are unmeasured in FileMaker. The desktop's
+  Duplicate Record behavior is described above under the window's
+  record session.
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.

@@ -989,7 +989,7 @@ impl NativeProvider {
     /// The rules a held change is checked by when the transaction commits,
     /// as far as they are known before then (`commit_held` may also skip
     /// data entry validation).
-    fn held_entry(&self) -> Entry {
+    fn held_entry(&self) -> Entry<'static> {
         Entry {
             script: false,
             skip_data_entry_validation: self
@@ -1001,6 +1001,7 @@ impl NativeProvider {
                 .as_ref()
                 .is_some_and(|t| t.options.skip_auto_enter),
             keep_written: false,
+            mapped_cells: None,
         }
     }
 
@@ -3938,6 +3939,7 @@ impl NativeProvider {
             skip_data_entry_validation: transaction.options.skip_validation || skip_validation,
             skip_auto_enter: transaction.options.skip_auto_enter,
             keep_written: false,
+            mapped_cells: None,
         };
         let environment = self.record_environment()?;
         let txn = transaction.txn;

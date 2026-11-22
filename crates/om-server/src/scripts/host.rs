@@ -438,7 +438,7 @@ type RowInputs<'a> = (
     WriteMode,
     &'a BTreeMap<u64, String>,
     &'a BTreeMap<u64, Option<String>>,
-    Entry,
+    Entry<'a>,
 );
 
 /// What a new record's rules read of the clock (#474).
@@ -1258,7 +1258,12 @@ impl ServerHost {
             }
             let mut view = open.node.clone();
             for (cell, text) in &open.preview {
-                view.set_child(values::cell(&uint_segment(*cell), text));
+                let key = uint_segment(*cell);
+                if text.is_empty() {
+                    view.remove(&[&key]);
+                } else {
+                    view.set_child(values::cell(&key, text));
+                }
             }
             return read(Some(&view), None);
         }
@@ -1612,21 +1617,14 @@ impl ServerHost {
             if record.serials.contains_key(&cell) || unknown.contains(&field_of(cell)) {
                 continue;
             }
-            // An entered value reads as entered, unless the field's own rules
-            // give it another (an auto-entered calculation that replaces it,
-            // such as the UUID Duplicate Record copied): then as the commit
-            // will store it. The commit writes only a nonempty one over a new
-            // record (`changed_values` compares with its empty base), so an
-            // empty one leaves the entered value, and so reads.
+            // Overlay an entered cell only if its rules give it a
+            // different value, including clearing a copied value.
             if record.changed.contains(&cell) {
                 let entered = record
                     .node
                     .child(&uint_segment(cell))
                     .and_then(values::cell_text);
-                if !plan.has_rules(cell)
-                    || text.is_empty()
-                    || entered.as_deref() == Some(text.as_str())
-                {
+                if !plan.has_rules(cell) || entered.as_deref().unwrap_or_default() == text {
                     continue;
                 }
             }
@@ -1703,7 +1701,7 @@ impl ServerHost {
                 record,
                 (mode, &existing, &changes, entry),
                 &mut environment,
-                |environment| plan.compute(mode, &existing, &changes, environment, entry),
+                |environment| plan.compute_staged(mode, &existing, &changes, environment, entry),
             )
             .map_err(|e| {
                 info!(

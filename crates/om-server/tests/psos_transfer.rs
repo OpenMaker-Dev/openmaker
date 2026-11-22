@@ -528,31 +528,36 @@ fn imported_rows_keep_the_values_auto_enter_gave_them() {
 }
 
 #[test]
-fn import_without_auto_entry_keeps_the_duplicates_copied_value() {
+fn import_into_a_duplicate_protects_only_mapped_values_from_auto_entry() {
     use fixture::{OCCURRENCE, TABLE};
     use om_hbam::{serial, slot::uint_segment};
 
     const NUMBER: u64 = 41;
-    let scripts = [script(
-        1,
-        "Duplicate and import",
-        vec![
-            fixture::on(86, true),
-            set_variable("$p", "Get ( DocumentsPath ) & \"copy.tab\""),
-            ScriptStep::new(23),
-            fixture::go_to_record(1),
-            ScriptStep::new(205),
-            ScriptStep::new(8),
-            // Leave only the duplicate in the found set to update.
-            fixture::go_to_record(1),
-            ScriptStep::new(25),
-            ScriptStep::new(25),
-            import_as(&["$p"], &[NAME], false, ImportAction::UpdateFoundSet),
-            set_variable("$import", "Get ( LastError )"),
-            ScriptStep::new(206),
-            fixture::exit_with("$import & \"|\" & Get ( LastError )"),
-        ],
-    )];
+    let duplicate_and_import = |id, name, source, fields: &[u64], auto_enter| {
+        script(
+            id,
+            name,
+            vec![
+                fixture::on(86, true),
+                set_variable("$p", &format!("Get ( DocumentsPath ) & \"{source}\"")),
+                ScriptStep::new(23),
+                fixture::go_to_record(1),
+                ScriptStep::new(205),
+                ScriptStep::new(8),
+                // Replace the found set with just the duplicate.
+                ScriptStep::new(25),
+                ScriptStep::new(27),
+                import_as(&["$p"], fields, auto_enter, ImportAction::UpdateFoundSet),
+                ScriptStep::new(206),
+                fixture::exit_with("Get ( LastError )"),
+            ],
+        )
+    };
+    let scripts = [
+        duplicate_and_import(1, "Unmapped Number", "copy.tab", &[NAME], true),
+        duplicate_and_import(2, "Auto-entry off", "copy.tab", &[NAME], false),
+        duplicate_and_import(3, "Mapped Number", "mapped.tab", &[NAME, NUMBER], true),
+    ];
     let mut root = fixture::tree(&scripts, true);
     fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
     fixture::add_formula(
@@ -576,13 +581,26 @@ fn import_without_auto_entry_keeps_the_duplicates_copied_value() {
     let file = TempFile(layout.0.join("Tasks.fmp12"));
     fixture::write_tree(&file.0, &root);
     std::fs::write(layout.documents("copy.tab"), "Imported copy\r").unwrap();
+    std::fs::write(layout.documents("mapped.tab"), "Mapped copy\t99\r").unwrap();
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "duplicate-import");
 
-    assert_eq!(run(&mut client, 1), (0, "0|0".into()));
+    let before = server::records_of(&mut client, TABLE);
+    assert_eq!(server::cell(&before, 1, NUMBER), Some("1"));
+    // The unmapped calculation needs a record number the import cannot
+    // supply. A refused row gives 729, and Commit Transaction rolls back.
+    assert_eq!(run(&mut client, 1).1, "729");
+    assert_eq!(server::records_of(&mut client, TABLE), before);
+
+    assert_eq!(run(&mut client, 2), (0, "0".into()));
     let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
     assert_ne!(copy.0, 1);
     assert_eq!(value(&copy, NUMBER), Some("1"));
+
+    assert_eq!(run(&mut client, 3), (0, "0".into()));
+    let copy = record_named(&mut client, "Mapped copy").expect("duplicate committed");
+    assert_ne!(copy.0, 1);
+    assert_eq!(value(&copy, NUMBER), Some("99"));
 }
 
 /// The review's C1 for updates, C2 and C3: an update's stored calculation

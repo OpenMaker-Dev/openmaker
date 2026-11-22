@@ -2017,7 +2017,7 @@ impl NativeProvider {
 /// creation, so the creation's auto-entered values never replace them
 /// (FileMaker enters them when New Record creates the record, before the
 /// script's Set Field).
-pub(super) fn script_entry(skip_validation: bool, create: bool) -> Entry {
+pub(super) fn script_entry(skip_validation: bool, create: bool) -> Entry<'static> {
     Entry {
         keep_written: create,
         ..Entry::script(skip_validation, false)
