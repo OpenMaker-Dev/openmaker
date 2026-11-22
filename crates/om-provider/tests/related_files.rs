@@ -8455,9 +8455,10 @@ fn a_related_files_list_of_a_calculation_reads_the_opened_file() {
 /// A new record's auto-entry reading its own table through a self-join that
 /// no other record matches, by the key the record was given, reads the
 /// relationship as empty, as #1035's two native cases measured: Count 0,
-/// List empty, the first related record's fields empty. Where another record
-/// matches, or the commit holds another record of the table, the record's
-/// own membership is unmeasured: refused (3).
+/// List empty, the first related record's fields empty. Where another
+/// record matches, it reads that one, never itself (s47, FileMaker Server's
+/// engine). Where the commit holds another record of the table, refused (3):
+/// FileMaker's transaction did not read it, OpenMaker's held reads would.
 #[test]
 fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     const KEY: u64 = 30;
@@ -8484,15 +8485,22 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     }
     let host = Host::new("self-join-unmatched", vec![(ROOT, root)]);
     let mut provider = host.open(ROOT);
+    fn create_counting(
+        provider: &mut impl DataProvider,
+        key: &str,
+        count: &str,
+    ) -> Result<om_data::Record, om_data::DataError> {
+        let values = [
+            ("Key".to_owned(), Some(key.to_owned())),
+            ("Count".to_owned(), Some(count.to_owned())),
+        ];
+        provider.create_record(fixture::LAYOUT as u32, values.into())
+    }
     fn create(
         provider: &mut impl DataProvider,
         key: &str,
     ) -> Result<om_data::Record, om_data::DataError> {
-        let values = [
-            ("Key".to_owned(), Some(key.to_owned())),
-            ("Count".to_owned(), Some("5".to_owned())),
-        ];
-        provider.create_record(fixture::LAYOUT as u32, values.into())
+        create_counting(provider, key, "5")
     }
     let made = create(&mut provider, "x2").unwrap();
     let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
@@ -8500,10 +8508,22 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     let record = page.records.iter().find(|r| r.id == made.id).unwrap();
     assert_eq!(record.values[at("Tally")].as_deref(), Some("5|0||"));
     assert_eq!(record.values[at("First")].as_deref(), Some("s=|"));
-    // Another record matches now: whether the new one is among its own
-    // related records is unmeasured.
-    let refused = create(&mut provider, "x2").unwrap_err();
-    assert_eq!(refused.code, Some(3), "{refused:?}");
+    // Another record matches now: the new one reads it, not itself.
+    let second = create(&mut provider, "x2").unwrap();
+    let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let record = page.records.iter().find(|r| r.id == second.id).unwrap();
+    assert_eq!(record.values[at("Tally")].as_deref(), Some("5|1|5|10"));
+    assert_eq!(record.values[at("First")].as_deref(), Some("s=|5"));
+    // Three older matches made in another order than their values': the
+    // fourth reads them in creation order.
+    for count in ["7", "3", "9"] {
+        create_counting(&mut provider, "w", count).unwrap();
+    }
+    let fourth = create_counting(&mut provider, "w", "1").unwrap();
+    let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let record = page.records.iter().find(|r| r.id == fourth.id).unwrap();
+    let tally = record.values[at("Tally")].as_deref().unwrap_or_default();
+    assert_eq!(tally.replace(['\r', '\n'], ","), "1|3|7,3,9|14,6,18");
     // Two new records in one commit: the other could match by then.
     provider.begin_transaction(Default::default()).unwrap();
     create(&mut provider, "y1").unwrap();
@@ -8543,8 +8563,8 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
 /// counts nothing through `Lead`, though `C`'s own key is auto-entered.
 /// Computed non-empty, a later record reads the other records where its
 /// final `Lead` differs from its own final `Code2`. Equal final keys read
-/// one older match during new-row aggregate auto-entry (C126); with two
-/// older matches the self-dependent answer remains unmeasured/refused (3).
+/// the older matches during new-row auto-entry, never the record itself:
+/// one (C126), and two (s47, FileMaker Server's engine).
 #[test]
 fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     const KEY: u64 = 30;
@@ -8589,11 +8609,10 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
         provider.create_record(fixture::LAYOUT as u32, values.into())
     };
     let first = create("g1", "g1").unwrap();
-    // Equal computed keys, one older match: Count sees that older row
-    // (C126). More than one older match gains no new allowance.
+    // Equal computed keys: Count sees the older rows, one (C126), then two
+    // (s47), and Lead the group's first record.
     let matching = create("g1", "x").unwrap();
-    let refused = create("g1", "z").unwrap_err();
-    assert_eq!(refused.code, Some(3), "{refused:?}");
+    let third = create("g1", "z").unwrap();
     // Lead "x" differs from its own Code2 "h1": it cannot satisfy its own
     // predicate, so it reads the other records (none).
     create("h1", "x").unwrap();
@@ -8608,6 +8627,8 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     assert_eq!(value(first.id, "Tally").as_deref(), Some("t=0"));
     assert_eq!(value(matching.id, "Lead").as_deref(), Some("g1"));
     assert_eq!(value(matching.id, "Tally").as_deref(), Some("t=1"));
+    assert_eq!(value(third.id, "Lead").as_deref(), Some("g1"));
+    assert_eq!(value(third.id, "Tally").as_deref(), Some("t=2"));
     assert_eq!(value(later.id, "Lead").as_deref(), Some("x"));
     assert_eq!(value(later.id, "Tally").as_deref(), Some("t=0"));
     provider.close();

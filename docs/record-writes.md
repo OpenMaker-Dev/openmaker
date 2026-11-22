@@ -1756,24 +1756,40 @@ application creation plan.
       gives, or computed fields whose evaluation has passed without being
       deferred or omitted. C126 measured a computed non-empty key with no
       other row.
-  - **One older matching row (C126 follow-up).** A new row's aggregate
-    auto-entry can read that older row through an unsorted equality join
-    with an auto-entered key. Both sides' keys must be final, the commit
-    must hold no other row of the table, and exactly one older row must
-    match. Reads by position and first-field reads gain no new allowance.
-    The native witness stores Count 1 and the older row's value; this
-    observes the last stored evaluation, not persistent self-exclusion.
-    Applying it to analogous keys/aggregates is inference.
+  - **Older matching rows (C126 follow-up, s47).** A new row's auto-entry
+    reads the rows committed before it with its key through an unsorted
+    equality join, never itself: aggregates and the first related record
+    read them in creation order. FileMaker Pro's local witness read one
+    older row (computed key, an aggregate); FileMaker Server's engine read
+    zero to three older rows of records a script made (given keys, an
+    auto-entry that replaces an existing value; auto-entry.md, "A new
+    record's own self-join"). Both sides' keys must be final and the
+    commit must hold no other row of the table: a desktop commit's held
+    records, or, on OpenMaker Server, the other records of a script's
+    transaction. The s47 allowance requires an auto-entry that replaces
+    an existing value. A calculation that keeps a value from creation
+    retains the earlier C126 allowance for one older match with a computed
+    key and an aggregate. A join on several equal predicates is read the
+    same way, an inference. Reads by position (`Last`, `GetNthRecord`) are
+    outside these allowances.
   - **A match field on the record's side left empty** relates nothing, the
     record included, since an empty match value never matches
     (file-metadata.md 4.3). This holds also where the write computes that
     key: its value is final by then. A reader of a key left out is left out
     too, and one read with other keys is not answered. Only a field the
     record's row holds counts, not a global or an unstored calculation.
-  - **What is unmeasured:** more than one matching record, later
-    reevaluations, another held row, sorted/non-equality matching joins,
-    and the original solution's context. Stored/validation formulas and
-    edited records have no new measured allowance.
+  - **Measured, not answered yet:** an edited record reads itself, with
+    the values being written, where its committed key matches the key being
+    written, and not otherwise; a second new row of one transaction does
+    not read the first (s47). OpenMaker refuses membership-dependent
+    reads for edited records with 3. For a new row with another pending
+    change in its table, the server preview omits the result if it needs
+    the self-join, and the commit refuses that read with 3. An empty
+    match key is still answered as above.
+    [#297](https://github.com/OpenMaker-Dev/openmaker/issues/297)
+  - **What is unmeasured:** sorted or non-equality joins with matches,
+    stored and validation formulas, portal rows made in one commit, and
+    the original solution's context.
   - **Its stored row is never read as a related record.** Every write names
     its record (`rules::Written`): new, as reserved by New Record, or
     stored. The stored row holds the values the write replaces.
