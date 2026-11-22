@@ -1343,8 +1343,40 @@ empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
 under `fe ff`, and a timestamp stored as a date alone under its date and
 `fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
 gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
-A typed index that an earlier OpenMaker build wrote lists no empty value
-under `01`, so a find for `=` on it misses those records.
+An index whose keys another rule wrote (an earlier OpenMaker build's, or
+FileMaker's where OpenMaker's rules still differ or give a value no key)
+keeps a record OpenMaker Server changes under none of those keys
+([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448)):
+- The first write that changes a field's value, after the server starts or
+  the schema changes, compares each of the field's indexes with one built
+  from every stored record (`Store::index_agrees`).
+- In an index that disagrees, every record the commit changes or deletes
+  leaves the entries its new value does not give when the commit finishes
+  (`Store::sweep_index`). That covers a key an earlier build gave `1.5`, a
+  FileMaker word break and a number among letters, and it happens also
+  when the record's computed keys do not move.
+- The index is never rebuilt: records no write touches keep their
+  entries as FileMaker wrote them, an overflow `ff 80` membership included.
+- Every entry a write or a sweep changes is kept first, so a failed save
+  puts each back exactly.
+- Before changing a record, the server checks the existing postings at
+  its computed old and new keys. If any cannot round-trip through the
+  RID writer, the whole commit fails before publication. This includes
+  readable forms such as a one-bit bitmap in place of a singleton, even
+  when the computed keys are unchanged and only the sweep would add a
+  membership. The sweep leaves other postings of unrecognized shape or
+  encoding as stored, so a stale membership there can remain. Counts of
+  an unknown shape also stay as stored.
+- A commit that changes records in a disagreeing index still scans and
+  validates every posting under the write lock. If the sweep makes a
+  change, recounting reads the resulting postings again.
+
+A new record's id has no prior membership, so creation skips the index
+agreement check and the sweep. The server still checks existing postings
+at the new keys and refuses the commit if an edit would not round-trip.
+An index that a commit empties stays in the commit's plan, so its later
+records are still indexed. Until a write changes a record in an index,
+the index is read as stored.
 
 Word-index keys break words as FileMaker's English, System and Unicode
 standard indexes do (query-program.md 7.2, "Word breaking"): within a
