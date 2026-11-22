@@ -135,10 +135,11 @@ on the command line. `--database-folder <dir>`, given once or more,
 replaces it; a folder named this way is resolved once, links and all,
 since the administrator chose it. Inside a database folder only regular
 files and folders are used, never a link, so a database elsewhere is
-hosted by naming its folder or the file itself. A file named on the
-command line may be a link to a regular file; every hosted file must be a
-regular file, and one that is not (a FIFO, a device) is refused without
-being waited on.
+hosted by naming its folder or the file itself. On Unix, a file named on
+the command line may be a link to a regular file. On Windows, the server
+refuses file symlinks at open, before recovery or saves. Name the regular
+database file directly. Other non-regular files (such as FIFOs and devices)
+are refused without waiting.
 
 Files named on the command line come first. A found file with the name of
 one already hosted is left out and logged. The backup and log folders in
@@ -152,16 +153,46 @@ server starts again. With no files at all the server still starts, with an
 empty file list; when files are found or named and none of them opens, it
 does not start.
 
-Discovery checks each entry when it reads the folder. The server opens,
-recovers and saves a hosted file by its path afterwards, during startup
-(between discovery and the file's load, and a recovery's save while it
-loads) as well as later on. So whoever may write in a database folder,
-in one of its subfolders, or in a folder above them can still change what
-that path leads to. Keep database folders, their subfolders and the
-folders above them writable by the server's user only
-([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). Once the
-entry limit is reached, the log says how many folders were left unread
-and names the first.
+Discovery checks each entry when it reads the folder. Afterwards the
+server finds a hosted file by its path each time it reads, saves, backs
+up or reopens it, and works through the folder handle it opened then, by
+the file's name, never following a link at the name
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)):
+- **A save or a backup copy** goes ahead only while the name is a regular
+  file and the file the server read or last saved (same device and
+  inode). It takes the file's permissions from that same look.
+- **A reopen**, which may find a file the administrator replaced, goes
+  ahead only while the folder is the one the file was first hosted from.
+
+So a folder of the path swapped for a link to other content, to an empty
+folder, or to a folder whose entry links back to the file, makes those
+fail instead of writing or reading there, and a save's changes wait in
+memory. Backup deletion protects a slot's last saved file even while the
+slot is closed or opening. If the saved location cannot be verified,
+retention and manual deletion stop. A schedule can still back up other
+files if the target passes the known container-folder checks. If an
+administrator moves a hosted file's folder and makes its path lead to
+the same file, saves and backups can continue. A reopen then refuses
+until the server restarts.
+
+On Linux and macOS a path whose last part is a link (allowed on the
+command line) is resolved once, when the file is hosted: the file is read
+and saved where the link led, and backup deletion checks both the
+configured and saved locations. A file already hosted under another
+name, through a link or a second hard link, is refused. The desktop
+keeps the path it opened.
+Outside Linux, a folder the server may search but not read cannot hold a
+hosted file. Some things still go by the path alone:
+- the time between discovery and the file's load;
+- server scripts' external container reads and Documents folder
+  ([#594](https://github.com/OpenMaker-Dev/openmaker/issues/594));
+- on Windows, which has no inode identities here, everything;
+- the moment between retention's check and its removal of an old backup
+  ([#602](https://github.com/OpenMaker-Dev/openmaker/issues/602)).
+
+Keep database folders, their subfolders and the folders above them
+writable by the server's user only all the same. Once the entry limit is reached, the
+log says how many folders were left unread and names the first.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
@@ -338,6 +369,80 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
   -subj /CN=localhost -addext subjectAltName=DNS:localhost \
   -addext basicConstraints=critical,CA:FALSE -keyout server.key -out server.pem
 ```
+
+### OpenMaker Server as a Linux service
+
+On Linux with systemd 247 or newer, run these scripts from a source checkout.
+They build the server and its PDF worker with Cargo, then use `sudo` for
+installation. Linux needs Bash, coreutils, util-linux, account management
+commands (`useradd`, `groupadd`), OpenSSL and `ss` from iproute2. The
+source build also needs stable Rust and a C linker.
+
+```sh
+tools/server/install.sh
+tools/server/update.sh      # after checking out the version to install
+tools/server/uninstall.sh
+```
+
+Install and update also accept a directory containing the matching Linux
+`om-server` and `om-server-pdf-worker` executables. For example,
+`tools/server/install.sh /path/to/openmaker/bin` skips the source build.
+The binaries need database folder discovery and the default Admin Console
+feature enabled.
+
+The installer starts and enables `openmaker-server.service` as the
+non-login user `omserver` and group `omadmin`. The service can start with
+an empty database directory.
+
+| Path | Contents |
+| --- | --- |
+| `/opt/OpenMaker/OpenMaker Server/bin/` | Link to the installed server and PDF worker |
+| `/opt/OpenMaker/OpenMaker Server/Data/Databases/` | Hosted databases |
+| `/opt/OpenMaker/OpenMaker Server/Data/Backups/` | Backups |
+| `/opt/OpenMaker/OpenMaker Server/Logs/` | FileMaker-format logs |
+| `/etc/openmaker/server.env` | Server name, database bind address, console bind address and console user |
+| `/etc/openmaker/admin-password` | Generated password for the Admin Console |
+| `/etc/openmaker/tls/` | TLS certificate and private key |
+| `/var/lib/openmaker-server/` | Server state directory managed by systemd |
+
+The default listeners are `127.0.0.1:5003` and `127.0.0.1:16000`. Sign in
+as `admin` at `https://localhost:16000/admin-console`. Read the password
+with `sudo cat /etc/openmaker/admin-password`. For remote access, edit the
+bind addresses in `server.env` and supply a certificate covering the
+address clients use. The generated certificate is self-signed and covers
+localhost. The service reads the private key and password through systemd
+credentials. Run `sudo systemctl restart openmaker-server.service` after
+changing the settings or replacing credentials.
+
+Stage working copies in the database folder. The server discovers eligible
+`.fmp12` files at startup, including one level of subdirectories.
+FileMaker Server's `Data/Secure/` and `Data/Scripts/` have no equivalent
+hosting or system-script features in this layout.
+
+```sh
+sudo install -o omserver -g omadmin -m 0660 Tasks.fmp12 \
+  '/opt/OpenMaker/OpenMaker Server/Data/Databases/Tasks.fmp12'
+sudo systemctl restart openmaker-server.service
+```
+
+Use `sudo systemctl edit openmaker-server.service` for unit overrides.
+When replacing a manual installation, stop its service first. The
+installer expects root-owned parent directories and manages only the
+unit and binaries it installs.
+
+Before updating, take a current backup of the hosted databases and keep it
+separate from the live database folder. Update keeps the settings and the
+service's active or stopped state. If startup fails, the script attempts
+to restore the previous binaries and unit. The server can save deferred
+recovery to hosted files before both listeners are ready. Those writes
+persist through binary and unit rollback. Use the pre-update backup if you
+need to restore the previous database contents.
+
+Uninstall stops and disables the service and removes its unit and
+binaries. It keeps databases, backups, logs, settings, credentials, and
+the service account for a later install. If uninstall is interrupted,
+correct the reported error and rerun `tools/server/uninstall.sh` before
+reinstalling or updating.
 
 ### Packages for Ubuntu 24.04
 

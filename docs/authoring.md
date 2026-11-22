@@ -19,8 +19,105 @@ an optional text label), texts and portals, moves, resizes and deletes
 objects, and changes a field's control and a text's words; changes a
 **custom value list's values**; and **runs scripts** on the host with
 Perform Script on Server. `create-file` makes a blank file on this
-computer without a connection. Everything else is read-only; see
-[Limits](#limits).
+computer without a connection. On FileMaker Server 26, a [Full Access]
+account can replace an existing script's steps through the native save.
+See [Limits](#limits).
+
+## Quickstart
+
+1. [Host a copy of your `.fmp12` file on OpenMaker Server](development.md#hosting-a-file-and-opening-it).
+   For design edits, use a password-protected account in the hosted file's
+   built-in Full Access privilege set. OpenMaker Server requires no FileMaker
+   client license.
+2. From the OpenMaker checkout on Linux or macOS, run the setup script with
+   Rust and Python 3.8 or newer on `PATH`.
+
+   ```sh
+   ./tools/setup-om-author.sh
+   ```
+
+   It installs `om-author` in Cargo's `bin` directory, normally `~/.cargo/bin`,
+   and prompts for the hosted file and account. For a self-signed OpenMaker
+   Server, give the PEM certificate path printed when the server starts.
+   The script creates the user config and stores prompted secrets in separate
+   owner-only files. Run it in an interactive terminal for first-time setup.
+   Running it again reuses an existing config.
+3. Run the printed `capabilities` command to verify the hosted file opens and
+   see what your account can do. Then run the printed Codex or Claude Code
+   command to register the MCP server. With the default Cargo install path
+   and user config, the commands are:
+
+   ```sh
+   "$HOME/.cargo/bin/om-author" capabilities
+   AUTHOR_CONFIG=$("$HOME/.cargo/bin/om-author" config-path)
+   codex mcp add openmaker -- "$HOME/.cargo/bin/om-author" --config "$AUTHOR_CONFIG" mcp
+   claude mcp add --scope user openmaker -- "$HOME/.cargo/bin/om-author" --config "$AUTHOR_CONFIG" mcp
+   ```
+
+   In another MCP client, use the absolute path to `om-author` as the command,
+   `--config`, the absolute config path and `mcp` as arguments, and stdio as
+   the transport. Start or reload the agent
+   and ask it to inspect the hosted file's tables using `openmaker_inspect`.
+   `openmaker_commands` lists the available commands without connecting.
+
+### Manual configuration
+
+Build `om-author` with `cargo build --locked -p om-author` and use the binary
+from `target/debug/` (with `.exe` on Windows). Run `om-author config-path` to
+find the config path. It defaults to `$XDG_CONFIG_HOME/openmaker/author.json`
+or `~/.config/openmaker/author.json` on Linux, to
+`~/Library/Application Support/OpenMaker/author.json` on macOS, and to
+`%APPDATA%\OpenMaker\author.json` on Windows. Use `--config PATH` or
+`OPENMAKER_AUTHOR_CONFIG` to select a different file. For another hosted file,
+pass the corresponding config path when registering the MCP server, for
+example `om-author --config /path/to/another.json mcp`.
+
+An example `author.json` for a local server on port 5003:
+
+```json
+{
+  "host": "localhost",
+  "file": "Tasks.fmp12",
+  "account": "Admin",
+  "password_file": "password",
+  "ca_cert": "server-ca.pem"
+}
+```
+
+Paths in JSON are relative to the config file unless absolute. Use the full
+home directory path if needed, since JSON paths do not expand `~`. The password
+file's first line is the file account password and may be empty. `ca_cert` is
+optional when the server's certificate is already trusted. An optional
+`license_file` points to a file with the FileMaker client license on its first
+line. Keep the password and license files private to your OS account. To
+rotate a password or license, edit the referenced file in place and restart
+the MCP server. If you remove a config created by setup, remove the password
+and license files it references as well.
+
+CLI flags take precedence. With the default config, environment variables
+override its settings. The password lookup order is `--password-file`,
+`OPENMAKER_PASSWORD_FILE`, `OPENMAKER_PASSWORD`, then `password_file`.
+With `--config` or `OPENMAKER_AUTHOR_CONFIG`, the selected file supplies the
+host, port, file and account. Its credential and CA paths take precedence
+over inherited environment variables. Environment credentials and CA paths
+can fill gaps as long as the environment's target settings match the
+connection. The same host and port check applies to the environment's
+license settings and to
+`OPENMAKER_CLIENT_CERT` and `OPENMAKER_CLIENT_KEY`. If the environment
+specifies a different host or port, `om-author` generates a TLS client
+identity in memory. A host or port override that changes the profile's
+endpoint skips the config's credential and CA paths. A different file or
+account also skips the config's password file.
+
+For a FileMaker Server that requires a client license, the default lookup
+order is `OPENMAKER_LICENSE_KEY`, the first line of `OPENMAKER_LICENSE_FILE`,
+then `license_file` in the config. An empty `OPENMAKER_LICENSE_KEY` disables
+the license. An empty `OPENMAKER_CA_CERT` uses the public roots alone with
+the default config. For MCP, set `license_file` with an explicit config
+path so the client can start the server without shell exports. That file
+takes precedence over either environment license setting. The server checks
+the key when opening the hosted file, where a missing or invalid key can
+return `0x507c`.
 
 ## Commands (`openmaker.authoring/v1`)
 
@@ -46,7 +143,7 @@ and every response is one JSON object:
 | `inspect` | `include` (optional: `scripts`, `tables`, `occurrences`, `layouts`, `value_lists`, `data_sources`) | the file's metadata, each object with a file-qualified `ref`, and with `layouts` the `layouts_revision` `create_layout` names. Never reads records |
 | `get_script` | `script` or `script_name` | the script's summary and `revision`, its `source` text, each step (line, depth, step id and name, `fidelity`), what is carried opaquely, whether `apply` is available |
 | `validate` | `script`/`script_name`, `source`, optional `expected_revision` | `valid`, step counts (kept, new, deleted) or `diagnostics` with line, step and text |
-| `plan` | as `validate` | `base_revision`, `after_revision`, `changed`, `already_applied`, a unified `diff` of the canonical text, `after_source`, step counts. Writes nothing |
+| `plan` | as `validate` | `base_revision`, `after_revision`, `changed`, `already_applied`, a unified `diff` of the canonical text, `after_source`, step counts. `native_save_unconfirmed` is true if the member already matches but the earlier native save cannot be verified. Writes nothing |
 | `apply` | `script`/`script_name`, `source`, `expected_revision` (required), optional `expected_after_revision` | `status` (`applied`, `already_applied`, `unchanged`), `previous_revision`, `revision`, and `verified` from a new connection |
 | `plan_field` | `table` or `table_name`, `name`, `type` (`text`, `number`, `date`, `time`, `timestamp`), optional `comment` and `expected_revision` | the table, `base_revision`, `already_applied`, the `field` (the reference and id the host would give it now, its definition and defaults), the catalog `changes`, whether `create` is available. Writes nothing |
 | `create_field` | as `plan_field`, `expected_revision` required | `status` (`created`, `already_applied`), the `field` and its `ref`, `previous_revision`, `revision`, and `verified` from a new connection |
@@ -109,13 +206,14 @@ layout's indexes), leaving out every stamp in it.
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
-`outcome_unknown`, `save_failed`, `verification_failed`. All but the last
-two mean nothing was written. `outcome_unknown` means the edit was sent and
-no answer came back: read the script or table again — a script is at
-`after_revision` if the edit was applied, at `previous_revision` if not —
-and do not resend blindly. A `plan` or `apply` of the same text then
-reports `already_applied` without writing, and so does a `create_field` of
-the same field from the same revision.
+`outcome_unknown`, `save_failed`, `verification_failed`. An
+`outcome_unknown` result means the save could not be confirmed. For an
+OpenMaker Server script save, read the script again and compare its
+revision with `after_revision` and `previous_revision`. The same edit from
+the same revision reports `already_applied` if the script has the requested
+steps. The same `create_field` request reports `already_applied` if its field
+is present. For FileMaker Server script saves, see
+[How writes reach the file](#how-writes-reach-the-file).
 
 ### Reading security
 
@@ -160,10 +258,11 @@ service's checks before a write. Each command's `effect` says what it can
 change: `reads` nothing, `authors` the file's design, `runs` a script, or
 `edits` a record's field as a user's choice in a window does.
 A command that authors needs the host's grant (`script_steps`, `fields`,
-`layouts`, `new_layouts`, `layout_objects`, `object_deletion`, `texts`, `layout_copies` or `layout_deletion`): only OpenMaker Server's authoring extension gives one, to
-an account allowed to author, so on any other host, FileMaker Server
-included, `capabilities` reports the operation unavailable and the
-command answers `unsupported` without sending anything. MCP tools are
+`layouts`, `new_layouts`, `layout_objects`, `object_deletion`, `texts`, `layout_copies` or `layout_deletion`). OpenMaker Server's authoring extension
+reports these grants for the current account. For FileMaker Server 26,
+`capabilities` offers `apply_script_steps` when the authenticated account's
+privilege set is verified as [Full Access]. It reports other design edits
+as unavailable there. MCP tools are
 marked read-only only for `reads`; `run_script`'s tool is marked
 destructive, not idempotent and open-world, so a client does not retry it
 on its own. `commands` returns the descriptions with each command's
@@ -1008,10 +1107,10 @@ om-author complete-calculation --text 'Left ( Tasks::Ti' # names completing the 
 om-author commands                          # every command and its parameters; no connection
 ```
 
-`--host`, `--port` (default 5003), `--file`, `--account` and
-`--password-file` override the environment; `commands` needs none of
-them. Passwords are never taken as arguments, which other users of the
-machine can list, and are never printed. The exit status is 0 for a
+`--host`, `--port`, `--file`, `--account` and `--password-file` override
+the corresponding environment variables and config settings. See
+[Manual configuration](#manual-configuration) for precedence. `commands`
+needs no connection settings. The exit status is 0 for a
 successful response (a valid `validate`, a `run_script` whose last error
 is 0), 1 for an error response or another `run_script` last error, and
 2 for a usage error.
@@ -1041,15 +1140,15 @@ configured account, so the server holds no session state between calls.
 Starting MCP, listing its tools and calling `openmaker_commands` need no
 connection settings or credentials. They are loaded when the first tool
 needs the file. Missing configuration is that tool's structured error;
-the MCP session stays open so discovery still works.
+the MCP session stays open so discovery still works. Restart the MCP server
+after editing a configuration it has already loaded.
 
-Registering the server with an agent is the user's choice; for example a
-client configuration entry running `om-author mcp` with the `OPENMAKER_*`
-environment above. Nothing registers it automatically.
+See the [Quickstart](#quickstart) for MCP registration commands and the first
+tool call. The MCP server uses the same config file and environment as the CLI.
 
 ## How writes reach the file
 
-Writes go through **OpenMaker Server's authoring extension**: one Perform
+On OpenMaker Server, writes go through its **authoring extension**: one Perform
 transaction, opcode 240. It is not a FileMaker transaction, and it is sent
 only to a host that claims it: the client first asks the server object
 `_is_a("IDL:OpenMaker/Authoring:1.0")`, CORBA's built-in type check, as for
@@ -1059,13 +1158,25 @@ for the file list's interface) and is never sent the transaction; a host
 that claims it but answers with a lone status 3 is treated as not having
 it.
 
-FileMaker Pro saves a script with op60, op82, op61, op13 and op62 on
-`[17, 5, S]` and `[17, 1]` (re/scripts.md, "Saving scripts to a host").
-That sequence was captured against OpenMaker Server only, and op13's reply
-is the same empty page whether the host stored the upload, skipped it (a
-protected index without `fc` and `KSerNum`, re/schema-path.md 3.3) or
-failed to save it, so a client cannot tell an applied edit from a lost
-one. The extension does the same catalog edit on the host and answers
+On FileMaker Server 26, `apply` locks the script member `[17, 5, S]` and
+the index `[17, 1]` using the native catalog operations in
+[Saving scripts to a host](re/scripts.md#saving-scripts-to-a-host-live-capture-2026-10-29).
+It checks the script's revision and modification count while holding both
+locks, then uploads the member with its edited steps and the otherwise
+unchanged index with updated stamps. It reads back both nodes before
+releasing the locks, and verifies the script from a fresh connection.
+The native protocol provides no disk-save confirmation. The two uploads
+are separate, so a failure after an upload begins reports
+`outcome_unknown` and may leave the script and index with different
+stamps. A fresh `get_script` can confirm the member's content. The index
+stamp is shared across scripts and cannot identify the earlier save.
+If the same `apply` from the original revision finds the requested steps
+already present, it returns `outcome_unknown` with
+`member_content_matches: true` and `index_verified: false`. The retry
+makes no writes. `unchanged` describes a no-op requested at the current
+revision.
+
+The extension does the edit on the host in a single commit and answers
 with what happened:
 
 1. The session must have the file open (status 100) and be logged in,
@@ -1226,21 +1337,19 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
 
 ## Limits
 
-- **Hosts.** Every design change needs OpenMaker Server: the commands
-  `commands` lists with the effect `authors`, and the desktop's placements
-  through the same extension. On a host that does not claim the extension,
-  FileMaker Server (Claris) included, those commands report `unsupported`
-  and nothing is sent. `get_security` is refused there too, since reading
+- **Hosts.** FileMaker Server 26 supports `apply` for existing script
+  steps under [Full Access]. The other design edits still require OpenMaker
+  Server. `get_security` also requires OpenMaker Server, since reading
   security needs the extension ([Reading security](#reading-security)),
   and the choice commands need a window (Records, below); the other
   commands work.
   `run_script` sends the request FileMaker Pro sends for Perform Script
   on Server, which FileMaker Server answers too, but it has been run
   against OpenMaker Server only (in process, on a synthetic file).
-  Native script, schema and layout saves to FileMaker Server stay
-  unavailable until its replies to the captured sequences are verified;
-  OpenMaker reading back what OpenMaker wrote does not prove FileMaker Pro
-  compatibility either. One case has been checked in FileMaker Pro 26
+  A native script-step save was verified by fresh read-back on FileMaker
+  Server 26.0.3. Opening or running the changed script in FileMaker Pro
+  and its persistence after a server restart were not measured.
+  One case has been checked in FileMaker Pro 26
   (issue #166): a stored Text field from `create_field` and its edit box
   from `place_field`, without a label, on a Form layout of a copy of a
   starter solution. The file passed Check Consistency and opened without a
@@ -1311,8 +1420,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   Server returns it. Runs cannot be undone, and a run whose answer is lost
   is not retried. The MCP server answers one tool call at a time, so the
   calls after a long run wait for it.
-- **The desktop Script Workspace** saves a script's steps through the same
-  step save as `apply` (`NativeProvider::save_script_steps`: the stored
+- **The desktop Script Workspace** saves a script's steps on OpenMaker
+  Server and local files through the extension path shared with `apply`
+  (`NativeProvider::save_script_steps`: the stored
   definition with the edited step list and step data, at the revision the
   scripts were read at). Its catalog changes (new, duplicated, renamed,
   moved and deleted scripts, script options) go through FileMaker Pro's
@@ -1328,8 +1438,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   that may write the file, as below) is still to be done.
 
 Structured authoring authenticates without requiring Browse layouts or tables.
-Accepted source is aligned after parser normalization, so retrying the same
-normalized edit retains its stored revision and reports already applied.
+Accepted source is aligned after parser normalization. On OpenMaker
+Server, retrying the same normalized edit retains its stored revision
+and reports already applied.
 Direct native catalog uploads and schema-changing query instructions require the
 file's [Full Access] set too; staging ordinary record edits keeps
 its existing permissions. The native upload reply does not prove persistence.

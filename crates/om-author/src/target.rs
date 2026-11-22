@@ -1,10 +1,7 @@
 //! Which hosted file to author and how to log in to it.
 //!
-//! The password comes from a file (`--password-file`,
-//! `OPENMAKER_PASSWORD_FILE`) or the environment (`OPENMAKER_PASSWORD`),
-//! never from a command-line argument, which other users of the machine
-//! can list. It is kept zeroed on drop, sent only to the host given, and
-//! never printed or logged.
+//! [`crate::config::ConnectionOptions`] resolves the target and credentials.
+//! A target keeps its password zeroed on drop and out of diagnostics.
 
 use std::path::Path;
 
@@ -24,8 +21,7 @@ pub struct Target {
     pub file: String,
     pub account: String,
     password: Zeroizing<String>,
-    /// The client TLS identity and the CA to trust
-    /// (`NativeConfig::from_env`).
+    /// The client TLS identity, additional CA and optional FileMaker client license.
     pub tls: NativeConfig,
 }
 
@@ -80,12 +76,7 @@ pub(crate) fn forget_password(connection: &mut Connection) {
 /// The password from `file` (its first line), else `OPENMAKER_PASSWORD`.
 pub fn read_password(file: Option<&Path>) -> Result<Zeroizing<String>, String> {
     if let Some(path) = file {
-        let text = Zeroizing::new(
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Cannot read the password file {}: {e}", path.display()))?,
-        );
-        let line = text.split(['\n', '\r']).next().unwrap_or_default();
-        return Ok(Zeroizing::new(line.to_owned()));
+        return read_secret_file(path, "password");
     }
     match std::env::var("OPENMAKER_PASSWORD") {
         Ok(password) => Ok(Zeroizing::new(password)),
@@ -98,4 +89,13 @@ pub fn read_password(file: Option<&Path>) -> Result<Zeroizing<String>, String> {
             Err("OPENMAKER_PASSWORD is not valid Unicode.".into())
         }
     }
+}
+
+pub(crate) fn read_secret_file(path: &Path, kind: &str) -> Result<Zeroizing<String>, String> {
+    let text = Zeroizing::new(
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("Cannot read the {kind} file {}: {e}", path.display()))?,
+    );
+    let line = text.split(['\n', '\r']).next().unwrap_or_default();
+    Ok(Zeroizing::new(line.to_owned()))
 }

@@ -1764,7 +1764,9 @@ impl Runtime {
             134 | 135 | 136 | 137 | 83 | 138 => {
                 let first = self.slot_text(host, step, 0).unwrap_or_default();
                 let second = self.slot_text(host, step, 1).unwrap_or_default();
-                let option = step.has_flag(flag::OPTION);
+                // Expire password (134, 136) and Deactivate (137) are a
+                // nonzero step value (local-files.md 2.4), not a flag.
+                let option = step.value != 0;
                 match id {
                     134 => host.add_account(&first, &second, &step.reserved, option),
                     135 => host.delete_account(&first),
@@ -1862,7 +1864,8 @@ impl Runtime {
             .params
             .iter()
             .any(|p| p.kind == crate::ParamKind::Target);
-        match host.other_step(&call) {
+        let file = self.script_file(host);
+        match host.other_step_with(&call, self.step_variables(file)) {
             Ok(Some(value)) if has_target => {
                 let select_all = step.has_flag(flag::SELECT_ALL);
                 self.write_target(host, step, value, Write::Result { select_all })

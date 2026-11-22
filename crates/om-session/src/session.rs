@@ -825,7 +825,7 @@ impl Session {
         // the session's back-channel).
         let contexts = [bidir_service_context(&[(callback_host, 5003)])];
         let is_a = wire.exchange(
-            |id| build_is_a(id, &contexts),
+            |id| Ok(build_is_a(id, &contexts)),
             Wait::Read,
             Carries::NoRecords,
         )?;
@@ -835,7 +835,10 @@ impl Session {
         }
 
         let connect_msg = wire.exchange(
-            |id| build_connect(id, callback_host, 0x138b, info),
+            |id| {
+                build_connect(id, callback_host, 0x138b, info)
+                    .map_err(|e| SessionError::Protocol(e.to_string()))
+            },
             Wait::Read,
             Carries::NoRecords,
         )?;
@@ -1456,18 +1459,42 @@ impl Session {
         key_path: &[&[u8]],
         max_return: u32,
     ) -> Result<DownloadReply, SessionError> {
+        self.download_pages(key_path, max_return, build_download, parse_download_reply)
+    }
+
+    /// Download a catalog node via op15 without asking for a read lock.
+    /// FileMaker Server's op90 would wait behind our own exclusive lock.
+    pub fn download_from_host(
+        &mut self,
+        key_path: &[&[u8]],
+    ) -> Result<DownloadReply, SessionError> {
+        self.download_pages(
+            key_path,
+            DOWNLOAD_MAX_RETURN,
+            om_protocol::build_download_from_host,
+            om_protocol::parse_download_from_host_reply,
+        )
+    }
+
+    fn download_pages(
+        &mut self,
+        key_path: &[&[u8]],
+        max_return: u32,
+        build: fn(&DownloadRequest<'_>) -> Vec<u8>,
+        parse: fn(&[u8]) -> Result<DownloadReply, om_protocol::PerformError>,
+    ) -> Result<DownloadReply, SessionError> {
         let file_id = self.opened_file_id()?;
         let mut resume = Resume::start();
         let mut slots = Vec::new();
         loop {
-            let transaction = build_download(&DownloadRequest {
+            let transaction = build(&DownloadRequest {
                 transaction_id: self.take_file_transaction(),
                 file_id,
                 key_path,
                 resume,
             });
             let result = self.perform_with_max(&transaction, max_return)?;
-            let reply = parse_download_reply(&result)
+            let reply = parse(&result)
                 .map_err(|e| SessionError::Protocol(format!("download reply: {e}")))?;
             check_progress(&reply.resume, reply.slots.len())?;
             slots.extend_from_slice(&reply.slots);
@@ -2609,7 +2636,7 @@ impl Wire {
         wait: Wait,
         carries: Carries,
     ) -> Result<Vec<u8>, SessionError> {
-        let exchanged = self.exchange(build, wait, carries);
+        let exchanged = self.exchange(|id| Ok(build(id)), wait, carries);
         exchanged.map_err(|e| self.check(e))
     }
 
@@ -2617,7 +2644,7 @@ impl Wire {
     /// has no session to lose yet.
     fn exchange(
         &mut self,
-        build: impl FnOnce(u32) -> Vec<u8>,
+        build: impl FnOnce(u32) -> Result<Vec<u8>, SessionError>,
         wait: Wait,
         carries: Carries,
     ) -> Result<Vec<u8>, SessionError> {
@@ -2626,12 +2653,13 @@ impl Wire {
             add_record_requests_sent(1);
         }
         let id = self.take_request_id();
+        let request = build(id)?;
         let Wire {
             transport, inbox, ..
         } = self;
         let transport = transport.as_mut().expect("checked above");
         let exchanged = transport
-            .send(&build(id))
+            .send(&request)
             .map_err(SessionError::from)
             .and_then(|()| recv_reply_message(transport, id, inbox, wait));
         self.last_request = Instant::now();

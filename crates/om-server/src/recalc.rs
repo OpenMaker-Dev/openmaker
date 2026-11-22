@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::{self, RecordEnvironment};
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{Cell, OwnedNode, Table};
@@ -53,6 +53,19 @@ pub struct FieldBasis {
     formula: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+impl FieldBasis {
+    pub fn known_storage(&self) -> Option<(bool, bool)> {
+        if !(1..=3).contains(&self.kind) || !(1..=6).contains(&self.data_type) {
+            return None;
+        }
+        Some((self.data_type == 6, self.options & 0x1_0000 != 0))
+    }
+
+    fn is_stored_container_calculation(&self) -> bool {
+        self.kind == 2 && self.data_type == 6 && self.options & 0x3_0000 == 0
+    }
+}
+
 /// A table's fields by id.
 pub type TableBasis = BTreeMap<u64, FieldBasis>;
 
@@ -62,8 +75,19 @@ pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
     table
         .fields
         .iter()
-        .filter_map(|field| {
-            let options = field.decoded_options()?;
+        .map(|field| {
+            let Some(options) = field.decoded_options() else {
+                return (
+                    field.id,
+                    FieldBasis {
+                        kind: 0,
+                        data_type: 0,
+                        options: 0,
+                        repetitions: 0,
+                        formula: None,
+                    },
+                );
+            };
             let f = uint_segment(field.id);
             let formula = (options.field_kind == 2)
                 .then(|| {
@@ -75,7 +99,7 @@ pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
                     Some((part(CONTEXT)?, part(POLISH)?))
                 })
                 .flatten();
-            Some((
+            (
                 field.id,
                 FieldBasis {
                     kind: options.field_kind,
@@ -84,7 +108,7 @@ pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
                     repetitions: options.max_repetitions,
                     formula,
                 },
-            ))
+            )
         })
         .collect()
 }
@@ -116,6 +140,42 @@ pub fn changed_fields(
     changed
 }
 
+/// The calculations of `new` with a container result that were
+/// calculations of another result type in `old`: their cells hold derived
+/// values of the old type (a calculation keeps its old text until it is
+/// recomputed), which name no member they counted, so the type change
+/// drops them before the recompute ([`crate::store::Store`]'s
+/// `update_table`). A field that held entered values (a normal field
+/// made a container calculation) keeps them until the recompute writes
+/// its results, so that a calculation the recompute cannot evaluate loses
+/// nothing (#427's review); what FileMaker shows of them is unmeasured
+/// (#293). Without an `old` basis there is no eager cleanup, and releases
+/// during the recompute are restricted to the surviving cells' counts.
+pub fn retyped_to_container(
+    old: Option<&TableBasis>,
+    new: &TableBasis,
+) -> Result<BTreeSet<u64>, &'static str> {
+    let Some(old) = old else {
+        return Ok(BTreeSet::new());
+    };
+    let mut retyped = BTreeSet::new();
+    for (id, basis) in new {
+        if !basis.is_stored_container_calculation() {
+            continue;
+        }
+        let Some(was) = old.get(id) else {
+            continue;
+        };
+        let Some((container, _)) = was.known_storage() else {
+            return Err("the old type of a stored container calculation is unknown");
+        };
+        if was.kind == 2 && was.options & 0x3_0000 == 0 && !container {
+            retyped.insert(*id);
+        }
+    }
+    Ok(retyped)
+}
+
 /// What a recomputation did.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -128,7 +188,19 @@ pub struct Outcome {
     /// Records with a value that changed, left as they were because their
     /// modification count is the largest a serial key holds.
     pub exhausted: usize,
+    /// Per record (its key under `[T, 05]`), the container results that
+    /// changed, by cell: stored in the table's library after the walk,
+    /// which reads the library while it runs ([`crate::store::Store`]'s
+    /// `recalculate`).
+    pub containers: Vec<(Vec<u8>, BTreeMap<u64, ContainerResult>)>,
 }
+
+/// How much new container data one recompute holds for the library
+/// before it is stored, charged as each result is queued: past it, a
+/// result fails on its record, which keeps its value (logged), so that a
+/// formula making large data on every row cannot hold rows times its size
+/// in memory (#427's review).
+pub const CONTAINER_BUDGET: usize = 256 << 20;
 
 /// Recompute `recalc`'s calculations on every record under `records`
 /// (`[T, 05]`), in place, one record at a time: a record whose values
@@ -147,6 +219,7 @@ pub fn recompute_records(
     let per_record = recalc.uses_uuid();
     let mut shared = environment();
     let mut outcome = Outcome::default();
+    let mut budget = CONTAINER_BUDGET;
     for record in &mut records.children {
         if om_hbam::writer::holds_value(record) {
             continue;
@@ -155,7 +228,16 @@ pub fn recompute_records(
         if per_record {
             shared = environment();
         }
-        let result = recalc.recompute(&texts(record), &shared);
+        let queue = &mut outcome.containers;
+        let growth = if queue.len() == queue.capacity() {
+            queue.capacity().max(1)
+        } else {
+            0
+        };
+        let overhead = growth * std::mem::size_of::<(Vec<u8>, BTreeMap<u64, ContainerResult>)>()
+            + record.segment.len();
+        let mut available = budget.saturating_sub(overhead);
+        let result = recalc.recompute(&texts(record), &shared, &mut available);
         // A calculation failing in several repetitions of the record is
         // one record it failed on.
         let mut seen = BTreeSet::new();
@@ -169,7 +251,7 @@ pub fn recompute_records(
                 .or_insert_with(|| (0, error.to_string()));
             entry.0 += 1;
         }
-        if result.values.is_empty() {
+        if result.values.is_empty() && result.containers.is_empty() {
             continue;
         }
         // Changed without a new count, a client's copy would not show as
@@ -177,6 +259,15 @@ pub fn recompute_records(
         if modcount::bump(record, 1).is_none() {
             outcome.exhausted += 1;
             continue;
+        }
+        if !result.containers.is_empty() {
+            // A result costs at least one node, so a nonempty map means
+            // its costs and the record's queue allocation both fit.
+            budget = available;
+            if growth != 0 {
+                queue.reserve_exact(growth);
+            }
+            queue.push((record.segment.clone(), result.containers));
         }
         for (field, text) in &result.values {
             let key = uint_segment(*field);
@@ -249,6 +340,7 @@ pub fn record_environment(account: &str, uuid: String) -> RecordEnvironment {
         // A server script's transaction holds its records in its own
         // session, which its source reads (`scripts::host`).
         held: None,
+        others_held: Default::default(),
         related_needs: None,
     }
 }

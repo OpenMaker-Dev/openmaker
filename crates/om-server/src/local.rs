@@ -428,7 +428,7 @@ impl LocalHost {
         else {
             return Err(crate::hosting::PasswordChangeError::Refused);
         };
-        if file.read_only {
+        if file.is_read_only() {
             return Err(crate::hosting::PasswordChangeError::Unwritten(
                 "the file is read-only".into(),
             ));
@@ -466,9 +466,6 @@ impl LocalHost {
         else {
             return false;
         };
-        if file.read_only {
-            return false;
-        }
         let key = |value: u64| {
             let bytes = value.to_be_bytes();
             bytes[bytes.iter().position(|b| *b != 0).unwrap_or(7)..].to_vec()
@@ -482,6 +479,9 @@ impl LocalHost {
             );
             return false;
         };
+        if store.is_read_only() {
+            return false;
+        }
         let version = store
             .node(&[&[3], &[0x10], &[5], &table, &[0xfb]])
             .and_then(|n| n.value.as_deref())
@@ -513,7 +513,7 @@ impl LocalHost {
         }
         let mut journal = store.begin_commit();
         store.replace_node_in(&mut journal, vec![occurrence, vec![7]], node);
-        match store.save_commit(&file.path, journal) {
+        match store.save_commit(&file.at, journal) {
             Ok(()) => true,
             Err(e) => {
                 warn!(

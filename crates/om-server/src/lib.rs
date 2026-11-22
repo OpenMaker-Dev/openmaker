@@ -108,6 +108,7 @@
 pub mod accounts;
 mod admin;
 mod admission;
+mod anchored;
 mod authoring;
 mod backups;
 mod cert;

@@ -132,18 +132,17 @@ impl WorkerHost<'_> {
         self.s.file.cache.borrow_mut().generation = generation;
         let mut remap_error = None;
         if let (Some(p), Some(mut row)) = (portal, active) {
-            let position = if p.ordered {
-                None
-            } else {
-                match self.portal_rows(&p) {
-                    Ok(rows) => rows.iter().position(|r| Some(*r) == previous),
+            let number = match previous {
+                Some(previous) if !p.ordered => match self.number_of(&p, previous) {
+                    Ok(number) => number,
                     Err(error) => {
                         remap_error = Some(error);
                         None
                     }
-                }
+                },
+                _ => None,
             };
-            row.row = position.map_or(0, |i| i as u64 + 1);
+            row.row = number.unwrap_or(0);
             if row.row == 0 {
                 row.identity = None;
                 row.field = None;
