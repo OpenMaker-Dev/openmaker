@@ -13,6 +13,13 @@ fn put(root: &mut OwnedNode, field: u64, id: u64, value: &str) {
     );
 }
 
+fn put_locale(root: &mut OwnedNode, locale: om_calc::Locale) {
+    root.put(
+        &[&[2], &[13]],
+        OwnedNode::leaf(Vec::new(), locale.to_record()),
+    );
+}
+
 fn list(root: &mut OwnedNode, occurrence: u64, field: u64) {
     let key = |id| {
         let bytes = uint_segment(id);
@@ -57,7 +64,8 @@ fn list_with_second(root: &mut OwnedNode, field: u64, options: u16, second: u64)
 #[test]
 fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
     // Records 1 and 2 hold Alpha and Bravo; record 3, Charlie, is a row.
-    let charlie = [("Charlie".to_string(), "2".to_string(), String::new())];
+    // In this file Charlie's Count is 2.5, between 1 and 3.
+    let charlie = [("Charlie".to_string(), "2,5".to_string(), String::new())];
     let records = [(1, "Alpha", "3"), (2, "Bravo", "1")];
     for (options, expected) in [
         (0x2, ["Bravo", "Charlie", "Alpha"]),
@@ -65,6 +73,7 @@ fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
         (0x0, ["Alpha", "Bravo", "Charlie"]),
     ] {
         let file = file_with(&format!("vl-second-{options}"), &charlie, |root| {
+            put_locale(root, om_calc::Locale::de_de());
             for (id, name, count) in records {
                 put(root, fixture::NAME, id, name);
                 put(root, fixture::COUNT, id, count);
@@ -80,6 +89,7 @@ fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
     // (file-metadata.md 6.4): Zebra and Bravo, Alpha left out.
     let bravo = [("Bravo".to_string(), "2".to_string(), String::new())];
     let file = file_with("vl-second-distinct", &bravo, |root| {
+        put_locale(root, om_calc::Locale::en_us());
         for (id, name, count) in [(1, "Zebra", "1"), (2, "Alpha", "1")] {
             put(root, fixture::NAME, id, name);
             put(root, fixture::COUNT, id, count);
@@ -120,6 +130,9 @@ fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
     for (tag, records, third, second, expected) in cases {
         let row = [("Alpha".to_string(), "3".to_string(), String::new())];
         let file = file_with(tag, &row, |root| {
+            if second == fixture::COUNT {
+                put_locale(root, om_calc::Locale::en_us());
+            }
             for (id, name, value) in records {
                 put(root, fixture::NAME, id, name);
                 put(root, second, id, value);
@@ -418,6 +431,9 @@ fn fallback_rejects_unread_values_instead_of_skipping() {
     {
         let file = file_with(&format!("vl-unsupported-{i}"), &[], |root| {
             fixture::add_field(root, TABLE, 90, "Unknown", 1, kind, 0, 0, 0);
+            if kind == 2 {
+                put_locale(root, om_calc::Locale::en_us());
+            }
             put(root, 90, 1, value);
         });
         let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);

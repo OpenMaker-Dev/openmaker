@@ -21,7 +21,7 @@ use om_collate::{DateOrder, NumberFormat};
 use om_data::found::code;
 use om_hbam::{Cell, DataType};
 use om_protocol::write;
-use om_query::keys::{TextKeys, EMPTY_TEXT_KEY};
+use om_query::keys::{Reading, TextKeys, EMPTY_TEXT_KEY};
 
 /// The value-list catalog `[21]` and its members' key `5`.
 const VALUE_LISTS: u8 = 0x21;
@@ -154,8 +154,8 @@ fn native_key(
 }
 
 /// How a field's values are keyed, as its value index keys them: its text
-/// form, and for dates and timestamps the file's date order. Either may be
-/// unknown; keying then fails only when a value must be keyed.
+/// form, the file's date order for dates and timestamps, and its number
+/// format for numbers. Missing settings fail when keying needs them.
 struct Keying {
     data_type: DataType,
     field: String,
@@ -178,13 +178,7 @@ impl Keying {
                 .whole_key(value)?
                 .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec()));
         }
-        let order = match self.data_type {
-            DataType::Date | DataType::Timestamp => self
-                .order
-                .ok_or_else(|| unsupported("The file's date order could not be read."))?,
-            _ => DateOrder::MonthDayYear,
-        };
-        om_query::keys::typed_value_keys(self.data_type, value, order)
+        om_query::keys::typed_value_keys(self.data_type, value, self.reading()?)
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -201,6 +195,11 @@ impl Keying {
             DataType::Text => self.text.ok_or_else(|| self.unestablished())?,
             _ => TextKeys::Collated,
         };
+        let Reading { order, numbers } = self.reading()?;
+        native_key(self.data_type, value, order, numbers, text)
+    }
+
+    fn reading(&self) -> Result<Reading, DataError> {
         let order = match self.data_type {
             DataType::Date | DataType::Timestamp => self
                 .order
@@ -213,7 +212,7 @@ impl Keying {
                 .ok_or_else(|| unsupported("The file's number format could not be read."))?,
             _ => NumberFormat::default(),
         };
-        native_key(self.data_type, value, order, numbers, text)
+        Ok(Reading { order, numbers })
     }
 
     /// Error 3 for text that must be keyed in a form with no established
@@ -674,8 +673,8 @@ impl NativeProvider {
     }
 
     /// How `field`'s values are keyed. With `strict` (a scan, which keys
-    /// every value), an unestablished text form or an unreadable date order
-    /// is error 3 at once; otherwise only when a value must be keyed.
+    /// every value), missing keying settings are an error at once;
+    /// otherwise only when a value must be keyed.
     fn keying(
         &mut self,
         field: &om_hbam::Field,
