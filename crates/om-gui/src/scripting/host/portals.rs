@@ -39,9 +39,7 @@
 //! portal of any order the record itself is the active row's while it stays
 //! one of the portal's related records (otherwise steps refuse): related
 //! fields read it, Set Field writes it, Delete Portal Row deletes it and
-//! Go to Related Record starts from it (one that shows only related
-//! records from a filtering portal stays refused: its found set would be
-//! every related record, not the portal's). Moving the active row forgets
+//! Go to Related Record starts from it. Moving the active row forgets
 //! that identity, as before.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -274,11 +272,19 @@ impl WorkerHost<'_> {
             return Ok((offset, Vec::new()));
         };
         let related = self.order_rows(portal, related)?;
-        let records: Vec<Row> = related
-            .into_iter()
-            .skip(portal.first)
-            .map(Row::Record)
-            .collect();
+        let rows = self.related_display_rows(portal, related.into_iter().skip(portal.first));
+        Ok((offset, rows))
+    }
+
+    /// The displayed rows after the initial-row offset has been applied
+    /// to the saved records.
+    fn related_display_rows(
+        &mut self,
+        portal: &Portal,
+        records: impl Iterator<Item = u64>,
+    ) -> Vec<Row> {
+        let occurrence = portal.occurrence;
+        let records = records.map(Row::Record);
         let begun: Vec<Row> = self
             .s
             .file
@@ -291,12 +297,12 @@ impl WorkerHost<'_> {
             .map(|d| Row::New(d.key))
             .collect();
         if portal.scrolls {
-            let mut rows = records;
+            let mut rows: Vec<_> = records.collect();
             rows.extend(begun);
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
-            return Ok((offset, rows));
+            return rows;
         }
         let mut rows = Vec::new();
         if portal.new_row_top {
@@ -312,7 +318,7 @@ impl WorkerHost<'_> {
             rows.extend(begun);
         }
         rows.truncate(usize::try_from(portal.visible).unwrap_or(usize::MAX));
-        Ok((offset, rows))
+        rows
     }
 
     /// `records`, the related records `portal` shows in the relationship's
@@ -673,10 +679,10 @@ impl WorkerHost<'_> {
         }
     }
 
-    /// The records the filtering portal whose row of `occurrence` is
-    /// active shows, in its order: what Go to Related Record with "Show
-    /// only related records" from that row finds (#192); `None` when no row
-    /// of a filtering portal of `occurrence` is active.
+    /// The saved filter matches for Go to Related Record with "Show
+    /// only related records" (#192). The initial row limits navigation
+    /// into the portal, but earlier matches still belong to the found set.
+    /// `None` when no filtering portal row of `occurrence` is active.
     pub(super) fn filtered_rows(&mut self, occurrence: u64) -> HostResult<Option<Vec<u64>>> {
         let Some((portal, _)) = self.active_row(occurrence) else {
             return Ok(None);
@@ -685,9 +691,29 @@ impl WorkerHost<'_> {
             return Ok(None);
         }
         self.check_order(&portal)?;
-        Ok(Some(
+        let rows = if Some(occurrence) == self.s.file.occurrence {
             self.portal_rows(&portal)?
-                .into_iter()
+        } else {
+            let Some(related) = self.related_rows(occurrence)? else {
+                return Ok(Some(Vec::new()));
+            };
+            let related = self.order_rows(&portal, related)?;
+            if portal.scrolls {
+                return Ok(Some(related));
+            }
+            // Keep the pre-offset matches and the saved rows in the
+            // existing visible-row limit for a non-scrolling portal.
+            let mut related = related.into_iter();
+            let mut rows: Vec<_> = related
+                .by_ref()
+                .take(portal.first)
+                .map(Row::Record)
+                .collect();
+            rows.extend(self.related_display_rows(&portal, related));
+            rows
+        };
+        Ok(Some(
+            rows.into_iter()
                 .filter_map(|row| match row {
                     Row::Record(record) => Some(record),
                     Row::New(_) | Row::Creation => None,

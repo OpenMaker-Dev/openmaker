@@ -391,12 +391,16 @@ fn portal_only_store() -> Vec<u8> {
 
 /// Notes 2 "first" and 3 "second" of "Write tests".
 fn add_notes(root: &mut OwnedNode) {
+    append_notes(root, &[(2, "first"), (3, "second")]);
+}
+
+fn append_notes(root: &mut OwnedNode, notes: &[(u64, &str)]) {
     let table = uint_segment(NOTES);
     let mut list = root
         .at(&[&table, &[0x0d]])
         .and_then(|n| RidList::from_owned(n).ok())
         .unwrap_or_default();
-    for (id, body) in [(2u64, "first"), (3, "second")] {
+    for &(id, body) in notes {
         let record = serial::encode(id);
         for (field, text) in [(BODY, body), (TASK, "Write tests")] {
             root.put(
@@ -407,7 +411,7 @@ fn add_notes(root: &mut OwnedNode) {
         list.insert(id);
     }
     root.put(&[&table, &[0x0d]], list.to_node(Vec::new()));
-    let last = serial::encode(3);
+    let last = serial::encode(notes.last().unwrap().0);
     let mut key = vec![last.len() as u8];
     key.extend(last);
     root.put(&[&table, &[0]], OwnedNode::leaf(Vec::new(), key));
@@ -1491,9 +1495,15 @@ fn scripts() -> Vec<Script> {
                 note(
                     "$related",
                     "Get ( LastError ) & \":\" & Get ( LayoutName ) & \":\" & Get ( FoundCount ) & \
-                     \":\" & Notes::Body",
+                     \":\" & Get ( RecordNumber ) & \":\" & Notes::Body",
                 ),
-                show("\"filtered row \" & $row & \", related \" & $related"),
+                fixture::go_to_record(1),
+                note("$first", "Notes::Body"),
+                fixture::go_to_record(2),
+                show(
+                    "\"filtered row \" & $row & \", related \" & $related & \
+                     \", first \" & $first & \", last \" & Notes::Body",
+                ),
             ],
         ),
         fixture::script(
@@ -4094,23 +4104,32 @@ fn a_sorted_portals_rows_are_numbered_as_browse_shows_them() {
     );
 }
 
-/// A portal that filters its rows numbers them for scripts as Browse
-/// shows them (#192): Go to Portal Row 1 is the first row the filter
-/// admits, and Go to Related Record with "Show only related records" from
-/// that row finds the records the portal shows, not every related record.
-/// A filter by row number counts the portal's rows, as Browse's does.
+/// First reaches the first displayed filter match. Go to Related Record
+/// keeps that record current and includes matches before Initial Row.
+/// The non-scrolling portal still limits the matches after Initial Row
+/// to its visible slots.
 #[test]
-fn a_filtered_portals_rows_and_related_records_are_the_ones_it_shows() {
+fn a_filtered_portal_keeps_the_active_record_and_pre_offset_matches() {
     for (tag, filter, expected) in [
         (
             "filtered",
             filter_portal as fn(&mut OwnedNode),
-            "filtered row 0:1:second, related 0:Notes:1:second",
+            "filtered row 0:1:second, related 0:Notes:1:1:second, first second, last second",
         ),
         (
             "filtered-rows",
             filter_portal_by_row,
-            "filtered row 0:1:first, related 0:Notes:1:first",
+            "filtered row 0:1:first, related 0:Notes:1:1:first, first first, last first",
+        ),
+        (
+            "filtered-offset-scrolling",
+            |root| filter_portal_with_offset(root, PORTAL_FLAGS),
+            "filtered row 0:2:second, related 0:Notes:3:2:second, first first, last third",
+        ),
+        (
+            "filtered-offset-fixed",
+            |root| filter_portal_with_offset(root, PORTAL_FLAGS & !0x1),
+            "filtered row 0:2:second, related 0:Notes:2:2:second, first first, last second",
         ),
     ] {
         let hosted = host_with(tag, filter);
@@ -4332,6 +4351,12 @@ fn shaped_portal(root: &mut OwnedNode, flags: u64, rows: u32, initial: u64) {
             om_layout::encode::append_to_store(&store, &[PORTAL], &[portal]),
         ),
     );
+}
+
+fn filter_portal_with_offset(root: &mut OwnedNode, flags: u64) {
+    append_notes(root, &[(4, "third"), (5, "closed")]);
+    shaped_portal(root, flags, 1, 2);
+    portal_filter(root, "Notes::Body ≠ \"closed\"");
 }
 
 /// Steps reach a portal's rows from its initial row, numbered where Browse

@@ -1271,15 +1271,15 @@ row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
 and whether a script reaches it, are unmeasured]. A portal whose initial
 row is past 1, scrolling or not, draws the records from that row on and
 numbers its rows from there, whether or not records fill the rows before
-it, also for scripts. No step reaches a record before the initial row:
-Go to Portal Row [First] and Go to Field go to the initial row, Previous
-stops there, a number before it is 101, and Go to Related Record from a
-filtering portal's row finds the records it draws [I: unmeasured]. A Go to Portal Row whose
-OnObjectExit begins or deletes a row moves to the row it chose, found
-again by what it shows (a record being created by its draft, whatever
-other drafts go), or fails with 101 when that row left the portal. The option's storage is
-read from FileMaker Pro 26.1.1's binaries, not from a file it saved, and
-Portal Setup does not offer it.
+it, also for scripts. Go to Portal Row [First] and Go to Field go to the
+initial row, Previous stops there, and a number before it is 101. Go to
+Related Record from a filtering portal's row includes earlier filter
+matches in the found set [I: the effect of Initial Row is unmeasured].
+A Go to Portal Row whose OnObjectExit begins or deletes a row moves to
+the row it chose, found again by what it shows (a record being created
+by its draft, whatever other drafts go), or fails with 101 when that row
+left the portal. The option's storage is read from FileMaker Pro 26.1.1's
+binaries, not from a file it saved, and Portal Setup does not offer it.
 
 A step that puts the focus in a field of a portal row (Go to Field, Go to
 Object, Go to Portal Row with a field active), as the starter solutions'
