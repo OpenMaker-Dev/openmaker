@@ -69,6 +69,24 @@ table, so later keys cannot group without them. `GetSummary`, restarting running
 summaries and subtotaled fractions read such groups as unsorted (empty), and
 reports refuse. Grouping by related keys is not implemented.
 
+The groups' keys, and the inputs of the summaries the parts print, read the
+reader's variables as its other calculations do [I: unmeasured in FileMaker]:
+the window's in Preview, and in Save Records as PDF and Print the script
+worker's own scratch store, which its report calculations assign. The
+variables a script's steps set do not reach the worker
+([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596);
+[#615](https://github.com/OpenMaker-Dev/openmaker/issues/615); calc-values.md,
+"The host's own reads of a field"). Reports refuse with 3, rather than band
+records the sort did not order:
+
+- a sort key up to a break that reads as `?` on any record;
+- while the reader has variables, a sort key up to a break that is an unstored
+  calculation which may read one (`Expr::variable_reads`, through the custom
+  functions it calls and the unstored calculations it references; one that
+  cannot be resolved counts as may), since the found set was sorted without
+  them [I: whether FileMaker's sort evaluates such a key with the
+  script's or window's variables is unmeasured].
+
 ### Costs and limits
 
 Planning a grouped report reads the ordered found set's IDs and each found

@@ -348,6 +348,7 @@ impl Hosted {
         let mut store = Store::load(file, &hosted.name).map_err(open)?;
         let mut read_only = false;
         if let Some((lock, local_read_only)) = local {
+            store.serve_desktop();
             if let Some(lock) = lock {
                 store.set_lock(lock);
             }

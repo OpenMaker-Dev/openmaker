@@ -125,6 +125,155 @@ fn an_open_refused_under_block_new_users_says_what_filemaker_says() {
     assert_eq!(error.message, om_provider::HOST_BLOCKS_NEW_USERS);
 }
 
+/// The host administrator's Send Message reaches the open file's provider
+/// while it is idle, read as it is polled, with the host's name (#156).
+#[test]
+fn a_host_message_is_taken_while_the_provider_is_idle() {
+    let file = file_with("provider-host-message", &[], |_| {});
+    let mut handle = None;
+    let (port, ca_pem) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    let handle = handle.unwrap();
+    let mut provider = open(port, &ca_pem);
+    assert!(provider.take_host_messages().is_empty());
+    let client = handle
+        .clients()
+        .into_iter()
+        .find(|client| !client.files.is_empty())
+        .expect("the provider's session")
+        .id;
+    handle
+        .send_message(client, "Back in five minutes.")
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let messages = loop {
+        let messages = provider.take_host_messages();
+        if !messages.is_empty() || std::time::Instant::now() > deadline {
+            break messages;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(
+        messages,
+        [om_data::HostMessage {
+            kind: om_data::HostMessageKind::Message,
+            text: "Back in five minutes.".into(),
+            server_name: "openmaker-test".into(),
+        }]
+    );
+    assert!(provider.take_host_messages().is_empty());
+    assert!(provider.connection_lost().is_none());
+    // A close with no time to leave is the forced notice at once, naming
+    // the file by the host's id: the provider's file is let go of, and lost.
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|info| info.name == FILE)
+        .expect("the hosted file")
+        .id;
+    handle
+        .close_file(
+            id,
+            &om_server::Notice {
+                message: "Closing for the night.".into(),
+                grace: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let messages = loop {
+        let messages = provider.take_host_messages();
+        if !messages.is_empty() || std::time::Instant::now() > deadline {
+            break messages;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(
+        messages,
+        [om_data::HostMessage {
+            kind: om_data::HostMessageKind::Disconnected,
+            text: "Closing for the night.".into(),
+            server_name: "openmaker-test".into(),
+        }]
+    );
+    let lost = provider.connection_lost().expect("the file is lost");
+    assert!(
+        lost.message.contains(om_session::HOST_DISCONNECTED_FILE),
+        "{lost:?}"
+    );
+}
+
+/// A file the host disconnected is lost to that open of it only (#156):
+/// reopened on the host and opened again on the same connection, through
+/// another handle, it is a new open, not lost, and the host's second
+/// disconnect of it is released again.
+#[test]
+fn a_file_the_host_disconnected_and_reopened_opens_again_on_the_connection() {
+    use std::time::{Duration, Instant};
+    let file = file_with("forced-reopen", &[], |_| {});
+    let mut handle = None;
+    let (port, _) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    let handle = handle.unwrap();
+    let id = handle.files()[0].id;
+    let force = || {
+        handle
+            .close_file(
+                id,
+                &om_server::Notice {
+                    message: String::new(),
+                    grace: Duration::ZERO,
+                },
+            )
+            .unwrap();
+    };
+    let disconnected = |session: &mut om_session::Session| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let taken = session.try_take_admin_messages().unwrap_or_default();
+            if taken.iter().any(|message| message.code == 0x0870) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "no forced notice");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let closed = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.files()[0].status != om_server::FileStatus::Closed {
+            assert!(Instant::now() < deadline, "the file stays open");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let mut first = raw_session(port);
+    // Keeps the connection, with no file open.
+    let mut second = first.share();
+    force();
+    disconnected(&mut first);
+    assert!(first.file_disconnected());
+    closed();
+
+    handle.open_file(id).unwrap();
+    second.open_file("127.0.0.1", FILE).unwrap();
+    let creation = second.fetch_internal_creation().unwrap();
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    assert!(second
+        .login(ACCOUNT, PASSWORD, creation, &environment)
+        .unwrap()
+        .is_success());
+    assert!(!second.file_disconnected(), "a new open of the file");
+    assert!(first.file_disconnected(), "the first open stays lost");
+
+    force();
+    disconnected(&mut second);
+    assert!(second.file_disconnected());
+    closed();
+}
+
 /// A session of its own, for what the provider does not expose.
 fn raw_session(port: u16) -> om_session::Session {
     let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
@@ -1720,6 +1869,26 @@ fn a_field_in_an_unknown_index_language_is_neither_found_nor_changed_by_guessing
     provider.close();
 }
 
+/// In a language FileMaker leaves untailored (French, 24), whose value keys
+/// are English's (query-program.md 7.2), a whole-value find runs without
+/// the host's index, the first time and again; a word find, whose word
+/// breaks are French's, still fails rather than guessing
+/// ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46),
+/// [#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
+#[test]
+fn an_untailored_language_finds_whole_values_without_the_hosts_index() {
+    let french = |root: &mut OwnedNode| fixture::set_field_language(root, TABLE, NAME, 24);
+    let values = cold_and_warm_in("cold-french", &[], french, vec![request("Name", "==Ship")]);
+    assert_eq!(values, (Ok(vec![2]), Ok(vec![2])));
+    let words = cold_and_warm_in(
+        "cold-french-words",
+        &[],
+        french,
+        vec![request("Name", "ship")],
+    );
+    assert_eq!(words, (Err(Some(3)), Err(Some(3))));
+}
+
 /// The missing target index of a related find must obey its own language
 /// too, rather than using English because the source field is English.
 #[test]
@@ -2521,9 +2690,12 @@ fn transaction_options_skip_auto_enter_and_data_entry_validation() {
 /// S::Count, compared by value; Mark one of S::Shout, an unstored
 /// calculation computed on each related record (#1058), the written
 /// record's over the values the write gives it; Owner one of S::Who,
-/// `Get ( AccountName )`, this session's account. While a transaction holds
-/// a record of another table, which such a calculation could read only as
-/// stored, Commit Transaction refuses (3).
+/// `Get ( AccountName )`, this session's account; Word (validated always)
+/// one of S::German, text indexed in German, whose keys OpenMaker does not
+/// build: refused (3) rather than compared in English, where `Apfel` is
+/// `Äpfel` (#571).
+/// While a transaction holds a record of another table, which such a
+/// calculation could read only as stored, Commit Transaction refuses (3).
 #[test]
 fn a_related_value_list_is_computed_for_the_written_record() {
     const SELF_JOIN: u64 = 0xd0_0009;
@@ -2532,6 +2704,12 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     const NUM: u64 = 35;
     const WHO: u64 = 36;
     const OWNER: u64 = 37;
+    const GERMAN: u64 = 38;
+    const WORD: u64 = 39;
+    const RAW: u64 = 40;
+    const LETTER: u64 = 41;
+    const ACCENTED: u64 = 42;
+    const VOWEL: u64 = 43;
     let mut root = fixture::tree(&[], true);
     let mut names = fixture::names();
     names.add_field(TABLE, SHOUT, "Shout");
@@ -2539,11 +2717,20 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     let shout = "Name & \"!\"";
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), SHOUT, 5, shout);
     fixture::add_field(&mut root, TABLE, MARK, "Mark", 1, 1, 0, 0, 0x100);
-    fixture::add_field(&mut root, TABLE, NUM, "Num", 1, 2, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, NUM, "Num", 1, 2, 0, 0, 0x500);
     fixture::add_field(&mut root, TABLE, WHO, "Who", 2, 1, 0, 0x2_0000, 0);
     let who = "Get ( AccountName )";
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), WHO, 5, who);
     fixture::add_field(&mut root, TABLE, OWNER, "Owner", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, GERMAN, "German", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, GERMAN, 25);
+    fixture::add_field(&mut root, TABLE, WORD, "Word", 1, 1, 0, 0, 0x500);
+    fixture::add_field(&mut root, TABLE, RAW, "Raw", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, RAW, 2);
+    fixture::add_field(&mut root, TABLE, LETTER, "Letter", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, ACCENTED, "Accented", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, ACCENTED, 3);
+    fixture::add_field(&mut root, TABLE, VOWEL, "Vowel", 1, 1, 0, 0, 0x100);
     fixture::add_occurrence(&mut root, SELF_JOIN, "S", TABLE);
     fixture::add_relationship(&mut root, 12, (OCCURRENCE, COUNT), 0, (SELF_JOIN, COUNT));
     fixture::set_field_validation(&mut root, TABLE, CODE, 0x100);
@@ -2567,6 +2754,9 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         (7u8, "Shouts", SHOUT, MARK),
         (8, "Counts", COUNT, NUM),
         (9, "Accounts", WHO, OWNER),
+        (10, "Germans", GERMAN, WORD),
+        (11, "Raws", RAW, LETTER),
+        (12, "Accents", ACCENTED, VOWEL),
     ] {
         root.put(&[&[0x21], &[5], &[list], &[0x10]], text_node(&[], name));
         root.put(&[&[0x21], &[5], &[list], &[2]], related(listed as u8));
@@ -2592,6 +2782,50 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         code(a.update_record(tasks, 2, values(&[("Code", "Write tests")]))),
         Err(Some(506))
     );
+    let refused = a
+        .update_record(tasks, 2, values(&[("German", "Äpfel"), ("Word", "Apfel")]))
+        .unwrap_err();
+    assert_eq!(refused.code, Some(3), "{refused:?}");
+    assert!(refused.message.contains("language"), "{refused:?}");
+    // S::Raw, Unicode raw (2), holds "A" and "a" on record 2's two lines:
+    // the list keeps one of them, so an exact "a" or "A" may be the one it
+    // left out (3), "A" exact is there, and "b" is in neither (506).
+    for (letter, expected) in [("A", None), ("a", Some(3)), ("b", Some(506))] {
+        let result = a.update_record(tasks, 2, values(&[("Raw", "A\ra"), ("Letter", letter)]));
+        match expected {
+            None => assert!(result.is_ok(), "{letter}: {result:?}"),
+            Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{letter}"),
+        }
+    }
+    // The same for S::Accented, Unicode standard (3), whose padded keys tell
+    // `e` and `é` apart where the list keeps one of them.
+    for (vowel, expected) in [("e", None), ("é", Some(3))] {
+        let result = a.update_record(tasks, 2, values(&[("Accented", "e\ré"), ("Vowel", vowel)]));
+        match expected {
+            None => assert!(result.is_ok(), "{vowel}: {result:?}"),
+            Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{vowel}"),
+        }
+    }
+    // An import's row with such a value is refused as one whose rule
+    // OpenMaker does not support checking, which ends the import.
+    let cells = [
+        (GERMAN, Some("Äpfel".to_owned())),
+        (WORD, Some("Apfel".to_owned())),
+    ]
+    .into();
+    let refused = a.import_record(tasks, Some(2), &cells, true).unwrap_err();
+    assert!(refused.unsupported, "{refused:?}");
+    // Count still relates record 2 to itself only. Its stored "1e3" is
+    // 1000, while "1é3" parses as 13. The text comparison would fold the
+    // accent, but the numeric list miss must skip only this import row.
+    a.update_record(tasks, 2, values(&[("Count", "1e3")]))
+        .unwrap();
+    let cells = [(NUM, Some("1000".to_owned()))].into();
+    a.import_record(tasks, Some(2), &cells, true).unwrap();
+    let cells = [(NUM, Some("1é3".to_owned()))].into();
+    let refused = a.import_record(tasks, Some(2), &cells, true).unwrap_err();
+    assert_eq!(refused.code, Some(506), "{refused:?}");
+    assert!(!refused.unsupported, "{refused:?}");
     // With Count 3 as written, record 1 ("Write tests", Count 3) is related.
     assert_eq!(
         code(a.update_record(tasks, 2, values(&[("Count", "3"), ("Code", "Write tests")]))),
@@ -2689,23 +2923,7 @@ fn existing_values_and_value_lists_of_a_field_are_checked_on_the_host() {
     let mut root = fixture::tree(&[], true);
     fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
     fixture::set_field_validation(&mut root, TABLE, NAME, 0x420);
-    fixture::set_field_validation(&mut root, TABLE, CODE, 0x500);
-    let (t, code) = (uint_segment(TABLE), uint_segment(CODE));
-    let reference = vec![2, 1, 5, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff];
-    root.put(
-        &[&t, &[3], &[5], &code, &[0x07]],
-        OwnedNode::leaf(Vec::new(), reference),
-    );
-    root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
-    // Kind 1: Tasks::Name (occurrence d0 00 01, field 1), no second field.
-    let mut list = vec![
-        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    list.extend(om_scsu::encode_counted(" "));
-    root.put(
-        &[&[0x21], &[5], &[5], &[2]],
-        OwnedNode::leaf(Vec::new(), list),
-    );
+    fixture::code_in_names_list(&mut root);
     let file = TempFile::from_tree("lookups", &root);
     let (port, ca_pem) = host(&file.0);
     let mut a = open(port, &ca_pem);
@@ -2733,6 +2951,133 @@ fn existing_values_and_value_lists_of_a_field_are_checked_on_the_host() {
     assert_eq!(text(&page, 1, "Name"), Some("ship"));
     assert_eq!(text(&page, 2, "Code"), Some("SHIP"));
     a.close();
+}
+
+/// A value list of a field's values whose field is indexed in a language
+/// OpenMaker does not key (German, 25, #299) refuses the check (3) before
+/// looking the value up, rather than keying it in English, which can both
+/// miss the index's key and match another value (#571).
+#[test]
+fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
+    for late in [false, true] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+        fixture::set_field_language(&mut root, TABLE, NAME, 25);
+        fixture::code_in_names_list(&mut root);
+        let file = TempFile::from_tree("list-language", &root);
+        let (port, ca_pem) = host_with(&file.0, None, |server| {
+            if late {
+                server.with_late_index_builds()
+            } else {
+                server
+            }
+        });
+        let mut a = open(port, &ca_pem);
+        let tasks = layout(&mut a, "Tasks");
+        let before = all_records(&mut a, tasks);
+        // Record 2's Name is "Ship": English keys would accept it.
+        let refused = a
+            .update_record(tasks, 1, values(&[("Code", "Ship")]))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "late={late}: {refused:?}");
+        // Refused by the value list's source language before any lookup:
+        // against OpenMaker Server, which builds no German index, the
+        // lookup itself would also fail (its scan), but a host with the
+        // index answers English keys wrongly.
+        assert!(
+            refused.message.contains("source of a value list"),
+            "late={late}: {refused:?}"
+        );
+        // An import's row, new or into a record, is refused as one whose
+        // rule OpenMaker does not support checking, which ends the import
+        // (`DataError::unsupported`), not as a row FileMaker refused.
+        let cells = [(CODE, Some("Ship".to_owned()))].into();
+        for record in [None, Some(1)] {
+            let refused = a.import_record(tasks, record, &cells, true).unwrap_err();
+            assert!(refused.unsupported, "late={late} {record:?}: {refused:?}");
+        }
+        assert_eq!(all_records(&mut a, tasks), before);
+        a.close();
+    }
+}
+
+/// A value list of a number field's values (Tasks::Count; record 2 holds
+/// 5) checks a value as a number, in the index's number keys
+/// (query-program.md 7.3), with the host's index and without (#591):
+/// `5.0` is listed, `4` is not (506). `abc`, no number OpenMaker keys, is
+/// looked up as text, as before: not in the number index (506; by then
+/// the host built it, also when it builds indexes late).
+#[test]
+fn a_value_list_of_a_number_field_checks_values_as_numbers() {
+    // A German file: `3.000` is 3000 there, and record 2's `5.000` is 5000.
+    // OpenMaker does not read such numbers yet, here or in the index
+    // OpenMaker Server builds, and looks them up as text (#415): never as
+    // 3, and `5` is not 5000.
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        decimal_separator: ',',
+        thousands_separator: '.',
+        ..om_calc::Locale::en_us()
+    };
+    for (late, german) in [
+        (false, None),
+        (true, None),
+        (false, Some(&german)),
+        (true, Some(&german)),
+    ] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, COUNT, 0x8000_0000);
+        fixture::code_in_list_of(&mut root, COUNT);
+        let count_of = |root: &mut OwnedNode, record: u64, text: &str| {
+            root.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[5],
+                    &serial::encode(record),
+                    &uint_segment(COUNT),
+                ],
+                text_node(&[], text),
+            )
+        };
+        if let Some(locale) = german {
+            root.put(
+                &[&[2], &[0x0d]],
+                OwnedNode::leaf(Vec::new(), locale.to_record()),
+            );
+            count_of(&mut root, 2, "5.000");
+        } else {
+            // One cell of two lines: a number field's value is not split.
+            count_of(&mut root, 1, "3,000\r2,000");
+        }
+        let file = TempFile::from_tree("list-of-numbers", &root);
+        let (port, ca_pem) = host_with(&file.0, None, |server| {
+            if late {
+                server.with_late_index_builds()
+            } else {
+                server
+            }
+        });
+        let mut a = open(port, &ca_pem);
+        let tasks = layout(&mut a, "Tasks");
+        let code = |a: &mut NativeProvider, text: &str| {
+            a.update_record(tasks, 1, values(&[("Code", text)]))
+                .map(|_| ())
+                .map_err(|e| e.code)
+        };
+        if german.is_some() {
+            assert_eq!(code(&mut a, "3.000"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "5"), Err(Some(506)), "late={late}");
+        } else {
+            // First, while a late index is not built yet: a value no
+            // number reads is looked up as text among the stored values,
+            // each a whole.
+            assert_eq!(code(&mut a, "3,000"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "abc"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
+            assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");
+        }
+        a.close();
+    }
 }
 
 /// A field-backed list on Code, with no related-value filter or second
@@ -3002,12 +3347,20 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         (1, 77, 0, ACCEPTED),
         // Unicode raw keys keep case (query-program.md 7.2).
         (1, 2, 0, [Some(506), None]),
+        // French is untailored: its value keys are English's.
+        (1, 24, 0, ACCEPTED),
+        // Finnish is a tailoring OpenMaker does not key.
         (1, 22, 0, UNSUPPORTED),
-        (1, 0, 0, UNSUPPORTED),
-        (2, 21, 0, UNSUPPORTED),
-        (3, 21, 0, UNSUPPORTED),
-        (4, 21, 0, UNSUPPORTED),
-        (5, 21, 0, UNSUPPORTED),
+        // Language 0 is the file's own, English here: the fixture has no
+        // locale record.
+        (1, 0, 0, ACCEPTED),
+        // A number, date, time or timestamp source's `A`, which its type
+        // gives no key, compares as text with a value that has none either,
+        // as on OpenMaker Server (#591).
+        (2, 21, 0, ACCEPTED),
+        (3, 21, 0, ACCEPTED),
+        (4, 21, 0, ACCEPTED),
+        (5, 21, 0, ACCEPTED),
         (6, 21, 0, UNSUPPORTED),
         (1, 21, 0x10000, UNSUPPORTED), // Globals are not record index values.
     ] {
@@ -3025,6 +3378,9 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
             0,
         );
         fixture::set_field_language(&mut root, fixture::NOTES, 20, language);
+        if data_type == 2 {
+            fixture::set_field_repetitions(&mut root, fixture::NOTES, 20, 2);
+        }
         root.put(
             &[&uint_segment(fixture::NOTES), &[5], &[1], &[20]],
             text_node(&[], "A"),
@@ -3034,6 +3390,14 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         let mut provider = open(port, &ca);
         let tasks = layout(&mut provider, "Tasks");
         let before = all_records(&mut provider, tasks);
+        if data_type == 2 {
+            // The absent second repetition cannot hold the zero-width
+            // space, even though it has the same text key as empty text.
+            let error = provider
+                .update_record(tasks, 1, values(&[("Code", "\u{200b}")]))
+                .unwrap_err();
+            assert_eq!(error.code, Some(506), "{error}");
+        }
         // A never-indexed text field continues to use the scan on each
         // attempt; unsupported keys are not reported as NOT_IN_LIST.
         for (candidate, expected) in ["a", "A"].into_iter().zip(expected) {
@@ -3049,8 +3413,12 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
                 "type={data_type}, language={language}, {candidate:?}: {error}"
             );
             if code == 3 {
+                // Refused by the scan, or before any lookup by a source
+                // language OpenMaker does not key (#571).
+                let message = error.to_string();
                 assert!(
-                    error.to_string().contains("without the host's value index"),
+                    message.contains("without the host's value index")
+                        || message.contains("the source of a value list"),
                     "{error}"
                 );
             }
@@ -3635,6 +4003,110 @@ fn typing_into_a_global_field_sets_the_sessions_value() {
         let mut other = open(port, &ca);
         assert_eq!(global(&mut other), "");
         other.close();
+        provider.close();
+    }
+}
+
+/// A number global validated "Not empty" and "Strict data type: Numeric
+/// only" takes typing, checked by those rules as it is applied: what they
+/// refuse keeps the session's value. One validated by calculation is not
+/// offered (its check is not implemented for globals).
+#[test]
+fn typing_into_a_validated_global_checks_its_entry_rules() {
+    use fixture::SETTING;
+    use om_data::host::CalcNeed;
+    for (validation, offered) in [(0x8 | 0x1000, true), (0x1, false)] {
+        let file = file_with(
+            &format!("provider-validated-global-{validation}"),
+            &[],
+            |root| {
+                fixture::add_field(
+                    root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, validation,
+                );
+                // Validated by calculation: its formula, so the table's other
+                // fields are planned and only the global is left out.
+                if validation & 0x1 == 0 {
+                    fixture::set_field_repetitions(root, TABLE, SETTING, 2);
+                } else {
+                    let mut names = fixture::names();
+                    names.add_field(TABLE, SETTING, "Setting");
+                    let (table, setting) = ((TABLE, OCCURRENCE), SETTING);
+                    fixture::add_formula(root, &names, table, setting, 0x19, "Setting > 0");
+                }
+            },
+        );
+        let (port, ca) = host(&file.0);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let capabilities = provider.record_capabilities(tasks).unwrap();
+        assert_eq!(
+            capabilities.editable_fields.unwrap().contains("Setting"),
+            offered
+        );
+        let global = |provider: &mut NativeProvider, repetition| {
+            let data = provider
+                .calc_data(&[CalcNeed::Globals { table: TABLE }])
+                .unwrap();
+            let locale = om_data::calc::Locale::en_us();
+            let cx = om_data::calc::Ctx::new(
+                &locale,
+                om_data::calc::Date::from_ymd(2026, 10, 29).unwrap(),
+            );
+            data.globals[&TABLE]
+                .get(SETTING, repetition)
+                .map(|v| v.to_text(&cx).into_string())
+                .unwrap_or_default()
+        };
+        let typed = |provider: &mut NativeProvider, text: &str| {
+            provider
+                .set_typed_global(TABLE, SETTING, 1, text)
+                .map_err(|error| error.code)
+        };
+        if offered {
+            assert_eq!(typed(&mut provider, "12"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "12");
+            assert_eq!(typed(&mut provider, "12abc"), Err(Some(502)));
+            assert_eq!(typed(&mut provider, ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "12");
+            // Browse's ordinary save of the record checks it too.
+            for (text, code) in [("12abc", 502), ("", 509)] {
+                let saved = provider.update_record(tasks, 1, values(&[("Setting", text)]));
+                assert_eq!(saved.map(|_| ()).map_err(|e| e.code), Err(Some(code)));
+            }
+            assert_eq!(global(&mut provider, 1), "12");
+            assert!(provider
+                .update_record(tasks, 1, values(&[("Setting", "7")]))
+                .is_ok());
+            assert_eq!(global(&mut provider, 1), "7");
+            // Not empty holds while another repetition has a value, as at a
+            // record's commit.
+            let second = |provider: &mut NativeProvider, text: &str| {
+                provider
+                    .set_typed_global(TABLE, SETTING, 2, text)
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(second(&mut provider, ""), Ok(()));
+            let batch = |provider: &mut NativeProvider, first: &str, second: &str| {
+                provider
+                    .set_typed_globals(
+                        TABLE,
+                        &[((SETTING, 1), first.into()), ((SETTING, 2), second.into())].into(),
+                    )
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(batch(&mut provider, "", "3"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, "7"), Ok(()));
+            assert_eq!(batch(&mut provider, "", ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "7");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, ""), Ok(()));
+            assert_eq!(second(&mut provider, ""), Err(Some(509)));
+        } else {
+            assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
+            assert_eq!(global(&mut provider, 1), "");
+        }
         provider.close();
     }
 }

@@ -4069,12 +4069,195 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
 
+/// Character runs that differ only in color print each in its own, as
+/// Browse colors them: a line keeps its baseline and wrapping and changes
+/// color where its runs do, each part from where the previous one ends
+/// (#106). Stored styles compare every byte but the color's, so an explicit
+/// size 0 differs from an unset size. Runs that are not their text's
+/// partition, runs in several sizes, and a value other than the text the
+/// runs are stored for refuse with 3.
+#[test]
+fn character_runs_print_in_their_own_colors() {
+    use om_layout::{CharacterStyle, StyledRun};
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let advance = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                f64::from(
+                    font.glyph_hor_advance(font.glyph_index(ch).unwrap())
+                        .unwrap(),
+                )
+            })
+            .sum::<f64>()
+            * 12.0
+            / f64::from(font.units_per_em())
+    };
+    // A stored color-only style (mask 0x0004, layout-model.md 8.1), and the
+    // same with an explicit size of 0 (mask 0x0006).
+    let stored = |mask: u16, rgb: [u8; 3]| {
+        let mut raw = mask.to_be_bytes().to_vec();
+        raw.extend([0; 6]);
+        raw.extend([rgb[0], rgb[1], rgb[2], 255]);
+        CharacterStyle {
+            color: Some(Color {
+                red: f32::from(rgb[0]) / 255.0,
+                green: f32::from(rgb[1]) / 255.0,
+                blue: f32::from(rgb[2]) / 255.0,
+                alpha: 1.0,
+            }),
+            raw,
+            ..Default::default()
+        }
+    };
+    // "Grüße", a CRLF, then a line that wraps after "overdue ": black up to
+    // "overdue", red from there on, across the wrap.
+    let text = "Grüße\r\nTotal overdue item";
+    let red_from = text.find("overdue").unwrap();
+    let width = advance("Total overdue ") + 3.0;
+    let mut colored = label(1, text, rect(12.0, 10.0, width, 60.0), 12.0, false);
+    colored.rich_text.as_mut().unwrap().character_runs = vec![
+        StyledRun {
+            range: 0..red_from,
+            style: stored(4, [0, 0, 0]),
+        },
+        StyledRun {
+            range: red_from..text.len(),
+            style: stored(4, [255, 0, 0]),
+        },
+    ];
+    let layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 100.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![colored],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let render = |layout: &Layout, value: &'static str| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 1, paper, &[], move |_, _| Ok(value.to_owned()))
+            .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+            .map_err(|e| (e.code, e.message))
+    };
+    let pdf = render(&layout, text).unwrap();
+    let origin = |word: &str| {
+        let found = text_origins(&pdf, 1, word);
+        assert_eq!(found.len(), 1, "{word}: {found:?}");
+        found[0]
+    };
+    let (first, total, overdue, item) = (
+        origin("Grüße"),
+        origin("Total "),
+        origin("overdue "),
+        origin("item"),
+    );
+    // "overdue " continues "Total "'s line, at its advance, on its baseline;
+    // "item" wraps to the next line, at the line's start.
+    assert!(
+        (overdue.1 - total.1 - advance("Total ")).abs() < 0.01,
+        "{total:?} {overdue:?}"
+    );
+    assert_eq!(overdue.2, total.2);
+    assert_eq!(item.1, total.1);
+    assert!(
+        first.2 > total.2 && total.2 > item.2,
+        "{first:?} {total:?} {item:?}"
+    );
+    // Each part is filled in its color, set just before it.
+    let fill_before = |word: &str| {
+        let glyphs: String = word
+            .chars()
+            .map(|ch| format!("{:04X}", font.glyph_index(ch).unwrap().0))
+            .collect();
+        let at = pdf.find(&format!("<{glyphs}> Tj")).unwrap();
+        let fill = pdf[..at]
+            .lines()
+            .rev()
+            .find(|l| l.ends_with(" rg"))
+            .unwrap();
+        fill.to_owned()
+    };
+    for (word, fill) in [
+        ("Grüße", "0 0 0 rg"),
+        ("Total ", "0 0 0 rg"),
+        ("overdue ", "1 0 0 rg"),
+        ("item", "1 0 0 rg"),
+    ] {
+        assert_eq!(fill_before(word), fill, "{word}");
+    }
+
+    fn runs(layout: &mut Layout) -> &mut Vec<om_layout::StyledRun<CharacterStyle>> {
+        &mut layout.objects.objects[0]
+            .rich_text
+            .as_mut()
+            .unwrap()
+            .character_runs
+    }
+    // Merged or calculated text is not the text the runs are stored for.
+    let several = "Report object 1's text is in several colors and is merged, calculated or \
+                   transformed; only its text as written can print in them";
+    assert_eq!(
+        render(&layout, "Grüße\r\nTotal 3 overdue").unwrap_err(),
+        (3, several.to_owned())
+    );
+    // An explicit size of 0 is not an unset size, nor are two sizes one.
+    let mixed = (3, "Mixed character styles are unsupported".to_owned());
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style = stored(6, [255, 0, 0]);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.raw[7] = 18;
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // A size given only decoded, with the stored bytes unchanged, too.
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // One style stored in a length the decoder does not read still prints,
+    // as before, in one color, and two copies of it as one.
+    let mut odd = layout.clone();
+    let style = CharacterStyle {
+        raw: vec![0; 14],
+        ..Default::default()
+    };
+    for run in runs(&mut odd) {
+        run.style = style.clone();
+    }
+    assert!(render(&odd, text).is_ok());
+    // A field's layout runs in two colors refuse, its filename included.
+    let mut field = layout.clone();
+    field.objects.objects[0].object_type = 1;
+    assert_eq!(render(&field, "notes.txt").unwrap_err(), mixed);
+    // Runs that leave a gap, or overlap, are not the text's partition.
+    let mut gap = layout.clone();
+    runs(&mut gap)[1].range.start += 1;
+    assert_eq!(
+        render(&gap, text).unwrap_err(),
+        (
+            3,
+            "Report object 1's character runs do not cover its text in order".to_owned()
+        )
+    );
+}
+
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
 /// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
 /// the merged field's value. An unclosed `{{` prints as it is, and a
 /// symbol is read within one literal run, never across a merged field.
-/// Other layout symbols still refuse.
+/// `{{PageCount}}` and symbols Browse does not show refuse, as do merge
+/// variables and other symbols in an object whose data format presents
+/// values.
 #[test]
 fn page_number_symbols_print_each_pages_number() {
     use om_layout::TextRun::{Literal, MergeField};
@@ -4119,6 +4302,19 @@ fn page_number_symbols_print_each_pages_number() {
         Literal("<<Page {{PageNumber}}>> / ".into()),
         MergeField("Name".into()),
     ];
+    // A label the runs do not spell is numbered by whole symbols outside
+    // placeholders, by number too.
+    let mut stored = label(
+        8,
+        "Page {{1015}} of <<Name>> (draft)",
+        rect(12.0, 135.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    stored.text_runs = vec![
+        Literal("Page {{1015}} of ".into()),
+        MergeField("Name".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -4138,7 +4334,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5, 6, 7],
+            root: vec![1, 2, 3, 4, 5, 6, 7, 8],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -4153,6 +4349,7 @@ fn page_number_symbols_print_each_pages_number() {
                 noted,
                 named,
                 angled,
+                stored,
             ],
             ..Default::default()
         },
@@ -4211,6 +4408,7 @@ fn page_number_symbols_print_each_pages_number() {
             format!("Note {{{{ <<Name>> / Page {number}"),
             format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
             format!("<<Page {number}>> / <<Name>>"),
+            format!("Page {number} of <<Name>> (draft)"),
         ] {
             let found = text_origins(&labels, 2, &label);
             assert_eq!(
@@ -4220,10 +4418,179 @@ fn page_number_symbols_print_each_pages_number() {
             );
         }
     }
-    let mut dated = layout.clone();
-    dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
+    for symbol in ["{{PageCount}}", "{{1125}}", "{{AccountName}}"] {
+        let mut counted = layout.clone();
+        counted.objects.objects[1].text = Some(format!("Page {{{{PageNumber}}}} of {symbol}"));
+        assert_eq!(
+            render(&counted).unwrap_err(),
+            "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
+             {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+            "{symbol}"
+        );
+    }
+    // A variable name with a space, which Set Variable accepts and Browse
+    // shows as written.
+    let mut spaced = layout.clone();
+    spaced.objects.objects[1].text = Some("Printed by <<$$printed by>>".into());
     assert_eq!(
-        render(&dated).unwrap_err(),
-        "Layout merge symbols other than {{PageNumber}} are unsupported"
+        render(&spaced).unwrap_err(),
+        "Report object 2 holds a <<$...>> OpenMaker does not read as a merge variable; \
+         how FileMaker reads it is unmeasured"
     );
+    // A data format that presents dates (format 7, numeric with the full
+    // year): FileMaker's for a variable or symbol is unmeasured.
+    let mut formatted = layout.clone();
+    formatted.objects.objects[1].data_format = Some(DataFormat {
+        date: om_layout::DateFormat {
+            flags: 7 << 24,
+            ..Default::default()
+        },
+        ..DataFormat::new_field()
+    });
+    for (text, refused) in [
+        ("Page {{PageNumber}}", false),
+        ("Printed {{CurrentDate}}", true),
+        ("Total <<$$total>>", true),
+    ] {
+        formatted.objects.objects[1].text = Some(text.into());
+        assert_eq!(
+            render(&formatted).err(),
+            refused.then(|| {
+                "Report object 2 formats numbers, dates or times and holds a merge variable \
+                 or layout symbol; whether FileMaker formats them is unmeasured"
+                    .to_owned()
+            }),
+            "{text}"
+        );
+    }
+}
+
+/// [`document`] with layout symbols and a merge variable: the header shows
+/// the user name and the date, each body the record's number by name and
+/// by its selector's number (`{{1020}}`), then `$$suffix`'s second
+/// repetition.
+pub(super) fn symbols_document() -> RenderLayout {
+    let mut document = document();
+    let objects = &mut document.layout.objects;
+    objects.objects[1] = label(
+        2,
+        "By {{UserName}} on {{CurrentDate}}",
+        rect(12.0, 44.0, 500.0, 22.0),
+        10.0,
+        false,
+    );
+    objects.objects.push(label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}<<$$suffix[2]>>",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    ));
+    objects.root.push(11);
+    document
+}
+
+/// Layout symbols print as Browse shows them
+/// (`om_data::host::layout::merge_text`), on each record: the record
+/// number its found-set position, the header's user name and date the
+/// session's. In a portal row the record number is the row's, as in Browse
+/// and Preview. A merge variable refuses (#596): this host does not read
+/// the running script's variables.
+#[test]
+fn layout_symbols_print_as_browse_shows_them() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("symbols.pdf");
+    let steps = |path: &std::path::Path| {
+        vec![
+            var("$$suffix", "\" of 9\""),
+            var("$before", "Get ( CurrentDate )"),
+            pdf(&crate::scripting::files::file_line(path), false),
+            exit("Get ( LastError ) & \"|\" & Get ( UserName ) & \"|\" & $before & \"|\" & Get ( CurrentDate )"),
+        ]
+    };
+    let mut c = client(steps(&path));
+    let mut document = symbols_document();
+    let objects = &mut document.layout.objects.objects;
+    let body = objects.iter_mut().find(|o| o.id == 11).unwrap();
+    *body = label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    );
+    c.server.lock().unwrap().refresh_render = Some(document);
+    c.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    let result = c.result();
+    let [error, user, before, after] = result.split('|').collect::<Vec<_>>()[..] else {
+        panic!("{result}");
+    };
+    assert_eq!(error, "0", "{:?}", c.session.s.failure);
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    // Each record's once, in found-set order over the three pages.
+    let pages: Vec<usize> = (1..=9)
+        .map(|n| {
+            let numbered = text_origins(&pdf, 3, &format!("No. {n} / {n}"));
+            assert_eq!(numbered.len(), 1, "{n}");
+            numbered[0].0
+        })
+        .collect();
+    assert!(
+        pages.is_sorted() && pages[0] == 0 && pages[8] == 2,
+        "{pages:?}"
+    );
+    // The header on each page; the date is the day the script ran on.
+    let mut dates = vec![before];
+    if after != before {
+        dates.push(after);
+    }
+    let mut headers: Vec<usize> = (dates.iter())
+        .flat_map(|date| text_origins(&pdf, 3, &format!("By {user} on {date}")))
+        .map(|o| o.0)
+        .collect();
+    headers.sort();
+    assert_eq!(headers, [0, 1, 2], "{dates:?}");
+
+    // `$$suffix[2]` would print empty whatever the script set: refused, and
+    // nothing is written.
+    let refused = temporary.path().join("variables.pdf");
+    let mut v = client(steps(&refused));
+    v.server.lock().unwrap().refresh_render = Some(symbols_document());
+    v.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    assert!(v.result().starts_with("3|"), "{}", v.result());
+    assert!(!refused.exists());
+
+    // The report host answers a portal row's number there.
+    let mut store = Store;
+    let mut io = Io {
+        provider: &mut c.provider,
+        files: &mut c.files,
+        store: &mut store,
+        jobs: &c.jobs,
+        responses: &c.responses,
+    };
+    let mut host = WorkerHost::new(&mut io, &mut c.session.s);
+    host.report_record = Some((9, 2, 0));
+    let row = crate::report::PortalRowContext {
+        occurrence: 6,
+        record: 101,
+        number: 2,
+    };
+    for (row, shown) in [(None, "3"), (Some(row), "2")] {
+        let context = crate::report::in_row(om_data::calc::eval::Context::record(5, 9), row);
+        assert_eq!(
+            om_data::host::layout::merge_text(&mut host, "{{RecordNumber}}", &context),
+            shown
+        );
+    }
 }

@@ -309,7 +309,9 @@ impl NativeProvider {
     /// A saved sort as this provider sorts: fields of `table` reached
     /// through `occurrence` itself, by value or by a value list's order.
     /// `None` for anything else (a related field, a summary order, a
-    /// repetition), which leaves the found set unsorted.
+    /// repetition, a value list the provider cannot list, one of related
+    /// values only included), which leaves the found set unsorted rather
+    /// than sorted in another order.
     fn saved_sort(
         &mut self,
         occurrence: u64,
@@ -725,9 +727,11 @@ impl NativeProvider {
     }
 
     /// The file's own language (`Locale::Type`), which an index in
-    /// language 0 keys text in (query-program.md 7.2).
-    fn file_language(&mut self) -> Result<u32, DataError> {
-        Ok(u32::from(self.calc_schema_cached()?.locale.language.id()))
+    /// language 0 keys text in (query-program.md 7.2): `None` when the
+    /// file's locale record does not decode
+    /// ([`om_data::host::CalcSchema::file_language`]).
+    pub(crate) fn file_language(&mut self) -> Result<Option<u32>, DataError> {
+        Ok(self.calc_schema_cached()?.file_language())
     }
 
     /// The records of `table` (out of `all`) that match `criteria`, ANDed:
@@ -873,7 +877,7 @@ impl NativeProvider {
                 let field = table.field(id).cloned().ok_or_else(|| {
                     DataError::with_code(code::FIELD_MISSING, "A find names a missing field.")
                 })?;
-                let text = text_keys(&field, file_language)?;
+                let text = text_keys(&field, file_language, index)?;
                 Ok((field, index, text))
             })
             .collect::<Result<_, DataError>>()?;
@@ -1108,15 +1112,23 @@ impl NativeProvider {
             let reply = session
                 .query(&program)
                 .map_err(|e| failure("join related records", e))?;
-            if let Some(code) = query_error(&reply.slots) {
-                return Err(DataError::with_code(
-                    i32::from(code),
-                    format!("The host could not join related records (error {code})."),
-                ));
-            }
             let unreadable = || DataError::new("The host's join reply could not be read.");
-            let existed =
-                finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?;
+            let existed = match query_error(&reply.slots) {
+                None => {
+                    finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?
+                }
+                // A join refused on a missing index runs on the client,
+                // as after FileMaker Server's empty answer.
+                Some(code) => match missing_after_refusal(session, code, near, &reads)? {
+                    Some(existed) => existed,
+                    None => {
+                        return Err(DataError::with_code(
+                            i32::from(code),
+                            format!("The host could not join related records (error {code})."),
+                        ))
+                    }
+                },
+            };
             current = if existed.into_iter().all(|existed| existed) {
                 finders::found(&reply.slots).ok_or_else(unreadable)?
             } else {
@@ -1129,7 +1141,7 @@ impl NativeProvider {
                 let text: Vec<(u64, TextKeys)> = fields
                     .iter()
                     .filter_map(|id| near_table.field(*id))
-                    .map(|field| Ok((field.id, text_keys(field, file_language)?)))
+                    .map(|field| Ok((field.id, text_keys(field, file_language, IndexKind::Value)?)))
                     .collect::<Result<_, DataError>>()?;
                 let mut related = RidList::new();
                 for batch in all.chunks(SORT_BATCH) {
@@ -1373,15 +1385,24 @@ pub(crate) fn checked_find(
     let reply = session
         .query(&program)
         .map_err(|e| failure("find records", e))?;
-    if let Some(code) = query_error(&reply.slots) {
-        return Err(DataError::with_code(
-            i32::from(code),
-            format!("The host could not run the find (error {code})."),
-        ));
-    }
     let unreadable = || DataError::new("The host's find reply could not be read.");
-    let existed = finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?;
-    let found = finders::found(&reply.slots).ok_or_else(unreadable)?;
+    let (existed, found) = match query_error(&reply.slots) {
+        None => (
+            finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?,
+            finders::found(&reply.slots).ok_or_else(unreadable)?,
+        ),
+        // A refused find on a missing index is answered as FileMaker
+        // Server's empty one: the caller finds on the client.
+        Some(code) => match missing_after_refusal(session, code, table, &reads)? {
+            Some(existed) => (existed, RidList::new()),
+            None => {
+                return Err(DataError::with_code(
+                    i32::from(code),
+                    format!("The host could not run the find (error {code})."),
+                ))
+            }
+        },
+    };
     let missing = reads
         .into_iter()
         .zip(existed)
@@ -1389,6 +1410,42 @@ pub(crate) fn checked_find(
         .map(|(index, _)| index)
         .collect();
     Ok((found, missing))
+}
+
+/// After the host refused a checked program with `code`, whether each of
+/// `reads` (indexes of `table`) exists, asked again with their GetKeys
+/// alone (`om_query::find::index_check_program`). `None`, so that the
+/// refusal stands, unless `code` is OpenMaker Server's refusal of a query
+/// on an index it cannot build in its field's language
+/// (`om_query::QueryError::UnkeyedIndex`, record-writes.md) and one of
+/// `reads` is missing. FileMaker Server answers a finder on a missing
+/// index with no records instead (query-program.md 7.1). Either way the
+/// client takes its own path for a missing index. A refused query stores
+/// none of the indexes it built, so the checks see the file as it was.
+pub(crate) fn missing_after_refusal(
+    session: &mut om_session::Session,
+    code: u16,
+    table: u64,
+    reads: &[FieldIndex],
+) -> Result<Option<Vec<bool>>, DataError> {
+    if code != om_query::QueryError::UnkeyedIndex.code() {
+        return Ok(None);
+    }
+    let file_id = session
+        .opened_file()
+        .ok_or_else(|| DataError::new("No hosted file is open."))?
+        .reply
+        .file_id;
+    let program = finders::index_check_program(file_id, table, reads);
+    let reply = session
+        .query(&program)
+        .map_err(|e| failure("check the host's indexes", e))?;
+    if query_error(&reply.slots).is_some() {
+        return Ok(None);
+    }
+    let existed = finders::indexes_existed(&reply.slots, reads.len())
+        .ok_or_else(|| DataError::new("The host's index check could not be read."))?;
+    Ok(existed.contains(&false).then_some(existed))
 }
 
 /// [`checked_find`] of `finders` on `field`'s value index, answered only
@@ -1409,21 +1466,32 @@ const CLIENT_FIND_BUDGET: usize = 64 << 20;
 
 /// How a find reads `field`'s index when the host has one: its index
 /// language's form, language 0 the file's own (`file_language`), English
-/// where OpenMaker builds no form ([`om_data::rules::read_text_keys`]).
-fn read_text_keys(field: &om_hbam::Field, file_language: u32) -> TextKeys {
+/// where OpenMaker builds no form ([`om_data::rules::read_text_keys`]),
+/// language 0 too when the file's language is unknown.
+fn read_text_keys(field: &om_hbam::Field, file_language: Option<u32>) -> TextKeys {
     match field.decoded_options() {
         Some(options) if field.data_type == om_hbam::DataType::Text => {
-            om_data::rules::read_text_keys(options.index_language(), file_language)
+            match (options.index_language(), file_language) {
+                (0, None) => TextKeys::Collated,
+                (language, file) => {
+                    om_data::rules::read_text_keys(language, file.unwrap_or(language))
+                }
+            }
         }
         _ => TextKeys::Collated,
     }
 }
 
 /// How `field`'s indexes key text: the form of its index language
-/// (query-program.md 7.2), language 0 the file's own (`file_language`). A
-/// text field in a language whose keys are not established cannot be found
-/// without the host's index.
-fn text_keys(field: &om_hbam::Field, file_language: u32) -> Result<TextKeys, DataError> {
+/// (query-program.md 7.2), language 0 the file's own (`file_language`,
+/// `None` when unknown). A text field in a language whose keys are not
+/// established, or in language 0 when the file's is unknown, cannot be
+/// found without the host's index.
+fn text_keys(
+    field: &om_hbam::Field,
+    file_language: Option<u32>,
+    index: IndexKind,
+) -> Result<TextKeys, DataError> {
     if field.data_type != om_hbam::DataType::Text {
         return Ok(TextKeys::Collated);
     }
@@ -1439,7 +1507,19 @@ fn text_keys(field: &om_hbam::Field, file_language: u32) -> Result<TextKeys, Dat
             )
         })?
         .index_language();
-    om_data::rules::written_text_keys(language, file_language).ok_or_else(|| {
+    // A value index in a language FileMaker leaves untailored keys as
+    // English (`value_text_keys`); its word breaks are not established
+    // (French's differ from English's), so word reads keep the written
+    // forms
+    // ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
+    let form = match (index, file_language) {
+        (IndexKind::Value, _) => om_data::rules::value_text_keys(language, file_language),
+        (IndexKind::Word, None) if language == 0 => None,
+        (IndexKind::Word, file) => {
+            om_data::rules::written_text_keys(language, file.unwrap_or(language))
+        }
+    };
+    form.ok_or_else(|| {
         DataError::with_code(
             code::UNSUPPORTED,
             format!(

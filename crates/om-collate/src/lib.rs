@@ -31,9 +31,11 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+mod japanese;
 mod names;
 mod typed;
 
+pub use japanese::japanese_key;
 pub use names::{name_key, Levels, Unkeyed};
 pub use typed::{date_key, number_key, time_key, timestamp_key, DateOrder};
 
@@ -437,29 +439,110 @@ fn word_char(c: char) -> WordChar {
     }
     match table().singles.get(&u32::from(c)) {
         None => WordChar::Word(script(c)),
-        Some(elements)
-            if elements.iter().all(|e| e.primary == 0)
-                && elements.iter().any(|e| e.secondary != 0) =>
-        {
-            WordChar::Extend
-        }
+        Some(_) if accent(c) => WordChar::Extend,
         Some(_) => WordChar::Break,
     }
 }
 
-/// Whether `c`, between `before` and `after`, joins them into one word
-/// (spec 7.1): `-`, `.`, `,`, `:` and `/` between two digits (`3.14`,
-/// `12:30`, `E9D8-45A3`); `.` between two letters (`x.y`), and an
-/// apostrophe (`'` or U+2019) when `apostrophes` (`don't`; French
-/// separates `l'équipe`).
-fn joins_word(before: char, c: char, after: char, apostrophes: bool) -> bool {
-    match c {
-        '-' | ',' | ':' | '/' => before.is_numeric() && after.is_numeric(),
-        '.' => {
-            before.is_numeric() && after.is_numeric()
-                || before.is_alphabetic() && after.is_alphabetic()
+/// A letter of the Latin script in the Latin blocks (Basic Latin to Latin
+/// Extended-B, and Latin Extended Additional), which hold no combining
+/// marks: all their letters but the micro sign U+00B5, whose script is
+/// Common.
+fn latin_letter(c: char) -> bool {
+    c.is_alphabetic() && c != 'µ' && matches!(u32::from(c), 0x41..=0x24f | 0x1e00..=0x1eff)
+}
+
+/// A character the table gives no primary weight but a secondary one: an
+/// accent, which keys with the letter before it.
+fn accent(c: char) -> bool {
+    table().singles.get(&u32::from(c)).is_some_and(|elements| {
+        elements.iter().all(|e| e.primary == 0) && elements.iter().any(|e| e.secondary != 0)
+    })
+}
+
+/// The characters that join two digits or two letters into one word in an
+/// index language's word index (spec 7.2, "Word breaking"): `-` and `,`
+/// join digits and `.` letters in every language, and these vary. The rest
+/// of the word rule is the same in every language probed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WordBreaks {
+    /// `.` joins two digits: all but French (24), Polish (33), Swedish (41,
+    /// 42) and Arabic (49).
+    pub dot_digits: bool,
+    /// `:` joins two digits: all but Italian (30).
+    pub colon_digits: bool,
+    /// `/` joins two digits: 23 of the languages probed.
+    pub slash_digits: bool,
+    /// An apostrophe (`'` or U+2019) joins two letters: all but Catalan
+    /// (16), French (24) and Italian (30).
+    pub apostrophe_letters: bool,
+    /// The middle dot U+00B7 joins two letters: Catalan (16) alone.
+    pub middle_dot_letters: bool,
+    /// The no-break space U+00A0 is part of a word, at either end too
+    /// (`1`, U+00A0, `234` is one word): in every language probed.
+    pub no_break_space: bool,
+}
+
+impl WordBreaks {
+    /// The English rules OpenMaker keys words with today, in English, System
+    /// and Unicode standard: the probe's, but the no-break space separates,
+    /// as before the probe. An index an earlier OpenMaker build wrote holds
+    /// such a value's words apart, and a changed record's old entries are
+    /// found by the rules in force, so the no-break space stays a
+    /// separator until those entries can be swept (#448).
+    pub const ENGLISH: WordBreaks = WordBreaks {
+        dot_digits: true,
+        colon_digits: true,
+        slash_digits: true,
+        apostrophe_letters: true,
+        middle_dot_letters: false,
+        no_break_space: false,
+    };
+
+    /// The word breaks FileMaker Server's engine was probed to use in index
+    /// language `language` (`Locale::Type`): 1, 3, 4, 16-65, 67 and 76, and
+    /// English international (77), which FileMaker stores as English, read
+    /// as English. `None` for the others; Unicode raw (2) breaks words at
+    /// spaces by rules of its own, not built here. English's differ from
+    /// [`Self::ENGLISH`] in the no-break space.
+    pub fn of_language(language: u32) -> Option<WordBreaks> {
+        let language = if language == 77 { 21 } else { language };
+        if !matches!(language, 1 | 3 | 4 | 16..=65 | 67 | 76) {
+            return None;
         }
-        '\'' | '\u{2019}' => apostrophes && before.is_alphabetic() && after.is_alphabetic(),
+        Some(WordBreaks {
+            dot_digits: !matches!(language, 24 | 33 | 41 | 42 | 49),
+            colon_digits: language != 30,
+            slash_digits: matches!(
+                language,
+                1 | 3 | 4 | 16 | 21 | 24 | 27 | 30 | 31 | 39 | 40 | 45..=52 | 54 | 56..=58
+            ),
+            apostrophe_letters: !matches!(language, 16 | 24 | 30),
+            middle_dot_letters: language == 16,
+            no_break_space: true,
+        })
+    }
+}
+
+/// Whether `c`, between `before` and `after`, joins them into one word in
+/// a language with `breaks` (spec 7.2): `-` and `,` between two digits, and
+/// `.`, `:` and `/` where the language joins them (`3.14`, `12:30`,
+/// `E9D8-45A3`, `50/50`); `.` between two letters (`x.y`), an apostrophe
+/// (`don't`; French separates `l'équipe`) and the middle dot (Catalan
+/// `l·l`) where the language joins them. None joins a digit and a letter.
+fn joins_word(before: char, c: char, after: char, breaks: WordBreaks) -> bool {
+    let digits = before.is_numeric() && after.is_numeric();
+    let letters = before.is_alphabetic() && after.is_alphabetic();
+    match c {
+        '-' | ',' => digits,
+        '.' => digits && breaks.dot_digits || letters,
+        ':' => digits && breaks.colon_digits,
+        '/' => digits && breaks.slash_digits,
+        '\'' | '\u{2019}' => letters && breaks.apostrophe_letters,
+        // Between two Latin letters themselves, as Catalan writes `l·l`
+        // (the probe's letters are ASCII): not an accent or another
+        // script's sign (U+0345, U+093F) beside it.
+        '\u{B7}' => breaks.middle_dot_letters && latin_letter(before) && latin_letter(after),
         _ => false,
     }
 }
@@ -468,16 +551,14 @@ fn joins_word(before: char, c: char, after: char, apostrophes: bool) -> bool {
 /// letters and digits of one script class ([`Script`]), accents and U+FFFE
 /// within them, joined across the punctuation [`joins_word`] names. Every
 /// other character separates words: `e-mail` gives `e`, `mail`; `U.S.A.`
-/// gives `U.S.A`; `日本語abc123` gives `日本語`, `abc123`. The word breaks of
-/// other index languages and of Unicode raw are not built here, but for
-/// French's apostrophe ([`words_with`]).
+/// gives `U.S.A`; `日本語abc123` gives `日本語`, `abc123`. English's
+/// joiners; another language's are [`words_in`]'s.
 pub fn words(text: &str) -> Vec<&str> {
-    words_with(text, true)
+    words_in(text, WordBreaks::ENGLISH)
 }
 
-/// [`words`], an apostrophe between letters joining them when `apostrophes`
-/// (English, Unicode standard) and separating them otherwise (French).
-pub fn words_with(text: &str, apostrophes: bool) -> Vec<&str> {
+/// [`words`] in a language with `breaks` ([`WordBreaks::of_language`]).
+pub fn words_in(text: &str, breaks: WordBreaks) -> Vec<&str> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut words = Vec::new();
     // The current word: where it starts, where its last character ends, its
@@ -486,7 +567,12 @@ pub fn words_with(text: &str, apostrophes: bool) -> Vec<&str> {
     let mut word: Option<(usize, usize, Script, char)> = None;
     for (i, &(offset, c)) in chars.iter().enumerate() {
         let end = offset + c.len_utf8();
-        match (word_char(c), &mut word) {
+        let kind = if c == '\u{A0}' && breaks.no_break_space {
+            WordChar::Word(Script::Other)
+        } else {
+            word_char(c)
+        };
+        match (kind, &mut word) {
             (WordChar::Word(script), Some((start, last, current, base))) => {
                 if *current != script {
                     words.push(&text[*start..*last]);
@@ -501,7 +587,7 @@ pub fn words_with(text: &str, apostrophes: bool) -> Vec<&str> {
             (WordChar::Break, Some((_, last, _, base)))
                 if *last == offset
                     && chars.get(i + 1).is_some_and(|&(_, after)| {
-                        script(*base) == script(after) && joins_word(*base, c, after, apostrophes)
+                        script(*base) == script(after) && joins_word(*base, c, after, breaks)
                     }) =>
             {
                 *last = end;
@@ -583,7 +669,31 @@ mod tests {
         );
         // The French FMS sample separates at an apostrophe; English joins.
         assert_eq!(
-            words_with("Revoir ce croquis avec l'équipe.", false),
+            words_in(
+                "Revoir ce croquis avec l'équipe.",
+                WordBreaks::of_language(24).unwrap()
+            ),
+            ["Revoir", "ce", "croquis", "avec", "l", "équipe"]
+        );
+        // The English OpenMaker writes keeps the no-break space separating
+        // (#448); the probed rules keep it in the word.
+        let english = WordBreaks::of_language(21).unwrap();
+        assert_eq!(words("1\u{a0}234"), ["1", "234"]);
+        assert_eq!(words_in("1\u{a0}234", english), ["1\u{a0}234"]);
+        // Catalan joins letters across `·`, not an accent beside it.
+        let catalan = WordBreaks::of_language(16).unwrap();
+        assert_eq!(words_in("l·l", catalan), ["l·l"]);
+        assert_eq!(words_in("1\u{345}·a", catalan), ["1\u{345}", "a"]);
+        assert_eq!(words_in("a·\u{93f}", catalan), ["a", "\u{93f}"]);
+        assert_eq!(words_in("N·µm", catalan), ["N", "µm"]);
+        // The dot does not stay with `a`; the accent after it is a word of
+        // its own, as an alphabetic accent after a separator is today.
+        assert_eq!(words_in("a·\u{345}", catalan), ["a", "\u{345}"]);
+        assert_eq!(
+            words_in(
+                "Revoir ce croquis avec l'équipe.",
+                WordBreaks::of_language(24).unwrap()
+            ),
             ["Revoir", "ce", "croquis", "avec", "l", "équipe"]
         );
         assert_eq!(words("avec l'équipe."), ["avec", "l'équipe"]);
