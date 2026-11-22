@@ -743,8 +743,10 @@ the client's address and session id, without its text (inf).
 
 OpenMaker's own client (`om-session`) answers each call at once and keeps
 the administrator's messages apart from change notifications
-(`Session::take_admin_messages`). It reads the host's calls only while it
-reads for itself, and the desktop does not show them yet
+(`Session::take_admin_messages`). The desktop reads the host's calls each
+second while idle and shows Send Message as FileMaker Pro does
+(desktop-client.md, "Messages from the host"); it does not act on the
+requests to close files or the forced disconnect yet
 ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)).
 
 **Block New Users.** `ServerHandle::set_block_new_users(bool)` and

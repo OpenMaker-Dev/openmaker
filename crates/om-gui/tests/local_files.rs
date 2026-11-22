@@ -1031,7 +1031,7 @@ fn consecutive_fields_are_drafts_until_save_and_survive_reopen() {
                 field.rect.width(),
                 field.rect.height()
             ),
-            (115.0, top, width, 22.0)
+            (115.0, top, width, 44.0)
         );
     }
     let schema = reader.database_schema().unwrap();
@@ -1446,6 +1446,329 @@ fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     common::wait_until(&mut app, "account script finished", |app| {
         !app.state().script_running()
     });
+}
+
+/// Send Mail by SMTP from a desktop script (#89): the message reaches the
+/// server the step names, and a refused password is 1501.
+#[test]
+fn send_mail_sends_through_the_steps_smtp_server() {
+    let (smtp, sessions) = fixture::smtp_server(fixture::smtp_sent_then_refused());
+    let folder = Folder::new("smtp");
+    let scripts = [fixture::script(
+        1,
+        "Mail",
+        vec![
+            fixture::on(86, true),
+            fixture::smtp_mail(smtp, false),
+            fixture::set_variable("$sent", "Get ( LastError )"),
+            fixture::smtp_mail(smtp, true),
+            show("$sent & \"/\" & Get ( LastError )"),
+        ],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::write_tree(&folder.file(), &root);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Mail");
+    common::wait_for_label(&mut app, "0/1501");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the script's end", |app| {
+        !app.state().script_running()
+    });
+    let sessions = sessions.join().unwrap();
+    let sent = sessions[0].concat();
+    assert!(sent.contains("RCPT TO:<kim@example.org>\r\n"), "{sent}");
+    assert!(sent.contains("\r\nSubject: Weekly report\r\n"), "{sent}");
+}
+
+/// Tasks::Note, looked up from Notes::Body through Tasks::Name =
+/// Notes::Task (relationship 1), in the local Tasks file: note 1 "Hi" is
+/// Ship's (task 2), note 2 "w" is Write tests' (task 1), and both tasks'
+/// Note holds a stale "old". With `styled`, task 2's Name is stored with a
+/// style subtree, as a value with character styles is.
+const RELOOKUP_NOTE: u64 = 9;
+
+fn relookup_file(folder: &Folder, scripts: &[om_scripts::Script], styled: bool) {
+    use om_data::field_options::{Lookup, NoMatch};
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let mut root = fixture::tree(scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    let (table, task) = (fixture::TABLE, fixture::TASK);
+    fixture::add_field(&mut root, fixture::NOTES, task, "Task", 1, 1, 0, 0, 0);
+    // Option 0x400: a looked-up value (auto-entry.md, Lookups).
+    fixture::add_field(&mut root, table, RELOOKUP_NOTE, "Note", 1, 1, 0, 0x400, 0);
+    let lookup = Lookup {
+        from: fixture::OCCURRENCE,
+        to: fixture::NOTES_OCCURRENCE,
+        copied: fixture::BODY,
+        copy_empty: false,
+        no_match: NoMatch::DoNotCopy,
+    };
+    let (tasks, notes) = (uint_segment(fixture::TABLE), uint_segment(fixture::NOTES));
+    root.put(
+        &[&tasks, &[3], &[5], &uint_segment(RELOOKUP_NOTE), &[8]],
+        OwnedNode::leaf(Vec::new(), lookup.encode().unwrap()),
+    );
+    fixture::add_relationship(
+        &mut root,
+        1,
+        (fixture::OCCURRENCE, fixture::NAME),
+        0,
+        (fixture::NOTES_OCCURRENCE, fixture::TASK),
+    );
+    let cells: [(&[u8], u64, u64, &str); 5] = [
+        (&notes, 1, fixture::TASK, "Ship"),
+        (&notes, 2, fixture::BODY, "w"),
+        (&notes, 2, fixture::TASK, "Write tests"),
+        (&tasks, 1, RELOOKUP_NOTE, "old"),
+        (&tasks, 2, RELOOKUP_NOTE, "old"),
+    ];
+    for (table, record, field, text) in cells {
+        root.put(
+            &[table, &[5], &serial::encode(record), &uint_segment(field)],
+            om_scripts::text_node(&[], text),
+        );
+    }
+    if styled {
+        // A chunked value beside a style subtree `ff`, in place of the
+        // plain value (calc-values.md, implementation notes).
+        root.put(
+            &[
+                &tasks,
+                &[5],
+                &serial::encode(2),
+                &uint_segment(fixture::NAME),
+            ],
+            OwnedNode::list(
+                Vec::new(),
+                vec![
+                    om_scripts::text_node(&[1], "Ship"),
+                    OwnedNode::list(vec![0xff], Vec::new()),
+                ],
+            ),
+        );
+    }
+    let ids: RidList = (1..=2).collect();
+    root.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
+    root.put(&[&notes, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 2]));
+    fixture::write_tree(&folder.file(), &root);
+}
+
+/// `text` compiled in the Tasks context with Tasks::Note and Notes::Task
+/// named.
+fn relookup_calc(text: &str) -> om_scripts::Calculation {
+    let mut names = fixture::names();
+    names.add_field(fixture::NOTES, fixture::TASK, "Task");
+    names.add_field(fixture::TABLE, RELOOKUP_NOTE, "Note");
+    let mut ctx = om_formula::Context::new(&names);
+    ctx.occurrence = Some(fixture::OCCURRENCE);
+    let compiled = om_formula::compile(text, &ctx).unwrap();
+    om_scripts::Calculation::new(
+        Some(om_formula::formatted::encode(&compiled.tokens)),
+        om_formula::polish::encode(&compiled.expr),
+    )
+}
+
+/// Relookup Field Contents [No dialog; Tasks::`field`].
+fn relookup_step(field: u64) -> om_scripts::ScriptStep {
+    let mut relookup = om_scripts::ScriptStep::new(40);
+    relookup.set_flag(om_scripts::flag::NO_INTERACT, true);
+    relookup.set_field_spec(
+        0,
+        Some(om_scripts::FieldSpec::new(
+            om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+            om_scripts::StoredKey::from_id(field).unwrap(),
+            0,
+        )),
+    );
+    relookup
+}
+
+/// Run script `name` of the open file and read its dialog `expected`.
+fn run_and_read(app: &mut App, name: &str, expected: &str) {
+    common::open_menu(app, "Scripts");
+    common::click(app, name);
+    common::wait_for_label(app, expected);
+    common::click(app, "OK");
+    common::wait_until(app, "the script's end", |app| !app.state().script_running());
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+/// Relookup Field Contents [No dialog; Tasks::Name] copies every found
+/// record's lookup again (#87), the match field keeping its value and the
+/// window its record.
+#[test]
+fn relookup_field_contents_copies_each_found_records_lookup_again() {
+    let folder = Folder::new("relookup");
+    let report = "GetNthRecord ( Tasks::Note ; 1 ) & \",\" & GetNthRecord ( Tasks::Note ; 2 ) \
+                  & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name";
+    let mut shown = show("\"\"");
+    shown.set_calculation(1, Some(&relookup_calc(report)));
+    // A Name the open transaction holds is not written over with the
+    // stored one: Relookup refuses it (3), which fails the transaction
+    // (script-runtime.md 8.4), so the block ends reverted and Tasks::Name
+    // reads its stored value again.
+    let mut held_report = show("\"\"");
+    held_report.set_calculation(
+        1,
+        Some(&relookup_calc(
+            "\"held:\" & Get ( LastError ) & \"/\" & Tasks::Name",
+        )),
+    );
+    let transaction = |id: u16, commit_at: u16| {
+        let mut step = om_scripts::ScriptStep::new(id);
+        step.value = commit_at;
+        step
+    };
+    let scripts = [
+        fixture::script(1, "Relookup", vec![relookup_step(fixture::NAME), shown]),
+        fixture::script(
+            2,
+            "Held",
+            vec![
+                fixture::on(86, true),
+                transaction(205, 4),
+                fixture::set_field(fixture::NAME, "\"new key\""),
+                relookup_step(fixture::NAME),
+                transaction(206, 4),
+                held_report,
+            ],
+        ),
+    ];
+    relookup_file(&folder, &scripts, false);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    // Each task's note, the step's error, and the record the window was on.
+    run_and_read(&mut app, "Relookup", "w,Hi/0/Write tests");
+    run_and_read(&mut app, "Held", "held:3/Write tests");
+}
+
+/// What Relookup Field Contents refuses writes no record: a field no
+/// lookup matches through, and a match field one record stores with
+/// character styles, which writing its text back would drop. Both are 3,
+/// both notes stay "old", and the window holds nothing uncommitted. (A
+/// match field that enters its own value is refused by the rules'
+/// `relookup_target`, tested there.)
+#[test]
+fn relookup_field_contents_writes_nothing_it_refuses() {
+    let folder = Folder::new("relookup-refused");
+    let report = "$count & \"/\" & Get ( LastError ) & \"/\" & GetNthRecord ( Tasks::Note ; 1 ) \
+                  & \",\" & GetNthRecord ( Tasks::Note ; 2 ) & \"/\" & Get ( RecordOpenState )";
+    let mut shown = show("\"\"");
+    shown.set_calculation(1, Some(&relookup_calc(report)));
+    let scripts = [fixture::script(
+        1,
+        "Refused",
+        vec![
+            fixture::on(86, true),
+            relookup_step(fixture::COUNT),
+            fixture::set_variable("$count", "Get ( LastError )"),
+            relookup_step(fixture::NAME),
+            shown,
+        ],
+    )];
+    relookup_file(&folder, &scripts, true);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    run_and_read(&mut app, "Refused", "3/3/old,old/0");
+}
+
+/// Records > Relookup Field Contents runs the step with its dialog on the
+/// field entered (#87): Cancel relooks up nothing, and OK copies each found
+/// record's lookup again. With no field entered, or typing in the record,
+/// the item is off.
+#[test]
+fn the_records_menu_relooks_up_through_the_field_entered() {
+    use egui_kittest::kittest::NodeT as _;
+    use om_scripts::relookup::{message, MENU_PATH};
+    let folder = Folder::new("relookup-menu");
+    let mut shown = show("\"\"");
+    shown.set_calculation(
+        1,
+        Some(&relookup_calc(
+            "GetNthRecord ( Tasks::Note ; 1 ) & \",\" & GetNthRecord ( Tasks::Note ; 2 )",
+        )),
+    );
+    relookup_file(&folder, &[fixture::script(1, "Notes", vec![shown])], false);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    let [menu, item] = MENU_PATH;
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    assert!(app.get_by_label(item).accesskit_node().is_disabled());
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
+    let relookup = |app: &mut App, answer: &str| {
+        app.get_all_by_role_and_label(egui::Role::TextInput, "Name")
+            .next()
+            .unwrap()
+            .click();
+        app.run_steps(2);
+        common::open_menu(app, menu);
+        common::click(app, item);
+        common::wait_for_label(app, &message("Name", 2));
+        common::click(app, answer);
+        common::wait_until(app, "the step's end", |app| !app.state().script_running());
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    };
+    relookup(&mut app, "Cancel");
+    run_and_read(&mut app, "Notes", "old,old");
+    relookup(&mut app, "OK");
+    run_and_read(&mut app, "Notes", "w,Hi");
+    // Typing in the frame of the click (one raw input batch: the
+    // harness's queued events take a frame each) opens no dialog and runs
+    // nothing. (`run_step` checks the item again at dispatch; this harness
+    // does not show the frame order that would reach that check.)
+    app.get_all_by_role_and_label(egui::Role::TextInput, "Name")
+        .next()
+        .unwrap()
+        .click();
+    app.run_steps(2);
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    let at = app.get_by_label(item).rect().center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.input_mut()
+        .events
+        .extend([egui::Event::PointerMoved(at), button(true)]);
+    app.step();
+    app.input_mut()
+        .events
+        .extend([egui::Event::Text("y".into()), button(false)]);
+    app.run_steps(6);
+    assert!(app.query_by_label(&message("Name", 2)).is_none());
+    assert!(!app.state().script_running());
+    // Typed in, the record has something to commit, which the step would
+    // commit past the field's triggers (#624): the item is off.
+    app.event(egui::Event::Text("x".into()));
+    app.run_steps(2);
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    assert!(app.get_by_label(item).accesskit_node().is_disabled());
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
 }
 
 /// A folder of its own holding a copy of a given file as `Tasks.fmp12`,

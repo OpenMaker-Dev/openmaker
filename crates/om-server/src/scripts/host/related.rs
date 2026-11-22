@@ -25,7 +25,7 @@ use om_data::host::{
 };
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{FieldKind, OwnedNode, RidList};
-use om_scripts::runtime::{ErrorCode, HostResult, LayoutTarget, Mode, RelatedRecords};
+use om_scripts::runtime::{ErrorCode, HostError, HostResult, LayoutTarget, RelatedRecords};
 
 use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
 use crate::modcount;
@@ -102,23 +102,32 @@ impl SessionSource<'_> {
         }
         let all: RidList = self.records(to.id)?.iter().copied().collect();
         let mut matched = RidList::new();
-        for &record in sources {
-            let mut these = all.clone();
+        'records: for &record in sources {
+            // Each predicate's match values first: a predicate with none
+            // relates nothing, whatever any index holds, so no index is
+            // read (an empty match value never matches, file-metadata.md
+            // 4.3).
+            let mut lookups = Vec::new();
             for predicate in &hop.predicates {
                 if predicate.op == JoinOp::Cartesian {
                     continue;
                 }
                 let Some(right) = to.fields.get(&predicate.right) else {
-                    these = RidList::new();
-                    break;
+                    continue 'records;
                 };
-                // An empty match value never matches (file-metadata.md 4.3).
                 let texts: Vec<String> = self
                     .match_values(from, hop.from, record, predicate.left)?
                     .iter()
                     .map(|v| v.to_text(cx).into_string())
                     .collect();
-                let found = host.index_lookup(to.id, predicate.right, right.value_type, &texts);
+                if texts.is_empty() {
+                    continue 'records;
+                }
+                lookups.push((predicate.right, right.value_type, texts));
+            }
+            let mut these = all.clone();
+            for (field, value_type, texts) in &lookups {
+                let found = host.index_lookup(to.id, *field, *value_type, texts)?;
                 these = these.and(&found);
             }
             matched = matched.or(&these);
@@ -272,14 +281,17 @@ impl ServerHost {
     }
 
     /// The records of `table` whose value index for `field` holds a key of
-    /// one of `texts` (each keyed as a value of `value_type`).
+    /// one of `texts` (each keyed as a value of `value_type`). Error 3 when
+    /// the index is missing and cannot be built (a text field in a language
+    /// this server does not key, `Store::index_on_demand`): a scan would
+    /// compare in English, which the index would not.
     fn index_lookup(
         &self,
         table: u64,
         field: u64,
         value_type: ValueType,
         texts: &[String],
-    ) -> RidList {
+    ) -> Result<RidList, CalcError> {
         let data_type = match value_type {
             ValueType::Number => om_hbam::DataType::Number,
             ValueType::Date => om_hbam::DataType::Date,
@@ -301,8 +313,7 @@ impl ServerHost {
                 Some(index) => Some(index),
                 None => {
                     on_demand = om_query::Source::index_on_demand(&*store, &t, &f, VALUE_INDEX)
-                        .ok()
-                        .flatten();
+                        .map_err(|_| CalcError::from_code(3).expect("nonzero"))?;
                     on_demand.as_ref()
                 }
             };
@@ -320,7 +331,7 @@ impl ServerHost {
             self.hosted.write_store().store_indexes_on_demand();
             self.hosted.save();
         }
-        found
+        Ok(found)
     }
 
     /// The records of `related` related to `record` of `occurrence`, in
@@ -352,21 +363,6 @@ impl ServerHost {
         Ok(records)
     }
 
-    /// The new window Go to Related Record opens: named as the step names
-    /// it, on no layout of its own.
-    fn related_window(&self, request: &RelatedRecords<'_>) -> om_scripts::runtime::NewWindow {
-        let cx = Ctx::new(&self.locale, self.today);
-        om_scripts::runtime::NewWindow {
-            name: request.window[0]
-                .as_ref()
-                .map(|v| v.to_text(&cx).into_string()),
-            bounds: Default::default(),
-            layout: None,
-            style: 0,
-            options: request.options,
-        }
-    }
-
     /// Go to Related Record (script-steps.md 11.8): the records related to
     /// the current record, or to every record of the found set, on the
     /// layout given (or the first layout of the related table), as the
@@ -376,15 +372,32 @@ impl ServerHost {
     pub(super) fn go_to_related(&mut self, request: &RelatedRecords<'_>) -> HostResult {
         let related = request.occurrence.ok_or(ErrorCode::INVALID)?;
         self.require_view()?;
-        // Before the open record is left a refusal changes nothing: the new
-        // window is checked holding at most every record of the related
-        // table, then again with the records found.
         if request.new_window {
-            let table = self.schema.table_of(related).ok_or(super::TABLE_MISSING)?;
-            let upper = self.table_record_count(table);
-            self.check_new_window(&self.related_window(request), Some(upper))?;
+            // The post-commit relationship can differ from the one visible
+            // now (for example, an auto-entered match value). A join or
+            // layout failure at that point would already have saved the edit.
+            if self.record.is_some() {
+                return Err(HostError::Unsupported);
+            }
+            let name = request.window[0]
+                .as_ref()
+                .map(|value| value.to_text(&self.cx()).into_string());
+            return self.open_window(name.as_deref(), false, |host| {
+                host.related_destination(request, related).map(Some)
+            });
         }
         self.leave()?;
+        let next = self.related_destination(request, related)?;
+        self.requests.clear();
+        self.window = Some(next);
+        Ok(())
+    }
+
+    fn related_destination(
+        &self,
+        request: &RelatedRecords<'_>,
+        related: u64,
+    ) -> HostResult<Window> {
         let window = self.window()?;
         let from = window.occurrence;
         let sources: Vec<u64> = if request.match_found_set {
@@ -414,28 +427,21 @@ impl ServerHost {
             }),
         }
         .ok_or(ErrorCode::LAYOUT_MISSING)?;
-        let mut next: Window = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let mut next = self
+            .empty_window_on(index)
+            .ok_or(ErrorCode::LAYOUT_MISSING)?;
         if next.table != table {
             return Err(super::TABLE_MISSING.into());
         }
-        next.mode = Mode::Browse;
         if request.show_only_related {
             next.found = ids;
-            next.current = 0;
         } else {
+            next.found = self.all_records(table);
             next.current = next.found.iter().position(|id| *id == ids[0]).unwrap_or(0);
         }
-        next.found.shrink_to_fit();
         if request.new_window {
-            // The window opens holding the found set prepared for it.
-            let incoming = next.found.len();
-            self.open_window(&self.related_window(request), Some(incoming))?;
+            next.found.shrink_to_fit();
         }
-        self.requests.clear();
-        self.window = Some(next);
-        if request.new_window {
-            self.keep_windows_within_budget()?;
-        }
-        Ok(())
+        Ok(next)
     }
 }

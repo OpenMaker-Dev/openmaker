@@ -1,0 +1,106 @@
+# scan dump: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:23=0 1:16=1 2:141=0 3:71=6 4:141=0 5:16=4 6:73=3 7:103=0
+# scan make: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:76=0 4:75=0 5:7=0 6:76=0 7:76=0 8:75=0 9:7=0 10:76=0 11:76=0 12:75=0 13:103=0
+# scan two older: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:76=0 4:75=0 5:103=0
+# scan key only: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:76=0 4:75=0 5:103=0
+# scan edit into: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:22=0 2:76=0 3:28=0 4:76=0 5:75=0 6:103=0
+# scan edit other field: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:22=0 2:76=0 3:28=0 4:76=0 5:75=0 6:103=0
+# scan held pair: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:205=8 2:7=0 3:76=0 4:76=0 5:7=0 6:76=0 7:76=0 8:206=8 9:103=0
+# scan: close 13
+make		0	3 [||0||][G2||0||][G2|a1|0||][||0||][G2||1|a1|a1][G2|a2|1|a1|a1][||0||][G0||0||][G0|c|0||]	0
+>	1	make	1	6	0	0	0	0
+>	1	make	2	7	0	0	0	0
+>	1	make	3	76	0	0	0	0
+>	1	make	4	76	0	0	0	0
+>	1	make	5	75	0	0	0	0
+>	1	make	6	7	0	0	0	0
+>	1	make	7	76	0	0	0	0
+>	1	make	8	76	0	0	0	0
+>	1	make	9	75	0	0	0	0
+>	1	make	10	7	0	0	0	0
+>	1	make	11	76	0	0	0	0
+>	1	make	12	76	0	0	0	0
+>	1	make	13	75	0	0	0	0
+>	1	make	14	103	0	0	1	0
+dump		101	a1=G2|a1|0|| a2=G2|a2|1|a1|a1 c=G0|c|0|| 	101
+>	1	dump	1	23	0	0	0	0
+>	1	dump	2	16	0	0	0	0
+>	1	dump	3	141	0	0	0	0
+>	1	dump	4	71	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+!	101	work : dump : 7 : Go to Record/Request/Page
+>	1	dump	6	16	101	0	0	101
+>	1	dump	8	103	0	0	1	101
+two older		0	G2|n3|2|a1,a2|a1 [||0||][G2||2|a1,a2|a1][G2|n3|2|a1,a2|a1]	0
+>	1	two older	1	6	0	0	0	0
+>	1	two older	2	7	0	0	0	0
+>	1	two older	3	76	0	0	0	0
+>	1	two older	4	76	0	0	0	0
+>	1	two older	5	75	0	0	0	0
+>	1	two older	6	103	0	0	1	0
+key only		0	G2|k4|3|a1,a2,n3|a1 [||0||][|k4|0||][G2|k4|3|a1,a2,n3|a1]	0
+>	1	key only	1	6	0	0	0	0
+>	1	key only	2	7	0	0	0	0
+>	1	key only	3	76	0	0	0	0
+>	1	key only	4	76	0	0	0	0
+>	1	key only	5	75	0	0	0	0
+>	1	key only	6	103	0	0	1	0
+edit into		0	1 G2|c|4|a1,a2,n3,k4|a1 [G2|c|4|a1,a2,n3,k4|a1]	0
+>	1	edit into	1	6	0	0	0	0
+>	1	edit into	2	22	0	0	0	0
+>	1	edit into	3	76	0	0	0	0
+>	1	edit into	4	28	0	0	0	0
+>	1	edit into	5	76	0	0	0	0
+>	1	edit into	6	75	0	0	0	0
+>	1	edit into	7	103	0	0	1	0
+edit other field		0	1 G2|a1x|5|a1x,a2,c,n3,k4|a1x [G2|a1x|5|a1x,a2,c,n3,k4|a1x]	0
+>	1	edit other field	1	6	0	0	0	0
+>	1	edit other field	2	22	0	0	0	0
+>	1	edit other field	3	76	0	0	0	0
+>	1	edit other field	4	28	0	0	0	0
+>	1	edit other field	5	76	0	0	0	0
+>	1	edit other field	6	75	0	0	0	0
+>	1	edit other field	7	103	0	0	1	0
+held pair		0	0 G5|h2|0|| [||0||][G5||0||][G5|h1|0||][||0||][G5||0||][G5|h2|0||]	0
+>	1	held pair	1	6	0	0	0	0
+>	1	held pair	2	205	0	0	0	0
+>	1	held pair	3	7	0	0	0	0
+>	1	held pair	4	76	0	0	0	0
+>	1	held pair	5	76	0	0	0	0
+>	1	held pair	6	7	0	0	0	0
+>	1	held pair	7	76	0	0	0	0
+>	1	held pair	8	76	0	0	0	0
+>	1	held pair	9	206	0	0	0	0
+>	1	held pair	10	103	0	0	1	0
+dump		101	a1x=G2|a1x|5|a1x,a2,c,n3,k4|a1x a2=G2|a2|1|a1|a1 c=G2|c|4|a1,a2,n3,k4|a1 n3=G2|n3|2|a1,a2|a1 k4=G2|k4|3|a1,a2,n3|a1 h1=G5|h1|0|| h2=G5|h2|0|| 	101
+>	1	dump	1	23	0	0	0	0
+>	1	dump	2	16	0	0	0	0
+>	1	dump	3	141	0	0	0	0
+>	1	dump	4	71	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+>	1	dump	6	16	0	0	0	0
+>	1	dump	7	73	0	0	1	0
+>	1	dump	5	141	0	0	0	0
+!	101	work : dump : 7 : Go to Record/Request/Page
+>	1	dump	6	16	101	0	0	101
+>	1	dump	8	103	0	0	1	101

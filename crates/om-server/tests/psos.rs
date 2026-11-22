@@ -198,7 +198,8 @@ fn performs_scripts_on_the_server() {
             fixture::slow(1.5),
             // What FileMaker Server's script engine answers for an add-on,
             // a sensor, the media player and Furigana without its
-            // dictionary (s45, calc-functions.md).
+            // dictionary (s45), a sensor it lists, and the location
+            // functions it does not have (s48, calc-functions.md).
             fixture::script(
                 4,
                 "Device functions",
@@ -207,7 +208,14 @@ fn performs_scripts_on_the_server() {
                      \"|\" & EvaluationError ( GetSensor ( \"battery\" ) ) & \"|\" & \
                      GetAVPlayerAttribute ( \"playbackState\" ) & \"|\" & \
                      EvaluationError ( GetAVPlayerAttribute ( \"playbackState\" ) ) & \"|\" & \
-                     Furigana ( \"abc\" )",
+                     Furigana ( \"abc\" ) & \"|\" & \
+                     EvaluationError ( GetSensor ( \"Location\" ) ) & \":\" & \
+                     GetSensor ( \"stepCount\" ; 3600 ) & \"|\" & \
+                     EvaluationError ( Location ( 10 ; 60 ) ) & \"|\" & \
+                     EvaluationError ( LocationValues ( 10 ; 60 ) ) & \"|\" & \
+                     EvaluationError ( RangeBeacons ( \"x\" ; 1 ) ) & \"|\" & \
+                     EvaluationError ( Evaluate ( \"If ( 0 ; Location ( 10 ; 60 ) ; 1 )\" ) ) & \
+                     \"|\" & Evaluate ( \"If ( 0 ; GetSensor ( \" & Quote ( \"battery\" ) & \" ) ; 1 )\" )",
                 )],
             ),
             fixture::script(
@@ -229,7 +237,10 @@ fn performs_scripts_on_the_server() {
     let device = client.perform_script_on_server(4, "", true).unwrap();
     assert_eq!(
         (device.error, device.result.as_str()),
-        (0, "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc")
+        (
+            0,
+            "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc|0:|1208|1208|1208|1208|1"
+        )
     );
     // The two errors' results are `?`, not empty, as s45 shows them.
     for script in [5, 6] {
@@ -589,6 +600,21 @@ fn server_scripts_apply_the_files_record_rules() {
                 exit_with("Get ( LastError ) & \"|\" & Get ( RecordID )"),
             ],
         ),
+        // A new record's auto-entered creator and its stored calculation
+        // read before its commit as the commit stores them (#474), as
+        // FileMaker Server's engine gave an auto-entered value right after
+        // New Record (script oracle s46).
+        script(
+            7,
+            "Before the commit",
+            vec![
+                ScriptStep::new(7),
+                set_field(COUNT, "4"),
+                set_variable("$before", "Tasks::Creator & \"|\" & Tasks::Doubled"),
+                ScriptStep::new(75),
+                exit_with("$before & \"|\" & Tasks::Creator & \"|\" & Tasks::Doubled"),
+            ],
+        ),
     ];
     let file = TempFile::new("rules", &scripts, true);
     let port = start(&file, None);
@@ -609,6 +635,7 @@ fn server_scripts_apply_the_files_record_rules() {
     assert_eq!(cell(&after, 4, COUNT), Some("21"));
     assert_eq!(cell(&after, 4, DOUBLED), Some("42"));
     assert_eq!(cell(&after, 4, CREATOR), Some("Admin"));
+    assert_eq!(run(&mut client, 7), (0, "Admin|8|Admin|8".into()));
     client.disconnect().unwrap();
 
     // A rule the server cannot enforce (an auto-entered serial number)
@@ -638,6 +665,148 @@ fn server_scripts_apply_the_files_record_rules() {
     assert_eq!(run(&mut client, 4), (0, "3|3".into()));
     assert_eq!(records(&mut client).len(), 2);
     assert_eq!(cell(&records(&mut client), 1, NAME), Some("Write tests"));
+    client.disconnect().unwrap();
+}
+
+/// A server script's Set Field into a field that must be a member of a
+/// value list of a field's values, that field indexed in a language
+/// OpenMaker does not key (German, 25, #299): refused with 3, with the
+/// index or without, rather than keyed in English, which would accept
+/// "Ship" here (#571). The index holds the key FileMaker built for record
+/// 2's "Ship" (alike in English and German), which English keys would
+/// find.
+#[test]
+fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
+    use fixture::{exit_with, go_to_record, on, script, set_field, set_variable};
+    use om_query::keys::{record_value_entries, TextKeys};
+    let index_path = [uint_segment(TABLE), vec![1], uint_segment(NAME), vec![0]];
+    let index_path: Vec<&[u8]> = index_path.iter().map(Vec::as_slice).collect();
+    for indexed in [false, true] {
+        let mut tree = fixture::tree(
+            &[script(
+                4,
+                "Code from names",
+                vec![
+                    on(86, true),
+                    go_to_record(1),
+                    set_field(CODE, "\"Ship\""),
+                    set_variable("$error", "Get ( LastError )"),
+                    ScriptStep::new(75),
+                    exit_with("$error"),
+                ],
+            )],
+            true,
+        );
+        if indexed {
+            fixture::set_field_options(&mut tree, TABLE, NAME, 0x8000_0000);
+            let ship = record_value_entries(
+                om_hbam::catalog::DataType::Text,
+                &["Ship".to_owned()],
+                om_collate::DateOrder::MonthDayYear,
+                TextKeys::Collated,
+            );
+            for key in ship {
+                let records: om_hbam::RidList = [2].into_iter().collect();
+                let mut path = index_path.clone();
+                path.push(&key);
+                tree.put(&path, records.to_node(Vec::new()));
+            }
+        }
+        fixture::set_field_language(&mut tree, TABLE, NAME, 25);
+        fixture::code_in_names_list(&mut tree);
+        let file = TempFile::from_tree("list-language", &tree);
+        let on_disk = om_hbam::HbamFile::open(&file.0).unwrap();
+        let index = on_disk.subtree(&index_path).unwrap();
+        assert_eq!(
+            index.is_some_and(|i| !i.children.is_empty()),
+            indexed,
+            "the index as the server opens it"
+        );
+        let port = start(&file, None);
+        let mut client = logged_in(port, "list-language");
+        assert_eq!(run(&mut client, 4), (0, "3".into()), "indexed={indexed}");
+        assert_eq!(cell(&records(&mut client), 1, CODE), None);
+        client.disconnect().unwrap();
+    }
+}
+
+/// A server script's Set Field into a field that must be a member of a
+/// value list of a number field's values (Tasks::Count; record 2 holds 5):
+/// the value is checked as a number, as the index keys numbers
+/// (query-program.md 7.3; #591): `5.0` is listed, `4` is not (506). A value
+/// no number OpenMaker keys is looked up as text, as before: `abc` is not
+/// listed (506), and in a German file a stored `379,5`, a decimal comma
+/// OpenMaker does not read as a number yet (#415), is listed as itself.
+#[test]
+fn a_value_list_of_a_number_field_checks_values_as_numbers() {
+    use fixture::{exit_with, go_to_record, on, script, set_field};
+    let attempt = |n: u64, text: &str| {
+        script(
+            n,
+            "Code from counts",
+            vec![
+                on(86, true),
+                go_to_record(1),
+                set_field(CODE, &format!("\"{text}\"")),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+    };
+    let mut tree = fixture::tree(
+        &[
+            attempt(4, "5.0"),
+            attempt(5, "4"),
+            attempt(6, "abc"),
+            attempt(7, "379,5"),
+            attempt(8, "3"),
+            attempt(9, "3.000"),
+        ],
+        true,
+    );
+    fixture::code_in_list_of(&mut tree, COUNT);
+    let count_of = |tree: &mut om_hbam::OwnedNode, record: u64, text: &str| {
+        tree.put(
+            &[
+                &uint_segment(TABLE),
+                &[5],
+                &serial::encode(record),
+                &uint_segment(COUNT),
+            ],
+            om_scripts::text_node(&[], text),
+        )
+    };
+    // Record 1's Count `3` is followed by a zero-width space, which gives
+    // it no number key: it still compares as text with `3`.
+    count_of(&mut tree, 1, "3\u{200b}");
+    let file = TempFile::from_tree("list-of-numbers", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "list-of-numbers");
+    // The exit result is the Set Field's error.
+    assert_eq!(run(&mut client, 4).1, "0");
+    assert_eq!(run(&mut client, 5).1, "506");
+    assert_eq!(run(&mut client, 6).1, "506");
+    assert_eq!(run(&mut client, 8).1, "0");
+    client.disconnect().unwrap();
+    // A German file whose records hold Count `3` and `379,5`. `3.000` is
+    // 3000 there; OpenMaker does not read it as one yet and compares it as
+    // text (#415), never as 3.
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        decimal_separator: ',',
+        thousands_separator: '.',
+        ..om_calc::Locale::en_us()
+    };
+    tree.put(
+        &[&[2], &[0x0d]],
+        om_hbam::OwnedNode::leaf(Vec::new(), german.to_record()),
+    );
+    count_of(&mut tree, 1, "3");
+    count_of(&mut tree, 2, "379,5");
+    let file = TempFile::from_tree("list-of-german-numbers", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "list-of-german-numbers");
+    assert_eq!(run(&mut client, 7).1, "0");
+    assert_eq!(run(&mut client, 9).1, "506");
     client.disconnect().unwrap();
 }
 
@@ -876,6 +1045,56 @@ fn a_sub_script_cannot_change_the_record_its_elevated_caller_opened() {
 }
 
 /// Set Variable [name; ExecuteSQL ( sql ; "|" ; "," )].
+/// Send Mail by SMTP from a server script (#89): the message reaches the
+/// server named in the step, a refused password is 1501, and the email
+/// client, which a server has not, is 3.
+#[test]
+fn send_mail_sends_through_the_steps_smtp_server() {
+    use fixture::{exit_with, on, script, set_variable};
+    let (smtp, mail) = fixture::smtp_server(fixture::smtp_sent_then_refused());
+    let mut client_mail = fixture::smtp_mail(smtp, false);
+    client_mail.set_number_bool(4, Some(false));
+    let scripts = [script(
+        4,
+        "Mail",
+        vec![
+            on(86, true),
+            fixture::smtp_mail(smtp, false),
+            set_variable("$sent", "Get ( LastError )"),
+            fixture::smtp_mail(smtp, true),
+            set_variable("$refused", "Get ( LastError )"),
+            client_mail,
+            exit_with("$sent & \"/\" & $refused & \"/\" & Get ( LastError )"),
+        ],
+    )];
+    let file = TempFile::from_tree("smtp", &fixture::tree(&scripts, true));
+    let port = start(&file, None);
+    let mut client = logged_in(port, "smtp");
+    assert_eq!(run(&mut client, 4), (3, "0/1501/3".to_string()));
+    let sessions = mail.join().unwrap();
+    let sent = sessions[0].concat();
+    assert!(
+        sent.contains("MAIL FROM:<pat@example.org>\r\nRCPT TO:<kim@example.org>\r\nDATA\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains(
+            "\r\nFrom: Pat <pat@example.org>\r\nTo: kim@example.org\r\nSubject: Weekly report\r\n"
+        ),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("\r\n\r\nSee you\r\nPat\r\n.\r\nQUIT\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sessions[1][1].starts_with("AUTH PLAIN "),
+        "{:?}",
+        sessions[1]
+    );
+    client.disconnect().unwrap();
+}
+
 fn query(name: &str, sql: &str) -> ScriptStep {
     fixture::set_variable(name, &format!("ExecuteSQL ( {sql:?} ; \"|\" ; \",\" )"))
 }
@@ -1726,4 +1945,38 @@ fn delete_account_removes_the_account_and_its_index_entries() {
     let value = |key: u8| index.child(&[key]).and_then(|n| n.value);
     assert_eq!(value(4), Some(&1u32.to_be_bytes()[..]));
     assert_eq!(value(0), Some(&[1, 3][..]));
+}
+
+/// Print Setup (42) in a server script: with neither Restore nor its
+/// dialog it sets nothing (0). A restored setup, which would configure PDF
+/// output OpenMaker Server cannot make yet, and one with its dialog on are
+/// 3, and so is Save Records as PDF (144, #104).
+#[test]
+fn print_setup_sets_nothing_on_the_server_and_pdf_is_3() {
+    use fixture::{exit_with, on, script, set_variable};
+    use om_data::flag;
+    // A4 portrait at 100%, 8.5 pt insets (script-steps.md 11.6).
+    const A4: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x08\x00\x00\xc1\x08\x00\x00\x44\x12\xb1\x48\x44\x50\x57\x0a\x44\x10\x91\x48\x44\x4e\x37\x0a";
+    let setup = |flags: u32| {
+        let mut step = ScriptStep::new(42);
+        step.flags = flags;
+        step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], A4)));
+        step
+    };
+    let steps = vec![
+        on(86, true),
+        setup(flag::RESTORE | flag::NO_INTERACT),
+        set_variable("$restored", "Get ( LastError )"),
+        setup(flag::NO_INTERACT),
+        set_variable("$nothing", "Get ( LastError )"),
+        setup(0),
+        set_variable("$dialog", "Get ( LastError )"),
+        ScriptStep::new(144),
+        exit_with("$restored & \"/\" & $nothing & \"/\" & $dialog & \"/\" & Get ( LastError )"),
+    ];
+    let tree = fixture::tree(&[script(4, "Print", steps)], true);
+    let file = TempFile::from_tree("print-setup", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "print-setup");
+    assert_eq!(run(&mut client, 4), (3, "3/0/3/3".into()));
 }

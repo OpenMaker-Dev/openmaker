@@ -79,6 +79,8 @@ pub(crate) fn report_family(face: crate::report::ReportFace) -> FontFamily {
         ReportFace::InterBold => semibold(),
         ReportFace::Sans => FontFamily::Name("report-liberation-sans".into()),
         ReportFace::SansBold => FontFamily::Name("report-liberation-sans-bold".into()),
+        ReportFace::SansItalic => FontFamily::Name("report-liberation-sans-italic".into()),
+        ReportFace::SansBoldItalic => FontFamily::Name("report-liberation-sans-bold-italic".into()),
     }
 }
 
@@ -156,6 +158,11 @@ fn fonts() -> FontDefinitions {
     for (name, bytes) in [
         ("report-liberation-sans", crate::report::SANS),
         ("report-liberation-sans-bold", crate::report::SANS_BOLD),
+        ("report-liberation-sans-italic", crate::report::SANS_ITALIC),
+        (
+            "report-liberation-sans-bold-italic",
+            crate::report::SANS_BOLD_ITALIC,
+        ),
     ] {
         fonts
             .font_data
