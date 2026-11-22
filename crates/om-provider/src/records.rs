@@ -1209,8 +1209,8 @@ impl NativeProvider {
         let options = field
             .decoded_options()
             .ok_or_else(|| unsupported("the field definition is unreadable."))?;
-        // A typed source's value looked up as text compares as a whole, not
-        // by lines, as OpenMaker Server's scan compares it.
+        // A typed source's text fallback compares each stored repetition
+        // whole, skipping absent cells, as OpenMaker Server's scan does.
         let whole = matches!(keys, IndexKeys::Text(_)) && field.data_type != DataType::Text;
         // The caller keyed the value as `keys`: stored values are keyed
         // the same, a text source only in that form, a typed one as its
@@ -1322,15 +1322,17 @@ impl NativeProvider {
                 }
                 let row = stored_record(id, &node);
                 let texts = (1..=repetitions)
-                    .map(|rep| {
+                    .filter_map(|rep| {
                         let cell = om_data::rules::cell_of(field.id, rep as u32);
-                        match cell.and_then(|cell| row.cells.get(&cell)) {
-                            None => Ok(String::new()),
-                            Some(value) => value
-                                .text()
-                                .ok_or_else(|| unsupported("a stored cell is not readable text."))?
-                                .map_err(|e| failure("decode a validation source value", e)),
-                        }
+                        let Some(value) = cell.and_then(|cell| row.cells.get(&cell)) else {
+                            return (!whole).then(|| Ok(String::new()));
+                        };
+                        Some(match value.text() {
+                            Some(text) => {
+                                text.map_err(|e| failure("decode a validation source value", e))
+                            }
+                            None => Err(unsupported("a stored cell is not readable text.")),
+                        })
                     })
                     .collect::<Result<Vec<_>, DataError>>()?;
                 if whole {
@@ -1845,9 +1847,20 @@ impl NativeProvider {
         Ok(stored)
     }
 
+    /// The error `field` of `table` refuses an entry with: `code`, with the
+    /// field's validation message when it has one.
+    pub(super) fn entry_refusal(
+        &mut self,
+        table: u64,
+        field: u64,
+        code: i32,
+    ) -> Result<DataError, DataError> {
+        Ok(self.entry_plan(table)?.refusal(field, code))
+    }
+
     /// The rules of `table`, from the schema read at open (with the opened
     /// file's tables, as `plan_schema` gives it, for an owner's write).
-    fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
+    pub(super) fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
         self.refuse_imported_table(table)?;
         let table = self
             .catalog

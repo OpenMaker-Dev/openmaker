@@ -64,24 +64,22 @@ impl NativeProvider {
         true
     }
 
-    pub(crate) fn set_desktop_global(
+    pub(crate) fn set_desktop_globals<'a>(
         &mut self,
         schema: &CalcSchema,
         table: u64,
-        field: u64,
-        repetition: u32,
-        text: &str,
+        changes: impl IntoIterator<Item = ((u64, u32), &'a str)>,
     ) {
         let (file, table) = match schema.table_context(table) {
             Some(file) => (file_key(&file.file_name), file.file_id(table)),
             None => (file_key(&self.calc.file_name), table),
         };
         let mut desktop = self.desktop.lock().expect("desktop globals");
-        desktop
-            .values
-            .entry(file)
-            .or_default()
-            .insert((table, field, repetition), text.to_owned());
+        desktop.values.entry(file).or_default().extend(
+            changes
+                .into_iter()
+                .map(|((field, repetition), text)| ((table, field, repetition), text.to_owned())),
+        );
         desktop.generation = desktop.generation.wrapping_add(1);
         self.desktop_generation = desktop.generation;
     }

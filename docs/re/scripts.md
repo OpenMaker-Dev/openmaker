@@ -154,9 +154,13 @@ FileMaker Pro's own records were not compared key by key]:
   carries its `f1` when the member has one (an option change, or a copy of
   a script with full access), so the members' digest and the cache's are
   the same, as in Pro's own save (#914). OpenMaker
-  writes only ASCII names, and only in a file whose name list shows the
-  DUCET form for its own ASCII names; deletes, moves and option changes
-  write no name and are saved in any file. New folders and separators
+  writes only ASCII names for now, each under FileMaker's name list key
+  (`field_catalog::listed_key`), in any file whatever its language: a
+  Create New file's empty catalog and the starters whose names show no
+  ASCII key included
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274); [I]:
+  FileMaker Pro has not opened such a file since). Deletes, moves and
+  option changes write no name. New folders and separators
   are not written: how the name list keys a second `--` or `-` is not
   established.
 
@@ -281,7 +285,9 @@ before its node exists.
 4. op13 to `[17, 5, S]`, node state `02`: the script's whole subtree
    (name, steps, parameters; scripts.md "Catalog"). It carries a stamp
    under `fc`: `fc 01` the client's user name, `fc 02` the account name
-   (masked SCSU), `fc 03` `08` + the 8-byte host timestamp from step 2.
+   (masked SCSU), `fc 03` the host timestamp from step 2 as a key string
+   (`08` and 8 bytes in this capture; shorter before 02:46:40,
+   schema-path.md 8.1).
 5. op62 `[17, 5, S]`, type `0a`, attention `0x2`.
 6. op61 `[17, 1]` from 9 to `0a` (the second transaction).
 7. op13 to `[17, 1]`, node state `02`: the whole catalog index (every

@@ -68,6 +68,9 @@ impl LockTable {
     /// The holders of locks that keep `user` from a lock of `lock_type` on
     /// `path`, as a conflict: another lock user's write or exclusive lock
     /// on the path, and another connection's on a path above or below it.
+    /// Each holder is named once, in the order found, however many of its
+    /// locks conflict: a session holding many record locks below a table's
+    /// is one name, not one per record (#136).
     fn conflict(&self, path: &[Vec<u8>], user: LockUser, lock_type: u16) -> Option<Conflict> {
         if !excludes(lock_type) {
             return None;
@@ -96,10 +99,12 @@ impl LockTable {
         if others.is_empty() {
             return None;
         }
+        let mut named = std::collections::HashSet::new();
         Some(Conflict {
             self_conflict: others.iter().any(|h| h.user.connection == user.connection),
             users: others
                 .iter()
+                .filter(|h| named.insert((h.user.connection, h.holder.as_str())))
                 .map(|h| h.holder.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -381,7 +386,8 @@ mod tests {
                 .lock(&table, other, LOCK_WRITE, "B")
                 .unwrap_err()
                 .users,
-            "S (admin)".to_string() + &", S (admin)".repeat(19_999)
+            // One holder of 20,000 record locks is named once (#136).
+            "S (admin)"
         );
         // A segment that only starts with the table's bytes is not below it.
         let sibling = vec![vec![0x80, 0x01], vec![0x05, 0x00]];
