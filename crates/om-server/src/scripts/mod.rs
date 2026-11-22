@@ -685,6 +685,9 @@ fn execute(host: &mut ServerHost, script: ScriptRef<'_>, parameter: &str, slot: 
             RunState::Paused { .. } => runtime.resume(),
             RunState::Waiting => runtime.complete_step(ErrorCode::UNAVAILABLE),
             RunState::Yielded => {}
+            // The server has no Script Debugger; a runtime that had one
+            // open runs on without it.
+            RunState::Debugger(_) => runtime.stop_debugging(),
         }
     }
     let cx = Ctx::new(host.locale(), host.today());

@@ -257,6 +257,39 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     use om_data::{DataProvider, FieldKind, SchemaFieldKind};
     let mut root = indexed_tasks();
     index_schema_catalogs(&mut root);
+    let table_key = om_hbam::slot::uint_segment(fixture::TABLE);
+    let name_key = om_hbam::slot::uint_segment(fixture::NAME);
+    root.put(
+        &[&table_key, &[3], &[5], &name_key, &[0x29]],
+        om_hbam::OwnedNode::leaf(Vec::new(), 2u32.to_be_bytes().to_vec()),
+    );
+    root.put(
+        &[&table_key, &[3], &[5], &name_key, &[0x30]],
+        om_scripts::text_node(&[], "Task title"),
+    );
+    // An annotation alone on Count, which the save renames: the rename
+    // keeps it.
+    root.put(
+        &[
+            &table_key,
+            &[3],
+            &[5],
+            &om_hbam::slot::uint_segment(fixture::COUNT),
+            &[0x30],
+        ],
+        om_scripts::text_node(&[], "How many"),
+    );
+    // Advanced flags of another width than a u32 are not read as set.
+    root.put(
+        &[
+            &table_key,
+            &[3],
+            &[5],
+            &om_hbam::slot::uint_segment(fixture::SETTING),
+            &[0x29],
+        ],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
     let file = fixture::TempFile::from_tree("gui-database-save", &root);
     let hosted = hosted::host_file(
         "database-save",
@@ -287,6 +320,7 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     press(&mut app, om_data::FieldColumn::TITLE);
     shot(&mut app, "manage-database-fields-comments");
     press(&mut app, om_data::FieldColumn::TITLE);
+    shot(&mut app, "manage-database-fields-advanced");
     press(&mut app, om_data::FieldColumn::TITLE);
     // Tasks: a new timestamp field with a comment, Count renamed, Due
     // deleted.
@@ -337,6 +371,16 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     let mut fresh = hosted.opened();
     let schema = fresh.database_schema().unwrap();
     let tasks = schema.table(fixture::TABLE).unwrap();
+    let name = tasks.fields.iter().find(|f| f.id == fixture::NAME).unwrap();
+    assert_eq!(
+        schema.field_column_text(tasks, name, om_data::FieldColumn::Advanced),
+        "Display Names, Task title"
+    );
+    let setting = tasks.fields.iter().find(|f| f.id == fixture::SETTING);
+    assert_eq!(
+        schema.field_column_text(tasks, setting.unwrap(), om_data::FieldColumn::Advanced),
+        ""
+    );
     let finished = tasks
         .fields
         .iter()
@@ -352,6 +396,10 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     );
     let quantity = tasks.fields.iter().find(|f| f.name == "Quantity").unwrap();
     assert_eq!(quantity.id, fixture::COUNT);
+    assert_eq!(
+        schema.field_column_text(tasks, quantity, om_data::FieldColumn::Advanced),
+        "How many"
+    );
     assert!(!tasks.fields.iter().any(|f| f.id == fixture::DUE));
     let projects = schema
         .tables
@@ -574,6 +622,39 @@ fn a_summary_field_is_made_on_an_openmaker_server() {
     });
     shot(&mut app, "manage-database-summary-field");
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+
+    // Options… and a double-click on the field open the dialog again, in
+    // front of Manage Database. A click's press and release in one pass
+    // left a reopened dialog behind it.
+    let title = "Options for Summary Field “Running Count”";
+    let in_front = |app: &common::App| {
+        let layer = |name| egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(name));
+        let at = |order: &[egui::LayerId], name| order.iter().position(|l| *l == layer(name));
+        app.ctx.memory(|m| {
+            let order: Vec<egui::LayerId> = m.layer_ids().collect();
+            at(&order, "database_summary_options") > at(&order, "manage_database")
+        })
+    };
+    for double in [false, true, false] {
+        if double {
+            row(&mut app, "Name");
+            let at = app
+                .get_by_role_and_label(Role::Button, "Running Count")
+                .rect()
+                .center();
+            common::workspace::double_click_at(&mut app, at);
+        } else {
+            row(&mut app, "Running Count");
+            press(&mut app, "Options…");
+        }
+        wait_until(&mut app, "the dialog in front", |app| {
+            app.query_by_label(title).is_some() && in_front(app)
+        });
+        confirm(&mut app, "Cancel");
+        wait_until(&mut app, "the dialog closed", |app| {
+            app.query_by_label(title).is_none()
+        });
+    }
     press(&mut app, "OK");
     wait_until(&mut app, "the save", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());

@@ -19,6 +19,8 @@ pub(crate) struct MenuContext<'a> {
     pub mode: Mode,
     pub view: ViewMode,
     pub zoom: u16,
+    /// View's zoom commands can change it (`OpenMakerApp::zooms`).
+    pub zooms: bool,
     pub session: Option<&'a Session>,
     pub find: &'a FindState,
     pub toolbar: bool,
@@ -42,6 +44,12 @@ pub(crate) struct MenuContext<'a> {
     /// Records > Revert Record... (Browse) or Requests > Revert Request...
     /// (Find) can run (`om_data::scripts::revert_record::available`).
     pub revert_record: bool,
+    /// Records > Relookup Field Contents can run: a field of the
+    /// record's own table is entered in Browse mode on a record with
+    /// nothing to commit, no script running or paused and no edit being
+    /// prepared (`om_data::scripts::relookup::available`). A related field
+    /// leaves it off: the step does not look up through one (3).
+    pub relookup: bool,
     /// The account may change the file's design: File > Manage's dialogs,
     /// Layout mode and Script Workspace (`App::design_allowed`).
     pub design: bool,
@@ -576,11 +584,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     pending(rows, "Ruler", None);
     rows.separator();
-    let zoom_enabled = context
-        .session
-        .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
-        && ((context.mode == Mode::Browse && context.view == ViewMode::Form)
-            || context.mode == Mode::Preview);
+    let zoom_enabled = context.zooms;
     if rows.item(
         "Actual Size",
         None,
@@ -796,7 +800,14 @@ fn records_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     }
     rows.separator();
     pending(rows, "Replace Field Contents...", command(CMD, Key::Equals));
-    pending(rows, "Relookup Field Contents", None);
+    // Relookup Field Contents (40) with its dialog, on the field entered,
+    // as a script runs it (`om_data::scripts::relookup`). Under Editing
+    // only and Minimum it stays off, as Sort Records and Revert Record do
+    // there [I].
+    let [_, label] = om_data::scripts::relookup::MENU_PATH;
+    if rows.item(label, None, false, context.relookup && context.full_menus()) {
+        actions.push(Action::Step(om_data::scripts::relookup::STEP_ID, 0));
+    }
     rows.separator();
     // Revert Record/Request (51) with its dialog, as a script runs it
     // (`om_data::scripts::revert_record`). Under Editing only and Minimum
