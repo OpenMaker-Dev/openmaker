@@ -1454,8 +1454,14 @@ window as Go to Related Record's (11.8): name slot 0, height, width, top,
 left slots 1-4, style word `[00 0, 03]`. Turning New Window off in a local
 Pro 26.0.3 file cleared `0x20000` but left the old slot-0 name calculation
 in place; slot 7 still held the record ids [O: [#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)]. So the flag, not
-slot 0, asks for the new window [I]. What the step does at run time (the
-window it opens, ids that are not records) is unmeasured.
+slot 0, asks for the new window [I].
+
+Claris documents that the step goes to the destination layout and replaces
+the found set with the records it located, in the requested order. Missing
+IDs are skipped and can produce error 101 or 401. For a same-window request
+with no matches, the documented replacement implies an empty found set [I].
+The exact error for zero matches and the window state after a failed
+new-window request are unmeasured. [Claris Help](https://help.claris.com/en/pro-help/content/go-to-list-of-records.html)
 
 **Configure Persistent Data (238)** [O; V1 `SetPersistentData`
 0x4f4c0a/0x4f4a1c]: `PersistentStore` with `Name value` = the key as text

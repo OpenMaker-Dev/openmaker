@@ -347,7 +347,10 @@ Go to List of Records finds its record ids in calculation slot 7, and
 Show in new window (`0x20000`) opens a window with the step's name, bounds
 and style first, as Go to Related Record's does (script-steps.md 12.2).
 OpenMaker Server uses the step's name and opens the window once its
-layout and records have been resolved. Go to Related Record with Show in
+layout and records have been resolved. When no listed IDs match, Go to
+List of Records returns 101. In the same window it applies the destination
+layout and clears the found set. With Show in new window it keeps the
+opener and its found set. Go to Related Record with Show in
 new window returns error 3 while a record is open. Committing can change
 the join result, so the script must commit or revert explicitly before
 using this option. FileMaker behavior for these options is unmeasured.
@@ -800,8 +803,10 @@ Open items:
   the active row's record (`GetNthRecord`, aggregates and field
   calculations read the related set from the parent; Go to Object on a
   button or text makes no object active; see that section's limits).
-  Each script window keeps its own active portal row. A new window starts
-  with none, a choice unmeasured in FileMaker Server.
+  Each script window keeps its own active portal row. On return to a
+  parked window, the server clears the selection if the portal or row
+  no longer exists. A new window starts with none. These window behaviors
+  are unmeasured in FileMaker Server.
   Set Field into a related field, Delete Portal Row and portals that sort
   or filter their rows are still 3
   ([#100](https://github.com/OpenMaker-Dev/openmaker/issues/100)).

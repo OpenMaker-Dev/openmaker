@@ -3768,12 +3768,11 @@ impl Navigation for ServerHost {
     }
 
     fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
-        // The layout and records are resolved before leaving the opener.
         let layout = match &request.layout {
             Some(target) => self.layout_index(target)?,
             None => None,
         };
-        let prepare = |host: &Self| {
+        let prepare = |host: &Self| -> HostResult<Window> {
             let mut next = match layout {
                 Some(index) => host
                     .empty_window_on(index)
@@ -3794,31 +3793,34 @@ impl Navigation for ServerHost {
                 }
             };
             let existing: BTreeSet<u64> = host.all_records(next.table).into_iter().collect();
-            let mut found: Vec<u64> = request
+            next.found = request
                 .ids
                 .split(['\r', '\n'])
                 .filter_map(|id| id.trim().parse().ok())
                 .filter(|id| existing.contains(id))
                 .collect();
-            if found.is_empty() {
-                return Err(ErrorCode::RECORD_MISSING.into());
-            }
-            if request.new_window.is_some() {
-                found.shrink_to_fit();
-            }
-            next.found = found;
-            next.mode = Mode::Browse;
-            next.current = 0;
-            next.sort = None;
-            Ok(Some(next))
+            Ok(next)
         };
         if let Some(window) = &request.new_window {
-            return self.open_window(window.name.as_deref(), true, prepare);
+            return self.open_window(window.name.as_deref(), true, |host| {
+                let mut next = prepare(host)?;
+                if next.found.is_empty() {
+                    return Err(ErrorCode::RECORD_MISSING.into());
+                }
+                next.found.shrink_to_fit();
+                Ok(Some(next))
+            });
         }
         let next = prepare(self)?;
         self.leave()?;
-        self.window = next;
-        Ok(())
+        let empty = next.found.is_empty();
+        // Same-window navigation replaces the found set even when no IDs match.
+        self.window = Some(next);
+        if empty {
+            Err(ErrorCode::RECORD_MISSING.into())
+        } else {
+            Ok(())
+        }
     }
 
     fn enter_mode(&mut self, mode: Mode, _pause: bool, requests: Option<&OwnedNode>) -> HostResult {
@@ -4822,6 +4824,13 @@ impl ServerHost {
         self.focus = window.focus;
         self.request_open = window.request_open;
     }
+
+    /// Resume a parked window against the records as they are now.
+    fn resume_window(&mut self, window: Parked) {
+        self.unpark(window);
+        self.prune_found_set();
+        self.revalidate_portal();
+    }
 }
 
 /// A session's window count and memory budget for copies of window state.
@@ -4889,8 +4898,7 @@ impl Windows for ServerHost {
         let selected = self.others.remove(index);
         let previous = self.park();
         self.others.push(previous);
-        self.unpark(selected);
-        self.prune_found_set();
+        self.resume_window(selected);
         Ok(())
     }
 
@@ -4915,8 +4923,7 @@ impl Windows for ServerHost {
                     self.windows_closed = true;
                     return Err(ErrorCode(13).into());
                 };
-                self.unpark(previous);
-                self.prune_found_set();
+                self.resume_window(previous);
                 Ok(())
             }
         }

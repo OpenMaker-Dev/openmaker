@@ -584,33 +584,48 @@ impl ServerHost {
         self.focus = None;
     }
 
+    /// Keep the active portal and row number if they still exist. Row 0
+    /// selects the portal object itself, so it needs no related records.
+    pub(super) fn revalidate_portal(&mut self) -> bool {
+        let Some(active) = self.window.as_ref().and_then(|w| w.portal.as_ref()) else {
+            return true;
+        };
+        let portal = self
+            .decoded_layout()
+            .map(|layout| ObjectIndex::new(&layout).portals())
+            .and_then(|portals| {
+                portals
+                    .into_iter()
+                    .find(|p| p.object == active.object && p.occurrence == active.occurrence)
+            });
+        let valid = portal.as_ref().is_some_and(|portal| {
+            active.row == 0
+                || self
+                    .portal_rows(portal)
+                    .is_ok_and(|(_, rows)| active.row <= rows)
+        });
+        if !valid {
+            self.leave_field();
+            self.clear_portal();
+        }
+        valid
+    }
+
     /// Go to Record keeps the active row's number on the record it went
     /// to, and the field entered in it, `focus` (s35): a record without
     /// that row has none active, and the move is 101.
     pub(super) fn keep_portal_row(&mut self, focus: Option<Focus>) -> HostResult {
-        let Some(active) = self.window.as_ref().and_then(|w| w.portal.clone()) else {
+        let Some(window) = self.window.as_ref().filter(|w| w.mode == Mode::Browse) else {
             return Ok(());
         };
-        if active.row == 0 || self.window.as_ref().is_some_and(|w| w.mode != Mode::Browse) {
+        let Some(active) = window.portal.as_ref().filter(|a| a.row > 0) else {
             return Ok(());
-        }
-        let portal = self
-            .decoded_layout()
-            .map(|layout| ObjectIndex::new(&layout).portals())
-            .and_then(|portals| portals.into_iter().find(|p| p.object == active.object));
-        let rows = match &portal {
-            Some(portal) => self.portal_rows(portal).map_or(0, |(_, rows)| rows),
-            None => 0,
         };
-        if rows < active.row {
-            self.focus = None;
-            self.clear_portal();
+        let occurrence = active.occurrence;
+        if !self.revalidate_portal() {
             return Err(ErrorCode::RECORD_MISSING.into());
         }
-        if focus
-            .as_ref()
-            .is_some_and(|f| f.occurrence == active.occurrence)
-        {
+        if focus.as_ref().is_some_and(|f| f.occurrence == occurrence) {
             self.focus = focus;
         }
         Ok(())

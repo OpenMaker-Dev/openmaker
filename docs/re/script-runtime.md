@@ -3091,8 +3091,10 @@ Server engine (11.3, 11.5)
   and the session keeps one transaction for all its windows.
 - A window that becomes current again drops from its found set the
   records deleted meanwhile (in Find mode its active request stays as it
-  was), and a schema change moves every window back onto its own layout,
-  as it moves the current one. A window that is not current and must move
+  was). It keeps its active portal and row number if the portal is still
+  present and the row is still in bounds, else clears the selection
+  (OpenMaker's choice, unmeasured in FileMaker Server). A schema change
+  moves every window back onto its own layout. A parked window that must move
   to another table's layout then shows none of its records, not all of
   them (OpenMaker's choice), so that a schema change cannot fill the
   windows past their budget.
@@ -3119,8 +3121,10 @@ Server engine (11.3, 11.5)
   available to revert. With no open record, the step resolves the related
   records and layout before opening a window. Go to List of Records
   resolves the layout and IDs before committing the opener's record and
-  installing the new window. It still skips IDs no record has, without
-  an error, and reads one ID per line
+  installing the new window. With no matches it returns 101. In the same
+  window it applies the destination layout and installs an empty found
+  set. With Show in new window it leaves the opener in place. Partial
+  matches still report success, and the step reads one ID per line
   ([#511](https://github.com/OpenMaker-Dev/openmaker/issues/511)).
 - Finds: Enter Find Mode (with or without stored requests), Set Field into
   requests, New/Duplicate/Delete Record and Omit in Find mode, Perform Find,

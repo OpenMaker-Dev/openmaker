@@ -1638,6 +1638,45 @@ fn server_scripts_keep_windows_of_their_own() {
     client.disconnect().unwrap();
 }
 
+#[test]
+fn server_scripts_empty_record_list_replaces_the_same_window_found_set() {
+    use fixture::{calc, exit_with, go_to_record, on, script, set_variable};
+
+    let list = |layout: Option<u64>, new_window| {
+        let mut step = on(228, new_window);
+        step.set_calculation(7, Some(&calc("\"999\"")));
+        if let Some(layout) = layout {
+            step.value = 5;
+            step.set_member_key(om_scripts::StoredKey::from_id(layout));
+        }
+        step
+    };
+    let state = "Get ( LastError ) & \"/\" & Get ( LayoutName ) & \"/\" & Get ( FoundCount ) & \
+                 \"/\" & Get ( RecordID ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )";
+    let scripts = [script(
+        6,
+        "Missing record IDs",
+        vec![
+            on(86, true),
+            go_to_record(2),
+            list(Some(fixture::NOTES_LAYOUT), true),
+            set_variable("$new", state),
+            list(None, false),
+            set_variable("$same", state),
+            list(Some(fixture::NOTES_LAYOUT), false),
+            exit_with(&format!("$new & \"|\" & $same & \"|\" & ({state})")),
+        ],
+    )];
+    let file = TempFile::new("empty-record-list", &scripts, true);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "empty-record-list");
+    assert_eq!(
+        run(&mut client, 6).1,
+        "101/Tasks/2/2/1|101/Tasks/0/0/1|101/Notes/0/0/1"
+    );
+    client.disconnect().unwrap();
+}
+
 /// Change Password (83) in a server script sets the password of the
 /// account the session logged in with, as FileMaker's `DoChangePassword`
 /// and `SetPassword` do (local-files.md 2.4): with its dialog the step is
@@ -2038,6 +2077,23 @@ fn server_scripts_move_through_portal_rows() {
         set_variable("$opener", row),
         ScriptStep::new(121),
         set_variable("$other", row),
+        // Move the last related record to a different parent while the
+        // window is parked on its row.
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 2;
+            step
+        },
+        ScriptStep::new(122),
+        go_to_layout(fixture::NOTES_LAYOUT),
+        go_to_record(2),
+        set_field_in(fixture::NOTES_OCCURRENCE, fixture::TASK, "\"Ship\""),
+        ScriptStep::new(75),
+        set_variable("$moved", "Get ( LastError )"),
+        ScriptStep::new(121),
+        set_variable("$resumed", &format!("Get ( LastError ) & \"/\" & ({row})")),
+        with_calc(145, "\"Note body\""),
+        set_variable("$reentered", row),
         with_calc(145, "\"Nope\""),
         set_variable("$missing", "Get ( LastError )"),
         with_calc(145, "\"\""),
@@ -2066,7 +2122,8 @@ fn server_scripts_move_through_portal_rows() {
         exit_with(
             "$first & \"|\" & $reverted & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & \
              $same_layout & \"|\" & $past & \"|\" & $portal & \"|\" & $new_window & \"|\" & \
-             $opener & \"|\" & $other & \"|\" & $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
+             $opener & \"|\" & $other & \"|\" & $moved & \"|\" & $resumed & \"|\" & $reentered & \"|\" & \
+             $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
              Get ( ActivePortalRowNumber )",
         ),
     ]);
@@ -2111,7 +2168,7 @@ fn server_scripts_move_through_portal_rows() {
         run(&mut client, 6).1,
         "1/first/Note body/first|3|2/second/Note body/second|first/second|\
          2/second/Note body/second|2/second/Note body/second|101/2|2/second/Notes portal/|\
-         0|2/second/Notes portal/|1/first/Notes portal/|116|5|0|0"
+         0|2/second/Notes portal/|1/first/Notes portal/|0|0/0/first//|1/first/Note body/first|116|5|0|0"
     );
     client.disconnect().unwrap();
 }
