@@ -3512,10 +3512,10 @@ impl RecordPlan {
         self.compute_values(mode, existing, changes, environment, entry, None)
     }
 
-    /// Compute changes for a draft that already holds copied cells.
-    /// A rule that restores a copied cell to its stored value (empty on
-    /// creation) still needs to overwrite the copy in the draft.
-    pub fn compute_with_copied_cells(
+    /// Compute changes for a draft with copied cells or earlier edits.
+    /// A rule can restore the stored value and still change the draft
+    /// if the cell was copied or an import leaves an earlier edit unmapped.
+    pub fn compute_with_staged_cells(
         &self,
         mode: WriteMode,
         existing: &BTreeMap<u64, String>,
@@ -3526,7 +3526,9 @@ impl RecordPlan {
     ) -> Result<BTreeMap<u64, Option<String>>, DataError> {
         let computed = self.compute_inner(mode, existing, changes, environment, entry, None)?;
         let changed = Self::changed_values(computed, existing, |id, value| {
-            was_copied(id)
+            let unmapped =
+                entry.keep_written && entry.mapped_cells.is_some_and(|cells| !cells.contains(&id));
+            (was_copied(id) || unmapped)
                 && changes
                     .get(&id)
                     .is_some_and(|text| value != text.as_deref().unwrap_or_default())
@@ -3754,12 +3756,12 @@ impl RecordPlan {
         Ok(())
     }
 
-    /// The cells `computed` changes from `existing` or a copied input, not
-    /// left out: stored text, `None` empty.
+    /// The cells `computed` changes from `existing` or a staged input,
+    /// excluding deferred cells: stored text, `None` empty.
     fn changed_values(
         computed: Computed,
         existing: &BTreeMap<u64, String>,
-        differs_from_copy: impl Fn(u64, &str) -> bool,
+        differs_from_staged: impl Fn(u64, &str) -> bool,
     ) -> BTreeMap<u64, Option<String>> {
         let Computed {
             row,
@@ -3773,7 +3775,7 @@ impl RecordPlan {
             .filter(|id| {
                 let value = row.get(id).map_or("", String::as_str);
                 value != existing.get(id).map_or("", String::as_str)
-                    || differs_from_copy(*id, value)
+                    || differs_from_staged(*id, value)
             })
             .map(|id| {
                 let text = row.get(&id).map_or("", String::as_str);

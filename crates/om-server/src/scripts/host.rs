@@ -1877,7 +1877,7 @@ impl ServerHost {
                 (mode, &existing, &changes, entry),
                 &mut environment,
                 |environment| {
-                    plan.compute_with_copied_cells(
+                    plan.compute_with_staged_cells(
                         mode,
                         &existing,
                         &changes,
@@ -1904,7 +1904,7 @@ impl ServerHost {
             }
         }
         // Rule output supersedes staged input for the same cell, including
-        // an explicit clear of a value copied by Duplicate Record.
+        // a rule that clears a copied or previously staged value.
         let effective_changes = || {
             computed.iter().chain(
                 changes

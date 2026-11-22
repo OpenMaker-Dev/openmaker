@@ -605,27 +605,47 @@ fn import_into_a_duplicate_protects_only_mapped_values_from_auto_entry() {
 
 #[test]
 fn import_validates_the_cleared_value_of_a_duplicate() {
+    assert_import_clears_duplicate_code(false);
+}
+
+#[test]
+fn import_clears_an_unmapped_value_entered_earlier_in_a_duplicate() {
+    assert_import_clears_duplicate_code(true);
+}
+
+fn assert_import_clears_duplicate_code(entered: bool) {
     use fixture::{OCCURRENCE, TABLE};
     use om_hbam::{serial, slot::uint_segment};
 
+    let mut steps = vec![
+        fixture::on(86, true),
+        set_variable("$p", "Get ( DocumentsPath ) & \"clear.tab\""),
+        ScriptStep::new(23),
+        fixture::go_to_record(1),
+        ScriptStep::new(205),
+        ScriptStep::new(8),
+    ];
+    if entered {
+        steps.push(fixture::set_field(CODE, "\"Ship\""));
+        steps.push(set_variable("$entered", "Code"));
+    }
+    steps.extend([
+        // Stage the duplicate and select it alone.
+        ScriptStep::new(25),
+        ScriptStep::new(27),
+        import_as(&["$p"], &[NAME], true, ImportAction::UpdateFoundSet),
+        set_variable("$import", "Get ( LastError )"),
+        ScriptStep::new(206),
+        if entered {
+            fixture::exit_with("$import & \"|\" & Get ( LastError ) & \"|\" & $entered")
+        } else {
+            fixture::exit_with("$import & \"|\" & Get ( LastError )")
+        },
+    ]);
     let scripts = [script(
         1,
         "Import into a duplicate with replacing auto-entry",
-        vec![
-            fixture::on(86, true),
-            set_variable("$p", "Get ( DocumentsPath ) & \"clear.tab\""),
-            ScriptStep::new(23),
-            fixture::go_to_record(1),
-            ScriptStep::new(205),
-            ScriptStep::new(8),
-            // Stage the duplicate and select it alone.
-            ScriptStep::new(25),
-            ScriptStep::new(27),
-            import_as(&["$p"], &[NAME], true, ImportAction::UpdateFoundSet),
-            set_variable("$import", "Get ( LastError )"),
-            ScriptStep::new(206),
-            fixture::exit_with("$import & \"|\" & Get ( LastError )"),
-        ],
+        steps,
     )];
     let mut root = fixture::tree(&scripts, true);
     fixture::code_in_names_list(&mut root);
@@ -655,7 +675,8 @@ fn import_validates_the_cleared_value_of_a_duplicate() {
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "duplicate-import-list");
 
-    assert_eq!(run(&mut client, 1), (0, "0|0".into()));
+    let expected = if entered { "0|0|Ship" } else { "0|0" };
+    assert_eq!(run(&mut client, 1), (0, expected.into()));
     let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
     assert_ne!(copy.0, 1);
     assert_eq!(value(&copy, CODE), None);
