@@ -26,6 +26,7 @@ mod value_lists;
 mod values;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +35,7 @@ use om_data::{
     LayoutInfo, ObjectGeom, PartGeom, Record, RecordPage, RenderLayout,
 };
 use om_hbam::{serial, Catalog, KeySegment, KeyTree, RidList, SlotReader, Table};
-use om_protocol::{LoginEnvironment, MachineInfo, NodeState};
+use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeState};
 use om_session::Session;
 
 mod schema;
@@ -42,6 +43,9 @@ pub use authoring::{Authoring, AuthoringError, ScriptDefinitions};
 pub use calc::local_utc_offset;
 pub use choice::ListedChoices;
 pub use schema::{schema_from_tree, schema_from_tree_with, DatabaseSchemaSnapshot};
+
+/// Open status returned when FileMaker Server refuses the client license.
+pub const CLIENT_LICENSE_REFUSED: i32 = 0x507c;
 
 /// TLS identity and connection configuration. This deliberately has no `Debug`
 /// implementation: its private key and license must never enter diagnostics.
@@ -59,8 +63,26 @@ impl NativeConfig {
     /// mutual-TLS identity. Server identity is always verified against the
     /// public roots and optional `OPENMAKER_CA_CERT` PEM file.
     pub fn from_env() -> Result<Self, DataError> {
-        let cert = std::env::var_os("OPENMAKER_CLIENT_CERT");
-        let key = std::env::var_os("OPENMAKER_CLIENT_KEY");
+        let ca_cert = std::env::var_os("OPENMAKER_CA_CERT");
+        Self::from_env_with_ca_cert(ca_cert.as_deref().map(Path::new), true)
+    }
+
+    /// Use the given CA file in addition to the public roots. Read the
+    /// callback from the environment. Read the client certificate and key
+    /// from the environment only if `use_env_identity` is true. Generate
+    /// an in-memory identity when no paths are selected.
+    pub fn from_env_with_ca_cert(
+        ca_cert: Option<&Path>,
+        use_env_identity: bool,
+    ) -> Result<Self, DataError> {
+        let (cert, key) = if use_env_identity {
+            (
+                std::env::var_os("OPENMAKER_CLIENT_CERT"),
+                std::env::var_os("OPENMAKER_CLIENT_KEY"),
+            )
+        } else {
+            (None, None)
+        };
         let (client_cert_pem, client_key_pem) =
             match (cert, key) {
                 (Some(cert), Some(key)) => (
@@ -79,7 +101,7 @@ impl NativeConfig {
                     "Set both OPENMAKER_CLIENT_CERT and OPENMAKER_CLIENT_KEY, or leave both unset.",
                 )),
             };
-        let additional_ca_pem = std::env::var_os("OPENMAKER_CA_CERT")
+        let additional_ca_pem = ca_cert
             .map(|p| read_config_file(p, "additional CA certificate"))
             .transpose()?
             .unwrap_or_default();
@@ -92,10 +114,20 @@ impl NativeConfig {
             machine: MachineInfo::default(),
         })
     }
+
+    /// Set the optional client license after checking that it fits in Connect.
+    pub fn set_client_license(&mut self, license: &str) -> Result<(), DataError> {
+        use zeroize::Zeroize;
+        validate_client_license(license).map_err(|error| DataError::new(error.to_string()))?;
+        self.machine.install_code.zeroize();
+        self.machine.install_code.push_str(license);
+        Ok(())
+    }
 }
 
-fn read_config_file(path: std::ffi::OsString, kind: &str) -> Result<Vec<u8>, DataError> {
-    std::fs::read(path).map_err(|e| failure(&format!("read {kind}"), e))
+fn read_config_file(path: impl AsRef<Path>, kind: &str) -> Result<Vec<u8>, DataError> {
+    let path = path.as_ref();
+    std::fs::read(path).map_err(|e| failure(&format!("read {kind} {}", path.display()), e))
 }
 
 /// Desktop logins share the cached display name used by calculations and
@@ -2262,22 +2294,18 @@ impl NativeProvider {
                 Some(login) => login,
                 None => {
                     session
-                .open_file(&connection.host, &connection.file)
-                .map_err(|e| {
-                    // Block New Users: FileMaker Pro's alert, with its error
-                    // (network-protocol.md 5.6.4, admin-console.md 9).
-                    if session.refused_open() == Some(1638) {
-                        return DataError::with_code(1638, HOST_BLOCKS_NEW_USERS);
-                    }
-                    // A client license matters only to a server that asks
-                    // for one, never to a file opened from this computer.
-                    let hint = if !local && endpoint.machine.install_code.is_empty() {
-                        " Add a client license in FileMaker License... if this server requires one."
-                    } else {
-                        ""
-                    };
-                    DataError::new(format!("open hosted file: {e}.{hint}"))
-                })?;
+                        .open_file(&connection.host, &connection.file)
+                        .map_err(|e| match session.refused_open().map(i32::from) {
+                            // Block New Users: FileMaker Pro's alert, with its
+                            // error (network-protocol.md 5.6.4, admin-console.md 9).
+                            Some(1638) => DataError::with_code(1638, HOST_BLOCKS_NEW_USERS),
+                            // FileMaker defers the install code check to Open.
+                            Some(CLIENT_LICENSE_REFUSED) if !local => DataError::with_code(
+                                CLIENT_LICENSE_REFUSED,
+                                format!("open hosted file: {e}"),
+                            ),
+                            _ => failure("open hosted file", e),
+                        })?;
                     canceled()?;
                     let (creation, file_node) = session
                         .fetch_status()
@@ -3039,8 +3067,7 @@ impl DataProvider for NativeProvider {
     }
 
     fn set_client_license(&mut self, license: Option<&str>) -> Result<(), DataError> {
-        self.config.machine.install_code = license.unwrap_or_default().to_owned();
-        Ok(())
+        self.config.set_client_license(license.unwrap_or_default())
     }
 
     fn can_write_records(&self) -> bool {

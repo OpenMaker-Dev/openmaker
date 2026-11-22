@@ -265,10 +265,19 @@ fn add_portal_layout(root: &mut OwnedNode) {
 /// The Notes portal (three rows of Notes::Body, Notes::Extra and the row
 /// button), its option word `flags`, at `bounds` in its container.
 fn portal_object(flags: u64, bounds: Vec<u8>) -> Vec<u8> {
+    portal_object_rows(flags, (3, 1), bounds)
+}
+
+/// [`portal_object`] with `rows` visible rows from its initial row
+/// `initial`.
+fn portal_object_rows(flags: u64, (rows, initial): (u32, u64), bounds: Vec<u8>) -> Vec<u8> {
     let mut portal_obj = Vec::new();
     uint(2, alias(NOTES_OCCURRENCE), &mut portal_obj);
     uint(3, flags, &mut portal_obj);
-    double(6, 3.0, &mut portal_obj);
+    if initial > 1 {
+        uint(5, initial, &mut portal_obj);
+    }
+    double(6, f64::from(rows), &mut portal_obj);
     let mut portal = Vec::new();
     uint(1, 9, &mut portal);
     uint(2, PORTAL, &mut portal);
@@ -382,12 +391,16 @@ fn portal_only_store() -> Vec<u8> {
 
 /// Notes 2 "first" and 3 "second" of "Write tests".
 fn add_notes(root: &mut OwnedNode) {
+    append_notes(root, &[(2, "first"), (3, "second")]);
+}
+
+fn append_notes(root: &mut OwnedNode, notes: &[(u64, &str)]) {
     let table = uint_segment(NOTES);
     let mut list = root
         .at(&[&table, &[0x0d]])
         .and_then(|n| RidList::from_owned(n).ok())
         .unwrap_or_default();
-    for (id, body) in [(2u64, "first"), (3, "second")] {
+    for &(id, body) in notes {
         let record = serial::encode(id);
         for (field, text) in [(BODY, body), (TASK, "Write tests")] {
             root.put(
@@ -398,7 +411,7 @@ fn add_notes(root: &mut OwnedNode) {
         list.insert(id);
     }
     root.put(&[&table, &[0x0d]], list.to_node(Vec::new()));
-    let last = serial::encode(3);
+    let last = serial::encode(notes.last().unwrap().0);
     let mut key = vec![last.len() as u8];
     key.extend(last);
     root.put(&[&table, &[0]], OwnedNode::leaf(Vec::new(), key));
@@ -1482,9 +1495,15 @@ fn scripts() -> Vec<Script> {
                 note(
                     "$related",
                     "Get ( LastError ) & \":\" & Get ( LayoutName ) & \":\" & Get ( FoundCount ) & \
-                     \":\" & Notes::Body",
+                     \":\" & Get ( RecordNumber ) & \":\" & Notes::Body",
                 ),
-                show("\"filtered row \" & $row & \", related \" & $related"),
+                fixture::go_to_record(1),
+                note("$first", "Notes::Body"),
+                fixture::go_to_record(2),
+                show(
+                    "\"filtered row \" & $row & \", related \" & $related & \
+                     \", first \" & $first & \", last \" & Notes::Body",
+                ),
             ],
         ),
         fixture::script(
@@ -4085,23 +4104,32 @@ fn a_sorted_portals_rows_are_numbered_as_browse_shows_them() {
     );
 }
 
-/// A portal that filters its rows numbers them for scripts as Browse
-/// shows them (#192): Go to Portal Row 1 is the first row the filter
-/// admits, and Go to Related Record with "Show only related records" from
-/// that row finds the records the portal shows, not every related record.
-/// A filter by row number counts the portal's rows, as Browse's does.
+/// First reaches the first displayed filter match. Go to Related Record
+/// keeps that record current and includes matches before Initial Row.
+/// The non-scrolling portal still limits the matches after Initial Row
+/// to its visible slots.
 #[test]
-fn a_filtered_portals_rows_and_related_records_are_the_ones_it_shows() {
+fn a_filtered_portal_keeps_the_active_record_and_pre_offset_matches() {
     for (tag, filter, expected) in [
         (
             "filtered",
             filter_portal as fn(&mut OwnedNode),
-            "filtered row 0:1:second, related 0:Notes:1:second",
+            "filtered row 0:1:second, related 0:Notes:1:1:second, first second, last second",
         ),
         (
             "filtered-rows",
             filter_portal_by_row,
-            "filtered row 0:1:first, related 0:Notes:1:first",
+            "filtered row 0:1:first, related 0:Notes:1:1:first, first first, last first",
+        ),
+        (
+            "filtered-offset-scrolling",
+            |root| filter_portal_with_offset(root, PORTAL_FLAGS),
+            "filtered row 0:2:second, related 0:Notes:3:2:second, first first, last third",
+        ),
+        (
+            "filtered-offset-fixed",
+            |root| filter_portal_with_offset(root, PORTAL_FLAGS & !0x1),
+            "filtered row 0:2:second, related 0:Notes:2:2:second, first first, last second",
         ),
     ] {
         let hosted = host_with(tag, filter);
@@ -4303,6 +4331,152 @@ fn a_deleted_portal_row_is_its_tables_record_only() {
         .map(|(id, _)| id)
         .collect();
     assert_eq!(notes, [1, 3]);
+}
+
+/// The Portals layout with a portal that does not scroll and places the
+/// new record's row at the top (`0x400`), `rows` rows from row `initial`.
+fn new_row_top_portal(root: &mut OwnedNode, rows: u32, initial: u64) {
+    shaped_portal(root, 0x500, rows, initial);
+}
+
+/// The Portals layout with its portal's option word `flags`, and `rows`
+/// rows from row `initial`.
+fn shaped_portal(root: &mut OwnedNode, flags: u64, rows: u32, initial: u64) {
+    let store = om_layout::encode::without_objects(&portal_store(flags), &[PORTAL]).unwrap();
+    let portal = portal_object_rows(flags, (rows, initial), rect(60.0, 10.0, 130.0, 410.0));
+    root.put(
+        &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+        OwnedNode::leaf(
+            Vec::new(),
+            om_layout::encode::append_to_store(&store, &[PORTAL], &[portal]),
+        ),
+    );
+}
+
+fn filter_portal_with_offset(root: &mut OwnedNode, flags: u64) {
+    append_notes(root, &[(4, "third"), (5, "closed")]);
+    shaped_portal(root, flags, 1, 2);
+    portal_filter(root, "Notes::Body ≠ \"closed\"");
+}
+
+/// Steps reach a portal's rows from its initial row, numbered where Browse
+/// draws them from that row on, whether or not records fill the rows
+/// before it:
+/// - a portal that does not scroll, the creation row at the top, Initial
+///   Row 2 and one row: "first" is not drawn, the creation row is row 2;
+/// - a portal that scrolls, Initial Row 2: "first" is not drawn, "second"
+///   is row 2, for Go to Field as for Go to Portal Row;
+/// - Initial Row 3 on Ship, which has no notes: the creation row at the
+///   top is row 3.
+#[test]
+fn steps_reach_a_portals_rows_from_its_initial_row() {
+    for (tag, (flags, rows, initial), record, expected) in [
+        (
+            "initial-row",
+            (0x500, 1, 2),
+            1,
+            "field 0:2:, first 0:2:, one 101:2:",
+        ),
+        (
+            "initial-row-scrolling",
+            (PORTAL_FLAGS, 3, 2),
+            1,
+            "field 0:2:second, first 0:2:second, one 101:2:second",
+        ),
+        (
+            "initial-row-sparse",
+            (0x500, 1, 3),
+            2,
+            "field 0:3:, first 0:3:, one 101:3:",
+        ),
+    ] {
+        let hosted = host_with(tag, |root| {
+            shaped_portal(root, flags, rows, initial);
+            add_script(
+                root,
+                &fixture::script(
+                    90,
+                    "Initial row",
+                    vec![
+                        fixture::on(86, true),
+                        fixture::go_to_layout(PORTALS),
+                        fixture::go_to_record(record),
+                        go_to_field(NOTES_OCCURRENCE, BODY),
+                        note("$field", ERROR_ROW),
+                        go_to_portal_row(1),
+                        note("$first", ERROR_ROW),
+                        go_to_portal_row_number(&format!("{}", initial - 1)),
+                        note("$one", ERROR_ROW),
+                        show("\"field \" & $field & \", first \" & $first & \", one \" & $one"),
+                    ],
+                ),
+            );
+        });
+        let mut app = open(&hosted);
+        expect(&mut app, "Initial row", expected);
+    }
+}
+
+/// `error:row:contents` after the last step.
+const ERROR_ROW: &str = "Get ( LastError ) & \":\" & Get ( ActivePortalRowNumber ) & \":\" & \
+                         Get ( ActiveFieldContents )";
+
+/// A move's destination row, a record being created, stays that record
+/// when the field's OnObjectExit deletes a row before it goes: here the
+/// saved row whose edit was staged before the records being created.
+#[test]
+fn a_move_to_a_row_being_created_survives_its_exit_deleting_a_row() {
+    let hosted = host_with("draft-identity", |root| {
+        new_row_top_portal(root, 5, 1);
+        add_object_exit_trigger(root, PORTAL_BODY, 92);
+        add_script(
+            root,
+            &hidden(fixture::script(
+                92,
+                "Drop exited",
+                vec![
+                    fixture::with_calc(68, "$$drop"),
+                    note("$$drop", "\"\""),
+                    without_dialog(104),
+                    ScriptStep::new(70),
+                    fixture::exit_with("1"),
+                ],
+            )),
+        );
+        add_script(
+            root,
+            &fixture::script(
+                91,
+                "Draft identity",
+                vec![
+                    fixture::on(86, true),
+                    fixture::go_to_layout(PORTALS),
+                    fixture::go_to_record(1),
+                    // [creation, first, second]: an edit of "first", then
+                    // two records to create, above it.
+                    go_to_portal_row_number("2"),
+                    set_field(NOTES_OCCURRENCE, BODY, 0, "\"S\""),
+                    go_to_portal_row(1),
+                    set_field(NOTES_OCCURRENCE, BODY, 0, "\"D\""),
+                    go_to_portal_row_number("2"),
+                    set_field(NOTES_OCCURRENCE, BODY, 0, "\"E\""),
+                    // [D, E, creation, first, second]: from "first" to D,
+                    // whose exit deletes "first".
+                    go_to_portal_row_number("4"),
+                    note("$$drop", "1"),
+                    go_to_portal_row(1),
+                    note(
+                        "$moved",
+                        "Get ( LastError ) & \":\" & Get ( ActivePortalRowNumber ) & \":\" & \
+                         Get ( ActiveFieldContents )",
+                    ),
+                    show("\"moved \" & $moved"),
+                ],
+            ),
+        );
+    });
+    let mut app = open(&hosted);
+    expect(&mut app, "Draft identity", "moved 0:1:D");
 }
 
 /// Go to Portal Row leaves the field the focus is in first: its

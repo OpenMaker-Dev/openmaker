@@ -1203,7 +1203,8 @@ fn raw_client_locking_record_1(port: u16) -> (Transport, u32, u32) {
         client.signing_key.serialize_pem().as_bytes(),
     )
     .unwrap();
-    let connect = om_protocol::build_connect(4, "127.0.0.1", 5003, &MachineInfo::default());
+    let connect =
+        om_protocol::build_connect(4, "127.0.0.1", 5003, &MachineInfo::default()).unwrap();
     let identity = om_protocol::parse_connect_reply(&exchange(&mut front, &connect)).unwrap();
     let id = identity.connection_id;
     let opened = exchange(

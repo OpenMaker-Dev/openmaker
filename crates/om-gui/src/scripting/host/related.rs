@@ -112,11 +112,11 @@ impl WorkerHost<'_> {
                 }
             }
         }
-        // From a filtering portal's row, the related records it shows
-        // (#192).
+        // From a filtering portal's row, restrict the found set to the
+        // portal's saved filter matches (#192).
         if request.show_only_related && !request.match_found_set {
-            if let Some(shown) = self.filtered_rows(related)? {
-                ids.retain(|id| u64::try_from(*id).is_ok_and(|id| shown.contains(&id)));
+            if let Some(matches) = self.filtered_rows(related)? {
+                ids.retain(|id| u64::try_from(*id).is_ok_and(|id| matches.contains(&id)));
             }
         }
         if ids.is_empty() {

@@ -485,6 +485,9 @@ impl<'a> WorkerHost<'a> {
                     Err(_) => return None,
                 },
             };
+            let Some(job) = job.serve_license(self.store, self.responses) else {
+                continue;
+            };
             match job.request {
                 Request::Answer { prompt, answer } => {
                     if Some(prompt) == wait_for {
@@ -1346,8 +1349,17 @@ impl<'a> WorkerHost<'a> {
                 let row = match row {
                     Some(mut row) => {
                         let portal = self.portal_by_id(row.object);
-                        row.identity = match portal {
-                            Some(portal) if !portal.ordered && row.row > 0 => {
+                        row.identity = match (portal, row.identity) {
+                            // A row the step chose before the triggers ran
+                            // is found again by what it shows: one the
+                            // triggers took out of the portal is missing.
+                            (Some(portal), Some(identity)) if !portal.ordered && row.row > 0 => {
+                                row.row = self
+                                    .number_of(&portal, identity)?
+                                    .ok_or(ErrorCode::RECORD_MISSING)?;
+                                Some(identity)
+                            }
+                            (Some(portal), _) if !portal.ordered && row.row > 0 => {
                                 self.row_of(&portal, row.row)?
                             }
                             _ => None,

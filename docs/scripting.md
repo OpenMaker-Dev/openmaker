@@ -784,6 +784,19 @@ Open items:
   FileMaker Pro's lock and upload sequence (scripts.md, "Saving scripts
   to a host"), then confirms the disk save through the extension and
   reads the catalog back (desktop-client.md, Script Workspace).
+- Server: Go to Portal Row, Go to Object and Go to Next/Previous Field
+  run as FileMaker Server's engine answered them (re/script-runtime.md
+  13.24), and a step's direct reference to a portal's related field reads
+  the active row's record (`GetNthRecord`, aggregates and field
+  calculations read the related set from the parent; Go to Object on a
+  button or text makes no object active; see that section's limits).
+  Set Field into a related field, Delete Portal Row and portals that sort
+  or filter their rows are still 3
+  ([#100](https://github.com/OpenMaker-Dev/openmaker/issues/100)).
+- Server Go to Field still focuses repetition 1 and returns 0 for a schema
+  field with no object on the layout. An Insert without a target writes to
+  that repetition. FileMaker Server returns 102 for the unshown field
+  ([#575](https://github.com/OpenMaker-Dev/openmaker/issues/575)).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
   - Account steps: Change Password sets the password of the account the
@@ -1105,10 +1118,16 @@ are the record the window painted there: a stored record, a record begun in
 the creation row, or the creation row itself. The triggers of the field the
 user is in read it (#1027). Rows a script moves to (Go to Portal Row, Go to
 Record) are numbered as Browse shows them, by the portal's sort and filter,
-and keep their record from then on (#192). Go to Related Record with "Show
-only related records" from a filtering portal's row finds the records the
-portal shows. Only a sort or filter that does not decode leaves the rows'
-order unknown, and steps reaching the active row's record are refused (3).
+and keep their record from then on (#192). Go to Related Record with
+"Show only related records" and "Match current record only" keeps the
+active row's record current in the destination found set when the set
+contains it. A scrolling filtered portal contributes all saved filter
+matches, including those before Initial Row. A non-scrolling filtered
+portal contributes matches before Initial Row and the saved matches
+within its visible rows. The effect of Initial Row and the non-scrolling
+row limit on this found set are unmeasured in FileMaker. Only a sort or
+filter that does not decode leaves the rows' order unknown, and steps
+reaching the active row's record are refused (3).
 
 Hidden objects, undecidable stand-ins, objects whose hide condition is still
 being calculated and the creation row's template take no clicks, as before.

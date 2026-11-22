@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["rt", "io-std"] }
 [dev-dependencies]
 om-crypto = { path = "../om-crypto" }
 om-formula = { path = "../om-formula" }
+om-giop = { path = "../om-giop" }
 om-server = { path = "../om-server" }
 om-session = { path = "../om-session" }
 rcgen = "0.14"
