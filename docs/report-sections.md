@@ -84,7 +84,9 @@ Reports refuse with 3 for these cases.
   functions it calls and the unstored calculations it references; one that
   cannot be resolved counts as may), since the found set was sorted without
   them [I: whether FileMaker's sort evaluates such a key with the
-  script's or window's variables is unmeasured].
+  script's or window's variables is unmeasured]. The same check applies
+  to the sort prefix of a `GetSummary` break, even on a report without
+  sub-summary parts.
 
 ### Costs and limits
 
