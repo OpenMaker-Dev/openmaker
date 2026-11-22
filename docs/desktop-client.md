@@ -1086,11 +1086,33 @@ finder (a leading wildcard, as in `==*pfel*`) is still tested against the
 stored values in English in those languages
 ([#588](https://github.com/OpenMaker-Dev/openmaker/issues/588)).
 
+A find on a related field walks each relationship back from the related
+records (query-program.md 6.5): their match values, every stored
+repetition and each nonempty line as stored, are projected for the near
+match field's type and index language (9.1, 7.2). A date compares with a
+timestamp as midnight, so times on the same date remain distinct. A
+timestamp compared with a time uses its time part. A match field indexed
+in Unicode or System uses that index's keys
+([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A far
+field compared with near fields of different types or forms is sent once
+for each, under a source slot of its own (9.2). With a hosted near index,
+a Japanese match field can use shared English weights, including `ー` and
+`㐀` (7.2). German dictionary uses the untailored form. A related value
+that needs an unsupported key, or a text field whose language 0 cannot be
+resolved from the file locale, fails the find with error 3. A request
+that finds no related records contributes no matches.
+
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
 (`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys
 for those criteria are unmeasured. The mock provider's in-memory finds key
 text in English.
+Japanese match fields that need keys fail with error 3 without the host's
+index. Date–Timestamp related finds remain unmeasured in FileMaker
+([#606](https://github.com/OpenMaker-Dev/openmaker/issues/606)). A far text
+value matched to a near number field must parse as a number. Extracting
+digits from mixed text, as in the projection example in query-program.md
+9.1, is unsupported.
 The badge's place, the portal's single row, empty merge fields, Return
 performing the find and how the value-list controls build criteria are
 OpenMaker's reading, not compared with FileMaker Pro (client-ui.md, "Find

@@ -99,6 +99,36 @@ impl TextKeys {
         }
     }
 
+    /// The form used for `text` in a stored value index: the usual
+    /// [`Self::of_language`] form, or [`Self::Collated`] for Japanese (31)
+    /// text in the shared form (query-program.md 7.2). This includes the
+    /// measured shared weights of `々` (`11d7`), `〇` (`1205`),
+    /// `ー` (`11dd`) and `㐀` (`a3cb`). Other
+    /// kana, their marks and kanji are outside this shared-form check.
+    pub fn of_language_for(language: u32, text: &str) -> Option<TextKeys> {
+        const JAPANESE: u32 = 31;
+        let tailored = |c: char| {
+            !matches!(c, '々' | '〇' | 'ー' | '㐀')
+                && matches!(
+                    u32::from(c),
+                    0x3005..=0x3007
+                        | 0x3040..=0x30FF
+                        | 0x31F0..=0x31FF
+                        | 0x3400..=0x4DBF
+                        | 0x4E00..=0x9FFF
+                        | 0xF900..=0xFAFF
+                        | 0xFF61..=0xFF9F
+                        | 0x1_AFF0..=0x1_AFFF
+                        | 0x1_B000..=0x1_B16F
+                        | 0x2_0000..=0x3_FFFF
+                )
+        };
+        match language {
+            JAPANESE if !text.chars().any(tailored) => Some(TextKeys::Collated),
+            _ => TextKeys::of_language(language),
+        }
+    }
+
     /// Whether every character of `text` keys in this form: always, but in
     /// [`TextKeys::Japanese`], which does not key a kanji outside level 1
     /// and the other characters [`om_collate::japanese_key`] names. A value
