@@ -354,7 +354,7 @@ pub(crate) enum HeldBasis {
         serials: BTreeMap<u64, String>,
         stamp: Option<crate::preview::Stamp>,
         context: WriteContext,
-        entry: Entry,
+        entry: Entry<'static>,
         /// Written from a preview: a later write keeps its context.
         previewed: bool,
     },
@@ -362,7 +362,7 @@ pub(crate) enum HeldBasis {
     Edit {
         values: Cells,
         context: WriteContext,
-        entry: Entry,
+        entry: Entry<'static>,
     },
     /// An imported or deleted one, which a preview does not compute.
     Other,
