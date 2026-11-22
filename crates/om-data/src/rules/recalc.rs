@@ -371,7 +371,9 @@ impl Recalculation {
                                 &target.expression,
                                 &row,
                                 &session,
+                                &mut session.calculation_budget(),
                             )
+                            .map_err(super::RunError::into_error)
                             .and_then(|(value, text)| container_result(value, text))
                     };
                     match result {
@@ -410,10 +412,11 @@ impl Recalculation {
                         &target.expression,
                         &row,
                         &session,
+                        &mut session.calculation_budget(),
                     ) {
                         Ok(text) => text,
                         Err(e) => {
-                            out.failed.push((target.id, e));
+                            out.failed.push((target.id, e.into_error()));
                             continue;
                         }
                     }
@@ -781,6 +784,7 @@ const LIMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 const LIMIT_CALC: om_calc::eval::CalcLimits = om_calc::eval::CalcLimits {
     text: 1 << 20,
     nesting: 1_000,
+    calculations: u64::MAX,
 };
 
 /// A custom privilege set's calculation limiting a record action
@@ -902,6 +906,7 @@ impl RecordLimit {
         environment.limits = om_calc::eval::CalcLimits {
             text: environment.limits.text.min(LIMIT_CALC.text),
             nesting: environment.limits.nesting.min(LIMIT_CALC.nesting),
+            calculations: environment.limits.calculations,
         };
         environment.interrupted = Some(Arc::new(move || {
             outer.as_ref().is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline
@@ -911,7 +916,16 @@ impl RecordLimit {
         let cx = om_calc::Ctx::new(&self.plan.schema.locale, today);
         let first = InRepetition::Calculation(1);
         self.plan
-            .run(0, &self.expression, row, &session, None, None, first)
+            .run(
+                0,
+                &self.expression,
+                row,
+                &session,
+                None,
+                None,
+                first,
+                &mut session.calculation_budget(),
+            )
             .is_ok_and(|(result, _)| result.is_true(&cx))
     }
 }
