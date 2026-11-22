@@ -4000,7 +4000,7 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
                     .unwrap();
                     ("two.png", *b"PNGf", png.into_inner())
                 }
-                41 => ("notes.txt", *b"FILE", b"notes".to_vec()),
+                41 | 43 => ("notes.txt", *b"FILE", b"notes".to_vec()),
                 42 => ("broken.png", *b"PNGf", b"\x89PNG\r\n\x1a\n broken".to_vec()),
                 _ => return Ok(None),
             };
@@ -4034,10 +4034,20 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
         }],
         ..Default::default()
     });
-    layout
-        .objects
-        .objects
-        .extend([photo, notes, field(42, 42, rect(270.0, 90.0, 60.0, 60.0))]);
+    // The 14-point Inter line fits 17 points before baseline rounding,
+    // but the underline would reach below the content box.
+    let mut tight_notes = notes.clone();
+    tight_notes.id = 43;
+    tight_notes.bounds = Some(rect(350.0, 90.0, 120.0, 17.0));
+    tight_notes.rich_text.as_mut().unwrap().character_runs[0]
+        .style
+        .font_size = Some(14.0);
+    layout.objects.objects.extend([
+        photo,
+        notes,
+        field(42, 42, rect(270.0, 90.0, 60.0, 60.0)),
+        tight_notes,
+    ]);
     layout.objects.root = layout.objects.objects.iter().map(|o| o.id).collect();
     let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
     let report = crate::report::render_pdf_with(layout, 1, paper, &[], &mut Containers).unwrap();
@@ -4069,6 +4079,20 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
         file.text.iter().all(|line| line.underline),
         "{:?}",
         file.text
+    );
+    let tight = objects.iter().find(|o| o.bounds.height() == 17.0).unwrap();
+    assert!(tight.file_icon.is_none());
+    let [line] = tight.text.as_slice() else {
+        panic!("expected one filename line, got {:?}", tight.text);
+    };
+    assert!(line.clip.is_none());
+    let strokes = line.decorations();
+    let [(stroke, _)] = strokes.as_slice() else {
+        panic!("expected one underline, got {strokes:?}");
+    };
+    assert!(
+        (stroke.bottom - tight.bounds.bottom).abs() < 0.01,
+        "{stroke:?}"
     );
     assert_eq!(objects.iter().filter(|o| o.picture.is_some()).count(), 1);
     let raster = raster(&report.bytes, 0);

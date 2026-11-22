@@ -166,7 +166,7 @@ the bundled face's `post` underline and OS/2 strikeout metrics, with the positio
 giving the stroke's top above the baseline [I: FileMaker Pro's positions,
 thicknesses and treatment of trailing spaces are unmeasured]. A container
 field's file name prints in the same faces. Strokes are clipped to the text
-box's sides. Reports refuse word and double underline, case,
+box on all four sides. Reports refuse word and double underline, case,
 superscript, subscript, condense, extend and other unsupported faces in these
 runs with error 3. Tab captions print without their character runs, as in
 Browse. Reports also omit style-level underline and strikethrough

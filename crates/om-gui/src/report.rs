@@ -962,12 +962,23 @@ fn prepare_colored_text_in(
     if colors.is_none() && paint(color)?.is_none() {
         return Ok((Vec::new(), needed, overflowed));
     }
+    let left = r.left + pad[3];
+    let right = (r.right - pad[1]).max(left);
+    let text_top = r.top + pad[0];
+    let text_bottom = (r.bottom - pad[2]).max(text_top);
+    let text_box = Rect {
+        left,
+        top: text_top,
+        right,
+        bottom: text_bottom,
+        ..Default::default()
+    };
     let mut output = Vec::new();
     // The colors of the characters laid out so far, line by line.
     let mut colored = 0;
     for (i, (glyphs, used)) in lines.into_iter().enumerate() {
         // A line that starts below the box shows nothing of itself.
-        let top = r.top + pad[0] + i as f64 * pitch;
+        let top = text_top + i as f64 * pitch;
         if overflowed && top >= r.bottom {
             break;
         }
@@ -984,7 +995,6 @@ fn prepare_colored_text_in(
         // A glyph whose outline reaches past the text box's sides (an
         // italic overhang, say), though its advance fits, is cut there, as
         // Pro clips text to its box.
-        let (left, right) = (r.left + pad[3], (r.right - pad[1]).max(r.left + pad[3]));
         let mut pen = left + dx;
         let mut spills = false;
         for (glyph, advance, _) in &glyphs {
@@ -996,8 +1006,8 @@ fn prepare_colored_text_in(
         }
         let line = TextLine {
             glyphs,
-            x: r.left + pad[3] + dx,
-            baseline: r.top + pad[0] + dy + first_baseline + i as f64 * pitch,
+            x: left + dx,
+            baseline: text_top + dy + first_baseline + i as f64 * pitch,
             size,
             face: report_face,
             color,
@@ -1011,14 +1021,10 @@ fn prepare_colored_text_in(
             spans: Vec::new(),
             underline: false,
             strike: false,
-            sides: (left, right),
+            text_box: text_box.clone(),
             clip: (cut || spills).then(|| Rect {
-                top: if cut { r.top + pad[0] } else { r.top },
-                bottom: if cut {
-                    (r.bottom - pad[2]).max(r.top + pad[0])
-                } else {
-                    r.bottom
-                },
+                top: if cut { text_top } else { r.top },
+                bottom: if cut { text_bottom } else { r.bottom },
                 left: if spills { left } else { r.left },
                 right: if spills { right } else { r.right },
                 ..r.clone()
@@ -1118,9 +1124,9 @@ pub(crate) struct TextLine {
     /// drawn as [`Self::decorations`] places them).
     pub underline: bool,
     pub strike: bool,
-    /// The text box's left and right sides, which its strokes stay within
-    /// ([`Self::decorations`]).
-    pub sides: (f64, f64),
+    /// The bounds for decoration strokes, including when the glyphs fit
+    /// and have no clip.
+    text_box: Rect,
     /// The box overflowing text is cut at ([`Overflow::Clip`]): its field's
     /// text box, between the padding and margins above and below, across
     /// the field's width; `None` when the text fits.
@@ -1133,8 +1139,7 @@ impl TextLine {
     /// stroke's top above the baseline) [I: FileMaker Pro's positions and
     /// thicknesses are unmeasured]. They run under the line's glyphs from
     /// its start to its last that is not a space, so a wrapped line's
-    /// trailing space is not underlined [I], and no further than its text
-    /// box's sides.
+    /// trailing space is not underlined [I]. Strokes stay within the text box.
     pub(crate) fn decorations(&self) -> Vec<(Rect, Color)> {
         let face = self.face.face();
         let unit = self.size / f64::from(face.units_per_em());
@@ -1150,22 +1155,26 @@ impl TextLine {
             let Some(metrics) = metrics.filter(|_| on && end > 0) else {
                 continue;
             };
-            let top = self.baseline - f64::from(metrics.position) * unit;
-            let thickness = (f64::from(metrics.thickness) * unit).max(0.0);
+            let stroke_top = self.baseline - f64::from(metrics.position) * unit;
+            let top = stroke_top.max(self.text_box.top);
+            let bottom =
+                (stroke_top + f64::from(metrics.thickness) * unit).min(self.text_box.bottom);
+            if bottom <= top {
+                continue;
+            }
             let mut first = 0;
             for (glyphs, color, x) in self.parts() {
                 let count = glyphs.len().min(end.saturating_sub(first));
                 first += glyphs.len();
                 let width: f64 = glyphs[..count].iter().map(|g| g.1).sum();
-                // Within the text box: an advance wider than the box would
-                // carry the stroke into its padding.
-                let (left, right) = (x.max(self.sides.0), (x + width).min(self.sides.1));
-                if right > left && thickness > 0.0 {
+                let left = x.max(self.text_box.left);
+                let right = (x + width).min(self.text_box.right);
+                if right > left {
                     let rect = Rect {
                         left,
                         top,
                         right,
-                        bottom: top + thickness,
+                        bottom,
                         ..Default::default()
                     };
                     out.push((rect, color));
