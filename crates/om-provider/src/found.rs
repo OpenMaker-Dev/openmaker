@@ -23,7 +23,7 @@ use om_data::calc::Ctx;
 use om_data::found::{
     self, code, FindKind, FindRequest, Findable, FoundSet, FoundSetChange, SortField,
 };
-use om_data::host::{CalcSource, FileCalc, Hop};
+use om_data::host::{CalcSource, FileCalc, Hop, SortNesting};
 use om_data::{DataError, Record};
 use om_hbam::{RidList, Table};
 use om_query::find::{
@@ -31,7 +31,7 @@ use om_query::find::{
 };
 use om_query::keys::{record_value_keys, word_keys, TextKeys, EMPTY_TEXT_KEY, INVALID_KEY};
 
-use crate::calc::NativeSource;
+use crate::calc::{check_sort_match_path, NativeSource};
 use crate::{download_records, download_tree, failure, record_ids, NativeProvider};
 
 /// Records downloaded per request while sorting.
@@ -1354,7 +1354,7 @@ impl NativeProvider {
                         ));
                     }
                     Some(from) if field.field.contains("::") => {
-                        related.push(self.related_sort_field(from, &field.field)?);
+                        related.push(self.related_sort_field(from, field)?);
                     }
                     _ => return Err(missing(&field.field)),
                 }
@@ -1377,11 +1377,17 @@ impl NativeProvider {
             rows.extend(om_hbam::record::records(&tree, table.id));
         }
         let mut page = crate::record_page(rows, table, ids.len() as u64)?;
+        let mut rank_text = BTreeMap::new();
         if let (Some(from), false) = (occurrence, related.is_empty()) {
             let records: Vec<u64> = page.records.iter().map(|r| r.id as u64).collect();
             let values = self.related_sort_values(from, table.id, &records, &related)?;
             for (record, values) in page.records.iter_mut().zip(values) {
-                record.values.extend(values);
+                for value in values {
+                    if let Some(text) = value.rank_text {
+                        rank_text.insert((record.id, record.values.len()), text);
+                    }
+                    record.values.push(value.comparison);
+                }
             }
             page.fields
                 .extend(related.into_iter().map(|r| om_data::Field {
@@ -1393,7 +1399,13 @@ impl NativeProvider {
         let position = |id: i64| ids.iter().position(|i| *i as i64 == id);
         let mut records: Vec<&Record> = page.records.iter().collect();
         records.sort_by_key(|r| position(r.id));
-        found::sort_rows_with_date_order(&page.fields, &mut records, sort, date_order);
+        found::sort_rows_with_rank_text(
+            &page.fields,
+            &mut records,
+            sort,
+            date_order,
+            |id, column| rank_text.get(&(id, column)).map(String::as_str),
+        );
         Ok(records.iter().map(|r| r.id as u64).collect())
     }
 
@@ -1404,7 +1416,12 @@ impl NativeProvider {
     /// the first matching record"; client-ui.md, Sort Records). A related
     /// file's table, an unrelated occurrence, a summary or a container
     /// field is refused (3).
-    fn related_sort_field(&mut self, from: u64, name: &str) -> Result<RelatedSort, DataError> {
+    fn related_sort_field(
+        &mut self,
+        from: u64,
+        sort: &SortField,
+    ) -> Result<RelatedSort, DataError> {
+        let name = sort.field.as_str();
         let missing = || {
             DataError::with_code(
                 code::FIELD_MISSING,
@@ -1450,6 +1467,7 @@ impl NativeProvider {
             let path = schema
                 .path(from, occurrence)
                 .ok_or_else(|| unsupported("its occurrence is not related to the layout's."))?;
+            check_sort_match_path(&schema, &path)?;
             // The relationships' own sort reads unstored calculations and
             // summaries as empty (`om_data::host::sort_records`): a first
             // related record ordered by one would be guessed.
@@ -1479,6 +1497,7 @@ impl NativeProvider {
             occurrence,
             field: id,
             kind,
+            custom_order: sort.value_list.is_some(),
         })
     }
 
@@ -1492,7 +1511,10 @@ impl NativeProvider {
         table: u64,
         records: &[u64],
         related: &[RelatedSort],
-    ) -> Result<Vec<Vec<Option<String>>>, DataError> {
+    ) -> Result<Vec<Vec<RelatedSortValue>>, DataError> {
+        let _nesting = SortNesting::enter().ok_or_else(|| {
+            DataError::with_code(code::UNSUPPORTED, "The related sort is nested too deeply.")
+        })?;
         // An occurrence or layout the schema had not read yet: read, then
         // the values again (as `filter_evaluated`).
         let mut asked = BTreeSet::new();
@@ -1519,7 +1541,7 @@ impl NativeProvider {
         table: u64,
         records: &[u64],
         related: &[RelatedSort],
-    ) -> Result<(Option<Vec<Vec<Option<String>>>>, crate::calc::SchemaNeeds), DataError> {
+    ) -> Result<(Option<Vec<Vec<RelatedSortValue>>>, crate::calc::SchemaNeeds), DataError> {
         let schema = self.calc_schema_cached()?;
         let session_info = self.session_info();
         let today = om_data::host::session::today(session_info.utc_offset);
@@ -1549,7 +1571,14 @@ impl NativeProvider {
                 match file.read_related_computed(from, record, sort.occurrence, sort.field) {
                     Ok(value) => {
                         let text = sort_text(&value, &cx);
-                        row.push((!text.is_empty()).then_some(text));
+                        let rank_text = sort
+                            .custom_order
+                            .then(|| value.to_text(&cx).into_string())
+                            .filter(|original| *original != text);
+                        row.push(RelatedSortValue {
+                            comparison: (!text.is_empty()).then_some(text),
+                            rank_text,
+                        });
                     }
                     Err(error) if error.code() == PENDING => {
                         pending = true;
@@ -1600,16 +1629,20 @@ struct RelatedSort {
     occurrence: u64,
     field: u64,
     kind: om_data::FieldKind,
+    custom_order: bool,
 }
 
-/// The related record ids a related sort's source may hold, from every
-/// relationship its reads follow, calculations' included (8 bytes each, 64
-/// MiB; [`NativeSource::with_related_limit`]): OpenMaker's limit, as a
-/// client find's duplicates have one ([`CLIENT_FIND_BUDGET`]).
+struct RelatedSortValue {
+    comparison: Option<String>,
+    rank_text: Option<String>,
+}
+
+/// The shared limit on related result and lookup candidate IDs retained
+/// during one sort's reads, including reads made by calculations.
 const RELATED_SORT_IDS: usize = 8 << 20;
 
 /// `value` as text the desktop's sort reads back as the same value
-/// (`found::sort_rows_with_date_order`), whatever the file's formats: a
+/// (`found::sort_rows_with_rank_text`), whatever the file's formats: a
 /// number written out in full with `.` (its reader stops at an exponent
 /// and takes only `.`), a time, and a timestamp's time, with `:` and its
 /// fraction, and a date, and a timestamp's date, with `/` in the file's

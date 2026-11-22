@@ -2410,14 +2410,18 @@ fn a_related_sort_orders_by_the_first_related_records_value() {
         use fixture::{BODY, NOTES, TASK};
         // Notes::Task, and relationship 1, Tasks::Name = Notes::Task.
         fixture::add_calculated(root);
+        fixture::add_field(root, NOTES, DUE, "Due", 1, 3, 0, 0, 0);
+        let cartesian = 0xd0_0005;
+        fixture::add_occurrence(root, cartesian, "All notes", NOTES);
+        fixture::add_relationship(root, 4, (OCCURRENCE, NAME), 6, (cartesian, TASK));
         let notes = uint_segment(NOTES);
-        for (id, task, body) in [
-            (2, "Ship", "z"),
-            (3, "Ship", "a"),
-            (4, "Write tests", "m"),
-            (5, "Alpha", "b"),
+        for (id, task, body, due) in [
+            (2, "Ship", "z", "12/01/2025"),
+            (3, "Ship", "a", ""),
+            (4, "Write tests", "m", "02/01/2025"),
+            (5, "Alpha", "b", "10;1;2025"),
         ] {
-            for (field, text) in [(TASK, task), (BODY, body)] {
+            for (field, text) in [(TASK, task), (BODY, body), (DUE, due)] {
                 root.put(
                     &[&notes, &[5], &serial::encode(id), &uint_segment(field)],
                     text_node(&[], text),
@@ -2441,6 +2445,30 @@ fn a_related_sort_orders_by_the_first_related_records_value() {
     };
     assert_eq!(sorted(SortOrder::Ascending), [4, 3, 1, 2]);
     assert_eq!(sorted(SortOrder::Descending), [2, 1, 3, 4]);
+    let mut by_date = SortField::new("Notes::Due", SortOrder::Ascending);
+    // Compare by date even when the original text uses a different separator.
+    provider
+        .change_found_set(tasks, FoundSetChange::Sort(vec![by_date.clone()]))
+        .unwrap();
+    assert_eq!(ids_of(&all_records(&mut provider, tasks)), [4, 1, 3, 2]);
+    // December ranks by its original text; February and October fall
+    // through to chronological comparison even with different separators.
+    by_date.value_list = Some(vec!["12/01/2025".into()]);
+    provider
+        .change_found_set(tasks, FoundSetChange::Sort(vec![by_date]))
+        .unwrap();
+    let before = ids_of(&all_records(&mut provider, tasks));
+    assert_eq!(before, [2, 4, 1, 3]);
+    for field in ["All notes::Body", "Notes by key::Body"] {
+        let error = provider
+            .change_found_set(
+                tasks,
+                FoundSetChange::Sort(vec![SortField::new(field, SortOrder::Ascending)]),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, Some(3), "{field}");
+        assert_eq!(ids_of(&all_records(&mut provider, tasks)), before);
+    }
     // From the Notes layout, by its related task's unstored number
     // calculation Tasks::Notes (`Count ( Notes::Body )`): note 1 has no
     // task (empty), notes 4 and 5 count 1, notes 2 and 3 count 2.
@@ -2461,6 +2489,45 @@ fn a_related_sort_orders_by_the_first_related_records_value() {
     });
     let refused = provider.change_found_set(tasks, FoundSetChange::Sort(vec![by_summary]));
     assert_eq!(refused.unwrap_err().code, Some(3));
+}
+
+#[test]
+fn a_related_sort_refuses_an_unsupported_path_inside_a_calculation() {
+    use om_data::found::{SortField, SortOrder};
+
+    let file = file_with("related-sort-calculation", &[], |root| {
+        use fixture::{NOTES_BY_KEY, NOTES_OCCURRENCE, TASK};
+        fixture::add_calculated(root);
+        // Notes by key -> Tasks has stored match fields. The calculation
+        // Tasks::Notes follows a different path, Tasks -> Notes.
+        fixture::add_relationship(root, 2, (OCCURRENCE, NAME), 0, (NOTES_BY_KEY, TASK));
+        fixture::add_relationship(root, 1, (OCCURRENCE, NAME), 6, (NOTES_OCCURRENCE, TASK));
+        root.put(
+            &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+            OwnedNode::leaf(Vec::new(), fixture::layout_def(NOTES_BY_KEY)),
+        );
+        root.put(
+            &[
+                &uint_segment(fixture::NOTES),
+                &[5],
+                &serial::encode(1),
+                &uint_segment(TASK),
+            ],
+            text_node(&[], "Ship"),
+        );
+    });
+    let (port, ca_pem) = host(&file.0);
+    let mut provider = open(port, &ca_pem);
+    let notes = layout(&mut provider, "Notes");
+    let before = ids_of(&all_records(&mut provider, notes));
+    let error = provider
+        .change_found_set(
+            notes,
+            FoundSetChange::Sort(vec![SortField::new("Tasks::Notes", SortOrder::Descending)]),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, Some(3));
+    assert_eq!(ids_of(&all_records(&mut provider, notes)), before);
 }
 
 #[test]

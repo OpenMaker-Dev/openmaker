@@ -23,7 +23,7 @@ use om_data::calc::{CalcError, Ctx, Date, Value, ValueType};
 use om_data::containers::MemberInfo;
 use om_data::host::{
     stored_value, CalcCancel, CalcData, CalcNeed, CalcSchema, CalcSource, FieldClass, FieldDef,
-    FileCalc, FileHost, LookupKey, RecordValues, Recorder, SessionInfo, TableDef,
+    FileCalc, FileHost, Hop, JoinOp, LookupKey, RecordValues, Recorder, SessionInfo, TableDef,
 };
 pub(crate) use om_data::rules::schema::calc_schema;
 use om_data::{DataError, Record, RecordPage};
@@ -38,6 +38,30 @@ use crate::{
 mod demand;
 pub(crate) use demand::rule_reads;
 mod related;
+
+/// A related sort accepts paths whose match values are stored. Check both
+/// sides of each hop, including when a calculation follows a path of its own.
+pub(crate) fn check_sort_match_path(schema: &CalcSchema, path: &[Hop]) -> Result<(), DataError> {
+    for hop in path {
+        for predicate in &hop.predicates {
+            let unstored = |occurrence, field| {
+                schema
+                    .field(occurrence, field)
+                    .is_some_and(FieldDef::is_unstored_calculation)
+            };
+            if predicate.op == JoinOp::Cartesian
+                || unstored(hop.from, predicate.left)
+                || unstored(hop.to, predicate.right)
+            {
+                return Err(DataError::with_code(
+                    om_data::found::code::UNSUPPORTED,
+                    "Related sorts do not support Cartesian predicates or unstored match fields.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Soft limits for the provider's working set, which stays across pages and
 /// batches until the data changes (#1061). An oversized evaluation still
@@ -381,10 +405,10 @@ pub(crate) struct NativeSource<'a> {
     sorts: RefCell<HashMap<u64, Arc<[u64]>>>,
     globals: RefCell<HashMap<u64, Arc<RecordValues>>>,
     related: RefCell<RelatedCache>,
-    /// The record ids `related` holds from this source's own reads.
+    /// The IDs retained by related reads and indexed lookups during a sort.
     related_held: std::cell::Cell<usize>,
-    /// The most `related` may hold ([`Self::with_related_limit`]).
-    related_limit: usize,
+    /// The shared ID limit for a related sort ([`Self::with_related_limit`]).
+    related_limit: Option<usize>,
     lookups: RefCell<HashMap<LookupKey, Option<Arc<[u64]>>>>,
     /// The session's own global values, over the stored ones.
     session_globals: SessionGlobals,
@@ -447,7 +471,7 @@ impl<'a> NativeSource<'a> {
             globals: RefCell::default(),
             related: RefCell::default(),
             related_held: std::cell::Cell::new(0),
-            related_limit: usize::MAX,
+            related_limit: None,
             lookups: RefCell::default(),
             session_globals: SessionGlobals::new(),
             library: None,
@@ -546,17 +570,35 @@ impl<'a> NativeSource<'a> {
         self
     }
 
-    /// Read imported tables on their related files' connections.
-    /// Hold at most `limit` related record ids (`related`): a related set
-    /// that would pass it fails the read that asked for it, with error 3
-    /// as this source's failure, instead of being kept. For a long reader
-    /// over many records, whose reads would otherwise keep every related
-    /// set they followed (a related sort).
+    /// Bound the IDs retained by a related sort, including lookup candidates
+    /// and results that only the caller's read recorder may keep.
     pub(crate) fn with_related_limit(mut self, limit: usize) -> Self {
-        self.related_limit = limit;
+        self.related_limit = Some(limit);
         self
     }
 
+    fn charge_related_ids(&self, count: usize) -> Result<(), CalcError> {
+        if let Some(limit) = self.related_limit {
+            let held = self.related_held.get().saturating_add(count);
+            if held > limit {
+                return Err(self.fail(DataError::with_code(
+                    om_data::found::code::UNSUPPORTED,
+                    format!("The related sort exceeded OpenMaker's limit of {limit} record IDs."),
+                )));
+            }
+            self.related_held.set(held);
+        }
+        Ok(())
+    }
+
+    fn check_sort_read(&self) -> Result<(), CalcError> {
+        if self.related_limit.is_some() && self.failure.borrow().is_some() {
+            return Err(om_data::host::record_missing());
+        }
+        Ok(())
+    }
+
+    /// Read imported tables on their related files' connections.
     pub fn with_external(mut self, external: &'a crate::external::ExternalFiles) -> Self {
         self.external = Some(external);
         self
@@ -936,9 +978,15 @@ impl CalcSource for NativeSource<'_> {
         to: u64,
         cx: &Ctx,
     ) -> Result<Arc<[u64]>, CalcError> {
+        self.check_sort_read()?;
         let key = (from, record, to);
         if let Some(ids) = self.related.borrow().get(&key) {
             return Ok(Arc::clone(ids));
+        }
+        if self.related_limit.is_some() {
+            if let Some(path) = schema.path(from, to) {
+                check_sort_match_path(schema, &path).map_err(|error| self.fail(error))?;
+            }
         }
         let ids = if let Some(ids) = self.indexed_related(schema, from, record, to, cx)? {
             ids
@@ -947,19 +995,10 @@ impl CalcSource for NativeSource<'_> {
             // the whole path here would also read final Cartesian bodies.
             om_data::host::related_by_scan(self, schema, from, record, to, cx)?
         };
+        // Even when the native cache cannot reuse a set, a Recorder can
+        // hold it after this call returns.
+        self.charge_related_ids(ids.len())?;
         if self.reusable_related(from, to) {
-            let held = self.related_held.get().saturating_add(ids.len());
-            if held > self.related_limit {
-                return Err(self.fail(DataError::with_code(
-                    om_data::rules::error::UNAVAILABLE,
-                    format!(
-                        "The related records read are more than {}, OpenMaker's limit for this \
-                         operation.",
-                        self.related_limit
-                    ),
-                )));
-            }
-            self.related_held.set(held);
             self.related.borrow_mut().insert(key, Arc::clone(&ids));
         }
         Ok(ids)
@@ -992,6 +1031,7 @@ impl CalcSource for NativeSource<'_> {
     /// the host refuses (an error) or cannot answer from an existing value
     /// index ([`crate::found::indexed_find`]) leaves the query to scan.
     fn lookup(&self, table: u64, field: u64, text: &str) -> Result<Option<Arc<[u64]>>, CalcError> {
+        self.check_sort_read()?;
         let key = (table, field, Arc::from(text));
         if let Some(ids) = self.lookups.borrow().get(&key) {
             return Ok(ids.clone());
@@ -1053,10 +1093,18 @@ impl CalcSource for NativeSource<'_> {
                 }
                 Ok(crate::found::indexed_find(session, wire, field, &finders)
                     .ok()
-                    .flatten()
-                    .map(|found| found.iter().collect()))
+                    .flatten())
             })
         })()?;
+        let result: Option<Arc<[u64]>> = match result {
+            Some(found) => {
+                if self.related_limit.is_some() {
+                    self.charge_related_ids(found.len())?;
+                }
+                Some(found.iter().collect())
+            }
+            None => None,
+        };
         self.lookups.borrow_mut().insert(key, result.clone());
         Ok(result)
     }

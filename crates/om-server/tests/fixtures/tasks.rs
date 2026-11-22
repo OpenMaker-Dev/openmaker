@@ -723,7 +723,7 @@ pub fn add_tasks(root: &mut OwnedNode, ids: std::ops::RangeInclusive<u64>) {
 
 /// A `LayoutDef` protobuf naming the occurrence (field 2, its serial-key
 /// value, layout-model.md 4.1).
-fn layout_def(occurrence: u64) -> Vec<u8> {
+pub fn layout_def(occurrence: u64) -> Vec<u8> {
     let mut alias = serial::decode(&uint_segment(occurrence)).expect("a serial key");
     let mut out = vec![0x10];
     loop {
