@@ -754,6 +754,13 @@ impl CalcSchema {
         &self.names
     }
 
+    /// The names text is compiled against (`Evaluate`, a calculation's
+    /// text), for a host whose engine lacks some built-in functions
+    /// ([`crate::host::device::withhold_server_lacks`]).
+    pub fn names_mut(&mut self) -> &mut NameTable {
+        &mut self.names
+    }
+
     pub fn tables(&self) -> impl Iterator<Item = &TableDef> {
         self.tables.values()
     }

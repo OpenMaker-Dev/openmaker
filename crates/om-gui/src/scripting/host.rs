@@ -3809,6 +3809,12 @@ impl CalcHost for WorkerHost<'_> {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
+        // FileMaker Go's sensor and location functions, as a desktop answers
+        // them (`om_data::host::device`).
+        let cx = Ctx::new(CalcHost::locale(self), self.today);
+        if let Some(answer) = om_data::host::device::answer(function, args, &cx, false) {
+            return answer;
+        }
         if let HostFunction::Builtin(builtin) = function {
             // With the window's session: its windows and the other open
             // files.

@@ -2,7 +2,7 @@
 //! functions and plug-in functions by id, and show them by their current
 //! names (calc-encoding.md 4.2). Callers plug in a file's catalogs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::operand::PluginFunctionId;
 
@@ -45,6 +45,14 @@ pub trait Names {
     fn find_plugin_function(&self, _name: &str) -> Option<PluginFunctionId> {
         None
     }
+    /// Whether FileMaker's built-in function `id` (a Design or mobile
+    /// function of the catalog) is one the compiling engine has: one it
+    /// lacks is an unknown name there, error 1208 wherever the formula
+    /// names it, as FileMaker Server's engine fails the location functions
+    /// (calc-functions.md, s48). Every one by default.
+    fn builtin_known(&self, _id: PluginFunctionId) -> bool {
+        true
+    }
 }
 
 /// A function the file defines or a plug-in provides.
@@ -79,6 +87,9 @@ pub struct NameTable {
     custom_function_names: HashMap<String, u64>,
     plugins: HashMap<PluginFunctionId, (String, u16, Option<u16>)>,
     plugin_names: HashMap<String, PluginFunctionId>,
+    /// Built-in functions the engine these names are for lacks
+    /// ([`Names::builtin_known`]).
+    withheld: HashSet<PluginFunctionId>,
 }
 
 impl NameTable {
@@ -123,6 +134,12 @@ impl NameTable {
         self.plugin_names.entry(fold(name)).or_insert(id);
     }
 
+    /// Built-in function `id` is not the engine's: formulas compiled
+    /// against these names fail its name ([`Names::builtin_known`]).
+    pub fn withhold_builtin(&mut self, id: PluginFunctionId) {
+        self.withheld.insert(id);
+    }
+
     fn table(&self, occurrence: u64) -> Option<u64> {
         self.occurrences.get(&occurrence).map(|(_, t)| *t)
     }
@@ -135,6 +152,7 @@ impl NameTable {
             custom_function_names: self.custom_function_names.clone(),
             plugins: self.plugins.clone(),
             plugin_names: self.plugin_names.clone(),
+            withheld: self.withheld.clone(),
             ..NameTable::default()
         }
     }
@@ -178,5 +196,8 @@ impl Names for NameTable {
     }
     fn find_plugin_function(&self, name: &str) -> Option<PluginFunctionId> {
         self.plugin_names.get(&fold(name)).copied()
+    }
+    fn builtin_known(&self, id: PluginFunctionId) -> bool {
+        !self.withheld.contains(&id)
     }
 }
