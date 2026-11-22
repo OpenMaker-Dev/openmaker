@@ -2201,17 +2201,24 @@ fn rolling_back_a_multi_hop_creation_clears_its_related_drafts() {
 
 #[test]
 fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
+    let extra_field = extra_raw();
     for (tag, revert_record) in [("retain-ordinary", false), ("revert-ordinary", true)] {
+        // The optional Revert Record moves the matching Commit Transaction.
+        let commit_index = 12 + u16::from(revert_record);
         let mut open_transaction = ScriptStep::new(205);
-        open_transaction.value = 11;
+        open_transaction.value = commit_index;
         let mut commit = ScriptStep::new(206);
-        commit.value = 11;
+        commit.value = commit_index;
         let mut steps = vec![
             fixture::on(86, true),
             fixture::go_to_layout(PORTALS),
             fixture::go_to_record(1),
             new_window("W2"),
-            set_field(NOTES_OCCURRENCE, EXTRA, 0, "\"ordinary\""),
+            set_field(NOTES_OCCURRENCE, extra_field, 1, "\"ordinary\""),
+            note(
+                "$ordinary",
+                "Get ( LastError ) & \":\" & Get ( WindowName )",
+            ),
             select_window("Tasks"),
             open_transaction,
             select_window("W2"),
@@ -2225,7 +2232,10 @@ fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
             note("$beforeRevert", "Get ( LastError )"),
             ScriptStep::new(207),
             commit,
-            show("\"revert \" & $created & \":\" & $beforeRevert & \":\" & Get ( LastError )"),
+            show(
+                "\"revert \" & $ordinary & \":\" & $created & \":\" & $beforeRevert & \
+                 \":\" & Get ( LastError )",
+            ),
         ]);
         let revert = fixture::script(1, "Revert from second window", steps);
         let save = fixture::script(
@@ -2243,15 +2253,16 @@ fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
             add_extra(root);
         });
         let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
-        let extra = stored(&hosted, NOTES, &[(EXTRA, 1)]);
+        let extra_cells = [(extra_field, 1), (extra_field, 2)];
+        let mut extra = stored(&hosted, NOTES, &extra_cells);
         let mut app = open(&hosted);
-        expect(&mut app, "Revert from second window", "revert 0:0:0");
+        expect(&mut app, "Revert from second window", "revert 0:W2:0:0:0");
         assert_eq!(
             stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
             notes,
             "{tag}"
         );
-        assert_eq!(stored(&hosted, NOTES, &[(EXTRA, 1)]), extra, "{tag}");
+        assert_eq!(stored(&hosted, NOTES, &extra_cells), extra, "{tag}");
 
         expect(&mut app, "Save second window", "save 0:W2");
         assert_eq!(
@@ -2259,18 +2270,12 @@ fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
             notes,
             "{tag}"
         );
-        let saved_extra = stored(&hosted, NOTES, &[(EXTRA, 1)]);
-        if revert_record {
-            assert_eq!(saved_extra, extra, "{tag}");
-        } else {
-            assert_eq!(
-                saved_extra
-                    .iter()
-                    .filter(|(_, fields)| fields == &["ordinary"])
-                    .count(),
-                1
-            );
+        if !revert_record {
+            // Task 1's first related note is record 2.
+            let (_, fields) = extra.iter_mut().find(|(id, _)| *id == 2).unwrap();
+            fields[0] = "ordinary".to_owned();
         }
+        assert_eq!(stored(&hosted, NOTES, &extra_cells), extra, "{tag}");
     }
 }
 
