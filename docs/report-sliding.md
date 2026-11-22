@@ -64,8 +64,8 @@ summary) is laid out on its own:
   inferred from it; no FileMaker output with a sliding-left object was
   compared:
   - a field set to slide left narrows to the width its text needs on one
-    line (its glyphs' advances, or the last glyph's ink where it reaches
-    further), its padding included; an empty field, an empty container
+    line, including side padding and room for ink that extends beyond
+    the glyph advances after alignment; an empty field, an empty container
     field among them, collapses to nothing and paints nothing, as one that
     slides up does; a container field holding data keeps its width; other
     objects move but never narrow;
@@ -110,6 +110,9 @@ file is staged or job spooled. Preview shows the reason instead of a page.
 - A field that slides left whose text takes more than one line, or is wider
   than the field (so that it would wrap): how a field of several lines
   narrows is unmeasured.
+- Centered or right-aligned text whose ink needs more than the field's
+  original width, or whose right edge extends beyond its advance when
+  right-aligned. That right edge cannot fit by widening the field.
 - An object that slides (up or left) in a part that holds an object hidden
   when printing or one beyond the printable width: whether FileMaker lets it
   slide into the space of what is left out is unmeasured.
@@ -121,10 +124,10 @@ file is staged or job spooled. Preview shows the reason instead of a page.
   slide up and resize the part too.
 - Everything the ordinary report contract still refuses
   ([portable PDF](portable-pdf.md)): rotation, hide and label
-  calculations, repeating fields, text overflow other than a field's text
-  that does not slide (it prints cut), and so on; and groups, portals and
-  conditionally formatted objects that are set to slide up or left, which
-  print only when they do not slide. Sliding never relaxes these.
+  calculations, repeating fields and so on. A fixed field's overflowing
+  text and a left-sliding field's vertical overflow print cut. Groups,
+  portals and conditionally formatted objects print only when they do
+  not slide.
 
 ## Costs and limits
 

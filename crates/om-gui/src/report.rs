@@ -3307,9 +3307,8 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
     std::borrow::Cow::Owned(object)
 }
 
-/// The width `value` needs in a box styled `style` on one line: its glyphs'
-/// advances, or the last glyph's ink where it reaches further, and the
-/// box's side padding, with a hair to spare; nothing for an empty value.
+/// The width `value` needs in a box styled `style` on one line, including
+/// side padding and room for the ink after alignment; zero for an empty value.
 /// It is measured in an opaque copy of the style, so text of any colour
 /// counts. A value that would take more than one line in `width`, the
 /// field's own width, refuses: how FileMaker narrows (or does not narrow)
@@ -3334,28 +3333,48 @@ fn one_line_width(
         ..Default::default()
     };
     let (lines, _, _) = prepare_text_in(value, &wide, &opaque, Overflow::Clip)?;
-    let mut needed = 0.0f64;
-    for line in &lines {
-        let face = line.face.face();
-        let unit = line.size / f64::from(face.units_per_em());
-        let mut pen = 0.0;
-        for (glyph, advance, _) in &line.glyphs {
-            let ink = face
-                .glyph_bounding_box(ttf_parser::GlyphId(*glyph))
-                .map_or(0.0, |b| f64::from(b.x_max) * unit);
-            needed = needed.max(pen + advance).max(pen + ink);
-            pen += advance;
-        }
-    }
-    let pad = style.padding.map(|p| p.unwrap_or(0.0));
-    let needed = needed + pad[1] + pad[3] + 0.01;
-    if lines.len() > 1 || needed > width + SLIDE_EPSILON {
-        return Err(ReportError::unsupported(format!(
+    let wraps = || {
+        ReportError::unsupported(format!(
             "Report field {id} slides left with more than one line of text; \
              how a field of several lines narrows is unmeasured"
-        )));
+        ))
+    };
+    let [line] = lines.as_slice() else {
+        return Err(wraps());
+    };
+    let face = line.face.face();
+    let unit = line.size / f64::from(face.units_per_em());
+    let (mut advance, mut ink_left, mut ink_right) = (0.0f64, 0.0f64, 0.0f64);
+    for (glyph, step, _) in &line.glyphs {
+        if let Some(ink) = face.glyph_bounding_box(ttf_parser::GlyphId(*glyph)) {
+            ink_left = ink_left.min(advance + f64::from(ink.x_min) * unit);
+            ink_right = ink_right.max(advance + f64::from(ink.x_max) * unit);
+        }
+        advance += step;
     }
-    Ok(needed)
+    let side_padding = style.padding[1].unwrap_or(0.0) + style.padding[3].unwrap_or(0.0);
+    let unaligned = advance.max(ink_right);
+    if unaligned + side_padding > width {
+        return Err(wraps());
+    }
+
+    let clipped = || {
+        ReportError::unsupported(format!(
+            "Report field {id} slides left with aligned text whose ink does not fit its box"
+        ))
+    };
+    // Centering gives half the spare width to each side. Right alignment
+    // gives it all to the left; widening cannot make room on the right.
+    let needed = match style.text_align {
+        Some(2) => advance + 2.0 * (-ink_left).max(ink_right - advance),
+        Some(3) if ink_right > advance => return Err(clipped()),
+        Some(3) => advance - ink_left,
+        _ => unaligned,
+    } + side_padding;
+    if needed > width {
+        return Err(clipped());
+    }
+    Ok((needed + SLIDE_EPSILON).min(width))
 }
 
 /// Lay out one part for one record and page, sliding objects up as

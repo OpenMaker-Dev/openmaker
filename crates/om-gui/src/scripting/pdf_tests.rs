@@ -1400,6 +1400,95 @@ fn sliding_left_closes_up_a_line_of_fields() {
 }
 
 #[test]
+fn sliding_left_keeps_centered_italic_ink_inside_the_field() {
+    use crate::report::{prepare_page, ContentContext, Pictures, ReportFace};
+    let mut italic = field(1, 1, rect(10.0, 10.0, 100.0, 120.0));
+    italic.flags |= om_layout::sliding::LEFT;
+    let mut text_style = style(96.0, false, None);
+    text_style.local_styles.as_mut().unwrap().components[0]
+        .properties
+        .extend([
+            Property {
+                id: 64,
+                string: Some("Arial".into()),
+                ..Default::default()
+            },
+            Property {
+                id: 67,
+                int: Some(2), // Italic
+                ..Default::default()
+            },
+            Property {
+                id: 74,
+                int: Some(2), // Centered
+                ..Default::default()
+            },
+        ]);
+    italic.style = Some(text_style);
+    let mut layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 140.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![italic],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut content = |_: &LayoutObject, _: ContentContext| Ok("f".into());
+    let paper = om_layout::pagination::PageSize::default();
+    let plan = crate::report::plan_report(&layout, 1, paper, &[], &mut content).unwrap();
+    let pictures = Pictures::default();
+    let page = prepare_page(&layout, &plan, 0, &pictures, &mut content).unwrap();
+    let object = page
+        .parts
+        .iter()
+        .flat_map(|part| &part.objects)
+        .next()
+        .unwrap();
+    let [line] = object.text.as_slice() else {
+        panic!("expected one line of text");
+    };
+    assert_eq!(line.face, ReportFace::SansItalic);
+    assert_eq!(line.size, 96.0);
+    let face = line.face.face();
+    let ink = face
+        .glyph_bounding_box(face.glyph_index('f').unwrap())
+        .unwrap();
+    let right_ink = line.x + f64::from(ink.x_max) * line.size / f64::from(face.units_per_em());
+    assert!(object.bounds.width() < 100.0);
+    assert!(right_ink <= object.bounds.right);
+    assert!(line.clip.is_none());
+
+    // Right alignment pins the advance at the right inset, so extra width
+    // cannot make room for the same glyph's right overhang.
+    layout.objects.objects[0]
+        .style
+        .as_mut()
+        .unwrap()
+        .local_styles
+        .as_mut()
+        .unwrap()
+        .components[0]
+        .properties
+        .last_mut()
+        .unwrap()
+        .int = Some(3);
+    let error = prepare_page(&layout, &plan, 0, &pictures, &mut content).unwrap_err();
+    assert_eq!(error.code, 3);
+    assert!(error
+        .message
+        .contains("aligned text whose ink does not fit"));
+}
+
+#[test]
 fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
     let paper = om_layout::pagination::PageSize::default();
     let refuse = |layout: &Layout| {
