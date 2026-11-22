@@ -20,6 +20,7 @@ use crate::content::PartsSent;
 use crate::icons::{self, Icon};
 use crate::layout_bar::{self, LayoutBarContext};
 use crate::layout_setup::{LayoutSetup, LayoutSetupAnswer};
+use crate::licensing::{LicenseAction, LicenseDialog, LicenseKey, LicenseOperation};
 use crate::manage_layouts::{ManageLayouts, ManageLayoutsResult};
 use crate::menubar::{self, MenuContext};
 use crate::new_layout::{NewLayout, NewLayoutAnswer};
@@ -837,7 +838,9 @@ pub struct OpenMakerApp {
     /// workspace's own buttons (not while a script runs).
     workspace_followups: Vec<Action>,
     client_license: bool,
-    license_dialog: Option<crate::licensing::LicenseDialog>,
+    license_dialog: Option<LicenseDialog>,
+    /// App-wide sequence shared by all windows and License dialogs.
+    license_requests: u64,
     /// The Settings dialog, and the file its OK saves in.
     settings: Option<crate::settings::SettingsDialog>,
     settings_path: Option<std::path::PathBuf>,
@@ -952,6 +955,7 @@ impl OpenMakerApp {
             workspace_followups: Vec::new(),
             client_license,
             license_dialog: None,
+            license_requests: 0,
             settings: None,
             settings_path: crate::settings::default_path(),
             web: Default::default(),
@@ -2420,26 +2424,20 @@ impl OpenMakerApp {
             }
         }
         if let Some(dialog) = &mut self.license_dialog {
-            use crate::licensing::{LicenseAction, LicenseKey};
             if let Some(action) = dialog.show(&ctx) {
-                let request = match action {
-                    LicenseAction::Save => {
-                        dialog.pending = true;
-                        Some(Request::SaveLicense(LicenseKey::new(
-                            dialog.input.trim().to_owned(),
-                        )))
-                    }
-                    LicenseAction::Remove => {
-                        dialog.pending = true;
-                        Some(Request::RemoveLicense)
-                    }
+                let operation = match action {
+                    LicenseAction::Save => Some(LicenseOperation::Save(LicenseKey::new(
+                        dialog.input.trim().to_owned(),
+                    ))),
+                    LicenseAction::Remove => Some(LicenseOperation::Remove),
+                    LicenseAction::Check => Some(LicenseOperation::Status),
                     LicenseAction::Close => {
                         self.license_dialog = None;
                         None
                     }
                 };
-                if let Some(request) = request {
-                    self.request(&ctx, request);
+                if let Some(operation) = operation {
+                    self.license_request(&ctx, operation);
                 }
             }
         }
@@ -3787,9 +3785,12 @@ impl OpenMakerApp {
                 }
             }
             Action::ManageLicense => {
-                if self.client_license && self.status == ConnectStatus::Idle {
-                    self.license_dialog = Some(crate::licensing::LicenseDialog::default());
-                    self.request(ctx, Request::LicenseStatus);
+                if self.client_license
+                    && self.status == ConnectStatus::Idle
+                    && self.license_dialog.is_none()
+                {
+                    self.license_dialog = Some(LicenseDialog::default());
+                    self.license_request(ctx, LicenseOperation::Status);
                 }
             }
             Action::NewRecord | Action::DuplicateRecord => {
@@ -4637,6 +4638,34 @@ impl OpenMakerApp {
         let file = self.w.file_id;
         let workspace = self.workspace.as_mut()?;
         workspace.takes(file, token).then_some(workspace)
+    }
+
+    /// Send an app-wide store operation even when the window's host is gone.
+    fn license_request(&mut self, ctx: &egui::Context, operation: LicenseOperation) {
+        let Some(dialog) = self
+            .license_dialog
+            .as_mut()
+            .filter(|dialog| !dialog.pending())
+        else {
+            return;
+        };
+        self.license_requests += 1;
+        let id = self.license_requests;
+        let writing = !matches!(operation, LicenseOperation::Status);
+        let request = Request::License { id, operation };
+        match self.worker.send(ctx, self.epoch, self.w.id, request) {
+            Ok(()) => dialog.wait_for(id, writing),
+            Err(err) => dialog.error = Some(err.to_string()),
+        }
+    }
+
+    /// A License dialog answer. The dialog is the app's, not a window's: it
+    /// takes the answer whichever window asked, also after that window or
+    /// its file closed.
+    pub(super) fn license_reply(&mut self, id: u64, result: Result<bool, DataError>) {
+        if let Some(dialog) = &mut self.license_dialog {
+            dialog.accept(id, result);
+        }
     }
 
     fn request(&mut self, ctx: &egui::Context, request: Request) {
@@ -5671,7 +5700,13 @@ impl OpenMakerApp {
         }
         loop {
             match self.worker.poll() {
-                Ok(response) if response.epoch == self.epoch => self.on_response(ctx, response),
+                // A License dialog answer is the app's, of any session.
+                Ok(response)
+                    if response.epoch == self.epoch
+                        || matches!(response.reply, Reply::License { .. }) =>
+                {
+                    self.on_response(ctx, response)
+                }
                 Ok(_) => {}
                 Err(PollError::Empty) => break,
                 Err(PollError::Stopped) => {
@@ -5882,11 +5917,7 @@ impl OpenMakerApp {
                 report,
             } => self.save_settled(ctx, settle, result, report),
             Reply::Recreated(result) => self.recreated(ctx, result),
-            Reply::License(result) => {
-                if let Some(dialog) = &mut self.license_dialog {
-                    dialog.accept(result);
-                }
-            }
+            Reply::License { id, result } => self.license_reply(id, result),
             Reply::Files(listed) => self.on_listed(listed),
             Reply::Opened(result) => {
                 let target = self.opening.take();
@@ -7085,6 +7116,97 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn only_the_current_license_request_can_finish_the_dialog() {
+        struct RejectSave;
+        impl crate::licensing::LicenseStore for RejectSave {
+            fn load(&mut self) -> Result<Option<LicenseKey>, DataError> {
+                Ok(Some(LicenseKey::new("synthetic-saved-key".into())))
+            }
+            fn save(&mut self, _: &LicenseKey) -> Result<(), DataError> {
+                Err(DataError::new("Fake store refused the save."))
+            }
+            fn remove(&mut self) -> Result<(), DataError> {
+                Ok(())
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::with_license_store(
+            Box::new(om_data::mock::MockProvider::new()),
+            Box::new(NoLicense),
+        );
+        let (worker, jobs, replies) = Worker::capture_jobs_with_replies();
+        app.worker = worker;
+        app.client_license = true;
+        app.windows = vec![windows::Doc::new(2), windows::Doc::new(3)];
+        let mut provider: Box<dyn DataProvider> = Box::new(om_data::mock::MockProvider::new());
+        let mut files = crate::scripting::databases::OpenFiles::default();
+        let mut scripts = crate::scripting::ScriptSession::new(Default::default());
+        let mut io = crate::scripting::session::Io {
+            provider: &mut provider,
+            files: &mut files,
+            store: &mut RejectSave,
+            jobs: &jobs,
+            responses: &replies,
+        };
+
+        app.with_window(2, |app| app.apply(&ctx, Action::ManageLicense))
+            .unwrap();
+        app.with_window(3, |app| app.apply(&ctx, Action::ManageLicense))
+            .unwrap();
+        let status = jobs.try_recv().unwrap();
+        assert_eq!(status.window, 2);
+        assert!(jobs.try_recv().is_err(), "one dialog requests status once");
+        let Request::License { id, .. } = &status.request else {
+            panic!("expected a license job");
+        };
+        let (status_id, status_epoch, status_window) = (*id, status.epoch, status.window);
+        app.remove_window(status.window);
+        app.epoch += 1;
+        scripts.handle(&mut io, status);
+        app.poll_worker(&ctx);
+        let dialog = app.license_dialog.as_mut().unwrap();
+        assert!(!dialog.pending());
+        assert_eq!(dialog.stored, Some(true));
+        let draft = "synthetic-unsaved-key";
+        dialog.input.push_str(draft);
+        app.license_request(&ctx, LicenseOperation::Save(LicenseKey::new(draft.into())));
+
+        // Opening the same app-wide dialog from another window leaves
+        // the write and its draft in place.
+        app.with_window(3, |app| app.apply(&ctx, Action::ManageLicense))
+            .unwrap();
+        let save = jobs.try_recv().unwrap();
+        assert!(jobs.try_recv().is_err(), "reentry does not request status");
+
+        // Even a successful status reply cannot settle a later write.
+        replies
+            .send(worker::Response {
+                epoch: status_epoch,
+                window: status_window,
+                reply: Reply::License {
+                    id: status_id,
+                    result: Ok(true),
+                },
+            })
+            .unwrap();
+        app.poll_worker(&ctx);
+        let dialog = app.license_dialog.as_ref().unwrap();
+        assert!(dialog.pending());
+        assert_eq!(dialog.input.as_str(), draft);
+
+        scripts.handle(&mut io, save);
+        app.poll_worker(&ctx);
+        let dialog = app.license_dialog.as_ref().unwrap();
+        assert!(!dialog.pending());
+        assert_eq!(
+            dialog.error.as_deref(),
+            Some("Fake store refused the save.")
+        );
+        assert_eq!(dialog.input.as_str(), draft);
     }
 
     /// FileMaker Pro 26.0.3 shows a layout the window goes back to in the

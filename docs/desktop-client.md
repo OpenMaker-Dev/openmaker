@@ -370,11 +370,25 @@ Persistence uses [keyring](https://docs.rs/keyring/3.6.3/keyring/)'s explicit
 native backends: macOS Keychain, Windows Credential Manager and Linux Secret
 Service with encrypted D-Bus transport. The service is
 `org.openmaker.OpenMaker` and the account is `filemaker-client-license`.
-Operations run on the provider worker, serialized with connection requests.
+Operations run in order on a thread of their own, for the provider worker.
 Failures do not write plaintext or silently switch to temporary storage; a
-failed save keeps the masked draft for retry. Loading a key fails the
-connection if the store is inaccessible; turning off **Use saved license**
-bypasses the store for an unlicensed server. The desktop client does not
+failed save keeps the masked draft for retry. Opening or reconnecting to a
+host waits for the saved key at most 3 seconds: the OS can hold a read
+while it asks the user (macOS Keychain asks whether a newly built OpenMaker
+may use the item, and the prompt can sit behind other windows). When the
+store fails or does not answer in time, the connection goes ahead without
+a key, which OpenMaker Server does not need; if the host refuses it, the
+error says the saved license was not sent and why. The next attempt takes
+the answer of a read that was still waiting rather than asking again, if it
+came within the last minute ([#151](https://github.com/OpenMaker-Dev/openmaker/issues/151)).
+While such a read waits, Save and Remove say so and change nothing;
+otherwise they wait for the store without a limit. When the dialog cannot
+tell whether a key is saved, **Check Again** reads the store again and keeps
+the draft. The app-wide dialog takes only the reply to its current request,
+even if the window that sent it closes or its session changes. License
+requests reach the store even when the window's host is gone. If the
+store's thread stops (its store failed), OpenMaker must be started again to
+reach it. Turning off **Use saved license** bypasses the store. The desktop client does not
 import license keys from `.env` or environment variables. License values and
 machine-info license fields are redacted in diagnostics.
 
