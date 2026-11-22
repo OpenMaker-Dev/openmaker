@@ -98,6 +98,11 @@ pub(super) struct Focus {
     pub occurrence: u64,
     pub field: u64,
     pub object: String,
+    /// The layout object entered, when known: a field shown by several
+    /// objects, or by an unnamed one, is entered again by it.
+    pub object_id: Option<u64>,
+    /// The repetition entered (`Get ( ActiveRepetitionNumber )`).
+    pub repetition: u32,
     /// Insert steps typed into it: not a modified field until it is left.
     pub typed: bool,
 }
@@ -114,8 +119,14 @@ impl ServerHost {
             // for a script session's file [O: harness, not hosted].
             MULTI_USER_STATE => number(0),
             PAGE_NUMBER => text(""),
-            ACTIVE_PORTAL_ROW_NUMBER => number(0),
-            ACTIVE_REPETITION_NUMBER => number(i64::from(self.focus.is_some())),
+            ACTIVE_PORTAL_ROW_NUMBER => number(
+                window
+                    .and_then(|w| w.portal.as_ref())
+                    .map_or(0, |r| i64::try_from(r.row).unwrap_or(0)),
+            ),
+            ACTIVE_REPETITION_NUMBER => {
+                number(self.focus.as_ref().map_or(0, |f| i64::from(f.repetition)))
+            }
             ACTIVE_FIELD_NAME
             | ACTIVE_FIELD_TABLE_NAME
             | ACTIVE_FIELD_CONTENTS
@@ -268,35 +279,12 @@ impl ServerHost {
                 occurrence: om_layout::occurrence_id(spec.table_key)?,
                 field: om_hbam::serial::raw_of_id(spec.field_key)?,
                 object: object.name.clone().unwrap_or_default(),
+                object_id: Some(object.id),
+                repetition: 1,
                 typed: false,
             })
         });
         self.focus = first;
-    }
-
-    /// Give the focus to `field` of `occurrence`, shown by the first object
-    /// of the window's layout that shows it.
-    pub(super) fn focus_field(&mut self, occurrence: u64, field: u64) {
-        let object = self.design().and_then(|schema| {
-            let window = self.window.as_ref()?;
-            let id = self.schema.layouts.get(window.layout)?.id;
-            let entry = schema.layouts().iter().find(|l| u64::from(l.id) == id)?;
-            om_data::host::layout_objects::objects_in_order(entry.layout.as_deref()?)
-                .into_iter()
-                .find(|o| {
-                    o.field_spec().is_some_and(|s| {
-                        om_layout::occurrence_id(s.table_key) == Some(occurrence)
-                            && om_hbam::serial::raw_of_id(s.field_key) == Some(field)
-                    })
-                })
-                .and_then(|o| o.name.clone())
-        });
-        self.focus = Some(Focus {
-            occurrence,
-            field,
-            object: object.unwrap_or_default(),
-            typed: false,
-        });
     }
 
     /// The focus selectors: the field's name and occurrence, its text (in
@@ -304,7 +292,12 @@ impl ServerHost {
     /// the object's name; empty without a focus.
     fn focus_answer(&self, selector: u8) -> Value {
         let Some(focus) = &self.focus else {
-            return Value::empty_text();
+            // A portal active without a field entered is the active object.
+            let portal = self.window.as_ref().and_then(|w| w.portal.as_ref());
+            return match (selector, portal) {
+                (ACTIVE_LAYOUT_OBJECT_NAME, Some(row)) => Value::text(&row.name),
+                _ => Value::empty_text(),
+            };
         };
         let contents = || -> String {
             let Some(window) = self.window.as_ref() else {
@@ -314,8 +307,31 @@ impl ServerHost {
                 Mode::Find => NO_RECORD,
                 _ => window.record().unwrap_or(NO_RECORD),
             };
+            // A related field reads the active row's record, else the first
+            // related record; never the window's record in another table.
+            let record = if focus.occurrence == window.occurrence || record == NO_RECORD {
+                record
+            } else {
+                match self.active_row_record(window.occurrence, record, focus.occurrence) {
+                    Ok(Some(Some(related))) => related,
+                    Ok(Some(None)) | Err(_) => return String::new(),
+                    Ok(None) => match self
+                        .related_set(window.occurrence, record, focus.occurrence)
+                        .ok()
+                        .and_then(|records| records.first().copied())
+                    {
+                        Some(related) => related,
+                        None => return String::new(),
+                    },
+                }
+            };
             let value = self
-                .field_value(focus.occurrence, record, focus.field, 1)
+                .field_value(
+                    focus.occurrence,
+                    record,
+                    focus.field,
+                    focus.repetition.max(1),
+                )
                 .unwrap_or_else(|_| Value::empty_text());
             om_calc::eval::display(&value, self)
         };

@@ -1013,21 +1013,15 @@ impl StepReader<'_> {
         Ok(())
     }
 
-    /// Add Account's "Expire password", Reset Account Password's and
-    /// Enable Account's choice: shown from the step value, whose stored
-    /// number for the other choice (1, 2 or 4) the XML does not tell.
+    /// The account steps' Booleans give the logical choice. The XML does
+    /// not carry the original nonzero step value (local-files.md 2.4).
     fn account_choice(&mut self, b: &Element) -> Read<()> {
         b.known(&["type", "value", "name"])?;
         b.no_children()?;
         let set = truth(b)?;
         // Enable Account shows Activate (True) for step value 0.
         let stored = if self.id() == 137 { !set } else { set };
-        if stored {
-            let label = b.attr("name").or(b.attr("type")).unwrap_or_default();
-            return Err(format!(
-                "The choice “{label}” is not read: its stored value is not known"
-            ));
-        }
+        self.choice(u16::from(stored));
         Ok(())
     }
 

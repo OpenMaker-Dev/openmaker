@@ -992,6 +992,9 @@ pub(crate) fn with_client_license<T>(
         provider.set_client_license(key.as_ref().map(LicenseKey::expose))?;
     }
     open(provider).map_err(|mut error| {
+        if error.code == Some(om_provider::CLIENT_LICENSE_REFUSED) {
+            error.message.push_str(". Check your key in FileMaker License... and enable Use saved license for this host.");
+        }
         if let Some(store) = unreadable {
             error.message = format!("{} The saved license was not sent: {store}", error.message);
         }

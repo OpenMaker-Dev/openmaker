@@ -3066,11 +3066,13 @@ Server engine (11.3, 11.5)
   related one current. "Show in new window" opens a window for them, as
   New Window does, once the records are found.
 - Windows (13.25): a session's windows each keep their layout, found set,
-  record, mode and Find mode's requests; steps work on the current one.
-  New Window copies the current window and becomes current, named as
-  given, else after the current one with " - 2" (" - 3", ... when taken),
-  then goes to its layout. Select Window and Close Window match names
-  front to back ignoring case, then window UUIDs, as Claris documents
+  record, mode, Find mode's requests and active portal row. Steps work on
+  the current window. New Window copies the layout, found set, record
+  and mode and becomes current, named as given, else after the current
+  one with " - 2" (" - 3", ... when taken), then goes to its layout.
+  A new window starts with no active portal row (OpenMaker's choice,
+  unmeasured in FileMaker Server). Select Window and Close Window match
+  names front to back ignoring case, then window UUIDs, as Claris documents
   Select Window's lookup; nothing matching is 112. Closing the current
   window makes the one current before it current, and closing another
   keeps the current one. Closing the last stops the script: the step
@@ -3096,11 +3098,12 @@ Server engine (11.3, 11.5)
   windows past their budget.
 - OpenMaker keeps at most 256 windows per session and budgets 128 MiB
   for their found sets, sort orders, Find requests (the last find
-  included) and names. It checks the retained allocation capacities of
-  the prepared window and the existing windows before committing the
-  opener's record. A budget refusal returns error 2 and leaves the open
-  edit and windows in place. A missing destination returns 105 before
-  opening a window. Set Window Title checks the budget for the new name.
+  included), window names and active portal names. It checks the retained
+  allocation capacities of the prepared and existing windows before
+  committing the opener's record. A budget refusal returns error 2 and
+  leaves the open edit and windows in place. A missing destination
+  returns 105 before opening a window. Set Window Title checks the budget
+  for the new name.
   An active window can grow during ordinary script operations. Select
   Window checks whether it can park the active state before committing
   its open record. FileMaker Server's limits are unmeasured.
@@ -3162,8 +3165,50 @@ Server engine (11.3, 11.5)
   summary reorder are 3. The found set stays sorted (`Get ( SortState )`
   1) until a step replaces it (Show All, Show Omitted Only, a find, Go to
   List of Records, Go to Related Record).
+- Portal rows (13.24): Go to Portal Row moves through the related records
+  of the window's record in the relationship's order, then the creation
+  row when the relationship allows creating records and the portal
+  scrolls (a portal that does not scroll reaches its visible rows); it
+  uses the active portal, else the first in stacking order. It keeps the
+  field entered, else enters the row's first field (top to bottom, then
+  left to right), and with Select makes the row active without a field.
+  Go to Object makes a portal active as a whole (its row kept), enters a
+  portal's field in the active row (row 1 without one; 101, the portal
+  active, when it has no rows) in the repetition given, or another field;
+  no such object is 116, an empty name 5, a repetition the field lacks
+  102. Go to Field resolves the first object in stacking order that
+  shows the field: in a portal it is entered the same way (a repetition
+  the field lacks is 102, nothing active), outside every portal the
+  portal is left; with no target the field is left, which commits the
+  record (s33). Go to Next and Previous Field are 0. Moving between the
+  fields and portal rows of one record commits nothing; the record is
+  committed when the window leaves it. Which portal an object is in
+  follows its parents, and every lookup is through one index of the
+  layout's objects, built once per step. OpenMaker excludes portals and
+  fields whose parent chain enters a cycle. FileMaker's handling of
+  malformed ancestry is unmeasured. A step's direct reference to
+  the portal's related fields, and `Get ( ActiveFieldContents )`, read the
+  active row's record (the creation row reads empty); `GetNthRecord`,
+  aggregates and field calculations read the related set from the parent
+  as before. Go to Record keeps the row number and the field entered (101,
+  no row active, when the next record lacks the row), the current layout
+  again keeps them, and another layout, Commit Records, a mode change or
+  a deleted record clears the row (a deleted record its field too).
+  Insert steps without a target write the repetition entered. Go to Field
+  still returns 0 and focuses repetition 1 when the field has no object
+  on the layout. The s35 probe returned 102 for the unshown field
+  ([#575](https://github.com/OpenMaker-Dev/openmaker/issues/575)). Set Field
+  into a related field and Delete Portal Row are still 3. A portal that
+  sorts its rows or filters them with "Filter portal records" on (`0x80`)
+  is refused (3) rather than numbered in an order that may not be
+  FileMaker's. Not yet:
+  Go to Object on a button or text makes no object active (`Get (
+  ActiveLayoutObjectName )` empty); a portal of B in an A to B to C graph
+  leaves a read of C anchored to A's first B; 26.1's new-record row at the
+  top (`0x400`) is not placed first.
 - Steps with a host method: Go to Layout, Go to Record/Request, Go to
-  Field, Go to Related Record, Go to List of Records, the window steps, Enter
+  Field, Go to Portal Row, Go to Object, Go to Next/Previous Field, Go to
+  Related Record, Go to List of Records, the window steps, Enter
   Browse/Find Mode, New, Duplicate, Delete, Delete All, Open, Revert and
   Commit Records, Truncate Table (the window's table),
   Open/Commit/Revert Transaction, Set Field, Set Field By Name, the Insert

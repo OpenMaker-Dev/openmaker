@@ -90,6 +90,7 @@ mod design;
 mod files;
 mod get;
 mod mail;
+mod portals;
 mod related;
 mod requests;
 mod sort;
@@ -152,7 +153,7 @@ const FINDER_BATCH: usize = 64;
 /// (calc-values.md 13). No record has this id.
 const NO_RECORD: u64 = u64::MAX;
 
-/// The one window of a session.
+/// The shared script runtime's handle for the current window.
 const WINDOW: WindowId = 1;
 /// The session's only file.
 const FILE: FileId = 0;
@@ -383,6 +384,8 @@ struct Window {
     /// The sort order of the found set (Sort Records), until the found
     /// set is replaced.
     sort: Option<SortSpec>,
+    /// The active portal row ([`portals`]).
+    portal: Option<portals::ActiveRow>,
 }
 
 impl Window {
@@ -405,30 +408,30 @@ struct Parked {
     request_open: bool,
 }
 
-/// Heap allocations retained by a window's found set, sort, and Find state.
+/// Heap allocations retained by a window's found set, sort, portal state
+/// and Find state.
 fn window_data_bytes(window: Option<&Window>, requests: [&Vec<Request>; 2]) -> usize {
-    let records_and_sort = window.map_or(0, |window| {
+    let window_bytes = window.map_or(0, |window| {
         let sort = window.sort.as_ref().map_or(0, |sort| {
             sort.fields.capacity() * size_of::<om_scripts::specs::SortEntry>()
         });
-        (window.found.capacity() * size_of::<u64>()).saturating_add(sort)
+        let portal = window.portal.as_ref().map_or(0, |row| row.name.capacity());
+        (window.found.capacity() * size_of::<u64>())
+            .saturating_add(sort)
+            .saturating_add(portal)
     });
-    requests
-        .into_iter()
-        .fold(records_and_sort, |total, requests| {
-            let bytes = requests.iter().fold(
-                requests.capacity() * size_of::<Request>(),
-                |total, request| {
-                    request.criteria.iter().fold(
-                        total.saturating_add(
-                            request.criteria.capacity() * size_of::<(u64, String)>(),
-                        ),
-                        |total, (_, text)| total.saturating_add(text.capacity()),
-                    )
-                },
-            );
-            total.saturating_add(bytes)
-        })
+    requests.into_iter().fold(window_bytes, |total, requests| {
+        let bytes = requests.iter().fold(
+            requests.capacity() * size_of::<Request>(),
+            |total, request| {
+                request.criteria.iter().fold(
+                    total.saturating_add(request.criteria.capacity() * size_of::<(u64, String)>()),
+                    |total, (_, text)| total.saturating_add(text.capacity()),
+                )
+            },
+        );
+        total.saturating_add(bytes)
+    })
 }
 
 /// A record being edited: locked for the session, its contents changed
@@ -1164,10 +1167,13 @@ impl ServerHost {
         let index = same.or_else(|| layouts.iter().position(shows_table));
         match index {
             Some(index) => {
-                let occurrence = layouts[index].occurrence;
+                let occurrence = layouts[index].occurrence.expect("shows the table");
                 let window = self.window.as_mut().expect("checked");
+                if same.is_none() || window.occurrence != occurrence {
+                    window.portal = None;
+                }
                 window.layout = index;
-                window.occurrence = occurrence.expect("shows the table");
+                window.occurrence = occurrence;
             }
             None => {
                 let other = layouts.iter().position(|l| l.occurrence.is_some());
@@ -1176,6 +1182,7 @@ impl ServerHost {
                     None => {
                         let window = self.window.as_mut().expect("checked");
                         window.layout = usize::MAX;
+                        window.portal = None;
                     }
                 }
             }
@@ -1235,6 +1242,7 @@ impl ServerHost {
             mode: Mode::Browse,
             browse_current: 0,
             sort: None,
+            portal: None,
         })
     }
 
@@ -3236,6 +3244,29 @@ impl CalcHost for ServerHost {
         )
     }
 
+    /// A direct reference to a related field in a step's calculation reads
+    /// the active portal row's record when that row is one of the related
+    /// records (the creation row: no record), else the first related
+    /// record ([`portals`]). `GetNthRecord` keeps reading the related set
+    /// from the parent (calc-values.md, portal rows).
+    fn referenced_record(
+        &self,
+        occurrence: u64,
+        record: u64,
+        related: u64,
+    ) -> Result<Option<u64>, CalcError> {
+        if !self.may_view() {
+            return Err(CalcError::from_code(NO_PRIVILEGES).expect("nonzero"));
+        }
+        if let Some(row) = self.active_row_record(occurrence, record, related)? {
+            return Ok(row);
+        }
+        Ok(self
+            .related_records(occurrence, record, related)?
+            .first()
+            .copied())
+    }
+
     fn related_records(
         &self,
         occurrence: u64,
@@ -3625,10 +3656,18 @@ impl Navigation for ServerHost {
         let Some(index) = self.layout_index(layout)? else {
             return Ok(());
         };
+        let focus = self.focus.clone();
         self.leave()?;
         let mut next = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let mut kept_focus = None;
         if let Some(old) = &self.window {
             next.mode = old.mode;
+            // The current layout again keeps the active portal row and the
+            // field entered in it (s35).
+            if old.layout == index && old.portal.is_some() {
+                next.portal.clone_from(&old.portal);
+                kept_focus = focus;
+            }
             if old.table == next.table {
                 // The same table keeps its found set, sort and record.
                 next.found.clone_from(&old.found);
@@ -3637,10 +3676,14 @@ impl Navigation for ServerHost {
             }
         }
         self.window = Some(next);
+        if kept_focus.is_some() {
+            self.focus = kept_focus;
+        }
         Ok(())
     }
 
     fn go_to_record(&mut self, movement: RecordMove, _with_dialog: bool) -> HostResult<bool> {
+        let focus = self.focus.clone();
         self.leave()?;
         let count = match self.window()?.mode {
             Mode::Find => self.requests.len(),
@@ -3661,7 +3704,29 @@ impl Navigation for ServerHost {
             RecordMove::Number(n) if n < 1 => return Err(ErrorCode::RECORD_MISSING.into()),
             RecordMove::Number(n) => (n as usize - 1).min(last),
         };
+        self.keep_portal_row(focus)?;
         Ok(true)
+    }
+
+    /// Go to Portal Row ([`portals`]).
+    fn go_to_portal_row(
+        &mut self,
+        movement: RecordMove,
+        select: bool,
+        _with_dialog: bool,
+    ) -> HostResult<bool> {
+        ServerHost::go_to_portal_row(self, movement, select)
+    }
+
+    /// Go to Next Field and Go to Previous Field: 0, as on FileMaker
+    /// Server (13.24); the focus stays where it is.
+    fn go_to_next_field(&mut self, _forward: bool) -> HostResult {
+        Ok(())
+    }
+
+    /// Go to Object ([`portals`]).
+    fn go_to_object(&mut self, name: &str, repetition: u32) -> HostResult {
+        self.go_to_named_object(name, repetition)
     }
 
     /// Go to Field: the field gets the focus; with none the field is left,
@@ -3670,11 +3735,31 @@ impl Navigation for ServerHost {
         match field {
             Some(field) => {
                 self.target(field)?;
-                self.focus_field(field.occurrence, field.field);
+                // A field in a portal is entered in its active row, else
+                // row 1 (s35); any other leaves the portal.
+                if self.go_to_portal_field(field)? {
+                    return Ok(());
+                }
+                // Preserve the existing repetition 1 fallback for a field
+                // with no layout object (#575). Untargeted Insert uses it.
+                self.focus = Some(get::Focus {
+                    occurrence: field.occurrence,
+                    field: field.field,
+                    object: String::new(),
+                    object_id: None,
+                    repetition: 1,
+                    typed: false,
+                });
                 Ok(())
             }
-            None if self.focus.is_some() => self.leave(),
-            None => Ok(()),
+            None => {
+                self.clear_portal();
+                if self.focus.is_some() {
+                    self.leave()
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -3704,6 +3789,7 @@ impl Navigation for ServerHost {
                         mode: Mode::Browse,
                         browse_current: current.browse_current,
                         sort: None,
+                        portal: None,
                     }
                 }
             };
@@ -3743,6 +3829,8 @@ impl Navigation for ServerHost {
             _ => None,
         };
         self.leave()?;
+        // A mode change leaves the portal (as on the desktop).
+        self.clear_portal();
         match mode {
             Mode::Browse => {
                 let window = self.window_mut()?;
@@ -3937,12 +4025,20 @@ impl Records for ServerHost {
             return Ok(());
         }
         let id = window.record().ok_or(ErrorCode::RECORD_MISSING)?;
-        self.delete(&[id], false)
+        // The portal's rows, and the field entered, were the deleted
+        // record's (as on the desktop).
+        self.delete(&[id], false)?;
+        self.focus = None;
+        self.clear_portal();
+        Ok(())
     }
 
     fn delete_all_records(&mut self, _with_dialog: bool) -> HostResult {
         let found = self.window()?.found.clone();
-        self.delete(&found, true)
+        self.delete(&found, true)?;
+        self.focus = None;
+        self.clear_portal();
+        Ok(())
     }
 
     /// Revert Record: the open record's changes are dropped. Inside a
@@ -3950,6 +4046,10 @@ impl Records for ServerHost {
     /// before the record was reopened stays).
     fn revert_record(&mut self, _with_dialog: bool) -> HostResult {
         self.focus = None;
+        // A new record reverted is gone, and with it its portal rows.
+        if self.record.as_ref().is_some_and(|r| r.new) {
+            self.clear_portal();
+        }
         let Some(transaction) = &self.transaction else {
             self.drop_open();
             return Ok(());
@@ -3969,8 +4069,12 @@ impl Records for ServerHost {
         Ok(())
     }
 
+    /// Commit Records also leaves the portal (13.24).
     fn commit_records(&mut self, options: CommitOptions) -> HostResult {
         self.focus = None;
+        if let Some(window) = self.window.as_mut() {
+            window.portal = None;
+        }
         self.commit_open(Entry::script(options.skip_validation, false))
     }
 
@@ -4102,7 +4206,7 @@ impl FieldSteps for ServerHost {
         let focused = self.focus.as_ref().map(|f| FieldRef {
             occurrence: f.occurrence,
             field: f.field,
-            repetition: 1,
+            repetition: f.repetition.max(1),
         });
         let field = target.field.or(focused).ok_or(HostError::Unsupported)?;
         // Into the focused field this is typing (s33).
@@ -4659,6 +4763,9 @@ impl ServerHost {
             window.current
         };
         let record = window.found.get(place).copied();
+        if record.is_some_and(|id| !existing.contains(&id)) {
+            window.portal = None;
+        }
         window.found.retain(|id| existing.contains(id));
         let place = record
             .and_then(|id| window.found.iter().position(|f| *f == id))
@@ -4717,14 +4824,14 @@ impl ServerHost {
     }
 }
 
-/// A session's window count and memory budget for copies of found sets,
-/// sort orders and Find state. The active window may grow as in a session
+/// A session's window count and memory budget for copies of window state.
+/// The active window may grow as in a session
 /// with one window; it must fit the budget before it is parked or copied.
 const MAX_WINDOWS: usize = 256;
 const MAX_WINDOW_DATA_BYTES: usize = 128 << 20;
 
 /// The server's windows (script-runtime.md 13.25, s35-windows): each has
-/// its own layout, found set, record and mode, and Find mode's requests;
+/// its own layout, found set, record, mode, Find requests and portal row;
 /// a step works on the current one. The record a step opened (and a
 /// transaction) belong to the session: a window that stops being current
 /// commits it first, as New Window and Close Window commit
@@ -4735,11 +4842,14 @@ impl Windows for ServerHost {
     /// New Window (122): a window showing what the current one shows, its
     /// layout, found set, record and mode, named as given, else after the
     /// current one with " - 2" (" - 3", ... when taken); it becomes
-    /// current, and goes to the layout given.
+    /// current, goes to the layout given and starts with no portal row.
     fn new_window(&mut self, window: &NewWindow) -> HostResult {
         self.open_window(window.name.as_deref(), true, |host| {
             let Some(layout) = window.layout else {
-                return Ok(host.window.clone());
+                return Ok(host.window.as_ref().map(|old| Window {
+                    portal: None,
+                    ..old.clone()
+                }));
             };
             let index = host
                 .layout_index(&LayoutTarget::Key(layout))?

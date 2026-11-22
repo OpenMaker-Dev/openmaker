@@ -353,11 +353,11 @@ the join result, so the script must commit or revert explicitly before
 using this option. FileMaker behavior for these options is unmeasured.
 
 OpenMaker Server allows up to 256 windows per script session. It checks
-a 128 MiB budget for found sets, sort orders, Find state and window names.
-Opening a window checks the prepared state's retained capacity before
-committing the opener's record. An active window can grow during ordinary
-script operations and is checked again before it is parked. FileMaker
-Server's window limits are unmeasured.
+a 128 MiB budget for found sets, sort orders, Find state, window names and
+active portal names. Opening a window checks the prepared state's retained
+capacity before committing the opener's record. An active window can
+grow during ordinary script operations and is checked again before it is
+parked. FileMaker Server's window limits are unmeasured.
 
 Fixes from a review of import data safety:
 - Each imported row is checked once with the import's own auto-enter and
@@ -794,6 +794,21 @@ Open items:
   FileMaker Pro's lock and upload sequence (scripts.md, "Saving scripts
   to a host"), then confirms the disk save through the extension and
   reads the catalog back (desktop-client.md, Script Workspace).
+- Server: Go to Portal Row, Go to Object and Go to Next/Previous Field
+  run as FileMaker Server's engine answered them (re/script-runtime.md
+  13.24), and a step's direct reference to a portal's related field reads
+  the active row's record (`GetNthRecord`, aggregates and field
+  calculations read the related set from the parent; Go to Object on a
+  button or text makes no object active; see that section's limits).
+  Each script window keeps its own active portal row. A new window starts
+  with none, a choice unmeasured in FileMaker Server.
+  Set Field into a related field, Delete Portal Row and portals that sort
+  or filter their rows are still 3
+  ([#100](https://github.com/OpenMaker-Dev/openmaker/issues/100)).
+- Server Go to Field still focuses repetition 1 and returns 0 for a schema
+  field with no object on the layout. An Insert without a target writes to
+  that repetition. FileMaker Server returns 102 for the unshown field
+  ([#575](https://github.com/OpenMaker-Dev/openmaker/issues/575)).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
   - Account steps: Change Password sets the password of the account the
@@ -817,6 +832,10 @@ Open items:
     steps that rewrite an account (all but Delete Account) leave alone one
     whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
     ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    The Script Workspace reads Expire password and Deactivate from the
+    step value. Older OpenMaker steps that stored the option only in flag
+    `0x100` keep their stored bytes and show Off or Activate. Set the option
+    again to store the intended choice ([#525](https://github.com/OpenMaker-Dev/openmaker/issues/525)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does

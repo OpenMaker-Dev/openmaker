@@ -142,7 +142,7 @@ impl Solver<'_> {
                 let before = self.dependency_mark();
                 let found = self
                     .host
-                    .related_record(occurrence, record, t.occurrence, 0);
+                    .referenced_record(occurrence, record, t.occurrence);
                 self.wait_for_field_target(&info, before)?;
                 match found {
                     Ok(Some(r)) => r,
