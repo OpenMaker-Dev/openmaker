@@ -13,6 +13,7 @@ use om_hbam::HbamFile;
 
 use crate::accounts::{AccountKind, AccountStatus};
 use crate::admin::FileStatus;
+use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -212,8 +213,11 @@ pub struct Hosted {
     pub id: u32,
     /// The name clients open it by.
     pub name: String,
-    /// Where the file lives on disk.
+    /// Where the file lives on disk, as it was given.
     pub path: PathBuf,
+    /// The file's folder as it was when the file was first hosted: it is
+    /// read and saved only there ([`FileAt`], #468).
+    pub(crate) at: FileAt,
     /// The file's contents: every download, query and write goes here.
     /// Taken through [`Hosted::read_store`] and [`Hosted::write_store`],
     /// which keeps `accounts` following it.
@@ -318,6 +322,7 @@ impl Hosted {
     fn load(
         id: u32,
         hosted: &HostedFile,
+        at: FileAt,
         file: &HbamFile,
         local: Option<(Option<FileLock>, bool)>,
         insecure_files: bool,
@@ -363,6 +368,7 @@ impl Hosted {
             id,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
+            at,
             store: RwLock::new(store),
             locks: Mutex::new(LockTable::default()),
             registrations: Mutex::new(Vec::new()),
@@ -493,7 +499,7 @@ impl Hosted {
             ));
         }
         let started = Instant::now();
-        let error = match store.save(&self.path) {
+        let error = match store.save(&self.at) {
             Ok(true) => {
                 debug!("{:?}: saved in {:?}", self.name, started.elapsed());
                 return Ok(());
@@ -538,7 +544,7 @@ impl Hosted {
         if !kept.is_empty() {
             return Err(error);
         }
-        if let Err(e) = store.save(&self.path) {
+        if let Err(e) = store.save(&self.at) {
             error!(
                 "{:?}: saving to {} failed, unsaved changes are kept in memory: {e}",
                 self.name,
@@ -898,7 +904,7 @@ impl Hosted {
     /// [`Store::save_commit`] for this file, logged.
     pub fn save_commit(&self, store: &mut Store, journal: Journal) -> std::io::Result<()> {
         let started = Instant::now();
-        let saved = store.save_commit(&self.path, journal);
+        let saved = store.save_commit(&self.at, journal);
         match &saved {
             Ok(()) => debug!("{:?}: saved in {:?}", self.name, started.elapsed()),
             Err(e) => {
@@ -1426,6 +1432,13 @@ pub enum HostingError {
     DuplicateName {
         name: String,
     },
+    /// The file another name already hosts (a link to it, or another hard
+    /// link): two stores of one file would each save over the other's
+    /// changes.
+    SameFile {
+        name: String,
+        hosted_as: String,
+    },
     /// A file FileMaker Server would not host, and the server does not host
     /// insecure files ([`crate::ServerConfig::insecure_files`]).
     Insecure {
@@ -1442,6 +1455,9 @@ impl std::fmt::Display for HostingError {
                 write!(f, "{name}: no mInternalCreation at [2, 254]")
             }
             HostingError::DuplicateName { name } => write!(f, "{name} is hosted twice"),
+            HostingError::SameFile { name, hosted_as } => {
+                write!(f, "{name} is the file already hosted as {hosted_as}")
+            }
             HostingError::Insecure { name, why } => write!(
                 f,
                 "{name} is not password protected: {why} (hosting it needs --allow-insecure-files)"
@@ -1474,6 +1490,9 @@ pub struct Slot {
     pub name: String,
     /// Where it lives on disk.
     pub path: PathBuf,
+    /// Its folder as it was when it was first hosted: a reopen reads the
+    /// file only there ([`FileAt`]).
+    at: FileAt,
     state: Mutex<SlotState>,
 }
 
@@ -1482,6 +1501,8 @@ struct SlotState {
     status: FileStatus,
     /// The file, while it is served: open, paused or closing.
     file: Option<Arc<Hosted>>,
+    /// The last saved identity while closed or opening, for backup protection.
+    closed_file: Option<FileId>,
     /// The close under way, while the file is closing.
     closing: Option<FileClose>,
     /// Why the file is closed: its last open failed.
@@ -1494,9 +1515,11 @@ impl Slot {
             id: hosted.id,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
+            at: hosted.at.clone(),
             state: Mutex::new(SlotState {
                 status: FileStatus::Open,
                 file: Some(hosted),
+                closed_file: None,
                 closing: None,
                 error: None,
             }),
@@ -1519,6 +1542,23 @@ impl Slot {
     /// The file, while it is served (open, paused or closing).
     pub fn served(&self) -> Option<Arc<Hosted>> {
         self.state().file.clone()
+    }
+
+    /// Where the slot saves and reopens its file, also while it is closed.
+    pub(crate) fn file_at(&self) -> &FileAt {
+        &self.at
+    }
+
+    /// The file this slot last read or saved, even after its store is closed.
+    pub(crate) fn saved_file(&self) -> Option<FileId> {
+        let (served, closed) = {
+            let state = self.state();
+            (state.file.clone(), state.closed_file)
+        };
+        match served {
+            Some(file) => file.read_store().file(),
+            None => closed,
+        }
     }
 
     /// Why the file is closed, when its last open failed.
@@ -1581,7 +1621,7 @@ impl Slot {
             return false;
         }
         state.status = FileStatus::Closed;
-        state.file = None;
+        state.closed_file = state.file.take().and_then(|file| file.read_store().file());
         state.closing = None;
         true
     }
@@ -1608,6 +1648,10 @@ pub struct Hosting {
     /// ([`crate::ServerConfig::insecure_files`]), also when one is opened
     /// again.
     insecure_files: bool,
+    /// Held while a file is opened again, so that two reopens cannot both
+    /// find their file unhosted and serve one file twice
+    /// ([`HostingError::SameFile`]).
+    reopening: Mutex<()>,
 }
 
 impl Hosting {
@@ -1627,6 +1671,7 @@ impl Hosting {
             slots: Vec::new(),
             configured: files.to_vec(),
             insecure_files,
+            reopening: Mutex::new(()),
         };
         let mut first_error = None;
         let mut names = std::collections::HashSet::new();
@@ -1638,7 +1683,16 @@ impl Hosting {
             }
             events.record(Event::file_opening(&hosted.name));
             let id = u32::try_from(index + 1).expect("fewer than 2^32 files");
-            match load_hosted(id, hosted, insecure_files, events) {
+            let loaded = FileAt::open(&hosted.path)
+                .map_err(|e| HostingError::Open {
+                    name: hosted.name.clone(),
+                    error: om_hbam::Error::from(e),
+                })
+                .and_then(|at| {
+                    let taken = |file: FileId| hosted_as(&hosting.slots, file, id);
+                    load_hosted(id, hosted, &at, insecure_files, events, &taken)
+                });
+            match loaded {
                 Ok(loaded) => {
                     events.record(Event::file_opened(&loaded.name, loaded.read_only));
                     hosting.slots.push(Slot::serving(loaded));
@@ -1665,20 +1719,32 @@ impl Hosting {
         let slot = self.slot(id).ok_or(ReopenError::UnknownFile)?;
         slot.change(FileStatus::Closed, FileStatus::Opening)
             .map_err(ReopenError::NotAllowed)?;
+        // One reopen at a time, until the file is served: another one
+        // looking for a file hosted twice sees this one (#468).
+        let _reopening = self
+            .reopening
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Only from the folder it was first hosted from: a folder of the
+        // path swapped for a link, or moved, since then fails the reopen
+        // (#468).
         let loaded = load_hosted(
             id,
             &HostedFile {
                 name: slot.name.clone(),
                 path: slot.path.clone(),
             },
+            &slot.at,
             self.insecure_files,
             events,
+            &|file| hosted_as(&self.slots, file, id),
         );
         let mut state = slot.state();
         match loaded {
             Ok(hosted) => {
                 state.status = FileStatus::Open;
                 state.file = Some(hosted);
+                state.closed_file = None;
                 state.error = None;
                 Ok(())
             }
@@ -1703,9 +1769,15 @@ impl Hosting {
         read_only: bool,
     ) -> Result<Self, HostingError> {
         let configured = vec![hosted.clone()];
+        // The path the desktop opened and locked, as it named it.
+        let at = FileAt::open_as_named(&hosted.path).map_err(|e| HostingError::Open {
+            name: hosted.name.clone(),
+            error: om_hbam::Error::from(e),
+        })?;
         let hosted = Hosted::load(
             1,
             hosted,
+            at,
             file,
             Some((lock, read_only)),
             false,
@@ -1715,6 +1787,7 @@ impl Hosting {
             slots: vec![Slot::serving(Arc::new(hosted))],
             configured,
             insecure_files: false,
+            reopening: Mutex::new(()),
         })
     }
 
@@ -1768,53 +1841,69 @@ impl Hosting {
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,
+    at: &FileAt,
     insecure_files: bool,
     events: &EventLog,
+    taken: &dyn Fn(FileId) -> Option<String>,
 ) -> Result<Arc<Hosted>, HostingError> {
-    let file = read_regular_file(&hosted.path)
-        .map_err(om_hbam::Error::from)
-        .and_then(HbamFile::from_bytes)
-        .map_err(|error| HostingError::Open {
+    let (bytes, on_disk) = read_regular_file(at).map_err(|e| HostingError::Open {
+        name: hosted.name.clone(),
+        error: om_hbam::Error::from(e),
+    })?;
+    // Before anything is saved, recovery included.
+    if let Some(hosted_as) = on_disk.and_then(taken) {
+        return Err(HostingError::SameFile {
             name: hosted.name.clone(),
-            error,
-        })?;
+            hosted_as,
+        });
+    }
+    let file = HbamFile::from_bytes(bytes).map_err(|error| HostingError::Open {
+        name: hosted.name.clone(),
+        error,
+    })?;
     let loaded = Arc::new(Hosted::load(
         id,
         hosted,
+        at.clone(),
         &file,
         None,
         insecure_files,
         events,
     )?);
+    // Before any save: saves write only where the path still leads to
+    // this file (#468).
+    loaded.write_store().set_file(on_disk);
     drop(file);
     loaded.commit_recovery();
     Ok(loaded)
 }
 
-/// The bytes of the regular file at `path`, read through the one handle
-/// whose type was checked: opened without blocking (a FIFO named as a
-/// database would otherwise hold startup before the server listens), and
-/// refused unless it is a regular file, so that one swapped in after a
-/// check cannot be read instead.
-fn read_regular_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+/// The bytes of the regular file `at`, from the folder it was first hosted
+/// from, and its device and inode, read through the one handle whose type
+/// was checked: opened without
+/// blocking (a FIFO named as a database would otherwise hold startup before
+/// the server listens), and refused unless it is a regular file, so that
+/// one swapped in after a check cannot be read instead.
+fn read_regular_file(at: &FileAt) -> std::io::Result<(Vec<u8>, Option<FileId>)> {
     use std::io::Read as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
-    }
-    let mut file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
-    }
+    let mut file = at.folder()?.open_regular(at.name())?;
+    let on_disk = crate::anchored::file_identity(&file)?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
-    Ok(data)
+    Ok((data, on_disk))
+}
+
+/// The name of the slot other than `id` among `slots` that serves the file
+/// with device and inode `file`.
+fn hosted_as(slots: &[Slot], file: FileId, id: u32) -> Option<String> {
+    slots
+        .iter()
+        .filter(|slot| slot.id != id)
+        .find(|slot| {
+            slot.served()
+                .is_some_and(|served| served.read_store().file() == Some(file))
+        })
+        .map(|slot| slot.name.clone())
 }
 
 /// Why [`Hosting::reopen`] did not open a file.
