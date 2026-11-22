@@ -228,10 +228,14 @@ the corpus [Low].
 | `kFieldSpec` 0x1 | `DBFieldSpec` (14 bytes) | `mTableKey` `HBKey<5>` (table occurrence, e.g. `04 03 d0 00 05`), `mFieldKey` `HBKey<5>` (`02 01 05`), `mRepetition` i16 BE [O] |
 | `kMemberKey` 0x8 | `HBKey<5>` of a layout or menu set | Go to Layout, GTRR, New Window, Install Menu Set (`KStandardMenuSet` = standard menus) [O] |
 | `kScriptKey` 0x40 | `HBKey<5>` of a script | Perform Script, PSOS, Install OnTimer Script [O] |
-| (privilege) | `HBSerialKey<7>` of a privilege set | Add Account (`SetPrivilegeKey`) [I] |
+| none (privilege set) | `HBSerialKey<7>` [from bin: `SetPrivilegeKey`] | Add Account [O: FileMaker Server's engine accepted `02 01 02` at the start of `mReserved` with only `kCalculation` set and assigned [Data Entry Only], local-files.md 2.4] |
 
-When the flag is clear the bytes keep stale content (Go to Field without a
-target keeps an old field spec) [O]; readers must test the flag first.
+For `kFieldSpec`, `kMemberKey` and `kScriptKey`, test the flag before
+reading the reference. The bytes can retain stale content when the flag
+is clear (Go to Field without a target keeps an old field spec [O]). The
+Add Account probe exercised one serial-key prefix with all three
+reference flags clear. The editor's output and other key lengths still
+need verification.
 
 **Variable targets.** A target that is a variable is a field spec whose table
 key is `HBAbstractKey(0)` and field key `HBAbstractKey(0x20)`
@@ -484,11 +488,15 @@ named ids absent from the corpus the CSV rests on the binary alone. Section
 
 ## 9. Unknowns
 
-- Slot maps inside compound elements for 23 step ids (CSV notes): AVPlayer,
+- Slot maps inside compound elements (CSV notes): AVPlayer,
   window options, Insert File options, web viewer actions, mobile steps,
-  Perform AppleScript, the account steps' Booleans. Section 12's method
-  (the step's `V2_ScriptStepXML` writer and reader in the Mac `FMEngine`, a
-  probe through FileMaker Server's XML importer) applies to them unchanged.
+  and Perform AppleScript. Section 12's method uses the step's
+  `V2_ScriptStepXML` writer and reader in the Mac `FMEngine` and a probe
+  through FileMaker Server's XML importer.
+- The server-engine account probes measured the runtime's interpretation
+  of `mStepValue` (local-files.md 2.4). The specific values and flags
+  written by FileMaker Pro's editor and FileMaker Server's XML importer
+  for those options remain unverified.
 - Section 12's own open points: the meaning of Perform Find by Natural
   Language's `Target` calculation (slot 6) and of Configure Prompt
   Template's step value; the slots of the web script parameters of
@@ -593,7 +601,8 @@ indexes, none differ).
 | Truncate Table (182) | the base table key (two-byte id from `0x8000`) in `mReserved` with `kMemberKey`, step value 1 and `kMenuSelection` (42/42); value 0 denotes the current table |
 | plug-in step (186) | `mStepValue` = function id, `83` = the plug-in's QuadChar id (`MBSP`) and bytes, one calculation per parameter in slots 0-9, a field or variable target, `0x100`, `0x200` and `0x1000` on all 5 steps |
 | Send Event, Send Mail, Speak, Perform AppleScript, New Window, Perform Find/Replace, Save Records as Excel, Set Web Viewer, Insert from Device, AVPlayer Play/Set Options, Configure Region Monitor Script, Local Notification, NFC Reading, Machine Learning Model | further numeric, list and calculation slots and flag bits of the compound element (listed in `CORPUS`); Send Event's numbers are four-character codes (`aevt`, `odoc`, target signatures), Speak's voice too; AppleScript stores a compiled blob under `83`; Send Event, Send Mail, Speak and Perform Find/Replace are mapped in section 12.3, the others' meanings are not mapped |
-| Paste, Dial Phone, Add/Reset/Enable Account, Convert File | a `kMenuSelection` step value (0, 1 or 4), meaning not mapped |
+| Paste, Dial Phone, Convert File | a `kMenuSelection` step value (0, 1 or 4), meaning not mapped |
+| Add Account, Reset Account Password, Enable Account | the corpus has these steps with `kMenuSelection` and a step value. The server-engine probes mapped the options to zero and nonzero `mStepValue` (local-files.md 2.4) |
 
 ## 11. Stored specs inside steps
 
@@ -3017,10 +3026,9 @@ Open (FileMaker Pro is not available on this machine):
    the `fmxmlsnippet` wrapper itself, `Options`-less steps (flags from the
    Booleans), and whether Pro's paste stores the importer's forms above or
    the original's.
-2. The stored values behind the account steps' Booleans ("Expire
-   password", Activate/Deactivate) and `External="True"` in Go to Related
-   Record. (Replace Field Contents' options are now specified in 11.8; the
-   reader still refuses the step.)
+2. `External="True"` in Go to Related Record and the XML importer's
+   storage of the account steps' options (9). Replace Field Contents'
+   options are now specified in 11.8. The reader still refuses the step.
 3. Data sources (`DataSourceReference`, file references `20`) and menu
    sets are not looked up by name (`StepNames` has no lookup for them), so
    steps naming them fail.
