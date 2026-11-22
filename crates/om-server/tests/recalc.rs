@@ -36,6 +36,15 @@ const BUILD_INDEX: u32 = 0x10;
 /// FileMaker Pro saves a field change (schema-path.md 2.3a), each reply
 /// checked.
 fn save_field_catalog(session: &mut Session, file: u32, catalog: &OwnedNode) {
+    let reply = try_save_field_catalog(session, file, catalog);
+    assert_eq!(reply.unwrap(), schema::update_table_reply());
+}
+
+fn try_save_field_catalog(
+    session: &mut Session,
+    file: u32,
+    catalog: &OwnedNode,
+) -> Result<Vec<u8>, om_session::SessionError> {
     let t = uint_segment(TABLE);
     let mut id = 1000;
     let mut next = || {
@@ -119,7 +128,6 @@ fn save_field_catalog(session: &mut Session, file: u32, catalog: &OwnedNode) {
         ))
         .unwrap();
     let reply = session.perform(&schema::build_update_table(next(), file, &vec![t.clone()]));
-    assert_eq!(reply.unwrap(), schema::update_table_reply());
     for release in [
         unlock(vec![vec![8]], write::LOCK_WRITE, 3, SCHEMA_TXN),
         unlock(
@@ -133,6 +141,7 @@ fn save_field_catalog(session: &mut Session, file: u32, catalog: &OwnedNode) {
             .perform(&write::build_unlock(next(), file, &release))
             .unwrap();
     }
+    reply
 }
 
 /// The Tasks field catalog `[T, 03]` of `root`.
@@ -421,7 +430,7 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
     let mut catalog = field_catalog(&root);
     set_formula(&mut catalog, DOUBLED, "Count * 4");
     defer(&mut catalog, DOUBLED, FORMULA_CHANGED);
-    root.put(&[&t, &[3]], catalog);
+    root.put(&[&t, &[3]], catalog.clone());
     let file = TempFile::from_tree("recalc-recover", &root);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
@@ -437,6 +446,55 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
         .and_then(|n| om_hbam::Cell::from_node(n).text())
         .and_then(Result::ok);
     assert_eq!(value.as_deref(), Some("12"));
+
+    // A pending removal has no old field definition after restart. Leave
+    // all pending work intact, including the otherwise replayable formula.
+    catalog.remove(&[&[5], &uint_segment(NAME)]);
+    defer(&mut catalog, NAME, 0x1e1);
+    root.put(&[&t, &[3]], catalog);
+    let file = TempFile::from_tree("recalc-recover-unknown-old-type", &root);
+    let before = std::fs::read(&file.0).unwrap();
+    let (mut client, _) = server::logged_in(server::start(&file), "client");
+    let records = records_of(&mut client, TABLE);
+    assert!(cell(&records, 1, NAME).is_some());
+    assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), before);
+}
+
+#[test]
+fn refused_live_deferred_work_keeps_the_host_read_only() {
+    let root = fixture::tree(&[], true);
+    let file = TempFile::from_tree("recalc-live-unknown-old-type", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let (mut writer, writer_id) = server::logged_in(port, "writer");
+    let mut catalog = field_catalog(&root);
+    set_formula(&mut catalog, DOUBLED, "Count * 4");
+    defer(&mut catalog, DOUBLED, FORMULA_CHANGED);
+    // op13 saves the new catalog, but op73 cannot classify this removal.
+    defer(&mut catalog, 46, 0x1e1);
+    assert!(try_save_field_catalog(&mut designer, id, &catalog).is_err());
+
+    let table = uint_segment(TABLE);
+    let pending = [&table[..], &[3], &[1], &[0xfd]];
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    assert!(saved.key_tree().unwrap().node(&pending).is_some());
+    let before = std::fs::read(&file.0).unwrap();
+    let request = write::CreateRecord {
+        table: vec![table],
+        count: 1,
+        txn: 0x51,
+    };
+    let reply = writer
+        .perform(&write::build_create_record(1, writer_id, &request))
+        .unwrap();
+    assert_eq!(
+        write::parse_create_record_reply(&reply).unwrap().status,
+        200
+    );
+    let records = records_of(&mut writer, TABLE);
+    assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), before);
 }
 
 /// A script that runs while Manage Database changes a stored calculation
@@ -856,4 +914,364 @@ fn design_functions_answer_as_the_file_context_does() {
     let after = records_of(&mut designer, TABLE);
     assert_eq!(cell(&after, 1, TABLES), Some("|"));
     assert_eq!(cell(&after, 1, FILES), Some("Tasks"));
+}
+
+/// Stored calculations with a container result are recomputed and stored
+/// as a server script's commit stores container data (containers.md,
+/// "Implementation notes (OpenMaker Server scripts)"; #384). PhotoCopy
+/// (`Photo`) names Photo's own member, one more reference to it; record 2,
+/// with no photo, stays empty. Decoded (`Base64Decode`, the same data on
+/// both records) is stored once as a new member with two references. When
+/// PhotoCopy's formula then answers nothing, its reference is released.
+/// Before, the recompute skipped container results and left them as they
+/// were.
+#[test]
+fn stored_container_calculations_store_their_data() {
+    const COPY: u64 = 44;
+    const DECODED: u64 = 45;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let file = TempFile::from_tree("recalc-container-results", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let t = uint_segment(TABLE);
+    let references = |session: &mut Session, text: &str| {
+        let member = om_data::containers::reference(text).unwrap();
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &member, &[0x12]];
+        let value = session.download(&path).unwrap().value;
+        u32::from_be_bytes(value.try_into().unwrap())
+    };
+
+    let mut names = fixture::photo_names();
+    names.add_field(TABLE, COPY, "PhotoCopy");
+    names.add_field(TABLE, DECODED, "Decoded");
+    let mut designed = root.clone();
+    for (field, name, text) in [
+        (COPY, "PhotoCopy", "Photo"),
+        (
+            DECODED,
+            "Decoded",
+            "Base64Decode ( \"aGVsbG8=\" ; \"a.txt\" )",
+        ),
+    ] {
+        // A stored calculation (2) with a container result (6).
+        fixture::add_field(&mut designed, TABLE, field, name, 2, 6, 0, 0, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, text);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+
+    let after = records_of(&mut designer, TABLE);
+    let photo = cell(&after, 1, fixture::PHOTO).unwrap().to_owned();
+    assert_eq!(cell(&after, 1, COPY), Some(photo.as_str()));
+    assert_eq!(cell(&after, 2, COPY), None);
+    assert_eq!(references(&mut designer, &photo), 2);
+    let decoded = cell(&after, 1, DECODED).unwrap().to_owned();
+    assert_ne!(decoded, photo);
+    assert_eq!(cell(&after, 2, DECODED), Some(decoded.as_str()));
+    assert_eq!(references(&mut designer, &decoded), 2);
+
+    set_formula(&mut catalog, COPY, "\"\"");
+    defer(&mut catalog, COPY, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, COPY), None);
+    assert_eq!(references(&mut designer, &photo), 1);
+    assert_eq!(
+        cell(&after, 1, DECODED),
+        Some(decoded.as_str()),
+        "not stale"
+    );
+    assert_eq!(references(&mut designer, &decoded), 2);
+}
+
+/// A calculation whose result type changes from text to container keeps
+/// its old text until it is recomputed; text shaped like a library
+/// reference there owns no reference. Emptying it must not release the
+/// member Photo names (#427's review: Photo's member was deleted while
+/// Photo still named it). A container result whose text has that shape is
+/// refused: the record keeps its value.
+#[test]
+fn a_result_changed_to_container_releases_no_reference_its_text_did_not_own() {
+    const SHAPED: u64 = 46;
+    const FAKE: u64 = 47;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let file = TempFile::from_tree("recalc-result-type", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let t = uint_segment(TABLE);
+    let photo_member = |session: &mut Session| {
+        let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+        session.download(&path).unwrap()
+    };
+    // Photo's member is `01`; its reference text is "01" then U+E000.
+    let reference = om_data::containers::reference_text(&om_hbam::serial::encode(1));
+    let shaped = "\"01\" & Char ( 57344 )";
+    let names = fixture::photo_names();
+    let mut designed = root.clone();
+    // Shaped: a stored text calculation (1); Fake: a container one (6).
+    for (field, name, data_type) in [(SHAPED, "Shaped", 1u8), (FAKE, "Fake", 6)] {
+        fixture::add_field(&mut designed, TABLE, field, name, 2, data_type, 0, 0x20, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, shaped);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), Some(reference.as_str()));
+    assert_eq!(
+        cell(&after, 1, FAKE),
+        None,
+        "reference-shaped text is refused"
+    );
+
+    // Shaped becomes a container calculation, its formula kept: the
+    // shaped text it answers is refused, and its old text, a value of the
+    // old type, is dropped with the type change rather than kept uncounted.
+    let path: [&[u8]; 3] = [&[5], &uint_segment(SHAPED), &[2]];
+    let mut definition = catalog.at(&path).unwrap().value.clone().unwrap();
+    definition[1] = 6;
+    catalog.put(&path, OwnedNode::leaf(Vec::new(), definition));
+    defer(&mut catalog, SHAPED, 0x40);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    // A later save empties it: nothing it never counted is released.
+    catalog.remove(&[&[1], &[0xfd]]);
+    set_formula(&mut catalog, SHAPED, "\"\"");
+    defer(&mut catalog, SHAPED, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    let member = photo_member(&mut designer);
+    assert_eq!(
+        member.node_state,
+        om_protocol::NodeState::Terminal,
+        "Photo's data is kept"
+    );
+    assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+    assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
+}
+
+/// Startup recovery without the schema it changed from (#427's review: a
+/// stop after the schema saved and before its recompute): a container
+/// calculation still holds text shaped like Photo's reference, which it
+/// never counted. Recomputing it to empty releases nothing, so Photo's
+/// member keeps its one reference, and the cell is emptied.
+#[test]
+fn recovery_releases_no_reference_a_cell_did_not_count() {
+    const SHAPED: u64 = 46;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let t = uint_segment(TABLE);
+    let names = fixture::photo_names();
+    fixture::add_field(&mut root, TABLE, SHAPED, "Shaped", 2, 6, 0, 0x20, 0);
+    fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), SHAPED, 5, "\"\"");
+    let reference = om_data::containers::reference_text(&om_hbam::serial::encode(1));
+    root.put(
+        &[&t, &[5], &[1], &uint_segment(SHAPED)],
+        om_scripts::text_node(&[], &reference),
+    );
+    let mut catalog = field_catalog(&root);
+    defer(&mut catalog, SHAPED, FORMULA_CHANGED);
+    root.put(&[&t, &[3]], catalog);
+    let file = TempFile::from_tree("recalc-recover-shaped", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let after = records_of(&mut client, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
+    let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+    let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+    let member = client.download(&path).unwrap();
+    assert_eq!(
+        member.node_state,
+        om_protocol::NodeState::Terminal,
+        "Photo's data is kept"
+    );
+    assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+}
+
+/// Two old text cells name the key a generated file will receive. Startup
+/// must keep the new cell's acquisition even when both old names go away.
+#[test]
+fn recovery_keeps_new_container_acquisitions_when_old_names_are_removed() {
+    const SHAPED_A: u64 = 46;
+    const SHAPED_B: u64 = 47;
+    const GENERATED: u64 = 48;
+    let mut root = fixture::tree(&[], true);
+    let table = uint_segment(TABLE);
+    let reference = om_data::containers::reference_text(&[1]);
+    let names = fixture::names();
+    for (field, name, formula) in [
+        (SHAPED_A, "ShapedA", "\"\""),
+        (SHAPED_B, "ShapedB", "\"\""),
+        (
+            GENERATED,
+            "Generated",
+            "If ( Count = 3 ; Base64Decode ( \"aGVsbG8=\" ; \"a.txt\" ) ; \"\" )",
+        ),
+    ] {
+        fixture::add_field(&mut root, TABLE, field, name, 2, 6, 0, 0x20, 0);
+        fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), field, 5, formula);
+        if field != GENERATED {
+            root.put(
+                &[&table, &[5], &[1], &uint_segment(field)],
+                om_scripts::text_node(&[], &reference),
+            );
+        }
+    }
+    let mut catalog = field_catalog(&root);
+    for field in [SHAPED_A, SHAPED_B, GENERATED] {
+        defer(&mut catalog, field, 0x40 | FORMULA_CHANGED);
+    }
+    root.put(&[&table, &[3]], catalog);
+    assert!(root.at(&[&table, &[0x1f]]).is_none());
+    let file = TempFile::from_tree("recalc-recover-new-member", &root);
+    let (mut client, _) = server::logged_in(server::start(&file), "client");
+    let records = records_of(&mut client, TABLE);
+    assert_eq!(cell(&records, 1, SHAPED_A), None);
+    assert_eq!(cell(&records, 1, SHAPED_B), None);
+    assert_eq!(cell(&records, 1, GENERATED), Some(reference.as_str()));
+    assert_eq!(cell(&records, 2, GENERATED), None);
+    let count = client
+        .download(&[&table, &[0x1f], &[5], &[1], &[0x12]])
+        .unwrap();
+    assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
+    assert_eq!(count.value, 1u32.to_be_bytes());
+}
+
+/// A skipped Text-to-Container calculation keeps the entered value.
+/// Deleting that field later must leave Photo's sole counted reference.
+#[test]
+fn deleting_a_converted_field_preserves_the_member_owned_by_photo() {
+    const ENTERED: u64 = 46;
+    let mut root = fixture::tree(&[], true);
+    let table = uint_segment(TABLE);
+    let field = uint_segment(ENTERED);
+    fixture::add_photo(&mut root);
+    fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 1, 1, 0, 0, 0);
+    let reference = om_data::containers::reference_text(&[1]);
+    root.put(
+        &[&table, &[5], &[1], &field],
+        om_scripts::text_node(&[], &reference),
+    );
+    let file = TempFile::from_tree("recalc-delete-converted", &root);
+    let (mut designer, id) = server::logged_in(server::start(&file), "designer");
+    fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 2, 6, 0, 0x20, 0);
+    fixture::add_formula(
+        &mut root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        ENTERED,
+        5,
+        "Notes::Body",
+    );
+    let mut catalog = field_catalog(&root);
+    defer(&mut catalog, ENTERED, 0x40 | FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let records = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&records, 1, ENTERED), Some(reference.as_str()));
+
+    catalog.remove(&[&[5], &field]);
+    defer(&mut catalog, ENTERED, 0x1e9);
+    save_field_catalog(&mut designer, id, &catalog);
+    let records = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&records, 1, ENTERED), None);
+    assert_eq!(cell(&records, 1, fixture::PHOTO), Some(reference.as_str()));
+    let count = designer
+        .download(&[&table, &[0x1f], &[5], &[1], &[0x12]])
+        .unwrap();
+    assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
+    assert_eq!(count.value, 1u32.to_be_bytes());
+}
+
+#[test]
+fn deleting_a_record_preserves_the_member_named_by_a_surviving_cell() {
+    use fixture::{exit_with, go_to_record, on, script};
+    use om_scripts::ScriptStep;
+
+    const ENTERED: u64 = 46;
+    const GLOBAL: u64 = 47;
+    let table = uint_segment(TABLE);
+    let field = uint_segment(ENTERED);
+    let photo = uint_segment(fixture::PHOTO);
+    let global = uint_segment(GLOBAL);
+    let reference = om_data::containers::reference_text(&[1]);
+
+    for global_owner in [false, true] {
+        let delete = script(
+            4,
+            "Delete converted row",
+            vec![
+                on(86, true),
+                go_to_record(2),
+                ScriptStep::new(9),
+                exit_with("Get ( LastError )"),
+            ],
+        );
+        let mut root = fixture::tree(&[delete], true);
+        fixture::add_photo(&mut root);
+        if global_owner {
+            fixture::add_field(
+                &mut root,
+                TABLE,
+                GLOBAL,
+                "Global Photo",
+                1,
+                6,
+                0,
+                0x1_0000,
+                0,
+            );
+            root.remove(&[&table, &[5], &[1], &photo]);
+            root.put(
+                &[&table, &[8], &global],
+                om_scripts::text_node(&[], &reference),
+            );
+        }
+        fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 1, 1, 0, 0, 0);
+        root.put(
+            &[&table, &[5], &[2], &field],
+            om_scripts::text_node(&[], &reference),
+        );
+        let file = TempFile::from_tree("recalc-delete-record", &root);
+        let (mut designer, id) = server::logged_in(server::start(&file), "designer");
+        fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 2, 6, 0, 0x20, 0);
+        fixture::add_formula(
+            &mut root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            ENTERED,
+            5,
+            "Notes::Body",
+        );
+        let mut catalog = field_catalog(&root);
+        defer(&mut catalog, ENTERED, 0x40 | FORMULA_CHANGED);
+        save_field_catalog(&mut designer, id, &catalog);
+        let records = records_of(&mut designer, TABLE);
+        assert_eq!(cell(&records, 2, ENTERED), Some(reference.as_str()));
+
+        let result = designer.perform_script_on_server(4, "", true).unwrap();
+        assert_eq!((result.error, result.result.as_str()), (0, "0"));
+        let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+        let tree = saved.key_tree().unwrap();
+        assert!(tree.node(&[&table, &[5], &[2]]).is_none());
+        let owner = if global_owner {
+            tree.node(&[&table, &[8], &global])
+        } else {
+            tree.node(&[&table, &[5], &[1], &photo])
+        };
+        let value = owner
+            .and_then(|n| om_hbam::Cell::from_node(n).text())
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, reference);
+        let count = designer
+            .download(&[&table, &[0x1f], &[5], &[1], &[0x12]])
+            .unwrap();
+        assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
+        assert_eq!(count.value, 1u32.to_be_bytes());
+    }
 }

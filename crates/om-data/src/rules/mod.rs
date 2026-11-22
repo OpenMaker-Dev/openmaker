@@ -4923,6 +4923,21 @@ impl RecordPlan {
         session: &Evaluation,
         remaining: &mut u64,
     ) -> Result<String, RunError> {
+        self.evaluate_repetition_value(id, repetition, expression, row, session, remaining)
+            .map(|(_, text)| text)
+    }
+
+    /// The typed value and stored text of repetition `repetition` of
+    /// calculated field `id`, evaluated in that repetition.
+    fn evaluate_repetition_value(
+        &self,
+        id: u64,
+        repetition: u32,
+        expression: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+        remaining: &mut u64,
+    ) -> Result<(Value, String), RunError> {
         let def = self
             .schema
             .table(self.table)
@@ -4939,7 +4954,6 @@ impl RecordPlan {
             repetition,
             remaining,
         )
-        .map(|(_, text)| text)
     }
 
     /// Whether repetition `repetition` of field `id` passes its validation

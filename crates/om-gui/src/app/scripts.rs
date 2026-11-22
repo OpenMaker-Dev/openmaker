@@ -709,6 +709,7 @@ impl OpenMakerApp {
                 Some(at) => at,
                 None => {
                     open.related.push(RelatedDraft {
+                        key: crate::scripting::DraftKey::fresh(),
                         reserved: None,
                         matched_cells: Default::default(),
                         occurrence: *occurrence,
@@ -752,6 +753,7 @@ impl OpenMakerApp {
                     draft.version = draft.version.or(edit.version);
                 }
                 None => open.related.push(RelatedDraft {
+                    key: crate::scripting::DraftKey::fresh(),
                     reserved: None,
                     matched_cells: Default::default(),
                     occurrence: edit.occurrence,
@@ -864,6 +866,7 @@ impl OpenMakerApp {
         open.related
             .retain(|d| !(d.table == row.table && d.record == Some(row.record)));
         open.related.push(RelatedDraft {
+            key: crate::scripting::DraftKey::fresh(),
             reserved: None,
             matched_cells: Default::default(),
             occurrence: row.occurrence,

@@ -2464,10 +2464,43 @@ repeating calculation (up to
 repetition, as calc-values.md 8.6 measured it: repetition n of a
 repeating input, a plain input that does not repeat read empty above
 repetition 1, `Extend` and `GetRepetition` as written,
-`Get ( CalculationRepetitionNumber )` n. A calculation it cannot evaluate
-(a related, global, summary or unstored-calculation input, a plug-in or
-mobile function, a selector that needs a window, a container result, a formula that names a
-deleted field) is skipped: its values stay as they were and the server
+`Get ( CalculationRepetitionNumber )` n. A container result is stored
+after the walk, which reads the library while it runs, as a server
+script's commit stores container data (containers.md, "Implementation
+notes (OpenMaker Server scripts)"): a member of the table's library the
+value names takes one more reference, data (another table's member's, or
+data the calculation made, typed by its file name) is stored as a member
+or counts one more reference to a member with the same MD5, text is the
+cell's text, and a member a cell no longer names is released (deleted at
+0); a record whose library writes would be refused keeps its container
+values, logged. Text in the form of a library reference is refused as a
+container result (the record keeps its value). A calculation whose
+result type changes to container has its old cells, derived values of
+the old type, dropped with the change; a normal field made a container
+calculation keeps its entered values until the recompute writes its
+results, so a calculation the recompute cannot evaluate loses nothing.
+A cell can still name a member without having counted a reference,
+for example when an ordinary Text field becomes a container
+calculation and the calculation cannot be evaluated. Recompute, deferred
+schema cleanup and server-script Delete Record protect the references
+named by surviving record or global cells before releasing old names. Recompute reserves
+each new acquisition separately, including when a newly created member
+receives a key that old text happens to name. When names do not establish
+ownership, the server may retain a count and logs the held release (inf).
+One recompute meters 256 MiB of queued container results. It charges
+each result for a full 11-slot B-tree node with edges and metadata, and
+for text, file names, styles, streams and shared buffer or library handles.
+The queue's allocated record slots and record keys also count before
+admission. The charge counts shared allocations per result and excludes
+allocator overhead, temporary formula evaluation, and non-container
+results. A result that does not fit keeps its old cell. A
+calculation that reads a container result recomputed in the same change
+is skipped, since it would read the old value, and so is one reading a
+calculation skipped so. How FileMaker Server stores a recomputed
+container result is unmeasured (inf). A calculation it cannot evaluate (a related, global, summary or
+unstored-calculation input, a plug-in or mobile function, a selector
+that needs a window, a formula that names a deleted field) is
+skipped: its values stay as they were and the server
 logs the field and why. A calculation that fails on a record keeps that
 record's value; failures are counted and logged once per field. With "do
 not evaluate if all referenced fields are empty" the value is empty when
@@ -2511,11 +2544,15 @@ disk holds either the state before op73 (old values, the list present) or
 the state after (new values, no list), never half a table. The op13 before
 op73 is saved at once, so a server that stops between the two (or during
 op73) leaves the new field catalog, its deferred list and the old values.
-When such a file is loaded, a table with a deferred list gets no basis and
-`Store::recover` runs its deferred work, recomputing all its stored
-calculations, before the file is served, and saves (inf: what FileMaker
-Server does with a list a stop left is unknown). Recomputing is
-idempotent, so finishing the work twice changes nothing more than once.
+When such a file is loaded, a table with a deferred list gets no old
+basis. For a recognized list that does not request removal or conversion
+of stored values, `Store::recover` finishes the work and recomputes
+the stored calculations with guarded library accounting. A malformed
+or unsupported list, or deferred removal or conversion that requires an
+unknown old field type, leaves the work and values in place. Both startup
+recovery and a live op73 refusal put the file in read-only mode before
+removing any work or changing any values (inf: FileMaker Server's restart
+behavior is unmeasured).
 
 **What else read the schema (2026-10-29, review fix).** The store counts
 schema changes (`Store::schema_generation`: every catalog op13 or op86

@@ -626,6 +626,7 @@ impl OpenMakerApp {
         use crate::worker::Reply;
         let window = response.window;
         match response.reply {
+            Reply::License { id, result } => self.license_reply(id, result),
             // Related files opened on demand grew the file's schema while
             // the provider answered: every window of the file takes it
             // before the answer, which may read the new files' tables.

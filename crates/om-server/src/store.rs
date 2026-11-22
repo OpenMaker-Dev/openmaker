@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use log::{error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::catalog::keys as catalog_keys;
 use om_hbam::slot::{be_uint, uint_segment};
@@ -44,6 +44,7 @@ use om_query::Write;
 
 use om_data::containers::{self, MemberInfo};
 
+use crate::anchored::{FileAt, FileId, Folder};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
@@ -99,6 +100,8 @@ mod deferred {
     /// A normal field changed to timestamp: rewrite each stored value as a
     /// timestamp (7.2.1).
     pub const TO_TIMESTAMP: u32 = 0x800;
+    pub const KNOWN: u32 = 0x1fff;
+    pub const REMOVES_VALUES: u32 = DELETE | FEWER | CONTAINER;
     // `0x40` alone changes no value of the field's own; its dependents are
     // recalculated ([`crate::recalc`]). `0x1000` (fewer repetitions) does
     // nothing by itself.
@@ -198,6 +201,10 @@ pub struct Store {
     /// a file hosted privately for a local client; each save moves it to
     /// the file it writes.
     lock: Option<FileLock>,
+    /// The device and inode of the file on disk the store was read from or
+    /// last saved as, where it has them ([`Store::set_file`]): a save
+    /// without a lock writes only where the path still leads to it (#468).
+    file: Option<FileId>,
     /// The file may not be written: saves fail, their changes stay in
     /// memory ([`Store::set_read_only`]).
     read_only: bool,
@@ -229,6 +236,9 @@ pub struct Journal {
     /// Per table, the record ids the commit added to and removed from its
     /// record list `[T, 0d]`.
     ids: BTreeMap<Vec<u8>, (Vec<u64>, Vec<u64>)>,
+    /// Container names of deleted script records, by table. Their releases
+    /// are checked once all the commit's record changes are in the tree.
+    deleted_container_refs: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, i32>>,
     /// The indexes whose counts the commit's records changed.
     recount: BTreeSet<Recount>,
     /// Per index that disagrees with the current rules, the records the
@@ -247,6 +257,9 @@ pub struct Journal {
 
 /// An index whose counts leaf is due: table, field, index and counts keys.
 type Recount = (Vec<u8>, Vec<u8>, u8, u8);
+
+/// Pending field operations and the named cell keys used to resolve them.
+type DeferredFieldWork<'a> = (&'a [(Vec<u8>, u32)], &'a BTreeSet<Vec<u8>>);
 
 /// One index a record write changes: the field, the index (value 0, word
 /// 1), and the record's entries in it before and after.
@@ -281,12 +294,25 @@ pub(crate) fn save_copy_path(path: &Path) -> PathBuf {
     PathBuf::from(temporary)
 }
 
-/// Whether `file`, the copy a save created, is still the entry at `path`.
-fn owned_copy(file: &std::fs::File, path: &Path) -> bool {
-    match crate::filelock::same_file(file, path) {
-        Ok(same) => same,
+/// The name of a save's new copy of the file named `name`, beside it.
+fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut temporary = name.to_owned();
+    temporary.push(".omsave");
+    temporary
+}
+
+/// Whether `file`, the copy a save created, is still entry `name` of the
+/// file's folder.
+fn owned_copy(folder: &Folder, file: &std::fs::File, name: &std::ffi::OsStr) -> bool {
+    #[cfg(unix)]
+    {
+        folder.is_entry(file, name).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
         // No inode identity (Windows): a regular file where the save made it.
-        Err(_) => std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()),
+        let _ = file;
+        folder.is_regular(name)
     }
 }
 
@@ -349,6 +375,7 @@ impl Store {
             on_demand: Mutex::new(BTreeSet::new()),
             verified: (0, BTreeMap::new()),
             lock: None,
+            file: None,
             read_only: false,
             desktop: false,
         };
@@ -413,15 +440,82 @@ impl Store {
             .map(|t| uint_segment(t.id))
             .filter(|t| self.node(&Self::deferred_path(t)).is_some())
             .collect();
+        if self.is_read_only() {
+            return false;
+        }
+        // A failed recovery must leave the file and the pending work intact.
+        for table in &pending {
+            if let Err(reason) = self.deferred_work(table) {
+                warn!(
+                    "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
+                    self.name
+                );
+                self.set_read_only();
+                return false;
+            }
+        }
         let mut changed = false;
         for table in pending {
             info!(
                 "{}: finishing the deferred field work of table {table:02x?}",
                 self.name
             );
-            changed |= self.update_table(&table, environment);
+            // The preflight checked every pending table before any changed.
+            changed |= self.update_table(&table, environment).unwrap_or(false);
         }
         changed
+    }
+
+    fn deferred_work(&self, table: &[u8]) -> Result<Vec<(Vec<u8>, u32)>, &'static str> {
+        let Some(list) = self.node(&Self::deferred_path(table)) else {
+            return Ok(Vec::new());
+        };
+        if holds_value(list) {
+            return Err("the deferred work list is not a list");
+        }
+        list.children
+            .iter()
+            .map(|entry| {
+                let field = be_uint(&entry.segment)
+                    .filter(|id| *id != 0 && uint_segment(*id) == entry.segment)
+                    .ok_or("a deferred field key does not decode")?;
+                let bits = entry
+                    .value
+                    .as_deref()
+                    .filter(|_| entry.children.is_empty())
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map(u32::from_be_bytes)
+                    .filter(|bits| bits & !deferred::KNOWN == 0)
+                    .ok_or("the deferred work uses unknown metadata")?;
+                if bits & (deferred::REMOVES_VALUES | deferred::TO_DATE | deferred::TO_TIMESTAMP)
+                    != 0
+                {
+                    let old = self.basis.get(table).and_then(|basis| basis.get(&field));
+                    let (container, global) =
+                        old.and_then(recalc::FieldBasis::known_storage).ok_or(
+                            "deferred value removal or conversion has no known old field type",
+                        )?;
+                    if bits & deferred::REMOVES_VALUES != 0
+                        && (container != (bits & deferred::CONTAINER != 0)
+                            || global != (bits & deferred::GLOBAL != 0))
+                    {
+                        return Err(
+                            "deferred value removal disagrees with the old field type or storage",
+                        );
+                    }
+                    if bits & deferred::FEWER != 0
+                        && !self
+                            .defined_repetitions(table, &entry.segment)
+                            .is_some_and(|n| n >= 1)
+                    {
+                        return Err(
+                            "deferred repetition removal has no known new repetition count",
+                        );
+                    }
+                }
+                Ok((entry.segment.clone(), bits))
+            })
+            .collect()
     }
 
     /// The file's own language (`Locale::Type`), which an index in
@@ -480,7 +574,7 @@ impl Store {
         self.dirty
     }
 
-    /// Write the tree to `path` if it has unsaved changes: a complete new
+    /// Write the tree to the file `at` if it has unsaved changes: a complete new
     /// file (`om_hbam::writer::rebuild`) written beside it, flushed, given
     /// the old file's permissions, then renamed over it, so a crash leaves
     /// the old file or the new one (hbam-writer.md 6.2). Returns whether it
@@ -490,29 +584,33 @@ impl Store {
     /// an entry of that name the store did not make (a copy a crash left,
     /// a link to another file) stops the save, untouched. A store holding
     /// the file's lock first checks that its locked descriptor is still the
-    /// file at `path` with no other names (a file another program replaced
-    /// or linked is not saved over), and locks the new copy before the
-    /// rename. On an error the file is the old one, the copy the store made
-    /// is removed (only it) and the tree stays unsaved; once the rename
-    /// succeeded the file is the new one, so a failure to flush the
-    /// directory after it is only logged.
+    /// file's entry in its folder, with no other names (a file another
+    /// program replaced or linked is not saved over), and locks the new
+    /// copy before the rename. On an error the file is the old one, the
+    /// copy the store made is removed (only it) and the tree stays unsaved;
+    /// once the rename succeeded the file is the new one, so a failure to
+    /// flush the folder after it is only logged. Every step goes through
+    /// the file's folder, opened again and checked to be the one the file
+    /// was hosted from ([`FileAt::folder`]): a folder of the path swapped
+    /// for a link, or moved, since then fails the save rather than move it
+    /// (#468).
     ///
     /// The copy is the whole database, password verifiers included. Until
     /// it has the old file's permissions it is owner-only (0600 on Unix,
     /// given as it is created, whatever the umask), so no one the file
     /// keeps out can open it while it is written: a descriptor opened then
     /// would go on reading it whatever its permissions became. With no file
-    /// at `path` it is a new file from the start (0666 less the umask);
+    /// there it is a new file from the start (0666 less the umask);
     /// when the old file's permissions cannot be read, nothing is saved.
-    pub fn save(&mut self, path: &Path) -> std::io::Result<bool> {
-        self.save_observed(path, &mut |_| {})
+    pub fn save(&mut self, at: &FileAt) -> std::io::Result<bool> {
+        self.save_observed(at, &mut |_| {})
     }
 
     /// [`Store::save`], calling `created` with the new copy's path once it
     /// exists, before anything is written to it (tests).
     fn save_observed(
         &mut self,
-        path: &Path,
+        at: &FileAt,
         created: &mut dyn FnMut(&Path),
     ) -> std::io::Result<bool> {
         use std::io::{Error, ErrorKind};
@@ -525,9 +623,13 @@ impl Store {
                 "the file is open read-only",
             ));
         }
+        // Every step goes through the file's folder, checked to be the one
+        // the file was hosted from (#468), by the file's name.
+        let name = at.name();
+        let folder = at.folder_now()?;
         let permissions = match &self.lock {
             Some(lock) => {
-                let current = crate::filelock::same_file(lock.file(), path)?
+                let current = folder.is_entry(lock.file(), name)?
                     && crate::filelock::link_count(lock.file())? == 1;
                 if !current {
                     return Err(Error::other(
@@ -537,45 +639,62 @@ impl Store {
                 }
                 Some(lock.file().metadata()?.permissions())
             }
-            None => match std::fs::metadata(path) {
-                Ok(metadata) => Some(metadata.permissions()),
-                Err(e) if e.kind() == ErrorKind::NotFound => None,
-                Err(e) => return Err(e),
+            // One look at the entry, never through a link: whether it is
+            // the file this store was read from or last saved as, and its
+            // permissions. A folder of the path swapped for a link to other
+            // content, to an empty folder, or to a folder whose entry links
+            // back to the file, is not saved into (#468).
+            None => match (self.file, folder.entry(name)?) {
+                (Some(file), Some(entry)) if entry.regular && entry.id == Some(file) => {
+                    Some(entry.permissions)
+                }
+                (Some(_), _) => {
+                    return Err(Error::other(format!(
+                        "{} no longer leads to the file this server read or last saved \
+                         there (a folder of the path, or the file, was replaced); it was \
+                         not saved",
+                        at.path().display()
+                    )))
+                }
+                (None, Some(entry)) if entry.regular => Some(entry.permissions),
+                (None, Some(_)) => {
+                    return Err(Error::other(format!(
+                        "{} is not a regular file; it was not saved over",
+                        at.path().display()
+                    )))
+                }
+                (None, None) => None,
             },
         };
         let bytes = om_hbam::writer::rebuild(&self.root, &self.superblock)
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
-        let temporary = save_copy_path(path);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Owner-only until it takes the old file's permissions; a new
-            // file's (0666 less the umask) when there is none to take.
-            options.mode(if permissions.is_some() { 0o600 } else { 0o666 });
-        }
-        let file = options.open(&temporary).map_err(|e| {
-            if e.kind() == ErrorKind::AlreadyExists {
-                Error::new(
-                    e.kind(),
-                    format!(
-                        "{} is in the way of the save's new copy (left by an earlier save?)",
-                        temporary.display()
-                    ),
-                )
-            } else {
-                e
-            }
-        })?;
-        created(&temporary);
+        let temporary = save_copy_name(name);
+        let shown = save_copy_path(at.place());
+        // Owner-only until it takes the old file's permissions; a new
+        // file's (0666 less the umask) when there is none to take.
+        let file = folder
+            .create_new(&temporary, permissions.is_some())
+            .map_err(|e| {
+                if e.kind() == ErrorKind::AlreadyExists {
+                    Error::new(
+                        e.kind(),
+                        format!(
+                            "{} is in the way of the save's new copy (left by an earlier save?)",
+                            shown.display()
+                        ),
+                    )
+                } else {
+                    e
+                }
+            })?;
+        created(&shown);
         // The copy is this save's from here on: on an error it removes the
         // entry only while it is still that copy.
         let owner = match file.try_clone() {
             Ok(owner) => owner,
             Err(e) => {
-                if owned_copy(&file, &temporary) {
-                    let _ = std::fs::remove_file(&temporary);
+                if owned_copy(&folder, &file, &temporary) {
+                    let _ = folder.remove(&temporary);
                 }
                 return Err(e);
             }
@@ -594,17 +713,27 @@ impl Store {
                 }
             })();
             let renamed = written.and_then(|lock| {
-                if !owned_copy(&owner, &temporary) {
+                // Read the staged file's identity before publication. The
+                // destination name could refer to another file after rename.
+                let identity = if self.file.is_some() {
+                    let staged = crate::anchored::file_identity(&owner)?;
+                    Some(staged.ok_or_else(|| Error::other("the new copy has no file identity"))?)
+                } else {
+                    None
+                };
+                if !owned_copy(&folder, &owner, &temporary) {
                     return Err(Error::other("the save's new copy was replaced"));
                 }
-                std::fs::rename(&temporary, path).map(|()| lock)
+                folder.rename(&temporary, name)?;
+                Ok((lock, identity))
             });
-            if renamed.is_err() && owned_copy(&owner, &temporary) {
-                let _ = std::fs::remove_file(&temporary);
+            if renamed.is_err() && owned_copy(&folder, &owner, &temporary) {
+                let _ = folder.remove(&temporary);
             }
             renamed
         };
-        let lock = saved?;
+        let (lock, identity) = saved?;
+        self.file = identity;
         if lock.is_some() {
             // The old file is gone from the path: its lock guards nothing.
             self.lock = lock;
@@ -612,14 +741,12 @@ impl Store {
         self.superblock = bytes[..self.superblock.len()].to_vec();
         self.dirty = false;
         self.saves += 1;
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            if let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
-                warn!(
-                    "{}: saved, but flushing {} failed: {e}",
-                    self.name,
-                    dir.display()
-                );
-            }
+        if let Err(e) = folder.sync() {
+            warn!(
+                "{}: saved, but flushing the folder of {} failed: {e}",
+                self.name,
+                at.path().display()
+            );
         }
         Ok(true)
     }
@@ -632,6 +759,7 @@ impl Store {
             undo: Vec::new(),
             saved: BTreeSet::new(),
             ids: BTreeMap::new(),
+            deleted_container_refs: BTreeMap::new(),
             recount: BTreeSet::new(),
             sweep: BTreeMap::new(),
             schema: false,
@@ -736,6 +864,22 @@ impl Store {
         new: Option<&OwnedNode>,
         counted: &[Vec<u8>],
     ) {
+        if new.is_none() {
+            for cell in old.iter().flat_map(|r| &r.children) {
+                if self.container_cell(table, &cell.segment) {
+                    if let Some(member) = member_key(cell) {
+                        let count = journal
+                            .deleted_container_refs
+                            .entry(table.to_vec())
+                            .or_default()
+                            .entry(member)
+                            .or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
+            }
+            return;
+        }
         let mut deltas: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
         for member in counted {
             *deltas.entry(member.clone()).or_default() -= 1;
@@ -749,6 +893,34 @@ impl Store {
                 }
             }
         }
+        self.adjust_container_counts(journal, table, deltas);
+    }
+
+    /// Retained text from a converted field can name a member without a
+    /// counted reference. Protect the names that remain in records and
+    /// globals, scanning each affected table only once per script commit.
+    pub fn release_deleted_record_containers(&mut self, journal: &mut Journal) {
+        for (table, removed) in std::mem::take(&mut journal.deleted_container_refs) {
+            let naming = self.naming_cells(&table, &[], &BTreeSet::new());
+            let deltas = removed
+                .into_iter()
+                .map(|(member, removed)| {
+                    let surviving = naming.get(&member).copied().unwrap_or_default();
+                    let release =
+                        self.guarded_container_release(&table, &member, 0, surviving, removed);
+                    (member, -release)
+                })
+                .collect();
+            self.adjust_container_counts(journal, &table, deltas);
+        }
+    }
+
+    fn adjust_container_counts(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        deltas: BTreeMap<Vec<u8>, i32>,
+    ) {
         let library: [&[u8]; 2] = [table, &[LIBRARY]];
         for (member, delta) in deltas.into_iter().filter(|(_, d)| *d != 0) {
             if let Some(reason) = self.library_refusal(&library, None, Some((&member, delta))) {
@@ -779,6 +951,75 @@ impl Store {
                 self.dirty = true;
             }
         }
+    }
+
+    /// References that remain after deferred value removal, including
+    /// globals and cells kept when an old field's record cannot advance.
+    fn naming_cells(
+        &self,
+        table: &[u8],
+        work: &[(Vec<u8>, u32)],
+        named: &BTreeSet<Vec<u8>>,
+    ) -> BTreeMap<Vec<u8>, i64> {
+        let mut naming = BTreeMap::new();
+        for storage in [keys::RECORDS, keys::GLOBALS] {
+            let old: BTreeSet<_> = work
+                .iter()
+                .filter(|(_, bits)| {
+                    bits & deferred::CONTAINER != 0
+                        && (bits & deferred::GLOBAL != 0) == (storage == keys::GLOBALS)
+                })
+                .flat_map(|(field, _)| self.cells_from(table, field, 1, named))
+                .collect();
+            let Some(values) = self.node(&[table, &[storage]]) else {
+                continue;
+            };
+            let mut count = |cell: &OwnedNode| {
+                if old.contains(&cell.segment)
+                    || (self.container_cell(table, &cell.segment)
+                        && (!named.contains(&cell.segment)
+                            || self.field_type(table, &cell.segment) == Some(DataType::Container)))
+                {
+                    if let Some(member) = member_key(cell) {
+                        *naming.entry(member).or_default() += 1;
+                    }
+                }
+            };
+            if storage == keys::GLOBALS {
+                values.children.iter().for_each(&mut count);
+            } else {
+                for record in &values.children {
+                    record.children.iter().for_each(&mut count);
+                }
+            }
+        }
+        naming
+    }
+
+    /// Releases can spend only pre-existing references left after
+    /// protecting surviving names. Acquisitions from this change are
+    /// reserved for its new cells, even when old text named the same key.
+    fn guarded_container_release(
+        &self,
+        table: &[u8],
+        member: &[u8],
+        counted: i32,
+        surviving: i64,
+        removed: i32,
+    ) -> i32 {
+        let stored = self
+            .library_member(&[table, &[LIBRARY]], member)
+            .map_or(0, library::reference_count);
+        let available = i64::from(stored) - i64::from(counted) - surviving.max(0);
+        let release = available.clamp(0, i64::from(removed)) as i32;
+        if release < removed {
+            warn!(
+                "{}: table {table:02x?} member {member:02x?}: held {} container release(s)",
+                self.name,
+                removed - release
+            );
+        }
+        release
     }
 
     /// Store container data a server script set into a field of a record
@@ -896,7 +1137,7 @@ impl Store {
     /// tree before the commit, the field indexes among it are taken out
     /// ([`Store::drop_unwritable_indexes`]), so the next commit is saved;
     /// anything else stays as it is and is logged.
-    pub fn save_commit(&mut self, path: &Path, mut journal: Journal) -> std::io::Result<()> {
+    pub fn save_commit(&mut self, at: &FileAt, mut journal: Journal) -> std::io::Result<()> {
         let saved = self.guarded(&mut journal, |store, journal| {
             if let Some(reason) = journal.refused.take() {
                 return Err(std::io::Error::new(
@@ -909,7 +1150,7 @@ impl Store {
             if store.fail_commit_saves {
                 return Err(std::io::Error::other("a test makes commit saves fail"));
             }
-            store.save(path)
+            store.save(at)
         });
         let error = match saved {
             Ok(_) => return Ok(()),
@@ -1788,69 +2029,55 @@ impl Store {
         &mut self,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
-    ) -> bool {
+    ) -> Result<bool, &'static str> {
+        if self.is_read_only() {
+            return Err("the file is hosted read-only");
+        }
         let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)).cloned() else {
-            return false;
+            return Ok(false);
         };
+        let preflight = (|| {
+            let work = self.deferred_work(table)?;
+            let basis = recalc::table_basis(&self.root, &definition);
+            let retyped = recalc::retyped_to_container(self.basis.get(table), &basis)?;
+            Ok((work, basis, retyped))
+        })();
+        let (work, basis, retyped) = match preflight {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                warn!(
+                    "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
+                    self.name
+                );
+                self.set_read_only();
+                return Err(reason);
+            }
+        };
+        let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
         let list = Self::deferred_path(table);
-        let work: Vec<(Vec<u8>, u32)> = self
-            .node(&list)
-            .map(|n| {
-                n.children
-                    .iter()
-                    .filter_map(|entry| {
-                        let bits = entry.value.as_deref()?.try_into().ok()?;
-                        Some((entry.segment.clone(), u32::from_be_bytes(bits)))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let mut changed = self.root.remove(&list).is_some();
         // Every field the work names keeps its own cells: a field deleted in
         // the same edit is no longer in the catalog, and its key may read as
         // another's repetition (`repetition_cells`).
-        let named: BTreeSet<Vec<u8>> = work.iter().map(|(field, _)| field.clone()).collect();
+        let mut named: BTreeSet<Vec<u8>> = work.iter().map(|(field, _)| field.clone()).collect();
+        if let Some(old) = self.basis.get(table) {
+            named.extend(old.keys().map(|id| uint_segment(*id)));
+        }
+        let mut removed = BTreeMap::new();
         for (field, bits) in &work {
-            if bits & deferred::DELETE != 0 {
-                // A global's value is the table's, not its records'
-                // (schema-path.md 7.2: `DeleteGlobalRecordData`).
+            if bits & deferred::REMOVES_VALUES != 0 {
+                // For a repetition cut, the preflight checked the new
+                // maximum. A delete or type change removes all repetitions.
+                let from = if bits & deferred::FEWER != 0 && bits & deferred::DELETE == 0 {
+                    self.repetitions(table, field).saturating_add(1)
+                } else {
+                    1
+                };
                 let container = bits & deferred::CONTAINER != 0;
                 if bits & deferred::GLOBAL != 0 {
-                    self.drop_global_value(table, field, 1, container, &named);
+                    self.drop_global_value(table, field, from, container, &named, &mut removed);
                 } else {
-                    self.drop_field_values(table, field, 1, container, &named);
-                }
-            } else if bits & deferred::FEWER != 0 {
-                // The repetitions above the new maximum go, releasing a
-                // container's library references (`0x8`), from the table's
-                // global value instead for a global (`0x2`; 7.2). A
-                // definition that does not read deletes nothing.
-                let container = bits & deferred::CONTAINER != 0;
-                match self.defined_repetitions(table, field).filter(|n| *n >= 1) {
-                    Some(maximum) => {
-                        let from = maximum.saturating_add(1);
-                        if bits & deferred::GLOBAL != 0 {
-                            self.drop_global_value(table, field, from, container, &named);
-                        } else {
-                            self.drop_field_values(table, field, from, container, &named);
-                        }
-                        changed = true;
-                    }
-                    None => warn!(
-                        "{}: table {table:02x?} field {field:02x?}: the repetitions above the \
-                         new count not deleted: the field's definition does not read (deferred \
-                         work {bits:#x})",
-                        self.name
-                    ),
-                }
-            } else if bits & deferred::CONTAINER != 0 {
-                // A type change from container deletes every repetition,
-                // releasing its library reference (7.2.1), the table's
-                // global value instead for a global (7.2).
-                if bits & deferred::GLOBAL != 0 {
-                    self.drop_global_value(table, field, 1, true, &named);
-                } else {
-                    self.drop_field_values(table, field, 1, true, &named);
+                    self.drop_field_values(table, field, from, container, &named, &mut removed);
                 }
                 changed = true;
             }
@@ -1870,13 +2097,18 @@ impl Store {
                     .is_some();
             }
         }
-        let basis = recalc::table_basis(&self.root, &definition);
-        let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
         self.basis.insert(table.to_vec(), basis);
+        for field in &retyped {
+            changed |= self.drop_retyped_cells(table, *field, &named);
+        }
+        if !removed.is_empty() {
+            let naming = self.naming_cells(table, &work, &named);
+            self.release_containers(table, removed, &naming);
+        }
         let recomputed = if stale.is_empty() {
             Vec::new()
         } else {
-            self.recalculate(table, &definition, &stale, environment)
+            self.recalculate(table, &definition, &stale, (&work, &named), environment)
         };
         changed |= !recomputed.is_empty();
         let mut rebuild: BTreeSet<Vec<u8>> = work
@@ -1941,7 +2173,7 @@ impl Store {
         if changed {
             self.generation += 1;
         }
-        changed
+        Ok(changed)
     }
 
     /// `f` of the catalogs a calculation of `table` reads, as a key tree
@@ -2006,6 +2238,7 @@ impl Store {
         table: &[u8],
         definition: &om_hbam::Table,
         stale: &BTreeSet<u64>,
+        deferred: DeferredFieldWork<'_>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
     ) -> Vec<u64> {
         let Some(plan) = self.with_calc_inputs(table, |tree, calc| {
@@ -2061,6 +2294,21 @@ impl Store {
             self.root.put(&[table, &[LIBRARY]], node);
         }
         let outcome = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        // The library is back: container results go into it, each release
+        // held to the references the table's cells make
+        // ([`Self::naming_cells`]).
+        if !outcome.containers.is_empty() {
+            let mut naming = self.naming_cells(table, deferred.0, deferred.1);
+            for (record, cells) in &outcome.containers {
+                self.store_recomputed_containers(
+                    table,
+                    record,
+                    cells,
+                    &definition.name,
+                    &mut naming,
+                );
+            }
+        }
         for (field, (records, first)) in &outcome.failed {
             let name = definition.field(*field).map_or("", |f| f.name.as_str());
             warn!(
@@ -2086,6 +2334,178 @@ impl Store {
         );
         self.dirty |= outcome.changed > 0;
         fields
+    }
+
+    /// Drop, in every record of `table`, the cells of `field`, whose type
+    /// changed to container in this change: they hold values of the old
+    /// type, which name no member they counted, so they are not counted
+    /// as references either (`recalc::retyped_to_container`). A record that
+    /// lost one counts one more modification; one whose count cannot
+    /// advance loses it too (it is not a container value), logged.
+    /// Returns whether a record changed.
+    fn drop_retyped_cells(&mut self, table: &[u8], field: u64, named: &BTreeSet<Vec<u8>>) -> bool {
+        let key = uint_segment(field);
+        let mut cells = self.repetition_cells(table, &key, named);
+        cells.insert(key);
+        let Some(records) = self.root.at_mut(&[table, &[keys::RECORDS]]) else {
+            return false;
+        };
+        let mut changed = false;
+        let mut exhausted = 0usize;
+        for record in &mut records.children {
+            let before = record.children.len();
+            record
+                .children
+                .retain(|cell| !cells.contains(&cell.segment));
+            if record.children.len() != before {
+                changed = true;
+                if modcount::bump(record, 1).is_none() {
+                    exhausted += 1;
+                }
+            }
+        }
+        if exhausted > 0 {
+            warn!(
+                "{}: table {table:02x?} field {field}: {exhausted} record(s) lost the old \
+                 values of a field changed to container without counting the change: their \
+                 modification count is the largest a serial key holds",
+                self.name
+            );
+        }
+        self.dirty |= changed;
+        changed
+    }
+
+    /// Store the container results `cells` the recompute computed for
+    /// record `record` of `table` (its key under `[T, 05]`), as a server
+    /// script's commit stores container data (containers.md,
+    /// "Implementation notes (OpenMaker Server scripts)"): a member of the
+    /// table's library the value names takes one more reference, data
+    /// (another table's member's, or data a calculation made) is stored as
+    /// a member, or counts one more reference to a member with the same
+    /// data, and text is the cell's text; a member a cell no longer names
+    /// is released (deleted at 0). When the library would refuse a write,
+    /// the record keeps its container values, logged.
+    ///
+    /// `naming` tracks surviving cells, including retained text in the
+    /// form of a member reference. Releases cannot spend the references
+    /// reserved for those cells or for this record's new results.
+    /// `naming` follows the record's change only once storage succeeds.
+    fn store_recomputed_containers(
+        &mut self,
+        table: &[u8],
+        record: &[u8],
+        cells: &BTreeMap<u64, ContainerResult>,
+        name: &str,
+        naming: &mut BTreeMap<Vec<u8>, i64>,
+    ) {
+        let path: [&[u8]; 3] = [table, &[keys::RECORDS], record];
+        let Some(old) = self.node(&path).cloned() else {
+            return;
+        };
+        let mut new = old.clone();
+        let mut journal = self.begin_commit();
+        // Added cells, removed names, and additions already counted by storage.
+        let mut references: BTreeMap<Vec<u8>, (i32, i32, i32)> = BTreeMap::new();
+        for (cell, result) in cells {
+            let key = uint_segment(*cell);
+            if let Some(member) = old.child(&key).and_then(member_key) {
+                references.entry(member).or_default().1 += 1;
+            }
+            let text = match result {
+                ContainerResult::Empty => None,
+                ContainerResult::Text(text) => Some(text.clone()),
+                ContainerResult::Data(value) => {
+                    let Some((member, stored)) = self.recomputed_member(&mut journal, table, value)
+                    else {
+                        journal.refused.get_or_insert_with(|| {
+                            "the container value has no data to store".to_string()
+                        });
+                        break;
+                    };
+                    let (added, _, counted) = references.entry(member.clone()).or_default();
+                    *added += 1;
+                    if stored {
+                        *counted += 1;
+                    }
+                    Some(containers::reference_text(&member))
+                }
+            };
+            match text {
+                Some(text) => new.set_child(om_scripts::text_node(&key, &text)),
+                None => {
+                    new.remove(&[&key]);
+                }
+            }
+        }
+        if journal.refused.is_none() {
+            let deltas = references
+                .iter()
+                .map(|(member, &(added, removed, counted))| {
+                    let surviving =
+                        naming.get(member).copied().unwrap_or_default() - i64::from(removed);
+                    let release =
+                        self.guarded_container_release(table, member, counted, surviving, removed);
+                    (member.clone(), added - counted - release)
+                })
+                .collect();
+            self.adjust_container_counts(&mut journal, table, deltas);
+        }
+        if let Some(reason) = journal.refused.take() {
+            warn!(
+                "{}: table {name:?}: record {record:02x?} keeps its container calculation \
+                 values: {reason}",
+                self.name
+            );
+            self.roll_back(journal);
+            return;
+        }
+        if let Some(node) = self.root.at_mut(&path) {
+            for (member, (added, removed, _)) in references {
+                *naming.entry(member).or_default() += i64::from(added - removed);
+            }
+            *node = new;
+            self.dirty = true;
+        }
+    }
+
+    /// The member of `table`'s library a recomputed container value names
+    /// when it is one of that library's, with `false`; else the member
+    /// [`Self::store_container_in`] stores its data in, counted, with
+    /// `true`: another table's member's tree as stored there, or the tree
+    /// the field stores for data a calculation made
+    /// (`om_data::containers::tree`). `None` without data to store, or
+    /// when the library refused it (in `journal`).
+    fn recomputed_member(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        value: &om_calc::Container,
+    ) -> Option<(Vec<u8>, bool)> {
+        let mut data = None;
+        if let Some(r) = &value.library {
+            let library = [uint_segment(r.table), vec![LIBRARY]];
+            let segments: Vec<&[u8]> = library.iter().map(Vec::as_slice).collect();
+            let member = self
+                .library_member(&segments, &r.member)
+                .filter(|m| MemberInfo::read(m).is_some_and(|i| i.md5 == r.md5));
+            if let Some(member) = member {
+                if library[0] == table {
+                    return Some((r.member.clone(), false));
+                }
+                data = library::member_tree(member);
+            }
+        }
+        let data = match data {
+            Some(data) => data,
+            None if value.streams.is_empty() => return None,
+            None => {
+                let (keys, md5) = containers::tree(value)?;
+                BinaryData::from_tree(keys, md5)
+            }
+        };
+        let member = self.store_container_in(journal, table, data);
+        (!member.is_empty()).then_some((member, true))
     }
 
     /// The cells holding repetitions 2 to 255 of `field`, in a record of
@@ -2123,22 +2543,38 @@ impl Store {
         cells
     }
 
-    /// Release the container data `values`, removed cells of `table`,
-    /// named.
-    fn release_containers(&mut self, table: &[u8], values: &[OwnedNode]) {
-        let library: [&[u8]; 2] = [table, &[LIBRARY]];
-        for member in values.iter().filter_map(member_key) {
-            let Some(library) = self.root.at_mut(&library) else {
+    /// Release names removed by deferred work after protecting the names
+    /// that still appear in records and globals.
+    fn release_containers(
+        &mut self,
+        table: &[u8],
+        removed: BTreeMap<Vec<u8>, i32>,
+        naming: &BTreeMap<Vec<u8>, i64>,
+    ) {
+        let path: [&[u8]; 2] = [table, &[LIBRARY]];
+        for (member, removed) in removed {
+            let surviving = naming.get(&member).copied().unwrap_or_default();
+            let release = self.guarded_container_release(table, &member, 0, surviving, removed);
+            if release == 0 {
                 continue;
-            };
-            if let Some(reason) = library::adjust_counter_refusal(library, &member, -1) {
+            }
+            if let Some(reason) = self.library_refusal(&path, None, Some((&member, -release))) {
                 warn!(
                     "{}: container data {member:02x?} of table {table:02x?} not released: {reason}",
                     self.name
                 );
                 continue;
             }
-            library::adjust(library, &member, -1);
+            if let Some(library) = self.root.at_mut(&path) {
+                library::adjust(library, &member, -release);
+            }
+        }
+    }
+
+    fn collect_removed_references(values: Vec<OwnedNode>, removed: &mut BTreeMap<Vec<u8>, i32>) {
+        for member in values.iter().filter_map(member_key) {
+            let count = removed.entry(member).or_default();
+            *count = count.saturating_add(1);
         }
     }
 
@@ -2152,6 +2588,7 @@ impl Store {
         from: u16,
         container: bool,
         others: &BTreeSet<Vec<u8>>,
+        removed: &mut BTreeMap<Vec<u8>, i32>,
     ) {
         let cells = self.cells_from(table, field, from, others);
         let Some(globals) = self.root.at_mut(&[table, &[keys::GLOBALS]]) else {
@@ -2165,7 +2602,7 @@ impl Store {
             return;
         }
         if container {
-            self.release_containers(table, &gone);
+            Self::collect_removed_references(gone, removed);
         }
         self.dirty = true;
     }
@@ -2265,10 +2702,10 @@ impl Store {
         from: u16,
         container: bool,
         others: &BTreeSet<Vec<u8>>,
+        removed: &mut BTreeMap<Vec<u8>, i32>,
     ) {
         let cells = self.cells_from(table, field, from, others);
         let is_value = |c: &OwnedNode| cells.contains(&c.segment);
-        let mut released = Vec::new();
         let mut kept = 0usize;
         if let Some(records) = self.root.at_mut(&[table, &[keys::RECORDS]]) {
             for record in &mut records.children {
@@ -2285,7 +2722,7 @@ impl Store {
                         .partition(is_value);
                 record.children = others;
                 if container {
-                    released.extend(gone);
+                    Self::collect_removed_references(gone, removed);
                 }
             }
         }
@@ -2296,7 +2733,6 @@ impl Store {
                 self.name
             );
         }
-        self.release_containers(table, &released);
         self.dirty = true;
     }
 
@@ -2429,6 +2865,18 @@ impl Store {
         };
         (stored && typed && (kind == keys::VALUE_INDEX || kind == keys::WORD_INDEX))
             .then_some(field.data_type)
+    }
+
+    /// Note the device and inode of the file on disk the store was read
+    /// from ([`anchored::file_identity`](crate::anchored::file_identity)).
+    pub fn set_file(&mut self, file: Option<FileId>) {
+        self.file = file;
+    }
+
+    /// The device and inode of the file on disk the store was read from or
+    /// last saved as, where it has them.
+    pub fn file(&self) -> Option<FileId> {
+        self.file
     }
 
     /// Take `built` back from the indexes due to be stored
@@ -2574,6 +3022,7 @@ impl Store {
             on_demand: Mutex::new(BTreeSet::new()),
             verified: (0, BTreeMap::new()),
             lock: None,
+            file: None,
             read_only: false,
             desktop: self.desktop,
         }
@@ -3445,6 +3894,7 @@ mod tests {
             on_demand: Mutex::new(BTreeSet::new()),
             verified: (0, BTreeMap::new()),
             lock: None,
+            file: None,
             read_only: false,
             desktop: false,
         }
@@ -3465,17 +3915,18 @@ mod tests {
         store.superblock = vec![0; 4096];
         store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
         store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        std::fs::write(&path, b"old").unwrap();
+        let at = FileAt::open(&path).unwrap();
         let save = |store: &mut Store| {
             store.dirty = true;
             let mut copy = None;
-            let saved = store.save_observed(&path, &mut |c| copy = mode(c).ok());
+            let saved = store.save_observed(&at, &mut |c| copy = mode(c).ok());
             (
                 saved.ok(),
                 copy.map(|m| m & 0o777),
                 mode(&path).ok().map(|m| m & 0o777),
             )
         };
-        std::fs::write(&path, b"old").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         // Under this umask a copy made with a new file's permissions is
         // 0644, readable by everyone.
@@ -3487,6 +3938,70 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(replaced, (Some(true), Some(0o600), Some(0o640)));
         assert_eq!(new, (Some(true), Some(0o644), Some(0o644)));
+    }
+
+    /// A hosted file is saved only where its path still leads to the file
+    /// the store was read from (#468). With its folder moved away and a link
+    /// to another folder in its place, the save fails, writes nowhere, and
+    /// the changes stay unsaved; so it does when that folder's entry is a
+    /// link back to the file. With the link leading to the moved folder,
+    /// which holds the same file, the save goes there.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_is_refused_where_a_link_leads_away_from_the_hosted_file() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("om-store-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (databases, moved, elsewhere) = (
+            base.join("Databases"),
+            base.join("moved"),
+            base.join("elsewhere"),
+        );
+        std::fs::create_dir_all(&databases).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let path = databases.join("Tasks.fmp12");
+        std::fs::write(&path, b"old").unwrap();
+        let at = FileAt::open(&path).unwrap();
+        let mut store = store_of(OwnedNode::default());
+        let read = std::fs::metadata(&path).unwrap();
+        store.set_file(Some((read.dev(), read.ino())));
+        store.superblock = vec![0; 4096];
+        store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
+        store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        std::fs::rename(&databases, &moved).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &databases).unwrap();
+        store.dirty = true;
+        let refused = store.save(&at);
+        let unsaved = store.dirty;
+        let kept = std::fs::read(moved.join("Tasks.fmp12")).ok();
+        let followed = std::fs::read_dir(&elsewhere).map(|d| d.count()).ok();
+        // The other folder's entry, a link back to the file.
+        std::os::unix::fs::symlink(moved.join("Tasks.fmp12"), elsewhere.join("Tasks.fmp12"))
+            .unwrap();
+        let through_link = store.save(&at);
+        let link_kept = std::fs::symlink_metadata(elsewhere.join("Tasks.fmp12"))
+            .is_ok_and(|m| m.file_type().is_symlink());
+        let still_old = std::fs::read(moved.join("Tasks.fmp12")).ok();
+        // The administrator's move: the path leads to the same file again.
+        std::fs::remove_file(&databases).unwrap();
+        std::os::unix::fs::symlink(&moved, &databases).unwrap();
+        let saved = store.save(&at);
+        let published = std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()));
+        let written = std::fs::read(moved.join("Tasks.fmp12"))
+            .map(|b| b.len())
+            .ok();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(unsaved, "the changes wait in memory");
+        assert_eq!(kept.as_deref(), Some(&b"old"[..]));
+        assert_eq!(followed, Some(0), "nothing written through the link");
+        assert!(through_link.is_err(), "{through_link:?}");
+        assert!(link_kept, "the link back is not saved over");
+        assert_eq!(still_old.as_deref(), Some(&b"old"[..]));
+        assert_eq!(saved.ok(), Some(true));
+        assert_ne!(store.file(), Some((read.dev(), read.ino())));
+        assert_eq!(store.file(), published);
+        assert!(written.is_some_and(|n| n > 3), "{written:?}");
     }
 
     #[test]
@@ -3739,7 +4254,14 @@ mod tests {
                 .put(&[table, &[keys::RECORDS], &record, cell], reference.clone());
         }
         // Cut to one repetition: from repetition 2 up.
-        store.drop_field_values(table, &first, 2, true, &BTreeSet::new());
+        let mut removed = BTreeMap::new();
+        store.drop_field_values(table, &first, 2, true, &BTreeSet::new(), &mut removed);
+        let naming = store.naming_cells(
+            table,
+            &[(first.clone(), deferred::FEWER | deferred::CONTAINER)],
+            &BTreeSet::new(),
+        );
+        store.release_containers(table, removed, &naming);
         let cell = |cell: &[u8]| {
             store
                 .node(&[table, &[keys::RECORDS], &record, cell])

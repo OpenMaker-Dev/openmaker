@@ -16,6 +16,7 @@ use om_protocol::container::{
 use om_protocol::write::KeyPath;
 use om_protocol::Resume;
 
+use crate::connection::ACCESS_DENIED;
 use crate::hosting::Hosted;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::store::Store;
@@ -98,6 +99,9 @@ fn store_upload(
     unique_id: impl FnMut() -> [u8; 16],
 ) -> UploadBinaryReply {
     let mut store = hosted.write_store();
+    if store.is_read_only() {
+        return upload_reply(ACCESS_DENIED, Vec::new(), String::new());
+    }
     let Some(path) = table_segment(table).and_then(|t| library_path(&store, t)) else {
         return upload_reply(TABLE_MISSING, Vec::new(), String::new());
     };
@@ -136,6 +140,9 @@ pub fn adjust_reference_count(hosted: &Hosted, req: &AdjustReferenceCount) -> u3
         return COUNT_FAILED;
     };
     let mut store = hosted.write_store();
+    if store.is_read_only() {
+        return COUNT_FAILED;
+    }
     let Some(path) = library_path(&store, table) else {
         return COUNT_FAILED;
     };

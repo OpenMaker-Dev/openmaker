@@ -182,7 +182,7 @@ fn check_name(name: &str) -> Result<(Vec<u8>, Vec<u8>), DataError> {
 /// Set a member's or the index's modification stamp (schema-path.md 8.1):
 /// the count raised unless the node is new, then the user, the account and
 /// the host's time.
-fn stamp(node: &mut OwnedNode, stamp: &Stamp, new: bool) {
+pub fn stamp(node: &mut OwnedNode, stamp: &Stamp, new: bool) {
     if !new {
         let next = node
             .child(MOD_COUNT)
