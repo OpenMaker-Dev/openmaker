@@ -1472,6 +1472,16 @@ impl ServerHost {
     /// clock it was created with (#474).
     fn rules_environment(&self, record: &OpenRecord, plan: &RecordPlan) -> RecordEnvironment {
         let mut environment = self.record_environment();
+        // The session sees pending writes and deletes. A new record's
+        // self-join needs committed membership (s47), so both preview and
+        // commit refuse a read that could depend on these peers.
+        if record.new
+            && self
+                .pending_in(record.table)
+                .any(|((_, id), _)| *id != record.id)
+        {
+            environment.others_held.insert(record.table);
+        }
         environment.context = rules::WriteContext {
             host_timestamp: environment.context.host_timestamp.take(),
             ..(*record.context).clone()

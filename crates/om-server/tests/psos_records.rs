@@ -37,6 +37,10 @@ const PRIORITY_LIST: u64 = 1;
 const NOTE: u64 = 9;
 /// Tasks::Stamp, auto-entered `Name & Setting` where a test adds it.
 const STAMP: u64 = 40;
+/// Tasks::Group and Seen, a self-join's key and an auto-entry reading it,
+/// where a test adds them.
+const GROUP_KEY: u64 = 42;
+const SEEN: u64 = 43;
 
 fn names() -> NameTable {
     let mut names = fixture::names();
@@ -44,6 +48,8 @@ fn names() -> NameTable {
     names.add_field(NOTES, TASK, "Task");
     names.add_field(TABLE, NOTE, "Note");
     names.add_field(TABLE, STAMP, "Stamp");
+    names.add_field(TABLE, GROUP_KEY, "Group");
+    names.add_field(TABLE, SEEN, "Seen");
     names
 }
 
@@ -1141,4 +1147,85 @@ fn a_related_sort_that_loops_stops_with_3() {
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
     assert_eq!(run(&mut client, 12), (3, "3".to_string()));
+}
+
+/// s47: a new record sees the older committed matches through its
+/// self-join. With a held peer, the preview leaves its answer out and
+/// the commit refuses the read with 3. Exercise both an aggregate and a
+/// first-related read that could otherwise use the earlier peer.
+#[test]
+fn server_scripts_self_join_auto_entry_reads_committed_matches_only() {
+    const GROUP: u64 = 0xd0_0019;
+    let mut names = names();
+    names.add_occurrence(GROUP, "G", TABLE);
+    for (kind, read, first, second) in [
+        ("count", "Count ( G::Group )", "0", "1"),
+        ("first", "G::Name", "", "committed"),
+    ] {
+        let mut root = tree();
+        fixture::add_field(&mut root, TABLE, GROUP_KEY, "Group", 1, 1, 0, 0, 0);
+        fixture::add_occurrence(&mut root, GROUP, "G", TABLE);
+        fixture::add_relationship(
+            &mut root,
+            20,
+            (OCCURRENCE, GROUP_KEY),
+            0,
+            (GROUP, GROUP_KEY),
+        );
+        // The first transaction row takes the constant branch. Only the
+        // second can fail by following the join.
+        fixture::add_field(&mut root, TABLE, SEEN, "Seen", 1, 1, 0, 0x88, 0);
+        fixture::add_formula(
+            &mut root,
+            &names,
+            (TABLE, OCCURRENCE),
+            SEEN,
+            5,
+            &format!("If ( Name = \"peer\" ; \"peer\" ; {read} )"),
+        );
+        let make = vec![
+            ScriptStep::new(7),
+            fixture::set_field(NAME, "\"committed\""),
+            fixture::set_field(GROUP_KEY, "\"k\""),
+            set_var("$preview", "Tasks::Seen"),
+            ScriptStep::new(75),
+            exit_with("Get ( LastError ) & \"|\" & $preview & \"|\" & Tasks::Seen"),
+        ];
+        let two = vec![
+            fixture::on(86, true),
+            ScriptStep::new(205),
+            ScriptStep::new(7),
+            fixture::set_field(NAME, "\"peer\""),
+            fixture::set_field(GROUP_KEY, "\"t\""),
+            set_var("$first", "Get ( LastError ) & \"|\" & Tasks::Seen"),
+            ScriptStep::new(7),
+            fixture::set_field(NAME, "\"reader\""),
+            fixture::set_field(GROUP_KEY, "\"t\""),
+            set_var("$second", "Get ( LastError ) & \"|\" & Tasks::Seen"),
+            ScriptStep::new(206),
+            exit_with("$first & \"|\" & $second & \"|\" & Get ( LastError )"),
+        ];
+        for (id, name, steps) in [(10, "Make", make), (11, "Two", two)] {
+            root.put(
+                &[&[17], &[5], &uint_segment(id)],
+                script(id, name, steps).encode(),
+            );
+        }
+        let file = TempFile::from_tree(&format!("psos-self-join-{kind}"), &root);
+        let port = server::start(&file);
+        let (mut client, _) = server::logged_in(port, "client");
+        assert_eq!(
+            run(&mut client, 10),
+            (0, format!("0|{first}|{first}")),
+            "{read}"
+        );
+        assert_eq!(
+            run(&mut client, 10),
+            (0, format!("0|{second}|{second}")),
+            "{read}"
+        );
+        let before = server::records_of(&mut client, TABLE);
+        assert_eq!(run(&mut client, 11).1, "0|peer|0||3", "{read}");
+        assert_eq!(server::records_of(&mut client, TABLE), before, "{read}");
+    }
 }

@@ -688,6 +688,7 @@ impl NativeProvider {
             // A write's operation supplies it (`Self::write_context`).
             context: WriteContext::default(),
             held: None,
+            others_held: Default::default(),
             related_needs: None,
         })
     }
