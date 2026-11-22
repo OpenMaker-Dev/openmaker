@@ -208,8 +208,8 @@ impl ConnectionOptions {
             env_ca.or(saved_ca)
         }
         .filter(|path| !path.as_os_str().is_empty());
-        let mut tls =
-            NativeConfig::from_env_with_ca_cert(ca_cert.as_deref()).map_err(|e| e.to_string())?;
+        let mut tls = NativeConfig::from_env_with_ca_cert(ca_cert.as_deref(), env_server_matches)
+            .map_err(|e| e.to_string())?;
         tls.set_client_license(license.trim())
             .map_err(|e| e.to_string())?;
         Ok(Target::new(host, port, file, account, password, tls))

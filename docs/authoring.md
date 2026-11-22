@@ -100,8 +100,12 @@ With `--config` or `OPENMAKER_AUTHOR_CONFIG`, the selected file supplies the
 host, port, file and account. Its credential and CA paths take precedence
 over inherited environment variables. Environment credentials and CA paths
 can fill gaps as long as the environment's target settings match the
-connection. A different host or port skips the config's credential and CA
-paths. A different file or account also skips the config's password file.
+connection. The same host and port check applies to
+`OPENMAKER_CLIENT_CERT` and `OPENMAKER_CLIENT_KEY`. If the environment
+specifies a different host or port, `om-author` generates a TLS client
+identity in memory. A host or port override that changes the profile's
+endpoint skips the config's credential and CA paths. A different file or
+account also skips the config's password file.
 
 For a FileMaker Server that requires a client license, set
 `OPENMAKER_LICENSE_KEY` in the environment that launches `om-author`, or set

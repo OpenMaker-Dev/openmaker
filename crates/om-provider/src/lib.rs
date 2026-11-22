@@ -64,14 +64,25 @@ impl NativeConfig {
     /// public roots and optional `OPENMAKER_CA_CERT` PEM file.
     pub fn from_env() -> Result<Self, DataError> {
         let ca_cert = std::env::var_os("OPENMAKER_CA_CERT");
-        Self::from_env_with_ca_cert(ca_cert.as_deref().map(Path::new))
+        Self::from_env_with_ca_cert(ca_cert.as_deref().map(Path::new), true)
     }
 
-    /// Read the TLS identity and callback from the environment and use the
-    /// given CA file. `None` trusts the public roots alone.
-    pub fn from_env_with_ca_cert(ca_cert: Option<&Path>) -> Result<Self, DataError> {
-        let cert = std::env::var_os("OPENMAKER_CLIENT_CERT");
-        let key = std::env::var_os("OPENMAKER_CLIENT_KEY");
+    /// Use the given CA file in addition to the public roots. Read the
+    /// callback from the environment. Read the client certificate and key
+    /// from the environment only if `use_env_identity` is true. Generate
+    /// an in-memory identity when no paths are selected.
+    pub fn from_env_with_ca_cert(
+        ca_cert: Option<&Path>,
+        use_env_identity: bool,
+    ) -> Result<Self, DataError> {
+        let (cert, key) = if use_env_identity {
+            (
+                std::env::var_os("OPENMAKER_CLIENT_CERT"),
+                std::env::var_os("OPENMAKER_CLIENT_KEY"),
+            )
+        } else {
+            (None, None)
+        };
         let (client_cert_pem, client_key_pem) =
             match (cert, key) {
                 (Some(cert), Some(key)) => (
@@ -2289,12 +2300,10 @@ impl NativeProvider {
                             // error (network-protocol.md 5.6.4, admin-console.md 9).
                             Some(1638) => DataError::with_code(1638, HOST_BLOCKS_NEW_USERS),
                             // FileMaker defers the install code check to Open.
-                            Some(CLIENT_LICENSE_REFUSED) if !local => {
-                                DataError::with_code(
-                                    CLIENT_LICENSE_REFUSED,
-                                    format!("open hosted file: {e}"),
-                                )
-                            }
+                            Some(CLIENT_LICENSE_REFUSED) if !local => DataError::with_code(
+                                CLIENT_LICENSE_REFUSED,
+                                format!("open hosted file: {e}"),
+                            ),
                             _ => failure("open hosted file", e),
                         })?;
                     canceled()?;

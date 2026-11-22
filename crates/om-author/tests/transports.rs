@@ -124,6 +124,14 @@ fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
         .env("OPENMAKER_PASSWORD", "synthetic-password-for-another-file")
         .env("OPENMAKER_CA_CERT", scratch.dir.join("missing.pem"))
         .env(
+            "OPENMAKER_CLIENT_CERT",
+            scratch.dir.join("missing-client.pem"),
+        )
+        .env(
+            "OPENMAKER_CLIENT_KEY",
+            scratch.dir.join("missing-client-key.pem"),
+        )
+        .env(
             "OPENMAKER_LICENSE_KEY",
             "synthetic-license-for-another-file",
         );
