@@ -731,7 +731,7 @@ fn report_groups_refuse_keys_their_sort_did_not_establish() {
             body: Expr::Variable("$$rate".into()),
         },
     );
-    for (id, function) in [(10, 1), (11, 2), (12, 99)] {
+    for (id, function) in [(20, 1), (21, 2), (22, 99)] {
         let call = Expr::CustomCall {
             tail: false,
             function: Key::from_id(function),
@@ -771,11 +771,11 @@ fn report_groups_refuse_keys_their_sort_did_not_establish() {
     assert_eq!(groups(7, false), Ok(Some(vec![0, 0, 0])));
     // Calculations that read no variable group as before: 20, 40 and 120.
     assert_eq!(groups(9, true), Ok(Some(vec![0, 1, 2])));
-    assert_eq!(groups(10, true), Ok(Some(vec![0, 1, 2])));
+    assert_eq!(groups(20, true), Ok(Some(vec![0, 1, 2])));
     // A custom function that reads one, or one that cannot be resolved,
     // may read them.
-    assert_eq!(groups(11, true), Err(GroupError::VariableKey));
-    assert_eq!(groups(12, true), Err(GroupError::VariableKey));
+    assert_eq!(groups(21, true), Err(GroupError::VariableKey));
+    assert_eq!(groups(22, true), Err(GroupError::VariableKey));
     assert_eq!(groups(8, false), Err(GroupError::UnevaluableKey));
 
     // GetSummary with no layout grouping still checks the entire sort
