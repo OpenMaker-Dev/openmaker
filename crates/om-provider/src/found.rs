@@ -309,7 +309,9 @@ impl NativeProvider {
     /// A saved sort as this provider sorts: fields of `table` reached
     /// through `occurrence` itself, by value or by a value list's order.
     /// `None` for anything else (a related field, a summary order, a
-    /// repetition), which leaves the found set unsorted.
+    /// repetition, a value list the provider cannot list, one of related
+    /// values only included), which leaves the found set unsorted rather
+    /// than sorted in another order.
     fn saved_sort(
         &mut self,
         occurrence: u64,

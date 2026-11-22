@@ -23,6 +23,44 @@ use super::data::CalcSource;
 use super::schema::{CalcSchema, FieldClass, TableDef};
 use crate::meta::ValueSource;
 
+/// How many sorts may run inside one another on one thread. A sort field
+/// of a related occurrence is read from its first related record, and that
+/// relationship may itself be sorted by a related field, and so on: a chain
+/// of such sorts, or a loop of them, a field leading back. Past the bound a
+/// sort fails with 3, OpenMaker's choice; FileMaker's handling is
+/// unmeasured.
+const MAX_NESTED_SORTS: u32 = 16;
+
+thread_local! {
+    static NESTED_SORTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// One sort under way on this thread ([`SortNesting::enter`]), counted
+/// until it is dropped. Every host's sort enters one, so that related
+/// sorts nested inside one another, through either host, are bounded. It
+/// stays on the thread that counted it (not `Send`).
+pub struct SortNesting(std::marker::PhantomData<*const ()>);
+
+impl SortNesting {
+    /// Count one more sort on this thread, or `None` past
+    /// [`MAX_NESTED_SORTS`].
+    pub fn enter() -> Option<SortNesting> {
+        NESTED_SORTS.with(|nested| {
+            let depth = nested.get();
+            (depth < MAX_NESTED_SORTS).then(|| {
+                nested.set(depth + 1);
+                SortNesting(std::marker::PhantomData)
+            })
+        })
+    }
+}
+
+impl Drop for SortNesting {
+    fn drop(&mut self) {
+        NESTED_SORTS.with(|nested| nested.set(nested.get().saturating_sub(1)));
+    }
+}
+
 /// `records` of `occurrence`'s table ordered by `spec`. Sort fields are
 /// read from the stored record (or the table's globals); calculations a
 /// record does not store and summaries sort as empty.
@@ -37,6 +75,7 @@ pub fn sort_records<S: CalcSource + ?Sized>(
     if spec.fields.is_empty() || records.len() < 2 {
         return Ok(records);
     }
+    let _nesting = SortNesting::enter().ok_or_else(|| CalcError::from_code(3).expect("nonzero"))?;
     // The occurrence or a sort field's occurrence waiting for its file or
     // its table's fields: each is asked for, and the order waits (1224)
     // rather than leaving that level out.

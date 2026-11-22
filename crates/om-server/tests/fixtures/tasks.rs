@@ -1366,3 +1366,93 @@ impl Drop for TempFile {
         let _ = std::fs::remove_file(save);
     }
 }
+
+/// A loopback SMTP server for one session per entry of `sessions`, each
+/// the replies to give: the greeting, then one per command (DATA's
+/// message ends at its `.` line). What each session read comes back.
+pub fn smtp_server(
+    sessions: Vec<Vec<&'static str>>,
+) -> (u16, std::thread::JoinHandle<Vec<Vec<String>>>) {
+    use std::io::{BufRead, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let mut all = Vec::new();
+        for replies in sessions {
+            let (socket, _) = listener.accept().unwrap();
+            let mut writer = socket.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(socket);
+            let mut replies = replies.into_iter();
+            writer
+                .write_all(replies.next().unwrap().as_bytes())
+                .unwrap();
+            let (mut read, mut in_data) = (Vec::new(), false);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                read.push(line.clone());
+                if in_data && line != ".\r\n" {
+                    continue;
+                }
+                in_data = line == "DATA\r\n";
+                let Some(reply) = replies.next() else { break };
+                writer.write_all(reply.as_bytes()).unwrap();
+                if line == "QUIT\r\n" {
+                    break;
+                }
+            }
+            all.push(read);
+        }
+        all
+    });
+    (port, handle)
+}
+
+/// Send Mail [Send via SMTP Server] to `port` on loopback, From Pat,
+/// To kim@example.org; with `login`, a plain password login.
+pub fn smtp_mail(port: u16, login: bool) -> ScriptStep {
+    let mut step = ScriptStep::new(63);
+    step.set_flag(om_scripts::flag::NO_INTERACT, true);
+    step.set_number_bool(4, Some(true));
+    let port = port.to_string();
+    let mut calculations = vec![
+        (0, "\"kim@example.org\""),
+        (3, "\"Weekly report\""),
+        (4, "\"See you\" & ¶ & \"Pat\""),
+        (5, "\"Pat\""),
+        (6, "\"pat@example.org\""),
+        (8, "\"127.0.0.1\""),
+        (9, port.as_str()),
+    ];
+    if login {
+        step.set_number_u16(6, Some(2));
+        calculations.extend([(10, "\"pat\""), (11, "\"wrong\"")]);
+    }
+    for (slot, text) in calculations {
+        step.set_calculation(slot, Some(&calc(text)));
+    }
+    step
+}
+
+/// [`smtp_server`]'s replies for two sessions: one that takes a message
+/// without a login, and one that refuses the password (535).
+pub fn smtp_sent_then_refused() -> Vec<Vec<&'static str>> {
+    vec![
+        vec![
+            "220 mail.example.org ESMTP\r\n",
+            "250 mail.example.org\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "354 Go ahead\r\n",
+            "250 OK queued\r\n",
+            "221 Bye\r\n",
+        ],
+        vec![
+            "220 mail.example.org ESMTP\r\n",
+            "250-mail.example.org\r\n250 AUTH PLAIN\r\n",
+            "535 5.7.8 Authentication credentials invalid\r\n",
+        ],
+    ]
+}

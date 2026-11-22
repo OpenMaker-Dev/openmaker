@@ -1743,6 +1743,8 @@ mod tests {
                     kind: SchemaFieldKind::Normal,
                     data_type: FieldKind::Text,
                     comment: String::new(),
+                    annotation: String::new(),
+                    display_names_enabled: false,
                     unique: false,
                     unstored: false,
                     options: None,

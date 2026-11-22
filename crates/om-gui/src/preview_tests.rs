@@ -342,6 +342,37 @@ fn preview_applies_conditional_formatting_per_record_like_the_pdf() {
         .any(|pixel| green.iter().zip(pixel.0).all(|(e, a)| a.abs_diff(*e) <= 3)));
 }
 
+/// Preview fills in merge variables and layout symbols on each record as
+/// Browse does: the record's number, by name and by its selector's
+/// number, as the PDF prints it, and the window's `$$suffix[2]`.
+#[test]
+fn preview_fills_in_merge_variables_and_symbols_like_the_pdf() {
+    let (provider, _) = crate::scripting::session::symbols_fixture();
+    let mut app = Harness::builder()
+        .renderer(crate::test_renderer::renderer())
+        .with_size(vec2(1060.0, 1100.0))
+        .build_eframe(move |cc| {
+            let mut app = OpenMakerApp::with_license_store(provider, Box::new(Store));
+            app.form.host = "synthetic.invalid".into();
+            app.form.file = "Root.fmp12".into();
+            app.form.account = "synthetic".into();
+            app.apply(&cc.egui_ctx, Action::Connect);
+            app
+        });
+    wait(&mut app, |a| a.is_settled() && a.w.calcs.schema().is_some());
+    let suffix = om_data::calc::Value::text(" of 9");
+    app.state_mut().w.globals.set("$$suffix", 2, suffix);
+    click(&mut app, "Preview");
+    shows(&mut app, "No. 1 / 1 of 9");
+    shot(&mut app, "symbols");
+    for n in 2..=3 {
+        app.get_by_label(&format!("No. {n} / {n} of 9"));
+    }
+    assert!(app.query_by_label_contains("By ").is_some());
+    assert!(app.query_by_label_contains("{{").is_none());
+    assert!(app.query_by_label_contains("Preview unavailable").is_none());
+}
+
 fn shows(app: &mut Harness<'_, OpenMakerApp>, text: &str) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while app.query_by_label(text).is_none() {

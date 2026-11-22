@@ -124,41 +124,12 @@ impl ReportFace {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ReportError {
-    pub code: i32,
-    pub message: String,
-}
-impl ReportError {
-    pub fn unsupported(message: impl Into<String>) -> Self {
-        Self {
-            code: 3,
-            message: message.into(),
-        }
-    }
-}
-
-/// What a viewer shows beside the page when it opens the PDF: Save Records
-/// as PDF's restored Initial View option (script-steps.md 11.7, its values
-/// as Create PDF's `View` names them in 12.5), written as the catalog's
-/// `/PageMode`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PdfView {
-    /// 0 Page Only: no `/PageMode`, the PDF default (`/UseNone`).
-    #[default]
-    PageOnly,
-    /// 1 Bookmarks Panel and Page: `/UseOutlines`.
-    Bookmarks,
-    /// 2 Pages Panel and Page: `/UseThumbs`.
-    Pages,
-}
-
-/// The planned document and its complete, validated PDF. No file I/O is done.
-#[derive(Debug)]
-pub struct PdfReport {
-    pub plan: ReportPlan,
-    pub bytes: Vec<u8>,
-}
+// The interface between a host's data and this renderer lives in
+// om-report, so that OpenMaker Server can give its own report content
+// (#104).
+pub use om_report::{
+    in_row, ContentContext, PdfReport, PdfView, PortalRowContext, ReportContent, ReportError,
+};
 
 /// A color as the PDF paints it: RGB, and its opacity in 255ths when it is
 /// translucent (8 bits, as Browse's `Color32` keeps it).
@@ -475,7 +446,13 @@ fn text_style(
     let mut style = crate::document::text_style(layout, object, conditions, 1);
     if let Some(rich) = &object.rich_text {
         if let Some(first) = rich.character_runs.first() {
-            if rich.character_runs.iter().any(|r| r.style != first.style) {
+            // A text object's or button's runs in several colors print each
+            // in its own (`run_colors`); runs in several fonts, sizes or
+            // faces, and a field's in several anything, are refused.
+            let colors = matches!(object.kind(), ObjectKind::Text | ObjectKind::Button);
+            if (rich.character_runs.iter()).any(|r| {
+                r.style != first.style && !(colors && same_but_color(&r.style, &first.style))
+            }) {
                 return Err(ReportError::unsupported(
                     "Mixed character styles are unsupported",
                 ));
@@ -539,6 +516,136 @@ fn text_style(
         style.font_style = condition.font_style.or(style.font_style);
     }
     Ok(style)
+}
+
+/// Whether character styles `a` and `b` differ in nothing but their color:
+/// the same font, size and faces as decoded, and for stored styles
+/// (layout-model.md 8.1) every byte but the color's:
+/// the mask without its color bit, the font, face and size slots (masked
+/// or not, so an explicit size 0 is not an unset size), and the extension
+/// byte. A style built in code (no stored bytes) compares as decoded. A
+/// stored style of another length, or one stored beside one built in code,
+/// differs.
+fn same_but_color(a: &om_layout::CharacterStyle, b: &om_layout::CharacterStyle) -> bool {
+    // What Browse and the report draw with, besides the color.
+    let decoded = |s: &om_layout::CharacterStyle| {
+        let size = s.font_size.map(f64::to_bits);
+        (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
+    };
+    if decoded(a) != decoded(b) {
+        return false;
+    }
+    fn without_color(raw: &[u8]) -> Option<(u16, &[u8], &[u8])> {
+        match raw {
+            [m0, m1, slots @ .., _, _, _, _] if slots.len() == 6 => {
+                Some((u16::from_be_bytes([*m0, *m1]) & !0x4, slots, &[]))
+            }
+            [m0, m1, rest @ ..] if rest.len() == 11 => Some((
+                u16::from_be_bytes([*m0, *m1]) & !0x4,
+                &rest[..6],
+                &rest[10..],
+            )),
+            _ => None,
+        }
+    }
+    match (a.raw.is_empty(), b.raw.is_empty()) {
+        (true, true) => true,
+        (false, false) => {
+            without_color(&a.raw).is_some() && without_color(&a.raw) == without_color(&b.raw)
+        }
+        _ => false,
+    }
+}
+
+/// The color of each character [`prepare_text_in`] lays out of `value` (CR
+/// and LF, which break paragraphs, have none), when `object`'s character
+/// runs give its text more than one, as Browse colors them (a run's color,
+/// else the object's text color, else black; `rich_text::text_format`).
+/// `None` for one color, for no text, and when a conditional format's color
+/// replaces every run's.
+///
+/// Refused with 3 rather than coloring the wrong characters:
+/// - runs that are not the stored text's complete partition, in order, on
+///   character boundaries, as the layout decoder gives them;
+/// - a field's layout runs: its record value carries its own styles;
+/// - a value that differs from the text the runs are stored for (merged
+///   fields or symbols, a label calculation) or a case transform.
+fn run_colors(
+    layout: &Layout,
+    object: &LayoutObject,
+    value: &str,
+    style: &ResolvedStyle,
+    conditions: &[usize],
+) -> Result<Option<Vec<Color>>, ReportError> {
+    let Some(rich) = &object.rich_text else {
+        return Ok(None);
+    };
+    let runs = &rich.character_runs;
+    let Some(first) = runs.first() else {
+        return Ok(None);
+    };
+    if value.is_empty() || runs.iter().all(|r| r.style.color == first.style.color) {
+        return Ok(None);
+    }
+    let text = rich.text.as_str();
+    let partition = runs.first().is_some_and(|r| r.range.start == 0)
+        && runs.last().is_some_and(|r| r.range.end == text.len())
+        && runs.windows(2).all(|w| w[0].range.end == w[1].range.start)
+        && runs.iter().all(|r| {
+            r.range.start < r.range.end
+                && text.is_char_boundary(r.range.start)
+                && text.is_char_boundary(r.range.end)
+        });
+    if !partition {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s character runs do not cover its text in order",
+            object.id
+        )));
+    }
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button) {
+        return Err(ReportError::unsupported(
+            "Mixed character styles are unsupported",
+        ));
+    }
+    if !conditions.is_empty()
+        && (crate::document::conditional_text_style(layout, object, conditions, 1).color).is_some()
+    {
+        return Ok(None);
+    }
+    if value != text || matches!(style.text_transform, Some(3 | 4)) {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s text is in several colors and is merged, calculated or \
+             transformed; only its text as written can print in them",
+            object.id
+        )));
+    }
+    let black = Color {
+        alpha: 1.0,
+        ..Default::default()
+    };
+    let base = (crate::document::text_style(layout, object, conditions, 1).color).unwrap_or(black);
+    let mut colors = Vec::with_capacity(value.len());
+    for run in runs {
+        let color = run.style.color.unwrap_or(base);
+        let chars = text[run.range.clone()].chars();
+        colors.extend(chars.filter(|ch| !matches!(ch, '\r' | '\n')).map(|_| color));
+    }
+    Ok(Some(colors))
+}
+
+/// [`prepare_text_in`] for `object`'s text `value`, in the colors of its
+/// character runs ([`run_colors`]).
+fn prepare_object_text(
+    layout: &Layout,
+    object: &LayoutObject,
+    value: &str,
+    r: &Rect,
+    style: &ResolvedStyle,
+    overflow: Overflow,
+    conditions: &[usize],
+) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
+    let colors = run_colors(layout, object, value, style, conditions)?;
+    prepare_colored_text_in(value, r, style, overflow, colors.as_deref())
 }
 
 /// The style text is laid out in: [`text_style`], with the text
@@ -664,6 +771,20 @@ fn prepare_text_in(
     r: &Rect,
     style: &ResolvedStyle,
     overflow: Overflow,
+) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
+    prepare_colored_text_in(value, r, style, overflow, None)
+}
+
+/// [`prepare_text_in`], with each character in its own color when
+/// `colors` gives them (one each, CR and LF excepted, [`run_colors`]): a
+/// line prints as one [`TextLine`] for each run of one color, from where
+/// that run starts.
+fn prepare_colored_text_in(
+    value: &str,
+    r: &Rect,
+    style: &ResolvedStyle,
+    overflow: Overflow,
+    colors: Option<&[Color]>,
 ) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
     if value.is_empty() {
         return Ok((Vec::new(), 0.0, false));
@@ -800,10 +921,12 @@ fn prepare_text_in(
         alpha: 1.0,
         ..Default::default()
     });
-    if paint(color)?.is_none() {
+    if colors.is_none() && paint(color)?.is_none() {
         return Ok((Vec::new(), needed, overflowed));
     }
     let mut output = Vec::new();
+    // The colors of the characters laid out so far, line by line.
+    let mut colored = 0;
     for (i, (glyphs, used)) in lines.into_iter().enumerate() {
         // A line that starts below the box shows nothing of itself.
         let top = r.top + pad[0] + i as f64 * pitch;
@@ -833,7 +956,7 @@ fn prepare_text_in(
             }
             pen += advance;
         }
-        output.push(TextLine {
+        let line = TextLine {
             glyphs,
             x: r.left + pad[3] + dx,
             baseline: r.top + pad[0] + dy + first_baseline + i as f64 * pitch,
@@ -847,6 +970,7 @@ fn prepare_text_in(
             // (a label's frame less its 1-point inset, layout-model.md 6.5),
             // and only there: a line that fits keeps the frame's height, so
             // an accent above the box is not cut for a bearing at its side.
+            spans: Vec::new(),
             clip: (cut || spills).then(|| Rect {
                 top: if cut { r.top + pad[0] } else { r.top },
                 bottom: if cut {
@@ -858,7 +982,22 @@ fn prepare_text_in(
                 right: if spills { right } else { r.right },
                 ..r.clone()
             }),
-        });
+        };
+        let mut line = line;
+        if let Some(colors) = colors {
+            let count = line.glyphs.len();
+            let line_colors = colors.get(colored..colored + count).ok_or_else(|| {
+                ReportError::unsupported("Report text colors do not match its characters")
+            })?;
+            colored += count;
+            for (k, color) in line_colors.iter().enumerate() {
+                paint(*color)?;
+                if line.spans.last().is_none_or(|(_, last)| last != color) {
+                    line.spans.push((k, *color));
+                }
+            }
+        }
+        output.push(line);
     }
     Ok((output, needed, overflowed))
 }
@@ -930,11 +1069,36 @@ pub(crate) struct TextLine {
     pub size: f64,
     pub face: ReportFace,
     pub color: Color,
+    /// Where the line's color changes, by glyph, when its characters are in
+    /// more than one ([`run_colors`]): from each glyph on, that color.
+    /// Empty for a line in `color`.
+    pub spans: Vec<(usize, Color)>,
     /// The box overflowing text is cut at ([`Overflow::Clip`]): its field's
     /// text box, between the padding and margins above and below, across
     /// the field's width; `None` when the text fits.
     pub clip: Option<Rect>,
 }
+impl TextLine {
+    /// The line's parts of one color: its glyphs, their color, and where the
+    /// first starts.
+    pub(crate) fn parts(&self) -> impl Iterator<Item = (&[(u16, f64, char)], Color, f64)> + '_ {
+        // Without spans, the whole line in `color`.
+        let span = |i: usize| self.spans.get(i).copied().unwrap_or((0, self.color));
+        let mut x = self.x;
+        (0..self.spans.len().max(1)).map(move |i| {
+            let (start, color) = span(i);
+            let end = self
+                .spans
+                .get(i + 1)
+                .map_or(self.glyphs.len(), |next| next.0);
+            let glyphs = self.glyphs.get(start..end).unwrap_or(&[]);
+            let at = x;
+            x += glyphs.iter().map(|g| g.1).sum::<f64>();
+            (glyphs, color, at)
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ReportObject {
     pub kind: ObjectKind,
@@ -1626,111 +1790,6 @@ pub(crate) struct ReportPage {
 
 type SourceObject<'a> = (&'a LayoutObject, Rect, usize);
 
-/// Independent coordinates for content evaluation. A once-only part or footer
-/// may reuse a record on a different physical page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContentContext {
-    /// Index in the selected records, in found-set order. A sub-summary
-    /// part's is its group's first (leading) or last (trailing) record.
-    pub record: usize,
-    /// Zero-based physical page, independent of the record's first placement.
-    pub page: usize,
-    /// A sub-summary part's break field: its summary fields read the
-    /// record's group (`GetSummary`) rather than the whole found set.
-    pub group: Option<BreakField>,
-    /// The portal row an object prints in: its fields read the row's
-    /// related record.
-    pub portal: Option<PortalRowContext>,
-}
-
-/// `context` in portal row `row`, as Browse evaluates a portal row's
-/// objects: the row's record of the portal's occurrence, and its number.
-pub(crate) fn in_row(
-    context: om_data::calc::eval::Context,
-    row: Option<PortalRowContext>,
-) -> om_data::calc::eval::Context {
-    match row {
-        Some(row) => context
-            .with_portal(row.occurrence, row.record)
-            .with_portal_row_number(row.number as u64),
-        None => context,
-    }
-}
-
-/// A portal row's related record: what Browse's portal rows evaluate in
-/// (`Context::with_portal`, row number from 1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PortalRowContext {
-    pub occurrence: u64,
-    pub record: u64,
-    pub number: usize,
-}
-
-/// What a report shows of its objects for a record: the text of a text,
-/// button or field object, the data of a container field, and the
-/// conditional formats that hold for it. A closure gives text only: its
-/// container fields print as their text, and an object with conditional
-/// formatting is refused rather than printed unformatted.
-pub trait ReportContent {
-    fn text(
-        &mut self,
-        object: &LayoutObject,
-        context: ContentContext,
-    ) -> Result<String, ReportError>;
-
-    /// The data a field object shows when it is a container field holding
-    /// data, its streams loaded; `None` for other objects and empty fields.
-    /// A missing or pending value is an error, as for text.
-    fn container(
-        &mut self,
-        _object: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Arc<om_data::calc::eval::StoredContainer>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The conditional formats of `object` whose condition holds for the
-    /// record and page, as indexes into `calcs.conditions` in stored order;
-    /// `None` when this source does not evaluate them.
-    fn conditions(
-        &mut self,
-        _object: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Vec<usize>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The related records `portal` shows for the record in `context`, in
-    /// the relationship's order; `None` when this source does not read
-    /// them. A pending read is an error, as for text.
-    fn portal_records(
-        &mut self,
-        _portal: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Vec<u64>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The panel tab control `control` shows in the window the report is
-    /// for; `None` to print the one it first shows.
-    fn front_panel(&mut self, _control: &LayoutObject) -> Option<u64> {
-        None
-    }
-}
-
-impl<F> ReportContent for F
-where
-    F: FnMut(&LayoutObject, ContentContext) -> Result<String, ReportError>,
-{
-    fn text(
-        &mut self,
-        object: &LayoutObject,
-        context: ContentContext,
-    ) -> Result<String, ReportError> {
-        self(object, context)
-    }
-}
-
 /// A found set's record ids and the sorted groups read for them.
 pub(crate) type FoundSetGroups = (std::sync::Arc<[u64]>, Vec<BreakGroups>);
 
@@ -1769,16 +1828,24 @@ pub(crate) fn report_breaks(
 }
 
 /// A failure of `FileCalc::found_groups` as a report refusal.
-pub(crate) fn group_error(error: om_data::calc::CalcError) -> ReportError {
+pub(crate) fn group_error(error: om_data::host::GroupError) -> ReportError {
+    use om_data::host::GroupError;
     ReportError {
         code: 3,
-        message: if error == om_data::calc::CalcError::NOT_SUPPORTED {
-            "Sub-summary groups after a related-field sort key are unsupported".into()
-        } else {
-            format!(
+        message: match error {
+            GroupError::RelatedSortKey => {
+                "Sub-summary groups after a related-field sort key are unsupported".into()
+            }
+            GroupError::UnevaluableKey => {
+                "A sub-summary group's sort key could not be calculated on every record".into()
+            }
+            GroupError::VariableKey => "Sub-summary groups by a calculation that may read \
+                variables are unsupported: the records were not sorted with them"
+                .into(),
+            GroupError::Calc(error) => format!(
                 "The report groups could not be read (error {})",
                 error.code()
-            )
+            ),
         },
     }
 }
@@ -2458,12 +2525,8 @@ fn report_object<'a>(
             object.id
         )));
     }
-    if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        && symbol_texts(object).any(|text| numbered(text, 0).is_none())
-    {
-        return Err(ReportError::unsupported(
-            "Layout merge symbols other than {{PageNumber}} are unsupported",
-        ));
+    if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button) {
+        merged_refusal(object)?;
     }
     if [rect.top, rect.left, rect.bottom, rect.right]
         .iter()
@@ -2965,30 +3028,70 @@ fn part_objects<'s, 'a>(
     }
 }
 
-/// `text` with each `{{PageNumber}}` (in any case, as Browse reads layout
-/// symbols, `om_data::host::layout::merge_text`) replaced by page `page`'s
-/// number (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save
-/// Records as PDF (calc-functions.md, O4). `None` when the text holds
-/// another symbol, which reports refuse; an unclosed `{{` is text, as
-/// Browse keeps it.
-fn numbered(text: &str, page: usize) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
-        let Some(end) = tail[2..].find("}}").map(|i| i + 2) else {
-            out.push_str(tail);
-            return Some(out);
-        };
-        if !tail[2..end].eq_ignore_ascii_case("PageNumber") {
-            return None;
+/// Why a report refuses `object`'s merge variables or layout symbols, if
+/// it does. The rest print as Browse shows them: `{{PageNumber}}` the
+/// page's number ([`numbered`]), and the others through the content's
+/// [`Piece::Literal`].
+///
+/// - A symbol Browse keeps as written refuses, `{{PageCount}}` among them:
+///   FileMaker shows a `Get` function's result for other names (Claris,
+///   "Inserting the date, page number, or other variable"), and what it
+///   prints for the page count is unmeasured.
+/// - So does a `<<$...>>` Browse keeps as written: Set Variable accepts a
+///   name with a space (script-runtime.md 13.6), which a merge variable
+///   may then name.
+/// - So does a merge variable or symbol other than the page number in an
+///   object whose data format presents numbers, dates or times: FileMaker
+///   formats merge fields with it (data-format.md), but whether it formats
+///   these too is unmeasured, and Browse does not.
+fn merged_refusal(object: &LayoutObject) -> Result<(), ReportError> {
+    use om_data::host::layout::{merged, Merged};
+    let formats = object.data_format.as_ref().is_some_and(|format| {
+        let number = &format.number;
+        (!number.as_entered() && (number.boolean() || !number.general()))
+            || format.date.format() != 0
+            || !format.time.as_entered()
+    });
+    for piece in symbol_texts(object).flat_map(|text| merged(text)) {
+        match piece {
+            Merged::Kept(_) => {
+                return Err(ReportError::unsupported(
+                    "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
+                     {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+                ))
+            }
+            Merged::KeptVariable(_) => {
+                return Err(ReportError::unsupported(format!(
+                    "Report object {} holds a <<$...>> OpenMaker does not read as a merge \
+                     variable; how FileMaker reads it is unmeasured",
+                    object.id
+                )))
+            }
+            Merged::Symbol("PageNumber") => {}
+            _ if formats => {
+                return Err(ReportError::unsupported(format!(
+                    "Report object {} formats numbers, dates or times and holds a merge \
+                     variable or layout symbol; whether FileMaker formats them is unmeasured",
+                    object.id
+                )))
+            }
+            _ => {}
         }
-        out.push_str(&(page + 1).to_string());
-        rest = &tail[end + 2..];
     }
-    out.push_str(rest);
-    Some(out)
+    Ok(())
+}
+
+/// `text` with each `{{PageNumber}}` (in any case, or by its selector's
+/// number, as Browse reads layout symbols,
+/// `om_data::host::layout::merge_text`) replaced by page `page`'s number
+/// (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save Records
+/// as PDF (calc-functions.md, O4). The rest is kept as written, for the
+/// content to fill in as Browse does: other symbols, merge variables (a
+/// symbol inside one is the variable's text), and an unclosed `{{`.
+fn numbered(text: &str, page: usize) -> String {
+    om_data::host::layout::replace_symbols(text, |name| {
+        (name == "PageNumber").then(|| (page + 1).to_string())
+    })
 }
 
 /// The texts a text object's or button's layout symbols are read from, as
@@ -3006,42 +3109,59 @@ fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_>
     }
 }
 
-/// `label` with each whole `{{PageNumber}}` (any case) replaced by page
+/// `label` with each whole `{{PageNumber}}` (any case, or `{{1015}}`) replaced by page
 /// `page`'s number (from 0): a merge text's label beside the runs its
 /// symbols are read from ([`symbol_texts`]), for content that reads the
 /// label. Its merged fields are written in it, so only whole symbols are
 /// numbered, never one paired across a field, and a field's placeholder
 /// (`<<Name>>`) is kept as written, whatever its name holds.
 fn numbered_label(label: &str, page: usize) -> String {
-    const SYMBOL: &str = "{{PageNumber}}";
+    use om_data::host::layout::{merged, Merged};
     let mut out = String::with_capacity(label.len());
-    let mut rest = label;
+    let mut at = 0;
+    // The next of each token from `at`, kept until it is passed, so the
+    // label is read once whatever it repeats.
+    let (mut field, mut symbol, mut field_end) = (None, None, None);
+    let next = |found: &mut Option<Option<usize>>, token: &str, at: usize| {
+        if found.is_none_or(|next| next.is_some_and(|i| i < at)) {
+            *found = Some(label[at..].find(token).map(|i| i + at));
+        }
+        found.flatten()
+    };
     loop {
-        let field = rest.find("<<");
-        let Some(start) = [field, rest.find("{{")].into_iter().flatten().min() else {
+        let fields = next(&mut field, "<<", at);
+        let Some(start) = [fields, next(&mut symbol, "{{", at)]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
             break;
         };
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
+        out.push_str(&label[at..start]);
         // A merged field's placeholder is its name, kept as written.
-        if field == Some(start) {
-            let end = tail[2..].find(">>").map_or(2, |end| end + 4);
-            out.push_str(&tail[..end]);
-            rest = &tail[end..];
+        if fields == Some(start) {
+            at = next(&mut field_end, ">>", start + 2).map_or(start + 2, |end| end + 2);
+            out.push_str(&label[start..at]);
             continue;
         }
-        match tail.get(..SYMBOL.len()) {
-            Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
+        // A whole page symbol, by name or by number, as runs are numbered
+        // ([`numbered`]). Its inside is a dozen characters at most, so
+        // only the next few are read for its `}}`.
+        let tail = &label[start..];
+        let near = &tail.as_bytes()[2..tail.len().min(18)];
+        let whole = (near.windows(2).position(|pair| pair == b"}}")).map(|i| &tail[..i + 4]);
+        match whole.filter(|symbol| merged(symbol).eq([Merged::Symbol("PageNumber")])) {
+            Some(symbol) => {
                 out.push_str(&(page + 1).to_string());
-                rest = &tail[SYMBOL.len()..];
+                at = start + symbol.len();
             }
-            _ => {
+            None => {
                 out.push_str("{{");
-                rest = &tail[2..];
+                at = start + 2;
             }
         }
     }
-    out.push_str(rest);
+    out.push_str(&label[at..]);
     out
 }
 
@@ -3058,11 +3178,7 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
         return std::borrow::Cow::Borrowed(object);
     }
     let mut object = object.clone();
-    let number = |text: &mut String| {
-        if let Some(n) = numbered(text, page) {
-            *text = n;
-        }
-    };
+    let number = |text: &mut String| *text = numbered(text, page);
     if object.text_runs.is_empty() {
         if let Some(text) = object.text.as_mut() {
             number(text);
@@ -3074,9 +3190,7 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
         let spelled = |numbered_runs: bool| {
             (object.text_runs.iter())
                 .map(|run| match run {
-                    TextRun::Literal(literal) if numbered_runs => {
-                        numbered(literal, page).unwrap_or_else(|| literal.clone())
-                    }
+                    TextRun::Literal(literal) if numbered_runs => numbered(literal, page),
                     TextRun::Literal(literal) => literal.clone(),
                     TextRun::MergeField(name) => format!("<<{name}>>"),
                 })
@@ -3230,11 +3344,14 @@ fn layout_part(
                     _ => bounds.clone(),
                 };
                 (
-                    prepare_text_in(
+                    prepare_object_text(
+                        layout,
+                        object,
                         &value,
                         &label,
                         &style,
                         overflow_of(object, part.slides[i].is_some()),
+                        &conditions,
                     )?
                     .0,
                     conditions,
@@ -3435,11 +3552,14 @@ fn portal_rows(
                         _ => bounds.clone(),
                     };
                     (
-                        prepare_text_in(
+                        prepare_object_text(
+                            layout,
+                            object,
                             &value,
                             &label,
                             &style,
                             overflow_of(object, part.slides[j].is_some()),
+                            &conditions,
                         )?
                         .0,
                         conditions,
@@ -3546,12 +3666,6 @@ pub(crate) fn plan_report_with(
         )?
         .height)
     })
-}
-
-impl From<String> for ReportError {
-    fn from(message: String) -> Self {
-        Self::unsupported(message)
-    }
 }
 
 /// Prepare only the selected physical page. The callback receives both the
@@ -4106,25 +4220,29 @@ fn encode_page(
                             pdf_rect(&mut c, clip, h);
                             c.clip_nonzero().end_path();
                         }
-                        let Some(opened) = fill(&mut c, Some(line.color), alphas)? else {
-                            if line.clip.is_some() {
-                                c.restore_state();
-                            }
-                            continue;
-                        };
-                        c.begin_text()
-                            .set_font(Name(line.face.names().0), line.size as f32)
-                            .set_text_matrix([
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                line.x as f32,
-                                (h - line.baseline) as f32,
-                            ])
-                            .show(Str(&bytes))
-                            .end_text();
-                        close(&mut c, opened);
+                        // Each part of one color from where it starts; a
+                        // transparent one draws nothing.
+                        let mut first = 0;
+                        for (glyphs, color, x) in line.parts() {
+                            let bytes = &bytes[first * 2..(first + glyphs.len()) * 2];
+                            first += glyphs.len();
+                            let Some(opened) = fill(&mut c, Some(color), alphas)? else {
+                                continue;
+                            };
+                            c.begin_text()
+                                .set_font(Name(line.face.names().0), line.size as f32)
+                                .set_text_matrix([
+                                    1.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    x as f32,
+                                    (h - line.baseline) as f32,
+                                ])
+                                .show(Str(bytes))
+                                .end_text();
+                            close(&mut c, opened);
+                        }
                         if line.clip.is_some() {
                             c.restore_state();
                         }
@@ -4398,13 +4516,48 @@ pub(crate) fn field_def<'s>(
     Ok(def)
 }
 
+/// A piece of a report object's text that its content fills in.
+pub(crate) enum Piece<'t> {
+    /// A field object's field, or a merge field: its value, presented.
+    Field(om_data::runtime::FieldRef),
+    /// A text or button object's label, or a merge text's literal run: the
+    /// text with its merge variables and layout symbols filled in as
+    /// Browse fills them in (`om_data::host::layout::merge_text`), on the
+    /// record and in the portal row the content is for. What reports
+    /// refuse of them is refused before ([`merged_refusal`]), and
+    /// `{{PageNumber}}` is numbered already ([`on_page`]).
+    Literal(&'t str),
+}
+
+/// Whether `text` holds what [`Piece::Literal`] fills in, so its content
+/// needs evaluating: a merge variable, or a symbol Browse shows.
+pub(crate) fn merges(text: &str) -> bool {
+    use om_data::host::layout::{merged, Merged};
+    merged(text).any(|piece| matches!(piece, Merged::Variable(_) | Merged::Symbol(_)))
+}
+
+/// Why a report that a script prints (Save Records as PDF, Print) refuses
+/// `text`, a [`Piece::Literal`], if it does: a merge variable. The script
+/// worker does not read the running script's variables
+/// ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)), so it
+/// would print empty.
+pub(crate) fn script_printed(text: &str) -> Result<(), ReportError> {
+    use om_data::host::layout::{merged, Merged};
+    match merged(text).any(|piece| matches!(piece, Merged::Variable(_))) {
+        true => Err(ReportError::unsupported(
+            "Merge variables in reports a script prints are unsupported",
+        )),
+        false => Ok(()),
+    }
+}
+
 /// Resolve the shared report field/merge binding contract. The caller supplies
 /// read-only per-record calculation and display formatting.
 pub(crate) fn object_text(
     object: &LayoutObject,
     origin: u64,
     schema: &om_data::host::CalcSchema,
-    mut field_text: impl FnMut(om_data::runtime::FieldRef) -> Result<String, ReportError>,
+    mut piece_text: impl FnMut(Piece<'_>) -> Result<String, ReportError>,
 ) -> Result<String, ReportError> {
     use om_data::formula::Names;
     use om_data::runtime::FieldRef;
@@ -4428,19 +4581,19 @@ pub(crate) fn object_text(
         let id = spec
             .field_id()
             .ok_or_else(|| ReportError::unsupported("A report field key is invalid"))?;
-        return field_text(FieldRef {
+        return piece_text(Piece::Field(FieldRef {
             occurrence,
             field: id,
             repetition: spec.repetition.max(1) as u32,
-        });
+        }));
     }
     if object.text_runs.is_empty() {
-        return Ok(object.text.clone().unwrap_or_default());
+        return piece_text(Piece::Literal(object.text.as_deref().unwrap_or_default()));
     }
     let mut text = String::new();
     for run in &object.text_runs {
         match run {
-            TextRun::Literal(literal) => text.push_str(literal),
+            TextRun::Literal(literal) => text.push_str(&piece_text(Piece::Literal(literal))?),
             TextRun::MergeField(name) => {
                 let (occurrence, name) = match name.split_once("::") {
                     Some((to, name)) => (
@@ -4455,11 +4608,11 @@ pub(crate) fn object_text(
                     .names()
                     .find_field(occurrence, name)
                     .ok_or_else(|| ReportError::unsupported("A report merge field is missing"))?;
-                text.push_str(&field_text(FieldRef {
+                text.push_str(&piece_text(Piece::Field(FieldRef {
                     occurrence,
                     field,
                     repetition: 1,
-                })?);
+                }))?);
             }
         }
     }
