@@ -34,8 +34,8 @@ pub enum Effect {
     /// Nothing: it reads metadata, or nothing at all.
     Reads,
     /// The file's design, through the host's authoring grant. It checks a
-    /// revision first, and the same request repeated after a lost answer
-    /// reports `already_applied` instead of changing anything again.
+    /// revision first. A repeated request can report `already_applied`
+    /// when the earlier change can be verified.
     Authors,
     /// Whatever the script it runs does: records, other files the account
     /// may change, and systems outside the host. Running it again runs the
@@ -310,7 +310,8 @@ pub static APPLY: CommandSpec = CommandSpec {
     title: "Apply a script edit",
     description: "Replace the script's steps with the edited text if the script is still at \
                   expected_revision, then read it back over a new connection. Only the steps \
-                  change; the script's name, options and other stored data are kept.",
+                  change. A retry of a native save can report outcome_unknown even if the \
+                  requested steps are present, because the index upload also needs confirmation.",
     effect: Effect::Authors,
     needs: Needs::Grant(Grant::ScriptSteps),
     operation: Some("apply_script_steps"),

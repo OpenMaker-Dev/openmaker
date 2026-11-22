@@ -378,6 +378,53 @@ fn native_script_save_checks_both_locks_and_preserves_the_catalog() {
     host.stop();
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn native_script_retry_leaves_a_member_only_save_unconfirmed() {
+    let mut root = fixture::tree(&scripts(), true);
+    fixture::index_scripts(&mut root);
+    let file = TempFile::from_tree("native-script-partial", &root);
+    let host = host_configured(&file, "Server 26.0.3", |server| {
+        // Answer the member upload and lose the connection on the index upload.
+        server
+            .without_authoring()
+            .panicking_on_after(om_protocol::Opcode::UploadToHost as u8, 1)
+    });
+    let target = target(&host, ACCOUNT, PASSWORD);
+    let mut service = Service::new(target.clone());
+    let mut reader = provider(&host);
+    let original_index = reader.script_definitions().unwrap().index.unwrap();
+    let got = get(&mut service, GREETING_REF);
+    let revision = text(&got["revision"]);
+    let new_source = edited(text(&got["source"]));
+    let request = apply(&new_source, revision);
+
+    let failed = error(service.handle(&request));
+    assert_eq!(failed["kind"], "outcome_unknown", "{failed:#}");
+    assert!(text(&failed["message"]).contains("The script member was read back as uploaded."));
+    let partial = reader.script_definitions().unwrap();
+    assert_eq!(partial.index.as_ref(), Some(&original_index));
+    let after = &failed["details"]["after_revision"];
+    assert_ne!(after, &got["revision"]);
+
+    // A new caller can see the edited steps but cannot confirm the index save.
+    let mut retry = Service::new(target);
+    assert_eq!(&get(&mut retry, GREETING_REF)["revision"], after);
+    let plan = ok(retry.handle(&Command::Plan(edit(&new_source, Some(revision)))));
+    assert_eq!(plan["already_applied"], false);
+    assert_eq!(plan["native_save_unconfirmed"], true);
+    let failed = error(retry.handle(&request));
+    assert_eq!(failed["kind"], "outcome_unknown", "{failed:#}");
+    assert_eq!(failed["details"]["member_content_matches"], true);
+    assert_eq!(failed["details"]["index_verified"], false);
+
+    let after_retry = reader.script_definitions().unwrap();
+    assert_eq!(after_retry.index, partial.index);
+    assert_eq!(after_retry.definitions, partial.definitions);
+    reader.close();
+    host.stop();
+}
+
 /// A save the host cannot write leaves the script as it was, in the file
 /// and as served: the edit is taken back and reported, not kept in memory.
 #[cfg(unix)]

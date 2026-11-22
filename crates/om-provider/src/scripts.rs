@@ -345,17 +345,27 @@ impl NativeProvider {
                 locks[i] = LOCK_EXCLUSIVE;
             }
             for (i, (node, (path, _))) in [&member, &index].into_iter().zip(paths).enumerate() {
+                let (what, other) = if i == 0 {
+                    ("script member", "The index upload was not attempted.")
+                } else {
+                    (
+                        "script index",
+                        "The script member was read back as uploaded.",
+                    )
+                };
+                let unconfirmed = |reason| {
+                    AuthoringError::OutcomeUnknown(format!(
+                        "The {what} upload could not be confirmed ({reason}). {other}"
+                    ))
+                };
                 attention[i] = ATTENTION_CATALOG;
                 session
                     .upload_to_host(path, node)
-                    .map_err(|e| AuthoringError::OutcomeUnknown(e.to_string()))?;
-                let read = native_script_node(session, path)
-                    .map_err(|e| AuthoringError::OutcomeUnknown(e.to_string()))?;
+                    .map_err(|e| unconfirmed(e.to_string()))?;
+                let read =
+                    native_script_node(session, path).map_err(|e| unconfirmed(e.to_string()))?;
                 if read.as_ref() != Some(node) {
-                    let what = if i == 0 { "script" } else { "script index" };
-                    return Err(AuthoringError::OutcomeUnknown(format!(
-                        "The host's read-back of the {what} differed from the upload."
-                    )));
+                    return Err(unconfirmed("read-back differed from the upload".into()));
                 }
             }
             Ok(om_protocol::authoring::Replaced {

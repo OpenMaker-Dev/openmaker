@@ -48,7 +48,7 @@ and every response is one JSON object:
 | `inspect` | `include` (optional: `scripts`, `tables`, `occurrences`, `layouts`, `value_lists`, `data_sources`) | the file's metadata, each object with a file-qualified `ref`, and with `layouts` the `layouts_revision` `create_layout` names. Never reads records |
 | `get_script` | `script` or `script_name` | the script's summary and `revision`, its `source` text, each step (line, depth, step id and name, `fidelity`), what is carried opaquely, whether `apply` is available |
 | `validate` | `script`/`script_name`, `source`, optional `expected_revision` | `valid`, step counts (kept, new, deleted) or `diagnostics` with line, step and text |
-| `plan` | as `validate` | `base_revision`, `after_revision`, `changed`, `already_applied`, a unified `diff` of the canonical text, `after_source`, step counts. Writes nothing |
+| `plan` | as `validate` | `base_revision`, `after_revision`, `changed`, `already_applied`, a unified `diff` of the canonical text, `after_source`, step counts. `native_save_unconfirmed` is true if the member already matches but the earlier native save cannot be verified. Writes nothing |
 | `apply` | `script`/`script_name`, `source`, `expected_revision` (required), optional `expected_after_revision` | `status` (`applied`, `already_applied`, `unchanged`), `previous_revision`, `revision`, and `verified` from a new connection |
 | `plan_field` | `table` or `table_name`, `name`, `type` (`text`, `number`, `date`, `time`, `timestamp`), optional `comment` and `expected_revision` | the table, `base_revision`, `already_applied`, the `field` (the reference and id the host would give it now, its definition and defaults), the catalog `changes`, whether `create` is available. Writes nothing |
 | `create_field` | as `plan_field`, `expected_revision` required | `status` (`created`, `already_applied`), the `field` and its `ref`, `previous_revision`, `revision`, and `verified` from a new connection |
@@ -110,13 +110,14 @@ layout's indexes), leaving out every stamp in it.
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
-`outcome_unknown`, `save_failed`, `verification_failed`. All but the last
-two mean nothing was written. `outcome_unknown` means the edit was sent and
-no answer came back: read the script or table again — a script is at
-`after_revision` if the edit was applied, at `previous_revision` if not —
-and do not resend blindly. A `plan` or `apply` of the same text then
-reports `already_applied` without writing, and so does a `create_field` of
-the same field from the same revision.
+`outcome_unknown`, `save_failed`, `verification_failed`. An
+`outcome_unknown` result means the save could not be confirmed. For an
+OpenMaker Server script save, read the script again and compare its
+revision with `after_revision` and `previous_revision`. The same edit from
+the same revision reports `already_applied` if the script has the requested
+steps. The same `create_field` request reports `already_applied` if its field
+is present. For FileMaker Server script saves, see
+[How writes reach the file](#how-writes-reach-the-file).
 
 ### Reading security
 
@@ -1045,7 +1046,13 @@ releasing the locks, and verifies the script from a fresh connection.
 The native protocol provides no disk-save confirmation. The two uploads
 are separate, so a failure after an upload begins reports
 `outcome_unknown` and may leave the script and index with different
-stamps. A fresh read can confirm what the host serves.
+stamps. A fresh `get_script` can confirm the member's content. The index
+stamp is shared across scripts and cannot identify the earlier save.
+If the same `apply` from the original revision finds the requested steps
+already present, it returns `outcome_unknown` with
+`member_content_matches: true` and `index_verified: false`. The retry
+makes no writes. `unchanged` describes a no-op requested at the current
+revision.
 
 The extension does the edit on the host in a single commit and answers
 with what happened:
@@ -1309,8 +1316,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   that may write the file, as below) is still to be done.
 
 Structured authoring authenticates without requiring Browse layouts or tables.
-Accepted source is aligned after parser normalization, so retrying the same
-normalized edit retains its stored revision and reports already applied.
+Accepted source is aligned after parser normalization. On OpenMaker
+Server, retrying the same normalized edit retains its stored revision
+and reports already applied.
 Direct native catalog uploads and schema-changing query instructions require the
 file's [Full Access] set too; staging ordinary record edits keeps
 its existing permissions. The native upload reply does not prove persistence.

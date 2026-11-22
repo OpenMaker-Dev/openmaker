@@ -110,18 +110,7 @@ impl NativeProvider {
     }
 
     fn script_step_authoring(&mut self) -> Result<(Authoring, ScriptSave), DataError> {
-        self.require_open()?;
-        let session = self.session.as_ref().expect("open session");
-        let identity = session.identity();
-        let filemaker_server = identity.exe_type == 0x22
-            && identity.app_type == 0x03
-            && identity.version_string.starts_with("Server 26.");
-        if filemaker_server {
-            if self.has_authoring_extension()? {
-                return self
-                    .describe_authoring(OP_REPLACE_SCRIPT_STEPS, "replacing script steps")
-                    .map(|grant| (grant, ScriptSave::Extension));
-            }
+        if self.uses_native_script_save()? {
             let availability = match &self.privileges.principal {
                 Some(principal) if principal.is_full_access() => Authoring::Available {
                     max_definition_bytes: authoring::MAX_DEFINITION_BYTES,
@@ -134,6 +123,18 @@ impl NativeProvider {
         }
         self.script_extension_authoring()
             .map(|grant| (grant, ScriptSave::Extension))
+    }
+
+    /// Whether this host uses the two-upload native path for step edits.
+    /// A matching member revision alone cannot confirm such an edit.
+    pub fn uses_native_script_save(&mut self) -> Result<bool, DataError> {
+        self.require_open()?;
+        let session = self.session.as_ref().expect("open session");
+        let identity = session.identity();
+        let filemaker_server = identity.exe_type == 0x22
+            && identity.app_type == 0x03
+            && identity.version_string.starts_with("Server 26.");
+        Ok(filemaker_server && !self.has_authoring_extension()?)
     }
 
     /// Whether this connection may add fields to tables on its host, as
