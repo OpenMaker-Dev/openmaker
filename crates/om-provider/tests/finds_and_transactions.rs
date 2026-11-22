@@ -2028,15 +2028,17 @@ fn indexed_join(
     )
 }
 
-/// The hosted Japanese join uses shared weights for `Ship`, `Aー` and
-/// `㐀`, and the German dictionary join uses them for `50/50`. `シップ`
-/// needs tailored keys and gives error 3. An empty related request leaves
-/// the other request's record 2 (Count 5) found.
+/// The hosted Japanese join uses shared weights for `Ship`, `Aー`,
+/// `々`, `〇` and `㐀`, and the German dictionary join uses them for `50/50`.
+/// `シップ` needs tailored keys and gives error 3. An empty related request
+/// leaves the other request's record 2 (Count 5) found.
 #[test]
 fn a_related_find_uses_shared_weights_for_existing_indexes() {
     for (tag, language, value) in [
         ("join-ja", 31, "Ship"),
         ("join-ja-mark", 31, "Aー"),
+        ("join-ja-iteration", 31, "々"),
+        ("join-ja-zero", 31, "〇"),
         ("join-ja-ideograph", 31, "㐀"),
         ("join-de-dictionary", 26, "50/50"),
     ] {

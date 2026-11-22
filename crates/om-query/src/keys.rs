@@ -102,12 +102,13 @@ impl TextKeys {
     /// The form used for `text` in a stored value index: the usual
     /// [`Self::of_language`] form, or [`Self::Collated`] for Japanese (31)
     /// text in the shared form (query-program.md 7.2). This includes the
-    /// measured shared weights of `ー` (`11dd`) and `㐀` (`a3cb`). Other
+    /// measured shared weights of `々` (`11d7`), `〇` (`1205`),
+    /// `ー` (`11dd`) and `㐀` (`a3cb`). Other
     /// kana, their marks and kanji are outside this shared-form check.
     pub fn of_language_for(language: u32, text: &str) -> Option<TextKeys> {
         const JAPANESE: u32 = 31;
         let tailored = |c: char| {
-            !matches!(c, 'ー' | '㐀')
+            !matches!(c, '々' | '〇' | 'ー' | '㐀')
                 && matches!(
                     u32::from(c),
                     0x3005..=0x3007
