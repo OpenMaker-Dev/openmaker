@@ -766,10 +766,36 @@ by-calculation validation, and uniqueness of text fields. Summary and
 unstored-calculation fields may be present; they are not edited or
 written. Globals and repeating fields may be present too; Browse edits
 them as described below (globals as session values, later repetitions in
-their own cells). Nothing the rules compute reads an unstored calculation
-(below), so its option bits are not checked but for a lookup's, which
-would write into it: a stray `0x80` (auto-entry.md) leaves the table
-writable. A stored calculation's unknown bits keep it read-only.
+their own cells). An unstored calculation's option bits are not checked
+but for a lookup's, which would write into it: a stray `0x80`
+(auto-entry.md) leaves the table writable. A stored calculation's unknown
+bits keep it read-only.
+
+**An auto-entered or validation formula may read an unstored
+calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
+an unstored calculation or a summary field"). The calculation is
+evaluated on the record the write leaves, with its own "Do not evaluate
+if all referenced fields are empty"; a change of one of its inputs
+evaluates a replacing auto-entered formula again, as a change of a field
+the formula reads itself does; and the formula's own "Do not evaluate if
+all referenced fields are empty" looks at the calculation's value. Only
+an unstored calculation the write can evaluate from the record alone is
+read: one that reads another occurrence, a global, summary or container
+field, a `Get` function only the write's operation answers, a custom
+function that reads fields, or another unstored calculation that does,
+keeps the table read-only, as a summary field read by such a formula
+still does; so does a chain of unstored calculations more than 32 deep,
+past which the calculation host reads them as `?`, or one whose read
+would evaluate unstored calculations more than 65,536 times (the host
+evaluates one on every read, so a chain that reads each step twice
+doubles at each). A loop or an aggregate over repetitions reads one
+again, which planning does not count. Each rule shares an allowance of
+up to 65,536 unstored evaluations across its empty-input probes and
+formula body. Exhaustion during auto-entry or validation refuses the
+write with error 7. FileMaker continues evaluating past that limit. A
+preview treats a formula over a calculation that draws `Random`, the clock
+or a UUID, and a skip that calculation's value decides, as not known until
+the commit.
 
 **A custom message** is shown for any rule of its field that a write
 breaks, not empty included. One stored as a calculation (`0x8000` with
@@ -1395,20 +1421,25 @@ key text in the form of the field's index language (query-program.md 7.2,
 Number, date, time and timestamp fields are keyed in the forms of 7.3: an
 empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
 under `fe ff`, and a timestamp stored as a date alone under its date and
-`fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
-gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+`fe ff`. A number's text is read as FileMaker reads it, with the file's
+decimal and thousands separators (`om_collate::number_text`, the reading
+the calculation engine uses too, calc-values.md 2.8): `1,234` is 1234 in
+an en-US file, `abc12` is 12, `(5)` is -5. A date or time with digits that
+OpenMaker does not read gets no key.
+
 An index whose keys another rule wrote (an earlier OpenMaker build's, or
 FileMaker's where OpenMaker's rules still differ or give a value no key)
-keeps a record OpenMaker Server changes under none of those keys
+can hold stale memberships for a record OpenMaker Server changes
 ([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448)):
 - The first write that changes a field's value, after the server starts or
   the schema changes, compares each of the field's indexes with one built
   from every stored record (`Store::index_agrees`).
 - In an index that disagrees, every record the commit changes or deletes
   leaves the entries its new value does not give when the commit finishes
-  (`Store::sweep_index`). That covers a key an earlier build gave `1.5`, a
-  FileMaker word break and a number among letters, and it happens also
-  when the record's computed keys do not move.
+  (`Store::sweep_index`). For example, an earlier build indexed `1.5`
+  as 1.5 in a German file. The current reader gives both `1.5` and `15,0`
+  the key for 15. Editing the record from `1.5` to `15,0` moves its stored
+  membership even though its computed keys are equal.
 - The index is never rebuilt: records no write touches keep their
   entries as FileMaker wrote them, an overflow `ff 80` membership included.
 - Every entry a write or a sweep changes is kept first, so a failed save
@@ -1430,7 +1461,8 @@ agreement check and the sweep. The server still checks existing postings
 at the new keys and refuses the commit if an edit would not round-trip.
 An index that a commit empties stays in the commit's plan, so its later
 records are still indexed. Until a write changes a record in an index,
-the index is read as stored.
+the index is read as stored. A find for `=` can miss untouched empty
+values in a typed index an earlier build wrote without `01` entries.
 
 Word-index keys break words as FileMaker's English, System and Unicode
 standard indexes do (query-program.md 7.2, "Word breaking"): within a

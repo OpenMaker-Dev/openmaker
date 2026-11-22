@@ -144,7 +144,7 @@ impl ServerHost {
             }
             WINDOW_LEFT | WINDOW_TOP => number(0),
             WINDOW_VISIBLE | STATUS_AREA_STATE | MENUBAR_STATE => number(1),
-            WINDOW_NAME => Some(Ok(self.get_value(FILE_NAME))),
+            WINDOW_NAME => text(&self.window_name()),
             WINDOW_STYLE
             | ACTIVE_MODIFIER_KEYS
             | HIGH_CONTRAST_STATE
@@ -245,7 +245,7 @@ impl ServerHost {
                 '.',
                 ',',
             )))),
-            WINDOW_UUID => text(&self.window_uuid()),
+            WINDOW_UUID => text(&self.window_uuid_of(self.window_serial)),
             _ => None,
         }
     }
@@ -425,13 +425,16 @@ impl ServerHost {
         self.request_open && self.window.as_ref().is_some_and(|w| w.mode == Mode::Find)
     }
 
-    /// The session window's UUID: 32 upper-case hex digits without
-    /// dashes, the same for the whole session.
-    fn window_uuid(&self) -> String {
-        let seed = format!(
+    /// The UUID of the session's window `serial` (0 the first): 32
+    /// upper-case hex digits without dashes, one per window (13.25).
+    pub(super) fn window_uuid_of(&self, serial: u32) -> String {
+        let mut seed = format!(
             "{}\u{0}{}\u{0}{}",
             self.hosted.name, self.user.connection, self.holder
         );
+        if serial > 0 {
+            seed.push_str(&format!("\u{0}{serial}"));
+        }
         use md5::{Digest, Md5};
         Md5::digest(seed.as_bytes())
             .iter()

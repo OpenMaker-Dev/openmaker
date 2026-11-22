@@ -18,8 +18,8 @@ write's container reader. Other lookups, entry from the last visited
 record, related fields beyond the formulas docs/record-writes.md
 supports, globals other than one repetition of a non-container global of
 the record's own table read by an auto-entered or validation
-calculation, summary and unstored-calculation dependencies, plug-in
-functions, custom functions that read fields and dependency cycles fail
+calculation, summary fields, unstored calculations other than those
+docs/record-writes.md lists, plug-in functions, custom functions that read fields and dependency cycles fail
 preflight (docs/record-writes.md, Limits).
 
 The provider preserves creation metadata on updates, refreshes modification
@@ -409,6 +409,50 @@ Each step is Set Field and Commit Records in a Contacts record:
 Not measured: several related records (which is first), sorted
 relationships, paths of more than one relationship, aggregates of related
 fields, and FileMaker Pro's own data entry.
+
+## Formulas over an unstored calculation or a summary field
+
+What FileMaker Server 26.0.3's script engine does with auto-entered
+calculations and a validation calculation that read an unstored
+calculation or a summary field of their own table [O-run: script harness
+battery s44 on contacts-en with six Contacts fields that
+`tools/fms-script-harness/s44_unstored_schema.py` adds (`SCHEMA=`): U =
+`First Name & "!"`, unstored, "Do not evaluate if all referenced fields
+are empty" on; A1 = `U & "?"`, replacing; A2 the same with "Do not replace
+existing value of field"; V1 validated Always by `U ≠ "x!"`, also when not
+modified; S = Count of First Name, a summary; A3 = `S & "#"`, replacing].
+Each step is in one new record, Commit Records after it unless said:
+
+| step | U / A1 / A2 / A3 after it |
+|---|---|
+| New Record, nothing set (before and after the commit) | empty / empty / empty / `0#` |
+| First Name set to "a", before the commit | `a!` / `a!?` / `a!?` / `1#` |
+| the same after the commit (error 0) | `a!` / `a!?` / `a!?` / `1#` |
+| First Name "b" | `b!` / `b!?` / `a!?` / `1#` |
+| Last Name "z" (read by no formula) | `b!` / `b!?` / `a!?` / `1#` |
+| First Name "x" | the commit fails with 507 (V1) |
+
+A second run, in a new record of a table holding the first run's record:
+First Name "x" fails with 507, then "y" commits with 0, U `y!`, A1 `y!?`,
+A3 `2#`.
+
+- The unstored calculation is evaluated on the record as it is,
+  committed or not, with its own "Do not evaluate if all referenced
+  fields are empty": U is empty while First Name is.
+- A formula reading it is evaluated again when one of the
+  calculation's inputs is set, at the Set Field, before the commit: A1
+  follows First Name, as if it read First Name itself. Its own "Do not
+  evaluate if all referenced fields are empty" looks at U's value, which
+  is empty while First Name is [I: no step separates the two].
+- "Do not replace existing value" keeps the value A2 was given first.
+- V1 reads U as the record holds it at the commit.
+- A3's summary counts the records of the window's found set, the new
+  record among them (1, then 2 in the second run), and is evaluated again
+  when the summarized field is set.
+
+Not measured: an unstored calculation over a related or global field, a
+chain of unstored calculations, a summary of another kind or over a
+sorted found set, and FileMaker Pro's own data entry.
 
 ## A new record's own self-join
 

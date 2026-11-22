@@ -680,6 +680,8 @@ impl ImportTarget for ServerImport<'_> {
             ruled: None,
             serials: BTreeMap::new(),
             context: Box::new(self.host.step_context()),
+            relooked: false,
+            relookup: false,
             created: None,
             preview: BTreeMap::new(),
         };
@@ -697,6 +699,17 @@ impl ImportTarget for ServerImport<'_> {
     ) -> om_transfer::Result<()> {
         let table = self.table(occurrence)?;
         let staged = match self.host.pending(table, record) {
+            // A Relookup the transaction holds for the record waits for
+            // Commit Transaction's rules, which an import's own options
+            // and values could not share without one overriding the other:
+            // refused (3), the transaction failing, rather than either
+            // half written (OpenMaker's limit, #647).
+            Some(Change::Write(r)) if r.relookup => {
+                return Err(TransferError::unsupported(
+                    "The transaction holds a Relookup Field Contents of this record, \
+                     which an import does not update.",
+                ));
+            }
             Some(Change::Write(r)) => Some(r.clone()),
             Some(Change::Delete) => return Err(TransferError::new(101, "The record is missing.")),
             None => None,
@@ -722,6 +735,8 @@ impl ImportTarget for ServerImport<'_> {
                         ruled: None,
                         serials: BTreeMap::new(),
                         context: Box::new(self.host.step_context()),
+                        relooked: false,
+                        relookup: false,
                         created: None,
                         preview: BTreeMap::new(),
                     },

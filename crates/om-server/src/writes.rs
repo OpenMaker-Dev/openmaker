@@ -22,6 +22,7 @@ use om_protocol::write::{
 };
 use om_rctransaction::TooLong;
 
+use crate::connection::ACCESS_DENIED;
 use crate::hosting::{FileAccount, Hosted};
 use crate::library::BinaryData;
 use crate::locks::{LockTable, LockUser};
@@ -302,6 +303,9 @@ pub fn create_record(
         record: vec![vec![0x00]],
     };
     let mut store = hosted.write_store();
+    if store.is_read_only() {
+        return refused(u32::from(ACCESS_DENIED));
+    }
     let Some(table) = single(&req.table).filter(|t| store.has_table(t)) else {
         return refused(TABLE_MISSING);
     };
@@ -365,6 +369,13 @@ pub fn create_record(
 /// flags ask (write-path.md 3.2).
 pub fn get_serial(hosted: &Hosted, req: &GetSerial) -> GetSerialReply {
     let mut store = hosted.write_store();
+    if store.is_read_only() {
+        return GetSerialReply {
+            conflict: None,
+            status: u32::from(ACCESS_DENIED),
+            value: String::new(),
+        };
+    }
     let value = match (single(&req.table), single(&req.field)) {
         (Some(table), Some(field)) => store.serial_value(
             table,
@@ -870,6 +881,7 @@ pub fn commit_records(
     let mut journal = store.begin_commit();
     let (changes, emptied) = store.guarded(&mut journal, |store, journal| {
         let changes = write_records(store, journal, records);
+        store.release_deleted_record_containers(journal);
         // Delete All Records and Truncate Table that leave a table empty
         // take its library with them (`Store::drop_emptied_library_in`).
         let emptied: Vec<u64> = tables

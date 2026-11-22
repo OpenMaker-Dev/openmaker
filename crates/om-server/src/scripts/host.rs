@@ -65,10 +65,11 @@ use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_IN
 use om_query::keys::TextKeys;
 use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
-    Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
-    FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    StepCall, TransactionOptions, WindowId, Windows,
+    Accounts, Bar, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files,
+    FindKind, FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation,
+    Network, NewWindow, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords,
+    ScriptAccess, ScriptHost, StepCall, TransactionOptions, Visibility, WindowId, WindowTarget,
+    Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -152,7 +153,7 @@ const FINDER_BATCH: usize = 64;
 /// (calc-values.md 13). No record has this id.
 const NO_RECORD: u64 = u64::MAX;
 
-/// The one window of a session.
+/// The shared script runtime's handle for the current window.
 const WINDOW: WindowId = 1;
 /// The session's only file.
 const FILE: FileId = 0;
@@ -393,6 +394,46 @@ impl Window {
     }
 }
 
+/// A window of the session other than the current one, with what each
+/// window keeps of its own: its layout, found set, record and mode, and
+/// Find mode's requests (script-runtime.md 13.25).
+struct Parked {
+    name: Option<String>,
+    serial: u32,
+    window: Option<Window>,
+    requests: Vec<Request>,
+    last_find: Vec<Request>,
+    request_count: usize,
+    focus: Option<get::Focus>,
+    request_open: bool,
+}
+
+/// Heap allocations retained by a window's found set, sort, portal state
+/// and Find state.
+fn window_data_bytes(window: Option<&Window>, requests: [&Vec<Request>; 2]) -> usize {
+    let window_bytes = window.map_or(0, |window| {
+        let sort = window.sort.as_ref().map_or(0, |sort| {
+            sort.fields.capacity() * size_of::<om_scripts::specs::SortEntry>()
+        });
+        let portal = window.portal.as_ref().map_or(0, |row| row.name.capacity());
+        (window.found.capacity() * size_of::<u64>())
+            .saturating_add(sort)
+            .saturating_add(portal)
+    });
+    requests.into_iter().fold(window_bytes, |total, requests| {
+        let bytes = requests.iter().fold(
+            requests.capacity() * size_of::<Request>(),
+            |total, request| {
+                request.criteria.iter().fold(
+                    total.saturating_add(request.criteria.capacity() * size_of::<(u64, String)>()),
+                    |total, (_, text)| total.saturating_add(text.capacity()),
+                )
+            },
+        );
+        total.saturating_add(bytes)
+    })
+}
+
 /// A record being edited: locked for the session, its contents changed
 /// here until it is committed (FileMaker's open record).
 #[derive(Clone, Debug)]
@@ -420,6 +461,14 @@ struct OpenRecord {
     /// access (Commit Transaction, #187).
     /// Boxed: an open record is held in a transaction's [`Change`].
     context: Box<rules::WriteContext>,
+    /// Staged by Relookup Field Contents with no edit of its own (any
+    /// later edit clears it): Commit Transaction writes it only when its
+    /// rules change a cell.
+    relooked: bool,
+    /// Relookup Field Contents staged the record in the transaction, its
+    /// lookup left for Commit Transaction's rules: an import does not
+    /// update it.
+    relookup: bool,
     /// A new record's creation clock (#474): the date, time, timestamp and
     /// UUID its rules read, at New Record for what a script reads of it
     /// before the commit, and again at the commit, which so stores what
@@ -484,6 +533,7 @@ impl OpenRecord {
 
     /// A step changed `cell`.
     fn changed_cell(&mut self, cell: u64) {
+        self.relooked = false;
         self.changed.insert(cell, CellSource::Entered);
         if let Some(ruled) = &mut self.ruled {
             ruled.since.insert(cell);
@@ -744,6 +794,19 @@ pub(crate) struct ServerHost {
     today: Date,
     schema: Schema,
     window: Option<Window>,
+    /// The current window's name; `None` for the file's name, which names
+    /// a session's first window.
+    window_name: Option<String>,
+    /// Which window of the session the current one is (0 the first), for
+    /// its `Get ( WindowUUID )`.
+    window_serial: u32,
+    /// The session's other windows, the most recently current last
+    /// (script-runtime.md 13.25).
+    others: Vec<Parked>,
+    /// How many windows the session has opened after its first.
+    windows_opened: u32,
+    /// A step closed the session's last window: the script stops.
+    windows_closed: bool,
     record: Option<OpenRecord>,
     /// Open Transaction and the changes since.
     transaction: Option<Transaction>,
@@ -826,6 +889,11 @@ impl ServerHost {
             today: today(),
             schema,
             window: None,
+            window_name: None,
+            window_serial: 0,
+            others: Vec::new(),
+            windows_opened: 0,
+            windows_closed: false,
             record: None,
             transaction: None,
             globals: HashMap::new(),
@@ -881,6 +949,12 @@ impl ServerHost {
     /// (`SMScriptRuntime::ExecuteScript`, 11.3).
     pub fn has_window(&self) -> bool {
         self.window.is_some()
+    }
+
+    /// A step closed the session's last window (13.25: the script stops,
+    /// and FileMaker Server's run ends with 0 and no result).
+    pub fn closed_last_window(&self) -> bool {
+        self.windows_closed
     }
 
     /// The record key of the account the session logged in with.
@@ -1038,16 +1112,42 @@ impl ServerHost {
             "{:?}: script session reads the file's changed schema",
             self.hosted.name
         );
-        let layout = self
-            .window
-            .as_ref()
-            .and_then(|w| self.schema.layouts.get(w.layout))
-            .map(|l| l.id);
+        let layout_of = |window: &Option<Window>, schema: &Schema| {
+            window
+                .as_ref()
+                .and_then(|w| schema.layouts.get(w.layout))
+                .map(|l| l.id)
+        };
+        let layout = layout_of(&self.window, &self.schema);
+        let parked: Vec<Option<u64>> = self
+            .others
+            .iter()
+            .map(|p| layout_of(&p.window, &self.schema))
+            .collect();
         self.schema = schema;
         self.locale = locale;
         self.file_language = file_language;
         self.plans.clear();
         self.place_window(layout);
+        // Each other window goes back on its own layout the same way, but
+        // one that must move to another table's layout shows none of its
+        // records rather than all of them: parked windows are not checked
+        // against the windows' budget again, and a schema change must not
+        // fill them past it (OpenMaker's choice).
+        for (index, id) in parked.into_iter().enumerate() {
+            let table = self.others[index].window.as_ref().map(|w| w.table);
+            let current = std::mem::replace(&mut self.window, self.others[index].window.take());
+            self.place_window(id);
+            if let Some(window) = self.window.as_mut() {
+                if Some(window.table) != table {
+                    window.found = Vec::new();
+                    window.current = 0;
+                    window.browse_current = 0;
+                    window.sort = None;
+                }
+            }
+            self.others[index].window = std::mem::replace(&mut self.window, current);
+        }
         if let Some(mut record) = self.record.take() {
             self.rebase(&mut record);
             self.record = Some(record);
@@ -1082,10 +1182,13 @@ impl ServerHost {
         let index = same.or_else(|| layouts.iter().position(shows_table));
         match index {
             Some(index) => {
-                let occurrence = layouts[index].occurrence;
+                let occurrence = layouts[index].occurrence.expect("shows the table");
                 let window = self.window.as_mut().expect("checked");
+                if same.is_none() || window.occurrence != occurrence {
+                    window.portal = None;
+                }
                 window.layout = index;
-                window.occurrence = occurrence.expect("shows the table");
+                window.occurrence = occurrence;
             }
             None => {
                 let other = layouts.iter().position(|l| l.occurrence.is_some());
@@ -1094,6 +1197,7 @@ impl ServerHost {
                     None => {
                         let window = self.window.as_mut().expect("checked");
                         window.layout = usize::MAX;
+                        window.portal = None;
                     }
                 }
             }
@@ -1140,21 +1244,28 @@ impl ServerHost {
         Ctx::new(&self.locale, self.today)
     }
 
-    /// A window on layout `index`, with every record of its table.
-    fn window_on(&self, index: usize) -> Option<Window> {
+    /// A window on layout `index`, before its found set is filled.
+    fn empty_window_on(&self, index: usize) -> Option<Window> {
         let occurrence = self.schema.layouts.get(index)?.occurrence?;
         let table = self.schema.table_of(occurrence)?;
         Some(Window {
             layout: index,
             occurrence,
             table,
-            found: self.all_records(table),
+            found: Vec::new(),
             current: 0,
             mode: Mode::Browse,
             browse_current: 0,
             sort: None,
             portal: None,
         })
+    }
+
+    /// A window on layout `index`, with every record of its table.
+    fn window_on(&self, index: usize) -> Option<Window> {
+        let mut window = self.empty_window_on(index)?;
+        window.found = self.all_records(window.table);
+        Some(window)
     }
 
     fn window(&self) -> HostResult<&Window> {
@@ -1365,15 +1476,51 @@ impl ServerHost {
             ruled: None,
             serials: BTreeMap::new(),
             context,
+            relooked: false,
+            relookup: false,
             created: None,
             preview: BTreeMap::new(),
         }))
     }
 
-    /// Commit the open record (leaving a record, changing layouts, Commit
-    /// Records) with its table's rules; inside a transaction it joins the
-    /// transaction, whose commit applies them. A record the rules refuse
-    /// stays open and the step fails with their error.
+    /// Commit the record Relookup opened with its match field marked set.
+    /// Outside a transaction, write it only if the rules change a cell.
+    /// Inside a transaction, defer the rules to Commit Transaction. If
+    /// the transaction skips auto-entry, release the record without staging it.
+    fn commit_open_relooked(&mut self) -> HostResult {
+        let Some(mut record) = self.record.take() else {
+            return Ok(());
+        };
+        let key = (record.table, record.id);
+        if let Some(transaction) = self.transaction.as_mut() {
+            if transaction.options.skip_auto_enter {
+                self.unlock_record(record.table, record.id);
+                return Ok(());
+            }
+            record.relooked = true;
+            record.relookup = true;
+            transaction.insert(key, Change::Write(record));
+            return Ok(());
+        }
+        let mut ready = record.clone();
+        if let Err(error) = self.apply_rules(&mut ready, Entry::script(false, false)) {
+            self.record = Some(record);
+            return Err(error);
+        }
+        if texts(&ready.node) == texts(&record.node) {
+            self.unlock_record(record.table, record.id);
+            return Ok(());
+        }
+        let committed = self.write(vec![(key, Change::Write(ready))]);
+        if committed.is_err() {
+            self.record = Some(record);
+        }
+        committed
+    }
+
+    /// Commit the open record when leaving it, changing layouts or running
+    /// Commit Records. Inside a transaction, defer its rules to the commit.
+    /// A record the rules refuse stays open and the step returns their error.
     fn commit_open(&mut self, entry: Entry) -> HostResult {
         let Some(record) = self.record.take() else {
             return Ok(());
@@ -2835,20 +2982,22 @@ impl ServerHost {
             .unwrap_or_default()
     }
 
+    fn file_stem(&self) -> &str {
+        self.hosted
+            .name
+            .rsplit_once('.')
+            .map_or(self.hosted.name.as_str(), |(stem, _)| stem)
+    }
+
     /// What calculations a query computes are told by `Get`: the session's
     /// account and file, the server's clock.
     fn session_info(&self) -> SessionInfo {
-        let file = self
-            .hosted
-            .name
-            .rsplit_once('.')
-            .map_or(self.hosted.name.as_str(), |(stem, _)| stem);
         SessionInfo {
             application_version: format!("Server {}", env!("CARGO_PKG_VERSION")),
             account_name: self.account.clone(),
             account_info: self.authenticated_account_info(),
             user_name: self.account.clone(),
-            file_name: file.to_string(),
+            file_name: self.file_stem().to_owned(),
             file_path: format!("file:{}", self.hosted.path.display()),
             host_name: self.shared.identity.name.clone(),
             utc_offset: i64::from(jiff::Zoned::now().offset().seconds()),
@@ -3540,9 +3689,10 @@ impl ScriptHost for ServerHost {
     }
 
     /// The administrator, a file close, the server's shutdown or a limit
-    /// aborted the script (`IsServerAbort`, script-runtime.md 2.3, 6.1).
+    /// aborted the script (`IsServerAbort`, script-runtime.md 2.3, 6.1),
+    /// or a step closed its last window (13.25).
     fn abort_requested(&mut self) -> bool {
-        self.control.aborted().is_some()
+        self.control.aborted().is_some() || self.windows_closed
     }
 
     /// Each step sees the schema as it is when the step starts.
@@ -3601,20 +3751,9 @@ fn print_setup(call: &StepCall<'_>) -> HostResult {
 
 impl Navigation for ServerHost {
     fn go_to_layout(&mut self, layout: &LayoutTarget, _animation: Option<u32>) -> HostResult {
-        let layouts = &self.schema.layouts;
-        let index = match layout {
-            LayoutTarget::Original => return Ok(()),
-            LayoutTarget::Key(id) => layouts.iter().position(|l| l.id == *id),
-            LayoutTarget::Name(name) => {
-                layouts.iter().position(|l| l.name == *name).or_else(|| {
-                    let name = name.to_lowercase();
-                    layouts.iter().position(|l| l.name.to_lowercase() == name)
-                })
-            }
-            LayoutTarget::Number(n) => usize::try_from(*n - 1).ok().filter(|i| *i < layouts.len()),
-        }
-        .filter(|i| layouts[*i].occurrence.is_some())
-        .ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let Some(index) = self.layout_index(layout)? else {
+            return Ok(());
+        };
         let focus = self.focus.clone();
         self.leave()?;
         let mut next = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
@@ -3727,30 +3866,59 @@ impl Navigation for ServerHost {
     }
 
     fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
-        if request.new_window.is_some() {
-            return Err(HostError::Unsupported);
+        let layout = match &request.layout {
+            Some(target) => self.layout_index(target)?,
+            None => None,
+        };
+        let prepare = |host: &Self| -> HostResult<Window> {
+            let mut next = match layout {
+                Some(index) => host
+                    .empty_window_on(index)
+                    .ok_or(ErrorCode::LAYOUT_MISSING)?,
+                None => {
+                    let current = host.window()?;
+                    Window {
+                        layout: current.layout,
+                        occurrence: current.occurrence,
+                        table: current.table,
+                        found: Vec::new(),
+                        current: 0,
+                        mode: Mode::Browse,
+                        browse_current: current.browse_current,
+                        sort: None,
+                        portal: None,
+                    }
+                }
+            };
+            let existing: BTreeSet<u64> = host.all_records(next.table).into_iter().collect();
+            next.found = request
+                .ids
+                .split(['\r', '\n'])
+                .filter_map(|id| id.trim().parse().ok())
+                .filter(|id| existing.contains(id))
+                .collect();
+            Ok(next)
+        };
+        if let Some(window) = &request.new_window {
+            return self.open_window(window.name.as_deref(), true, |host| {
+                let mut next = prepare(host)?;
+                if next.found.is_empty() {
+                    return Err(ErrorCode::RECORD_MISSING.into());
+                }
+                next.found.shrink_to_fit();
+                Ok(Some(next))
+            });
         }
-        if let Some(layout) = &request.layout {
-            self.go_to_layout(layout, None)?;
-        }
-        let ids = &request.ids;
+        let next = prepare(self)?;
         self.leave()?;
-        let table = self.window()?.table;
-        let existing: BTreeSet<u64> = self.all_records(table).into_iter().collect();
-        let found: Vec<u64> = ids
-            .split(['\r', '\n'])
-            .filter_map(|id| id.trim().parse().ok())
-            .filter(|id| existing.contains(id))
-            .collect();
-        let window = self.window_mut()?;
-        window.mode = Mode::Browse;
-        window.found = found;
-        window.current = 0;
-        window.sort = None;
-        if window.found.is_empty() {
-            return Err(ErrorCode::RECORD_MISSING.into());
+        let empty = next.found.is_empty();
+        // Same-window navigation replaces the found set even when no IDs match.
+        self.window = Some(next);
+        if empty {
+            Err(ErrorCode::RECORD_MISSING.into())
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn enter_mode(&mut self, mode: Mode, _pause: bool, requests: Option<&OwnedNode>) -> HostResult {
@@ -3860,6 +4028,8 @@ impl Records for ServerHost {
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
+            relooked: false,
+            relookup: false,
             created: Some(Box::new(CreatedClock {
                 date: clock.date,
                 time: clock.time,
@@ -4077,6 +4247,7 @@ impl Records for ServerHost {
             .count()
             > 1;
         let keys: Vec<(u64, u64)> = transaction.changes.keys().copied().collect();
+        let mut unchanged_relookups = BTreeSet::new();
         for key in keys {
             let Some(transaction) = self.transaction.as_mut() else {
                 break;
@@ -4091,6 +4262,17 @@ impl Records for ServerHost {
                 record.context.record_number = None;
             }
             let result = self.apply_rules(&mut record, entry);
+            // Keep an unchanged relookup held while the other records run
+            // their rules, including the new-record self-join check (#490).
+            // Omit it from the write and release its lock with the others.
+            if result.is_ok()
+                && record.relooked
+                && self
+                    .committed_node(record.table, record.id)
+                    .is_some_and(|stored| texts(&stored) == texts(&record.node))
+            {
+                unchanged_relookups.insert(key);
+            }
             if let Some(transaction) = self.transaction.as_mut() {
                 transaction.insert(key, Change::Write(record));
             }
@@ -4102,7 +4284,12 @@ impl Records for ServerHost {
         let changes: Vec<((u64, u64), Change)> = self
             .transaction
             .take()
-            .map(|t| t.changes.into_iter().collect())
+            .map(|t| {
+                t.changes
+                    .into_iter()
+                    .filter(|(key, _)| !unchanged_relookups.contains(key))
+                    .collect()
+            })
             .unwrap_or_default();
         let (created, deleted) = created_and_deleted(&changes);
         let result = if changes.is_empty() {
@@ -4125,6 +4312,104 @@ impl Records for ServerHost {
 }
 
 impl FieldSteps for ServerHost {
+    /// Relookup Field Contents (40), as the desktop's provider operation
+    /// does it (`DataProvider::relookup`): in each record of the found set,
+    /// by id as the step began, the match field is marked set with its
+    /// stored value unchanged, which performs the lookups through it
+    /// (auto-entry.md, Lookups, battery s41), and the record is committed;
+    /// a transaction holds it. Before any record changes: the target is a
+    /// field of the window's own occurrence that `RecordPlan::
+    /// relookup_target` takes, and no record stores it with character
+    /// styles (a plain write would drop them) or is held in the open
+    /// transaction (whose held value the stored one would replace). A
+    /// record refused ends the step, that record left as it was; the
+    /// window keeps its record. The server shows no dialog.
+    fn relookup(&mut self, field: Option<FieldRef>, _with_dialog: bool) -> HostResult {
+        let field = match field {
+            Some(field) => field,
+            None => {
+                let focus = self.focus.as_ref().ok_or(ErrorCode::FIELD_MISSING)?;
+                FieldRef {
+                    occurrence: focus.occurrence,
+                    field: focus.field,
+                    repetition: 1,
+                }
+            }
+        };
+        let window = self.window()?;
+        if window.mode == Mode::Find {
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        if window.occurrence != field.occurrence || field.repetition > 1 {
+            // A related record's field (relationships are not followed), or
+            // a later repetition, which the target check does not name.
+            return Err(HostError::Unsupported);
+        }
+        let (table, def) = self.target(field)?;
+        let cell = self
+            .plan(table)?
+            .relookup_target(&def.name)
+            .map_err(|e| rule_error(&e))?;
+        self.leave()?;
+        let (mut ids, original) = {
+            let window = self.window()?;
+            (window.found.clone(), window.record())
+        };
+        // Each record once: a list Go to List of Records made can name one
+        // twice, and a second pass would reopen the first's staged write.
+        let mut seen = BTreeSet::new();
+        ids.retain(|id| seen.insert(*id));
+        let key = uint_segment(cell);
+        for &id in &ids {
+            if self.pending(table, id).is_some() {
+                return Err(ErrorCode::UNAVAILABLE.into());
+            }
+            // A value with character styles reads as nested, and one whose
+            // text does not decode would match as empty; a plain one
+            // stored in chunks assembles into a value and is relooked up.
+            let unreadable = self.committed_node(table, id).is_some_and(|node| {
+                node.child(&key)
+                    .is_some_and(|c| !matches!(om_hbam::Cell::from_owned(c).text(), Some(Ok(_))))
+            });
+            if unreadable {
+                return Err(ErrorCode::UNAVAILABLE.into());
+            }
+        }
+        let mut result = Ok(());
+        for &id in &ids {
+            let Some(index) = self.window()?.found.iter().position(|r| *r == id) else {
+                continue;
+            };
+            self.window_mut()?.current = index;
+            let context = self.step_context();
+            match self.open_current() {
+                Ok(record) => {
+                    record.before_change();
+                    *record.context = context;
+                    record.changed_cell(cell);
+                }
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+            if let Err(error) = self.commit_open_relooked() {
+                // The refused record goes back to what it was: no write of
+                // it stays pending for a later commit.
+                self.drop_open();
+                result = Err(error);
+                break;
+            }
+        }
+        if let Some(window) = self.window.as_mut() {
+            if let Some(index) = original.and_then(|id| window.found.iter().position(|r| *r == id))
+            {
+                window.current = index;
+            }
+        }
+        result
+    }
+
     fn export_field_contents(
         &mut self,
         field: Option<FieldRef>,
@@ -4526,10 +4811,411 @@ impl FoundSets for ServerHost {
     }
 }
 
+impl ServerHost {
+    /// The current window's name: the file's name until a step names it.
+    pub(super) fn window_name(&self) -> String {
+        self.window_name
+            .clone()
+            .unwrap_or_else(|| self.file_stem().to_owned())
+    }
+
+    /// The session's windows' names, front to back (`WindowNames`): the
+    /// current one, then the others from the most recently current.
+    pub(super) fn window_names(&self) -> Vec<String> {
+        let file = self.file_stem();
+        std::iter::once(self.window_name())
+            .chain(
+                self.others
+                    .iter()
+                    .rev()
+                    .map(|w| w.name.clone().unwrap_or_else(|| file.to_owned())),
+            )
+            .collect()
+    }
+
+    /// The window `target` names: `None` the current one, else its place
+    /// among the others. Names are matched front to back ignoring case,
+    /// then window UUIDs, as Claris documents Select Window's lookup; 112
+    /// when no window matches.
+    fn window_target(&self, target: &WindowTarget) -> HostResult<Option<usize>> {
+        let WindowTarget::Named(name) = target else {
+            return Ok(None);
+        };
+        let wanted = name.to_lowercase();
+        let file = self.file_stem();
+        let named = |n: &str| n.to_lowercase() == wanted;
+        if named(self.window_name.as_deref().unwrap_or(file)) {
+            return Ok(None);
+        }
+        if let Some(index) = self
+            .others
+            .iter()
+            .rposition(|w| named(w.name.as_deref().unwrap_or(file)))
+        {
+            return Ok(Some(index));
+        }
+        if named(&self.window_uuid_of(self.window_serial)) {
+            return Ok(None);
+        }
+        self.others
+            .iter()
+            .rposition(|w| named(&self.window_uuid_of(w.serial)))
+            .map(Some)
+            .ok_or(ErrorCode::WINDOW_MISSING.into())
+    }
+
+    /// Windows cannot change while a transaction is open: a record a
+    /// step commits in another window is not part of the transaction in
+    /// FileMaker (script-runtime.md 8.5), and this session keeps one
+    /// transaction for all its windows, so a revert would take it back.
+    /// 3 until windows keep transactions of their own.
+    fn windows_may_change(&self) -> HostResult {
+        if self.transaction.is_some() {
+            info!(
+                "{:?}: a window step refused: a transaction is open",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
+        Ok(())
+    }
+
+    /// What the current window holds: its found set, sort and Find state,
+    /// and its name.
+    fn current_window_data_bytes(&self) -> usize {
+        window_data_bytes(self.window.as_ref(), [&self.requests, &self.last_find])
+            .saturating_add(self.window_name.as_ref().map_or(0, String::capacity))
+    }
+
+    /// Data already parked, excluding the window becoming current.
+    fn parked_window_data_bytes(&self, selected: Option<usize>) -> usize {
+        self.others
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != selected)
+            .fold(0usize, |total, (_, window)| {
+                total
+                    .saturating_add(window_data_bytes(
+                        window.window.as_ref(),
+                        [&window.requests, &window.last_find],
+                    ))
+                    .saturating_add(window.name.as_ref().map_or(0, String::capacity))
+            })
+    }
+
+    /// Prepare the exact next window before leaving the opener. Count the
+    /// capacities of the allocations we will install, and do no fallible
+    /// navigation after the opener's record is committed.
+    fn open_window(
+        &mut self,
+        name: Option<&str>,
+        copy_requests: bool,
+        prepare: impl FnOnce(&Self) -> HostResult<Option<Window>>,
+    ) -> HostResult {
+        self.windows_may_change()?;
+        let budget_error = ErrorCode(2);
+        if self.others.len() + 2 > MAX_WINDOWS {
+            return Err(budget_error.into());
+        }
+        let available = MAX_WINDOW_DATA_BYTES
+            .checked_sub(
+                self.parked_window_data_bytes(None)
+                    .saturating_add(self.current_window_data_bytes()),
+            )
+            .ok_or(budget_error)?;
+        let name = match name.filter(|name| !name.is_empty()) {
+            Some(name) if name.len() <= available => name.to_owned(),
+            Some(_) => return Err(budget_error.into()),
+            None => self.default_window_name(available)?,
+        };
+        let window = prepare(self)?;
+        let requests = if copy_requests {
+            self.requests.clone()
+        } else {
+            Vec::new()
+        };
+        let last_find = self.last_find.clone();
+        let needed = window_data_bytes(window.as_ref(), [&requests, &last_find])
+            .saturating_add(name.capacity());
+        if needed > available {
+            return Err(budget_error.into());
+        }
+        self.leave()?;
+        self.windows_opened += 1;
+        let copy = Parked {
+            name: Some(name),
+            serial: self.windows_opened,
+            window,
+            requests,
+            last_find,
+            request_count: self.request_count,
+            focus: None,
+            request_open: false,
+        };
+        let previous = self.park();
+        self.others.push(previous);
+        self.unpark(copy);
+        Ok(())
+    }
+
+    /// Choose the default suffix by borrowing names. A renamed opener can
+    /// have a large title, so only allocate the selected name once it fits.
+    fn default_window_name(&self, available: usize) -> HostResult<String> {
+        let file = self.file_stem();
+        let base = self.window_name.as_deref().unwrap_or(file);
+        for number in 2..=MAX_WINDOWS {
+            let suffix = format!(" - {number}");
+            let len = base.len().saturating_add(suffix.len());
+            if len > available {
+                break;
+            }
+            let taken = self.others.iter().any(|window| {
+                window.name.as_deref().unwrap_or(file).strip_prefix(base) == Some(suffix.as_str())
+            });
+            if !taken {
+                let mut name = String::with_capacity(len);
+                name.push_str(base);
+                name.push_str(&suffix);
+                return Ok(name);
+            }
+        }
+        Err(ErrorCode(2).into())
+    }
+
+    /// The current window's found set without the records that are gone
+    /// (deleted while another window was current), its record kept when
+    /// it still exists.
+    fn prune_found_set(&mut self) {
+        let Some(table) = self.window.as_ref().map(|w| w.table) else {
+            return;
+        };
+        let existing: BTreeSet<u64> = self.all_records(table).into_iter().collect();
+        let Some(window) = self.window.as_mut() else {
+            return;
+        };
+        if window.found.iter().all(|id| existing.contains(id)) {
+            return;
+        }
+        // In Find mode `current` is the active request; the record to come
+        // back to is `browse_current`.
+        let place = if window.mode == Mode::Find {
+            window.browse_current
+        } else {
+            window.current
+        };
+        let record = window.found.get(place).copied();
+        if record.is_some_and(|id| !existing.contains(&id)) {
+            window.portal = None;
+        }
+        window.found.retain(|id| existing.contains(id));
+        let place = record
+            .and_then(|id| window.found.iter().position(|f| *f == id))
+            .unwrap_or_else(|| place.min(window.found.len().saturating_sub(1)));
+        if window.mode == Mode::Find {
+            window.browse_current = place;
+        } else {
+            window.current = place;
+        }
+    }
+
+    /// The index of the layout `layout` names, `None` for the original
+    /// layout; 105 for one that is missing or shows no table.
+    fn layout_index(&self, layout: &LayoutTarget) -> HostResult<Option<usize>> {
+        let layouts = &self.schema.layouts;
+        let index = match layout {
+            LayoutTarget::Original => return Ok(None),
+            LayoutTarget::Key(id) => layouts.iter().position(|l| l.id == *id),
+            LayoutTarget::Name(name) => {
+                layouts.iter().position(|l| l.name == *name).or_else(|| {
+                    let name = name.to_lowercase();
+                    layouts.iter().position(|l| l.name.to_lowercase() == name)
+                })
+            }
+            LayoutTarget::Number(n) => usize::try_from(*n - 1).ok().filter(|i| *i < layouts.len()),
+        }
+        .filter(|i| layouts[*i].occurrence.is_some())
+        .ok_or(ErrorCode::LAYOUT_MISSING)?;
+        Ok(Some(index))
+    }
+
+    /// The current window, taken out with what is its own.
+    fn park(&mut self) -> Parked {
+        Parked {
+            name: self.window_name.take(),
+            serial: self.window_serial,
+            window: self.window.take(),
+            requests: std::mem::take(&mut self.requests),
+            last_find: std::mem::take(&mut self.last_find),
+            request_count: std::mem::take(&mut self.request_count),
+            focus: self.focus.take(),
+            request_open: std::mem::take(&mut self.request_open),
+        }
+    }
+
+    /// Make `window` the current one.
+    fn unpark(&mut self, window: Parked) {
+        self.window_name = window.name;
+        self.window_serial = window.serial;
+        self.window = window.window;
+        self.requests = window.requests;
+        self.last_find = window.last_find;
+        self.request_count = window.request_count;
+        self.focus = window.focus;
+        self.request_open = window.request_open;
+    }
+
+    /// Resume a parked window against the records as they are now.
+    fn resume_window(&mut self, window: Parked) {
+        self.unpark(window);
+        self.prune_found_set();
+        self.revalidate_portal();
+    }
+}
+
+/// A session's window count and memory budget for copies of window state.
+/// The active window may grow as in a session
+/// with one window; it must fit the budget before it is parked or copied.
+const MAX_WINDOWS: usize = 256;
+const MAX_WINDOW_DATA_BYTES: usize = 128 << 20;
+
+/// The server's windows (script-runtime.md 13.25, s35-windows): each has
+/// its own layout, found set, record, mode, Find requests and portal row;
+/// a step works on the current one. The record a step opened (and a
+/// transaction) belong to the session: a window that stops being current
+/// commits it first, as New Window and Close Window commit
+/// (OpenMaker's choice for Select Window, which FileMaker Server's runs
+/// do not show). Nothing is drawn, so bounds are not kept: every window
+/// answers 640 x 480 at 0, 0.
 impl Windows for ServerHost {
+    /// New Window (122): a window showing what the current one shows, its
+    /// layout, found set, record and mode, named as given, else after the
+    /// current one with " - 2" (" - 3", ... when taken); it becomes
+    /// current, goes to the layout given and starts with no portal row.
+    fn new_window(&mut self, window: &NewWindow) -> HostResult {
+        self.open_window(window.name.as_deref(), true, |host| {
+            let Some(layout) = window.layout else {
+                return Ok(host.window.as_ref().map(|old| Window {
+                    portal: None,
+                    ..old.clone()
+                }));
+            };
+            let index = host
+                .layout_index(&LayoutTarget::Key(layout))?
+                .ok_or(ErrorCode::LAYOUT_MISSING)?;
+            let mut next = host
+                .empty_window_on(index)
+                .ok_or(ErrorCode::LAYOUT_MISSING)?;
+            if let Some(old) = &host.window {
+                next.mode = old.mode;
+                if next.table == old.table {
+                    next.found = old.found.clone();
+                    next.current = old.current;
+                    next.sort = old.sort.clone();
+                    return Ok(Some(next));
+                }
+            }
+            next.found = host.all_records(next.table);
+            next.found.shrink_to_fit();
+            Ok(Some(next))
+        })
+    }
+
+    /// Select Window (123): the window named becomes current (112 when no
+    /// window has the name).
+    fn select_window(&mut self, target: &WindowTarget, _current_file_only: bool) -> HostResult {
+        let Some(index) = self.window_target(target)? else {
+            return Ok(());
+        };
+        self.windows_may_change()?;
+        let bytes = self
+            .parked_window_data_bytes(Some(index))
+            .saturating_add(self.current_window_data_bytes());
+        if bytes > MAX_WINDOW_DATA_BYTES {
+            return Err(ErrorCode(2).into());
+        }
+        self.leave()?;
+        let selected = self.others.remove(index);
+        let previous = self.park();
+        self.others.push(previous);
+        self.resume_window(selected);
+        Ok(())
+    }
+
+    /// Close Window (121): the window's record is committed and the
+    /// window closed. Closing the current one makes the window current
+    /// before it current; closing the session's last window is 13 and
+    /// stops the script, as on FileMaker Server.
+    fn close_window(&mut self, target: &WindowTarget, _current_file_only: bool) -> HostResult {
+        let target = self.window_target(target)?;
+        self.windows_may_change()?;
+        match target {
+            Some(index) => {
+                self.others.remove(index);
+                Ok(())
+            }
+            None => {
+                self.leave()?;
+                let Some(previous) = self.others.pop() else {
+                    // 13 on FileMaker Server, and the script stops
+                    // ([`Self::abort_requested`]).
+                    self.window = None;
+                    self.windows_closed = true;
+                    return Err(ErrorCode(13).into());
+                };
+                self.resume_window(previous);
+                Ok(())
+            }
+        }
+    }
+
+    /// Set Window Title (124).
+    fn set_window_title(
+        &mut self,
+        target: &WindowTarget,
+        title: &str,
+        _current_file_only: bool,
+    ) -> HostResult {
+        let target = self.window_target(target)?;
+        // A name is held as long as its window: it counts in the windows'
+        // budget (2 past it, the name unchanged).
+        let old = match target {
+            None => self.window_name.as_ref(),
+            Some(index) => self.others[index].name.as_ref(),
+        }
+        .map_or(0, String::capacity);
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes())
+            .saturating_sub(old)
+            .saturating_add(title.len());
+        if bytes > MAX_WINDOW_DATA_BYTES {
+            return Err(ErrorCode(2).into());
+        }
+        match target {
+            None => self.window_name = Some(title.to_owned()),
+            Some(index) => self.others[index].name = Some(title.to_owned()),
+        }
+        Ok(())
+    }
+
     /// Nothing is drawn on the server.
     fn refresh_window(&mut self, _flush_joins: bool, _flush_external: bool) -> HostResult {
         Ok(())
+    }
+
+    /// View As (30): no window is drawn on the server, so the step does
+    /// nothing (FileMaker Server runs it, script-step-compat.csv).
+    fn view_as(&mut self, _choice: u16) -> HostResult {
+        Ok(())
+    }
+
+    /// Show/Hide Toolbars (29) does nothing on the server, which draws no
+    /// toolbar; the other bars stay unsupported.
+    fn show_hide(&mut self, what: Bar, _visibility: Visibility, _lock: bool) -> HostResult {
+        match what {
+            Bar::Toolbars { .. } => Ok(()),
+            _ => Err(HostError::Unsupported),
+        }
     }
 }
 
@@ -4664,7 +5350,7 @@ impl ServerHost {
         step: &str,
         edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
     ) -> HostResult {
-        if self.hosted.read_only {
+        if self.hosted.is_read_only() {
             info!(
                 "{:?}: {step} changed nothing: the file is hosted read-only",
                 self.hosted.name

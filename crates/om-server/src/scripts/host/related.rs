@@ -25,7 +25,7 @@ use om_data::host::{
 };
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{FieldKind, OwnedNode, RidList};
-use om_scripts::runtime::{ErrorCode, HostResult, LayoutTarget, Mode, RelatedRecords};
+use om_scripts::runtime::{ErrorCode, HostError, HostResult, LayoutTarget, RelatedRecords};
 
 use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
 use crate::modcount;
@@ -366,12 +366,38 @@ impl ServerHost {
     /// Go to Related Record (script-steps.md 11.8): the records related to
     /// the current record, or to every record of the found set, on the
     /// layout given (or the first layout of the related table), as the
-    /// found set or as the current record of all records. The server has
-    /// one window: "show in new window" uses it.
+    /// found set or as the current record of all records. "Show in new
+    /// window" opens a window for them, named as the step names it
+    /// (13.25's New Window), once the records are found.
     pub(super) fn go_to_related(&mut self, request: &RelatedRecords<'_>) -> HostResult {
         let related = request.occurrence.ok_or(ErrorCode::INVALID)?;
         self.require_view()?;
+        if request.new_window {
+            // The post-commit relationship can differ from the one visible
+            // now (for example, an auto-entered match value). A join or
+            // layout failure at that point would already have saved the edit.
+            if self.record.is_some() {
+                return Err(HostError::Unsupported);
+            }
+            let name = request.window[0]
+                .as_ref()
+                .map(|value| value.to_text(&self.cx()).into_string());
+            return self.open_window(name.as_deref(), false, |host| {
+                host.related_destination(request, related).map(Some)
+            });
+        }
         self.leave()?;
+        let next = self.related_destination(request, related)?;
+        self.requests.clear();
+        self.window = Some(next);
+        Ok(())
+    }
+
+    fn related_destination(
+        &self,
+        request: &RelatedRecords<'_>,
+        related: u64,
+    ) -> HostResult<Window> {
         let window = self.window()?;
         let from = window.occurrence;
         let sources: Vec<u64> = if request.match_found_set {
@@ -401,19 +427,21 @@ impl ServerHost {
             }),
         }
         .ok_or(ErrorCode::LAYOUT_MISSING)?;
-        let mut next: Window = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let mut next = self
+            .empty_window_on(index)
+            .ok_or(ErrorCode::LAYOUT_MISSING)?;
         if next.table != table {
             return Err(super::TABLE_MISSING.into());
         }
-        next.mode = Mode::Browse;
         if request.show_only_related {
             next.found = ids;
-            next.current = 0;
         } else {
+            next.found = self.all_records(table);
             next.current = next.found.iter().position(|id| *id == ids[0]).unwrap_or(0);
         }
-        self.requests.clear();
-        self.window = Some(next);
-        Ok(())
+        if request.new_window {
+            next.found.shrink_to_fit();
+        }
+        Ok(next)
     }
 }

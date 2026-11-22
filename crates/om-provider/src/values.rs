@@ -17,11 +17,11 @@
 //!   host stores the text as the field's next serial value.
 
 use super::*;
-use om_collate::DateOrder;
+use om_collate::{DateOrder, NumberFormat};
 use om_data::found::code;
 use om_hbam::{Cell, DataType};
 use om_protocol::write;
-use om_query::keys::{TextKeys, EMPTY_TEXT_KEY};
+use om_query::keys::{Reading, TextKeys, EMPTY_TEXT_KEY};
 
 /// The value-list catalog `[21]` and its members' key `5`.
 const VALUE_LISTS: u8 = 0x21;
@@ -122,12 +122,13 @@ fn native_key(
     data_type: DataType,
     value: &str,
     order: DateOrder,
+    numbers: NumberFormat,
     text: TextKeys,
 ) -> Result<Option<Vec<u8>>, DataError> {
     let key = match data_type {
         DataType::Text => text.whole_key(value),
         _ if value.is_empty() => return Ok(None),
-        DataType::Number => om_collate::number_key(value),
+        DataType::Number => om_collate::number_key_in(value, numbers),
         DataType::Date => om_collate::date_key(value, order),
         DataType::Time => om_collate::time_key(value),
         DataType::Timestamp => om_collate::timestamp_key(value, order),
@@ -153,14 +154,16 @@ fn native_key(
 }
 
 /// How a field's values are keyed, as its value index keys them: its text
-/// form, and for dates and timestamps the file's date order. Either may be
-/// unknown; keying then fails only when a value must be keyed.
+/// form, the file's date order for dates and timestamps, and its number
+/// format for numbers. Missing settings fail when keying needs them.
 struct Keying {
     data_type: DataType,
     field: String,
     language: u32,
     text: Option<TextKeys>,
     order: Option<DateOrder>,
+    /// The file's number format, for a number field.
+    numbers: Option<NumberFormat>,
 }
 
 impl Keying {
@@ -175,13 +178,7 @@ impl Keying {
                 .whole_key(value)?
                 .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec()));
         }
-        let order = match self.data_type {
-            DataType::Date | DataType::Timestamp => self
-                .order
-                .ok_or_else(|| unsupported("The file's date order could not be read."))?,
-            _ => DateOrder::MonthDayYear,
-        };
-        om_query::keys::typed_value_keys(self.data_type, value, order)
+        om_query::keys::typed_value_keys(self.data_type, value, self.reading()?)
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -198,13 +195,24 @@ impl Keying {
             DataType::Text => self.text.ok_or_else(|| self.unestablished())?,
             _ => TextKeys::Collated,
         };
+        let Reading { order, numbers } = self.reading()?;
+        native_key(self.data_type, value, order, numbers, text)
+    }
+
+    fn reading(&self) -> Result<Reading, DataError> {
         let order = match self.data_type {
             DataType::Date | DataType::Timestamp => self
                 .order
                 .ok_or_else(|| unsupported("The file's date order could not be read."))?,
             _ => DateOrder::MonthDayYear,
         };
-        native_key(self.data_type, value, order, text)
+        let numbers = match self.data_type {
+            DataType::Number => self
+                .numbers
+                .ok_or_else(|| unsupported("The file's number format could not be read."))?,
+            _ => NumberFormat::default(),
+        };
+        Ok(Reading { order, numbers })
     }
 
     /// Error 3 for text that must be keyed in a form with no established
@@ -665,8 +673,8 @@ impl NativeProvider {
     }
 
     /// How `field`'s values are keyed. With `strict` (a scan, which keys
-    /// every value), an unestablished text form or an unreadable date order
-    /// is error 3 at once; otherwise only when a value must be keyed.
+    /// every value), missing keying settings are an error at once;
+    /// otherwise only when a value must be keyed.
     fn keying(
         &mut self,
         field: &om_hbam::Field,
@@ -709,12 +717,38 @@ impl NativeProvider {
         } else {
             None
         };
+        // Stored numbers read with the file's separators (`1,5` is 1.5 in
+        // de-DE, 15 in en-US: calc-values.md 2.8).
+        let numbers = if field.data_type == DataType::Number {
+            match self.file_number_format() {
+                Ok(format) => Some(format),
+                Err(error) if strict => return Err(error),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         Ok(Keying {
             data_type: field.data_type,
             field: field.name.clone(),
             language,
             text,
             order,
+            numbers,
+        })
+    }
+
+    /// The file's decimal and thousands separators, read from its locale
+    /// `[02, 0d]`, as [`Self::file_date_order`] reads its date order.
+    fn file_number_format(&mut self) -> Result<NumberFormat, DataError> {
+        let data = download_node(self.session_mut()?, vec![vec![2]])?
+            .ok_or_else(|| unsupported("The file's number format could not be read."))?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        let locale = om_data::meta::locale(&tree)
+            .ok_or_else(|| unsupported("The file's number format could not be read."))?;
+        Ok(NumberFormat {
+            decimal: locale.decimal_separator,
+            thousands: locale.thousands_separator,
         })
     }
 
@@ -1126,6 +1160,14 @@ mod native_key_tests {
                 21,
                 vec![0x7f, 0xfe, 0xcf],
             ),
+            // Read as FileMaker reads a number (query-program.md 7.3).
+            (
+                DataType::Number,
+                "1,234",
+                DateOrder::MonthDayYear,
+                21,
+                vec![0x80, 4, 0x23, 0x45],
+            ),
             (
                 DataType::Timestamp,
                 "27/10/2026 21:26:57",
@@ -1156,18 +1198,30 @@ mod native_key_tests {
             ),
         ] {
             assert_eq!(
-                native_key(kind, value, order, TextKeys::of_language(language).unwrap()).unwrap(),
+                native_key(
+                    kind,
+                    value,
+                    order,
+                    NumberFormat::default(),
+                    TextKeys::of_language(language).unwrap()
+                )
+                .unwrap(),
                 Some(key)
             );
         }
-        // Digits among other characters
-        // (https://github.com/OpenMaker-Dev/openmaker/issues/246) and an
-        // impossible date.
-        for (kind, value) in [(DataType::Number, "1,234"), (DataType::Date, "2/31/2026")] {
+        // A number field's text with no number in it, and an impossible
+        // date.
+        for (kind, value) in [(DataType::Number, "N/A"), (DataType::Date, "2/31/2026")] {
             assert_eq!(
-                native_key(kind, value, DateOrder::MonthDayYear, TextKeys::Collated)
-                    .unwrap_err()
-                    .code,
+                native_key(
+                    kind,
+                    value,
+                    DateOrder::MonthDayYear,
+                    NumberFormat::default(),
+                    TextKeys::Collated
+                )
+                .unwrap_err()
+                .code,
                 Some(3)
             );
         }
@@ -1178,6 +1232,7 @@ mod native_key_tests {
                 DataType::Text,
                 &"a".repeat(300),
                 DateOrder::MonthDayYear,
+                NumberFormat::default(),
                 TextKeys::Collated
             )
             .unwrap(),

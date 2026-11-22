@@ -3063,7 +3063,69 @@ Server engine (11.3, 11.5)
   table's layout is 106, no related record 101 (the window stays), an
   occurrence without a path 103. "Show only related records" makes them
   the found set; without it the found set is all records with the first
-  related one current. "Show in new window" uses the session's one window.
+  related one current. "Show in new window" opens a window for them, as
+  New Window does, once the records are found.
+- Windows (13.25): a session's windows each keep their layout, found set,
+  record, mode, Find mode's requests and active portal row. Steps work on
+  the current window. New Window copies the layout, found set, record
+  and mode and becomes current, named as given, else after the current
+  one with " - 2" (" - 3", ... when taken), then goes to its layout.
+  A new window starts with no active portal row (OpenMaker's choice,
+  unmeasured in FileMaker Server). Select Window and Close Window match
+  names front to back ignoring case, then window UUIDs, as Claris documents
+  Select Window's lookup; nothing matching is 112. Closing the current
+  window makes the one current before it current, and closing another
+  keeps the current one. Closing the last stops the script: the step
+  returns 13, and the run ends with 0 and no result, as in s35's "close
+  last". Set Window Title renames. `WindowNames` lists the windows front
+  to back, and `Get ( WindowUUID )` differs per window.
+- The record a step opened belongs to the session, so a window that
+  stops being current commits it first. New Window and Close Window
+  commit it as FileMaker's do; for Select Window this is OpenMaker's
+  choice, since FileMaker Server's runs do not show it. Committing also
+  leaves the field with the focus and closes Find mode's new request, so
+  `Get ( ActiveFieldName )` is empty and `Get ( RecordOpenState )` 0 back
+  in that window (unmeasured).
+- No window step runs while a transaction is open (3): in FileMaker a
+  record another window commits is not part of the transaction (8.5),
+  and the session keeps one transaction for all its windows.
+- A window that becomes current again drops from its found set the
+  records deleted meanwhile (in Find mode its active request stays as it
+  was). It keeps its active portal and row number if the portal is still
+  present and the row is still in bounds, else clears the selection
+  (OpenMaker's choice, unmeasured in FileMaker Server). A schema change
+  moves every window back onto its own layout. A parked window that must move
+  to another table's layout then shows none of its records, not all of
+  them (OpenMaker's choice), so that a schema change cannot fill the
+  windows past their budget.
+- OpenMaker keeps at most 256 windows per session and budgets 128 MiB
+  for their found sets, sort orders, Find requests (the last find
+  included), window names and active portal names. It checks the retained
+  allocation capacities of the prepared and existing windows before
+  committing the opener's record. A budget refusal returns error 2 and
+  leaves the open edit and windows in place. A missing destination
+  returns 105 before opening a window. Set Window Title checks the budget
+  for the new name.
+  An active window can grow during ordinary script operations. Select
+  Window checks whether it can park the active state before committing
+  its open record. FileMaker Server's limits are unmeasured.
+- No bounds or styles are kept: every window is 640 x 480 at 0, 0,
+  whatever New Window asks. The new window's layout does not run
+  OnLayoutEnter, as the server's Go to Layout does not. View As and
+  Show/Hide Toolbars do nothing, as nothing is drawn, so `Get (
+  LayoutViewState )` and `Get ( StatusAreaState )` keep their answers
+  (unmeasured).
+- With Show in new window, Go to Related Record returns error 3 while a
+  record is open and leaves the edit pending. A commit can change the
+  join result, and a failed join or layout lookup must leave the edit
+  available to revert. With no open record, the step resolves the related
+  records and layout before opening a window. Go to List of Records
+  resolves the layout and IDs before committing the opener's record and
+  installing the new window. With no matches it returns 101. In the same
+  window it applies the destination layout and installs an empty found
+  set. With Show in new window it leaves the opener in place. Partial
+  matches still report success, and the step reads one ID per line
+  ([#511](https://github.com/OpenMaker-Dev/openmaker/issues/511)).
 - Finds: Enter Find Mode (with or without stored requests), Set Field into
   requests, New/Duplicate/Delete Record and Omit in Find mode, Perform Find,
   Constrain and Extend with their stored requests (script-steps.md 11.2,
@@ -3150,7 +3212,7 @@ Server engine (11.3, 11.5)
   top (`0x400`) is not placed first.
 - Steps with a host method: Go to Layout, Go to Record/Request, Go to
   Field, Go to Portal Row, Go to Object, Go to Next/Previous Field, Go to
-  Related Record, Go to List of Records (same window), Enter
+  Related Record, Go to List of Records, the window steps, Enter
   Browse/Find Mode, New, Duplicate, Delete, Delete All, Open, Revert and
   Commit Records, Truncate Table (the window's table),
   Open/Commit/Revert Transaction, Set Field, Set Field By Name, the Insert
@@ -3927,7 +3989,26 @@ Steps
   its record and found set. A record refused partway ends the step, the
   records before it written; a record deleted after the check is 101.
   Records > Relookup Field Contents runs the step with its dialog on the
-  field entered. Unmeasured, and OpenMaker's choices:
+  field entered.
+  OpenMaker Server's host does the same in its own session, with the same
+  checks and a match value whose text does not decode refused too (3).
+  Each record of the found set is opened once, by id, with the match
+  field marked set and its stored value unchanged, and the rules run on
+  it. Outside a transaction, the server writes the record if the rules
+  change a cell. Inside one, it stages the record like Set Field with the
+  match field's own value. Commit Transaction runs validation with the
+  transaction's options and looks up values with what the transaction
+  holds then. It writes a record staged only by Relookup if the rules
+  change a cell.
+  An Import Records that would update a record whose relookup the
+  transaction holds aborts with error 3 and rolls back any rows staged by
+  that import. By default Commit Transaction reverts the transaction,
+  including the pending relookup
+  ([#647](https://github.com/OpenMaker-Dev/openmaker/issues/647)).
+  FileMaker copies the lookup at the step. Under "Skip auto-enter
+  options" nothing is copied and nothing staged. A record refused is left
+  as it was.
+  Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - committing the window's record before the writes, which Claris's help
     says neither the command nor the step does

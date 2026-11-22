@@ -14,6 +14,8 @@
 mod fixture;
 #[path = "fixtures/server.rs"]
 mod server;
+#[path = "fixtures/transfer.rs"]
+mod transfer;
 
 use fixture::{
     script, TempFile, COUNT, NAME, NOTES, NOTES_LAYOUT, NOTES_OCCURRENCE, OCCURRENCE, TABLE,
@@ -336,6 +338,27 @@ fn scripts() -> Vec<Script> {
                 exit_with("Get ( LastError )"),
             ],
         ),
+        script(14, "Related window", {
+            let mut related = go_to_related(NOTES_OCCURRENCE, NOTES_LAYOUT);
+            related.set_flag(flag::TURN_ON, true);
+            vec![
+                fixture::on(86, true),
+                fixture::go_to_record(1),
+                set_field(NAME, 1, "\"Unmatched\""),
+                related.clone(),
+                set_var(
+                    "$refused",
+                    "Get ( LastError ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )",
+                ),
+                ScriptStep::new(51),
+                set_var("$reverted", "Tasks::Name"),
+                related,
+                exit_with(
+                    "$refused & \"/\" & $reverted & \"/\" & Get ( LastError ) & \"/\" & \
+                     ValueCount ( WindowNames ( Get ( FileName ) ) ) & \"/\" & Notes::Body",
+                ),
+            ]
+        }),
     ]
 }
 
@@ -475,6 +498,12 @@ fn server_scripts_follow_relationships() {
     assert_eq!(
         run(&mut client, 2),
         (101, "0|2|Notes|a-note,b-note/101|Tasks".to_string())
+    );
+    // The pending change would remove the matching note if committed. After
+    // refusal Revert restores the key, and the same step can open its window.
+    assert_eq!(
+        run(&mut client, 14),
+        (0, "3/1/Write tests/0/2/w".to_string())
     );
     // The index the join read was built on demand and stored.
     let notes = uint_segment(NOTES);
@@ -1185,6 +1214,210 @@ fn set_match_fields_perform_lookups() {
             "calculated={calculated}"
         );
     }
+}
+
+/// Relookup Field Contents [Tasks::Name] copies each found task's lookup
+/// again, Name itself unchanged (#87). Inside a transaction that skips
+/// auto-entry it copies and writes nothing; inside an ordinary one the copy
+/// waits for Commit Transaction, which writes it only when its rules
+/// change a cell. Task 1's Note, typed over, comes
+/// back as its note "w", and task 3, whose Name `東京` is stored in chunks,
+/// takes its note "jp". Run again with nothing new to copy, it writes no
+/// record: task 1's modification count stays. Through Count, which no
+/// lookup matches through, or through a later repetition of Name, the
+/// step is 3 and changes nothing.
+#[test]
+fn relookup_field_contents_copies_the_lookups_again() {
+    let relookup = |field: u64, repetition: i16| {
+        let mut step = ScriptStep::new(40);
+        step.set_flag(flag::NO_INTERACT, true);
+        step.set_field_spec(
+            0,
+            Some(FieldSpec::new(
+                StoredKey::from_id(OCCURRENCE).unwrap(),
+                StoredKey::from_id(field).unwrap(),
+                repetition,
+            )),
+        );
+        step
+    };
+    let mut tree = lookup_tree();
+    let (tasks, notes) = (uint_segment(TABLE), uint_segment(NOTES));
+    tree.put(
+        &[&tasks, &[5], &serial::encode(3), &uint_segment(NAME)],
+        text_node(&[], "東京"),
+    );
+    for (field, text) in [(BODY, "jp"), (TASK, "東京")] {
+        tree.put(
+            &[&notes, &[5], &serial::encode(5), &uint_segment(field)],
+            text_node(&[], text),
+        );
+    }
+    let ids: RidList = (1..=5).collect();
+    tree.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
+    tree.put(&[&notes, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 5]));
+    let open_transaction = |skip_auto_enter: bool| {
+        let mut open = ScriptStep::new(205);
+        open.set_flag(om_scripts::flag::SELECT_ALL, skip_auto_enter);
+        open
+    };
+    // In place of scripts 5 to 9, so the catalog's index lists them.
+    for (id, name, steps) in [
+        (
+            5u64,
+            "Relookup in a transaction",
+            vec![
+                fixture::go_to_record(1),
+                set_field(NOTE, 1, "\"typed\""),
+                ScriptStep::new(75),
+                open_transaction(false),
+                relookup(fixture::NAME, 0),
+                set_var("$relookup", "Get ( LastError )"),
+                ScriptStep::new(206),
+                exit_with("Tasks::Note & \"/\" & $relookup & \"/\" & Get ( LastError )"),
+            ],
+        ),
+        (
+            6,
+            "Relookup skipped",
+            vec![
+                fixture::go_to_record(1),
+                open_transaction(true),
+                relookup(fixture::NAME, 0),
+                set_var("$relookup", "Get ( LastError )"),
+                ScriptStep::new(206),
+                exit_with("Tasks::Note & \"/\" & $relookup & \"/\" & Get ( LastError )"),
+            ],
+        ),
+        (
+            8,
+            "Relookup through Name",
+            vec![
+                fixture::go_to_record(1),
+                set_field(NOTE, 1, "\"typed\""),
+                ScriptStep::new(75),
+                relookup(fixture::NAME, 0),
+                exit_with("Tasks::Note & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name"),
+            ],
+        ),
+        (
+            7,
+            "Relookup again",
+            vec![
+                fixture::go_to_record(1),
+                relookup(fixture::NAME, 0),
+                open_transaction(false),
+                relookup(fixture::NAME, 0),
+                ScriptStep::new(206),
+            ],
+        ),
+        (
+            9,
+            "Relookup refused",
+            vec![
+                fixture::on(86, true),
+                fixture::go_to_record(1),
+                relookup(fixture::COUNT, 0),
+                set_var("$count", "Get ( LastError )"),
+                relookup(fixture::NAME, 2),
+                exit_with("$count & \"/\" & Get ( LastError ) & \"/\" & Tasks::Note"),
+            ],
+        ),
+    ] {
+        tree.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-relookup-step", &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let count = |client: &mut Session| {
+        let records = server::records_of(client, TABLE);
+        server::cell(&records, 1, 0xfc).map(str::to_owned)
+    };
+    // A transaction that skips auto-entry copies nothing and writes
+    // nothing.
+    let before = count(&mut client);
+    assert_eq!(run(&mut client, 6), (0, "/0/0".to_string()));
+    assert_eq!(count(&mut client), before);
+    // Inside an ordinary transaction the copied value is staged, and
+    // Commit Transaction writes it.
+    assert_eq!(run(&mut client, 5), (0, "w/0/0".to_string()));
+    assert_eq!(run(&mut client, 8), (0, "w/0/Write tests".to_string()));
+    let records = server::records_of(&mut client, TABLE);
+    assert_eq!(server::cell(&records, 3, NOTE), Some("jp"));
+    assert_eq!(server::cell(&records, 3, NAME), Some("東京"));
+    // Nothing new to copy, outside a transaction or inside one: the
+    // record is not written again.
+    let before = count(&mut client);
+    assert_eq!(run(&mut client, 7).0, 0);
+    assert_eq!(count(&mut client), before);
+    // The script's last error is the reply's too.
+    assert_eq!(run(&mut client, 9), (3, "3/3/w".to_string()));
+}
+
+/// An import aborts with 3 when it reaches a record whose relookup the
+/// transaction holds (#647). The transaction reverts the relookup and
+/// the import leaves even the row it staged before the refusal unchanged.
+#[test]
+fn an_import_into_a_staged_relookup_is_refused() {
+    let mut relookup = ScriptStep::new(40);
+    relookup.set_flag(flag::NO_INTERACT, true);
+    relookup.set_field_spec(
+        0,
+        Some(FieldSpec::new(
+            StoredKey::from_id(OCCURRENCE).unwrap(),
+            StoredKey::from_id(fixture::NAME).unwrap(),
+            0,
+        )),
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "om-psos-relookup-import-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Documents")).unwrap();
+    std::fs::write(dir.join("Documents").join("counts.tab"), "9\r10\r").unwrap();
+    let mut tree = lookup_tree();
+    let steps = vec![
+        fixture::go_to_record(1),
+        set_field(NOTE, 1, "\"typed\""),
+        ScriptStep::new(75),
+        find(28, &[(false, &[(OCCURRENCE, COUNT, "3")])]),
+        ScriptStep::new(205),
+        relookup,
+        set_var("$relookup", "Get ( LastError )"),
+        ScriptStep::new(23), // Show All Records
+        // Import into task 4 (Count 1) first, then task 1 (Count 3).
+        sort(&spec(false, vec![entry(OCCURRENCE, COUNT, false, None)])),
+        set_var("$order", COUNTS),
+        set_var("$p", "Get ( DocumentsPath ) & \"counts.tab\""),
+        transfer::import_as(
+            &["$p"],
+            &[COUNT],
+            false,
+            om_transfer::spec::ImportAction::UpdateFoundSet,
+        ),
+        ScriptStep::new(206),
+        exit_with("$order & \"/\" & $relookup & \"/\" & Get ( LastError )"),
+    ];
+    tree.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(8, "Relookup, then an import", steps).encode(),
+    );
+    let file = TempFile(dir.join(fixture::FILE));
+    fixture::write_tree(&file.0, &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let result = run(&mut client, 8);
+    let records = server::records_of(&mut client, TABLE);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, (3, "1,3,5,7/0/3".to_string()));
+    assert_eq!(server::cell(&records, 1, NOTE), Some("typed"));
+    assert_eq!(server::cell(&records, 1, COUNT), Some("3"));
+    assert_eq!(server::cell(&records, 4, COUNT), Some("1"));
 }
 
 /// A new record's entered value that its replacing auto-entered calculation

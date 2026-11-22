@@ -507,6 +507,13 @@ pub fn rebuild(root: &OwnedNode, superblock: &[u8]) -> Result<Vec<u8>> {
     let last_page = next - 1;
 
     let mut scn = u64::from_be_bytes(superblock[SCN..SCN + 8].try_into().expect("8 bytes"));
+    // Each page written takes the next change number (5.2): a stored one
+    // without room for them all is refused, not wrapped.
+    if scn.checked_add(pages.len() as u64 + 1).is_none() {
+        return Err(Error::Write(
+            "the file's change number has no room for the rebuilt pages",
+        ));
+    }
     let mut out = vec![0u8; (last_page as usize + 1) * PAGE_SIZE];
     let mut write_page = |number: u32, page: &Built, prev: u32, next: u32| {
         scn += 1;
@@ -654,6 +661,10 @@ mod tests {
         assert_eq!(node.children.len(), 202);
         assert_eq!(node.children[128].segment.0, [0x80, 0x00]);
         assert_eq!(node.assembled().unwrap().as_ref(), value.as_slice());
+        // A stored change number with no room for the pages is refused.
+        let mut full = superblock.clone();
+        full[SCN..SCN + 8].copy_from_slice(&(u64::MAX - 3).to_be_bytes());
+        assert!(rebuild(&root, &full).is_err());
     }
 
     #[test]
