@@ -165,11 +165,38 @@ between the corners its start bits name, as Browse draws it (layout-model.md
 printing are decoded but refused ([report sliding](report-sliding.md)). The supported slice does not silently clip oversized
 objects or drop records returned incompletely by the provider.
 
-Append, target/container/variable/currently-open-PDF destinations, blank records,
+Target/container/variable/currently-open-PDF destinations, blank records,
 email attachment creation, encryption/restricted permissions, metadata,
 page ranges and page layouts and magnifications other than Default are
 explicitly refused. With Restore On, slots 0-7 accept only their decoded
-neutral numeric defaults. The other restored options:
+neutral numeric defaults. The other options:
+- **Append to existing PDF** (`kOption`) writes the existing file's pages
+  followed by the report's. With no file at the path it writes the report
+  alone [I: FileMaker's answer there is unmeasured]. With a file to append to,
+  the PDF worker accepts the bounded page-only format OpenMaker emits. Its
+  PDF 1.7 binary marker identifies a candidate for validation. The worker
+  verifies the terminal footer, the classic cross-reference table, and every
+  indexed object at its exact offset. It requires a minimal catalog and
+  trailer, a flat page tree with matching page parents and count, and each
+  page's own media box. Extra revisions, unindexed objects, metadata,
+  encryption, annotations, comments outside strings or streams, and other
+  syntax outside this format are refused with error 3 before saving.
+
+  The copy remaps indirect references and writes a new page tree and
+  cross-reference table. It copies other object bytes, including literal
+  strings, numbers and encoded streams, verbatim. References to missing
+  objects or to discarded structural objects fail the append, as do
+  indexed objects unreachable from the pages. The worker does not use a
+  repaired PDF to assemble the result. Reports saved with Page Only can
+  be appended repeatedly. The existing file is read up to 512 MiB and
+  both reports together can have at most 100,000 pages.
+
+  The staged result replaces the destination only after comparing the
+  destination with the bytes read. A changed file or a file that appeared
+  after an absent-path check results in error 800. OpenMaker serializes
+  appends within one process. A writer in another process can still race
+  the comparison, including the reread, through the rename. FileMaker's
+  own append was not compared.
 - **Initial view (slot 8)** is honored in the PDF's catalog (script-steps.md
   11.7, 12.5):
   - 0 Page Only writes no `/PageMode`, the PDF default;
@@ -737,8 +764,9 @@ is inferred from Browse; its printed output has not been compared.
 
 `cargo test -p om-gui --lib pdf_` exercises the real desktop runtime/host, generates
 found-set (three pages) and current-record (one page) output from synthetic data,
-keeps the selected record/index, and verifies cancellation plus unsupported
-append/security preserve existing output. The found set is deliberately shuffled;
+keeps the selected record/index, and verifies cancellation, an append
+without the PDF worker and unsupported security options preserve existing
+output (`tests/script_engine.rs` appends with the worker). The found set is deliberately shuffled;
 fields include a calculation using `Get ( RecordNumber )` and a formatted currency
 value. A second check refuses text overflow and a summary part. A small pagination
 unit check verifies repeated parts, whole-record transitions and oversize refusal.

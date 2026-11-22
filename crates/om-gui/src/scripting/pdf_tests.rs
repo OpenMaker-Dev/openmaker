@@ -1456,6 +1456,8 @@ fn desktop_pdf_outputs_found_set_and_current_record_and_preserves_existing_on_re
         assert!(String::from_utf8_lossy(&bytes).contains(&format!("/Count {pages}")));
     }
     let existing = std::fs::read(&all).unwrap();
+    // Without the PDF worker (unit tests have none) an append refuses and
+    // keeps the file; with it, tests/script_engine.rs appends.
     let mut append = pdf(&path(&all), false);
     append.flags |= flag::OPTION;
     let mut c = client(vec![append, exit("Get ( LastError )")]);
