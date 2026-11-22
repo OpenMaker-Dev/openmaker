@@ -12,6 +12,7 @@ if ((EUID != 0)); then
     exec sudo -- "$script_dir/update.sh" "$binary_dir"
 fi
 lock_installation
+require_no_pending_uninstall
 managed_installation
 
 scratch=$(mktemp -d)

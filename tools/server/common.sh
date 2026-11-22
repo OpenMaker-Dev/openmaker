@@ -59,21 +59,78 @@ root_directory() {
     (( (8#$mode & 022) == 0 )) || fail "Directory is writable by other users: $directory"
 }
 
-managed_installation() {
-    root_directory /opt/OpenMaker
+managed_directories() {
+    root_directory "${server_root%/*}"
     root_directory "$server_root"
     root_directory "$server_root/releases"
+}
+
+managed_unit() {
     [[ -f "$unit_path" && ! -L "$unit_path" &&
         $(stat -c %u -- "$unit_path") == 0 ]] &&
         grep -Fxq '# Managed by the OpenMaker Server service scripts.' "$unit_path" ||
         fail 'Expected a service installed by the OpenMaker Server scripts.'
-    previous_release=$(readlink -- "$server_root/bin") ||
-        fail 'The managed binary link is missing.'
-    [[ $previous_release =~ ^releases/release\.[[:alnum:]]{8}$ &&
-        -d "$server_root/$previous_release" && ! -L "$server_root/$previous_release" ]] ||
-        fail 'The managed binary link points outside the release directory.'
     [[ $(systemctl show -p FragmentPath --value "$unit") == "$unit_path" ]] ||
         fail 'systemd is using a different unit file.'
+}
+
+managed_release_link() {
+    local link=$1 release
+    [[ -L "$link" && $(stat -c %u -- "$link") == 0 ]] ||
+        fail "Expected a root-owned release link: $link"
+    # Preserve trailing newlines so the pattern checks the whole link target.
+    release=$(readlink -n -- "$link" && printf '.') || fail "Cannot read release link: $link"
+    release=${release%.}
+    [[ $release =~ ^releases/release\.[[:alnum:]]{8}$ && ! -L "$server_root/$release" ]] ||
+        fail 'The managed binary link points outside the release directory.'
+    if [[ -e "$server_root/$release" ]]; then
+        root_directory "$server_root/$release"
+    fi
+    printf '%s\n' "$release"
+}
+
+managed_installation() {
+    managed_directories
+    managed_unit
+    previous_release=$(managed_release_link "$server_root/bin")
+    [[ -d "$server_root/$previous_release" ]] || fail 'The managed binary release is missing.'
+}
+
+require_no_pending_uninstall() {
+    [[ ! -e "$server_root/.uninstall-release" && ! -L "$server_root/.uninstall-release" ]] ||
+        fail 'An uninstall is pending. Rerun uninstall.sh to finish it.'
+}
+
+uninstall_service() {
+    local pending="$server_root/.uninstall-release" previous_release
+    if [[ -e "$pending" || -L "$pending" ]]; then
+        managed_directories
+        previous_release=$(managed_release_link "$pending")
+        [[ ! -e "$server_root/bin" && ! -L "$server_root/bin" ]] ||
+            fail 'A binary path appeared during uninstall.'
+        if [[ -e "$unit_path" || -L "$unit_path" ]]; then
+            managed_unit
+            systemctl disable --now "$unit"
+        fi
+    elif [[ ! -e "$unit_path" && ! -L "$unit_path" &&
+        ! -e "$server_root/bin" && ! -L "$server_root/bin" &&
+        $(systemctl show -p LoadState --value "$unit") == not-found ]]; then
+        echo 'OpenMaker Server service is already absent.'
+        return
+    else
+        managed_installation
+        systemctl disable --now "$unit"
+        # Keep the validated release link until both systemd and disk cleanup succeed.
+        mv -T -- "$server_root/bin" "$pending"
+    fi
+
+    rm -f -- "$unit_path"
+    systemctl daemon-reload
+    if [[ -d "$server_root/$previous_release" ]]; then
+        remove_release "$previous_release"
+    fi
+    rm -- "$pending"
+    echo 'Removed the OpenMaker Server service and binaries. Kept data, settings, credentials, and the service account.'
 }
 
 stage_release() {

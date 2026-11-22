@@ -12,10 +12,9 @@ if ((EUID != 0)); then
     exec sudo -- "$script_dir/install.sh" "$binary_dir"
 fi
 lock_installation
+require_no_pending_uninstall
 
-root_directory /opt/OpenMaker
-root_directory "$server_root"
-root_directory "$server_root/releases"
+managed_directories
 root_directory "$server_root/Data"
 root_directory "$config"
 root_directory "$config/tls"

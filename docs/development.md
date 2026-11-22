@@ -398,11 +398,20 @@ Use `sudo systemctl edit openmaker-server.service` for unit overrides.
 When replacing a manual installation, stop its service first. The
 installer expects root-owned parent directories and manages only the
 unit and binaries it installs.
-Update keeps configuration and data, retains the service's active or
-stopped state, and restores the previous binaries and unit if the updated
-service fails to start. Uninstall stops and disables the service and
-removes its unit and binaries. It keeps databases, backups, logs, settings,
-credentials, and the service account for a later install.
+
+Before updating, take a current backup of the hosted databases and keep it
+separate from the live database folder. Update keeps the settings and the
+service's active or stopped state. If startup fails, the script attempts
+to restore the previous binaries and unit. The server can save deferred
+recovery to hosted files before both listeners are ready. Those writes
+persist through binary and unit rollback. Use the pre-update backup if you
+need to restore the previous database contents.
+
+Uninstall stops and disables the service and removes its unit and
+binaries. It keeps databases, backups, logs, settings, credentials, and
+the service account for a later install. If uninstall is interrupted,
+correct the reported error and rerun `tools/server/uninstall.sh` before
+reinstalling or updating.
 
 ### Packages for Ubuntu 24.04
 
