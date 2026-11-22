@@ -30,7 +30,8 @@ struct Server {
     /// lines) of each report row, for sliding address blocks.
     report_slides: bool,
     /// Signed (7), an unstored calculation of a `$$` and a `$` variable,
-    /// and Queried (8), which reads a row's Signed through ExecuteSQL.
+    /// Queried (8), which reads a row's Signed through ExecuteSQL, and
+    /// Rated (14) and RatedTotal (15), for a variable-dependent total.
     report_variables: bool,
     scripts: BTreeMap<String, Vec<Script>>,
     rows: BTreeMap<String, String>,
@@ -172,12 +173,20 @@ impl Provider {
             pdf_tests::add_grand_fields(&mut schema);
         }
         if self.server.lock().unwrap().report_variables {
-            for (id, name, source) in [
-                (7, "Signed", "$$signer & \" / \" & $who"),
+            use om_data::host::{FieldClass, SummaryDef, SummaryKind};
+            for (id, name, value_type, source) in [
+                (7, "Signed", ValueType::Text, "$$signer & \" / \" & $who"),
                 (
                     8,
                     "Queried",
+                    ValueType::Text,
                     r#"GetValue ( ExecuteSQL ( "SELECT \"Signed\" FROM \"Rows\"" ; "" ; "" ) ; 1 )"#,
+                ),
+                (
+                    14,
+                    "Rated",
+                    ValueType::Number,
+                    "If ( IsEmpty ( $$signer ) Or IsEmpty ( $who ) ; -1 ; 10 )",
                 ),
             ] {
                 let mut cx = om_data::formula::Context::new(schema.names());
@@ -190,9 +199,17 @@ impl Provider {
                 };
                 schema.add_field(
                     5,
-                    FieldDef::calculation(id, name, ValueType::Text, formula, false),
+                    FieldDef::calculation(id, name, value_type, formula, false),
                 );
             }
+            schema.add_field(
+                5,
+                FieldDef {
+                    class: FieldClass::Summary,
+                    summary: Some(SummaryDef::new(SummaryKind::Total, 14)),
+                    ..FieldDef::data(15, "RatedTotal", ValueType::Number)
+                },
+            );
         }
         if self.server.lock().unwrap().report_groups {
             schema.add_field(5, FieldDef::data(10, "Region", ValueType::Text));
@@ -2159,6 +2176,35 @@ fn opening_a_peer_evaluates_its_trigger_parameter_in_the_peer_namespace() {
     assert_eq!(c.result(), "Root");
 }
 
+#[test]
+fn set_zoom_level_sets_and_clears_the_windows_zoom_lock() {
+    for locked in [true, false] {
+        let mut zoom = ScriptStep::new(97);
+        zoom.value = 5;
+        if locked {
+            zoom.flags |= om_data::scripts::flag::LOCK;
+        }
+        let mut client = Client::new(vec![zoom], vec![]);
+        client.run_in(WindowState {
+            layout: Some(1),
+            record: Some(1),
+            zoom_locked: !locked,
+            ..Default::default()
+        });
+        let state = client
+            .events()
+            .into_iter()
+            .rev()
+            .find_map(|event| match event {
+                ScriptEvent::Window(update) => Some(update.state),
+                _ => None,
+            })
+            .expect("Set Zoom Level publishes the window");
+        assert_eq!(state.zoom, 150);
+        assert_eq!(state.zoom_locked, locked);
+    }
+}
+
 /// Adjust Window [Resize to Fit] before the window's content area was
 /// drawn (#1115): the worker sends the window what the step fits, at the
 /// step's zoom and bars, after the window update with what the script
@@ -3046,6 +3092,10 @@ pub(super) fn button_group_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec
 
 pub(super) fn conditional_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
     report_fixture(false, Some(pdf_tests::conditional_document()))
+}
+
+pub(super) fn symbols_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
+    report_fixture(false, Some(pdf_tests::symbols_document()))
 }
 
 /// The rows sorted by Region (East, North, West) with sub-summary parts.

@@ -321,7 +321,16 @@ fn desktop_print_takes_a_stored_current_record_only_with_its_options() {
 
 #[test]
 fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
-    for (proceed, expected, jobs) in [(false, "20", 0), (true, "0", 1)] {
+    for (proceed, replace_trigger, expected, jobs) in [
+        (false, false, "20", 0),
+        (true, false, "0", 1),
+        (true, true, "0", 1),
+    ] {
+        let trigger = if replace_trigger {
+            vec![ScriptStep::new(62)]
+        } else {
+            vec![exit(if proceed { "1" } else { "0" })]
+        };
         let (mut c, fake) = client(
             vec![
                 var("$$signer", "\"Ada\""),
@@ -329,7 +338,7 @@ fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
                 print(true, false, false),
                 exit("Get ( LastError )"),
             ],
-            vec![exit(if proceed { "1" } else { "0" })],
+            trigger,
         );
         // Print, held for the trigger, prints with the script's variables
         // when the trigger lets it (#596).
@@ -339,6 +348,47 @@ fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
             let mut server = c.server.lock().unwrap();
             server.report_variables = true;
             server.refresh_render = Some(document);
+            if replace_trigger {
+                let mut replacement = script(vec![exit("1")]);
+                replacement.id = 2;
+                replacement.name = "Replacement".into();
+                server
+                    .scripts
+                    .get_mut("Root.fmp12")
+                    .unwrap()
+                    .push(replacement);
+            }
+        }
+        if replace_trigger {
+            // The button exits the paused trigger and starts a new script
+            // before the held Print runs. Print still belongs to its caller.
+            let mut button = ScriptStep::new(1);
+            button.reserved[..4].copy_from_slice(&[2, 1, 2, 0xbe]);
+            button.value = 2; // Exit current script.
+            let window = dirty();
+            c._keep_jobs
+                .send(Job {
+                    epoch: 1,
+                    window: window.id,
+                    ctx: Default::default(),
+                    request: Request::Script(Box::new(ScriptJob {
+                        start: Start::Button {
+                            step: Box::new(button),
+                            formula: None,
+                            literal: String::new(),
+                            portal: None,
+                        },
+                        window,
+                        others: Vec::new(),
+                        context: SessionContext {
+                            host: "host.invalid".into(),
+                            file: "Root.fmp12".into(),
+                            account: "root-account".into(),
+                            local: None,
+                        },
+                    })),
+                })
+                .unwrap();
         }
         c.run_in(dirty());
         assert_eq!(c.result(), expected);

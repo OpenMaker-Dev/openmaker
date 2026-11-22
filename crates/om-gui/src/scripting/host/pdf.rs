@@ -237,7 +237,7 @@ impl WorkerHost<'_> {
             .map_err(|e| self.report_error(ReportError::unsupported(e)))?;
         let selected_ids: Vec<u64> = selected.iter().map(|id| *id as u64).collect();
         let breaks = self
-            .report_groups(&document.layout, occurrence, &schema, &selected_ids)
+            .report_groups(&document.layout, occurrence, &schema, &selected_ids, true)
             .map_err(|e| self.report_error(e))?;
         // Claris: Get ( WindowMode ) is 3 while printing is in progress; a
         // PDF is printed output too (inferred). Layout calculations such as
@@ -359,13 +359,15 @@ impl WorkerHost<'_> {
 
     /// The sorted groups of the layout's sub-summary parts for `selected`
     /// (record ids in output order); empty, without reading any data, for
-    /// a layout without them. Shared by output and Preview page counts.
+    /// a layout without them. Output uses the script's lent variables
+    /// before there is a report row. Preview navigation uses the host store.
     pub(super) fn report_groups(
         &mut self,
         layout: &om_layout::Layout,
         occurrence: u64,
         schema: &om_data::host::CalcSchema,
         selected: &[u64],
+        printing: bool,
     ) -> Result<Vec<om_layout::pagination::BreakGroups>, ReportError> {
         let breaks = report::report_breaks(layout, schema, occurrence)?;
         if breaks.is_empty() {
@@ -384,8 +386,12 @@ impl WorkerHost<'_> {
             )));
         }
         let fields: Vec<u64> = breaks.iter().map(|b| b.field).collect();
+        let snapshot = self.variable_snapshot(printing);
         let found = self
-            .file(|f| f.found_groups(occurrence, &fields))
+            .file(|f| {
+                f.with_variables(snapshot.as_ref())
+                    .found_groups(occurrence, &fields)
+            })
             .ok_or_else(|| {
                 ReportError::unsupported("This provider has no report calculation context")
             })?
@@ -545,7 +551,22 @@ impl WorkerHost<'_> {
     ) -> Result<(String, Option<Value>), ReportError> {
         let mut own = None;
         let (group, row) = (context.group, context.portal);
-        let text = report::object_text(object, origin, schema, |field| {
+        let text = report::object_text(object, origin, schema, |piece| {
+            let field = match piece {
+                report::Piece::Field(field) => field,
+                report::Piece::Literal(text) if !report::merges(text) => return Ok(text.into()),
+                // Symbols on the record, as Browse shows them. Script
+                // output still uses the renderer's merge-variable refusal.
+                report::Piece::Literal(text) => {
+                    report::script_printed(text)?;
+                    let context = report::in_row(Context::record(origin, record), row);
+                    return om_data::host::layout::merge_text_checked(self, text, &context)
+                        .map_err(|code| ReportError {
+                            code: if code == 0 { 3 } else { code },
+                            message: "A report symbol could not be calculated completely".into(),
+                        });
+                }
+            };
             let (value, text) =
                 self.pdf_field(origin, record, group, row, field, object, schema)?;
             if object.kind() == ObjectKind::Field {

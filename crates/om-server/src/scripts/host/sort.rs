@@ -10,7 +10,10 @@
 //! list after its values (dividers ignored); ties to the next field, and
 //! finally to the record id. A sort field of another occurrence of a
 //! different table sorts by its first related record's value (Claris); an
-//! unstored calculation by its value on each record. Value lists from
+//! unstored calculation by its value on each record. Sort Records refuses
+//! a self join's field (3, #610). Sorts nested more than 16 deep inside one
+//! another, through related sort fields, stop with 3
+//! (`om_data::host::SortNesting`). Value lists from
 //! fields and the summary reorder are not supported (3).
 
 use std::cmp::Ordering;
@@ -102,6 +105,23 @@ impl ServerHost {
         }
         let window = self.window()?;
         let (occurrence, found) = (window.occurrence, window.found.clone());
+        // A self join's field would sort by its first related record, and
+        // the summaries a sorted found set feeds would have to follow:
+        // refused rather than sorted by the record's own value (#610).
+        // A field that no longer exists is left to the sort's own check
+        // (102).
+        let self_joined = spec.fields.iter().any(|entry| {
+            let field_occurrence = entry.field.occurrence.unwrap_or(occurrence);
+            entry.summary.is_none()
+                && self
+                    .schema
+                    .field(field_occurrence, entry.field.field)
+                    .is_some()
+                && self.self_join(occurrence, field_occurrence)
+        });
+        if self_joined {
+            return Err(UNSUPPORTED.into());
+        }
         let sorted = self.sorted(occurrence, found, spec)?;
         let window = self.window_mut()?;
         window.found = sorted;
@@ -134,6 +154,20 @@ impl ServerHost {
         self.sort_window(&spec)
     }
 
+    /// Whether `field_occurrence` is a self join's from `occurrence`:
+    /// another occurrence of the same table that a relationship path leads
+    /// to. A field of it sorts by its first related record in FileMaker
+    /// (Claris for related fields; calc-values.md 12.1 for the self join).
+    /// Another occurrence of the same table that none leads to, as a sort
+    /// kept from a layout of it names, is the record's own field.
+    fn self_join(&self, occurrence: u64, field_occurrence: u64) -> bool {
+        field_occurrence != occurrence
+            && self.schema.table_of(field_occurrence) == self.schema.table_of(occurrence)
+            && self
+                .calc_schema()
+                .is_some_and(|schema| schema.path(occurrence, field_occurrence).is_some())
+    }
+
     /// `records` of `occurrence`'s table in the order of `spec`.
     pub(super) fn sorted(
         &self,
@@ -146,6 +180,8 @@ impl ServerHost {
             .iter()
             .map(|entry| self.level(occurrence, entry))
             .collect::<Result<Vec<_>, _>>()?;
+        // A related sort field's related set may be sorted too.
+        let _nesting = om_data::host::SortNesting::enter().ok_or(UNSUPPORTED)?;
         let mut keyed = Vec::with_capacity(records.len());
         for (i, record) in records.into_iter().enumerate() {
             // A key may evaluate a calculation or follow a relationship.

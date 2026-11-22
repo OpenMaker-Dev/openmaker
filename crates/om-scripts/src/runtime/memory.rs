@@ -96,6 +96,8 @@ pub struct MemoryScriptHost {
     /// Answers to custom dialogs in order; when empty the default button
     /// with the inputs unchanged.
     pub dialog_answers: VecDeque<DialogResponse>,
+    /// Send Mail's messages, in order; none is sent.
+    pub mails: Vec<Mail>,
     /// Layout triggers: (layout, event) -> (file, script).
     pub layout_triggers: HashMap<(u64, TriggerEvent), (FileId, u64)>,
     /// Calculation functions by lowercase name, answered before
@@ -144,6 +146,10 @@ pub struct MemoryScriptHost {
     pub pending_commits: u32,
     /// Go to List of Records' requests, in order; the found set stays.
     pub record_lists: Vec<RecordList>,
+    /// Scripts the Script Debugger runs whole without showing their
+    /// steps, as FileMaker runs an "Executable Only" script: (file,
+    /// script). It shows every other script.
+    pub executable_only: HashSet<(FileId, u64)>,
 }
 
 impl MemoryScriptHost {
@@ -162,6 +168,7 @@ impl MemoryScriptHost {
             log: Vec::new(),
             dialogs: Vec::new(),
             dialog_answers: VecDeque::new(),
+            mails: Vec::new(),
             layout_triggers: HashMap::new(),
             functions: HashMap::new(),
             queued: Vec::new(),
@@ -187,6 +194,7 @@ impl MemoryScriptHost {
             pending_opens: 0,
             pending_commits: 0,
             record_lists: Vec::new(),
+            executable_only: HashSet::new(),
         }
     }
 
@@ -586,6 +594,10 @@ impl ScriptHost for MemoryScriptHost {
             .cloned()
     }
 
+    fn script_debuggable(&mut self, file: FileId, script: u64) -> bool {
+        !self.executable_only.contains(&(file, script))
+    }
+
     fn script_named(&mut self, file: FileId, name: &str) -> Option<u64> {
         self.files
             .get(&file)?
@@ -728,8 +740,8 @@ impl Navigation for MemoryScriptHost {
     }
 
     /// No relationships are followed: no related records.
-    fn go_to_related_record(&mut self, _request: &RelatedRecords<'_>) -> HostResult {
-        self.call("go_to_related_record");
+    fn go_to_related_record(&mut self, request: &RelatedRecords<'_>) -> HostResult {
+        self.call(format!("go_to_related_record {:?}", request.occurrence));
         Err(ErrorCode::RECORD_MISSING.into())
     }
 
@@ -1307,6 +1319,13 @@ impl Files for MemoryScriptHost {
 impl Network for MemoryScriptHost {
     fn open_url(&mut self, url: &str, _with_dialog: bool, _external: bool) -> HostResult {
         self.call(format!("open_url {url}"));
+        Ok(())
+    }
+
+    /// Keeps the message in [`MemoryScriptHost::mails`].
+    fn send_mail(&mut self, mail: &Mail) -> HostResult {
+        self.call("send_mail");
+        self.mails.push(mail.clone());
         Ok(())
     }
 
