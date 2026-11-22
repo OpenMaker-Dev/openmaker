@@ -1118,10 +1118,16 @@ are the record the window painted there: a stored record, a record begun in
 the creation row, or the creation row itself. The triggers of the field the
 user is in read it (#1027). Rows a script moves to (Go to Portal Row, Go to
 Record) are numbered as Browse shows them, by the portal's sort and filter,
-and keep their record from then on (#192). Go to Related Record with "Show
-only related records" from a filtering portal's row finds the records the
-portal shows. Only a sort or filter that does not decode leaves the rows'
-order unknown, and steps reaching the active row's record are refused (3).
+and keep their record from then on (#192). Go to Related Record with
+"Show only related records" and "Match current record only" keeps the
+active row's record current in the destination found set when the set
+contains it. A scrolling filtered portal contributes all saved filter
+matches, including those before Initial Row. A non-scrolling filtered
+portal contributes matches before Initial Row and the saved matches
+within its visible rows. The effect of Initial Row and the non-scrolling
+row limit on this found set are unmeasured in FileMaker. Only a sort or
+filter that does not decode leaves the rows' order unknown, and steps
+reaching the active row's record are refused (3).
 
 Hidden objects, undecidable stand-ins, objects whose hide condition is still
 being calculated and the creation row's template take no clicks, as before.
