@@ -392,6 +392,12 @@ impl ScriptWorkspace {
     /// workspace's to take (once). A reply to a request of a workspace
     /// closed or replaced since, or of another file, is not, even with the
     /// same script ids.
+    /// Whether it waits for an answer: a save under way, or a request
+    /// whose reply has not come.
+    pub(crate) fn waiting(&self) -> bool {
+        self.busy || !self.awaiting.is_empty()
+    }
+
     pub(crate) fn takes(&mut self, file: u64, token: u64) -> bool {
         self.owns(file) && self.awaiting.remove(&token)
     }

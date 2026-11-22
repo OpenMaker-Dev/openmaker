@@ -874,6 +874,13 @@ fn o5_layout_objects_in_screen_points() {
                 "GetLayoutObjectAttribute ( \"First Name\" ; \"UUID\" )",
                 "BD9EB7E8-1237-464D-B0A2-42E058E00EC9",
             ),
+            // FileMaker Go's location functions are empty in FileMaker Pro
+            // [doc]; a sensor it lists is empty, another name 1208, as on
+            // FileMaker Server (s48) [I] (om_data::host::device).
+            ("Location ( 10 ; 60 )", ""),
+            ("LocationValues ( 10 ; 60 )", ""),
+            ("GetSensor ( \"stepCount\" ; 3600 )", ""),
+            ("GetSensor ( \"battery\" )", "?#1208"),
         ],
     );
     // Inside an object's own calculation: that object's UUID.

@@ -1,6 +1,7 @@
 //! Imports and exports stop when the host interrupts them (its script was
 //! aborted or ran out of time): before the next row or record, with error
-//! 1, the import writing no more rows and the export no file.
+//! 1, the import writing no more rows and the export no file. An import
+//! also stops at a row whose rule the host does not support checking.
 
 mod support;
 
@@ -69,6 +70,40 @@ fn an_interrupted_import_stops_before_the_next_row() {
         .unwrap_err();
         assert_eq!(error.code, 1, "{action:?}");
         assert_eq!(mem.checks, 3, "{action:?}");
+    }
+}
+
+/// A row the host refuses as one whose rule OpenMaker does not support
+/// checking ends the import with 3 at that row (#571); a row's ordinary
+/// error 3 (a lookup's invalid date, a record changed meanwhile) is a
+/// skipped row, and the import goes on to the next.
+#[test]
+fn only_a_rule_the_host_cannot_check_ends_an_import() {
+    for (error, ends) in [
+        (om_transfer::TransferError::unsupported("unchecked"), true),
+        (om_transfer::TransferError::new(3, "refused"), false),
+    ] {
+        let mut mem = Mem::new();
+        mem.refuse_create = Some((2, error));
+        let result = import::import(
+            &mut mem,
+            &import_request(ImportAction::Add),
+            b"Ann\rBob\rCyd\r",
+            &om_calc::Locale::en_us(),
+        );
+        match result {
+            Err(error) => {
+                assert!(ends, "{error:?}");
+                assert_eq!(error.code, 3);
+                assert_eq!(mem.creates, 2);
+            }
+            Ok(summary) => {
+                assert!(!ends, "{summary:?}");
+                assert_eq!(mem.creates, 3);
+                assert!(summary.errors.iter().any(|e| e.row == 2 && e.code == 3));
+                assert_eq!(summary.error_code(), 729);
+            }
+        }
     }
 }
 

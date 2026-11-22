@@ -221,6 +221,21 @@ says that, when the matching value is calculated, a relookup targets an
 editable input of that calculation. This documents calculated matching,
 not the timing of automatic lookups during creation or an input edit.
 
+**Relookup from the Records menu (documented, unmeasured).** Claris's
+[lookups help](https://help.claris.com/en/pro-help/content/lookups.html):
+"In Browse mode in the current table, select the match field, then choose
+Records menu > Relookup Field Contents"; it "updates all fields looked up
+by the match field across all records in the current found set", and "You
+can't undo your actions when you update lookup values". Neither the
+command nor the step commits the active record: uncommitted records the
+lookup affects stay uncommitted until the active record is committed
+([Committing data in records](https://help.claris.com/en/pro-help/content/committing-data.html)).
+Not measured:
+- the confirmation's wording and buttons;
+- whether the item is enabled with no field entered, or in a field that
+  is not a match field, and what that field answers;
+- what the open record holds afterwards.
+
 **Observed, bounded local case (#1194):** in FileMaker Pro 26.0.3, one
 new record in a two-table fixture used stored Text calculation match
 fields with option word `0xa0000020`. After an input field lost focus,

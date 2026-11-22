@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 om-data = { path = "../om-data" }
 om-layout = { path = "../om-layout" }
+om-report = { path = "../om-report" }
 om-provider = { path = "../om-provider" }
 om-url = { path = "../om-url" }
 # The PDF worker executable's limiting allocator (om-gui-pdf-worker; MIT OR Apache-2.0).
@@ -40,6 +41,8 @@ flate2 = "1.1"
 # worker (their text in the bundled fonts; resvg: MIT OR Apache-2.0).
 # Without `raster-images`: no raster image an SVG embeds is decoded.
 resvg = { version = "0.45.1", default-features = false, features = ["text"] }
+# Tokenize only the SVG prolog and root tag to place the icon tint.
+quick-xml = "0.41"
 # The root viewport's native window, which web viewers are children of
 # (the version eframe uses; MIT OR Apache-2.0 OR Zlib).
 raw-window-handle = "0.6"
@@ -56,7 +59,7 @@ log = "0.4"
 # libwebkit2gtk-4.1-dev) and pkg-config; running it, the WebKitGTK 4.1
 # runtime. Without it, web viewers show a note and their script steps fail.
 # On Linux its windows are on winit's X11 backend, also on a Wayland session.
-web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-core-foundation", "dep:objc2-foundation", "dep:getrandom"]
+web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:getrandom"]
 
 [target.'cfg(unix)'.dependencies]
 # Nonblocking open before checking local Insert/URL files, including FIFOs.
@@ -64,13 +67,16 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
-# The `web-viewer` feature's backend (wry: MIT OR Apache-2.0), and the
-# AppKit views it places pages in (the versions wry uses; MIT).
+# The `web-viewer` feature's backend (wry: MIT OR Apache-2.0).
 wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
-objc2 = { version = "0.6", optional = true }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSResponder", "NSView", "NSWindow"], optional = true }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"], optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"], optional = true }
+# AppKit (the versions wry uses; MIT): the views web viewers place pages
+# in, and the Insert commands' open panel (`file_panel`) with its
+# completion block.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"] }
+block2 = "0.6"
 # The web viewer bridge's tokens (the version om-data uses; MIT OR Apache-2.0).
 getrandom = { version = "0.2.17", optional = true }
 
@@ -116,10 +122,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-# The web viewer test's window, views and posted clicks (the versions wry
-# uses; MIT).
+# The web viewer test's window, views and posted clicks, and the open
+# panel test's panel (the versions wry uses; MIT).
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -130,6 +136,10 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 # Web viewers in the real event loop under an X server: one eframe event
 # loop per process, on the main thread.
+[[test]]
+name = "insert_panel_native"
+harness = false
+
 [[test]]
 name = "web_viewer_native"
 harness = false

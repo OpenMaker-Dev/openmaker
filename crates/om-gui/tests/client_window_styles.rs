@@ -201,6 +201,59 @@ fn a_card_opens_over_its_parent_and_its_close_box_returns_there() {
     dialog_says(&mut app, "Tasks:0:2:Ship:Tasks");
 }
 
+#[test]
+fn a_covered_cards_close_box_stays_below_the_front_card() {
+    let hosted = host(
+        "nested-card",
+        &[
+            fixture::script(
+                1,
+                "Open picker",
+                vec![
+                    view_as_table(),
+                    new_window("Picker", Some(CARD), Some((240, 360))),
+                ],
+            ),
+            fixture::script(
+                2,
+                "Open details",
+                vec![new_window("Details", Some(CARD), Some((180, 270)))],
+            ),
+        ],
+    );
+    let mut app = open(&hosted);
+    run(&mut app, "Open picker");
+    finished(&mut app);
+    let box_center = app.get_by_label("Close card").rect().center();
+    let picker_box = app.ctx.layer_id_at(box_center).expect("picker close layer");
+
+    run(&mut app, "Open details");
+    finished(&mut app);
+    common::wait_until(&mut app, "both cards to be drawn", |app| {
+        app.state().cards().len() == 2
+    });
+    let details_center = app
+        .state()
+        .cards()
+        .into_iter()
+        .find(|card| card.name == "Details")
+        .expect("front card")
+        .frame
+        .center();
+    let details = app
+        .ctx
+        .layer_id_at(details_center)
+        .expect("front card layer");
+    app.ctx.memory(|memory| {
+        let layers: Vec<_> = memory.layer_ids().collect();
+        let position = |id| layers.iter().position(|layer| *layer == id).unwrap();
+        assert!(
+            position(picker_box) < position(details),
+            "the picker close box paints above the details card"
+        );
+    });
+}
+
 /// Layout 1 (Tasks) shows Tasks::Name, filled yellow, at the top left of
 /// a 300-point body (layout-model.md 5): what Form view paints on the
 /// layout's own layer, as the starters' filled parts and panels.

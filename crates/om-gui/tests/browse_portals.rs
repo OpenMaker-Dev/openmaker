@@ -27,6 +27,7 @@ use std::{
 
 const PEOPLE: u64 = 0xd00001;
 const LINES: u64 = 0xd00002;
+const READY_LINES: u64 = 0xd00003;
 const P: u64 = 0x8001;
 const C: u64 = 0x8002;
 type Reads = Arc<Mutex<Vec<CalcNeed>>>;
@@ -90,6 +91,17 @@ fn schema() -> CalcSchema {
     );
     relation.options = 0x10;
     s.add_relationship(relation);
+    s.add_occurrence(READY_LINES, "Ready Lines", C);
+    s.add_relationship(RelationshipDef::new(
+        2,
+        PEOPLE,
+        READY_LINES,
+        vec![JoinPredicate {
+            op: JoinOp::Equal,
+            left: 2,
+            right: 2,
+        }],
+    ));
     s.add_value_list(om_data::meta::ValueList {
         id: 1,
         name: "Names".into(),
@@ -101,12 +113,12 @@ fn schema() -> CalcSchema {
     s.add_layout(7, "Portal fixture", Some(PEOPLE));
     s
 }
-fn source() -> MemorySource {
+fn source(second_popup: bool) -> MemorySource {
     let mut s = MemorySource::new();
     for (record, name) in [(19, "Clara"), (37, "Emery")] {
         let mut row = RecordValues::default();
         row.set(1, 1, Value::text(name));
-        row.set(2, 1, Value::text(""));
+        row.set(2, 1, Value::text(if second_popup { name } else { "" }));
         s.put_record(P, record, row);
     }
     for (record, name, owner, visible) in [
@@ -139,6 +151,8 @@ struct Calcs {
     hide_empty: bool,
     /// The row's button performs script 1, which shows the row it runs in.
     row_script: bool,
+    /// A second portal joins on Note so it can stay ready as Given is edited.
+    second_popup: bool,
     /// The portal's related records cannot be read: every read of them
     /// fails.
     fail_related: bool,
@@ -149,6 +163,7 @@ const SORTED_AND_FILTERED: Calcs = Calcs {
     control: 0,
     hide_empty: false,
     row_script: false,
+    second_popup: false,
     fail_related: false,
 };
 struct Provider {
@@ -195,7 +210,7 @@ impl DataProvider for Provider {
                     values: vec![
                         Some(name.into()),
                         Some("Page line".into()),
-                        Some(String::new()),
+                        Some(if self.calcs.second_popup { name } else { "" }.into()),
                     ],
                 })
                 .collect(),
@@ -212,7 +227,7 @@ impl DataProvider for Provider {
             delete: true,
             editable_fields: None,
             related: if self.calcs.control != 0 || self.calcs.row_script {
-                BTreeMap::from([(LINES, [1].into())])
+                BTreeMap::from([(LINES, [1].into()), (READY_LINES, [1].into())])
             } else {
                 BTreeMap::new()
             },
@@ -302,7 +317,7 @@ impl DataProvider for Provider {
             }
         }
         let schema = schema();
-        let source = source();
+        let source = source(self.calcs.second_popup);
         let recorder = Recorder::new(&source);
         let cx = Ctx::new(&schema.locale, Date::from_ymd(2026, 10, 30).unwrap());
         for need in needs {
@@ -458,7 +473,7 @@ fn document(calcs: Calcs) -> RenderLayout {
         text: Some("RELATED LINES".into()),
         ..object(1, 2, None, 20.0, 5.0, 300.0, 25.0)
     };
-    RenderLayout {
+    let mut rendered = RenderLayout {
         layout: Layout {
             id: 7,
             name: "Portal fixture".into(),
@@ -499,7 +514,28 @@ fn document(calcs: Calcs) -> RenderLayout {
             (3, "Note".into()),
             (11, "Given".into()),
         ]),
+    };
+    if calcs.second_popup {
+        let second = LayoutObject {
+            children: vec![21],
+            portal: Some(PortalObject {
+                table_alias_key: 1065091,
+                num_rows: 1.0,
+                initial_row: 1,
+                flags: 0x8,
+                ..Default::default()
+            }),
+            ..object(20, 9, None, 20.0, 214.0, 500.0, 32.0)
+        };
+        let mut control = field(21, Some(20), 1065091, 0.0, 0.0);
+        let options = control.field_obj.as_mut().unwrap();
+        options.display_type = 2;
+        options.value_list_key = 1;
+        rendered.layout.objects.root.push(20);
+        rendered.layout.objects.objects.extend([second, control]);
+        rendered.field_bindings.insert(21, "Given".into());
     }
+    rendered
 }
 fn open() -> (common::App, Reads) {
     open_with(SORTED_AND_FILTERED, None)
@@ -828,6 +864,129 @@ fn a_field_click_while_its_portal_is_read_again_focuses_that_records_field() {
         .collect();
     assert_eq!(focused, ["Aster"]);
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+/// A click on a portal row's pop-up menu while the portal's records are
+/// read again is not dropped, as a click on a row's edit box is not
+/// (#1099): once the records are in, that record's pop-up opens its list,
+/// with no second click (#288).
+#[test]
+fn a_pop_up_click_while_its_portal_is_read_again_opens_its_list_once_read() {
+    let hold = Gate::default();
+    hold.open();
+    let _release = Release(hold.clone());
+    let held = Arc::new(AtomicUsize::new(0));
+    let (mut app, _) = open_holding(
+        Calcs {
+            control: 2,
+            sort: false,
+            row_script: true,
+            ..SORTED_AND_FILTERED
+        },
+        None,
+        Some((hold.clone(), held.clone())),
+    );
+    common::wait_for_label(&mut app, "Line Aster / Clara");
+    let menus = || {
+        egui_kittest::kittest::By::new()
+            .role(Role::ComboBox)
+            .label("Lines::Given")
+    };
+    let value = |node: &egui_kittest::Node<'_>| node.accesskit_node().value().unwrap_or_default();
+    // The portal is read again for the parent's draft of its match field,
+    // and shows the rows it showed last until the provider answers.
+    hold.close();
+    common::text_field(&app, "Given").focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("clara".into()));
+    common::wait_until(&mut app, "the portal read again", |_| {
+        held.load(Ordering::SeqCst) > 0
+    });
+    app.run_steps(3);
+    app.query_all(menus())
+        .find(|node| value(node) == "Aster")
+        .unwrap()
+        .click();
+    app.run_steps(10);
+    assert!(
+        app.query_by_role_and_label(Role::Button, "Cora").is_none(),
+        "the list opened before the portal's records were in"
+    );
+    hold.open();
+    common::wait_for_label(&mut app, "Cora");
+    app.get_by_role_and_label(Role::Button, "Cora").click();
+    common::wait_until(&mut app, "the chosen item", |app| {
+        let values: Vec<_> = app.query_all(menus()).map(|node| value(&node)).collect();
+        values.contains(&"Cora".into())
+            && values.contains(&"Baker".into())
+            && !values.contains(&"Aster".into())
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+#[test]
+fn a_new_pop_up_click_cancels_a_waiting_click_in_another_portal() {
+    let hold = Gate::default();
+    hold.open();
+    let _release = Release(hold.clone());
+    let held = Arc::new(AtomicUsize::new(0));
+    let (mut app, _) = open_holding(
+        Calcs {
+            control: 2,
+            sort: false,
+            row_script: true,
+            second_popup: true,
+            ..SORTED_AND_FILTERED
+        },
+        None,
+        Some((hold.clone(), held.clone())),
+    );
+    let menus = |label| {
+        egui_kittest::kittest::By::new()
+            .role(Role::ComboBox)
+            .label(label)
+    };
+    let values = |app: &common::App| {
+        app.query_all(menus("Lines::Given"))
+            .chain(app.query_all(menus("Ready Lines::Given")))
+            .filter_map(|node| node.accesskit_node().value())
+            .collect::<Vec<_>>()
+    };
+    common::wait_until(&mut app, "both portals' rows", |app| {
+        values(app).iter().filter(|value| *value == "Baker").count() == 2
+    });
+
+    // The first portal joins on Given. The second joins on the unchanged
+    // Note, so it can still open its pop-up during the first portal's read.
+    hold.close();
+    common::text_field(&app, "Given").focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("clara".into()));
+    common::wait_until(&mut app, "the first portal refresh", |_| {
+        held.load(Ordering::SeqCst) > 0
+    });
+    app.query_all(menus("Lines::Given"))
+        .find(|node| node.accesskit_node().value().as_deref() == Some("Aster"))
+        .unwrap()
+        .click();
+    app.run_steps(3);
+    app.query_all(menus("Ready Lines::Given"))
+        .find(|node| node.accesskit_node().value().as_deref() == Some("Baker"))
+        .unwrap()
+        .click();
+    common::wait_for_label(&mut app, "Cora");
+    hold.open();
+    common::wait_until(&mut app, "the first portal settled", |app| {
+        app.state().is_settled()
+    });
+    app.get_by_role_and_label(Role::Button, "Cora").click();
+    common::wait_until(&mut app, "the later click's selected value", |app| {
+        let values = values(app);
+        values.iter().any(|value| value == "Aster")
+            && values.iter().filter(|value| *value == "Cora").count() == 2
+    });
 }
 
 /// A pop-up menu in a portal row (#537) offers its list in that row, and

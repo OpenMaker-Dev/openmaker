@@ -1539,36 +1539,54 @@ Claris documents that Insert File without a source file shows a dialog in
 which the user selects a file, that its data goes into the target or the
 active container field, and that Export Field Contents without an output
 file asks the user for a file name and location ("Insert File script
-step", "Export Field Contents script step"). The desktop now does both,
-in an in-app dialog that takes a path (absolute, or relative to the
-Documents folder); the system's file panels are not used.
+step", "Export Field Contents script step"). The desktop does both. On
+macOS the Insert commands' file comes from the system's open panel
+(`NSOpenPanel`, shown modeless while the window waits on the step's
+prompt, titled with the command and saying the field the file goes into;
+`om-gui` `file_panel`). On Linux and Windows, in the GUI tests, and for
+Export Field Contents, an in-app dialog takes a path (absolute, or
+relative to the Documents folder). Neither offers "Store only a reference
+to the file", which FileMaker Pro's panel has: how FileMaker stores a
+reference is unmeasured ("External storage: still open", step 5), so such
+a step still stops as unsupported. That FileMaker Pro shows the panel
+modeless rather than as a sheet, and its exact title and message, are
+unmeasured [I].
 
-- Browse mode: a click on a container field object of the layout's own
-  table (not in a portal) selects it and makes it the active field
-  (`Get ( ActiveFieldName )`, OnObjectEnter/Exit as for other fields). A
-  focus ring shows it. Another field's focus, a click elsewhere on the
-  layout, another record, layout or mode, or a script that commits the
-  record or leaves the field ends the selection. A field's refused exit (its
-  OnObjectExit or validation trigger) keeps the focus where it was, so
-  the container is not selected. The field shows the picture or the
-  file's icon and name (Browse, above), never its library reference; media
-  is not played.
-- Insert > Picture... and Insert > File... run Insert Picture (56) and
-  Insert File (131) without a path on the selected field; they are
-  enabled only while a container is selected and the record may be
-  changed (no read-only file, no running script). Edit > Export Field
-  Contents... runs Export Field Contents (132) on it. Insert > PDF... and
-  Insert > Audio/Video... stay disabled: OpenMaker shows no PDF and plays
-  no media, and how FileMaker Pro stores what those commands insert is
-  not measured. A script's Insert PDF or Insert Audio/Video without a
-  path asks like Insert File, and stores the file as the steps with a
-  path do (typed by its name).
-- Before the dialog shows, Insert checks the field: a stored container
-  field of the window's own table, in Browse mode, on a connection whose
-  record capabilities allow changes; otherwise 413 or 201 (OpenMaker's
-  choices), with no dialog. Export reads the field's data first, through
-  the library as above, and refuses external data that cannot be read
-  intact (1225) before any dialog or output.
+[Claris's container commands](https://help.claris.com/en/pro-help/content/data-in-container-fields.html)
+describe PDF and Audio/Video insertion for interactive containers.
+[Claris's formatting help](https://help.claris.com/en/pro-help/content/formats-container-fields.html)
+excludes fields directly in portal rows from interactive formatting and
+allows fields inside a portal's popover. OpenMaker's interactive
+containers are available outside portal rows.
+
+- In Browse, clicking a container selects the field for Insert and Export
+  and shows a focus ring. Leaving the field, layout, record or mode ends
+  the selection. A refused field exit keeps focus on the previous field.
+  See [Browse mode](../desktop-client.md#browse-mode) for picture and PDF
+  display. Audio and video play on the current record in Form or List view
+  outside portal rows, in a `web-viewer` build with a native player for
+  that window (WebKitGTK on Linux/X11 and WKWebView on macOS).
+- Insert > Picture..., Audio/Video..., PDF... and File... run script steps
+  56, 159, 158 and 131 without a source path on the selected field. Insert
+  requires full menus, a writable selection whose field object allows
+  entry in Browse mode (Edit, not View Only or Select Only, which Claris
+  documents as preventing changes through the object), and no running
+  script. PDF and Audio/Video additionally require a field optimized for
+  interactive content outside portal rows. The same checks are made again
+  when the command runs. Edit > Export Field Contents... runs Export Field
+  Contents (132).
+- Insert PDF and Insert Audio/Video type the source by name using the
+  same rules as FileMaker Server's Set Field (oracle s34). Insert PDF also
+  requires a PDF header (`%PDF-` within the first 1024 bytes); Insert
+  Audio/Video takes what the Browse player plays (a `movie` path, or a
+  file named as audio or video, such as an `.aac` stored as a file). A
+  file of the wrong type yields error 700 before any edit preparation or
+  upload. The stored representation and error for these commands in
+  FileMaker Pro remain unmeasured [I, OpenMaker's choice].
+- Before showing the dialog, Insert checks that the selected stored
+  container field can be written in Browse on the current connection.
+  Export reads the field's data first and refuses external data that
+  cannot be read intact (1225) before showing a dialog or writing output.
 - The dialog's answer applies only to what it was opened for: the same
   file session, window and window UUID, mode, layout, record, active
   field and object, and field definition (the calculation schema it was

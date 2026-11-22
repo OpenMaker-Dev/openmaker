@@ -527,6 +527,64 @@ fn imported_rows_keep_the_values_auto_enter_gave_them() {
     }
 }
 
+#[test]
+fn import_without_auto_entry_keeps_the_duplicates_copied_value() {
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::{serial, slot::uint_segment};
+
+    const NUMBER: u64 = 41;
+    let scripts = [script(
+        1,
+        "Duplicate and import",
+        vec![
+            fixture::on(86, true),
+            set_variable("$p", "Get ( DocumentsPath ) & \"copy.tab\""),
+            ScriptStep::new(23),
+            fixture::go_to_record(1),
+            ScriptStep::new(205),
+            ScriptStep::new(8),
+            // Leave only the duplicate in the found set to update.
+            fixture::go_to_record(1),
+            ScriptStep::new(25),
+            ScriptStep::new(25),
+            import_as(&["$p"], &[NAME], false, ImportAction::UpdateFoundSet),
+            set_variable("$import", "Get ( LastError )"),
+            ScriptStep::new(206),
+            fixture::exit_with("$import & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        NUMBER,
+        5,
+        "Get ( RecordNumber )",
+    );
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(1),
+            &uint_segment(NUMBER),
+        ],
+        om_scripts::text_node(&[], "1"),
+    );
+    let layout = Layout::new("duplicate-import");
+    let file = TempFile(layout.0.join("Tasks.fmp12"));
+    fixture::write_tree(&file.0, &root);
+    std::fs::write(layout.documents("copy.tab"), "Imported copy\r").unwrap();
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "duplicate-import");
+
+    assert_eq!(run(&mut client, 1), (0, "0|0".into()));
+    let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
+    assert_ne!(copy.0, 1);
+    assert_eq!(value(&copy, NUMBER), Some("1"));
+}
+
 /// The review's C1 for updates, C2 and C3: an update's stored calculation
 /// reads the new modification value; inside Open Transaction, Commit
 /// Transaction neither auto-enters what the import left out nor checks
@@ -636,6 +694,41 @@ fn imports_into_tables_the_server_cannot_write_fail_with_3() {
     let (mut client, _) = server::logged_in(port, "serial");
     assert_eq!(run(&mut client, 1), (3, "3".into()));
     assert_eq!(records_named(&mut client, "Alpha"), 0);
+}
+
+/// An import into a field that must be a member of a value list of a
+/// field's values, that field indexed in a language OpenMaker does not key
+/// (German, #571): the row with a value to check ends the import with 3
+/// and nothing is imported, the row before it neither, rather than
+/// skipping that row (729) and keeping the others.
+#[test]
+fn imports_checked_against_an_unkeyed_value_list_fail_with_3() {
+    let scripts = vec![script(
+        1,
+        "Import",
+        vec![
+            fixture::on(86, true),
+            set_variable("$p", "Get ( DocumentsPath ) & \"codes.tab\""),
+            import(&["$p"], &[NAME, CODE], true),
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    )];
+    let layout = Layout::new("unkeyed-list");
+    let mut root = fixture::tree(&scripts, true);
+    fixture::set_field_language(&mut root, fixture::TABLE, NAME, 25);
+    fixture::code_in_names_list(&mut root);
+    let file = TempFile(layout.0.join("Tasks.fmp12"));
+    fixture::write_tree(&file.0, &root);
+    std::fs::write(
+        layout.0.join("Documents").join("codes.tab"),
+        "Blank\t\rShipped\tShip\r",
+    )
+    .unwrap();
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "unkeyed-list");
+    assert_eq!(run(&mut client, 1), (3, "3".into()));
+    assert_eq!(records_named(&mut client, "Blank"), 0);
+    assert_eq!(records_named(&mut client, "Shipped"), 0);
 }
 
 /// The review's C4 and C5: an import or export the script's time limit
