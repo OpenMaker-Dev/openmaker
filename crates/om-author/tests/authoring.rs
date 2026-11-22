@@ -328,6 +328,103 @@ fn hosts_without_the_authoring_extension_are_read_only() {
     host.stop();
 }
 
+/// Exercise the native wire path with the extension disabled. Holding the
+/// index simulates another Script Workspace saving a different script.
+#[test]
+fn native_script_save_checks_both_locks_and_preserves_the_catalog() {
+    let mut root = fixture::tree(&scripts(), true);
+    fixture::index_scripts(&mut root);
+    let file = TempFile::from_tree("native-script-save", &root);
+    let host = host_configured(&file, "Server 26.0.3", om_server::Server::without_authoring);
+    let mut service = Service::new(target(&host, ACCOUNT, PASSWORD));
+    let got = get(&mut service, GREETING_REF);
+    assert_eq!(got["apply"]["available"], true);
+    let new_source = edited(text(&got["source"]));
+    let revision = text(&got["revision"]);
+
+    let (mut other, _) = session(&host, "Other desk", ACCOUNT, PASSWORD);
+    assert!(matches!(
+        other.lock(&[&[17], &[1]], 77, true).unwrap(),
+        om_protocol::write::LockReply::Granted { .. }
+    ));
+    let refused = error(service.handle(&apply(&new_source, revision)));
+    assert_eq!(refused["kind"], "locked", "{refused:#}");
+    assert_eq!(get(&mut service, GREETING_REF)["revision"], revision);
+    other.kill_all_locks(77).unwrap();
+
+    let applied = ok(service.handle(&apply(&new_source, revision)));
+    assert_eq!(applied["verified"]["fresh_connection"], true, "{applied:#}");
+    let mut provider = provider(&host);
+    let catalog = provider.script_definitions().unwrap();
+    let index = catalog.index.unwrap();
+    assert_eq!(
+        content_revision(&index),
+        content_revision(root.at(&[&[17], &[1]]).unwrap())
+    );
+    assert_eq!(
+        index.child(authoring::MOD_COUNT).unwrap().value.as_deref(),
+        Some(&[1, 1][..])
+    );
+    let script = catalog.catalog.script(GREETING).unwrap();
+    assert_eq!(script.steps[1], greeting().steps[0]);
+    assert_eq!(script.unreferenced_data, greeting().unreferenced_data);
+
+    let mut clerk = Service::new(target(&host, CLERK, CLERK_PASSWORD));
+    let denied = error(clerk.handle(&apply(
+        &format!("# another edit\n{new_source}"),
+        text(&applied["revision"]),
+    )));
+    assert_eq!(denied["kind"], "permission_denied", "{denied:#}");
+    host.stop();
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn native_script_retry_leaves_a_member_only_save_unconfirmed() {
+    let mut root = fixture::tree(&scripts(), true);
+    fixture::index_scripts(&mut root);
+    let file = TempFile::from_tree("native-script-partial", &root);
+    let host = host_configured(&file, "Server 26.0.3", |server| {
+        // Answer the member upload and lose the connection on the index upload.
+        server
+            .without_authoring()
+            .panicking_on_after(om_protocol::Opcode::UploadToHost as u8, 1)
+    });
+    let target = target(&host, ACCOUNT, PASSWORD);
+    let mut service = Service::new(target.clone());
+    let mut reader = provider(&host);
+    let original_index = reader.script_definitions().unwrap().index.unwrap();
+    let got = get(&mut service, GREETING_REF);
+    let revision = text(&got["revision"]);
+    let new_source = edited(text(&got["source"]));
+    let request = apply(&new_source, revision);
+
+    let failed = error(service.handle(&request));
+    assert_eq!(failed["kind"], "outcome_unknown", "{failed:#}");
+    assert!(text(&failed["message"]).contains("The script member was read back as uploaded."));
+    let partial = reader.script_definitions().unwrap();
+    assert_eq!(partial.index.as_ref(), Some(&original_index));
+    let after = &failed["details"]["after_revision"];
+    assert_ne!(after, &got["revision"]);
+
+    // A new caller can see the edited steps but cannot confirm the index save.
+    let mut retry = Service::new(target);
+    assert_eq!(&get(&mut retry, GREETING_REF)["revision"], after);
+    let plan = ok(retry.handle(&Command::Plan(edit(&new_source, Some(revision)))));
+    assert_eq!(plan["already_applied"], false);
+    assert_eq!(plan["native_save_unconfirmed"], true);
+    let failed = error(retry.handle(&request));
+    assert_eq!(failed["kind"], "outcome_unknown", "{failed:#}");
+    assert_eq!(failed["details"]["member_content_matches"], true);
+    assert_eq!(failed["details"]["index_verified"], false);
+
+    let after_retry = reader.script_definitions().unwrap();
+    assert_eq!(after_retry.index, partial.index);
+    assert_eq!(after_retry.definitions, partial.definitions);
+    reader.close();
+    host.stop();
+}
+
 /// A save the host cannot write leaves the script as it was, in the file
 /// and as served: the edit is taken back and reported, not kept in memory.
 #[cfg(unix)]
