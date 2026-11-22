@@ -98,18 +98,16 @@ index keys, and no others:
 | `20` | `04` | in every file; the layout index `[4, 1]` has the same, the value list index `[21, 1]` has `01`. Probably the Manage dialogs' last view order (`KLastViewOrdering`) [I] |
 | `d8`, `fc`, `fc01`-`fc03` | | the index's UUID and modification stamp (schema-path.md 8) |
 
-**Name keys depend on the file's language.** A name list key is the
-name's text key without its `01` (schema-path.md 5.6) in the collation of
-the file's language ([README.md](README.md) F57). The English, Dutch and
-Italian files list their ASCII names under DUCET 5.2.0's primary weights
-and `00 00 00`. A name with accents (in the French, German, Spanish,
-Portuguese and Swedish files) has a second level after its primary
-weights: `00 00`, `01`, one secondary weight per character, `00` ("Añadir
+**Name keys do not depend on the file's language.** A name list key is
+FileMaker's key of the name in the catalog language (schema-path.md 5.6),
+the same in every file: an ASCII name is DUCET 5.2.0's primary weights and
+`00 00 00` in all 66 starters; accents add a secondary level ("Añadir
 registro relacionado": 27 primary weights, then `00 00 01 01 2f 01 ...
-01 00`, `2f` for the tilde). The Japanese, Korean and Chinese files use
-weights of their own (`76ee 9332`, the code points, for `目録`). How the
-list holds two members of one name (two folders' `--` ends) is not
-established: no starter file has two.
+01 00`, `2f` for the tilde), kana a tertiary one, and ideographs and Hangul
+syllables key as FileMaker's own weights (`76ee 9332`, the code points, for
+`目録`). How the list holds two scripts of one name is not established: no
+starter file has two (layouts and fonts of one name are listed under the
+key and the member's key segment, schema-path.md 5.6).
 
 **A script member** `[17, 5, S]` in the starter files has `04` and `05`
 (scripts only), `10`, `13` = 0, `d8` and `d9` (version-4 UUIDs), `f0` and
@@ -156,9 +154,13 @@ FileMaker Pro's own records were not compared key by key]:
   carries its `f1` when the member has one (an option change, or a copy of
   a script with full access), so the members' digest and the cache's are
   the same, as in Pro's own save (#914). OpenMaker
-  writes only ASCII names, and only in a file whose name list shows the
-  DUCET form for its own ASCII names; deletes, moves and option changes
-  write no name and are saved in any file. New folders and separators
+  writes only ASCII names for now, each under FileMaker's name list key
+  (`field_catalog::listed_key`), in any file whatever its language: a
+  Create New file's empty catalog and the starters whose names show no
+  ASCII key included
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274); [I]:
+  FileMaker Pro has not opened such a file since). Deletes, moves and
+  option changes write no name. New folders and separators
   are not written: how the name list keys a second `--` or `-` is not
   established.
 
@@ -283,7 +285,9 @@ before its node exists.
 4. op13 to `[17, 5, S]`, node state `02`: the script's whole subtree
    (name, steps, parameters; scripts.md "Catalog"). It carries a stamp
    under `fc`: `fc 01` the client's user name, `fc 02` the account name
-   (masked SCSU), `fc 03` `08` + the 8-byte host timestamp from step 2.
+   (masked SCSU), `fc 03` the host timestamp from step 2 as a key string
+   (`08` and 8 bytes in this capture; shorter before 02:46:40,
+   schema-path.md 8.1).
 5. op62 `[17, 5, S]`, type `0a`, attention `0x2`.
 6. op61 `[17, 1]` from 9 to `0a` (the second transaction).
 7. op13 to `[17, 1]`, node state `02`: the whole catalog index (every

@@ -19,12 +19,21 @@ starter solution):
   name, field type), and a list of Field Name, Type and "Options / Comments
   / Advanced   (Click to toggle)". A click on that title steps the column
   from each field's options to its comment, to its advanced options and
-  back; the options read as FileMaker Pro lists them ("Indexed,
+  back. Advanced shows "Display Names" when the field's display names
+  are customized, then ", " and the field's annotation if it has one;
+  without the option, the annotation alone. Which stored text FileMaker
+  Pro shows there, after "Display Names" or alone, is not traced
+  (client-ui.md): that it is the annotation, and the ", " between them,
+  are inferred ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)).
+  The options read as FileMaker Pro lists them ("Indexed,
   Auto-enter Calculation replaces existing value, Can't Modify Auto,
   Required Value, Unique", "= Count * 2", "= Total of Price";
   `DatabaseSchema::field_column_text`, client-ui.md). Field Name, the Type menu
   (Text, Number, Date, Time, Timestamp, Container, Calculation, Summary)
-  and Comment; Create, Change, Delete; Options… for the selected field.
+  and Comment; Create, Change, Delete; Options… for the selected field,
+  which a double-click on the field opens too. A dialog Manage Database
+  opens comes in front of it each time, also when a quick click (press and
+  release in one frame) reopens it (`widgets::RaiseOpened`).
 - **Specify Calculation** (`script_workspace::calculation` in field mode):
   Create with the type Calculation, or Options… on a calculation field,
   opens it on the field's formula: the context occurrence (the field's
@@ -612,9 +621,22 @@ established:
 
 Names must be ones a calculation can use as they are, the rule `om-author`
 applies (`field_catalog::check_name`), and must differ from the other
-tables', fields' or occurrences' names by their name keys, so case and
-accents do not tell names apart. FileMaker Pro accepts some other names
-after a warning, which OpenMaker does not.
+tables', fields' or occurrences' names by their primary weights, so neither
+case nor accents tell names apart, nor what FileMaker's catalog language
+equates (`ı` and `i`); an entry another member has in a name list is never
+written over. FileMaker Pro accepts some other names
+after a warning, which OpenMaker does not. FileMaker's own keys tell
+accents apart; whether Pro takes `Grosse` beside `Größe` is not
+established, so OpenMaker refuses it. A name is listed in the name lists
+under the key FileMaker Pro lists it under, with its accent and kana levels
+(re/schema-path.md 5.6, `om_collate::name_key`), in every file language.
+OpenMaker refuses a name whose key it cannot build: one with `‚`, `‛`,
+`‟` or a CJK compatibility ideograph, one that mixes an accent or kana with
+a character FileMaker gives its own weights other than a CJK unified
+ideograph (Hangul, CJK extension A, private use), and one whose key would
+pass FileMaker's 210 bytes. A deleted or renamed member's entries go
+whatever key they were listed under, so an entry an earlier OpenMaker
+wrote under the primary weights alone does not stay behind.
 
 ## Decoding
 
@@ -718,8 +740,11 @@ after a warning, which OpenMaker does not.
 - **Missing list features.** Custom order, Copy, Paste, Import and Print
   are not built, and the record counts of "Details" are not read
   ([#152](https://github.com/OpenMaker-Dev/openmaker/issues/152)).
-- **The Fields tab's third column.** Advanced shows nothing: OpenMaker
-  does not read a field's advanced members (`29`-`31`). The options text
+- **The Fields tab's third column.** Advanced options are read-only.
+  The column shows the display-names option and the annotation, without
+  evaluating the display-names formula. The annotation as the text shown,
+  after "Display Names" or alone without the option, and the ", "
+  separator are inferred ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)). The options text
   says "Use Furigana" without the furigana field, and a summary's break or
   weight field by its name alone. Only the field name is exposed to
   accessibility, as for every list in the dialog. The text follows

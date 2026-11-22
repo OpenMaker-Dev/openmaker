@@ -1231,13 +1231,16 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         provider.update_record(layout, 1, values).unwrap_err().code,
         Some(3)
     );
+    // The user's deletion is refused, as the user's edits are. A script's
+    // is held in the related file's part of the transaction: it locks the
+    // record and commits nothing before Commit Transaction.
     assert_eq!(provider.delete_record(layout, 1).unwrap_err().code, Some(3));
+    provider.delete_record_in_script(layout, 1).unwrap();
     provider.revert_transaction().unwrap();
     refused(provider.set_next_serial_value(REMOTE, NAME, "10"));
     for op in [
         om_protocol::Opcode::HostCreateRecord,
         om_protocol::Opcode::HostCommit,
-        om_protocol::Opcode::Lock,
         om_protocol::Opcode::HostGetSerial,
     ] {
         assert!(host.captures.with_opcode(op).is_empty(), "{op:?} was sent");
@@ -1558,15 +1561,16 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.use_window(1);
     assert_eq!(ids(&mut provider, 2), [2, 1]);
 
+    // A script's deletion is held in the related file's part of the
+    // transaction: nothing is committed, and the revert keeps the record.
+    // The user's own is refused there.
     provider.begin_transaction(Default::default()).unwrap();
-    let before = host.captures.transactions().len();
+    let commits = host.captures.with_opcode(Opcode::HostCommit).len();
     assert_eq!(provider.delete_record(2, 1).unwrap_err().code, Some(3));
-    assert_eq!(
-        host.captures.transactions().len(),
-        before,
-        "pre-effect refusal"
-    );
+    provider.delete_record_in_script(2, 1).unwrap();
     provider.revert_transaction().unwrap();
+    assert_eq!(host.captures.with_opcode(Opcode::HostCommit).len(), commits);
+    assert_eq!(ids(&mut provider, 2), [2, 1], "the reverted deletion");
     let generation = provider.calc_data(&[]).unwrap().generation;
     let barrier = host.block_saves(1);
     let error = provider.delete_record(2, 1).unwrap_err();
@@ -1628,6 +1632,17 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.delete_record(1, 2).unwrap();
     assert_eq!(ids(&mut host.open(ROOT), 1), [1]);
     assert_eq!(ids(&mut host.open(RELATED), 1), [2]);
+
+    // Held in a transaction and committed, the deletion needs no
+    // field-entry plan either: the table's unplannable auto-entry does not
+    // refuse Commit Transaction.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.delete_record_in_script(2, 2).unwrap();
+    // Held until the commit.
+    assert_eq!(ids(&mut host.open(RELATED), 1), [2]);
+    provider.commit_transaction(false).unwrap();
+    assert!(ids(&mut host.open(RELATED), 1).is_empty());
+    assert!(ids(&mut provider, 2).is_empty());
 }
 
 /// New Record, Duplicate Record's copied values and a script's New Record
@@ -8038,6 +8053,112 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     assert_eq!(typed, None);
     assert_eq!((written(), reserved()), (before, serials));
     provider.close();
+}
+
+/// The opened file (English) validates Code against a related-values list
+/// of Remote Tasks::Name, a field of the related file (German) indexed in
+/// language 0, that file's own (#571): its keys are German's, which
+/// OpenMaker does not build, so the check is refused (3), not made in the
+/// opened file's English, where `Apfel` is the related `Äpfel`. The same
+/// when the related file's locale record does not decode: its language is
+/// unknown, not English. Num, against a list of the related file's Count,
+/// a number in language 0 too, compares by value as before: `3` is listed.
+#[test]
+fn a_related_files_list_is_compared_in_its_own_files_language() {
+    use fixture::{CODE, COUNT};
+    const JOB_KEY: u64 = 30;
+    const NUM: u64 = 31;
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        ..om_calc::Locale::en_us()
+    };
+    for (tag, locale) in [
+        ("related-list-language", german.to_record()),
+        ("related-list-unreadable-locale", vec![0xff; 3]),
+    ] {
+        let mut root = fixture::tree(&[], true);
+        let mut child = fixture::tree(&[], true);
+        reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+        for tree in [&mut root, &mut child] {
+            fixture::add_field(tree, TABLE, JOB_KEY, "JobKey", 1, 2, 0, 0, 0);
+        }
+        child.put(&[&[2], &[0x0d]], OwnedNode::leaf(Vec::new(), locale));
+        // Its Name and Count are indexed in language 0, the file's own (the
+        // fixture's are English, 21).
+        fixture::set_field_language(&mut child, TABLE, NAME, 0);
+        fixture::set_field_language(&mut child, TABLE, COUNT, 0);
+        fixture::add_relationship(&mut root, 9, (OCCURRENCE, JOB_KEY), 0, (REMOTE, JOB_KEY));
+        // Value lists 7 and 8, "Include only related values starting from"
+        // Tasks (0x0001): Remote Tasks::Name and ::Count, no second field.
+        // Code and Num are members of them, validated always.
+        fixture::add_field(&mut root, TABLE, NUM, "Num", 1, 1, 0, 0, 0x500);
+        fixture::set_field_validation(&mut root, TABLE, CODE, 0x500);
+        for (id, name, listed, validated) in [
+            (7u8, "Remote names", NAME, CODE),
+            (8, "Remote counts", COUNT, NUM),
+        ] {
+            root.put(
+                &[&[0x21], &[5], &[id], &[0x10]],
+                om_scripts::text_node(&[], name),
+            );
+            let mut list = vec![
+                1,
+                0,
+                1,
+                4,
+                3,
+                0xd0,
+                0,
+                0x40,
+                2,
+                1,
+                listed as u8,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+            ];
+            list.extend([4, 3, 0xd0, 0, 1, 0, 0]);
+            list.extend(om_scsu::encode_counted(" "));
+            root.put(
+                &[&[0x21], &[5], &[id], &[2]],
+                OwnedNode::leaf(Vec::new(), list),
+            );
+            root.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[3],
+                    &[5],
+                    &uint_segment(validated),
+                    &[7],
+                ],
+                OwnedNode::leaf(
+                    Vec::new(),
+                    vec![2, 1, id, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff],
+                ),
+            );
+        }
+        put(&mut root, 1, JOB_KEY, "7");
+        put(&mut child, 1, JOB_KEY, "7");
+        put(&mut child, 1, NAME, "Äpfel");
+        let host = Host::new(tag, vec![(ROOT, root), (RELATED, child)]);
+        let mut provider = host.open(ROOT);
+        provider.calc_schema().unwrap();
+        let layout = u32::try_from(fixture::LAYOUT).unwrap();
+        let change = |field: &str, text: &str| {
+            om_data::FieldChanges::from([(field.to_owned(), Some(text.to_owned()))])
+        };
+        let refused = provider
+            .update_record(layout, 1, change("Code", "Apfel"))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "{tag}: {refused}");
+        assert!(refused.message.contains("language"), "{tag}: {refused}");
+        let num = provider.update_record(layout, 1, change("Num", "3"));
+        assert!(num.is_ok(), "{tag}: {num:?}");
+        provider.close();
+    }
 }
 
 /// A related-values list of an unstored calculation reading the opened

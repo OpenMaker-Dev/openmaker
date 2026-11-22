@@ -16,6 +16,7 @@ KBaseDirectories,26,020126
 KBaseThemeName,18,020118
 KBaseThemeVersion,19,020119
 KBlob,83,020183
+KButtonIconSvgCalc,91,020191
 KCFConditions,8a,02018a
 KCachedCount,0f,02010f
 KCachedCountIgnoreFolders,13,020113
@@ -23,6 +24,7 @@ KCachedCountValid,14,020114
 KCatalog,03,020103
 KCatalogFlags,f2,0201f2
 KCatalogName,75,020175
+KCatalogSpecificFlags,f3,0201f3
 KClientList,05,020105
 KClientUserData,5d,02015d
 KClientUserDataRequests,5e,02015e
@@ -35,6 +37,7 @@ KCustomList,03,020103
 KCustomMenuSets,40,020140
 KCustomMenus,41,020141
 KDBData,00,020100
+KDBData2,0b,02010b
 KDataModCount,fb,0201fb
 KDataType,09,020109
 KDefaultStyle,28,020128

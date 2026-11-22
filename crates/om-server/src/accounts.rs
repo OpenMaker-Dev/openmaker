@@ -106,6 +106,31 @@ impl AccountStatus {
         }
     }
 
+    /// The status FileMaker writes when Reset Account Password sets an
+    /// account's password at `date`, `seconds` past midnight
+    /// (`DoResetAccount`, local-files.md 2.4): the time to the second, the
+    /// other flags kept, and a change due at the next login when `expire`.
+    pub fn password_reset(&self, date: Date, seconds: u32, expire: bool) -> AccountStatus {
+        let status = self.password_set(date, seconds);
+        AccountStatus {
+            microseconds: status.microseconds | if expire { CHANGE_PASSWORD } else { 0 },
+            ..status
+        }
+    }
+
+    /// This status with the account active or not (`SetEnabled`,
+    /// local-files.md 2.4): only the inactive bit changes.
+    pub fn enabled(&self, active: bool) -> AccountStatus {
+        AccountStatus {
+            microseconds: if active {
+                self.microseconds & !INACTIVE
+            } else {
+                self.microseconds | INACTIVE
+            },
+            ..*self
+        }
+    }
+
     /// The value FileMaker stores for this status (`0a`), the form
     /// [`Self::decode`] reads: a byte counting the rest, the date's three
     /// bytes, `80` and the count of the seconds' integer digits (none for

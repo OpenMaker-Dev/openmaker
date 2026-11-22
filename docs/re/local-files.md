@@ -168,10 +168,10 @@ Observed [O]:
 The starter solutions checked are all 330 shipped with FileMaker Pro
 19.6.3, 20.3.2, 21.1.3, 22.0.6 and 26.0.3 (six solutions in eleven
 languages each, read-only copies): no account has `02`, and every [Full
-Access] set lacks `0c`. Not observed in any file: a status with bit 18
-set, a kind other than 0 or a set with `0c`; those forms are known from
-the code above only. The account's 16-byte `04` is a checksum of the
-record (2.4).
+Access] set lacks `0c`. None of those files has bit 18 set, an account
+of a kind other than 0 or a set with `0c`. The Manage Security and
+server-engine script probes in 2.4 both observed changes to bits 18 and
+19. The account's 16-byte `04` is a checksum of the record (2.4).
 
 [Guest] is the account with record key `01` (FileMaker's `KIndex`, which
 its Guest check reads); FileMaker opens a file as [Guest] by a login of its
@@ -349,8 +349,7 @@ signing in as that account showed a required-change prompt, accepted a
 new password and opened the file. This changed the salt and hash,
 advanced the password-set second, cleared bit 18 and recomputed `04`.
 Deleting the account removed its member and index entries. An independent
-recalculation of `04` matched at every saved stage. These are UI and
-sign-in observations; the account script steps below were not run.
+recalculation of `04` matched at every saved stage.
 Changing the starter's Admin password from empty through File > Change
 Password also created an empty subtree at `[23, 1, 5, 02, 5d, 0000, 11,
 18]` [O: both the key-tree scan and `om-hbam` read it; the same subtree
@@ -358,15 +357,67 @@ is present in another FileMaker-written full-access account]. Its
 purpose and whether another password change needs to update it are not
 established; it is not part of the `04` calculation above.
 
-**Script steps** (Mac x86_64 FMEngine `ScriptRuntimeBase`):
+**Script steps** (Mac x86_64 FMEngine `ScriptRuntimeBase` [from bin] and
+the runs below [O]). The table lists selected writes. The runs also
+record UUIDs and modification stamps.
 
 | Step | Writes | Notes |
 |---|---|---|
-| Add Account (`DoAddAccount`, `0x681002`) | a new member: `02` (`SetUserType`), `10`, `06` and `0a` (kind 0 only), `0b`, bit 18 of `0a` when "User must change password" is set, `04` | needs full access (9); an empty name or the [Full Access] set gives 5 |
-| Delete Account (`DoDeleteAccount`, `0x6815c6`) | removes the member | needs full access (9) |
-| Reset Account Password (`DoResetAccount`, `0x6818b0`) | `06`, `0a` (password stamp, then bit 18 as the step's option says), `04` | needs full access (9) |
-| Enable Account (`DoEnableAccount`, `0x681cde`) | bit 19 of `0a`, `04` | needs full access (9) |
-| Change Password (`DoChangePassword`, `0x6b21be`) | `06`, `0a` (bit 18 cleared), `04` | the signed-in account only; 3 for [Guest] or another kind; both passwords cut to 100 code units; the old one must test 0 or 211 |
+| Add Account (`DoAddAccount`, `0x681002`) | a new member: `10`, `06` and `0a` (kind 0 only), `0b`, bit 18 of `0a` when "Expire password" is set, `04` [from bin; O]; `02` (`SetUserType`) [from bin], but none for a FileMaker-file account [O] | needs full access (9) [from bin]; an empty name gives 5 [O], the [Full Access] set too [from bin] |
+| Delete Account (`DoDeleteAccount`, `0x6815c6`) | removes the member [from bin; O] | needs full access (9) [from bin] |
+| Reset Account Password (`DoResetAccount`, `0x6818b0`) | `06`, `0a` (password stamp, then bit 18 as the step's option says), `04` [from bin; O] | needs full access (9) [from bin] |
+| Enable Account (`DoEnableAccount`, `0x681cde`) | bit 19 of `0a`, `04` [from bin; O]; the password stamp stays [O] | needs full access (9) [from bin] |
+| Change Password (`DoChangePassword`, `0x6b21be`) | `06`, `0a` (bit 18 cleared), `04` [from bin] | the signed-in account only; 3 for [Guest] or another kind; both passwords cut to 100 code units; the old one must test 0 or 211 [from bin]; 3 in one server script run [O, below] |
+
+**The steps run [O: FileMaker Server 26.0.3's engine, 2026-11-20].**
+Scripts holding the account steps, written with OpenMaker's step writer
+into a copy of the English Contacts starter, ran in the script harness
+(`tools/fms-script-harness`, run lines naming them, using the harness's
+default security-bypass identity, which reports the account name Admin).
+The account catalog was compared after each run:
+
+- Add Account made a member with `04`, `06`, `0a`, `0b`, `10`, the member
+  UUID `d8`, `fc01` and `fc02` (both reading Admin), and `fc03`. It
+  wrote no `02`. With expiry off, `fc03` and `0a` were byte-identical
+  (`07 9f aa d4 80 04 34 16`). The step's `mReserved` began with
+  `02 01 02` with only `kCalculation` set, which selected [Data Entry
+  Only] and stored `01 02` in `0b`. An empty name gave 5 and made
+  nothing.
+- **The options are the step value.** Add Account and Reset Account
+  Password set bit 18 of `0a` ("Expire password") with `mStepValue` 1.
+  Enable Account set bit 19 ("Deactivate") with value 1. Nonzero values
+  2 and 4 also enabled the options in the probes, and value 1 worked
+  with `kMenuSelection` set. Flag `0x100` with value 0 changed neither
+  bit. Activate (value 0) left an already-active account active. The
+  inactive-to-active transition was not exercised.
+- Reset Account Password wrote a new `06` (new salt), stamped `0a`, set
+  `fc03` to the same bytes as `0a` in the UTC-6 run and counted the
+  member's changes in `fc` (`01 01`, then `01 02` after the reset with
+  expiry on). Enable Account set `fc` to `01 01` on the account it
+  deactivated and moved `fc03` to the time of its run, keeping `0a`'s
+  password-set second.
+- Delete Account removed the member. Change Password ran with its
+  dialog off and an empty old password under that security-bypass
+  identity. That attempt returned 3 and changed nothing. The cause remains
+  unknown. The run did not exercise a non-empty old password or a client
+  session. Claris lists the step as Partial on FileMaker Server.
+- Every account's `04` matched the checksum rule above at every stage.
+
+The recorded `0a` values decode as follows (2.2). The microsecond field
+holds the status flags.
+
+| Run | `0a` | Date | Seconds since midnight | Microseconds |
+|---|---|---|---:|---:|
+| Add Account, expiry off | `07 9f aa d4 80 04 34 16` | 2026-11-20 | 2305 | 0 |
+| Add Account, expiry on | `0a 9f aa d4 80 04 36 59 37 32 55` | 2026-11-20 | 2548 | 262144 |
+| Reset Account Password, expiry on | `0a 9f aa d4 80 04 37 54 37 32 55` | 2026-11-20 | 2643 | 262144 |
+| Enable Account, deactivating the expiry-off Add Account member | `0a 9f aa d4 80 04 34 16 63 53 99` | 2026-11-20 | 2305 | 524288 |
+| Reset Account Password at UTC-6 | `08 9f aa d3 80 05 78 34 10` | 2026-11-19 | 67230 | 0 |
+
+In the UTC-6 run, Reset Account Password stamped 18:40:30 on the
+previous date, matching the engine's local time for the run at 00:40
+UTC. The other runs used UTC. Local-time stamping on other paths is
+inferred from `DateTime::Now`.
 
 **Native hosted writes [O].** The `s148-hosted-account-writes-20261113`
 private relay capture recorded FileMaker Pro 26.0.3 changing a disposable
@@ -405,7 +456,77 @@ its old password is tested, as FileMaker's check gives it; an account that may n
 gets `SetPassword`'s checks (206, 208, 209); more than 100 characters is
 11. A new password outside ASCII is hashed after `HashDecompose` (2.1), as
 FileMaker Pro's own accounts are. It does not create the empty `5d`
-subtree.
+subtree. Before it rewrites an account, it recomputes the stored `04`
+from the account's current members; when the two differ nothing is
+written (3 for a script step; OpenMaker's choice): FileMaker Pro would
+refuse a file whose checksum OpenMaker got wrong (808), so an account it
+does not read as FileMaker does is left alone. An account with no `04`
+is given one.
+
+OpenMaker Server's scripts run Change Password through the same
+operation, as `DoChangePassword` does. The target is the account the
+session logged in with, found by its record key so that a rename since
+cannot redirect it. Both passwords are cut to 100 UTF-16 code units, and
+[Guest] or an account of another kind gives 3. A step running with full
+access counts as a caller that may manage the account, so it skips
+`SetPassword`'s set checks [I: Claris documents that a script granted
+full access may change a password the set does not let the account
+change]. The step's dialog is not shown on a server, so with it the step
+gives 3 [I: FileMaker Server's handling is not measured]. While it
+writes, the script's session holds a write lock on `[23, 1]`, as Manage
+Security does, and another user's lock gives 310. That Change Password
+behavior is inferred from the binary's Reset Account Password mapping
+of 8003 to 310 ([script-runtime.md §2.3](script-runtime.md#23-executing-one-step-execute-0xa771a0)).
+The commit stamps the account and the
+catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
+copy of the catalog shows as stale, and other clients are told the
+catalog changed.
+
+Reset Account Password and Enable Account run through
+`Hosted::reset_account_password` and `Hosted::enable_account`, under the
+same lock, stamps, notification and checksum check, writing the members
+the table above lists. A session without full access gets 9. Reset
+Account Password takes only a FileMaker-file account (206) and a password
+of at most 100 characters (11); its status is stamped as Change
+Password's is. Its "Expire password" option gives 3 before anything
+changes: the account could then sign in to a hosted file only with a new
+password, which OpenMaker Server does not take at login yet
+([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)). Enable
+Account changes only bit 19; an account already in that state is not
+written and no client is told of a change. It takes the file's own
+accounts and external server groups (kinds 0 and 1) and gives 3 for an
+OAuth or Claris ID account, and it gives 3 rather than make a [Full
+Access] account inactive [I: Claris documents both refusals for Enable
+Account; their codes are not observed]. Both find the account by name,
+ignoring case; a name no account has gives 213 [I: FileMaker's code for
+a name it does not find is not observed], and [Guest], whose name is not
+text, is never found. A new status that would not read back as written
+(flags added to a fraction of a second already held, past the six digits
+the value keeps) is not written (3).
+
+Delete Account runs through `Hosted::delete_account`, under the same
+lock and notification, for a session with full access (else 9). It
+removes the account's member and, from the catalog's index (3), its name
+list entry, its place in the display order (the order numbered again
+from 1) and its `07` entry, and takes one from the count; `00` keeps the
+last key issued, and the index is stamped. A name no account has gives
+213 (inferred). As Claris documents for the step, it does not delete a
+[Full Access] account, nor an OAuth or Claris ID one; [Guest] (key `01`)
+is not deleted either. Each of these gives 3 [I: the codes are not
+observed]. The index must be one OpenMaker reads as 3 describes: its
+name list and its display order (positions 1 to n) each name every
+account once, the count is the number of accounts, and the account's
+`07` entry, if any, is an empty leaf. Otherwise nothing is written (3),
+so no data it does not read is dropped. The account's own checksum is not
+checked, since nothing of it is written. The header's `10` is left as it
+is. It is the account File Options' "Log in using" names, signed in with
+the password the header keeps in `06` (3.1), so when it names the deleted
+account, the file's automatic sign-in is left naming an account that no
+longer exists [I: what FileMaker Pro does with it then is not observed].
+
+OpenMaker still refuses Add Account. The server-engine probe confirms
+one inline privilege-set key in `mReserved`. The full inline layout
+and editor output remain unverified (script-steps.md 4.1).
 
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)
@@ -427,12 +548,15 @@ a refusal (212 for a wrong old password, 206, 208, 209, 11) keeps it up
 with its reason. The new password is then the session's, for the files its
 scripts open later [I]. A file on a host does not offer it yet ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
 
-Unknowns: the account script steps above and hosted password change at
-sign-in were not run live; login type 2 was not captured; whether the
-password stamp's time is local or UTC is not measured; the empty `5d`
-subtree noted above is not explained. The checksums for privilege sets,
-extended privileges and file access entries are specified separately in
-session-identity.md 4.
+Unknowns: the account script probes covered the server engine only.
+FileMaker Pro script execution and hosted catalog transfers for those
+steps remain unmeasured. The probes did not check missing accounts,
+catalog lock conflicts or [Guest]. Reset Account Password's 310 on a
+catalog lock conflict comes from the binary. Hosted password change at
+sign-in and Re-Login (login type 2) remain uncaptured. The editor's and
+XML importer's storage are open in script-steps.md 9. The empty `5d`
+subtree noted above is unexplained. See session-identity.md 4 for the
+checksums for privilege sets, extended privileges and file access entries.
 
 ## 3. The account catalog's header `[23, 1, 1]`
 
@@ -441,6 +565,31 @@ It is the member data of the account catalog itself
 (`DBUserAccountCatalog`, the file user's `mUserAccountCatalog`). In every
 starter solution [O]: `00` = `01 02` (account 2's key), `04` = 2, `06`
 empty, `16` = "Admin", `24` = "0" (text), `252` = `01 02`.
+
+It is the catalog's index `[cat, 1]` (schema-path.md 1), laid out as the
+other catalogs' indexes are [O: the English Contacts and Tasks and the
+German Inventory starter solutions of FileMaker Pro 26, read with
+`om-hbam`'s `dump_keys` example; all three alike]:
+
+| Key | Content | Starter value |
+|---|---|---|
+| `00` | the last account key issued, as a key string | `01 02` |
+| `01, <name key>` | the name list: one leaf per account, keyed by its name's key (schema-path.md 5.6), holding the account's key as a key string | `0301ffe0e0020302000000` → `01 01` ([Guest]); `120f1250135f12ec136d000000` → `01 02` ("Admin") |
+| `03, <position>` | the display order: big-endian u32 positions from 1, each holding an account's key as a key string | `00000001` → `01 01`, `00000002` → `01 02` |
+| `04` | the number of accounts, big-endian u32 | `00000002` |
+| `06` | empty | |
+| `07, <key>` | one empty leaf per account | `07/01`, `07/02` |
+| `10` | "Admin": the header's account name above | |
+| `18` | "0" | |
+| `d8`, `fc`, `fc01`-`fc03` | the index's UUID and modification stamps (schema-path.md 8.1) | |
+
+So a new account takes the key after `00`, a name list entry, the next
+display position, one more in `04` and a `07` entry, as a new script does
+in the script catalog's index (scripts.md); a deleted one gives up its
+name list entry, display position and `07` entry and one of `04`, while
+`00` keeps the last key issued [I: from the other catalogs' indexes; an
+account added or deleted by FileMaker Pro was observed to change its index
+entries (2.4), but those entries were not compared one by one].
 
 ### 3.1 File Options > Open: "Log in using" and sign-in options
 

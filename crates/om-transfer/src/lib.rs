@@ -95,6 +95,10 @@ pub(crate) fn interrupted() -> TransferError {
 pub struct TransferError {
     pub code: i32,
     pub message: String,
+    /// A row's error that ends an import rather than skipping the row: the
+    /// host met a rule OpenMaker does not support checking (error 3), which
+    /// a skipped row would report as the row's own failure (729).
+    pub ends_import: bool,
 }
 
 impl TransferError {
@@ -102,6 +106,16 @@ impl TransferError {
         TransferError {
             code,
             message: message.into(),
+            ends_import: false,
+        }
+    }
+
+    /// Error 3 for a row whose rule OpenMaker does not support checking
+    /// ([`Self::ends_import`]).
+    pub fn unsupported(message: impl Into<String>) -> TransferError {
+        TransferError {
+            ends_import: true,
+            ..TransferError::new(code::UNAVAILABLE, message)
         }
     }
 }

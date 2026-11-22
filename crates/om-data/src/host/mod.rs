@@ -36,6 +36,7 @@
 
 mod data;
 mod design;
+pub mod device;
 pub mod layout;
 pub mod layout_objects;
 pub mod machine;
@@ -51,7 +52,7 @@ mod summary;
 pub mod window;
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use om_calc::eval::{
@@ -75,8 +76,8 @@ pub use schema::{
     SummaryDef, SummaryKind, TableDef,
 };
 pub use session::{AccountInfo, OpenFile, Privileges, SessionInfo, WindowMode};
-pub use sort::sort_records;
-pub use summary::{FoundGroups, SummaryCache};
+pub use sort::{sort_records, SortNesting};
+pub use summary::{FoundGroups, GroupError, SummaryCache};
 pub use window::{Frame, WindowInfo};
 
 /// The record a window's calculations are evaluated on when it has no
@@ -170,6 +171,40 @@ pub struct FileCalc<'a> {
     /// Optional summary reuse during one immutable calculation pass.
     summaries: Option<&'a SummaryCache>,
     reads: Option<&'a Cell<HostReads>>,
+    /// A copy of the caller's `$` and `$$` variables, which an unstored
+    /// calculation the host evaluates itself reads ([`Self::read_field`]):
+    /// a summary's inputs and a sort's keys (#615). `None` reads with none.
+    variables: Option<&'a VariableSnapshot>,
+}
+
+/// One copy of a caller's `$` and `$$` variables for what `FileCalc`
+/// evaluates itself during one read ([`FileHost::with_file_variables`]):
+/// every input of a summary, or every key of a sort, reads it in turn, so
+/// it is copied once a read rather than once a record. What one input
+/// assigns the next one sees, and it is dropped after the read [I:
+/// FileMaker's for assignments in a summary's inputs is unmeasured].
+#[derive(Debug)]
+pub struct VariableSnapshot {
+    maps: RefCell<(Variables, Variables)>,
+}
+
+impl VariableSnapshot {
+    /// A copy of `locals` and `globals`; `None` when both are empty, as a
+    /// read with no variables needs none.
+    pub fn of(locals: &Variables, globals: &Variables) -> Option<VariableSnapshot> {
+        (!locals.is_empty() || !globals.is_empty()).then(|| VariableSnapshot {
+            maps: RefCell::new((locals.clone(), globals.clone())),
+        })
+    }
+
+    /// The maps' identities now (`Variables::revision`: a clone keeps its
+    /// original's until it is assigned, and every assignment takes a new
+    /// one), for a cache to tell their contents apart; `None` while a read
+    /// holds them.
+    pub(crate) fn revisions(&self) -> Option<(u64, u64)> {
+        let maps = self.maps.try_borrow().ok()?;
+        Some((maps.0.revision(), maps.1.revision()))
+    }
 }
 
 impl<'a> FileCalc<'a> {
@@ -181,7 +216,83 @@ impl<'a> FileCalc<'a> {
             session: None,
             summaries: None,
             reads: None,
+            variables: None,
         }
+    }
+
+    /// The same data with a copy of the caller's variables
+    /// ([`VariableSnapshot`]), which a summary's inputs and a sort's keys
+    /// read as the caller's own calculations do (#615).
+    pub fn with_variables(self, variables: Option<&'a VariableSnapshot>) -> FileCalc<'a> {
+        FileCalc { variables, ..self }
+    }
+
+    /// Whether the calculation of `field` of `occurrence` may read a
+    /// variable when this host reads it: an unstored calculation whose
+    /// formula, a custom function it calls, or a formula of an unstored
+    /// calculation either references, may (`Expr::variable_reads`), to 32
+    /// steps deep. Deeper, or a custom function that cannot be resolved,
+    /// counts as may.
+    pub(crate) fn reads_variables(&self, occurrence: u64, field: u64) -> bool {
+        use std::collections::HashSet;
+        // What is left to check: a field's calculation or a custom
+        // function's body, and how many steps from the key it is.
+        enum Next {
+            Field(u64, u64),
+            Function(u64),
+        }
+        let (mut fields, mut functions) = (HashSet::new(), HashSet::new());
+        let mut stack = vec![(Next::Field(occurrence, field), 0)];
+        while let Some((next, depth)) = stack.pop() {
+            if depth > 32 {
+                return true;
+            }
+            let function;
+            let expr = match next {
+                Next::Field(occurrence, field) => {
+                    if !fields.insert((occurrence, field)) {
+                        continue;
+                    }
+                    let Some(def) = self.schema.field(occurrence, field) else {
+                        continue;
+                    };
+                    match def
+                        .formula
+                        .as_ref()
+                        .filter(|_| def.is_unstored_calculation())
+                    {
+                        Some(formula) => &formula.polish,
+                        None => continue,
+                    }
+                }
+                Next::Function(id) => {
+                    if !functions.insert(id) {
+                        continue;
+                    }
+                    let Some(resolved) = self.custom_function(id) else {
+                        return true;
+                    };
+                    function = resolved;
+                    &function.body
+                }
+            };
+            let (itself, called) = expr.variable_reads();
+            if itself {
+                return true;
+            }
+            for key in called {
+                match key.id() {
+                    Some(id) => stack.push((Next::Function(id), depth + 1)),
+                    None => return true,
+                }
+            }
+            for reference in expr.field_references() {
+                if let (Some(of), Some(id)) = (reference.occurrence.id(), reference.field.id()) {
+                    stack.push((Next::Field(of, id), depth + 1));
+                }
+            }
+        }
+        false
     }
 
     /// The same data with `session`'s `Get` answers.
@@ -400,8 +511,28 @@ impl<'a> FileCalc<'a> {
         };
         let fallback = SessionInfo::default();
         let session = self.session.unwrap_or(&fallback);
-        let (mut locals, mut globals) = (Variables::new(), Variables::new());
-        let mut host = FileHost::new(*self, session, &mut locals, &mut globals);
+        let mut fresh = (Variables::new(), Variables::new());
+        let mut lent = match self
+            .variables
+            .map(|snapshot| snapshot.maps.try_borrow_mut())
+        {
+            Some(Ok(maps)) => Some(maps),
+            // A read that holds the copy hands its host none, so this read
+            // is not inside one; were it, `?` rather than another's values.
+            Some(Err(_)) => return Ok(Value::invalid()),
+            None => None,
+        };
+        let (locals, globals) = match lent.as_deref_mut() {
+            Some((locals, globals)) => (locals, globals),
+            None => (&mut fresh.0, &mut fresh.1),
+        };
+        // The calculation's host has these maps; what it reads itself it
+        // reads with a copy of them.
+        let file = FileCalc {
+            variables: None,
+            ..*self
+        };
+        let mut host = FileHost::new(file, session, locals, globals);
         let value = read_field(&mut host, occurrence, record, field, repetition);
         self.record_reads(host.read_provenance());
         Ok(value)
@@ -468,6 +599,71 @@ impl<'a> FileCalc<'a> {
             .source
             .related_ids(self.schema, occurrence, record, related, &cx)?
             .to_vec())
+    }
+
+    /// `GetRecordIDsFromFoundSet ( type {; tableOccurrenceOrPortal} )`
+    /// in `context` (calc-functions.md, "GetRecordIDsFromFoundSet on
+    /// FileMaker Server"): the ids of the found set of the context's
+    /// occurrence, in its order, or, with an occurrence
+    /// named, of that occurrence's found set when it is the context's and
+    /// otherwise of its records related to the context's record, written
+    /// as `type` asks (`om_calc::functions::record_ids`), within `limit`
+    /// bytes. A name that is no occurrence, empty or a portal object's, is
+    /// error 10 (s45; portals are not looked up); one of a related file not
+    /// opened yet waits for it.
+    pub fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+        limit: usize,
+    ) -> Result<Value, CalcError> {
+        use om_calc::functions::record_ids;
+        let cx = self.cx();
+        let kind = record_ids::kind(args.first().unwrap_or(&Value::empty_text()), &cx)?;
+        let missing = || CalcError::from_code(10).expect("nonzero");
+        let own = context.occurrence.ok_or_else(missing)?;
+        let occurrence = match args.get(1) {
+            None => own,
+            Some(name) => {
+                let name = name.to_text(&cx).into_string();
+                match self.schema.names().find_occurrence(&name) {
+                    Some(occurrence) => occurrence,
+                    None => {
+                        // An occurrence of a related file not opened yet:
+                        // the read waits for the file, as a field's does.
+                        // Its name matches in any case, as the file's
+                        // names do once it is open (`NameTable`).
+                        let folded = name.to_lowercase();
+                        let pending = self
+                            .schema
+                            .external_occurrences()
+                            .find(|o| o.name.to_lowercase() == folded)
+                            .is_some_and(|o| self.waits(o.id));
+                        return Err(if pending {
+                            CalcError::from_code(1224).expect("nonzero")
+                        } else {
+                            missing()
+                        });
+                    }
+                }
+            }
+        };
+        let ids = if occurrence == own {
+            let table = self.schema.table_of(own).ok_or(CalcError::TABLE_MISSING)?;
+            self.source.found_set(own, table.id)?
+        } else {
+            match context.record.filter(|r| *r != NO_RECORD) {
+                Some(record) => self.source.related_ids(
+                    self.schema,
+                    own,
+                    record,
+                    occurrence,
+                    &self.cx_for(own),
+                )?,
+                None => Arc::from([]),
+            }
+        };
+        Ok(Value::text(record_ids::write(&ids, kind, limit)?))
     }
 
     /// One related record, in the related set's order (the first is what
@@ -586,6 +782,14 @@ impl Vars<'_> {
             Vars::Shared(vars) => Vars::Shared(vars),
         }
     }
+
+    /// The `$` and `$$` maps, to read; one map is both.
+    pub fn maps(&self) -> (&Variables, &Variables) {
+        match self {
+            Vars::Scoped { locals, globals } => (locals, globals),
+            Vars::Shared(vars) => (vars, vars),
+        }
+    }
 }
 
 /// A whole calculation host: a file's data, a session's `Get` answers and
@@ -609,6 +813,11 @@ pub struct FileHost<'a> {
     pub interrupted: Option<&'a dyn Fn() -> bool>,
     /// What evaluations on this host may build ([`CalcHost::limits`]).
     pub limits: CalcLimits,
+    /// A calculation of the file itself with no session, as FileMaker
+    /// Server recomputes stored values after a schema change: every
+    /// Design function but `DatabaseNames` answers empty (calc-functions.md,
+    /// "Design functions on FileMaker Server").
+    pub file_context: bool,
     nested_reads: Cell<HostReads>,
 }
 
@@ -654,6 +863,7 @@ impl<'a> FileHost<'a> {
             self_reads: HostReads::default(),
             interrupted: None,
             limits: CalcLimits::DEFAULT,
+            file_context: false,
             nested_reads: Cell::default(),
         }
     }
@@ -661,6 +871,16 @@ impl<'a> FileHost<'a> {
     /// Include nested summary inputs and cached summary dependencies.
     pub fn read_provenance(&self) -> HostReads {
         self.reads.union(self.nested_reads.get())
+    }
+
+    /// `read` over [`Self::file`] with a copy of this host's variables, for
+    /// what it evaluates itself: a summary's inputs and a sort's keys read
+    /// them as this host's own calculations do (#615). The copy is made once
+    /// for the read ([`VariableSnapshot`]).
+    pub fn with_file_variables<R>(&self, read: impl FnOnce(FileCalc<'_>) -> R) -> R {
+        let (locals, globals) = self.vars.maps();
+        let snapshot = VariableSnapshot::of(locals, globals);
+        read(self.file.with_variables(snapshot.as_ref()))
     }
 
     /// The imported related file owning the formula solved in `context`;
@@ -740,9 +960,17 @@ impl CalcHost for FileHost<'_> {
         field: u64,
         repetition: u32,
     ) -> Result<Value, CalcError> {
-        self.file
-            .with_reads(&self.nested_reads)
-            .field_value_in_context(context, occurrence, record, field, repetition)
+        // Only a summary reads unstored calculations itself.
+        let summary = (self.file.schema.field(occurrence, field))
+            .is_some_and(|def| def.class == FieldClass::Summary);
+        if !summary {
+            return (self.file.with_reads(&self.nested_reads))
+                .field_value_in_context(context, occurrence, record, field, repetition);
+        }
+        self.with_file_variables(|file| {
+            file.with_reads(&self.nested_reads)
+                .field_value_in_context(context, occurrence, record, field, repetition)
+        })
     }
 
     fn evaluate_always(&self, occurrence: u64, field: u64) -> bool {
@@ -795,9 +1023,10 @@ impl CalcHost for FileHost<'_> {
         summary: FieldId,
         break_field: FieldId,
     ) -> Result<Value, CalcError> {
-        self.file
-            .with_reads(&self.nested_reads)
-            .summary(context, summary, break_field)
+        self.with_file_variables(|file| {
+            file.with_reads(&self.nested_reads)
+                .summary(context, summary, break_field)
+        })
     }
 
     fn pending(&self) -> Pending {
@@ -886,9 +1115,16 @@ impl CalcHost for FileHost<'_> {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
+        let server = device::is_server(&self.session.application_version);
+        if let Some(answer) = device::answer(function, args, &self.file.cx(), server) {
+            return answer;
+        }
         match function {
             HostFunction::Builtin(builtin) => {
                 if let Some(result) = self.file.design(builtin.name, args, context) {
+                    if self.file_context && !builtin.name.eq_ignore_ascii_case("DatabaseNames") {
+                        return Ok(Value::empty_text());
+                    }
                     return result;
                 }
             }
@@ -909,6 +1145,10 @@ impl CalcHost for FileHost<'_> {
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectOwnerInfo") => {
                 return Ok(Value::text(layout_objects::owner_info_not_found()));
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") => {
+                let limit = self.limits.text;
+                return self.file.record_ids_from_found_set(args, context, limit);
             }
             _ => {}
         }

@@ -201,9 +201,14 @@ fields), and the optional comment. The name must be one a calculation can
 name without `${…}`: at most 100 characters, no operators or other
 delimiters, no leading digit, period or `$`, no space at either end, no
 `and`/`or`/`xor`/`not` word, not a function's name, no control characters
-(`invalid_name`). It must not be a name of the table's fields as FileMaker
-compares them, by their name keys, so case and accents do not tell them
-apart (`duplicate_name`, naming the field that has it).
+(`invalid_name`), and one whose name list key OpenMaker can build
+(re/schema-path.md 5.6; the names it cannot are in schema-manager.md,
+"What it refuses"). It must not have the primary weights of another of the
+table's fields, so neither case nor accents tell them apart, nor what
+FileMaker's catalog language equates (`ı` and `i`)
+(`duplicate_name`, naming the field that has it): FileMaker's keys tell
+accents apart, and whether FileMaker Pro takes `Grosse` beside `Größe` is
+not established.
 
 The host does what Manage Database's save of one new field stores
 (re/schema-path.md 2.3, 5.1, 5.5, 5.6, 8.1), in the table's field catalog
@@ -270,9 +275,11 @@ writes into the layout member `[4, 5, L]` only:
   but the rotation FileMaker Pro writes, so the layout's theme styles
   them;
 - an attribute record `[4, 5, L, 05, O]` for each object: an empty name
-  `10`, fresh UUIDs `d8` and `d9`, and for the label its text `01` (a
-  plain SCSU value, as the templates store a plain label) and a text
-  height of 0 `0d`;
+  `10`, fresh UUIDs `d8` and `d9`, for the edit box its tab order
+  position `07` (and, where the layout stores a Table View layout, the
+  columns' data format record `0d`, below), and for the label its text
+  `01` (a plain SCSU value, as the templates store a plain label) and a
+  text height of 0 `0d`;
 - the field reference index entry `[4, 5, L, 01, <occurrence>, <field>,
   <object>]` (an empty value, as every field object in the templates has);
 - both objects at the end of the body part's list of its objects `[4, 5,
@@ -285,6 +292,11 @@ writes into the layout member `[4, 5, L]` only:
   the object tree, and its key. Every field object FileMaker saved has
   one. The index holds whole points, so the field's frame must start at
   whole points (status 3 otherwise);
+- the edit box's entry in the layout's tab order `[4, 5, L, 15, <n>]`,
+  holding the same reference as its object index entry, at the position
+  after the greatest stored one; every stored entry and gap is kept, and
+  the label stays outside the order
+  ([#316](https://github.com/OpenMaker-Dev/openmaker/issues/316));
 - the last object key issued `[4, 5, L, 05, 00]`, raised to the new
   objects' keys;
 - where the layout stores a Table View layout `[4, 5, L, 0d]` (every
@@ -304,20 +316,23 @@ writes into the layout member `[4, 5, L]` only:
 - the layout's stamp (`fc` counted up, `fc 01` to `fc 03`).
 
 Object keys are the next after every key the layout uses (its objects,
-root stack, containers' children, attribute records, index and part
-lists) and after the last key it issued. A layout whose object tree does
+root stack, containers' children, attribute records, field reference
+index and part lists), every key its object index and tab order entries
+name, and the last key it issued. A layout whose object tree does
 not reach each of its objects once, whose object index already holds the
 new edit box's position in that tree, or whose body part has no list of
-its objects that OpenMaker reads, is refused (status 3). Nothing else is written: no
-tab order, object name, data formatting, script trigger, conditional
-formatting or hide condition, and no other layout index
-(re/layout-model.md 10.5). Every other key of the layout, known or not,
-every stored object's attribute record and every index entry are kept;
+its objects that OpenMaker reads, is refused (status 3). Nothing else is
+written: no object name, other data formatting, script trigger,
+conditional formatting or hide condition, and no other layout index
+(re/layout-model.md 10.5).
+Every other key of the layout, known or not, every stored object's
+attribute record and every index entry are kept;
 `place_field` checks them again on the read-back, decodes the layout as
 the desktop client does (`om_layout::Layout::decode_from_tree`), and
 checks that the client lists the new object among the layout's fields,
-that the object index lists the edit box, and that the parts are as they
-were but for the new objects at the end of the body's list.
+that the parts are as they were but for the new objects at the end of
+the body's list, and that the object index, the tab order and the edit
+box's position in it are the plan's.
 
 A request repeated after a lost answer finds its objects on top of the
 stack (the same field at the same frame, and the same label) and reports
@@ -476,6 +491,9 @@ FileMaker Pro's New Layout/Report makes for a computer with Form chosen
 shows only in Form view (Claris, "New Layout/Report"). It takes the theme
 and width of the layout named, or of the first layout in the file's order
 that has a theme; its body is 600 points high. Layouts may share a name.
+The name is listed under the key FileMaker Pro lists it under
+(re/schema-path.md 5.6), and one whose key OpenMaker cannot build is
+refused as an unusable name.
 The part set, the body's height, the width and the theme are OpenMaker's
 choices: what FileMaker Pro writes for them is not measured
 (re/layout-model.md 10.6).
@@ -1239,16 +1257,13 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   fields their formulas compiled against the file's names.
 - **New fields are not placed on layouts by `create_field`**, as FileMaker
   Pro's "Add newly defined fields to current layout" option would; place
-  one with `place_field`. A placed field is not in the layout's tab order,
-  so Tab does not reach it (a click does), and New Record does not put the
-  focus in it; a portal's fields are, as FileMaker Pro puts them there.
-- **Layout indexes.** Besides the field reference and object indexes,
-  FileMaker keeps an object name index `[4, 5, L, 08]` and the tab order
-  `[4, 5, L, 15]` (re/layout-model.md 10.5); a placed object is unnamed
-  and outside the tab order, so they are left as they are. FileMaker Pro's
-  own save of a layout holding a placed edit box also added it to the tab
-  order, set an undecoded flag bit on it and wrote a table view `0d` for
-  the layout (issue #166); a placement does none of these. The layout
+  one with `place_field`. New edit boxes go at the end of the layout's
+  tab order. Placement keeps the order of all existing entries. Where
+  FileMaker Pro inserts a new field in an existing order is unmeasured.
+- **Layout indexes.** The edit box's tab order entry at `[4, 5, L, 15]`
+  refers to the same field object as its object index entry, and its
+  attribute `07` records the new position (re/layout-model.md 10.5).
+  Labels stay outside the order. Placed objects are unnamed. The layout
   catalog's index `[4, 1]` and its stamp are not changed. FileMaker Pro
   counted up its `fc` during a session that saved a field and a layout;
   which saves do so is not isolated.

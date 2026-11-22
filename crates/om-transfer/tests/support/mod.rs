@@ -58,6 +58,9 @@ pub mod a {
 pub enum Summary {
     Total(u64),
     Count(u64),
+    /// A summary its values cannot give, `?` (a standard deviation of one
+    /// value).
+    Invalid,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +194,10 @@ pub struct Mem {
     /// script); `None` never.
     pub interrupt_after: Option<usize>,
     pub checks: usize,
+    /// The nth record made (1-based) is refused with this error.
+    pub refuse_create: Option<(usize, om_transfer::TransferError)>,
+    /// Records made or refused so far.
+    pub creates: usize,
 }
 
 impl Mem {
@@ -206,6 +213,8 @@ impl Mem {
             locale: Locale::en_us(),
             interrupt_after: None,
             checks: 0,
+            refuse_create: None,
+            creates: 0,
         }
     }
 
@@ -432,6 +441,7 @@ impl ExportSource for Mem {
                     .count();
                 ExportValue::Stored(n.to_string())
             }
+            Summary::Invalid => ExportValue::Computed(om_calc::Value::invalid()),
         })
     }
 
@@ -489,6 +499,12 @@ impl ImportTarget for Mem {
         writes: &[FieldWrite],
         auto_enter: bool,
     ) -> Result<RecordId> {
+        self.creates += 1;
+        if let Some((nth, error)) = &self.refuse_create {
+            if *nth == self.creates {
+                return Err(error.clone());
+            }
+        }
         let mut cells = Cells::new();
         apply(&mut cells, writes);
         if auto_enter {

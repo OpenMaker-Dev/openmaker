@@ -93,7 +93,7 @@ impl ServerHost {
     /// field, whose value is then error 9 (fail closed).
     pub(super) fn field_info(&self, occurrence: u64, field: u64) -> Option<FieldInfo> {
         let (_, def) = self.schema.field(occurrence, field)?;
-        if self.privileged() {
+        if self.may_view() {
             let calc = self
                 .schema
                 .rules
@@ -577,6 +577,19 @@ impl CalcHost for Reader<'_> {
         _context: &Context,
     ) -> Result<om_calc::eval::StoredContainer, CalcError> {
         self.host.load_container(container)
+    }
+
+    /// The session's functions as a step's evaluation answers them
+    /// (`ServerHost::shared_call`): GetSensor, the Design functions and the
+    /// rest; `GetLayoutObjectAttribute` alone is the default's (empty), as
+    /// it would evaluate the window's objects.
+    fn call(
+        &mut self,
+        function: HostFunction<'_>,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        self.host.shared_call(function, args, context)
     }
 
     fn call_reporting(

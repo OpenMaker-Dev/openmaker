@@ -630,9 +630,11 @@ finders carry the full criterion text; their operand text is 300 bytes in
 this capture. The native client requests establish the wire shapes for
 these three criteria. FileMaker Server's replies to them, including its
 behavior with and without `IncludeTooLong`, remain unmeasured. The
-loopback host returned normal no-match for the plain criterion and an
-unsupported-finder error for the other two; those are OpenMaker Server
-results, not FileMaker Server evidence. Evidence: private capture
+loopback host, an OpenMaker Server that did not yet answer Match finders,
+returned normal no-match for the plain criterion and an unsupported-finder
+error for the other two; those are OpenMaker Server results, not FileMaker
+Server evidence. om-query now tests Match finders and leaves an optional
+IndexScan out ([#48](https://github.com/OpenMaker-Dev/openmaker/issues/48)). Evidence: private capture
 `re/work/issue-316/long-find-loopback/capture/conn-000` and [#126](https://github.com/OpenMaker-Dev/openmaker/issues/126).
 
 **Which Match finders reach the host (Med: bin).** `DBPredicateBuilder::Process`
@@ -828,21 +830,70 @@ first) is open (13).
 
 **Word breaking (High for the cases below).** The word index keys each
 word of a value: maximal runs of letters and digits, in which some
-characters between two letters or two digits join:
+characters between two letters or two digits join. In each index language
+FileMaker Server's engine was probed in (1-4, 16-65, 67 and 76; 0 and 77
+were not probed here, and FMUpgradeTool stored them as 21 in the earlier
+probe file, below) but Unicode raw (2), whose rules follow below:
 
-- between digits: `-`, `.`, `,`, `:` and `/` (`392E36CA-E9D8-45A3-83DD-66A6EFF95ADE`
-  gives `392E36CA`, `E9D8-45A3-83DD`, `66A6EFF95ADE`; `3.14`, `3,000`,
-  `12:30` and `50/50` are one word each);
-- between letters, in English: an apostrophe (`'` or U+2019) and `.`
-  (`don't`, `l'équipe`, `x.y`, `U.S.A.` gives `U.S.A`). In French an
-  apostrophe separates (`l'équipe` gives `l`, `équipe`).
+- between digits: `-` and `,` in every language; `.` except in French
+  (24), Polish (33), Swedish (41, 42) and Arabic (49); `:` except in
+  Italian (30); and `/` only in System (1), Unicode standard (3), Catalog
+  (4), Catalan (16), English (21), French (24), Greek (27), Italian (30),
+  Japanese (31), Spanish (39, 40), Chinese (45, 46), Hebrew (47), Hindi
+  (48), Arabic (49), Estonian (50), Lithuanian (51), Latvian (52), Persian
+  (54), Vietnamese (56), Thai (57) and Greek mixed (58). In English
+  `392E36CA-E9D8-45A3-83DD-66A6EFF95ADE` gives `392E36CA`,
+  `E9D8-45A3-83DD`, `66A6EFF95ADE`, and `3.14`, `3,000`, `12:30` and
+  `50/50` are one word each;
+- between letters: `.` in every language, an apostrophe (`'` or U+2019)
+  except in Catalan, French and Italian (16, 24, 30), and the middle dot
+  U+00B7 in Catalan alone (`l·l`). So `don't`, `l'équipe`, `x.y` are one
+  word in English and `U.S.A.` gives `U.S.A`, while French `l'équipe`
+  gives `l`, `équipe`.
+
+In those languages none of these characters joins a digit and a letter
+(`1.b`, `a-1`), `_` and `;` always separate, and, Thai aside, none stays in
+a word at its start or end (`.1`, `a-` give `1`, `a`). In Thai (57) `.` and
+`-` have no weight, so its keys cannot show whether its words keep them at
+either end. The no-break space U+00A0 separates in none of them: it is part of
+the word, at either end too (`1`, U+00A0, `234` is one word). The languages
+that join with `/` and with `.` resemble those whose locales write dates
+with `/` and decimals with `.`, but whether FileMaker takes these
+characters from the locale or from a table of its own is not known [I]; the
+probe gives them for these characters only. In the probe, whose keys are
+all whole, the primary weights of each word's key are those of the value
+key for the word's characters (all 11,487 word keys). A long value's key
+and each of its word keys are cut to 7.1's limit on their own, so a cut
+value key need not hold a later word's weights: in English `x`×100
+`中`×10 keeps nine `中` in its value key and all ten in its word key
+([catalogs/index-key-vectors.tsv](catalogs/index-key-vectors.tsv)). In System and
+Unicode standard a word's key is in their padded form, with its own `00 00`
+and the word's higher levels after it (`ab’cd` keeps the secondary weight
+of `’`). Evidence:
+[catalogs/word-break-vectors.tsv](catalogs/word-break-vectors.tsv), a
+probe of 139 values in 56 index languages (each of `. , : / - ' ’ · _ ;`
+and U+00A0 between two digits, two letters, a digit and a letter and at
+either end, and 8 dates, times and numbers as locales write them).
 
 Every other character separates (`e-mail`, `x-1`, `a_b`, `foo@bar.com`
-gives `foo`, `bar.com`; `#tag`, `C++`, `AT&T`, `$5`, `5%`), and so does a
-change between kanji, hiragana, katakana and Latin letters
-(`日本語のテキスト` gives `日本語`, `の`, `テキスト`; `日本語abc123` gives
-`日本語`, `abc123`). U+FFFE and an emoji do not separate (`a😀b` is one
-word). Evidence: every record of every word-indexed text field in test
+gives `foo`, `bar.com`; `#tag`, `C++`, `AT&T`, `$5`, `5%`, a tab, a soft
+hyphen U+00AD), and so does a change between kanji, hiragana, katakana and
+Latin letters (`日本語のテキスト` gives `日本語`, `の`, `テキスト`;
+`日本語abc123` gives `日本語`, `abc123`; `abc日本`, `x`×108 + U+20000), and
+between Hangul syllables, conjoining jamo and compatibility jamo (`각힣` +
+`각` as three jamo + `ㄱㅏ` gives three words). The kana sound marks
+U+309B and U+309C and the prolonged sound mark `ー` go with katakana
+(`゛゜゙゚ー` is one word), the iteration marks `々`, `〆` and `〻` with kanji,
+and `〇` with neither (`゛゜゙゚ー々〆〇〻` gives `゛゜゙゚ー`, `々〆`, `〇`, `〻`).
+Accents (U+0301 after `x`, U+3099), U+FFFE and an emoji do not separate
+(`a😀b` is one word); an emoji and the unassigned U+0378 alone are words,
+as if every code point the table does not list were a letter. Evidence: the word columns of
+[catalogs/index-key-vectors.tsv](catalogs/index-key-vectors.tsv). Which
+other characters fall in each class is inferred from Unicode's blocks.
+Unicode raw (2) breaks words by rules of its own: its word index splits
+the probe's values at spaces and line breaks only (`x-1`, `a_b` and `a`
+tab `b` are one word each), and a word of one supplementary character
+keys its high surrogate alone (`😀` = `01 d83d`). Evidence: every record of every word-indexed text field in test
 project and the en/fr/es/it FMS samples (`crates/om-collate/tests/indexes.rs`),
 and the word indexes of the probe file of 7.2 (English, French and
 Japanese fields). The full break rules (FileMaker's own word-break
@@ -1139,8 +1190,15 @@ kanji weights of its own; every other character keys from the table
   (`kana` rows).
 - A voiced kana keys as its plain kana then `01f4`, a semi-voiced one then
   `01f8` (`ば` = `4031 01f4`, `パ` = `4438 01f8`); U+3099/U+309B key `01f4`
-  and U+309A/U+309C `01f8`. Halfwidth katakana take the fullwidth weights
-  (`ﾊﾝｶｸ` = `01 4438 446a 440c 4411`).
+  and U+309C `01f8`. This section read U+309A as `01f8` too, but in the
+  probe's `゛゜゙゚ー々〆〇〻` (U+309B U+309C U+3099 U+309A …) it adds nothing
+  after U+3099 (`01 01f4 01f8 01f4 11dd …`), so how it keys, after a kana or
+  another mark, is open. Halfwidth katakana take the fullwidth weights
+  (`ﾊﾝｶｸ` = `01 4438 446a 440c 4411`); the halfwidth sound marks U+FF9E and
+  U+FF9F were not probed.
+- `〆` (U+3006) is tailored too: it keys `446b`, after `ン` (`446a`), where
+  English gives it two table weights (the same probe value's word `々〆` is
+  `01 11d7 446b`). `々`, `〇`, `〻` and `ー` key from the table.
 - A kanji of JIS X 0208 level 1 (rows 16 to 47) is 0x967E + (row - 1) × 94
   + (cell - 1): `一` (row 16, cell 76) = `9c4b`, `中` = `a33f` (42 of 42
   level-1 kanji in the probe and the Japanese sample). Other kanji have
@@ -1250,8 +1308,8 @@ writes `0x800000` for year 0, then the number key of
 
 A find for `12:30 PM` on a time field reads the range [`80 00 00 80 05 56
 11 10`, `80 00 00 80 05 56 16 aa aa aa a0`], the whole minute up to
-45,059.9999999 s (the finder FileMaker Server's engine built for that
-find, traced in the probe).
+45,059.999999 s, its last microsecond (the finder FileMaker Server's engine
+built for that find, traced in the probe).
 
 **Timestamp (High).** The 3-byte date part, then the number key of the
 seconds since midnight: 2026-10-27 21:26:57 = `9f aa 9b | 80 05 88 32 80`
@@ -1669,8 +1727,9 @@ values, not the value index: live:proj_ts keys ModificationTimestamp, which
 has no index. When the requested type is the field's own type and the
 language gives the index's form, the output equals the value index inverted
 (record -> keys) without its empty-value key `01`; om-query answers that case
-from the index and reports the others (conversions, unindexed fields, other
-languages) as unsupported until it can key stored values.
+from the index, keys text in System and Unicode standard and unindexed text
+fields from the stored values, and reports the others (conversions, other
+unindexed fields, other languages) as unsupported.
 
 ### 9.2 JoinProjection, op 12: full semantics (High)
 
@@ -1708,6 +1767,10 @@ Multi-key and multi-row cases: jp_two_keys (two keys under B, one matching)
 {1}; jp_two_rows (one matching row, one not) {1}; jp_two_preds_hit
 (PK = K and Company = empty) {1}; jp_two_preds_miss (Company = "A") {};
 jp_company_emptykey (Company = `01`) {1,2,3}; jp_pk_miss, jp_empty_src {}.
+Whether `≠` and the inequalities list the records under the empty value's
+key `01` is not measured on the host; a relationship never relates an empty
+value (file-metadata.md 4, observed), and om-query leaves `01` out of
+those ranges while `=` matches it.
 
 Not observed: `25` KFilter and `0a` KOperand1, which `JoinProjection` reads
 when present (bin @0xfc90c0; by name, a relationship filter and its operand;
@@ -1961,7 +2024,14 @@ the value indexes of First Name, Company and PK (`dl_*`).
    Thai and Greek-mixed tailorings, the Chinese, Chinese-stroke and Korean
    tables and the Japanese weights of kanji outside JIS X 0208 level 1;
    whether System (1) follows the machine's language; language 77, which
-   FMUpgradeTool would not create. The full word-break rules (7.1). The
+   FMUpgradeTool would not create. In the padded form, the secondary
+   weights of the weights FileMaker gives unlisted code points: no probe
+   value mixed them with accents, so whether each weight adds a secondary
+   byte is not known. The keys of the characters DUCET lists with UCA's
+   implicit weights, other than the compatibility ideographs that have a
+   canonical decomposition: Kangxi and CJK radicals, circled and
+   parenthesized ideographs, and the twelve unified ideographs in
+   U+FA0E..U+FA29, which have no decomposition. The full word-break rules (7.1). The
    cut of long keys in every form (7.1) and `IncludeTooLong` (6.3) are
    solved; three FileMaker Pro long-criterion wire requests are captured
    (6.4), but its finders were not replayed against FileMaker Server with

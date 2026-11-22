@@ -36,6 +36,7 @@ use crate::record::Recordings;
 use crate::schedules::{Clock, Schedule, ScheduleError, ScheduleStatus, Scheduler};
 use crate::scripts::{AbortReason, RunningScript, ScriptEngine};
 use crate::tls::{server_config, Identity, IdentityError};
+use crate::transfer::DownloadMemory;
 use crate::uploads::UploadMemory;
 use om_calc::eval::CalcLimits;
 
@@ -114,6 +115,9 @@ pub struct Server {
     admissions: Arc<Admissions>,
     /// The stack size of connection threads, if not the default.
     stack_size: Option<usize>,
+    /// The database folders the server found its files in at startup
+    /// ([`Server::with_database_folders`]).
+    database_folders: Arc<Vec<PathBuf>>,
 }
 
 impl Server {
@@ -193,6 +197,7 @@ impl Server {
                 no_get_file_list: AtomicBool::new(false),
                 no_authoring: AtomicBool::new(false),
                 upload_memory: UploadMemory::new(ConnectionLimits::DEFAULT.upload_memory),
+                download_memory: DownloadMemory::new(ConnectionLimits::DEFAULT.download_memory),
                 #[cfg(debug_assertions)]
                 test_panic: Default::default(),
                 #[cfg(debug_assertions)]
@@ -206,6 +211,7 @@ impl Server {
             limits: ConnectionLimits::DEFAULT,
             admissions: Default::default(),
             stack_size: None,
+            database_folders: Arc::default(),
         })
     }
 
@@ -256,6 +262,9 @@ impl Server {
     /// ([`ConnectionLimits::DEFAULT`] otherwise).
     pub fn with_connection_limits(mut self, limits: ConnectionLimits) -> Self {
         self.shared.upload_memory.set_limit(limits.upload_memory);
+        self.shared
+            .download_memory
+            .set_limit(limits.download_memory);
         self.limits = limits;
         self
     }
@@ -560,6 +569,15 @@ impl Server {
         Ok(self)
     }
 
+    /// The database folders the server's files were looked for in at
+    /// startup (`om_server::database_folders::discover`), which the Admin
+    /// Console lists whether or not a hosted file lies in them, as
+    /// FileMaker Server lists its default and additional database folders.
+    pub fn with_database_folders(mut self, folders: Vec<PathBuf>) -> Self {
+        self.database_folders = Arc::new(folders);
+        self
+    }
+
     /// A handle for administering the running server: its clients, its
     /// scripts, its schedules and its shutdown.
     pub fn handle(&self) -> io::Result<ServerHandle> {
@@ -567,6 +585,7 @@ impl Server {
             shared: self.shared.clone(),
             schedules: self.schedules.clone(),
             addr: self.local_addr()?,
+            database_folders: self.database_folders.clone(),
         })
     }
 
@@ -789,6 +808,7 @@ pub struct ServerHandle {
     pub(crate) shared: Arc<Shared>,
     schedules: Arc<Scheduler>,
     pub(crate) addr: SocketAddr,
+    database_folders: Arc<Vec<PathBuf>>,
 }
 
 impl ServerHandle {
@@ -850,6 +870,12 @@ impl ServerHandle {
     /// run due at its time has started. Returns whether that happened.
     pub fn wait_for_schedules(&self, timeout: Duration) -> bool {
         self.schedules.wait_idle(timeout)
+    }
+
+    /// The database folders the server looked for files in at startup
+    /// ([`Server::with_database_folders`]).
+    pub fn database_folders(&self) -> Vec<PathBuf> {
+        self.database_folders.to_vec()
     }
 
     /// The default backup folder ([`Server::with_backup_folder`]).
