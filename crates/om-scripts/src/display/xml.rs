@@ -77,6 +77,8 @@ pub fn parse_xml_steps(text: &str, names: &dyn StepNames) -> Result<Vec<Pasted>,
 
 type Read<T> = Result<T, String>;
 
+const UNREAD_CALLBACK: &str = "The callback of Perform Script on Server with Callback is not read";
+
 /// Attributes that carry nothing to read anywhere: UUIDs, member counts
 /// and FileMaker's hashes.
 const INFORMATIONAL: [&str; 3] = ["UUID", "membercount", "hash"];
@@ -371,14 +373,26 @@ impl StepReader<'_> {
         match (id, kind) {
             (87, "Button1" | "Button2" | "Button3") => return self.button(parameter, kind),
             (87, "Field1" | "Field2" | "Field3") => return self.input(parameter, kind),
+            // FileMaker Pro 26.1.1's "Close after (seconds)": its Boolean
+            // and `AutoCloseSeconds` are known from the binaries only
+            // (script-steps.md 12.4), not their XML shape.
+            (87, "AutoCloseTimer") => {
+                return Err("Show Custom Dialog's “Close after” is not read".into());
+            }
             (1 | 164 | 210, "List") => return self.script_choice(parameter),
+            // Pro's XML names the callback `CallbackScriptReference id=n`
+            // and keeps its name and parameter calculations at positions 7
+            // and 4, but the elements' full shape (and the state's) is not
+            // established; a nested `ScriptReference` would otherwise
+            // replace the script to run (script-steps.md 12.2).
+            (210, kind) if kind.starts_with("Callback") => return Err(UNREAD_CALLBACK.into()),
             (16 | 99, "Records" | "Portal") => return self.go_to_choice(parameter),
             (71, "List") => return self.flush(parameter),
             (62, "Options") => return self.pause(parameter),
             (74, "Related") => return self.related(parameter),
             // Its "Skip auto-enter options" reads back differently in
             // FileMaker's writer and importer (script-steps.md 11.8).
-            (91, "replace") => {
+            (91 | 249, "replace") => {
                 return Err("Replace Field Contents' options are not read".into());
             }
             (175, "Parameter") => return self.javascript_parameters(parameter),
@@ -403,6 +417,7 @@ impl StepReader<'_> {
     /// a `Target` parameter, where a variable may stand for the field.
     fn element(&mut self, e: &Element, target: bool) -> Read<()> {
         match e.name.as_str() {
+            name if self.id() == 210 && name.starts_with("Callback") => Err(UNREAD_CALLBACK.into()),
             "Boolean" => self.boolean(e),
             "Calculation" => self.calculation(e),
             "Restore" => {
@@ -742,9 +757,9 @@ impl StepReader<'_> {
         self.container(s)
     }
 
-    /// Perform Script and Perform Script on Server: "From list" (1) with a
-    /// script, or "By name" (2) with the name calculation in slot 2 and
-    /// `[00 1]` = 1 (script-steps.md 10).
+    /// Perform Script and Perform Script on Server (with Callback): "From
+    /// list" (1) with a script, or "By name" (2) with the name calculation
+    /// in slot 2 and `[00 1]` = 1 (script-steps.md 10, 12.2).
     fn script_choice(&mut self, p: &Element) -> Read<()> {
         let mut lists = p.elements();
         let (Some(list), None) = (lists.next(), lists.next()) else {
@@ -759,7 +774,7 @@ impl StepReader<'_> {
         self.chosen = true;
         match number::<u16>(list, "value")? {
             1 => {}
-            2 if self.id() != 210 => self.step.set_list_value(1, Some(1)),
+            2 => self.step.set_list_value(1, Some(1)),
             other => return Err(format!("The script choice {other} is not read")),
         }
         for child in list.elements() {

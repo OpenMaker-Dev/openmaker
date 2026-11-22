@@ -20,7 +20,7 @@ fn pdf(path: &std::path::Path) -> ScriptStep {
         0x82,
         Some(om_data::text_node(
             &[0x82],
-            &format!("file:{}", path.display()),
+            &crate::scripting::files::file_line(path),
         )),
     );
     step
@@ -162,4 +162,45 @@ fn page_setup_dialog_cancel_invalid_restore_and_current_noop_preserve_dirty_reco
         .events
         .iter()
         .any(|e| e.ends_with(":write")));
+}
+
+/// A file that stores a page setup (`[2, 87]`) prints on its paper before
+/// any Page Setup in the session (A4 landscape here: its PDF's pages), and
+/// one accepted in the session takes its place. Print Setup without
+/// Restore or dialog leaves both as they are.
+#[test]
+fn a_files_stored_page_setup_is_its_paper_until_another_is_accepted() {
+    let temporary = tempfile::tempdir().unwrap();
+    let (stored, accepted) = (
+        temporary.path().join("stored.pdf"),
+        temporary.path().join("accepted.pdf"),
+    );
+    let mut noop = ScriptStep::new(42);
+    noop.flags = flag::NO_INTERACT;
+    let mut c = Client::new(
+        vec![
+            noop,
+            pdf(&stored),
+            setup(false, false),
+            pdf(&accepted),
+            exit("Get ( LastError )"),
+        ],
+        Vec::new(),
+    );
+    let mut landscape = A4.to_vec();
+    landscape[8] = 2;
+    c.server.lock().unwrap().page_format = Some(landscape);
+    c.server.lock().unwrap().pdf_rows = vec![1, 2, 3];
+    c.run();
+    assert_eq!(c.result(), "0");
+    let text = |path: &std::path::Path| {
+        String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned()
+    };
+    assert!(text(&stored).contains("/MediaBox [0 0 841.86 595.27]"));
+    assert!(text(&accepted).contains("/MediaBox [0 0 595.27 841.86]"));
+    let accepted = c.session.s.file.page_setup.as_ref().unwrap();
+    assert_eq!(
+        accepted.paper.orientation,
+        om_layout::paper::Orientation::Portrait
+    );
 }

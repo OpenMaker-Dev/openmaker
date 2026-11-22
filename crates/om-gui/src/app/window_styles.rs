@@ -69,7 +69,7 @@ pub struct CardFrame {
 }
 
 impl OpenMakerApp {
-    fn docs(&self) -> impl Iterator<Item = &super::windows::Doc> {
+    pub(super) fn docs(&self) -> impl Iterator<Item = &super::windows::Doc> {
         std::iter::once(&self.w).chain(&self.windows)
     }
 
@@ -159,22 +159,17 @@ impl OpenMakerApp {
     }
 
     /// Draw window `id` and its cards in `ui`, its viewport, whose native
-    /// window is `parent`. `front`: the app's front window.
+    /// window is `parent`.
     pub(super) fn draw_viewport(
         &mut self,
         ui: &mut Ui,
         id: u32,
         embedded: bool,
-        front: u32,
         parent: NativeParent,
     ) {
         let chain = self.card_chain(id);
         let top = *chain.last().expect("one window");
         let dialog = self.blocking_dialog(id);
-        // Embedded viewports share the root's input: only the front
-        // window's takes it.
-        let input = dialog.is_none() && (!embedded || chain.contains(&front));
-        let front_here = chain.contains(&front);
         if !embedded
             && dialog.is_none()
             && matches!(
@@ -194,7 +189,11 @@ impl OpenMakerApp {
             });
             if user_input {
                 self.presentation = Some(super::windows::Presentation::User);
-                self.bring_to_front(top);
+                if !self.bring_to_front(top) {
+                    let viewport = self.viewport_of(self.w.id);
+                    ui.ctx()
+                        .send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+                }
             }
         }
         if let Some(dialog) = dialog {
@@ -206,6 +205,11 @@ impl OpenMakerApp {
                     .send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
             }
         }
+        // A previous viewport, or script presentation handling above, can
+        // have changed which file's dialogs belong in this frame.
+        let front = self.front_doc().id;
+        let front_here = chain.contains(&front);
+        let input = dialog.is_none() && (!embedded || front_here);
         if chain.len() == 1 {
             let draw = |app: &mut Self, ui: &mut Ui| {
                 let sharing = Sharing {
@@ -383,10 +387,45 @@ impl OpenMakerApp {
             self.with_window(card, |app| {
                 app.draw_window_with(ui, input, front, native, sharing);
             });
-            if options.close {
-                close = close_box(ui, card, rect);
-            }
         });
+        if options.close {
+            // On a layer of its own, above the card's: the card's layout
+            // paints on a sublayer of the card's layer (`document::zoom`),
+            // which egui paints above it, so a Table view's header or a
+            // layout's canvas there would cover the close box and take
+            // its click.
+            let top = egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::unique(("openmaker-card-close-layer", card)),
+            );
+            if let Some(transform) = ctx.layer_transform_to_global(layer) {
+                ctx.set_transform_layer(top, transform);
+            }
+            let button = close_box_rect(rect);
+            ctx.memory_mut(|memory| {
+                memory.areas_mut().set_state(
+                    top,
+                    egui::AreaState {
+                        pivot_pos: Some(button.min),
+                        pivot: egui::Align2::LEFT_TOP,
+                        size: Some(button.size()),
+                        interactable: true,
+                        last_became_visible_at: None,
+                    },
+                );
+            });
+            // Keep the close box above this card's layout and below any
+            // card covering it. Both are sublayers of the same card.
+            ctx.set_sublayer(layer, top);
+            ctx.move_to_top(top);
+            let ui = &mut ui.new_child(egui::UiBuilder::new().layer_id(top).max_rect(rect));
+            ui.set_clip_rect(rect);
+            if blocked {
+                ui.style_mut().visuals.disabled_alpha = 1.0;
+                ui.disable();
+            }
+            close = close_box(ui, card, rect);
+        }
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(4),
@@ -405,13 +444,18 @@ impl OpenMakerApp {
     }
 }
 
+/// Where the close box of a card at `rect` is: its top right corner.
+fn close_box_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        egui::pos2(rect.right() - CLOSE_BOX - 6.0, rect.top() + 6.0),
+        egui::vec2(CLOSE_BOX, CLOSE_BOX),
+    )
+}
+
 /// The card's close box at its top right corner, drawn (no font has a
 /// glyph every platform shares); `true` when clicked.
 fn close_box(ui: &mut Ui, card: u32, rect: Rect) -> bool {
-    let button = Rect::from_min_size(
-        egui::pos2(rect.right() - CLOSE_BOX - 6.0, rect.top() + 6.0),
-        egui::vec2(CLOSE_BOX, CLOSE_BOX),
-    );
+    let button = close_box_rect(rect);
     let response = ui
         .interact(
             button,

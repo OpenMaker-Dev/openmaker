@@ -50,6 +50,11 @@ const COMPILED_ENTRIES: usize = 1024;
 /// `Get ( CalculationRepetitionNumber )`, answered from the context.
 const CALCULATION_REPETITION_NUMBER: u8 = 68;
 
+/// `Get ( SortOrder )`, FileMaker Pro 26.1.1's, which no host answers yet
+/// ([#350](https://github.com/OpenMaker-Dev/openmaker/issues/350)): it
+/// fails rather than answer empty, as unanswered selectors do.
+const SORT_ORDER: u8 = 142;
+
 pub(super) mod opc {
     use om_formula::Opcode;
 
@@ -322,13 +327,12 @@ pub(super) struct Solver<'h> {
     budget: CalcLimits,
     /// Custom function calls and `Evaluate`s running, nested.
     nesting: u32,
-    /// Unstored calculations evaluated so far, toward
-    /// [`CalcLimits::calculations`].
-    calculations: u64,
+    /// Unstored calculations left in the evaluation's allowance.
+    pub(super) calculations_remaining: u64,
 }
 
 impl<'h> Solver<'h> {
-    pub fn new(host: &'h mut dyn CalcHost, context: Context) -> Solver<'h> {
+    pub fn new(host: &'h mut dyn CalcHost, context: Context, remaining: u64) -> Solver<'h> {
         let today = host.today();
         let pending = host.pending();
         let budget = host.limits();
@@ -349,7 +353,7 @@ impl<'h> Solver<'h> {
             ticks: 0,
             budget,
             nesting: 0,
-            calculations: 0,
+            calculations_remaining: budget.calculations.min(remaining),
         }
     }
 
@@ -759,6 +763,11 @@ impl<'h> Solver<'h> {
         let (v, e) = self
             .host
             .call_reporting(HostFunction::Named(name), &values, &self.context);
+        // A host function that refused to build its text past the limit
+        // (error 7) ends the evaluation, as the evaluator's own do.
+        if e == Some(CalcError::OUT_OF_MEMORY) {
+            return self.built(Err(CalcError::OUT_OF_MEMORY));
+        }
         if let Some(e) = e {
             self.errors.record(e);
         }
@@ -880,7 +889,11 @@ impl<'h> Solver<'h> {
         if selector == CALCULATION_REPETITION_NUMBER {
             return Value::number(i64::from(self.context.repetition));
         }
-        let r = self.host.get(selector, &self.context);
+        let r = if selector == SORT_ORDER {
+            Err(CalcError::NOT_SUPPORTED)
+        } else {
+            self.host.get(selector, &self.context)
+        };
         self.check(r)
     }
 
@@ -1196,10 +1209,10 @@ impl<'h> Solver<'h> {
     /// Counts one more unstored calculation, ending the evaluation with
     /// error 7 past [`CalcLimits::calculations`].
     pub(super) fn count_calculation(&mut self) -> Flow<()> {
-        self.calculations += 1;
-        if self.calculations > self.budget.calculations {
+        if self.calculations_remaining == 0 {
             return Err(Abort::exhausted());
         }
+        self.calculations_remaining -= 1;
         Ok(())
     }
 

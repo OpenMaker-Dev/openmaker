@@ -1,0 +1,96 @@
+# GetRecordIDsFromFoundSet on FileMaker Server's script engine: each type
+# over an empty found set, all records, a found set with gaps, the same
+# sorted descending, a related occurrence named by its second parameter,
+# the types given as numbers, and an unknown type. Run on contacts-en
+# (Contacts, layout "Contact Details", related "Phone Numbers"); each type
+# by number, and text for the type. Also what the engine answers for the
+# FileMaker Go, add-on and Furigana functions, one script each.
+
+== ids
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Delete All Records [ With dialog: Off ]
+Set Variable [ $log ; "empty " & GetRecordIDsFromFoundSet ( ValueNumber ) & "/" & GetRecordIDsFromFoundSet ( ValueNumberRanges ) & "/" & GetRecordIDsFromFoundSet ( JSONStringRanges ) & "/" & Get ( LastError ) ]
+Loop
+New Record/Request
+Set Field [ Contacts::First Name ; Right ( "000" & Get ( RecordID ) ; 4 ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Loop If [ Get ( FoundCount ) ≥ 8 ]
+End Loop
+Show All Records
+Set Variable [ $log ; $log & ¶ & "all " & Substitute ( GetRecordIDsFromFoundSet ( ValueNumber ) ; ¶ ; "," ) & "/" & Substitute ( GetRecordIDsFromFoundSet ( ValueNumberRanges ) ; ¶ ; "," ) & "/" & GetRecordIDsFromFoundSet ( JSONStringRanges ) ]
+Go to Record/Request/Page [ First ]
+Go to Record/Request/Page [ Next ]
+Omit Record
+Go to Record/Request/Page [ Next ]
+Go to Record/Request/Page [ Next ]
+Omit Record
+Go to Record/Request/Page [ Last ]
+Omit Record
+Set Variable [ $log ; $log & ¶ & "gaps " & Get ( FoundCount ) & " " & Substitute ( GetRecordIDsFromFoundSet ( ValueNumber ) ; ¶ ; "," ) & "/" & Substitute ( GetRecordIDsFromFoundSet ( ValueNumberRanges ) ; ¶ ; "," ) & "/" & GetRecordIDsFromFoundSet ( JSONStringRanges ) ]
+Sort Records [ Contacts::First Name desc ]
+Set Variable [ $log ; $log & ¶ & "sorted " & Substitute ( GetRecordIDsFromFoundSet ( ValueNumber ) ; ¶ ; "," ) & "/" & Substitute ( GetRecordIDsFromFoundSet ( ValueNumberRanges ) ; ¶ ; "," ) & "/" & GetRecordIDsFromFoundSet ( JSONStringRanges ) ]
+Set Variable [ $log ; $log & ¶ & "numbers " & Substitute ( GetRecordIDsFromFoundSet ( 0 ) ; ¶ ; "," ) & "/" & Substitute ( GetRecordIDsFromFoundSet ( 1 ) ; ¶ ; "," ) & "/" & GetRecordIDsFromFoundSet ( 2 ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( 2912 ) ) & ":" & GetRecordIDsFromFoundSet ( 2912 ) ]
+Set Variable [ $log ; $log & ¶ & "bad " & GetRecordIDsFromFoundSet ( 99 ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( 99 ) ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( "x" ) ) & "/" & GetRecordIDsFromFoundSet ( "" ) ]
+Go to Record/Request/Page [ First ]
+Set Field [ Phone Numbers::Number ; "1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Phone Numbers::Number ; "2" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "related " & Get ( LastError ) & " " & Substitute ( GetRecordIDsFromFoundSet ( ValueNumber ; "Phone Numbers" ) ; ¶ ; "," ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( ValueNumber ; "Phone Numbers" ) ) & "/" & Count ( Phone Numbers::Number ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( ValueNumber ; "Nothing" ) ) & "/" & Substitute ( GetRecordIDsFromFoundSet ( ValueNumber ; "Contacts" ) ; ¶ ; "," ) ]
+Exit Script [ $log ]
+
+== location
+Exit Script [ "location " & Location ( 10 ; 60 ) & "/" & EvaluationError ( Location ( 10 ; 60 ) ) & "/" & LocationValues ( 10 ; 60 ) & "/" & EvaluationError ( LocationValues ( 10 ; 60 ) ) ]
+
+== addon
+Exit Script [ "addon " & GetAddonInfo ( "x" ) & "/" & EvaluationError ( GetAddonInfo ( "x" ) ) & "/" & GetAddonInfo ( "" ) & "/" & EvaluationError ( GetAddonInfo ( "" ) ) ]
+
+== furigana
+Exit Script [ "furigana " & Furigana ( "abc" ) & "/" & EvaluationError ( Furigana ( "abc" ) ) ]
+
+== beacons
+Exit Script [ "beacons " & RangeBeacons ( "00000000-0000-0000-0000-000000000000" ; 1 ) & "/" & EvaluationError ( RangeBeacons ( "00000000-0000-0000-0000-000000000000" ; 1 ) ) ]
+
+== sensor
+Exit Script [ "sensor " & GetSensor ( "battery" ) & "/" & EvaluationError ( GetSensor ( "battery" ) ) ]
+
+== player
+Exit Script [ "player " & GetAVPlayerAttribute ( "playbackState" ) & "/" & EvaluationError ( GetAVPlayerAttribute ( "playbackState" ) ) ]
+
+== text
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Show All Records
+Exit Script [ "text x:" & Substitute ( GetRecordIDsFromFoundSet ( "x" ) ; ¶ ; "," ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( "x" ) ) & " empty:" & EvaluationError ( GetRecordIDsFromFoundSet ( "" ) ) & " 3:" & Substitute ( GetRecordIDsFromFoundSet ( "3" ) ; ¶ ; "," ) & " list:" & Substitute ( GetRecordIDsFromFoundSet ( ValueNumber ; "" ) ; ¶ ; "," ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( ValueNumber ; "" ) ) ]
+
+== types
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Show All Records
+Go to Record/Request/Page [ First ]
+Go to Record/Request/Page [ Next ]
+Omit Record
+Go to Record/Request/Page [ Next ]
+Go to Record/Request/Page [ Next ]
+Omit Record
+Set Variable [ $log ; "names " & GetAsNumber ( ValueNumber ) & "/" & GetAsNumber ( ValueNumberRanges ) & "/" & GetAsNumber ( JSONStringRanges ) & "/" & Get ( FoundCount ) ]
+Set Variable [ $n ; 0 ]
+Loop
+Set Variable [ $log ; $log & ¶ & $n & " " & Substitute ( GetRecordIDsFromFoundSet ( $n ) ; ¶ ; "," ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( $n ) ) ]
+Set Variable [ $n ; $n + 1 ]
+Exit Loop If [ $n > 7 ]
+End Loop
+Set Variable [ $log ; $log & ¶ & "half " & EvaluationError ( GetRecordIDsFromFoundSet ( 1.5 ) ) & ":" & GetRecordIDsFromFoundSet ( 1.5 ) & "/" & EvaluationError ( GetRecordIDsFromFoundSet ( -1 ) ) ]
+Exit Script [ $log ]
+
+--- run
+ids
+location
+addon
+furigana
+beacons
+sensor
+player
+types
+text

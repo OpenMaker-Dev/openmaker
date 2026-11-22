@@ -533,6 +533,7 @@ fn export_ages(summaries: &[&str]) -> ScriptStep {
         formatting: false,
         charset: om_transfer::ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let profile = om_transfer::Profile::new(om_transfer::FileType::TabSeparated);
     let mut s = step(36);
@@ -886,6 +887,21 @@ fn catalog() -> ScriptCatalog {
                 ],
             ),
             script(
+                903,
+                "Ask briefly",
+                vec![
+                    {
+                        // "Close after" 1 second (script-steps.md 12.4).
+                        let mut dialog = custom_dialog();
+                        dialog.set_number_bool(6, Some(true));
+                        dialog.set_calculation(13, Some(&calc("1")));
+                        dialog
+                    },
+                    set_field("Note", "Get ( LastMessageChoice ) & \"/\" & $answer"),
+                    step(75),
+                ],
+            ),
+            script(
                 2,
                 "Missing layout",
                 vec![
@@ -1128,6 +1144,19 @@ fn custom_dialogs_store_inputs_and_the_chosen_button() {
     let row = state.lock().unwrap().rows[0].clone();
     assert_eq!(row.values[0].as_deref(), Some("Ada L."));
     assert_eq!(row.values[2].as_deref(), Some("2/"));
+
+    // "Close after": the dialog closes by itself as no button, 0, with no
+    // click. Its inputs are left to the runtime's test: under load the
+    // dialog may close before this one could type.
+    run(&mut app, "Ask briefly");
+    common::wait_until(&mut app, "the dialog's timeout", |_| {
+        state.lock().unwrap().rows[0].values[2].as_deref() == Some("0/")
+    });
+    wait_idle(&mut app);
+    assert!(app.query_by_label("Who are you?").is_none());
+    let row = state.lock().unwrap().rows[0].clone();
+    assert_eq!(row.values[0].as_deref(), Some("Ada L."));
+    assert_eq!(row.values[2].as_deref(), Some("0/"));
 }
 
 #[test]
@@ -1939,8 +1968,16 @@ fn on_window_close_can_keep_the_file_open() {
 /// A PDF of one 300 x 200 page per marker, each showing its marker in
 /// Helvetica, the pages sharing one font object.
 fn marked_pdf(markers: &[&str]) -> Vec<u8> {
-    use pdf_writer::{Finish, Name, Pdf, Rect, Ref};
+    titled_pdf(markers, None)
+}
+
+/// [`marked_pdf`] with `title` in its document information.
+fn titled_pdf(markers: &[&str], title: Option<&str>) -> Vec<u8> {
+    use pdf_writer::{Finish, Name, Pdf, Rect, Ref, TextStr};
     let mut pdf = Pdf::new();
+    if let Some(title) = title {
+        pdf.document_info(Ref::new(99)).title(TextStr(title));
+    }
     let count = markers.len() as i32;
     pdf.catalog(Ref::new(1)).pages(Ref::new(2));
     pdf.pages(Ref::new(2))
@@ -2587,4 +2624,109 @@ fn a_script_stopped_by_a_provider_panic_frees_its_window() {
             == Some("again")
     });
     assert_ne!(note(&state).as_deref(), Some("again"), "nothing saved it");
+}
+
+/// Save Records as PDF [Append to existing PDF] (#109) adds the report's
+/// pages after the file's, through the PDF worker: to the PDF the step
+/// saved just before, and again to the document that append made; with no
+/// file yet, it writes a new one. A PDF another program wrote (without
+/// OpenMaker's mark, even with only pages), a file that is not a PDF, and
+/// one with document information or a marked file with a bad xref refuse
+/// with 3 and stay as they were.
+#[test]
+fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
+    om_data::calc::functions::pdf_worker::set_default(
+        env!("CARGO_BIN_EXE_om-gui-pdf-worker").into(),
+    );
+    use om_data::calc::functions::pdf_worker;
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name);
+    let plain = marked_pdf(&["P1"]);
+    std::fs::write(path("plain.pdf"), &plain).unwrap();
+    let mut marked = plain.clone();
+    marked[b"%PDF-1.7\n%".len()..][..4].copy_from_slice(pdf_worker::MARKER);
+    let xref = marked.windows(7).position(|w| w == b"xref\n0 ").unwrap();
+    let start = xref
+        + marked[xref..]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b == b'\n')
+            .nth(1)
+            .unwrap()
+            .0
+        + 1;
+    // Point the catalog's row at object 2. The marker still matches.
+    marked.copy_within(start + 40..start + 50, start + 20);
+    std::fs::write(path("bad-xref.pdf"), &marked).unwrap();
+    std::fs::write(path("bad.pdf"), b"not a PDF").unwrap();
+    let titled = titled_pdf(&["T1"], Some("Kept"));
+    std::fs::write(path("titled.pdf"), &titled).unwrap();
+    let save = |name: &str, append: bool| {
+        let mut step = step(144);
+        step.value = 1;
+        step.flags |= flag::NO_INTERACT | flag::FILE_PATH;
+        if append {
+            step.flags |= flag::OPTION;
+        }
+        step.set_slot_child(
+            0,
+            0x82,
+            Some(om_data::text_node(
+                &[0x82],
+                &format!("file:{}", path(name).display()),
+            )),
+        );
+        step
+    };
+    let errors = |name: &str| set_variable(name, "Get ( LastError )");
+    let steps = vec![
+        capture_errors(),
+        save("records.pdf", false),
+        errors("$a"),
+        save("records.pdf", true),
+        errors("$b"),
+        save("records.pdf", true),
+        errors("$g"),
+        save("bad-xref.pdf", true),
+        errors("$h"),
+        save("plain.pdf", true),
+        errors("$c"),
+        save("new.pdf", true),
+        errors("$d"),
+        save("bad.pdf", true),
+        errors("$e"),
+        save("titled.pdf", true),
+        errors("$f"),
+        set_field(
+            "Note",
+            "$a & \"|\" & $b & \"|\" & $g & \"|\" & $c & \"|\" & $d & \"|\" & $e & \"|\" & $f & \"|\" & $h",
+        ),
+        // Commit Records: the script's end does not save the field.
+        step(75),
+    ];
+    let (mut app, state) = open_with(State {
+        calc_schema: true,
+        rows: rows_of(&[("Ada", "10"), ("Grace", "20"), ("Alan", "30")]),
+        scripts: ScriptCatalog {
+            scripts: vec![script(96, "Append", steps)],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    run(&mut app, "Append");
+    wait_idle(&mut app);
+    assert_eq!(notes(&state)[0].as_deref(), Some("0|0|0|3|0|3|3|3"));
+    let pages = |name: &str| {
+        pdf_worker::info(&std::fs::read(path(name)).unwrap())
+            .unwrap()
+            .unwrap()
+            .pages
+    };
+    let once = pages("new.pdf");
+    assert!(once > 0);
+    assert_eq!(pages("records.pdf"), 3 * once);
+    assert_eq!(std::fs::read(path("plain.pdf")).unwrap(), plain);
+    assert_eq!(std::fs::read(path("bad-xref.pdf")).unwrap(), marked);
+    assert_eq!(std::fs::read(path("bad.pdf")).unwrap(), b"not a PDF");
+    assert_eq!(std::fs::read(path("titled.pdf")).unwrap(), titled);
 }

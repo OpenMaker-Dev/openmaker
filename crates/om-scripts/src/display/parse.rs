@@ -75,6 +75,18 @@ pub(super) fn serial_key(id: u64) -> Option<StoredKey> {
     zero_key(&om_hbam::serial::encode(id))
 }
 
+/// Whether a script's text names one of another file, as the step text
+/// writes it: `“Name” from file: “File”` (either may be `<unknown>`). A
+/// quoted name that only holds those words, `“Import from file: CSV”`, is
+/// this file's.
+fn from_other_file(text: &str) -> bool {
+    let named = |part: &str| {
+        part == UNKNOWN || (part.len() > 1 && part.starts_with('“') && part.ends_with('”'))
+    };
+    text.rsplit_once(" from file: ")
+        .is_some_and(|(script, file)| named(script) && named(file))
+}
+
 /// A typographic-quoted name, `“Name”`, unquoted.
 fn unquote(text: &str) -> Option<&str> {
     text.trim().strip_prefix('“')?.strip_suffix('”')
@@ -107,6 +119,11 @@ fn label_value<'o>(option: &'o str, label: &str) -> Option<&'o str> {
     }
     let rest = &option[label.len()..];
     let rest = rest.trim_start_matches(' ').strip_prefix(':')?;
+    // `Repetition::Names` is a field of the occurrence Repetition, not the
+    // label Repetition.
+    if rest.starts_with(':') {
+        return None;
+    }
     // One space follows the colon; a calculation keeps the rest as is.
     let rest = rest.strip_prefix(' ').unwrap_or(rest);
     Some(if rest.trim().is_empty() { "" } else { rest })
@@ -227,6 +244,14 @@ impl<'a> Parser<'a> {
             Ok(calc) => self.step.set_calculation(slot, Some(&calc)),
             Err(message) => self.issue(message, Some(Part::Slot(slot))),
         }
+    }
+
+    /// `kFieldSpecByCalc` with a target field named by slot 1's calculation
+    /// (Set Field By Name, Replace Field Contents by Name), as FileMaker
+    /// stores it (script-steps.md 4).
+    fn field_by_calculation(&mut self) {
+        let named = self.step.calculation(1).is_some();
+        self.step.set_flag(flag::FIELD_SPEC_BY_CALC, named);
     }
 
     /// A calculation alone, unless the next option is one of `stop`.
@@ -374,10 +399,11 @@ impl<'a> Parser<'a> {
 
     /// A script's text `“Name”` (or `… from file: “File”`).
     fn script(&mut self, text: &str) {
-        if text == UNKNOWN || text.contains(" from file: ") {
+        let external = from_other_file(text);
+        if text == UNKNOWN || external {
             self.issue(
                 "The script is not in this file".into(),
-                Some(if text.contains(" from file: ") {
+                Some(if external {
                     Part::Key(0x20)
                 } else {
                     Part::Reserved
@@ -403,6 +429,39 @@ impl<'a> Parser<'a> {
                 Some(Part::Reserved),
             ),
             Err(reason) => self.issue(reason, Some(Part::Reserved)),
+        }
+    }
+
+    /// Perform Script on Server with Callback's callback from the list: the
+    /// script's key as a quoted hex literal in slot 3, with `kOption`
+    /// (script-steps.md 12.2). FileMaker's case for the digits a-f is not
+    /// observed; upper case is written.
+    fn callback_script(&mut self, text: &str) {
+        let part = Some(Part::Slot(3));
+        if text == UNKNOWN || from_other_file(text) {
+            self.issue("The callback script is not in this file".into(), part);
+            return;
+        }
+        let Some(name) = unquote(text) else {
+            self.issue(format!("“{text}” is not a script name"), part);
+            return;
+        };
+        match self
+            .names
+            .find_script(name)
+            .require(&format!("the script “{name}”"))
+        {
+            Ok(id) => {
+                let hex: String = om_hbam::serial::encode(id)
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect();
+                let literal =
+                    compile(&format!("\"{hex}\""), self.names).expect("a text literal compiles");
+                self.step.set_calculation(3, Some(&literal));
+                self.step.flags |= flag::OPTION;
+            }
+            Err(reason) => self.issue(reason, part),
         }
     }
 
@@ -636,6 +695,7 @@ fn rule(p: &mut Parser<'_>) {
         87 => custom_dialog(p),
         103 => p.labeled("Text Result", 0),
         141 => set_variable(p),
+        250 => set_variable_by_name(p),
         148 => {
             if let Some(text) = p.take() {
                 p.script(&text);
@@ -679,13 +739,13 @@ fn rule(p: &mut Parser<'_>) {
             p.labeled("Repetition", 1);
         }
         228 => {
-            p.labeled("List of record IDs", 0);
+            p.labeled("List of record IDs", 7);
             if let Some(text) = p.labeled_value("Using layout") {
                 if text != "<Current Layout>" {
                     p.layout(&text);
                 }
             }
-            p.word("New window", flag::OPTION);
+            p.word("New window", flag::TURN_ON);
             p.animation();
         }
         11 | 12 | 18 | 46 | 47 | 49 => {
@@ -738,9 +798,15 @@ fn rule(p: &mut Parser<'_>) {
             p.target(Some("Target"), &[]);
             p.bare(0, &[]);
         }
-        91 => {
+        91 | 249 => {
             p.dialog();
-            p.field(&["Current contents", "Serial numbers"]);
+            // 249 names its field with a calculation (script-steps.md 12.4).
+            if p.step.id() == 249 {
+                p.bare(1, &["Current contents", "Serial numbers"]);
+                p.field_by_calculation();
+            } else {
+                p.field(&["Current contents", "Serial numbers"]);
+            }
             if p.next_is("Current contents") {
                 p.pos += 1;
             } else if p.next_is("Serial numbers") {
@@ -753,6 +819,7 @@ fn rule(p: &mut Parser<'_>) {
         }
         147 => {
             p.bare(1, &[]);
+            p.field_by_calculation();
             p.bare(0, &[]);
         }
         131 => {
@@ -1237,12 +1304,7 @@ fn by_name(p: &mut Parser<'_>) {
 
 fn server_script(p: &mut Parser<'_>) {
     match p.labeled_value("Specified").map(|s| s.to_ascii_lowercase()) {
-        Some(s) if s == "by name" && p.step.id() == 164 => by_name(p),
-        Some(s) if s == "by name" => {
-            if let Some(text) = p.take() {
-                p.calc_into(1, &text);
-            }
-        }
+        Some(s) if s == "by name" => by_name(p),
         _ => {
             if p.peek()
                 .is_some_and(|o| label_value(o, "Parameter").is_none())
@@ -1259,14 +1321,30 @@ fn server_script(p: &mut Parser<'_>) {
                 .set_flag(flag::OPTION, value.eq_ignore_ascii_case("off"));
         }
     } else {
-        if let Some(how) = p.labeled_value("Callback script specified") {
-            if how.eq_ignore_ascii_case("by name") {
-                if let Some(text) = p.take() {
-                    p.calc_into(2, &text);
-                }
+        // Slots and flags of script-steps.md 12.2: by name, `[00 6]` = 1
+        // and the name in slot 7 with `0x1000 | 0x2000`; the parameter in
+        // slot 4 with `0x200`.
+        let stop = ["Callback script parameter:", "State:"];
+        match p.labeled_value("Callback script specified") {
+            Some(how) if how.eq_ignore_ascii_case("by name") => {
+                p.step.set_list_value(6, Some(1));
+                p.step.flags |= flag::SELECT_ALL | flag::EXIT;
+                p.bare(7, &stop);
             }
+            Some(how)
+                if how.eq_ignore_ascii_case("from list")
+                    && p.peek().is_some()
+                    && !p.stops(&stop) =>
+            {
+                let text = p.take().expect("peeked");
+                p.callback_script(&text);
+            }
+            _ => {}
         }
-        p.labeled("Callback script parameter", 3);
+        p.labeled("Callback script parameter", 4);
+        if p.step.calculation(4).is_some() {
+            p.step.flags |= flag::OPTION2;
+        }
         p.choice(&[
             (1, "State: Halt"),
             (2, "State: Exit"),
@@ -1337,6 +1415,25 @@ fn set_variable(p: &mut Parser<'_>) {
     p.labeled("Value", 1);
 }
 
+/// Set Variable by Name's text as OpenMaker shows it: the name's
+/// calculation whole, then `Repetition:` when it is not 1, then `Value:`
+/// [I]. The repetition has its own label: a name calculation can end in a
+/// repetition of its own (`Table::Names[2]`).
+fn set_variable_by_name(p: &mut Parser<'_>) {
+    if p.peek().is_some_and(|o| {
+        label_value(o, "Value").is_none() && label_value(o, "Repetition").is_none()
+    }) {
+        let text = p.take().expect("peeked");
+        p.calc_into(3, &text);
+    }
+    match p.labeled_value("Repetition") {
+        Some(text) => p.calc_into(2, &text),
+        // As Set Variable stores repetition 1 when none is given.
+        None => p.calc_into(2, "1"),
+    }
+    p.labeled("Value", 1);
+}
+
 fn go_to_layout(p: &mut Parser<'_>) {
     if p.next_is("original layout") {
         p.pos += 1;
@@ -1392,20 +1489,27 @@ fn go_to_related_record(p: &mut Parser<'_>) {
     p.word("Show only related records", flag::RESTORE);
     p.word("Match found set", flag::OPTION2);
     if let Some(text) = p.labeled_value("From table") {
-        let occurrence = match quoted_head(&text) {
-            Some(name) => p
-                .names
-                .find_occurrence(name)
-                .require(&format!("the table occurrence “{name}”")),
-            None => Err(format!("{text} is not a table occurrence name")),
-        };
-        match occurrence {
-            Ok(o) => {
-                let key = om_formula::Key::from_id(o).0;
-                p.step
-                    .set_slot_child(0, 0x11, Some(om_hbam::OwnedNode::leaf([0x11], key)));
+        if quoted_head(&text).is_none() && text != UNKNOWN && !text.trim().is_empty() {
+            // Table by Calculation: the name's calculation in slot 8 with
+            // `0x400` (script-steps.md 12.4).
+            p.calc_into(8, &text);
+            p.step.flags |= flag::OPTION3;
+        } else {
+            let occurrence = match quoted_head(&text) {
+                Some(name) => p
+                    .names
+                    .find_occurrence(name)
+                    .require(&format!("the table occurrence “{name}”")),
+                None => Err(format!("{text} is not a table occurrence name")),
+            };
+            match occurrence {
+                Ok(o) => {
+                    let key = om_formula::Key::from_id(o).0;
+                    p.step
+                        .set_slot_child(0, 0x11, Some(om_hbam::OwnedNode::leaf([0x11], key)));
+                }
+                Err(reason) => p.issue(reason, Some(Part::Slot(0))),
             }
-            Err(reason) => p.issue(reason, Some(Part::Slot(0))),
         }
     }
     if let Some(text) = p.labeled_value("Using layout") {
@@ -1633,4 +1737,16 @@ pub(super) fn split_top(text: &str, sep: char) -> Vec<String> {
         out.push(current.trim().to_owned());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_value;
+
+    #[test]
+    fn a_label_is_not_an_occurrence_of_its_name() {
+        assert_eq!(label_value("Repetition: 2", "Repetition"), Some("2"));
+        assert_eq!(label_value("Repetition::Names[2]", "Repetition"), None);
+        assert_eq!(label_value("Value::x", "Value"), None);
+    }
 }

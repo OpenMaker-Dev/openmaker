@@ -831,6 +831,76 @@ fn focus_selection_and_the_records_open_state() {
     assert_eq!(all[5], ["0", "", "4", "2", "1300048", ""]);
 }
 
+/// The layout's calculations read the window's focus, the text typed so
+/// far, the record's changed fields and the sort as a script in the window
+/// does: hide conditions on them follow the user's focus and typing, the
+/// field being left and Sort Records.
+#[test]
+fn layout_calculations_read_the_focus_changes_and_sort() {
+    use egui_kittest::kittest::Queryable;
+    let mut layout = render();
+    for (id, text, hide) in [
+        (
+            30,
+            "OUT OF NAME",
+            "Get ( ActiveFieldName ) = \"Name\" and Get ( ActiveFieldTableName ) = \"Contacts\"",
+        ),
+        (
+            31,
+            "NOTHING TYPED",
+            "PatternCount ( Get ( ActiveFieldContents ) ; \"x\" ) > 0",
+        ),
+        (
+            32,
+            "NAME UNCHANGED",
+            "PatternCount ( Get ( ModifiedFields ) ; \"Name\" ) > 0",
+        ),
+        (33, "UNSORTED", "Get ( SortState ) = 1"),
+    ] {
+        let top = 230.0 + 15.0 * (id - 30) as f64;
+        let mut marker = LayoutObject {
+            id,
+            object_type: 2,
+            text: Some(text.into()),
+            bounds: Some(Rect {
+                top,
+                left: 320.0,
+                bottom: top + 14.0,
+                right: 620.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        marker.calcs.hide = Some(formula(hide));
+        layout.layout.objects.root.push(id);
+        layout.layout.objects.objects.push(marker);
+    }
+    let markers = ["OUT OF NAME", "NOTHING TYPED", "NAME UNCHANGED", "UNSORTED"];
+    let shown = |app: &common::App| markers.map(|label| app.query_by_label(label).is_some());
+    let (mut app, _state) = open_with(
+        vec![script(208, "Sort by name", vec![sort_by_name()])],
+        Default::default(),
+        Some(layout),
+    );
+    common::wait_until(&mut app, "every marker", |app| shown(app) == [true; 4]);
+    // Typing into Name: Name is active with what was typed, and listed as
+    // modified only once it is left.
+    common::fill(&mut app, "Name", "x");
+    common::wait_until(&mut app, "the focus and typing", |app| {
+        shown(app) == [false, false, true, true]
+    });
+    app.key_press(egui::Key::Tab);
+    common::wait_until(&mut app, "Name left", |app| {
+        shown(app) == [true, true, false, true]
+    });
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Sort by name");
+    common::wait_until(&mut app, "the sort", |app| {
+        !app.state().script_running() && !shown(app)[3]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// The text field that has the focus: its label and its top.
 fn focused(app: &common::App) -> Option<(String, f32)> {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -1154,9 +1224,16 @@ fn sorting_preview_printing_and_layout_object_functions() {
                 "Get ( PageCount )",
                 "Get ( PrinterName )",
                 "Get ( QuickFindText )",
+                "GetRecordIDsFromFoundSet ( JSONStringRanges )",
+                "GetRecordIDsFromFoundSet ( 2 )",
             ]),
             sort_by_name(),
-            probe(&["Get ( SortState )"]),
+            probe(&[
+                "Get ( SortState )",
+                "GetRecordIDsFromFoundSet ( JSONStringRanges )",
+                "GetRecordIDsFromFoundSet ( 2 )",
+                "EvaluationError ( GetRecordIDsFromFoundSet ( 5 ) )",
+            ]),
             // Still sorted with a new record open (O3).
             step(7),
             probe(&["Get ( SortState )", "Get ( RecordOpenState )"]),
@@ -1179,8 +1256,11 @@ fn sorting_preview_printing_and_layout_object_functions() {
     )];
     let (mut app, state) = open(scripts);
     let all = answers(&mut app, &state, "Sort and preview");
-    assert_eq!(all[0], ["0", "0", "", " ", ""]);
-    assert_eq!(all[1], ["1"]);
+    // The found set's ids in its order, each run of ascending ids a range
+    // (calc-functions.md, "GetRecordIDsFromFoundSet on FileMaker
+    // Server"): Ada 1, Grace 2, Alan 3, then by name.
+    assert_eq!(all[0], ["0", "0", "", " ", "", r#"["1-3"]"#, "[1,2,3]"]);
+    assert_eq!(all[1], ["1", r#"["1","3","2"]"#, "[1,3,2]", "1708"]);
     assert_eq!(all[2], ["1", "1"]);
     // Preview has pages but no page count, and no object bounds.
     assert_eq!(all[3], ["2", "1", "", ""]);
@@ -1302,6 +1382,13 @@ fn limited_built_in_sets_keep_layout_mode_closed() {
 fn window_names_and_uuids_follow_new_window() {
     let mut new_window = step(122);
     new_window.set_calculation(0, Some(&calc("\"Second\"")));
+    // Select Window by name finds a name without case, else a window's
+    // UUID (Claris, select-window.html; #320).
+    let select = |name: &str| {
+        let mut select = with_value(step(123), 1);
+        select.set_calculation(0, Some(&calc(name)));
+        select
+    };
     let scripts = vec![script(
         205,
         "Windows probe",
@@ -1316,6 +1403,20 @@ fn window_names_and_uuids_follow_new_window() {
                 "Get ( WindowUUID ) <> $$u",
                 "Length ( Get ( WindowUUID ) )",
             ]),
+            select("$$u"),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            select("\"sECOND\""),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            // A name as given wins over one that differs only in case.
+            {
+                let mut upper = step(122);
+                upper.set_calculation(0, Some(&calc("\"SECOND\"")));
+                upper
+            },
+            select("\"Second\""),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            // Close Second, then SECOND, the window current before it.
+            step(121),
             step(121),
             probe(&["WindowNames", "Get ( WindowUUID ) = $$u"]),
         ]),
@@ -1324,5 +1425,8 @@ fn window_names_and_uuids_follow_new_window() {
     let all = answers(&mut app, &state, "Windows probe");
     assert_eq!(all[0], ["Contacts", "Contacts"]);
     assert_eq!(all[1], ["Second\rContacts", "Second", "1", "32"]);
-    assert_eq!(all[2], ["Contacts", "1"]);
+    assert_eq!(all[2], ["0", "Contacts"]);
+    assert_eq!(all[3], ["0", "Second"]);
+    assert_eq!(all[4], ["0", "Second"]);
+    assert_eq!(all[5], ["Contacts", "1"]);
 }

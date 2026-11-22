@@ -21,12 +21,32 @@
 //! others. Afterwards the found set holds the records added and updated
 //! (all of the found set for an update of the found set).
 //!
+//! "Preserve target field data if source field is empty" (FileMaker
+//! 26.1.1, flag `0x40`): an update leaves a field whose source value is
+//! empty as it is and still writes the row's other values (Claris). Which
+//! values count is inferred, unmeasured on FileMaker: an empty text or a
+//! missing column, repetition by repetition; a record the import adds is
+//! written in full, as without the option. With "perform auto-enter
+//! options" too, an update fails with error 3 before any row: an imported
+//! field's write is what keeps auto-entry from replacing it, so a field
+//! left unwritten could have a calculation or lookup overwrite the very
+//! value the option keeps (how FileMaker orders the two is unmeasured).
+//! The refusal reads only the step's own options, so no schema change
+//! during the import and no column the source lacks can get past it. An
+//! import with a flag OpenMaker does not know fails with error 3 before
+//! any row.
+//!
 //! Entry options. With "perform auto-enter options" fields that are not
 //! imported get their auto-entered values; an imported field keeps the
 //! imported value (empty too). Validation set to "always" is checked and a
 //! row that fails is not imported; the step then ends with error 729 after
 //! importing the others. "Only during data entry" validation is not
-//! checked. Values are stored as the source spells them, except dates with
+//! checked. A row the host refuses as one whose rule OpenMaker does not
+//! support checking ([`TransferError::ends_import`], error 3) ends the
+//! import there with error 3 instead: counting it as a skipped row would
+//! report an unsupported check as the row's validation failure (729) and
+//! keep the others. Any other row error, error 3 among them, skips the
+//! row. Values are stored as the source spells them, except dates with
 //! a year of less than four digits, which are stored completed
 //! (`1/1/24` is `01/01/2024`).
 //!
@@ -35,6 +55,7 @@
 
 pub mod limit;
 pub mod read;
+mod xls;
 
 use std::collections::{HashMap, HashSet};
 
@@ -80,7 +101,8 @@ pub trait ImportTarget {
 
     /// Make a record with `writes`, applying auto-entry to the other fields
     /// when `auto_enter` and the "always" validation of the record. `Err`
-    /// refuses the row (its code is reported).
+    /// refuses the row (its code is reported); one that
+    /// [`TransferError::ends_import`] ends the import (module docs).
     fn create(
         &mut self,
         occurrence: u64,
@@ -168,11 +190,56 @@ impl ImportSummary {
     }
 }
 
+/// Refuse, with error 3 before any row is read, the import options
+/// OpenMaker does not carry out, rather than import other records than
+/// FileMaker would: "Split repeating values into separate records"
+/// (FileMaker Server's split of a text source kept only each field's first
+/// repetition and left others empty, oracle x02 `i_split`; not reproduced)
+/// an import into a new table (`FieldFlags::new_table`; OpenMaker
+/// creates no table), "Preserve target field data" in an update that
+/// performs auto-enter options (module docs), and option flags OpenMaker
+/// does not know.
+pub fn refuse_unsupported(options: &ImportOptions, field_flags: Option<&FieldFlags>) -> Result<()> {
+    if options.has(import_flag::SPLIT_REPETITIONS) {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Splitting repetitions into separate records is not supported.",
+        ));
+    }
+    if field_flags.is_some_and(|f| !f.new_table.is_empty()) {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Importing into a new table is not supported.",
+        ));
+    }
+    // "Preserve target field data" with auto-entry in an update (module
+    // docs), and options OpenMaker does not know.
+    if options.has(import_flag::PRESERVE_TARGET)
+        && options.has(import_flag::AUTO_ENTER)
+        && options.action != ImportAction::Add
+    {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Preserving target data while performing auto-enter options is not supported.",
+        ));
+    }
+    if options.flags & !import_flag::KNOWN != 0 {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            format!(
+                "Import option flags {:#04x} are not supported.",
+                options.flags & !import_flag::KNOWN
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Parse a source file in the profile's format, within [`limit`].
 pub fn parse(request: &ImportRequest, bytes: &[u8]) -> Result<Source> {
     let unreadable = match request.profile.file_type {
         FileType::XmlImport => code::XML_PARSE,
-        FileType::Excel2007 | FileType::ExcelExport => 730,
+        FileType::Excel2007 | FileType::ExcelExport | FileType::Excel2003 => 730,
         _ => 708,
     };
     if bytes.len() > limit::SOURCE_BYTES {
@@ -216,6 +283,18 @@ pub fn parse(request: &ImportRequest, bytes: &[u8]) -> Result<Source> {
             Source {
                 names: None,
                 rows: read::workbook(bytes, sheet, worksheet)?,
+            }
+        }
+        FileType::Excel2003 => {
+            let (sheet, worksheet) = match &request.profile.body {
+                ProfileBody::Excel {
+                    sheet, worksheet, ..
+                } => (*sheet as usize, worksheet.as_str()),
+                _ => (0, ""),
+            };
+            Source {
+                names: None,
+                rows: xls::workbook(bytes, sheet, worksheet, &mut limit::Budget::new(unreadable))?,
             }
         }
         FileType::DBase => read::dbase(bytes, charset)?,
@@ -285,6 +364,7 @@ pub fn import_rows(
     locale: &Locale,
 ) -> Result<ImportSummary> {
     let options = &request.options;
+    refuse_unsupported(options, request.field_flags.as_ref())?;
     let occurrence = options.table.id().ok_or_else(|| {
         TransferError::new(code::FIELD_MISSING, "The import has no target table.")
     })?;
@@ -292,6 +372,7 @@ pub fn import_rows(
     let columns = map_columns(options, &source, &fields);
     let auto_enter = options.has(import_flag::AUTO_ENTER);
     let add_remaining = options.has(import_flag::ADD_REMAINING);
+    let preserve = options.has(import_flag::PRESERVE_TARGET);
     let mut summary = ImportSummary {
         total: source.rows.len(),
         ..ImportSummary::default()
@@ -303,7 +384,9 @@ pub fn import_rows(
         .enumerate()
         .filter_map(|(i, c)| Some((i, c.as_ref()?)))
         .collect();
-    let writes_of = |row: &SourceRow, with_match: bool| -> Vec<FieldWrite> {
+    // `existing`: the writes update a record (module docs, "Preserve
+    // target field data").
+    let writes_of = |row: &SourceRow, with_match: bool, existing: bool| -> Vec<FieldWrite> {
         let mut out = Vec::new();
         for &(i, t) in &mapped {
             if t.matching && !with_match {
@@ -316,6 +399,9 @@ pub fn import_rows(
                 if reps == 1 && r > 0 {
                     break;
                 }
+                if preserve && existing && text.is_empty() {
+                    continue;
+                }
                 out.push(FieldWrite {
                     field: t.field.id,
                     repetition: r as u32 + 1,
@@ -326,6 +412,19 @@ pub fn import_rows(
         out
     };
     let mut found = Vec::new();
+    // A row's error is kept for the summary, except one that ends the
+    // import (module docs).
+    let refused = |summary: &mut ImportSummary, index: usize, e: TransferError| {
+        if e.ends_import {
+            return Err(e);
+        }
+        summary.errors.push(RowError {
+            row: first_row + index,
+            code: e.code,
+            message: e.message,
+        });
+        Ok(())
+    };
     let add = |target: &mut dyn ImportTarget,
                summary: &mut ImportSummary,
                found: &mut Vec<RecordId>,
@@ -335,12 +434,9 @@ pub fn import_rows(
             Ok(id) => {
                 summary.added += 1;
                 found.push(id);
+                Ok(())
             }
-            Err(e) => summary.errors.push(RowError {
-                row: first_row + index,
-                code: e.code,
-                message: e.message,
-            }),
+            Err(e) => refused(summary, index, e),
         }
     };
     match options.action {
@@ -349,8 +445,8 @@ pub fn import_rows(
                 if target.interrupted() {
                     return Err(crate::interrupted());
                 }
-                let writes = writes_of(row, true);
-                add(target, &mut summary, &mut found, i, &writes);
+                let writes = writes_of(row, true, false);
+                add(target, &mut summary, &mut found, i, &writes)?;
             }
         }
         ImportAction::UpdateFoundSet => {
@@ -359,17 +455,18 @@ pub fn import_rows(
                 if target.interrupted() {
                     return Err(crate::interrupted());
                 }
-                let writes = writes_of(row, true);
                 match records.get(i) {
-                    Some(&record) => match target.update(occurrence, record, &writes, auto_enter) {
-                        Ok(()) => summary.updated += 1,
-                        Err(e) => summary.errors.push(RowError {
-                            row: first_row + i,
-                            code: e.code,
-                            message: e.message,
-                        }),
-                    },
-                    None if add_remaining => add(target, &mut summary, &mut found, i, &writes),
+                    Some(&record) => {
+                        let writes = writes_of(row, true, true);
+                        match target.update(occurrence, record, &writes, auto_enter) {
+                            Ok(()) => summary.updated += 1,
+                            Err(e) => refused(&mut summary, i, e)?,
+                        }
+                    }
+                    None if add_remaining => {
+                        let writes = writes_of(row, true, false);
+                        add(target, &mut summary, &mut found, i, &writes)?;
+                    }
                     None => break,
                 }
             }
@@ -423,14 +520,14 @@ pub fn import_rows(
                 let matches = by_key.get(&row_key).map_or(&[][..], Vec::as_slice);
                 if matches.is_empty() {
                     if add_remaining {
-                        let writes = writes_of(row, true);
-                        add(target, &mut summary, &mut found, i, &writes);
+                        let writes = writes_of(row, true, false);
+                        add(target, &mut summary, &mut found, i, &writes)?;
                     }
                     continue;
                 }
                 // With "add remaining" a matched record takes the row's
                 // match values too (`alpha` over `Alpha`, oracle x04).
-                let writes = writes_of(row, add_remaining);
+                let writes = writes_of(row, add_remaining, true);
                 for &record in matches {
                     match target.update(occurrence, record, &writes, auto_enter) {
                         Ok(()) => {
@@ -439,11 +536,7 @@ pub fn import_rows(
                                 found.push(record);
                             }
                         }
-                        Err(e) => summary.errors.push(RowError {
-                            row: first_row + i,
-                            code: e.code,
-                            message: e.message,
-                        }),
+                        Err(e) => refused(&mut summary, i, e)?,
                     }
                 }
             }

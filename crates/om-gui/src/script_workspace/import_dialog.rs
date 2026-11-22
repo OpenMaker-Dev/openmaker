@@ -60,6 +60,7 @@ fn profile_for(path: &std::path::Path) -> Option<Profile> {
 }
 
 /// The step's import parts as stored, the source the dialog reads.
+#[derive(Clone)]
 pub(crate) struct ImportParts {
     pub paths: Vec<String>,
     pub order: Option<ImportOptions>,
@@ -107,6 +108,9 @@ pub(crate) struct ImportMapping {
     names_row: bool,
     /// The names row as the dialog opened.
     names_row_was: bool,
+    /// Whether another target table was chosen here, even if the stored
+    /// one was chosen again: every target was cleared then (`set_table`).
+    table_changed: bool,
     /// Whether the source names its fields (merge, XML), so that an order
     /// arranged by matching names (`MATCH_NAMES`) maps by those names.
     named: bool,
@@ -134,9 +138,11 @@ impl ImportMapping {
                     .to_owned()
             })?,
         };
+        // An Excel 97-2004 source reads as Import Records reads it when it
+        // runs (`om_transfer::import`'s BIFF8 reader).
         if matches!(
             profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc | FileType::Excel2003
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
         ) {
             return Err(format!(
                 "OpenMaker does not read a {} data source, so its import order cannot be \
@@ -195,54 +201,39 @@ impl ImportMapping {
             touched: Vec::new(),
             names_row,
             names_row_was: names_row,
+            table_changed: false,
             named: false,
             error: None,
             order,
             stored,
         };
         dialog.read_columns()?;
+        // Import Records matches such an order's fields by the names its
+        // names row holds (`om_transfer::import`); this dialog shows a text
+        // or spreadsheet source's columns by position, so it would show the
+        // order other than it runs. It says so instead.
+        if !dialog.named
+            && dialog.names_row
+            && dialog
+                .stored
+                .as_ref()
+                .is_some_and(|o| o.has(import_flag::MATCH_NAMES))
+        {
+            return Err(
+                "This import order matches the source's fields by the names in its field names \
+                 record, which OpenMaker does not show here, so it cannot be specified here."
+                    .into(),
+            );
+        }
         if dialog.columns.len() > usize::from(u16::MAX) {
             return Err(
                 "The data source has more fields than an import order holds (65,535).".into(),
             );
         }
+        // Columns took their stored entries by position (`read_columns`);
+        // an order matched by names takes them by name.
         if dialog.by_names() {
-            // The fields the source's names match, as Import Records maps
-            // them (om-transfer's import, `MATCH_NAMES`): a field's first
-            // entry in the order says whether it is excluded or a key.
-            let targets = dialog.targets();
-            for (i, column) in dialog.columns.iter().enumerate() {
-                let field = targets
-                    .iter()
-                    .find(|(_, name)| name.eq_ignore_ascii_case(column))
-                    .map(|(id, _)| *id);
-                let entry =
-                    field.and_then(|id| dialog.order.map.iter().find(|e| e.field.id() == Some(id)));
-                let excluded = entry.is_some_and(|e| {
-                    matches!(e.mapping, Mapping::DontImport | Mapping::Unimportable)
-                });
-                dialog.map[i] = field.filter(|_| !excluded);
-                dialog.keys[i] = entry.is_some_and(|e| e.mapping == Mapping::Match);
-            }
-        } else {
-            dialog.map = (0..dialog.columns.len())
-                .map(|i| {
-                    let entry = dialog.order.map.get(i)?;
-                    if !matches!(entry.mapping, Mapping::Import | Mapping::Match) {
-                        return None;
-                    }
-                    entry.field.id()
-                })
-                .collect();
-            dialog.keys = (0..dialog.columns.len())
-                .map(|i| {
-                    dialog
-                        .order
-                        .map
-                        .get(i)
-                        .is_some_and(|e| e.mapping == Mapping::Match)
-                })
-                .collect();
+            dialog.map_by_names();
         }
         Ok(dialog)
     }
@@ -275,9 +266,64 @@ impl ImportMapping {
                 })
                 .unwrap_or_default(),
         };
-        self.map.resize(self.columns.len(), None);
-        self.keys.resize(self.columns.len(), false);
-        self.touched.resize(self.columns.len(), false);
+        // Grown only: a column that a re-read with another character set
+        // hides keeps its target, key and edit for when it shows again,
+        // as its stored entry keeps importing meanwhile.
+        // A column shown for the first time takes its stored entry, as the
+        // columns shown when the dialog opened do (an order matched by names
+        // is mapped by name afterwards, `map_by_names`).
+        // After another target table was chosen here, the stored entries
+        // name the old table's fields: a column shown then has no target
+        // and counts as set here, as the others do (`set_table`).
+        let shown = self.columns.len();
+        let same_table = !self.table_changed;
+        while self.map.len() < shown {
+            let i = self.map.len();
+            let entry = self.order.map.get(i).filter(|_| same_table);
+            self.map.push(
+                entry
+                    .filter(|e| matches!(e.mapping, Mapping::Import | Mapping::Match))
+                    .and_then(|e| e.field.id()),
+            );
+            self.keys
+                .push(entry.is_some_and(|e| e.mapping == Mapping::Match));
+            self.touched.push(!same_table);
+        }
+        Ok(())
+    }
+
+    /// The targets of the columns not changed here, by the fields their
+    /// names match, as Import Records maps them (om-transfer's import,
+    /// `MATCH_NAMES`): a field's first entry in the order says whether it
+    /// is excluded or a key. Done when the dialog opens and again when the
+    /// source is read with another character set, which can respell the
+    /// names.
+    fn map_by_names(&mut self) {
+        let targets = self.targets();
+        for (i, column) in self.columns.iter().enumerate() {
+            if self.touched[i] {
+                continue;
+            }
+            let field = targets
+                .iter()
+                .find(|(_, name)| name.eq_ignore_ascii_case(column))
+                .map(|(id, _)| *id);
+            let entry =
+                field.and_then(|id| self.order.map.iter().find(|e| e.field.id() == Some(id)));
+            let excluded = entry
+                .is_some_and(|e| matches!(e.mapping, Mapping::DontImport | Mapping::Unimportable));
+            self.map[i] = field.filter(|_| !excluded);
+            self.keys[i] = entry.is_some_and(|e| e.mapping == Mapping::Match);
+        }
+    }
+
+    /// The source read again with the order's character set, the targets
+    /// of an order matched by names following the names it now spells.
+    fn reread(&mut self) -> Result<(), String> {
+        self.read_columns()?;
+        if self.by_names() {
+            self.map_by_names();
+        }
         Ok(())
     }
 
@@ -293,6 +339,7 @@ impl ImportMapping {
             return;
         }
         self.order.table = Key::from_id(table);
+        self.table_changed = true;
         self.map.iter_mut().for_each(|t| *t = None);
         self.keys.iter_mut().for_each(|k| *k = false);
         self.touched.iter_mut().for_each(|t| *t = true);
@@ -347,12 +394,24 @@ impl ImportMapping {
     fn answer(&self) -> Mapped {
         let mut order = self.order.clone();
         let new = self.stored.is_none();
-        let stored_table = self.stored.as_ref().map(|o| o.table.clone());
-        let retargeted = stored_table.is_some_and(|t| t != order.table);
-        let mapped = new || retargeted || self.touched.iter().any(|t| *t);
+        // Another table chosen here clears every target, the stored order's
+        // hidden entries too, even if the stored table was chosen again.
+        let retargeted = self.stored.is_some() && self.table_changed;
+        // Turning the names row on or off changes the names an order
+        // matched by names maps by (Import Records reads them from that
+        // row), so the order is written as shown instead.
+        // A merge or XML source names its fields itself, whatever the
+        // names row says.
+        let renamed = !self.named
+            && self.names_row != self.names_row_was
+            && self
+                .stored
+                .as_ref()
+                .is_some_and(|o| o.has(import_flag::MATCH_NAMES));
+        let mapped = new || retargeted || renamed || self.touched.iter().any(|t| *t);
         // A name-matched order edited here becomes a custom one: every
         // column takes the target the names gave it, as shown.
-        let all = new || retargeted || (mapped && self.by_names());
+        let all = new || retargeted || renamed || (mapped && self.by_names());
         let action_changed = self
             .stored
             .as_ref()
@@ -368,6 +427,16 @@ impl ImportMapping {
                     field: Key::none(),
                     mapping: Mapping::DontImport,
                 });
+            }
+            // An order that ran matched by names (a merge or XML source's),
+            // written by position from here: its entries past the columns
+            // shown matched names, not positions, so none of them imports
+            // by position now. One whose names flag was dormant (no names
+            // to match) ran by position, and its entries keep doing so.
+            if all && self.by_names() {
+                for entry in map.iter_mut().skip(self.columns.len()) {
+                    entry.mapping = Mapping::DontImport;
+                }
             }
             for (column, entry) in map.iter_mut().enumerate().take(self.columns.len()) {
                 if all || self.touched[column] {
@@ -651,7 +720,7 @@ impl ImportMapping {
                     ) {
                         let was = self.order.charset;
                         self.order.charset = ImportCharset::ALL[n];
-                        match self.read_columns() {
+                        match self.reread() {
                             Ok(()) => self.error = None,
                             Err(e) => {
                                 self.order.charset = was;
@@ -702,7 +771,7 @@ mod tests {
         let file = dir.join("source.tab");
         std::fs::write(&file, "First\tLast\tNotes\rAda\tLovelace\tx\r").unwrap();
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: None,
             profile: None,
             profile_ex: None,
@@ -744,6 +813,36 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A stored legacy step's Excel 97-2004 source lists its sheet's first
+    /// row as the columns to map, read as Import Records reads it, and its
+    /// profile (the sheet it names) is kept.
+    #[test]
+    fn an_excel_97_2004_source_maps_its_first_rows_cells() {
+        let dir = std::env::temp_dir().join(format!("om-import-xls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("source.xls");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../om-transfer/tests/data/xls/cells.xls");
+        std::fs::copy(fixture, &file).unwrap();
+        let mut profile = Profile::new(FileType::Excel2003);
+        profile.body = om_transfer::spec::ProfileBody::Excel {
+            sheet: 0,
+            worksheet: String::new(),
+            file: "source.xls".into(),
+        };
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&file)],
+            order: None,
+            profile: Some(profile.clone()),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let dialog = ImportMapping::open(parts, None).unwrap();
+        assert_eq!(dialog.columns, ["Text", "Number", "Flag", "When"]);
+        assert_eq!(dialog.profile, profile);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn an_unchanged_mapping_answers_the_stored_order() {
         let dir = std::env::temp_dir().join(format!("om-import-kept-{}", std::process::id()));
@@ -773,7 +872,7 @@ mod tests {
             ],
         };
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: Some(stored.clone()),
             profile: Some(Profile::new(FileType::CommaSeparated)),
             profile_ex: None,
@@ -803,7 +902,7 @@ mod tests {
             mapping: Mapping::Import,
         };
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: Some(ImportOptions {
                 map: vec![entry(1), entry(2)],
                 ..new_order(0xd00002)
@@ -841,7 +940,7 @@ mod tests {
             mapping: Mapping::Import,
         };
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: Some(ImportOptions {
                 flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
                 map: vec![entry(1), entry(2)],
@@ -866,10 +965,240 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// An order matched by names whose names a text or spreadsheet source's
+    /// names row holds is refused with a reason (Import Records matches it
+    /// by those names, which this dialog does not show); one opened with no
+    /// names row and given one here is written as shown, by position.
+    #[test]
+    fn a_names_row_order_matched_by_names_is_refused_or_written_as_shown() {
+        use om_data::calc::{Locale, ValueType};
+        use om_data::host::FieldDef;
+        let mut schema = CalcSchema::new("Import fixture", Locale::en_us());
+        schema.add_table(1, "People");
+        schema.add_occurrence(0xd00002, "People", 1);
+        schema.add_field(1, FieldDef::data(1, "First", ValueType::Text));
+        schema.add_field(1, FieldDef::data(2, "Last", ValueType::Text));
+        let schema = Arc::new(schema);
+        let dir = std::env::temp_dir().join(format!("om-import-row-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = |id| MapEntry {
+            field: Key::from_id(id),
+            mapping: Mapping::Import,
+        };
+        let named = dir.join("named.tab");
+        std::fs::write(&named, "Last\tFirst\rLovelace\tAda\r").unwrap();
+        let mut profile = Profile::new(FileType::TabSeparated);
+        profile.field_names = 1;
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&named)],
+            order: Some(ImportOptions {
+                flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
+                map: vec![entry(1), entry(2)],
+                ..new_order(0xd00002)
+            }),
+            profile: Some(profile),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let refused = ImportMapping::open(parts.clone(), Some(schema.clone())).err();
+        assert!(refused.is_some_and(|e| e.contains("by the names")));
+        // Without a names row the order runs by position, as shown; turning
+        // the names row on writes it so, rather than leaving it to match
+        // names that row would now hold.
+        let parts = ImportParts {
+            profile: Some(Profile::new(FileType::TabSeparated)),
+            ..parts
+        };
+        let mut dialog = ImportMapping::open(parts, Some(schema)).unwrap();
+        assert_eq!(dialog.map, [Some(1), Some(2)]);
+        dialog.names_row = true;
+        let (order, _, _) = dialog.answer();
+        assert!(!order.has(import_flag::MATCH_NAMES));
+        assert_eq!(order.map[..2], [entry(1), entry(2)]);
+        // A dormant names flag ran by position: an entry past the columns
+        // shown (the first row is shorter) keeps importing by position.
+        let short = dir.join("short.tab");
+        std::fs::write(&short, "First\rAda\tLondon\r").unwrap();
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&short)],
+            order: Some(ImportOptions {
+                flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
+                map: vec![entry(1), entry(4)],
+                ..new_order(0xd00002)
+            }),
+            profile: Some(Profile::new(FileType::TabSeparated)),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let mut dialog = ImportMapping::open(parts, None).unwrap();
+        assert_eq!(dialog.columns, ["First"]);
+        dialog.names_row = true;
+        let (order, _, _) = dialog.answer();
+        assert_eq!(order.map[1], entry(4));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A column a re-read with another character set hides keeps its
+    /// target for when it shows again, as its stored entry keeps
+    /// importing.
+    #[test]
+    fn a_character_set_round_trip_keeps_every_columns_target() {
+        let dir = std::env::temp_dir().join(format!("om-import-round-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("source.csv");
+        std::fs::write(&file, "a,b,c\r1,2,3\r").unwrap();
+        let entry = |id| MapEntry {
+            field: Key::from_id(id),
+            mapping: Mapping::Import,
+        };
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&file)],
+            order: Some(ImportOptions {
+                charset: ImportCharset::Utf8,
+                map: vec![entry(1), entry(2), entry(3)],
+                ..new_order(0xd00002)
+            }),
+            profile: Some(Profile::new(FileType::CommaSeparated)),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let mut dialog = ImportMapping::open(parts, None).unwrap();
+        assert_eq!(dialog.map, [Some(1), Some(2), Some(3)]);
+        dialog.order.charset = ImportCharset::Utf16;
+        dialog.reread().unwrap();
+        assert!(dialog.columns.len() < 3, "{:?}", dialog.columns);
+        dialog.order.charset = ImportCharset::Utf8;
+        dialog.reread().unwrap();
+        assert_eq!(dialog.columns, ["a", "b", "c"]);
+        assert_eq!(dialog.map[..3], [Some(1), Some(2), Some(3)]);
+        let (order, _, _) = dialog.answer();
+        assert_eq!(order.map[..3], [entry(1), entry(2), entry(3)]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A merge source names its fields itself: its names row changes
+    /// nothing in an order matched by names; and when such an order is
+    /// written by position, its entries past the columns shown import
+    /// nothing, as they matched names, not positions.
+    #[test]
+    fn a_merge_sources_order_keeps_what_runs_by_name() {
+        use om_data::calc::{Locale, ValueType};
+        use om_data::host::FieldDef;
+        let mut schema = CalcSchema::new("Import fixture", Locale::en_us());
+        schema.add_table(1, "People");
+        schema.add_occurrence(0xd00002, "People", 1);
+        schema.add_field(1, FieldDef::data(1, "First", ValueType::Text));
+        schema.add_field(1, FieldDef::data(2, "Last", ValueType::Text));
+        schema.add_field(1, FieldDef::data(3, "Notes", ValueType::Text));
+        let dir = std::env::temp_dir().join(format!("om-import-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("source.mer");
+        std::fs::write(
+            &file,
+            "\"Last\",\"First\"\r\"Lovelace\",\"Ada\",\"private note\"\r",
+        )
+        .unwrap();
+        let entry = |id, mapping| MapEntry {
+            field: Key::from_id(id),
+            mapping,
+        };
+        let stored = ImportOptions {
+            flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
+            map: vec![
+                entry(1, Mapping::Import),
+                entry(2, Mapping::Import),
+                entry(3, Mapping::Import),
+            ],
+            ..new_order(0xd00002)
+        };
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&file)],
+            order: Some(stored.clone()),
+            profile: Some(Profile::new(FileType::Merge)),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let schema = Arc::new(schema);
+        let mut dialog = ImportMapping::open(parts.clone(), Some(schema.clone())).unwrap();
+        assert_eq!(dialog.map, [Some(2), Some(1)]);
+        dialog.names_row = !dialog.names_row;
+        assert_eq!(dialog.answer().0, stored);
+        let mut dialog = ImportMapping::open(parts, Some(schema)).unwrap();
+        dialog.map[1] = None;
+        dialog.touched[1] = true;
+        let (order, _, _) = dialog.answer();
+        assert!(!order.has(import_flag::MATCH_NAMES));
+        assert_eq!(
+            order.map,
+            [
+                entry(2, Mapping::Import),
+                MapEntry {
+                    field: Key::none(),
+                    mapping: Mapping::DontImport
+                },
+                entry(3, Mapping::DontImport),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A column a character set shows only once chosen here takes its
+    /// stored entry, as those shown when the dialog opened do.
+    #[test]
+    fn a_column_shown_by_another_character_set_takes_its_stored_entry() {
+        let dir = std::env::temp_dir().join(format!("om-import-shown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("source.csv");
+        std::fs::write(&file, "a,b,c\r1,2,3\r").unwrap();
+        let entry = |id| MapEntry {
+            field: Key::from_id(id),
+            mapping: Mapping::Import,
+        };
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&file)],
+            order: Some(ImportOptions {
+                charset: ImportCharset::Utf16,
+                map: vec![entry(1), entry(2), entry(3)],
+                ..new_order(0xd00002)
+            }),
+            profile: Some(Profile::new(FileType::CommaSeparated)),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let mut dialog = ImportMapping::open(parts.clone(), None).unwrap();
+        assert!(dialog.columns.len() < 3, "{:?}", dialog.columns);
+        dialog.order.charset = ImportCharset::Utf8;
+        dialog.reread().unwrap();
+        assert_eq!(dialog.columns, ["a", "b", "c"]);
+        assert_eq!(dialog.map[..3], [Some(1), Some(2), Some(3)]);
+        // After another table is chosen, a column shown then takes nothing
+        // of the old table's entries.
+        let mut dialog = ImportMapping::open(parts.clone(), None).unwrap();
+        dialog.set_table(0xd00003);
+        dialog.order.charset = ImportCharset::Utf8;
+        dialog.reread().unwrap();
+        assert_eq!(dialog.map[..3], [None, None, None]);
+        let (order, _, _) = dialog.answer();
+        assert!(order.map.iter().all(|e| e.mapping == Mapping::DontImport));
+        // So does choosing the stored table again: its targets were cleared.
+        let mut dialog = ImportMapping::open(parts, None).unwrap();
+        dialog.set_table(0xd00003);
+        dialog.set_table(0xd00002);
+        dialog.order.charset = ImportCharset::Utf8;
+        dialog.reread().unwrap();
+        assert_eq!(dialog.map[..3], [None, None, None]);
+        let (order, _, _) = dialog.answer();
+        assert!(order.map.iter().all(|e| e.mapping == Mapping::DontImport));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn no_readable_source_says_why() {
+        let dir = tempfile::tempdir().unwrap();
         let parts = ImportParts {
-            paths: vec!["filelinux:/nonexistent/om-source.tab".into()],
+            paths: vec![crate::scripting::files::file_line(
+                &dir.path().join("om-source.tab"),
+            )],
             order: None,
             profile: None,
             profile_ex: None,

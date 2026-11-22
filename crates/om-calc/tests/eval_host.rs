@@ -361,6 +361,8 @@ fn get_self_random_and_hooks() {
         &[
             ("Get ( ApplicationVersion )", "OpenMaker test", 0),
             ("Get ( CalculationRepetitionNumber )", "0", 0),
+            // FileMaker Pro 26.1.1's, not answered yet (#350).
+            ("Get ( SortOrder )", "?", 1225),
             ("Self", "?", 1225),
             (
                 "GetLayoutObjectAttribute ( \"x\" ; \"content\" ) & \"|\"",

@@ -592,6 +592,39 @@ impl NativeProvider {
         })
     }
 
+    /// The records the open transaction holds as new ones
+    /// ([`Self::transaction_new`]), and those the related files hold new
+    /// for it on layouts of their tables (`OwnerTransaction::held_new`),
+    /// as (table, record id).
+    pub(crate) fn held_new_records(&self) -> Vec<(u64, i64)> {
+        let own = self
+            .transaction
+            .iter()
+            .flat_map(|t| t.held.iter())
+            .filter(|(_, held)| {
+                matches!(
+                    held.change,
+                    Change::New(_)
+                        | Change::Imported {
+                            mod_count: None,
+                            ..
+                        }
+                )
+            })
+            .map(|(&key, _)| key);
+        let routed = self
+            .transaction
+            .is_some()
+            .then(|| self.owner_transaction.held_new())
+            .into_iter()
+            .flatten();
+        own.chain(routed)
+            .collect::<BTreeSet<(u64, u64)>>()
+            .into_iter()
+            .filter_map(|(table, record)| Some((table, i64::try_from(record).ok()?)))
+            .collect()
+    }
+
     /// Whether the open transaction holds a record of `table`: a new one
     /// op71 reserved (not yet in the host's record list), or one it edits.
     pub(crate) fn holds_records_of(&self, table: u64) -> bool {
@@ -880,6 +913,61 @@ impl NativeProvider {
         });
     }
 
+    /// Whether the window's record session holds existing record `record`
+    /// of `table` as it is edited, locked as its editing began
+    /// (`prepare_root_record_edit`): `Some(true)` when it holds nothing
+    /// else, of this file or a related one, so that nothing of it is on
+    /// the host but that lock.
+    pub(crate) fn session_edit(&self, table: u64, record: u64) -> Option<bool> {
+        let t = self
+            .transaction
+            .as_ref()
+            .filter(|t| t.kind == TransactionKind::Record)?;
+        let held = t.held.get(&(table, record))?;
+        if !matches!(held.change, Change::Edit { .. }) {
+            return None;
+        }
+        Some(
+            self.owner_transaction.alone()
+                && t.mark.is_none()
+                && t.containers.is_empty()
+                && t.root_acquisitions.is_empty()
+                && t.parked.is_empty()
+                && t.held.len() == 1,
+        )
+    }
+
+    /// The window's record session holds only record `record` of `table`,
+    /// locked as its editing began and not changed since
+    /// ([`Self::session_edit`]), and the window keeps no edit of it any
+    /// more: the session goes, which lets the lock go.
+    pub(crate) fn release_untouched_edit(&mut self, table: u64, record: u64) {
+        let untouched = self.session_edit(table, record) == Some(true)
+            && matches!(
+                self.held(table, record),
+                Some(Change::Edit { values, .. }) if values.is_empty()
+            );
+        if untouched {
+            let _ = om_data::DataProvider::revert_record_session(self);
+        }
+    }
+
+    /// Delete Record of the record the window's record session holds as it
+    /// is edited, and nothing else ([`Self::session_edit`]): deleted under
+    /// the lock its editing took, its edits going with the session, as
+    /// FileMaker Pro deletes the record being edited. A delete the host
+    /// refuses leaves no delete held for a later save: the session goes.
+    pub(crate) fn delete_edited(&mut self, table: u64, record_id: i64) -> Result<(), DataError> {
+        self.invalidate_calc_data();
+        let deleted = self
+            .hold_delete(table, record_id)
+            .and_then(|()| om_data::DataProvider::commit_record_session(self, true));
+        if deleted.is_err() && self.transaction_kind() == Some(TransactionKind::Record) {
+            let _ = om_data::DataProvider::revert_record_session(self);
+        }
+        deleted
+    }
+
     /// The open transaction's kind.
     pub(crate) fn transaction_kind(&self) -> Option<TransactionKind> {
         self.transaction.as_ref().map(|t| t.kind)
@@ -944,7 +1032,19 @@ impl NativeProvider {
                     record_number: context.record_number.or(previewed.context.record_number),
                     ..previewed.context.clone()
                 },
-                None => context,
+                // A record made in the transaction keeps the place it was
+                // made at, which its auto-entered Get ( RecordNumber ) was
+                // given, through later writes that give none: a window's
+                // commit or navigation forgets it, the record is still
+                // the transaction's to create (#526).
+                None => WriteContext {
+                    record_number: context.record_number.or_else(|| {
+                        before
+                            .filter(|h| matches!(h.change, Change::New(_)))
+                            .and_then(|h| h.context.record_number)
+                    }),
+                    ..context
+                },
             };
             let held = Held {
                 script,
@@ -1915,12 +2015,13 @@ impl NativeProvider {
             }
         };
         apply_values(&mut node, cells.clone());
+        let file_language = self.file_language()?;
         note_unique(
             unique,
             table,
             plan.unique_fields_for(Entry::import(true)),
             cells,
-            record,
+            (record, file_language),
         )?;
         let mut written = cells.clone();
         if !later.is_empty() {
@@ -1935,7 +2036,13 @@ impl NativeProvider {
             )?;
             self.refuse_related_lists(table, plan, entry, entered(&ready.values))?;
             let fields = plan.unique_fields_for(entry);
-            note_unique(unique, table, fields.clone(), &ready.values, record)?;
+            note_unique(
+                unique,
+                table,
+                fields.clone(),
+                &ready.values,
+                (record, file_language),
+            )?;
             self.check_unique(table, fields, &ready.values, record, txn)?;
             self.check_lookups(table, plan, entry, &ready.values, record)?;
             // Over what the import left, not the stored row: not named, so a
@@ -2854,19 +2961,21 @@ impl NativeProvider {
                 .transaction_kind()
                 .is_some_and(|k| k != TransactionKind::Record)
             || self.asset_settlement.is_some()
-            || !self.scalar_session_alone()
+            || self.entered_over.is_some()
         {
             return Ok(Unavailable);
         }
+        // Another window's record session, or a reconnect's carried or
+        // unsettled work, leaves an edit no recovery proof; the record is
+        // locked all the same.
+        let provable = self.scalar_session_alone();
         self.refuse_while_unsettled()?;
         let Ok((table, _)) = self.record_plan(baseline.layout) else {
             return Ok(Unavailable);
         };
-        if self.external.route(table.id).is_some()
-            || !table.fields.iter().any(|f| {
-                f.kind == om_hbam::FieldKind::Normal && f.data_type == om_hbam::DataType::Container
-            })
-        {
+        // Another file's table is written through its owner, which locks
+        // the record only to commit it.
+        if self.external.route(table.id).is_some() {
             return Ok(Unavailable);
         }
         if self
@@ -2954,31 +3063,34 @@ impl NativeProvider {
             let mark = self
                 .single_root_baseline()
                 .ok_or_else(|| unavailable("No before-work record baseline."))?;
-            let Some(identity) = self.external.root_identity().cloned() else {
-                return Ok(Unavailable);
+            // What a reconnect can recover of the edit, where it can be
+            // proved (the account's set, the file's identity); the record
+            // is locked either way, as FileMaker Pro locks it.
+            let mut start = match self.external.root_identity().cloned().filter(|_| provable) {
+                Some(identity) => self.existing_edit_start_at(
+                    &table,
+                    scalar_recovery::ExistingAttachment {
+                        record,
+                        version,
+                        field: None,
+                    },
+                    Some(baseline.layout),
+                    mark,
+                    identity,
+                    false,
+                )?,
+                None => None,
             };
-            let Some(mut start) = self.existing_edit_start_at(
-                &table,
-                scalar_recovery::ExistingAttachment {
-                    record,
-                    version,
-                    field: None,
-                },
-                Some(baseline.layout),
-                mark,
-                identity,
-                false,
-            )?
-            else {
-                return Ok(Unavailable);
-            };
-            if !start.extend_record_edit(self, table.id, fields, baseline.layout) {
-                return Ok(Unavailable);
+            if let Some(proved) = &mut start {
+                if proved.extend_record_edit(self, table.id, fields, baseline.layout) {
+                    proved.row = proved
+                        .existing
+                        .clone()
+                        .map(scalar_recovery::mixed::RowReceipt::Existing);
+                } else {
+                    start = None;
+                }
             }
-            start.row = start
-                .existing
-                .clone()
-                .map(scalar_recovery::mixed::RowReceipt::Existing);
             if self.lock_record(table.id, record, self.transaction_id()?)? != Some(version) {
                 return Err(DataError::with_code(
                     306,
@@ -3006,7 +3118,7 @@ impl NativeProvider {
                 .ok_or_else(|| unavailable("The accepted record is not held."))?
                 .input_layouts
                 .insert(baseline.layout);
-            t.single_root_start = Some(start);
+            t.single_root_start = start;
             Ok(Prepared)
         })();
         if opened && !matches!(prepared, Ok(Prepared)) {
@@ -3840,8 +3952,13 @@ impl NativeProvider {
         // Whether a related-values list may read the records computed so far
         // (`computed`, below).
         let mut lists = false;
-        for (table, _) in &transaction.order {
-            if !reads_of.contains_key(table) {
+        for key @ (table, _) in &transaction.order {
+            // A deletion evaluates no rules: its table needs no plan.
+            let deleted = transaction
+                .held
+                .get(key)
+                .is_some_and(|held| matches!(held.change, Change::Deleted));
+            if !deleted && !reads_of.contains_key(table) {
                 let (_, plan) = self.table_plan(*table)?;
                 reads_of.insert(*table, plan.related_tables());
                 lists |= plan.checks_related_lists();
@@ -3976,6 +4093,33 @@ impl NativeProvider {
             }
             done.insert(*key);
             let record_key = serial::encode(record);
+            if matches!(held.change, Change::Deleted) {
+                // Prepared from the table's fields and the stored record's
+                // container references alone, with no field-entry plan, as
+                // the ordinary deletion is: a table whose rules OpenMaker
+                // cannot plan still deletes.
+                let table_def = self.table_fields(table)?;
+                let released = match self.read_record(table, record)? {
+                    Some(node) => super::containers::references(
+                        &table_def,
+                        &text_values(&stored_record(record, &node)),
+                        None,
+                    ),
+                    None => Vec::new(),
+                };
+                prepared.push(Prepared {
+                    table: table_def,
+                    record,
+                    node: None,
+                    entry: OwnedNode::leaf(record_key, vec![write::COMMIT_DELETED]),
+                    expected: None,
+                    cells: None,
+                    released,
+                    acquired: Vec::new(),
+                });
+                computed.delete(table, record);
+                continue;
+            }
             let (table_def, plan) = self.table_plan(table)?;
             // The session's global values its formulas read (5.17), for
             // an imported row's later edits as for any held record.
@@ -4027,28 +4171,7 @@ impl NativeProvider {
             }
             let (values, mode, mut node, base) = match &held.change {
                 Change::Imported { .. } => unreachable!("written above"),
-                Change::Deleted => {
-                    let released = match self.read_record(table, record)? {
-                        Some(node) => super::containers::references(
-                            &table_def,
-                            &text_values(&stored_record(record, &node)),
-                            None,
-                        ),
-                        None => Vec::new(),
-                    };
-                    prepared.push(Prepared {
-                        table: table_def,
-                        record,
-                        node: None,
-                        entry: OwnedNode::leaf(record_key, vec![write::COMMIT_DELETED]),
-                        expected: None,
-                        cells: None,
-                        released,
-                        acquired: Vec::new(),
-                    });
-                    computed.delete(table, record);
-                    continue;
-                }
+                Change::Deleted => unreachable!("prepared above"),
                 Change::New(values) => (
                     values,
                     WriteMode::Create,
@@ -4091,12 +4214,13 @@ impl NativeProvider {
             )?;
             self.refuse_related_lists(&table_def, &plan, entry, entered(&ready.values))?;
             let unique_fields = plan.unique_fields_for(entry);
+            let file_language = self.file_language()?;
             note_unique(
                 &mut unique,
                 &table_def,
                 unique_fields.clone(),
                 &ready.values,
-                record,
+                (record, file_language),
             )?;
             self.check_unique(&table_def, unique_fields, &ready.values, record, txn)?;
             self.check_lookups(&table_def, &plan, entry, &ready.values, record)?;
@@ -4259,13 +4383,13 @@ fn note_unique(
     table: &Table,
     fields: Vec<u64>,
     values: &EncodedChanges,
-    record: u64,
+    (record, file_language): (u64, Option<u32>),
 ) -> Result<(), DataError> {
     for field in fields {
         if let Some(Some(value)) = values.get(&field) {
             let text = om_scsu::decode_scsu(value)
                 .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
-            let key = super::records::checked_keys(table, field)?
+            let key = super::records::checked_keys(table, field, file_language)?
                 .key(&text)
                 .unwrap_or_default();
             let seen = unique.entry((table.id, field)).or_default();

@@ -793,6 +793,96 @@ also governs unknown-step handling (4.9).
 Set Layout Object Animation (168) sets `mAllowAnimation` from kTurnOn (obs).
 Pause/Resume unfreezes a frozen window (doc).
 
+### 6.4 Script Debugger and Data Viewer
+
+FileMaker Pro's client, not the server build: the runtime keeps the
+debugger's state in `mAutoPaused` (1.1, "paused implicitly"), `mStepAction`
+(1.1, the pending action), `mIsProDebuggerDataViewerVisible` (1.1, which
+makes Loop's flush Always, 3.3), `mPauseOnError` and `mUserTriggersEnabled`
+(1.2) (obs). The rest is from Claris's help for FileMaker Pro 2026, fetched
+2026-11-20: "Debugging scripts" (`debugging-scripts.html`), "Data Viewer"
+(`data-viewer.html`), and "Script Debugger keyboard shortcuts" for macOS
+and Windows (`script-debugger-shortcuts-os-x.html`,
+`script-debugger-shortcuts-windows.html`) (doc). None of it was compared
+with a FileMaker Pro screen.
+
+- **Availability.** The Use advanced tools general setting. Tools > Script
+  Debugger, then run a script; or the Script Workspace's Debug button,
+  which with Shift (Windows) or Option (macOS) first saves every open
+  script. Scripts started from the Scripts menu, a shortcut, a trigger, a
+  button or a custom menu are debugged. For a startup script, open the
+  debugger before the file (doc).
+- **Commands** (doc):
+  - Step Over: one step at a time. A Perform Script runs its sub-script
+    whole and stops at the caller's next step, unless a breakpoint in the
+    sub-script stops it.
+  - Step Into: one step at a time, entering sub-scripts. A Perform Script
+    stops at the sub-script's first step.
+  - Step Out: the rest of the current script. In a sub-script it stops at
+    the caller's step after the Perform Script; in the outermost script it
+    runs to a breakpoint or the end.
+  - Set Next Step: the highlighted step of the currently executing script
+    becomes the next, without running it or the steps between.
+  - Run / Pause: run to a breakpoint or the end, or pause.
+  - Halt Script.
+  - Enable/Disable Script Triggers: all triggers in the file, with full
+    access only. They are on by default, and closing the debugger turns
+    them all on again.
+  - Edit Script: open the current script for editing; saving it halts
+    execution. While paused, a double-click in the Call Stack opens that
+    script in a Script Workspace tab.
+  - Open/Close Data Viewer.
+  - Authenticate/Deauthenticate script (lock icon): sign in with full
+    access to debug scripts the account cannot modify. It covers every
+    script but no records, layouts or other elements, and lasts until both
+    the debugger and the Data Viewer are closed.
+  - Pause on error: pause a script when a step returns an error.
+- **Shortcuts** (doc). macOS: Step Over F5, Step Into F6, Step Out F7, Run
+  to Breakpoint Option-F8, Halt Script Command-F8, Set Next Step
+  Shift-Command-F5, Set/Clear Breakpoint Command-F9, Remove Breakpoints
+  Shift-Command-F9. Windows: the same with Alt for Option and Ctrl for
+  Command, and Edit Script Ctrl+F10.
+- **Breakpoints.** A click on a step's line number sets or clears one; a
+  script may have several (doc). They are stored on the step as
+  `kBreakpoint` (script-steps.md, flag `0x100000`, inf). They are ignored
+  while the debugger is not in use, and "You cannot set breakpoints on
+  steps called by a button or custom menu" (doc).
+- **Call Stack.** The running scripts. After Step Into a Perform Script it
+  lists the sub-script, and selecting a script shows its steps (doc).
+- **Privileges** (doc). A Modifiable script calling an Executable Only one:
+  the Executable Only script runs whole and its steps are hidden. An
+  Executable Only script calling a Modifiable one: only the Modifiable
+  script's steps are shown.
+- **Overrides** (doc). Allow User Abort [ Off ] does not keep the debugger
+  from halting a script. Adjust Window [ Hide ] or [ Minimize ] reached by
+  Step Over or Step Into neither hides nor minimizes the window. Closing
+  the debugger while a script is paused lets the script run to its end.
+- **Data Viewer** (doc). Tools > Data Viewer, or the debugger's button.
+  - The Current tab lists the fields the running script uses, directly or
+    in calculations, its local variables, and the global variables. The
+    globals are listed even with no script running.
+  - The Watch tab holds one expression per row. + or a double-click opens
+    Edit Expression, which is like Specify Calculation: Automatically
+    evaluate updates the result while typing, and Evaluate updates it on
+    request. Expressions stay until deleted. With the debugger, their
+    values follow the paused script.
+  - A double-click in the Current tab opens Current Value with the whole
+    value, which can be copied. A variable's value can be changed, a
+    field's cannot, and closing the dialog commits the change.
+  - A repeating field is listed only when it holds values, as
+    `<fieldname>[<n>]`, the first repetition without brackets. A
+    calculated repetition shows no value until the script reaches the step
+    where it is solved.
+  - Privileges: full access always. "Manage database as a developer"
+    (client-ui.md, FileMaker 26) also works without a running script in
+    26; before, it worked only while debugging scripts the account may
+    modify. Variables defined outside scripts are shown only with full
+    access, or while debugging a Modifiable script with that privilege.
+    The Lock button signs in with full access, and a sign-in in either
+    window holds in both.
+
+Unknowns: U17.
+
 ## 7. Script triggers
 
 ### 7.1 Event ids
@@ -1095,6 +1185,14 @@ Animation, Open/Commit/Revert Transaction, Set Revert Transaction on Error).
 `kAllDeviceCompatible` = 0x7e. `ScriptStep::GetUnstoredStepOptions` reads it
 (no caller in the server build; inf: the Script Workspace uses it to grey
 out steps).
+
+FileMaker Pro's Mac `FMEngine` holds the same table: 26.0.3's x86_64 slice
+at file offset `0x8a7dd0`, with the 248 values of libFMEngine's, and
+26.1.1's (SHA-256 `e306cd52...`) at `0x8d7d80` with 251 (obs, 2026-11-19:
+found by those values). In 26.1.1, 248 is 0 (no client), 249 Replace Field
+Contents by Name and 250 Set Variable by Name are 0x7e (every client), and
+96 Save a Copy as Add-on Package gains the Server bit (0x0e; Claris: it
+runs on FileMaker Server in 26.1.1); the other 247 are unchanged.
 
 The `IsServerCompatible`, `IsWebDirectCompatible`, `IsCustomWebCompatible`
 and `IsWebCompatible` functions (0xe86920 etc.) do not test a step: they
@@ -2110,6 +2208,27 @@ and Go to Record stays.
   Select Window [ Current Window ], each followed in A by Select Window
   [ Name: "B" ], recording `Get ( LastError )`, `WindowNames` and B's
   visibility after each step.
+- U17. The Script Debugger and Data Viewer (6.4) were taken from Claris's
+  help, not observed. Still to observe:
+  - whether a script started with the debugger open stops before its
+    first step;
+  - whether the debugger stops at disabled steps and comments;
+  - whether Step Over and Step Out stop in a trigger a step fires;
+  - whether Pause on error stops before or after the error alert, and
+    with error capture on;
+  - whether a breakpoint set in the debugger is saved to the file at once;
+  - whether the Call Stack lists an Executable Only script's name;
+  - what Set Next Step does across a block's boundaries and inside an
+    open transaction;
+  - whether the debugger's commands continue a Pause/Resume Script pause,
+    and whether closing the debugger ends it;
+  - the Debugging Controls submenu's items and order;
+  - the windows' layout, button order and tooltips, and the last error
+    shown.
+
+  Route: the FileMaker Pro oracle with Use advanced tools on, on a
+  disposable copy of a starter solution, recording the debugger's window
+  and `Get ( LastError )` after each command.
 
 ## What other workstreams need
 
@@ -2254,9 +2373,11 @@ Execution model
 - There is no step or depth limit. `Options::step_budget` is a host safety
   budget per top-level script (unlimited by default) and
   `Options::time_slice` returns from `Runtime::run` like the 2000 ms slice.
-  `Runtime::step` executes one step (a debugger's Step); with
-  `Runtime::set_tracing` every executed step is recorded as the oracle
-  traces it (`Runtime::take_trace`).
+  `Runtime::step` executes at most one step. The Script Debugger's stops
+  and commands (6.4) are `Runtime::start_debugging`, `debug`,
+  `set_next_step` and `debug_stack` (docs/scripting.md, "Script
+  Debugger"). With `Runtime::set_tracing` every executed step is recorded
+  as the oracle traces it (`Runtime::take_trace`).
 - Multi-stage steps (internal 3001): a host method returns
   `HostError::Pending`; `run` returns `Waiting`. `Runtime::complete_step`
   finishes the step with its error (post-step cleanup as usual); running
@@ -2571,19 +2692,42 @@ Server engine (11.3, 11.5)
   transaction, 1) and the sender of its notifications, so every registered
   client is told of its commits, the requester included. Other users see
   its locks as held by `<server name> (script engine, <account>)`.
-- Privileges (9, 11.3): the session runs with the requesting account's.
-  An account in the file's verified built-in [Full Access] set
-  (local-files.md 2.3) has full access; every other account fails closed
-  (`Privileges::Unknown`): a custom set's script, layout and record
-  limits are not applied to server scripts yet. Its scripts are not executable (op30 answers 9
-  and nothing runs) unless set to run with full access privileges: then
-  the script runs and each of its steps has full access (2.2, 9.1). A
-  sub-script it calls may execute (`mParentRunWithFullAccess`) but runs
-  with the account's own privileges unless it is also set to: there, and
-  wherever the account is not elevated, creating, changing, deleting,
+- Privileges (9, 11.3): the session runs with the requesting account's,
+  as FileMaker Server's engine opens the file "as the same account"
+  (11.3). An account in one of the file's verified built-in sets
+  (local-files.md 2.3, session-identity.md 2.7) has that set's
+  privileges: [Full Access] everything; [Data Entry Only] every script
+  executable, every record read, created, edited and deleted;
+  [Read-Only Access] every script executable and every record read, with
+  creating, changing, deleting, setting a global field and importing
+  refused with 200, the code a client's own write under the set gets
+  (inferred: FileMaker Server's codes for a server script under these
+  sets are unmeasured, with
+  [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)). Truncate
+  Table needs [Full Access] whatever the account may delete (Claris's
+  Truncate Table help), and Set Next Serial Value, which changes a
+  field's definition, does too (inferred); both are 9 otherwise. An
+  account in a custom set runs the scripts its set makes executable
+  (session-identity.md 2.2); one its set gives no access is refused with
+  9 and nothing runs, also when it is set to run with full access
+  privileges, as `CallScript` checks the account's access before that
+  flag counts (3.7, 9.1). Before, the flag let it run, and its steps
+  wrote with full access
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). The
+  set's layout, field and record limits are not applied to server scripts
+  yet, so its steps fail closed (`Privileges::Unknown`) unless the script
+  is set to run with full access privileges: then each of its steps has
+  full access (2.2, 9.1). A sub-script it calls may execute even without
+  access (`mParentRunWithFullAccess`) but runs with the account's own
+  privileges: OpenMaker gives the full-access flag only to a script the
+  account may run, so such a child is not elevated even when it is itself
+  set to run with full access, where FileMaker would elevate it (inf, 9.1)
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)): there,
+  and wherever the account is not elevated, creating, changing, deleting,
   truncating, setting a global field or a next serial value and finding
   fail with 9, and reading a field is calculation error 9 (`?`, not
-  FileMaker's `<No Access>` text). Each edit is checked against the
+  FileMaker's `<No Access>` text).
+  Each edit is checked against the
   privileges of the step making it: a record an elevated caller opened
   (changed and not yet committed) is still refused to its sub-script
   (before, the open record let the sub-script write; review fix).
@@ -3306,9 +3450,10 @@ Triggers (7)
   keys typed before such a change. Queued keys retain their original field
   object and editor before any trigger dispatch. An approved Tab, Return or
   Escape can transfer its own pending typeahead after navigation settles; an
-  intervening pointer focus change cancels that transfer. Limits: Find and Preview mode keys (the
-  triggers' other modes), IME commits, the keypad Enter (10; egui reports
-  Return), Home/End/Page keys (no documented code; they reach the editor
+  intervening pointer focus change cancels that transfer. The keypad's
+  Enter is 10 and Return 13: egui reports both as Enter, and the app's
+  event loop marks the keypad's (`om_gui::keypad`). Limits: Find and Preview mode keys (the
+  triggers' other modes), IME commits, Home/End/Page keys (no documented code; they reach the editor
   without a trigger), the no-active-object alert for typed characters, and
   native key timing and type-ahead ordering are not implemented or
   measured.
@@ -3652,13 +3797,23 @@ Globals (2026-10-29; Claris "Global fields")
   offers separate field objects for repetitions 2 through 255 under the
   same type, account and modification guards as the first repetition.
   Global repetitions remain session values; ordinary repetitions join the
-  record's other changes in one write. Native Browse repetition and global
-  entry parity remains unmeasured.
+  record's other changes in one write. A script's Set Field into a later
+  repetition of the current record shows in its field object at once,
+  before the commit, as a first repetition's does (the window's
+  uncommitted cells under the user's own typing there); one replacing the
+  user's typing (an OnObjectSave setting the field again) shows the
+  script's value. Entered again, the field object opens with the script's
+  value, and the user's edit replaces it, also one erased back to the
+  stored value. Native Browse repetition and global entry parity remains
+  unmeasured.
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
   ([field validation](https://help.claris.com/en/pro-help/content/field-validation.html)).
-  Non-text globals requiring those checks stay display-only. Intrinsic
-  temporal parsing here runs on save; global field-exit timing is unmeasured.
+  OpenMaker checks a typed global's entry rules and Not empty as the
+  typing is applied, at the commit; a global validated by calculation,
+  unique or existing value stays display-only (record-writes.md, Limits;
+  [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424)). Global
+  field-exit timing is unmeasured.
 - Tests: `om-gui/tests/client_globals.rs` (a script's globals through the
   window against an in-process server: the stored value first, Set Field
   in Browse and Find mode, the value across scripts, another client and
@@ -3710,6 +3865,37 @@ Steps
   evaluated on each record made current, serial numbers counting up the
   last run of digits of the initial value; each record is committed; no
   triggers fire.
+- Relookup Field Contents
+  ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse
+  mode, the provider's operation (`DataProvider::relookup`) writes each
+  record of the found set, by id as the step began, with its own value of
+  the match field, with a script's rules and the step's privilege set; a
+  transaction holds the writes. The record rules perform a lookup whose
+  match field a script sets, also to the value it had (auto-entry.md,
+  Lookups, battery s41), so each lookup through the field copies again; a
+  plain value written back changes nothing of the field. Before any record
+  is written, and before the window's record is committed, it checks the
+  target: a field of the layout's table a script sets, that a lookup
+  matches through (an editable input of a calculated match field
+  included, as Claris's help names the target for one), and that enters
+  no value of its own, which a write of it could replace. Then it checks
+  that no record stores the field with character styles, which a plain
+  write would drop, and that the open transaction holds none of them
+  (its held value would be replaced by the stored one). The window keeps
+  its record and found set. A record refused partway ends the step, the
+  records before it written; a record deleted after the check is 101.
+  Records > Relookup Field Contents runs the step with its dialog on the
+  field entered. Unmeasured, and OpenMaker's choices:
+  - the dialog's text;
+  - committing the window's record before the writes, which Claris's help
+    says neither the command nor the step does
+    ([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624));
+  - the codes: 102 for no such field, 201 for one a script cannot set (a
+    calculation or a global), 3 for one no lookup matches through, for one
+    with auto-entry, for a styled value, for a record the transaction
+    holds, for a field reached through a relationship (a self-join's too,
+    as for Replace Field Contents), for a layout of another file's table,
+    and for Find mode.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find
@@ -3724,7 +3910,13 @@ Steps
   given or after the current window plus " - 2" (" - 3" when taken;
   OpenMaker's choice beyond the engine's one answer), with a layout going
   there with OnLayoutEnter; Select Window makes a named window current
-  (names matched front to back, duplicates allowed); Close Window commits
+  (names matched front to back, as given and then without case,
+  duplicates allowed, then `Get ( WindowUUID )`s, each in every open file
+  before the next, as 9.2 documents; over a dialog only the dialog itself
+  may be the window found; Close Window, Set Window Title and Move/Resize Window match
+  this file's windows the same way, which Claris does not state for them
+  ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)), and
+  letters beyond ASCII fold as Unicode lowercase [I]); Close Window commits
   the window's record, closes it and makes the window current before it
   current again (closing another window keeps the current one); 112 for a
   name no window has. Closing the file's last window closes the file
@@ -3763,8 +3955,11 @@ Steps
   and calculations again. A trigger names the window its event happened
   in. Adjust Window becomes a viewport command. Resize to Fit sizes the
   window to its layout at its zoom (script-steps.md, Adjust Window; on a
-  card it does nothing, OpenMaker's gap). Set Zoom Level zooms the window's
-  layout, Scroll Window scrolls it, and Arrange All Windows does nothing.
+  card it does nothing, OpenMaker's gap). Set Zoom Level sets the window's
+  zoom. With Lock on, users cannot change it. Running Set Zoom Level with
+  Lock off allows user changes again
+  ([Claris Set Zoom Level](https://help.claris.com/en/pro-help/content/set-zoom-level.html)).
+  Scroll Window scrolls the layout, and Arrange All Windows does nothing.
 - Window styles (2026-11-02; `scripting/host/windows.rs`,
   `app/window_styles.rs`; Claris "About window styles" and "New Window",
   not measured against FileMaker Pro). New Window and Go to Related
@@ -3891,14 +4086,15 @@ Steps
   re-reads the window's records afterwards.
 - Insert from Index shows the View Index dialog with the field's
   value-index values (CreateValueListEx, in index order; "Show individual
-  words" is not offered); Paste inserts the value at the end of the field
-  (the insertion point) or replaces the contents with "Select entire
-  contents"; Cancel is 1.
+  words" is not offered); Paste inserts the value at the insertion point
+  of the field entered (replacing its selection; at the end of a field not
+  entered) or replaces the contents with "Select entire contents"; Cancel
+  is 1.
 - Set Next Serial Value sends op72 with `kReplace` for the field of the
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).
 - Steps the desktop client answers with 3 (and, as before, stops on with a
-  message): Relookup, Undo/Redo,
+  message): Undo/Redo,
   Export Field Contents, Set Web Viewer, Perform JavaScript in Web Viewer,
   the account steps, Open File and the other database file steps, Show/Hide
   Text Ruler, Enable Touch Keyboard, and every step of script-steps.md 7

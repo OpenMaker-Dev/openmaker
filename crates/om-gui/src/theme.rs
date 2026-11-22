@@ -79,6 +79,8 @@ pub(crate) fn report_family(face: crate::report::ReportFace) -> FontFamily {
         ReportFace::InterBold => semibold(),
         ReportFace::Sans => FontFamily::Name("report-liberation-sans".into()),
         ReportFace::SansBold => FontFamily::Name("report-liberation-sans-bold".into()),
+        ReportFace::SansItalic => FontFamily::Name("report-liberation-sans-italic".into()),
+        ReportFace::SansBoldItalic => FontFamily::Name("report-liberation-sans-bold-italic".into()),
     }
 }
 
@@ -113,9 +115,11 @@ pub(crate) fn body() -> FontId {
 
 /// Install the FileMaker look on `ctx`: the bundled UI font and the light
 /// chrome style. FileMaker's captured chrome is light, so OpenMaker pins the
-/// light theme.
+/// light theme. Library images decode with `egui_extras`' raster loaders
+/// and OpenMaker's own SVG loader (`svg_loader`).
 pub fn install(ctx: &egui::Context) {
     egui_extras::install_image_loaders(ctx);
+    crate::svg_loader::install(ctx);
     ctx.set_fonts(fonts());
     ctx.set_theme(Theme::Light);
     ctx.set_style_of(Theme::Light, style());
@@ -154,6 +158,11 @@ fn fonts() -> FontDefinitions {
     for (name, bytes) in [
         ("report-liberation-sans", crate::report::SANS),
         ("report-liberation-sans-bold", crate::report::SANS_BOLD),
+        ("report-liberation-sans-italic", crate::report::SANS_ITALIC),
+        (
+            "report-liberation-sans-bold-italic",
+            crate::report::SANS_BOLD_ITALIC,
+        ),
     ] {
         fonts
             .font_data

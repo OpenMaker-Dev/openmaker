@@ -115,6 +115,11 @@ needs no open file.
   what Pro's entries for the file itself hash is not known; the
   calculation's context is stored as the occurrence; the history and page
   setup keys of `[2]` are left for FileMaker to write.
+- **Scripts.** A new file takes new scripts, listed under FileMaker's
+  name list key in whatever language it was made in
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274)).
+  FileMaker Pro has not opened a new file holding a script OpenMaker added
+  ([#407](https://github.com/OpenMaker-Dev/openmaker/issues/407)).
 - **The theme** is plain and covers six object types; tabs, portals,
   popovers, button bars and the rest look as FileMaker's defaults make them
   ([#222](https://github.com/OpenMaker-Dev/openmaker/issues/222)).

@@ -192,7 +192,7 @@ Neither item has a shortcut (`AXMenuItemCmdChar` absent).
 - an untouched new record: it is removed (3 of 3 became 2 of 2), and the former last record is current;
 - a find request: the typed criterion is cleared.
 
-**Not measured:** the alert of the Revert Record/Request script step with its dialog; keypad Enter as a commit (Claris Help, as #871 cites it).
+**Not measured:** the alert of the Revert Record/Request script step with its dialog; keypad Enter as a commit beyond the one ordinary Text field of script-runtime.md 7.1 (Claris Help, as #871 cites it).
 
 ## Menus
 
@@ -363,6 +363,54 @@ The decoder recognizes only part of the serialized object graph. Constraints,
 actual pixel layout, dynamic controls, runtime handlers and some hierarchy links
 remain unknown, so OpenMaker's Layout mode dimensions and interactions are its
 own choices ([desktop-client.md](../desktop-client.md), Layout mode).
+
+## Layout mode: Align, Distribute and Resize To
+
+From Claris's help (doc), fetched 2026-11-20:
+- The FileMaker Pro 2026 page "Arranging objects" (`arranging-objects.html`)
+  names the Inspector's Align and Space controls, and says those commands
+  are also in the Arrange menu and the shortcut menu. It does not give
+  their rules.
+- The FileMaker Pro 2026 page "Resizing and reshaping objects"
+  (`resizing-reshaping-objects.html`) documents the Resize controls.
+- The Align and Distribute rules are from "Aligning or distributing
+  objects", FileMaker Pro 12 (`archive/help/12/fmp/en/html/edit_layout.10.50.html`).
+- The notes on groups and repetitions are from "Resizing and reshaping
+  objects", FileMaker Pro 12 (`archive/help/12/fmp/en/html/edit_layout.10.8.html`).
+
+`ArrangeAlignInspector.nib` carries the Align, Space and Resize labels
+(above). Nothing here was compared with a FileMaker Pro screen.
+
+- **Align**:
+  - left edges, vertical centers, right edges, top edges, horizontal centers
+    and bottom edges (doc);
+  - "When you align objects along their tops, bottoms, or sides, the
+    objects align with the object farthest out of alignment" (doc): left
+    edges to the leftmost left edge, right edges to the rightmost right
+    edge, top edges to the topmost, bottom edges to the bottommost (inf);
+  - "To force the alignment to a specific object, lock that object before
+    you set the alignment" (doc);
+  - which line centers align to is not stated (U).
+- **Distribute** horizontally or vertically: "FileMaker Pro takes the space
+  separating the two objects farthest apart and divides it evenly among all
+  the selected objects" (doc). That the two outermost objects stay and the
+  others move so the gaps between neighbours are equal is inferred. When
+  the objects are wider (taller) together than the space between the
+  outermost edges, equal gaps would be negative and could reverse the
+  objects' order. OpenMaker then spaces their leading edges evenly instead
+  (its choice; FileMaker Pro's is unmeasured).
+- **Resize**: match all widths, all heights, or both to the smallest or the
+  largest selected object, in one step (doc).
+- **Notes** (doc): resizing a grouped object resizes every object in it, and
+  resizing a repeating field's first repetition resizes all of them.
+- **Unknowns**:
+  - the Arrange menu's submenu item names and order, and their shortcuts;
+  - which objects take part when the selection holds a locked object, a
+    group, or objects in a panel or portal;
+  - how a fractional result is rounded. OpenMaker puts left and top edges
+    on whole points, so aligning centers again can move an object by one
+    more point;
+  - whether Distribute needs three objects.
 
 ## Fields in the Layout sidebar
 

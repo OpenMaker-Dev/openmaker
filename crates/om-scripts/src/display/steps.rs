@@ -387,6 +387,7 @@ fn options(l: &mut Line<'_>) -> bool {
         87 => custom_dialog(l),
         103 => l.labeled_always("Text result", "Text Result", 0),
         141 => set_variable(l),
+        250 => set_variable_by_name(l),
         148 => {
             let script = l.script();
             l.push("Script", script);
@@ -439,14 +440,17 @@ fn options(l: &mut Line<'_>) -> bool {
             l.labeled("Repetition", "Repetition", 1);
         }
         228 => {
-            l.labeled_always("List of record IDs", "List of record IDs", 0);
+            // Slot 7, and the new window under `kTurnOn` with its name in
+            // slot 0, which Pro keeps when it is turned off (script-steps.md
+            // 12.2).
+            l.labeled_always("List of record IDs", "List of record IDs", 7);
             let layout = if s.member_key().is_some() {
                 l.member_layout()
             } else {
                 "<Current Layout>".into()
             };
             l.push("Layout", format!("Using layout: {layout}"));
-            let new_window = l.has(flag::OPTION);
+            let new_window = l.has(flag::TURN_ON);
             l.word("New window", "New window", new_window);
             l.animation();
         }
@@ -499,7 +503,7 @@ fn options(l: &mut Line<'_>) -> bool {
             l.target("Target", Some("Target"));
             l.bare("Value", 0);
         }
-        91 => replace_field_contents(l),
+        91 | 249 => replace_field_contents(l),
         116 => {
             l.field("Field");
             l.bare("Value", 0);
@@ -1012,18 +1016,24 @@ fn perform_script(l: &mut Line<'_>) {
 /// Perform Script on Server (with Callback): as Perform Script, then
 /// `Wait for completion: On|Off`, or the callback script and its state.
 fn server_script(l: &mut Line<'_>) {
-    // PSOS uses Perform Script's canonical slot-2 name form. Keep
-    // reading the old slot-1 form; callback steps use that slot too.
-    let canonical = l.step.id() == 164 && l.step.list_value(1) == Some(1);
+    // Both steps name the script to run in Perform Script's canonical
+    // slot-2 form (script-steps.md 12.2). Keep reading the old slot-1 form.
+    let canonical = l.step.list_value(1) == Some(1);
     let by_name = if canonical {
         Some(l.calc(2).unwrap_or_default())
     } else {
         l.calc(1)
     };
+    // Step 210's schema keeps the by-name form in its Script parameter.
+    let by_name_param = if l.step.id() == 164 {
+        "Specify by name"
+    } else {
+        "Script"
+    };
     match by_name {
         Some(name) if canonical => {
-            l.push("Specify by name", "Specified: By name");
-            l.push_calculation("Specify by name", 2, name);
+            l.push(by_name_param, "Specified: By name");
+            l.push_calculation(by_name_param, 2, name);
         }
         Some(name) => {
             l.push("Script", "Specified: By name");
@@ -1040,14 +1050,37 @@ fn server_script(l: &mut Line<'_>) {
         let wait = !l.has(flag::OPTION);
         l.on_off("Wait for completion", "Wait for completion", wait);
     } else {
-        match l.calc(2) {
-            Some(name) => {
-                l.push("Callback script", "Callback script specified: By name");
+        // The choice decides: Pro keeps the list's key in slot 3 when the
+        // callback changes to by name (script-steps.md 12.2).
+        if l.step.list_value(6) == Some(1) {
+            l.push("Callback script", "Callback script specified: By name");
+            let name = l.calc(7).unwrap_or_default();
+            l.push_calculation("Callback script", 7, name);
+        } else {
+            l.push("Callback script", "Callback script specified: From list");
+            // Nothing more when no callback is chosen; `<unknown>` for one
+            // the file does not have.
+            let id = l.step.positioned_id(3).filter(|_| l.has(flag::OPTION));
+            if let Some(id) = id {
+                let name = l
+                    .names
+                    .script_name(id)
+                    .map_or_else(|| UNKNOWN.into(), quoted);
+                let name = if l.has(flag::OPTION3) {
+                    // Its data source is in slot 5 (`"01"`), not under `20`.
+                    let file = l
+                        .step
+                        .positioned_id(5)
+                        .and_then(|id| l.names.data_source_name(id))
+                        .map_or_else(|| UNKNOWN.into(), quoted);
+                    format!("{name} from file: {file}")
+                } else {
+                    name
+                };
                 l.push("Callback script", name);
             }
-            None => l.push("Callback script", "Callback script specified: From list"),
         }
-        l.labeled("Callback script", "Callback script parameter", 3);
+        l.labeled("Callback script parameter", "Callback script parameter", 4);
         l.choice(
             "State",
             &[
@@ -1114,6 +1147,21 @@ fn set_variable(l: &mut Line<'_>) {
     l.labeled_always("Value", "Value", 1);
 }
 
+/// Set Variable by Name, as Set Variable shows its name: the name's
+/// calculation, its repetition in brackets unless 1, then the value [I:
+/// FileMaker Pro 26.1.1's text not seen].
+fn set_variable_by_name(l: &mut Line<'_>) {
+    if let Some(name) = l.calc(3) {
+        l.push_calculation("Name", 3, name);
+    }
+    if l.calc(2)
+        .is_some_and(|r| r.trim() != "1" && !r.trim().is_empty())
+    {
+        l.labeled("Repetition", "Repetition", 2);
+    }
+    l.labeled_always("Value", "Value", 1);
+}
+
 /// Go to Layout: the stored layout, `original layout` or a calculated
 /// name or number, then the animation.
 fn go_to_layout(l: &mut Line<'_>) {
@@ -1177,10 +1225,18 @@ fn go_to_related_record(l: &mut Line<'_>) {
             let (&len, segment) = bytes.split_first()?;
             om_hbam::slot::be_uint(segment.get(..usize::from(len))?)
         });
-    let table = occurrence
-        .and_then(|o| l.names.calc_names().occurrence_name(o))
-        .map_or_else(|| UNKNOWN.into(), quoted);
-    l.push("Related table", format!("From table: {table}"));
+    if l.has(flag::OPTION3) {
+        // Table by Calculation (26.1, script-steps.md 12.4): the name's
+        // calculation, slot 8, where a quoted occurrence name goes
+        // otherwise. OpenMaker's text: FileMaker 26.1.1's is not observed.
+        let name = l.calc(8).unwrap_or_default();
+        l.push_calculation("Related table", 8, format!("From table: {name}"));
+    } else {
+        let table = occurrence
+            .and_then(|o| l.names.calc_names().occurrence_name(o))
+            .map_or_else(|| UNKNOWN.into(), quoted);
+        l.push("Related table", format!("From table: {table}"));
+    }
     let layout = match step.value {
         1 => "<Current Layout>".into(),
         _ => l.member_layout(),
@@ -1217,7 +1273,11 @@ fn new_window(l: &mut Line<'_>) {
 /// numbers or the calculation (script-steps.md 11.8).
 fn replace_field_contents(l: &mut Line<'_>) {
     l.dialog();
-    l.field("Field");
+    if l.step.id() == 249 {
+        l.bare("Target field by name", 1);
+    } else {
+        l.field("Field");
+    }
     match l.step.number(1) {
         Some(2) => l.push("Replace with", "Serial numbers"),
         Some(3) => l.bare("Replace with", 0),

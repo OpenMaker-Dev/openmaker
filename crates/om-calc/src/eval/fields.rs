@@ -731,7 +731,7 @@ mod nested_context_tests {
             extend_fields: true,
         };
         let before = format!("{context:?}");
-        let mut solver = Solver::new(&mut h, context);
+        let mut solver = Solver::new(&mut h, context, u64::MAX);
         solver.errors.record(CalcError::DIVIDE_BY_ZERO);
         solver.invalid = true;
         solver.precision = 57;
