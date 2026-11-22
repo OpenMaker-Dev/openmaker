@@ -629,6 +629,18 @@ pub fn checked_find_program(
     find_program(file_id, table, finders, None, access_key, checks)
 }
 
+/// The GetKeys of a [`checked_find_program`] alone, into the same spots,
+/// which [`indexes_existed`] reads. A client sends it after a host refused
+/// a checked program, to learn whether an index the program read is
+/// missing: OpenMaker Server refuses a query on an index it cannot build
+/// in its field's language, where FileMaker Server would answer the
+/// finder with no records and then build the index (7.1).
+pub fn index_check_program(file_id: u32, table: u64, checks: &[FieldIndex]) -> Vec<u8> {
+    assemble(index_checks(file_id, table, checks), Vec::new())
+        .to_wire()
+        .expect("index checks fit their slots")
+}
+
 /// [`checked_find_program`] of `field`'s value index alone: the find is
 /// instruction 2.
 pub fn checked_program(

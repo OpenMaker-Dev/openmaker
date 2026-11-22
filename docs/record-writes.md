@@ -81,6 +81,20 @@ FileMaker Pro's order:
   file its own part, every part prepared before any record data goes
   (below: a script's transaction across files, and the window's commit of
   a record across files).
+- **The windows after Revert Transaction.** A record the transaction
+  created goes from every window of the file that shows it, with what the
+  window still had pending on it: one committed into the transaction, and
+  one a New Record made in it, in any window, that no commit had logged
+  yet. The records are known by identity, as the provider's transaction
+  holds them new (`DataProvider::transaction_created`), not by what a
+  window remembers of its record: a record an earlier transaction saved
+  stays, with an edit pending on it, and so does a record a window's
+  record session holds apart. The window shows the
+  record at the same place in the found set as the revert leaves it, or the
+  last one when no record is there any more (so the record before a new one
+  at the end), and `Get ( RecordID )` answers that record's id
+  ([#307](https://github.com/OpenMaker-Dev/openmaker/issues/307)). Which
+  record FileMaker shows then is unmeasured [I].
 
 ### A window's record session
 
@@ -105,7 +119,28 @@ OpenMaker does the same with the window's record session
   too.
 - **Duplicate Record** opens the session before it copies the record, so
   the container references the copy takes are the session's: kept by its
-  commit, released by its revert.
+  commit, released by its revert. It copies no auto-entered value: a
+  field that auto-enters a variable (a creation timestamp, an account
+  name), a serial number, a constant or a calculation that replaces an
+  existing value gets the copy's own, as FileMaker's does (auto-entry.md,
+  "Serial numbers"; script oracle s46-record-number-ae for a replacing
+  calculation,
+  [#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A
+  replacing `Get ( RecordNumber )` is the copy's place after the records
+  of an unsorted found set, as s46 measured, as the host's found set is
+  when the copy is made; the copy keeps it through its edits before its
+  save, and in a script's transaction through Commit Records and later
+  writes until the transaction commits it (the transaction's held create
+  keeps it), as an auto-entered value is entered when the record is made.
+  Another client's change of the found set after that is not counted, as
+  a value FileMaker entered is not entered again [I]. In a
+  sorted found set the copy has none and its save is refused (3). A
+  lookup's value and a calculation that does not replace one are copied.
+  In a transaction that skips auto-entry the copy takes every stored value
+  of the record but a serial number, and enters none [I]. A table with a field that enters the last visited
+  record's value (`0x10`) is refused for these writes, as an unsupported
+  field option. The variable and constant cases follow Claris's
+  documentation and are unmeasured.
 - **On a layout of a related file's table** the related file holds the
   record as one of the session's parts, as it holds a portal row of its
   table (`write_routed_related`): op71 under the session's shared
@@ -183,6 +218,7 @@ comes only at the commit, it presumably sees nothing until then
   - **Unknown fields.** A field the provider can't know yet reads its stored value, never empty. With a related record to delete in the same commit, nothing is computed.
   - **Browse** still shows a stored calculation's stored value until the commit.
   - **Measured only for a script's Set Field** on a local file's own stored calculation. The user's typing, Browse and hosted files are unmeasured [I].
+  - **On OpenMaker Server** a script's new record is computed the same way, from New Record on and again after each change of a cell the rules compute from (`RecordPlan::computes_from`): its auto-entered values and stored calculations, validation left to the commit (`ServerHost::preview_new_record`, [#474](https://github.com/OpenMaker-Dev/openmaker/issues/474)). FileMaker Server's engine gave an auto-entered value right after New Record (script oracle s46). The preview is only what the script reads of its open record: the record holds just what the steps set, so a Set Field of the value it previews enters that value, and a duplicate, the transaction's other records and its unique values never see it. The commit computes the values again, with the clock and UUID the record was created with: a creation and a modification timestamp of a new record are its creation time [I]. What the commit stores can still differ from what was read where an input changed in between without a change of the record's own cells (a global, a related record). A value the preview cannot know yet (a formula it cannot answer, `Get ( RecordNumber )` until #456) reads empty, as before. An existing record's stored calculations still read their stored value until the commit there.
 
 ### A new record's preview
 
@@ -751,8 +787,26 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **How:** the list is computed as a choice list computes it
   (`FileCalc::value_list_entries`, with the session's global values) for
   the record as the write leaves it. A changed value not among its values
-  is refused with 506. Text compares as English index keys, other types by
-  value, as for a list of one field's values.
+  is refused with 506. Text compares as the list's field keys it in its
+  value index, its index language's form, language 0 being that of the
+  file that owns the field's table (a related file's own, unknown when its
+  locale record does not decode). A text field indexed in a tailored
+  language refuses the check with 3 rather than compare in English, where
+  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+  A destination of another type compares by value, whatever its language. The
+  computed list keeps one of the values a calculation compares equal. For
+  a text destination, the index keys can distinguish values the list
+  groups together (case or accents in Unicode raw or standard, `v` and `w`
+  in a Swedish file). If a text value matches only by calculation equality,
+  the check returns 3 because deduplication may have dropped an exact match.
+  This comparison reads the candidate in the listed field's locale and
+  uses the list owner's collation. The check reparses each rendered list
+  item in the list owner's locale, which can misread a number retaining
+  its original spelling. For example, a US list can read a German `1,500`
+  as 1500 and return 3 for that candidate instead of 506
+  ([#634](https://github.com/OpenMaker-Dev/openmaker/issues/634)). A refusal
+  with 3 ends an import (scripting.md). A numeric destination's miss
+  returns 506 and skips the row, even if the stored text compares equal.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.
@@ -1026,9 +1080,22 @@ is written by that file (`related_owner.rs`, #1000):
     window keeps what was typed. What FileMaker does in that case is
     unmeasured.
   - **Revert Transaction** reverts every file's part.
-  - **Still refused (3)** inside the transaction, on a layout of another
-    file's table: Delete Record, and edits the user makes there while the
-    script is paused (the provider's create, update and delete calls).
+  - **A script's Delete Record** (and Delete All Records, and Revert
+    Record of a record the transaction made) on a layout of another file's
+    table is held in that file's part, as a deleted portal row is
+    (`DataProvider::delete_record_in_script`): the record goes when the
+    transaction commits and stays when it is reverted. Commit Transaction
+    prepares such a deletion from the table's fields and the record's
+    container references alone, as the ordinary deletion does, so a table
+    whose rules OpenMaker cannot plan still deletes
+    ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)). Which
+    records the window shows after such a revert is unmeasured.
+  - **Still refused (3)** inside the transaction, on such a layout: the
+    edits, new records and deletions the user makes there while the script
+    is paused (the provider's create, update and delete calls,
+    [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)). No step
+    of the transaction made them, and the window's OnWindowTransaction
+    would report them before the transaction's outcome.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and
@@ -1230,9 +1297,28 @@ set to always use the system's formats, Pro's observed de-DE/en-US
 case interprets the typed date using the system setting; OpenMaker uses
 the file's own locale (file-metadata.md 2.2).
 
-Browse edits plain Number, Date, Time and Timestamp data globals through
+Browse edits Text, Number, Date, Time and Timestamp data globals through
 session-value operations. A global edit changes no stored record and reaches
-no other client. Temporal entry uses the shared typed-global operation and
+no other client. Its editor opens with the session's value, as the field
+shows it, not the value the record's page was read with; while that value
+is read again (a script set it), the editor takes no typing, so that no
+edit begins from the value before. A global's validation is checked as the typing is
+applied (`DataProvider::set_typed_global`), in the record's ordinary save
+as in a commit after scripts: its entry rules (maximum characters 511,
+strict data type 500-502, range 503, a custom value list or a field of
+this file 506) and Not empty (509), which holds while any of its
+repetitions has a value, as at a record's commit. The check uses the
+complete set of proposed repetitions before publishing any of the edits.
+The refusal carries the field's
+custom message when it is text, or a calculated one that is text alone;
+otherwise, and for a date or time it cannot read, OpenMaker's own
+wording. What they refuse keeps the draft and the session's value, as an
+invalid date does, and a save with several globals sets none of them. A
+global validated by calculation, unique or existing value, a
+related-values list or another file's field, whose checks are not
+implemented for globals, stays display-only. Supported global fields
+stay editable while a related file needed by another field's write rules
+is still closed. Temporal entry uses the shared typed-global operation and
 the file's entry parser: invalid Date/Timestamp (500) or Time (501) text
 keeps its draft and leaves the session value unchanged. Complete accepted
 Date text survives calculation readback. Time/Timestamp readback uses the
@@ -1251,9 +1337,13 @@ once together; related-record cells use their existing versioned write.
 Global repetitions remain session values and run no record transaction.
 Account rights, validation and prohibited modification still apply.
 
-Limits: non-text globals requiring field-exit validation and container
-globals are not typing targets; calculation fields are not, as in
-FileMaker. A field object showing several repetitions divides its stored
+Limits: globals validated by calculation, unique or existing value, a
+related-values list or another file's field, and container globals, are
+not typing targets; calculation fields are not, as
+in FileMaker. Typed globals are applied, and so checked, when the record
+is committed; FileMaker validates a global as its field is left (Claris
+"Field validation"), and its alert there is unmeasured
+([#424](https://github.com/OpenMaker-Dev/openmaker/issues/424)). A field object showing several repetitions divides its stored
 bounds evenly among them, across or down as it is stored [I: FileMaker
 Pro's repetition geometry is unmeasured]. Repetitions above 255 are
 outside the write planner's cell representation. Native repetition entry
@@ -1272,25 +1362,86 @@ empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
 under `fe ff`, and a timestamp stored as a date alone under its date and
 `fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
 gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
-A typed index that an earlier OpenMaker build wrote lists no empty value
-under `01`, so a find for `=` on it misses those records.
+An index whose keys another rule wrote (an earlier OpenMaker build's, or
+FileMaker's where OpenMaker's rules still differ or give a value no key)
+keeps a record OpenMaker Server changes under none of those keys
+([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448)):
+- The first write that changes a field's value, after the server starts or
+  the schema changes, compares each of the field's indexes with one built
+  from every stored record (`Store::index_agrees`).
+- In an index that disagrees, every record the commit changes or deletes
+  leaves the entries its new value does not give when the commit finishes
+  (`Store::sweep_index`). That covers a key an earlier build gave `1.5`, a
+  FileMaker word break and a number among letters, and it happens also
+  when the record's computed keys do not move.
+- The index is never rebuilt: records no write touches keep their
+  entries as FileMaker wrote them, an overflow `ff 80` membership included.
+- Every entry a write or a sweep changes is kept first, so a failed save
+  puts each back exactly.
+- Before changing a record, the server checks the existing postings at
+  its computed old and new keys. If any cannot round-trip through the
+  RID writer, the whole commit fails before publication. This includes
+  readable forms such as a one-bit bitmap in place of a singleton, even
+  when the computed keys are unchanged and only the sweep would add a
+  membership. The sweep leaves other postings of unrecognized shape or
+  encoding as stored, so a stale membership there can remain. Counts of
+  an unknown shape also stay as stored.
+- A commit that changes records in a disagreeing index still scans and
+  validates every posting under the write lock. If the sweep makes a
+  change, recounting reads the resulting postings again.
 
-Word-index keys break words as FileMaker's English and Unicode standard
-indexes do (query-program.md 7.1): within a script, across `.` and
-apostrophes between letters and `-`, `.`, `,`, `:`, `/` between digits.
-Unicode raw's own word breaks are not built
-([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)), nor the
-word breaks of the other index languages, whose text is refused anyway.
+A new record's id has no prior membership, so creation skips the index
+agreement check and the sweep. The server still checks existing postings
+at the new keys and refuses the commit if an edit would not round-trip.
+An index that a commit empties stays in the commit's plan, so its later
+records are still indexed. Until a write changes a record in an index,
+the index is read as stored.
+
+Word-index keys break words as FileMaker's English, System and Unicode
+standard indexes do (query-program.md 7.2, "Word breaking"): within a
+script, across `.` and apostrophes between letters and `-`, `.`, `,`, `:`,
+`/` between digits. FileMaker keeps a no-break space in its word. OpenMaker
+still separates there (`WordBreaks::ENGLISH`), because an index an
+earlier OpenMaker build wrote holds such words apart, and a changed
+record's old entries are found by the rules in force
+([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448)).
+`om_collate::WordBreaks::of_language` holds the joiners each language was
+probed to use, the no-break space included. They differ in `.`, `:` and
+`/` between digits and in the apostrophe and `·` between letters. They are
+tested against the probe's word keys in 52 of the 56 languages probed:
+all but Unicode raw, and Vietnamese, Thai and Greek mixed, whose keys of
+the probe's values use weights OpenMaker does not build, so their joiners
+are taken from the spec unchecked. No key is written with them yet, since
+those languages' text is refused
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). Where the probe did not reach, such as a no-break space
+beside kanji or alone, the rules are OpenMaker's reading. Unicode raw's
+own word breaks are not built
+([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)).
 
 For a text field indexed in any other language they write no key, rather
 than English ones a find in that language would miss (#159):
 - A commit that would change the field's text where the field has an index
   in the file is refused and changes nothing. That includes a new or
   deleted record with text there.
-- An index that op73 asks for, or that a find builds on demand, is not
-  stored while a record holds text in the field. op73 then leaves the field
-  without the index it had. A find reads the field's text in English for
-  itself, so the next find builds it again.
+- op73 builds no such index while a record holds text in the field, and
+  so leaves the field without the index it had.
+- A query that needs such an index the file does not hold, while a record
+  holds text in the field (a find, a join, a value list), is refused
+  rather than answered from English keys, which would give another found
+  set ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). It
+  builds nothing, and keeps none of the indexes it built of other fields
+  before the refusal: a later query builds them again. A client gets the
+  query's error, 3 (`om_query::QueryError::UnkeyedIndex`; FileMaker
+  Server builds every language's index, so its answer is unmeasured).
+  Only after that error
+  does OpenMaker's desktop client ask which of the indexes it read are
+  missing. If one is, it takes its own path for a missing index, as after
+  FileMaker Server's empty answer (query-program.md 7.1). For these
+  languages that path fails the find with 3
+  ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A server
+  script's find, or a join of its Go to Related Record, gives 3. A blank
+  match value relates nothing without reading the index. A field that
+  holds no text has no keys to differ, and is answered.
 
 OpenMaker's record rules refuse such a write first (error 3, naming the
 field and the language). They do so for a stored text field defined with
@@ -1328,13 +1479,43 @@ A number field with unique or existing-value validation keeps its table
 read-only, as before. Unique and existing values are checked in the field's
 value index, so such a field must be defined for a value index in English (21,
 77), System (1), Unicode standard (3) or Unicode raw (2) (auto-entry.md,
-Index bits), the forms whose keys OpenMaker builds; a field in another
-language keeps its table read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)). The client and the host build the key in the field's
-form (`om_data::rules::checked_text_keys`, query-program.md 7.2), cut to 219
+Index bits), the forms whose keys OpenMaker builds, or in language 0 when
+the file's own language is one of them and its locale record can be read
+(a file without one counts as English). A language FileMaker leaves
+untailored counts too (Dutch, French, German dictionary, Greek, Italian,
+Portuguese, Russian, Hebrew, Serbian, Bulgarian and the Indic languages 59
+to 67): its value keys
+are English's (query-program.md 7.2; the set is inferred from bin's list of
+tailored languages and a probe,
+[#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A change of
+such a field's text is still refused, as its word keys are not built
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). A field in
+a tailored language keeps its table read-only
+([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)). The client
+and the host build the key in the field's value form
+(`om_data::rules::value_text_keys`, query-program.md 7.2), cut to 219
 bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents
 its Unicode index as case-sensitive, which was not measured.
+A value list of a field's values is checked in its source field's value
+index the same way: a text source field in a tailored language refuses
+the check with 3, on the client and on OpenMaker Server, rather than
+keying the value in English, which could both miss the host's key and
+match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+A number, date, time or timestamp source uses its type's index keys,
+with dates read in the file's order (query-program.md 7.3). For example,
+`5.0` matches a listed `5`
+([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)). Number
+sources in files with a decimal separator other than a point are still
+looked up as text until #415. This avoids false matches against an index
+built by OpenMaker Server, whose number parser keys a German `1.000` as 1.
+A value for which OpenMaker cannot build a typed key also falls back to
+text. On the desktop, a date or timestamp source with an unreadable
+locale record returns 3 because the date order is unknown. A new record's
+refusal before its commit (unique, existing value, value list) is the
+write's, with its code: the record id it reserved stays unused, as
+FileMaker's reserved ids can (write-path.md 2).
 A definition marked indexed does not prove that the host has built the
 index (schema-path.md 6). Unique, Existing and
 field-backed value-list validation therefore read the value-index counts
@@ -1364,12 +1545,20 @@ unreadable confirmation fails the check while the unique lock stays held.
 A confirmation must finish exactly its requested subtree; trailing data
 cannot establish an empty source value.
 Missing-index fallback is
-limited to stored text keyed in the checked value's form: 21 or 77, or 2
-for a unique or existing value (a field-backed value list compares English
-keys). Typed, other-language, global, summary or
-unstored sources are explicitly unsupported without an index; file date
-formats are consequently not interpreted by this fallback. A stored
-text source that prohibits index creation can be scanned on each
+limited to stored text keyed in its value form
+(`om_data::rules::value_text_keys`): English (21, 77), System (1), Unicode
+standard (3), Unicode raw (2), a language FileMaker leaves untailored, or
+language 0 resolved as above. A field-backed value list is checked in its
+source's value form too; a text source in a tailored language refuses the
+check with 3, with the host's index or without (above,
+[#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A stored
+number, date, time or timestamp source is scanned in its type's keys,
+with dates read in the file's order. Text fallback compares whole stored
+repetitions and skips absent cells. A source with more than 255
+repetitions is refused because a later repetition would read another
+field's cell. Tailored-language text, global, summary and unstored
+sources are unsupported without an index. A stored text source that
+prohibits index creation can be scanned on each
 check. Field-backed lists still require a local source without a related
 filter or second display field; CreateValueListEx is a separate path.
 

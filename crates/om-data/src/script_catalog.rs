@@ -51,7 +51,7 @@ use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
 use om_scripts::StepData;
 
-use crate::field_catalog::{name_key, MAX_NAME_CHARS, MAX_NAME_KEY};
+use crate::field_catalog::{listed_key, listed_key_or_why, name_key, MAX_NAME_CHARS, MAX_NAME_KEY};
 use crate::schema_draft::Stamp;
 use crate::{DataError, Script, ScriptCatalog, ScriptKind};
 
@@ -134,53 +134,23 @@ fn key_string_id(value: &[u8]) -> Option<u64> {
         .flatten()
 }
 
-/// The name list key of `name` in `[17, 1, 01]`: its name key and three
-/// zero bytes (schema-path.md 5.6).
+/// The name list key of an ASCII name in `[17, 1, 01]`: its name key and
+/// three zero bytes (schema-path.md 5.6), as [`listed_key`] builds it.
+#[cfg(test)]
 fn listed(key: &[u8]) -> Vec<u8> {
     let mut listed = key.to_vec();
     listed.extend([0, 0, 0]);
     listed
 }
 
-/// Whether the file's own name list shows the key form [`name_key`]
-/// computes for names of ASCII characters: some member named with an ASCII
-/// letter, and every member named in ASCII, is listed under its
-/// [`name_key`]. The key depends on the file's language (scripts.md, "The
-/// catalog index"): English, Dutch and Italian starter files list ASCII
-/// names under DUCET primary weights; Japanese, Korean and Chinese ones
-/// use other weights, and names with accents carry more levels.
-fn ascii_keys_shown(stored: &ScriptCatalog, index: &OwnedNode) -> bool {
-    let names = index.child(&[NAMES]);
-    // Folder ends (`--`), separators (`-`) and members sharing a name
-    // cannot each have the one entry of their key.
-    let mut seen = BTreeMap::new();
-    for script in &stored.scripts {
-        *seen.entry(name_key(&script.name)).or_insert(0) += 1;
-    }
-    let mut shown = false;
-    for script in stored.scripts.iter().filter(|s| {
-        s.name.is_ascii()
-            && matches!(s.kind, ScriptKind::Script | ScriptKind::Folder)
-            && seen[&name_key(&s.name)] == 1
-    }) {
-        let listed = names
-            .and_then(|n| n.child(&listed(&name_key(&script.name))))
-            .and_then(|e| e.value.as_deref())
-            .and_then(key_string_id);
-        if listed != Some(script.id) {
-            return false;
-        }
-        shown |= script.name.bytes().any(|b| b.is_ascii_alphabetic());
-    }
-    shown
-}
-
-/// Check a script or folder name and return its name key. FileMaker's
+/// Check a script or folder name and return its name key and the key the
+/// name list holds it under ([`listed_key`]: FileMaker's, the same in every
+/// file whatever its language, scripts.md "The catalog index"). FileMaker's
 /// rules for script names are not established; these are OpenMaker's: a
 /// name, at most 100 characters (FileMaker's limit for field names), no
-/// control character or line break, and a name key the name list can hold.
-/// Only ASCII names are written, whose key [`ascii_keys_shown`] checks.
-fn check_name(name: &str) -> Result<Vec<u8>, DataError> {
+/// control character or line break, and a name list key it can hold. Only
+/// ASCII names are written for now.
+fn check_name(name: &str) -> Result<(Vec<u8>, Vec<u8>), DataError> {
     let refuse = |why: &str| unsupported(format!("“{name}” cannot be a script name: {why}."));
     if name.is_empty() {
         return Err(unsupported("A script needs a name."));
@@ -195,19 +165,18 @@ fn check_name(name: &str) -> Result<Vec<u8>, DataError> {
     }
     if !name.is_ascii() {
         return Err(refuse(
-            "OpenMaker saves script names of ASCII characters only for now, since the key \
-             FileMaker lists a name under for other characters depends on the file's language \
-             and is not established",
+            "OpenMaker saves script names of ASCII characters only for now",
         ));
     }
     let key = name_key(name);
     if key.is_empty() {
         return Err(refuse("it has no character FileMaker tells names apart by"));
     }
-    if key.len() + 3 > MAX_NAME_KEY {
+    let entry = listed_key_or_why(name).map_err(|why| refuse(&why))?;
+    if entry.len() > MAX_NAME_KEY {
         return Err(refuse("its name key is longer than FileMaker stores"));
     }
-    Ok(key)
+    Ok((key, entry))
 }
 
 /// Set a member's or the index's modification stamp (schema-path.md 8.1):
@@ -228,7 +197,7 @@ pub fn stamp(node: &mut OwnedNode, stamp: &Stamp, new: bool) {
     }
     node.set_child(om_scripts::text_node(MOD_USER, &stamp.user));
     node.set_child(om_scripts::text_node(MOD_ACCOUNT, &stamp.account));
-    // A key string: the time's key is shorter than 8 bytes before 00:16:40
+    // A key string: the time's key is shorter than 8 bytes before 02:46:40
     // (schema-path.md 3.1).
     node.set_child(OwnedNode::leaf(MOD_TIME.to_vec(), key_string(&stamp.time)));
 }
@@ -388,6 +357,18 @@ pub fn plan(
         return Err(missing("index"));
     };
     let mut index = index.clone();
+    // With no member decoded, the index is a new one only when it lists no
+    // member either: a name, order or cache entry without its member is
+    // not written over as if the catalog were empty.
+    let lists_members = [NAMES, ORDER, CACHE]
+        .iter()
+        .any(|key| index.child(&[*key]).is_some_and(|n| !n.children.is_empty()));
+    if before.is_empty() && lists_members {
+        return Err(unsupported(
+            "The script catalog's index lists members the file does not define, so OpenMaker \
+             does not save a change to it; nothing was saved.",
+        ));
+    }
     let last = match index.child(&[LAST_ID]) {
         Some(node) => node
             .value
@@ -435,13 +416,6 @@ pub fn plan(
         .copied()
         .filter(|(s, old)| s.name != old.name)
         .collect();
-    if !(new.is_empty() && renamed.is_empty()) && !ascii_keys_shown(stored, &index) {
-        return Err(unsupported(
-            "This file's script names do not show the key FileMaker lists a name under in \
-             its language, so OpenMaker does not save new or renamed scripts in it yet; \
-             nothing was saved.",
-        ));
-    }
 
     // A member's name list entry is found by the id it holds, so a deleted
     // or renamed member's entry goes whatever its language's key. One that
@@ -467,12 +441,36 @@ pub fn plan(
             )));
         }
     }
+    // A going member's name list entries go with it, so each must be a
+    // plain leaf: one with children of its own holds bytes OpenMaker cannot
+    // read, which removing it would lose.
+    let entries: &[OwnedNode] = index
+        .child(&[NAMES])
+        .map(|n| n.children.as_slice())
+        .unwrap_or_default();
+    for &id in &going {
+        let value = key_string(&serial::encode(id));
+        if entries
+            .iter()
+            .any(|e| e.value.as_deref() == Some(value.as_slice()) && !e.children.is_empty())
+        {
+            let name = stored
+                .scripts
+                .iter()
+                .find(|s| s.id == id)
+                .map_or("", |s| &s.name);
+            return Err(unsupported(format!(
+                "The script catalog's name list entry for “{name}” holds data OpenMaker cannot \
+                 read, so OpenMaker does not rename or delete it; nothing was saved."
+            )));
+        }
+    }
     let unlist = |index: &mut OwnedNode, segment: &[u8]| {
         let value = key_string(segment);
         index
             .ensure(&[&[NAMES]])
             .children
-            .retain(|e| e.value.as_deref() != Some(value.as_slice()));
+            .retain(|e| !e.children.is_empty() || e.value.as_deref() != Some(value.as_slice()));
     };
 
     // The names every member keeps, by name key, to refuse a second one:
@@ -483,23 +481,34 @@ pub fn plan(
             names.insert(name_key(&script.name), script.id);
         }
     }
-    let listed_names: BTreeMap<Vec<u8>, u64> = index
+    // Every key the name list holds, but the entries of members whose old
+    // name goes: an entry whose value does not read as a member's id
+    // (opaque, or not a key string) is held too, so a new name never
+    // replaces bytes OpenMaker cannot read.
+    let listed_names: BTreeSet<Vec<u8>> = index
         .child(&[NAMES])
         .map(|n| n.children.as_slice())
         .unwrap_or_default()
         .iter()
-        .filter_map(|e| Some((e.segment.clone(), key_string_id(e.value.as_deref()?)?)))
-        .filter(|(_, id)| !going.contains(id))
+        .filter(|e| {
+            let id = e
+                .value
+                .as_deref()
+                .filter(|_| e.children.is_empty())
+                .and_then(key_string_id);
+            !id.is_some_and(|id| going.contains(&id))
+        })
+        .map(|e| e.segment.clone())
         .collect();
     let mut take = |name: &str, id: u64| -> Result<Vec<u8>, DataError> {
-        let key = check_name(name)?;
-        if names.insert(key.clone(), id).is_some() || listed_names.contains_key(&listed(&key)) {
+        let (key, entry) = check_name(name)?;
+        if names.insert(key, id).is_some() || listed_names.contains(&entry) {
             return Err(unsupported(format!(
                 "Another script or folder is named “{name}”, and OpenMaker does not save two \
                  of one name yet; nothing was saved."
             )));
         }
-        Ok(key)
+        Ok(entry)
     };
 
     let mut members = Vec::new();
@@ -519,6 +528,61 @@ pub fn plan(
     for script in &new {
         keys.insert(script.id, take(&script.name, assigned[&script.id])?);
     }
+    // A new member's id must be free in the index: an entry already under
+    // it (left by a member the file no longer defines) is not replaced.
+    for &id in assigned.values() {
+        let segment = serial::encode(id);
+        let value = key_string(&segment);
+        let named = |key: u8| {
+            index.child(&[key]).is_some_and(|n| {
+                n.children
+                    .iter()
+                    .any(|e| e.value.as_deref() == Some(&value[..]))
+            })
+        };
+        if index.at(&[&[CACHE], &segment]).is_some() || named(NAMES) || named(ORDER) {
+            return Err(unsupported(format!(
+                "The script catalog's index already has an entry for id {id}, which no script \
+                 holds, so OpenMaker does not give a new script that id; nothing was saved."
+            )));
+        }
+    }
+    // The members that stay must be listed under the keys OpenMaker
+    // computes for them: one FileMaker listed under another key means the
+    // two disagree, and a new key could then land where FileMaker would
+    // list another name (scripts.md, "The catalog index").
+    if !keys.is_empty() {
+        let mut listed: BTreeMap<&[u8], Vec<&[u8]>> = BTreeMap::new();
+        for entry in index
+            .child(&[NAMES])
+            .map(|n| n.children.as_slice())
+            .unwrap_or_default()
+        {
+            if let Some(value) = entry.value.as_deref() {
+                listed.entry(value).or_default().push(&entry.segment);
+            }
+        }
+        for script in stored
+            .scripts
+            .iter()
+            .filter(|s| after.contains(&s.id) && !going.contains(&s.id))
+        {
+            let value = key_string(&serial::encode(script.id));
+            let (Some(segments), Some(expected)) =
+                (listed.get(value.as_slice()), listed_key(&script.name))
+            else {
+                continue;
+            };
+            if !segments.contains(&expected.as_slice()) {
+                return Err(unsupported(format!(
+                    "The script catalog lists “{}” under a name key OpenMaker does not compute \
+                     for it, so OpenMaker does not save a new or renamed script beside it; \
+                     nothing was saved.",
+                    script.name
+                )));
+            }
+        }
+    }
 
     for script in &deleted {
         let segment = serial::encode(script.id);
@@ -534,7 +598,7 @@ pub fn plan(
             let member = new_member(script, id, by, uuid);
             let flags = flags(&script.metadata, MEMBER_FLAGS);
             index.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
-                listed(&keys[&script.id]),
+                keys[&script.id].clone(),
                 key_string(&segment),
             ));
             let mut cached = vec![
@@ -568,7 +632,7 @@ pub fn plan(
                 cached.set_child(om_scripts::text_node(&[NAME], &script.name));
                 unlist(&mut index, &segment);
                 index.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
-                    listed(&keys[&script.id]),
+                    keys[&script.id].clone(),
                     key_string(&segment),
                 ));
             }
@@ -1187,6 +1251,25 @@ mod tests {
         let mut accented = stored.clone();
         accented.scripts[1].name = "Créer".into();
         assert!(refused(&accented).message.contains("ASCII"));
+        // An entry whose value is no member's id still holds its key: a new
+        // name under it is refused rather than written over it.
+        let mut unread = index.clone();
+        unread.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
+            crate::field_catalog::listed_key("Fresh").unwrap(),
+            vec![0xff],
+        ));
+        let mut fresh = stored.clone();
+        fresh.scripts[1].name = "Fresh".into();
+        let error = plan(
+            Some(&unread),
+            &stored,
+            &definitions,
+            &fresh,
+            &by(),
+            &mut || [0; 16],
+        )
+        .unwrap_err();
+        assert!(error.message.contains("two of one name"), "{error:?}");
         let mut renamed = stored.clone();
         renamed.scripts[1].name = "Other".into();
         let error = plan(None, &stored, &definitions, &renamed, &by(), &mut || {
@@ -1218,5 +1301,87 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    /// What the index holds that OpenMaker cannot read, or that disagrees
+    /// with the keys it computes, is never written over: the save is
+    /// refused and nothing changes.
+    #[test]
+    fn index_entries_openmaker_cannot_account_for_are_refused() {
+        let (index, definitions, stored) = starter();
+        let with_new = |stored: &ScriptCatalog| {
+            let mut requested = stored.clone();
+            requested.scripts.push(Script {
+                id: 9,
+                name: "Fresh".into(),
+                kind: ScriptKind::Script,
+                ..Script::default()
+            });
+            requested
+        };
+        let refused = |index: &OwnedNode,
+                       stored: &ScriptCatalog,
+                       definitions: &BTreeMap<u64, OwnedNode>,
+                       requested: &ScriptCatalog| {
+            plan(
+                Some(index),
+                stored,
+                definitions,
+                requested,
+                &by(),
+                &mut || [0; 16],
+            )
+            .unwrap_err()
+            .message
+        };
+        // A renamed or deleted member's name list entry with children of
+        // its own: removing the entry would lose them.
+        let mut opaque = index.clone();
+        let key = listed_key("Go to Entry Field").unwrap();
+        opaque
+            .ensure(&[&[NAMES], &key])
+            .children
+            .push(OwnedNode::leaf([9], [1]));
+        let mut renamed = stored.clone();
+        renamed.scripts[1].name = "Other".into();
+        let mut deleted = stored.clone();
+        deleted.scripts.remove(1);
+        for requested in [&renamed, &deleted] {
+            let error = refused(&opaque, &stored, &definitions, requested);
+            assert!(error.contains("cannot read"), "{error}");
+        }
+        // A member listed under another key than the one OpenMaker
+        // computes for its name: the two disagree, so no new key is added.
+        let mut moved = index.clone();
+        let tasks = listed_key("Tasks").unwrap();
+        moved
+            .ensure(&[&[NAMES]])
+            .children
+            .retain(|e| e.segment != tasks);
+        moved.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
+            listed_key("Taskz").unwrap(),
+            key_string(&[1]),
+        ));
+        let error = refused(&moved, &stored, &definitions, &with_new(&stored));
+        assert!(error.contains("does not compute"), "{error}");
+        // No member decoded, no last issued id, and a cache entry left for
+        // id 1: not an empty catalog, so the first script does not take 1.
+        let orphan = OwnedNode::list(
+            vec![1],
+            vec![OwnedNode::list(
+                vec![CACHE],
+                vec![OwnedNode::list(
+                    vec![1],
+                    vec![
+                        om_scripts::text_node(&[NAME], "Gone"),
+                        OwnedNode::leaf([MEMBER_FLAGS], [0, 0, 0, 0, 0, 0, 0, 8]),
+                        OwnedNode::leaf([0x55], [1, 2, 3]),
+                    ],
+                )],
+            )],
+        );
+        let empty = ScriptCatalog::default();
+        let error = refused(&orphan, &empty, &BTreeMap::new(), &with_new(&empty));
+        assert!(error.contains("does not define"), "{error}");
     }
 }

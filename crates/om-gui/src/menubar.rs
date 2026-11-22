@@ -9,7 +9,7 @@
 use egui::{Key, KeyboardShortcut, Modifiers, Ui};
 use om_data::scripts::save_records::Format as SaveFormat;
 
-use crate::app::{shortcuts, steps, Action, FindState, Mode, ViewMode};
+use crate::app::{shortcuts, steps, Action, EditCommand, FindState, Mode, ViewMode};
 use crate::session::Session;
 use crate::theme;
 use crate::widgets::{menu_item, menu_separator, submenu};
@@ -19,6 +19,8 @@ pub(crate) struct MenuContext<'a> {
     pub mode: Mode,
     pub view: ViewMode,
     pub zoom: u16,
+    /// View's zoom commands can change it (`OpenMakerApp::zooms`).
+    pub zooms: bool,
     pub session: Option<&'a Session>,
     pub find: &'a FindState,
     pub toolbar: bool,
@@ -42,6 +44,12 @@ pub(crate) struct MenuContext<'a> {
     /// Records > Revert Record... (Browse) or Requests > Revert Request...
     /// (Find) can run (`om_data::scripts::revert_record::available`).
     pub revert_record: bool,
+    /// Records > Relookup Field Contents can run: a field of the
+    /// record's own table is entered in Browse mode on a record with
+    /// nothing to commit, no script running or paused and no edit being
+    /// prepared (`om_data::scripts::relookup::available`). A related field
+    /// leaves it off: the step does not look up through one (3).
+    pub relookup: bool,
     /// The account may change the file's design: File > Manage's dialogs,
     /// Layout mode and Script Workspace (`App::design_allowed`).
     pub design: bool,
@@ -60,6 +68,21 @@ pub(crate) struct MenuContext<'a> {
     pub container: bool,
     /// ...and the record may be changed: Insert's Picture and File.
     pub container_insert: bool,
+    /// The selection is optimized for interactive content outside portal rows.
+    pub container_interactive: bool,
+    /// A text field is entered for typing (Browse mode, no script
+    /// running): Edit's Cut, Copy and Paste, and Insert's Current Date,
+    /// Current Time, Current User Name, From Index and From Last Visited
+    /// Record.
+    pub text_field: bool,
+    /// ...and it is one of the current record's own fields, not a portal
+    /// row's or a related field: Edit's Undo, Redo, Clear and Select All.
+    pub own_field: bool,
+    /// Edit > Undo and Redo have something to do in that field.
+    pub field_undo: (bool, bool),
+    /// A record is shown in Browse with no field entered: Edit > Copy
+    /// copies the record (Copy Record/Request).
+    pub record_copy: bool,
     pub client_license: bool,
     /// Layout mode has a field placed with the Field tool and not yet
     /// saved (Save Layout, Revert Layout).
@@ -189,11 +212,15 @@ fn pending_submenu(rows: &mut dyn MenuRows, label: &str) {
     rows.submenu(label, false, &mut |_| {});
 }
 
-pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
+/// Draw the menu bar. Returns whether this frame's pointer is on the bar or
+/// on one of its open menus, where a click leaves the active field entered
+/// (`OpenMakerApp::draw_window_with`).
+pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>) -> bool {
+    let mut open = false;
     let frame = egui::Frame::new()
         .fill(theme::TOOLBAR_BG)
         .inner_margin(egui::Margin::symmetric(6, 0));
-    egui::Panel::top("menubar")
+    let bar = egui::Panel::top("menubar")
         .frame(frame)
         .exact_size(theme::MENU_BAR_HEIGHT)
         .show_separator_line(false)
@@ -209,46 +236,70 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
                 .style(theme::menu_bar_style)
                 .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
                 .ui(ui, |ui| {
-                    ui.menu_button(
-                        egui::RichText::new(crate::APP_TITLE)
-                            .font(egui::FontId::new(theme::BODY, theme::semibold())),
-                        |ui| app_menu(&mut Drawn(ui), context, actions),
-                    );
+                    open |= ui
+                        .menu_button(
+                            egui::RichText::new(crate::APP_TITLE)
+                                .font(egui::FontId::new(theme::BODY, theme::semibold())),
+                            |ui| app_menu(&mut Drawn(ui), context, actions),
+                        )
+                        .inner
+                        .is_some();
                     // Under Editing only or Minimum menus (session-identity.md
                     // 2.3) each menu gates its own items, so that a row's
                     // look and its click agree: a whole menu disabled at
                     // its start drew some rows as enabled.
-                    ui.menu_button("File", |ui| file_menu(&mut Drawn(ui), context, actions));
-                    ui.menu_button("Edit", |ui| edit_menu(&mut Drawn(ui), context, actions));
-                    ui.menu_button("View", |ui| view_menu(&mut Drawn(ui), context, actions));
-                    ui.menu_button("Insert", |ui| insert_menu(&mut Drawn(ui), context, actions));
-                    ui.menu_button("Format", |ui| format_menu(&mut Drawn(ui)));
+                    let mut menu =
+                        |ui: &mut Ui, title: &str, add: &mut dyn FnMut(&mut dyn MenuRows)| {
+                            open |= ui
+                                .menu_button(title, |ui| add(&mut Drawn(ui)))
+                                .inner
+                                .is_some();
+                        };
+                    menu(ui, "File", &mut |rows| file_menu(rows, context, actions));
+                    menu(ui, "Edit", &mut |rows| edit_menu(rows, context, actions));
+                    menu(ui, "View", &mut |rows| view_menu(rows, context, actions));
+                    menu(ui, "Insert", &mut |rows| {
+                        insert_menu(rows, context, actions)
+                    });
+                    menu(ui, "Format", &mut |rows| format_menu(rows));
                     match context.mode {
                         Mode::Browse | Mode::Preview => {
-                            ui.menu_button("Records", |ui| {
-                                records_menu(&mut Drawn(ui), context, actions)
+                            menu(ui, "Records", &mut |rows| {
+                                records_menu(rows, context, actions)
                             });
                         }
                         Mode::Find => {
-                            ui.menu_button("Requests", |ui| {
-                                requests_menu(&mut Drawn(ui), context, actions)
+                            menu(ui, "Requests", &mut |rows| {
+                                requests_menu(rows, context, actions)
                             });
                         }
                         Mode::Layout => {
-                            ui.menu_button("Layouts", |ui| {
-                                layouts_menu(&mut Drawn(ui), context, actions)
+                            menu(ui, "Layouts", &mut |rows| {
+                                layouts_menu(rows, context, actions)
                             });
-                            ui.menu_button("Arrange", |ui| arrange_menu(&mut Drawn(ui)));
+                            menu(ui, "Arrange", &mut |rows| arrange_menu(rows));
                         }
                     }
-                    ui.menu_button("Scripts", |ui| {
-                        scripts_menu(&mut Drawn(ui), context, actions)
+                    menu(ui, "Scripts", &mut |rows| {
+                        scripts_menu(rows, context, actions)
                     });
-                    ui.menu_button("Tools", |ui| tools_menu(&mut Drawn(ui)));
-                    ui.menu_button("Window", |ui| window_menu(&mut Drawn(ui), context, actions));
-                    ui.menu_button("Help", |ui| help_menu(&mut Drawn(ui)));
+                    menu(ui, "Tools", &mut |rows| tools_menu(rows));
+                    menu(ui, "Window", &mut |rows| {
+                        window_menu(rows, context, actions)
+                    });
+                    menu(ui, "Help", &mut |rows| help_menu(rows));
                 });
         });
+    // The bar, or an open menu's popup (menus are foreground areas over the
+    // window, their submenus too).
+    let ctx = ui.ctx();
+    ctx.pointer_interact_pos().is_some_and(|pos| {
+        bar.response.rect.contains(pos)
+            || (open
+                && ctx
+                    .layer_id_at(pos)
+                    .is_some_and(|layer| layer.order == egui::Order::Foreground))
+    })
 }
 
 fn app_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
@@ -402,24 +453,59 @@ pub(crate) fn manage_items(rows: &mut dyn MenuRows, design: bool, actions: &mut 
 }
 
 fn edit_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
-    pending(rows, "Can't Undo", command(CMD, Key::Z));
-    pending(rows, "Can't Redo", command(SHIFT_CMD, Key::Z));
-    rows.separator();
-    pending(rows, "Cut", command(CMD, Key::X));
-    pending(rows, "Copy", command(CMD, Key::C));
-    pending(rows, "Paste", command(CMD, Key::V));
-    pending(rows, "Paste Text Only", command(ALT_SHIFT_CMD, Key::V));
-    // Layout mode: delete the selected object, as Delete does.
-    if rows.item(
-        "Clear",
-        None,
-        false,
-        context.layout_delete && context.full_menus(),
-    ) {
-        actions.push(Action::DeleteLayoutObject);
+    // The field the user is typing in: its editor's own commands, which
+    // its keys also run (a click on the menus leaves it entered). That
+    // Editing only keeps them, as it keeps the editors' keys, is inferred.
+    let text = context.text_field && context.editing();
+    // Undo, Redo, Clear and Select All change the record's own field's
+    // text here; a portal row's editor takes only its keys.
+    let own = text && context.own_field;
+    let (undo, redo) = context.field_undo;
+    let (undo, redo) = (own && undo, own && redo);
+    let undo_label = if undo { "Undo" } else { "Can't Undo" };
+    if rows.item(undo_label, command(CMD, Key::Z), false, undo) {
+        actions.push(Action::EditField(EditCommand::Undo));
+    }
+    let redo_label = if redo { "Redo" } else { "Can't Redo" };
+    if rows.item(redo_label, command(SHIFT_CMD, Key::Z), false, redo) {
+        actions.push(Action::EditField(EditCommand::Redo));
     }
     rows.separator();
-    pending(rows, "Select All", command(CMD, Key::A));
+    if rows.item("Cut", command(CMD, Key::X), false, text) {
+        actions.push(Action::EditField(EditCommand::Cut));
+    }
+    // With no field entered, Copy copies the record (Copy Record/Request).
+    let record_copy = context.record_copy && context.editing();
+    if rows.item("Copy", command(CMD, Key::C), false, text || record_copy) {
+        actions.push(if text {
+            Action::EditField(EditCommand::Copy)
+        } else {
+            Action::Step(steps::COPY_RECORD, 0)
+        });
+    }
+    // The editors paste text only: Paste Text Only pastes as Paste does.
+    for (label, shortcut) in [
+        ("Paste", command(CMD, Key::V)),
+        ("Paste Text Only", command(ALT_SHIFT_CMD, Key::V)),
+    ] {
+        if rows.item(label, shortcut, false, text) {
+            actions.push(Action::EditField(EditCommand::Paste));
+        }
+    }
+    // A field's selection, or in Layout mode the selected object, as
+    // Delete deletes them.
+    let layout_clear = context.layout_delete && context.full_menus();
+    if rows.item("Clear", None, false, own || layout_clear) {
+        actions.push(if own {
+            Action::EditField(EditCommand::Clear)
+        } else {
+            Action::DeleteLayoutObject
+        });
+    }
+    rows.separator();
+    if rows.item("Select All", command(CMD, Key::A), false, own) {
+        actions.push(Action::EditField(EditCommand::SelectAll));
+    }
     rows.separator();
     pending_submenu(rows, "Find/Replace");
     pending_submenu(rows, "Spelling");
@@ -498,11 +584,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     pending(rows, "Ruler", None);
     rows.separator();
-    let zoom_enabled = context
-        .session
-        .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
-        && ((context.mode == Mode::Browse && context.view == ViewMode::Form)
-            || context.mode == Mode::Preview);
+    let zoom_enabled = context.zooms;
     if rows.item(
         "Actual Size",
         None,
@@ -529,29 +611,74 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
 }
 
-/// Picture and File insert into the selected container field (the
-/// script steps without a path, which ask for the file). Audio/Video and
-/// PDF stay disabled: OpenMaker plays no media and shows no PDF, and how
-/// FileMaker Pro stores what those commands insert is not measured.
+/// Picture, Audio/Video, PDF and File insert into the selected container
+/// field: the script steps without a path, which ask for the file and store
+/// it as the steps with a path do, typed by its name (what FileMaker Pro
+/// stores for each is not measured, containers.md "Desktop menus and file
+/// dialogs").
 fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     // Editing only and Minimum leave both out (FileMaker Pro 26.0.3,
     // #651's reading).
     let insert = context.container_insert && context.full_menus();
-    if rows.item("Picture...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_PICTURE, 0));
-    }
-    pending(rows, "Audio/Video...", None);
-    pending(rows, "PDF...", None);
-    if rows.item("File...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_FILE, 0));
+    let insert_interactive = insert && context.container_interactive;
+    for (label, step, enabled) in [
+        ("Picture...", steps::INSERT_PICTURE, insert),
+        (
+            "Audio/Video...",
+            steps::INSERT_AUDIO_VIDEO,
+            insert_interactive,
+        ),
+        ("PDF...", steps::INSERT_PDF, insert_interactive),
+        ("File...", steps::INSERT_FILE, insert),
+    ] {
+        if rows.item(label, None, false, enabled) {
+            actions.push(Action::Step(step, 0));
+        }
     }
     rows.separator();
-    pending(rows, "Current Date", command(CMD, Key::Minus));
-    pending(rows, "Current Time", command(CMD, Key::Semicolon));
-    pending(rows, "Current User Name", command(SHIFT_CMD, Key::N));
+    // The field's steps (script-steps.md: 13, 14, 60, 11, 12), on the field
+    // entered: inserted at its insertion point, replacing its selection.
+    // That Editing only keeps them, as it keeps Export Field Contents, is
+    // inferred.
+    let text = context.text_field && context.editing();
+    for (label, shortcut, step) in [
+        (
+            "Current Date",
+            command(CMD, Key::Minus),
+            steps::INSERT_CURRENT_DATE,
+        ),
+        (
+            "Current Time",
+            command(CMD, Key::Semicolon),
+            steps::INSERT_CURRENT_TIME,
+        ),
+        (
+            "Current User Name",
+            command(SHIFT_CMD, Key::N),
+            steps::INSERT_CURRENT_USER_NAME,
+        ),
+    ] {
+        if rows.item(label, shortcut, false, text) {
+            actions.push(Action::Step(step, 0));
+        }
+    }
     rows.separator();
-    pending(rows, "From Index...", command(CMD, Key::I));
-    pending(rows, "From Last Visited Record", command(CMD, Key::Quote));
+    for (label, shortcut, step) in [
+        (
+            "From Index...",
+            command(CMD, Key::I),
+            steps::INSERT_FROM_INDEX,
+        ),
+        (
+            "From Last Visited Record",
+            command(CMD, Key::Quote),
+            steps::INSERT_FROM_LAST_VISITED,
+        ),
+    ] {
+        if rows.item(label, shortcut, false, text) {
+            actions.push(Action::Step(step, 0));
+        }
+    }
 }
 
 fn format_menu(rows: &mut dyn MenuRows) {
@@ -673,7 +800,14 @@ fn records_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     }
     rows.separator();
     pending(rows, "Replace Field Contents...", command(CMD, Key::Equals));
-    pending(rows, "Relookup Field Contents", None);
+    // Relookup Field Contents (40) with its dialog, on the field entered,
+    // as a script runs it (`om_data::scripts::relookup`). Under Editing
+    // only and Minimum it stays off, as Sort Records and Revert Record do
+    // there [I].
+    let [_, label] = om_data::scripts::relookup::MENU_PATH;
+    if rows.item(label, None, false, context.relookup && context.full_menus()) {
+        actions.push(Action::Step(om_data::scripts::relookup::STEP_ID, 0));
+    }
     rows.separator();
     // Revert Record/Request (51) with its dialog, as a script runs it
     // (`om_data::scripts::revert_record`). Under Editing only and Minimum
