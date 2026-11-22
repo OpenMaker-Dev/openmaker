@@ -901,8 +901,31 @@ the custom order's pop-up has no Manage Value Lists.... Related fields'
 place in Current Layout's alphabetical list (sorted here by their
 `Table::Field` text), the button order, Sort disabled for an empty
 order, and a script's step succeeding after Unsort are OpenMaker's
-readings, not compared with FileMaker Pro. A field of another table can be
-chosen, but sorting by it fails ([#47](https://github.com/OpenMaker-Dev/openmaker/issues/47)). A sort made from field names
+readings, not compared with FileMaker Pro. A field of another occurrence
+of this file's tables, a self join's included, sorts each record by its
+first related record's value, as Claris documents ("the value in the
+first matching record"), read as `Rel::field` reads it: without a
+relationship sort, the related record first in creation order
+(calc-values.md 12.1); a calculation reads with the parent record as
+its context. Numbers, dates and times compare by value. Custom value
+lists rank by the original text, including a stored date's padding and
+separators. FileMaker's related sort and a sorted relationship's first
+record are not measured. Fail with 3:
+- a related field of an imported table, or of an unrelated occurrence;
+- a related summary or container field, or a later repetition;
+- a summary's reordering by a related field, and a summary of another
+  occurrence;
+- a path through a relationship that sorts by an unstored calculation or a
+  summary, which OpenMaker's relationship sort reads as empty;
+- any relationship path read by the sort, including by a calculation, that
+  uses a Cartesian predicate or an unstored match field;
+- a value that could not be computed (`?`, or a related file that did not
+  open);
+- more than 8,388,608 record IDs retained across related results and index
+  lookup candidates, OpenMaker's limit per sort pass.
+
+A local file reopened with such a sort reopens unsorted
+([#47](https://github.com/OpenMaker-Dev/openmaker/issues/47)). A sort made from field names
 (Sort Records by Field) comes back without a value list or summary
 reordering, and a local file reopened sorted shows an empty order: the
 order it saved (`0a`, file-metadata.md 11) is not read into the dialog. On

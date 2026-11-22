@@ -806,6 +806,18 @@ pub fn sort_rows_with_date_order(
     sort: &[SortField],
     date_order: DateOrder,
 ) {
+    sort_rows_with_rank_text(fields, rows, sort, date_order, |_, _| None);
+}
+
+/// Sort normalized values, optionally using their original text for custom
+/// value-list ranks. `rank_text` receives the record ID and field index.
+pub fn sort_rows_with_rank_text<'a>(
+    fields: &[Field],
+    rows: &mut [&Record],
+    sort: &[SortField],
+    date_order: DateOrder,
+    rank_text: impl Fn(i64, usize) -> Option<&'a str>,
+) {
     if rows.len() < 2 {
         return;
     }
@@ -842,7 +854,8 @@ pub fn sort_rows_with_date_order(
                 .map(|(level, &(index, kind, field))| {
                     let value = cell(row, index);
                     let rank = ranks[level].as_ref().and_then(|ranks| {
-                        let key = om_collate::text_key(value.trim());
+                        let text = rank_text(row.id, index).unwrap_or(value);
+                        let key = om_collate::text_key(text.trim());
                         ranks.get(&key).copied()
                     });
                     LevelKey {

@@ -241,11 +241,20 @@ pub(crate) struct Committed {
 const ONE: u32 = 1;
 
 /// A table's last sort order in a window: by names, and the stored order it
-/// came from with the table it sorted (`Window::last_sort_spec`).
-type TableSort = (
-    Vec<SortField>,
-    Option<(Option<u64>, om_data::specs::SortSpec)>,
-);
+/// came from (`Window::last_sort_spec`).
+type TableSort = (Vec<SortField>, Option<LastSortSpec>);
+
+/// A stored sort order as last accepted ([`Window::last_sort_spec`]).
+#[derive(Clone)]
+pub(crate) struct LastSortSpec {
+    /// The base table it sorted.
+    pub table: Option<u64>,
+    /// The layout occurrence it was accepted on. Its keys of that
+    /// occurrence are the layout's own fields on any layout of the table;
+    /// a key of another occurrence, a self join's included, stays related.
+    pub occurrence: Option<u64>,
+    pub spec: om_data::specs::SortSpec,
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct Window {
@@ -289,7 +298,7 @@ pub(crate) struct Window {
     /// or dialog) and the base table it sorted, which the Sort Records
     /// dialog shows again on that table; `None` after a sort from names
     /// (Sort Records by Field).
-    pub last_sort_spec: Option<(Option<u64>, om_data::specs::SortSpec)>,
+    pub last_sort_spec: Option<LastSortSpec>,
     /// `last_sort` and `last_sort_spec` of the other tables the window
     /// showed: FileMaker Pro keeps the last sort order per table in a
     /// window (26.0.3, the Tasks starter, #840's reading).
