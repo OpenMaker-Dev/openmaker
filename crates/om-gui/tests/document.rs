@@ -912,8 +912,8 @@ fn the_insert_menu_puts_its_text_at_the_insertion_point() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
-/// An Insert shortcut that shares a frame with Tab cannot run in the
-/// field Tab enters. Command-minus was claimed by Insert in this frame.
+/// An Insert shortcut that shares a frame with Tab leaves both fields
+/// alone. Command-minus still belongs to Insert in that frame.
 #[test]
 fn current_date_shortcut_does_not_follow_tab_to_another_field() {
     let mut provider = DocumentProvider::new(false);
@@ -924,6 +924,7 @@ fn current_date_shortcut_does_not_follow_tab_to_another_field() {
     assert!(common::text_field(&app, "Given").is_focused());
     let given = common::text_field(&app, "Given").value();
     let family = common::text_field(&app, "Family").value();
+    let given_width = common::text_field(&app, "Given").rect().width();
 
     let key = |key, modifiers| egui::Event::Key {
         key,
@@ -932,17 +933,31 @@ fn current_date_shortcut_does_not_follow_tab_to_another_field() {
         repeat: false,
         modifiers,
     };
-    app.input_mut().events.extend([
-        key(egui::Key::Minus, egui::Modifiers::COMMAND),
-        key(egui::Key::Tab, egui::Modifiers::NONE),
-    ]);
-    app.run_steps(3);
-    common::wait_until(&mut app, "the Tab and shortcut", |app| {
-        app.state().is_settled()
+    let date = key(egui::Key::Minus, egui::Modifiers::COMMAND);
+    let tab = key(egui::Key::Tab, egui::Modifiers::NONE);
+    for events in [[date.clone(), tab.clone()], [tab, date.clone()]] {
+        common::text_field(&app, "Given").focus();
+        app.run_steps(2);
+        app.input_mut().events.extend(events);
+        app.run_steps(3);
+        common::wait_until(&mut app, "the Tab and shortcut", |app| {
+            app.state().is_settled()
+        });
+        assert!(common::text_field(&app, "Family").is_focused());
+        assert_eq!(common::text_field(&app, "Given").value(), given);
+        assert_eq!(common::text_field(&app, "Family").value(), family);
+        assert_eq!(
+            common::text_field(&app, "Given").rect().width(),
+            given_width
+        );
+    }
+
+    app.event(date);
+    common::wait_until(&mut app, "the date in Family", |app| {
+        common::text_field(app, "Family").value() != family
     });
     assert!(common::text_field(&app, "Family").is_focused());
     assert_eq!(common::text_field(&app, "Given").value(), given);
-    assert_eq!(common::text_field(&app, "Family").value(), family);
 }
 
 /// Edit > Select All, Clear and Undo act on the field being typed in,

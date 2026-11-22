@@ -3098,6 +3098,12 @@ impl OpenMakerApp {
         // (`document::return_goes_on`).
         let enter_goes_next =
             enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_enter);
+        let return_goes_next = field.is_some_and(om_layout::FieldObject::next_object_on_return);
+        let traverses_fields = |event: &egui::Event| {
+            crate::document::tab_key(event).is_some()
+                || (enter_goes_next && crate::keypad::is_enter_press(event))
+                || (return_goes_next && crate::keypad::is_return_press(event))
+        };
         // A commit key that came after typing in the same frame waited for
         // this one: the editor has applied the typing (below). It goes back
         // only in the next frame, and only to the file, mode, layout, record
@@ -3185,6 +3191,13 @@ impl OpenMakerApp {
                 actions.push(Action::DeleteLayoutObject);
             }
             if let Some(target) = field_target.as_ref().filter(|_| inserts) {
+                // The document may move focus in a later pass (including
+                // when a keystroke trigger still has to decide the key).
+                // Refuse the insert on either side of that key in this
+                // batch, but still consume its shortcut before Zoom Out.
+                let traversing = self.w.document.tab_in_progress()
+                    || input.events.iter().any(traverses_fields)
+                    || self.has_queued_keystroke(traverses_fields);
                 // Before New Record: egui's match of Command-N ignores Shift.
                 for (modifiers, key, step) in [
                     (Modifiers::COMMAND, Key::Minus, steps::INSERT_CURRENT_DATE),
@@ -3205,7 +3218,8 @@ impl OpenMakerApp {
                         steps::INSERT_FROM_LAST_VISITED,
                     ),
                 ] {
-                    if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
+                    if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) && !traversing
+                    {
                         actions.push(Action::FieldMenuStep(step, 0, Box::new(target.clone())));
                     }
                 }

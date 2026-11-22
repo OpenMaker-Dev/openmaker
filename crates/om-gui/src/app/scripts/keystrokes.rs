@@ -401,6 +401,16 @@ impl OpenMakerApp {
             || self.script.resumes.iter().any(|(w, h, ..)| key(*w, h))
     }
 
+    /// A key taken by the trigger gate is no longer in this pass's input.
+    pub(in crate::app) fn has_queued_keystroke(&self, matches: impl Fn(&Event) -> bool) -> bool {
+        let keys = &self.w.keys;
+        keys.ahead.iter().any(|(_, _, key)| matches(&key.event))
+            || keys
+                .approved
+                .as_ref()
+                .is_some_and(|held| matches(&held.key.event))
+    }
+
     /// Something other than the document has the keyboard: a dialog, an
     /// alert, a menu or popup; or the record is being saved. The open list
     /// of the drop-down list being edited is not elsewhere: its editor

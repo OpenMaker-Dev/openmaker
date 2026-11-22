@@ -1356,6 +1356,10 @@ impl DocumentState {
         ui.ctx().request_repaint();
     }
 
+    pub(crate) fn tab_in_progress(&self) -> bool {
+        self.tab_held.is_some() || self.tab_goal.is_some()
+    }
+
     /// The second frame of [`Self::resolve_tab`]: `from`, the stop that had
     /// the focus when Tab was pressed, gives it to the next stop of those
     /// the last frame painted.
@@ -7327,7 +7331,7 @@ fn return_goes_on(
     ui.ctx().request_repaint();
 }
 
-fn tab_key(event: &egui::Event) -> Option<bool> {
+pub(crate) fn tab_key(event: &egui::Event) -> Option<bool> {
     match event {
         egui::Event::Key {
             key: egui::Key::Tab,

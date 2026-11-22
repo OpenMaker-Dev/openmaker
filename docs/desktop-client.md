@@ -1247,7 +1247,9 @@ Limits:
 - While edit preparation holds a menu command's field exit, later menu
   choices are ignored. File > Close can still cancel the pending edit.
 - An Insert shortcut typed in the same frame as other keys runs its step
-  after the editor took those keys.
+  after the editor took those keys. If field traversal is pending or its
+  key shares the frame, the Insert shortcut is dropped. Command-minus
+  still belongs to Insert while the field is entered.
 - ⌘- inserts the date while a field is entered and zooms out otherwise;
   FileMaker Pro's own shortcut for Zoom Out is unmeasured.
 
