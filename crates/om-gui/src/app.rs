@@ -3785,7 +3785,10 @@ impl OpenMakerApp {
                 }
             }
             Action::ManageLicense => {
-                if self.client_license && self.status == ConnectStatus::Idle {
+                if self.client_license
+                    && self.status == ConnectStatus::Idle
+                    && self.license_dialog.is_none()
+                {
                     self.license_dialog = Some(LicenseDialog::default());
                     self.license_request(ctx, LicenseOperation::Status);
                 }
@@ -7154,23 +7157,16 @@ mod tests {
             .unwrap();
         app.with_window(3, |app| app.apply(&ctx, Action::ManageLicense))
             .unwrap();
-        let first = jobs.try_recv().unwrap();
-        let current = jobs.try_recv().unwrap();
-        assert_eq!((first.window, current.window), (2, 3));
-        let Request::License { id, .. } = &current.request else {
+        let status = jobs.try_recv().unwrap();
+        assert_eq!(status.window, 2);
+        assert!(jobs.try_recv().is_err(), "one dialog requests status once");
+        let Request::License { id, .. } = &status.request else {
             panic!("expected a license job");
         };
-        let (status_id, status_epoch) = (*id, current.epoch);
-        app.remove_window(first.window);
-        scripts.handle(&mut io, first);
-        app.poll_worker(&ctx);
-        let dialog = app.license_dialog.as_ref().unwrap();
-        assert!(dialog.pending());
-        assert_eq!(dialog.stored, None);
-
-        app.remove_window(current.window);
+        let (status_id, status_epoch, status_window) = (*id, status.epoch, status.window);
+        app.remove_window(status.window);
         app.epoch += 1;
-        scripts.handle(&mut io, current);
+        scripts.handle(&mut io, status);
         app.poll_worker(&ctx);
         let dialog = app.license_dialog.as_mut().unwrap();
         assert!(!dialog.pending());
@@ -7179,11 +7175,18 @@ mod tests {
         dialog.input.push_str(draft);
         app.license_request(&ctx, LicenseOperation::Save(LicenseKey::new(draft.into())));
 
+        // Opening the same app-wide dialog from another window leaves
+        // the write and its draft in place.
+        app.with_window(3, |app| app.apply(&ctx, Action::ManageLicense))
+            .unwrap();
+        let save = jobs.try_recv().unwrap();
+        assert!(jobs.try_recv().is_err(), "reentry does not request status");
+
         // Even a successful status reply cannot settle a later write.
         replies
             .send(worker::Response {
                 epoch: status_epoch,
-                window: 3,
+                window: status_window,
                 reply: Reply::License {
                     id: status_id,
                     result: Ok(true),
@@ -7195,7 +7198,7 @@ mod tests {
         assert!(dialog.pending());
         assert_eq!(dialog.input.as_str(), draft);
 
-        scripts.handle(&mut io, jobs.try_recv().unwrap());
+        scripts.handle(&mut io, save);
         app.poll_worker(&ctx);
         let dialog = app.license_dialog.as_ref().unwrap();
         assert!(!dialog.pending());
