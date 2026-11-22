@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use om_calc::eval::{CalcHost, Context};
+use om_calc::eval::{CalcHost, Context, Variables};
 use om_calc::Value;
 use om_hbam::OwnedNode;
 
@@ -838,6 +838,19 @@ pub trait ScriptHost:
         Ok(())
     }
 
+    /// [`Self::trigger_action`] with the running script's variables, which
+    /// the runtime calls instead, as it calls [`Self::other_step_with`]: a
+    /// step a trigger held (Print, for an OnRecordCommit trigger) runs its
+    /// action here when the trigger lets the event happen. The default
+    /// does not use them.
+    fn trigger_action_with(
+        &mut self,
+        action: &TriggerAction,
+        _variables: StepVariables<'_>,
+    ) -> HostResult {
+        self.trigger_action(action)
+    }
+
     /// Show the error alert of a client with error capture off. The
     /// default, a host without a user interface, continues.
     fn error_alert(&mut self, _alert: &ErrorAlert) -> AlertChoice {
@@ -872,6 +885,29 @@ pub trait ScriptHost:
     fn other_step(&mut self, _call: &StepCall<'_>) -> HostResult<Option<Value>> {
         Err(HostError::Unsupported)
     }
+
+    /// [`Self::other_step`] with the running script's variables, which
+    /// the runtime calls instead: for a host whose step evaluates
+    /// calculations of its own, such as the fields and merge variables of
+    /// a report it prints, so that they read and set the script's
+    /// variables as the step's own calculations do. The default does not
+    /// use them.
+    fn other_step_with(
+        &mut self,
+        call: &StepCall<'_>,
+        _variables: StepVariables<'_>,
+    ) -> HostResult<Option<Value>> {
+        self.other_step(call)
+    }
+}
+
+/// The running script's variables, lent to the host for one step
+/// ([`ScriptHost::other_step_with`]).
+pub struct StepVariables<'a> {
+    /// The `$` variables of the running script.
+    pub locals: &'a mut Variables,
+    /// The `$$` variables of the running script's file.
+    pub globals: &'a mut Variables,
 }
 
 /// Install OnTimer Script's timer.

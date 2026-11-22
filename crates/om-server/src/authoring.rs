@@ -644,7 +644,7 @@ fn replace_script_steps(
 /// answer whether the disk holds them all: a failed save keeps them in
 /// memory, for the next save.
 fn save(peer: &str, file: &Hosted) -> Reply {
-    if file.read_only {
+    if file.is_read_only() {
         return refused(
             status::UNSUPPORTED,
             "The file is open read-only: nothing is written to it.",
@@ -863,7 +863,7 @@ fn create_layout(
     account: &str,
     request: &CreateLayout,
 ) -> Reply {
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             "The file is open read-only; no layout was added.",
@@ -1392,7 +1392,7 @@ where
     P: Fn(&OwnedNode, &Store) -> Result<layout_objects::Planned, Reply>,
 {
     let id = edit.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return Err(refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -1484,7 +1484,7 @@ fn layout_setup(
     request: &LayoutSetup,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -1610,7 +1610,7 @@ fn value_list_values(
 ) -> Reply {
     use om_data::value_lists::{self, ValuesRefusal};
     let id = request.list;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; value list {id} is unchanged."),
@@ -1748,7 +1748,7 @@ fn place_field(
     request: &PlaceField,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -1936,7 +1936,7 @@ fn duplicate_layout(
     account: &str,
     request: &DuplicateLayout,
 ) -> Reply {
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             "The file is open read-only; no layout was added.",
@@ -2153,7 +2153,7 @@ fn delete_layout(
     request: &DeleteLayout,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is kept."),
@@ -2315,7 +2315,7 @@ fn place_text(
     request: &PlaceText,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2480,7 +2480,7 @@ fn place_portal(
     request: &PlacePortal,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2666,7 +2666,7 @@ fn place_button(
     request: &PlaceButton,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2732,7 +2732,7 @@ fn place_button_step(
     request: &PlaceButtonStep,
 ) -> Reply {
     let id = request.layout;
-    if hosted.read_only {
+    if hosted.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),

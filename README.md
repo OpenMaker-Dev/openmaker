@@ -40,6 +40,10 @@ OpenMaker Server and open it from the client, follow
 [Hosting a file and opening it](docs/development.md#hosting-a-file-and-opening-it). Requirements, environment
 variables, tests and tools: [docs/development.md](docs/development.md).
 
+To work on a hosted FileMaker solution with a coding agent, follow the
+[agent authoring quickstart](docs/authoring.md#quickstart) to set up `om-author`
+and register its MCP server.
+
 ## Clean-room provenance
 
 OpenMaker is implemented only from written specifications of FileMaker's

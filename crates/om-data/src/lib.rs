@@ -539,6 +539,35 @@ impl fmt::Debug for LocalFile {
     }
 }
 
+/// What Save a Copy as writes (script-steps.md: step 37's value; Claris
+/// Help, "Saving and copying files").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyKind {
+    /// 1, "copy of current file": the file as it is.
+    Copy,
+    /// 2, "compacted copy (smaller)": the file rewritten without its free
+    /// space.
+    Compacted,
+    /// 3, "clone (no records)": the schema, layouts and scripts, no data.
+    Clone,
+    /// 4, "self-contained copy (single file)": container data stored
+    /// outside the file or by reference embedded in it.
+    SelfContained,
+}
+
+impl CopyKind {
+    /// The kind a Save a Copy as step's value names.
+    pub fn of_step(value: u16) -> Option<CopyKind> {
+        match value {
+            1 => Some(CopyKind::Copy),
+            2 => Some(CopyKind::Compacted),
+            3 => Some(CopyKind::Clone),
+            4 => Some(CopyKind::SelfContained),
+            _ => None,
+        }
+    }
+}
+
 /// What [`DataProvider::open_local`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalOpen {
@@ -800,6 +829,9 @@ pub enum EditPreparation {
     /// existing behavior; a later upload must not invent a baseline.
     Unavailable,
 }
+
+/// A validated local copy operation. Dropping it leaves no copy behind.
+pub type PreparedCopy = Box<dyn FnOnce() -> Result<(), DataError>>;
 
 /// A source of FileMaker data for the GUI.
 ///
@@ -2403,6 +2435,26 @@ pub trait DataProvider: Send {
         Err(DataError::with_code(
             3,
             "This provider cannot change a password.",
+        ))
+    }
+
+    /// Save a Copy as (37): write a copy of the open file to a new path.
+    fn save_a_copy(&mut self, path: &std::path::Path, kind: CopyKind) -> Result<(), DataError> {
+        self.prepare_copy(path, kind)?()
+    }
+
+    /// Validate a copy destination before committing a record. Call the
+    /// returned operation to copy the then-current store. Error 3 denotes
+    /// an unsupported copy and 800 a creation failure, including an occupied
+    /// destination (local-files.md 4, "Save a Copy as").
+    fn prepare_copy(
+        &mut self,
+        _path: &std::path::Path,
+        _kind: CopyKind,
+    ) -> Result<PreparedCopy, DataError> {
+        Err(DataError::with_code(
+            3,
+            "This provider cannot save a copy of the file.",
         ))
     }
 

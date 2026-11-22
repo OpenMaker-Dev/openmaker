@@ -33,11 +33,14 @@ use std::sync::OnceLock;
 
 mod japanese;
 mod names;
+pub mod number_text;
 mod typed;
 
 pub use japanese::japanese_key;
 pub use names::{name_key, Levels, Unkeyed};
-pub use typed::{date_key, number_key, time_key, timestamp_key, DateOrder};
+pub use typed::{
+    date_key, number_key, number_key_in, time_key, timestamp_key, DateOrder, NumberFormat,
+};
 
 /// The first byte of every text key.
 pub const TEXT_KEY_PREFIX: u8 = 0x01;

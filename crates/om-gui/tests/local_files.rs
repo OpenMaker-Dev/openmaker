@@ -554,6 +554,124 @@ fn show(text: &str) -> om_scripts::ScriptStep {
     step
 }
 
+/// Save a Copy as [ `path` ; `kind` ] (37), the path a variable's.
+#[cfg(target_os = "linux")]
+fn save_a_copy(variable: &str, kind: u16) -> om_scripts::ScriptStep {
+    use om_scripts::{flag, StepData};
+    let mut step = om_scripts::ScriptStep::new(37);
+    step.value = kind;
+    step.flags |= flag::FILE_PATH;
+    step.set_data_leaf(
+        StepData::PATH_STRING,
+        Some(om_scripts::text_node(&[StepData::PATH_STRING], variable)),
+    );
+    step
+}
+
+/// Save a Copy as from a local file's script: a copy and a compacted copy
+/// of the file, each a file that opens, while a copy over an existing file
+/// fails with 800. A missing destination folder leaves the draft unsaved
+/// even with Create folders enabled. A clone stops the script.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_local_files_script_saves_copies_of_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let folder = Folder::new("save-copy");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let made = |name: &str| folder.0.join(format!("{name}.fmp12"));
+    let output = |name: &str| format!("\"file:{}\"", made(name).display());
+    let mut missing = save_a_copy("$missing", 1);
+    missing.flags |= om_scripts::flag::OPTION2; // Create folders
+    let mut clone = save_a_copy("$clone", 3);
+    clone.flags |= om_scripts::flag::OPTION2;
+    let scripts = [fixture::script(
+        1,
+        "Copy",
+        vec![
+            fixture::on(86, true), // Set Error Capture [ On ]
+            fixture::set_variable("$copy", &output("Copy")),
+            fixture::set_variable("$compacted", &output("Compacted")),
+            fixture::set_variable("$clone", &output("Clone/Clone")),
+            fixture::set_variable("$missing", &output("Missing/Copy")),
+            fixture::set_field(fixture::NAME, "\"pending\""),
+            fixture::set_variable("$e", "Get ( LastError )"),
+            missing,
+            show("$e & \",\" & Get ( LastError )"),
+            save_a_copy("$copy", 1),
+            fixture::set_variable("$e", "Get ( LastError )"),
+            save_a_copy("$compacted", 2),
+            fixture::set_variable("$e", "$e & \",\" & Get ( LastError )"),
+            save_a_copy("$copy", 2),
+            show("$e & \",\" & Get ( LastError )"),
+            clone,
+        ],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::write_tree(&folder.file(), &root);
+    let cert = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let host = om_server::LocalHost::open(&folder.file(), cert.cert.pem().as_bytes()).unwrap();
+    let can_publish = match host.prepare_copy(&made("Copy"), om_data::CopyKind::Copy) {
+        Ok(_) => true,
+        Err(err)
+            if err.kind() == std::io::ErrorKind::Unsupported
+                && err
+                    .to_string()
+                    .starts_with("copy destinations require ext2") =>
+        {
+            false
+        }
+        Err(err) => panic!("prepare copy: {err}"),
+    };
+    assert!(host.close());
+    let mut app = app();
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Open...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    let before = std::fs::read(folder.file()).unwrap();
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Copy");
+    common::wait_for_label(&mut app, "0,800");
+    assert_eq!(std::fs::read(folder.file()).unwrap(), before);
+    assert!(!folder.0.join("Missing").exists());
+    common::click(&mut app, "OK");
+    if !can_publish {
+        common::wait_until(&mut app, "unsupported copy to stop", |a| {
+            !a.state().script_running()
+        });
+        let stopped = app.state().error().unwrap_or_default();
+        assert!(
+            stopped.contains("Save a Copy as") && stopped.contains("not supported"),
+            "{stopped}"
+        );
+        assert!(!made("Copy").exists() && !made("Compacted").exists());
+        assert_eq!(std::fs::read(folder.file()).unwrap(), before);
+        return;
+    }
+    common::wait_for_label(&mut app, "0,0,800");
+    let decode = |name: &str| om_hbam::HbamFile::open(made(name)).map(|_| ());
+    let copies = [decode("Copy"), decode("Compacted")];
+    let copy_bytes = std::fs::read(made("Copy"));
+    assert!(copies.iter().all(Result::is_ok), "{copies:?}");
+    let saved = std::fs::read(folder.file()).unwrap();
+    assert_ne!(saved, before);
+    assert_eq!(saved, copy_bytes.unwrap());
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the script to stop", |a| {
+        !a.state().script_running()
+    });
+    let stopped = app.state().error().unwrap_or_default();
+    assert!(
+        stopped.contains("Save a Copy as") && stopped.contains("not supported"),
+        "{stopped}"
+    );
+    assert!(!folder.0.join("Clone").exists());
+}
+
 /// A local file opens on the found set and record FileMaker Pro saved for
 /// the layout's occurrence (file-metadata.md 11), and its OnFirstWindowOpen
 /// script runs there: the window is on the record before its triggers run.

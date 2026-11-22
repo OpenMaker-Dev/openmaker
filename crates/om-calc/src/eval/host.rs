@@ -127,6 +127,13 @@ pub struct CalcLimits {
     /// together: what the evaluator's stack grows with (about 5 KB a call
     /// and 8 KB an `Evaluate` in a release build). Tail calls do not nest.
     pub nesting: u32,
+    /// How many unstored calculations the evaluation may evaluate, nested
+    /// ones and each read again counted; past it the evaluation ends with
+    /// error 7. FileMaker evaluates an unstored calculation on every read
+    /// without such a limit; a host that must not stall on a file's
+    /// unstored calculations (a record write's formulas, which a loop or a
+    /// chain reading each step twice multiplies) sets one.
+    pub calculations: u64,
 }
 
 impl CalcLimits {
@@ -134,10 +141,12 @@ impl CalcLimits {
     /// whether a calculation reaches it unmeasured), and a nesting of
     /// 100,000, OpenMaker's own: FileMaker Server's engine was observed to
     /// recurse 60,000 calls deep, and how deep it nests `Evaluate` is
-    /// unmeasured (calc-values.md 8.5).
+    /// unmeasured (calc-values.md 8.5). Unstored calculations are not
+    /// limited.
     pub const DEFAULT: CalcLimits = CalcLimits {
         text: 2 << 30,
         nesting: 100_000,
+        calculations: u64::MAX,
     };
 
     /// The bytes of text `Evaluate`, `GetField` and `IsValidExpression`
@@ -296,6 +305,21 @@ pub trait CalcHost {
         _related: u64,
     ) -> Result<Vec<u64>, CalcError> {
         Err(CalcError::from_code(103).expect("nonzero"))
+    }
+
+    /// The related record a direct reference `Related::Field` reads from
+    /// record `record` of `occurrence`: the first related record
+    /// ([`Self::related_record`] 0). A host whose window has an active
+    /// portal row on that relationship answers that row's record instead
+    /// (`Some(None)` from the host's own check means its empty creation
+    /// row); `GetNthRecord` and aggregates read the related set itself.
+    fn referenced_record(
+        &self,
+        occurrence: u64,
+        record: u64,
+        related: u64,
+    ) -> Result<Option<u64>, CalcError> {
+        self.related_record(occurrence, record, related, 0)
     }
 
     /// The related record at `index` (0-based) of [`Self::related_records`];

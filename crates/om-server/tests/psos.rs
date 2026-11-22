@@ -1564,6 +1564,119 @@ fn administrators_abort_scripts_and_shut_down() {
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
+/// A server script's windows (script-runtime.md 13.25, s35-windows): New
+/// Window copies the current one and is named after it with " - 2"; each
+/// window keeps its own record; Select Window matches names ignoring case,
+/// then window UUIDs, and a window nothing matches is 112; `WindowNames`
+/// lists them front to back; closing another window keeps the current one.
+/// Closing the last stops the script, which then ends with 0 and no result,
+/// as FileMaker Server's run does (#99).
+#[test]
+fn server_scripts_keep_windows_of_their_own() {
+    use fixture::{calc, exit_with, go_to_record, on, script, set_variable};
+    let named = |id: u16, name: &str| {
+        let mut step = ScriptStep::new(id);
+        step.value = 1;
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let scripts =
+        [
+            script(
+                6,
+                "Windows",
+                vec![
+                on(86, true),
+                set_variable("$uuid", "Get ( WindowUUID )"),
+                ScriptStep::new(122),
+                set_variable("$name", "Get ( WindowName )"),
+                go_to_record(2),
+                set_variable("$last", "Get ( RecordNumber ) = Get ( FoundCount )"),
+                named(123, "$uuid"),
+                set_variable("$first", "Get ( RecordNumber ) & \"/\" & Get ( WindowName )"),
+                named(123, "\"Nope\""),
+                set_variable("$missing", "Get ( LastError )"),
+                named(123, "Lower ( Get ( FileName ) & \" - 2\" )"),
+                set_variable("$lower", "Get ( WindowName )"),
+                named(123, "Get ( FileName )"),
+                set_variable(
+                    "$names",
+                    "Substitute ( WindowNames ( Get ( FileName ) ) ; ¶ ; \",\" )",
+                ),
+                named(121, "Get ( FileName ) & \" - 2\""),
+                {
+                    // A layout that does not exist: 105, no window opened.
+                    let mut step = ScriptStep::new(122);
+                    step.set_member_key(om_scripts::StoredKey::from_id(999));
+                    step
+                },
+                set_variable(
+                    "$gone",
+                    "Get ( LastError ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )",
+                ),
+                exit_with(
+                    "$name & \"|\" & $last & \"|\" & $first & \"|\" & $missing & \"|\" & $lower \
+                     & \"|\" & $names & \"|\" & WindowNames ( Get ( FileName ) ) & \"|\" & $gone",
+                ),
+            ],
+            ),
+            script(
+                7,
+                "Close the last",
+                vec![ScriptStep::new(121), exit_with("\"after\"")],
+            ),
+        ];
+    let file = TempFile::new("windows", &scripts, true);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "windows");
+    let stem = FILE.trim_end_matches(".fmp12");
+    assert_eq!(
+        run(&mut client, 6).1,
+        format!("{stem} - 2|1|1/{stem}|112|{stem} - 2|{stem},{stem} - 2|{stem}|105/1")
+    );
+    assert_eq!(run(&mut client, 7), (0, String::new()));
+    client.disconnect().unwrap();
+}
+
+#[test]
+fn server_scripts_empty_record_list_replaces_the_same_window_found_set() {
+    use fixture::{calc, exit_with, go_to_record, on, script, set_variable};
+
+    let list = |layout: Option<u64>, new_window| {
+        let mut step = on(228, new_window);
+        step.set_calculation(7, Some(&calc("\"999\"")));
+        if let Some(layout) = layout {
+            step.value = 5;
+            step.set_member_key(om_scripts::StoredKey::from_id(layout));
+        }
+        step
+    };
+    let state = "Get ( LastError ) & \"/\" & Get ( LayoutName ) & \"/\" & Get ( FoundCount ) & \
+                 \"/\" & Get ( RecordID ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )";
+    let scripts = [script(
+        6,
+        "Missing record IDs",
+        vec![
+            on(86, true),
+            go_to_record(2),
+            list(Some(fixture::NOTES_LAYOUT), true),
+            set_variable("$new", state),
+            list(None, false),
+            set_variable("$same", state),
+            list(Some(fixture::NOTES_LAYOUT), false),
+            exit_with(&format!("$new & \"|\" & $same & \"|\" & ({state})")),
+        ],
+    )];
+    let file = TempFile::new("empty-record-list", &scripts, true);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "empty-record-list");
+    assert_eq!(
+        run(&mut client, 6).1,
+        "101/Tasks/2/2/1|101/Tasks/0/0/1|101/Notes/0/0/1"
+    );
+    client.disconnect().unwrap();
+}
+
 /// Change Password (83) in a server script sets the password of the
 /// account the session logged in with, as FileMaker's `DoChangePassword`
 /// and `SetPassword` do (local-files.md 2.4): with its dialog the step is
@@ -1683,14 +1796,14 @@ fn account_steps_reset_passwords_and_enable_accounts() {
         step.set_calculation(1, Some(&calc(password)));
         step
     };
-    // Deactivate is the step's flag 0x100.
+    // Deactivate and Expire password use the step value (local-files.md 2.4).
     let enable = |name: &str, active: bool| {
         let mut step = named(137, name);
-        step.set_flag(0x100, !active);
+        step.value = u16::from(!active);
         step
     };
     let mut expired = reset("\"Clerk\"", "\"later\"");
-    expired.set_flag(0x100, true);
+    expired.value = 1;
     let scripts = [
         script(
             6,
@@ -1871,6 +1984,226 @@ fn delete_account_removes_the_account_and_its_index_entries() {
     let value = |key: u8| index.child(&[key]).and_then(|n| n.value);
     assert_eq!(value(4), Some(&1u32.to_be_bytes()[..]));
     assert_eq!(value(0), Some(&[1, 3][..]));
+}
+
+/// Portal rows in a server script (script-runtime.md 13.24, s35-portals):
+/// Go to Portal Row moves through the related records of the window's
+/// record, entering the row's first field; a step's calculation reads the
+/// active row's record for the portal's related fields; Next past the last
+/// row keeps it; Go to Object on the portal keeps the row with no field
+/// entered, by a name no object has is 116 and an empty name is 5; Commit
+/// Records leaves the portal (#100).
+#[test]
+fn server_scripts_move_through_portal_rows() {
+    use fixture::{
+        calc, exit_with, go_to_layout, go_to_record, on, script, set_field_in, set_variable,
+        with_calc,
+    };
+    use om_hbam::OwnedNode;
+    // Two notes of task 1 ("Write tests"), made by the script itself.
+    let mut steps = vec![on(86, true), go_to_layout(fixture::NOTES_LAYOUT)];
+    for body in ["first", "second"] {
+        steps.extend([
+            ScriptStep::new(7),
+            set_field_in(fixture::NOTES_OCCURRENCE, fixture::TASK, "\"Write tests\""),
+            set_field_in(
+                fixture::NOTES_OCCURRENCE,
+                fixture::BODY,
+                &format!("{body:?}"),
+            ),
+            ScriptStep::new(75),
+        ]);
+    }
+    let row = "Get ( ActivePortalRowNumber ) & \"/\" & Notes::Body & \"/\" & \
+               Get ( ActiveLayoutObjectName ) & \"/\" & Get ( ActiveFieldContents )";
+    steps.extend([
+        go_to_layout(fixture::LAYOUT),
+        go_to_record(1),
+        // An edit of the parent stays open through the portal's rows.
+        fixture::set_field(fixture::COUNT, "99"),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
+        set_variable("$first", row),
+        ScriptStep::new(51),
+        set_variable("$reverted", "Tasks::Count"),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 4;
+            step
+        },
+        set_variable("$second", row),
+        // GetNthRecord reads the related set from the parent, not the row.
+        set_variable(
+            "$nth",
+            "GetNthRecord ( Notes::Body ; 1 ) & \"/\" & Notes::Body",
+        ),
+        // Go to Record keeps the row, and the field entered in it.
+        go_to_record(1),
+        set_variable("$kept", row),
+        go_to_layout(fixture::LAYOUT),
+        set_variable("$same_layout", row),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 4;
+            step
+        },
+        set_variable(
+            "$past",
+            "Get ( LastError ) & \"/\" & Get ( ActivePortalRowNumber )",
+        ),
+        with_calc(145, "\"Notes portal\""),
+        set_variable("$portal", row),
+        ScriptStep::new(122),
+        set_variable("$new_window", "Get ( ActivePortalRowNumber )"),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
+        {
+            let mut step = ScriptStep::new(123);
+            step.value = 1;
+            step.set_calculation(0, Some(&calc("Get ( FileName )")));
+            step
+        },
+        set_variable("$opener", row),
+        ScriptStep::new(121),
+        set_variable("$other", row),
+        // Move the last related record to a different parent while the
+        // window is parked on its row.
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 2;
+            step
+        },
+        ScriptStep::new(122),
+        go_to_layout(fixture::NOTES_LAYOUT),
+        go_to_record(2),
+        set_field_in(fixture::NOTES_OCCURRENCE, fixture::TASK, "\"Ship\""),
+        ScriptStep::new(75),
+        set_variable("$moved", "Get ( LastError )"),
+        ScriptStep::new(121),
+        set_variable("$resumed", &format!("Get ( LastError ) & \"/\" & ({row})")),
+        with_calc(145, "\"Note body\""),
+        set_variable("$reentered", row),
+        with_calc(145, "\"Nope\""),
+        set_variable("$missing", "Get ( LastError )"),
+        with_calc(145, "\"\""),
+        set_variable("$empty", "Get ( LastError )"),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
+        {
+            // Go to Field outside the portal leaves it.
+            let mut step = ScriptStep::new(17);
+            step.set_field_spec(
+                0,
+                Some(om_scripts::FieldSpec::new(
+                    om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                    om_scripts::StoredKey::from_id(fixture::NAME).unwrap(),
+                    0,
+                )),
+            );
+            step
+        },
+        set_variable("$left", "Get ( ActivePortalRowNumber )"),
+        with_calc(145, "\"Notes portal\""),
+        ScriptStep::new(75),
+        exit_with(
+            "$first & \"|\" & $reverted & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & \
+             $same_layout & \"|\" & $past & \"|\" & $portal & \"|\" & $new_window & \"|\" & \
+             $opener & \"|\" & $other & \"|\" & $moved & \"|\" & $resumed & \"|\" & $reentered & \"|\" & \
+             $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
+             Get ( ActivePortalRowNumber )",
+        ),
+    ]);
+    let scripts = [script(6, "Portal rows", steps)];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_calculated(&mut root);
+    // The Tasks layout gets a portal of Notes (object 50) holding Body
+    // (object 51), named for Go to Object.
+    let layout = uint_segment(fixture::LAYOUT);
+    let alias = om_hbam::serial::id_of_raw(fixture::NOTES_OCCURRENCE).unwrap();
+    let rect = |top: f64, left: f64, bottom: f64, right: f64| om_layout::Rect {
+        top,
+        left,
+        bottom,
+        right,
+        ..Default::default()
+    };
+    let objects = [
+        om_layout::encode::portal_object(50, &rect(100.0, 20.0, 190.0, 400.0), &[51], alias, 3),
+        om_layout::encode::portal_field_object(
+            51,
+            &rect(100.0, 20.0, 125.0, 220.0),
+            alias,
+            fixture::BODY,
+        ),
+    ];
+    let store = om_layout::encode::append_to_store(&[], &[50], &objects);
+    root.put(
+        &[&[4], &[5], &layout, &[7]],
+        OwnedNode::leaf(Vec::new(), store),
+    );
+    for (id, name) in [(50u64, "Notes portal"), (51, "Note body")] {
+        root.put(
+            &[&[4], &[5], &layout, &[5], &serial::encode(id), &[0x10]],
+            om_scripts::text_node(&[], name),
+        );
+    }
+    let file = TempFile::from_tree("portal-rows", &root);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "portals");
+    assert_eq!(
+        run(&mut client, 6).1,
+        "1/first/Note body/first|3|2/second/Note body/second|first/second|\
+         2/second/Note body/second|2/second/Note body/second|101/2|2/second/Notes portal/|\
+         0|2/second/Notes portal/|1/first/Notes portal/|0|0/0/first//|1/first/Note body/first|116|5|0|0"
+    );
+    client.disconnect().unwrap();
+}
+
+#[test]
+fn unshown_field_fallback_keeps_untargeted_insert_on_repetition_one() {
+    use fixture::{exit_with, go_to_record, on, script, set_field, with_calc};
+
+    let second = om_scripts::FieldSpec::new(
+        om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+        om_scripts::StoredKey::from_id(NAME).unwrap(),
+        2,
+    );
+    let mut seed = set_field(NAME, "\"keep\"");
+    seed.set_field_spec(0, Some(second));
+    let mut go_to_field = ScriptStep::new(17);
+    go_to_field.set_field_spec(0, Some(second));
+    let mut insert = with_calc(77, "\"changed\"");
+    insert.flags = om_scripts::flag::SELECT_ALL;
+    let steps = vec![
+        on(86, true),
+        go_to_record(1),
+        seed,
+        ScriptStep::new(75),
+        go_to_field,
+        insert,
+        ScriptStep::new(75),
+        exit_with("Tasks::Name & \"/\" & Tasks::Name[2]"),
+    ];
+    let mut root = fixture::tree(&[script(6, "Unshown field", steps)], true);
+    fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
+    let file = TempFile::from_tree("unshown-field", &root);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "unshown-field");
+    assert_eq!(run(&mut client, 6), (0, "changed/keep".into()));
 }
 
 /// Print Setup (42) in a server script: with neither Restore nor its

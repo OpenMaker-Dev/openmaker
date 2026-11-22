@@ -521,6 +521,14 @@ pub(crate) fn paint(
                                 x += *advance as f32;
                             }
                         }
+                        // Underlines and strikethroughs, in the line's clip.
+                        for (decoration, decoration_color) in line.decorations() {
+                            painter.rect_filled(
+                                rect(&decoration),
+                                CornerRadius::ZERO,
+                                color(decoration_color),
+                            );
+                        }
                         // One accessible label per physical line, without any
                         // field editor or interaction in the read-only scene.
                         let label: String = line.glyphs.iter().map(|g| g.2).collect();

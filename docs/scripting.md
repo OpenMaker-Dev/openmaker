@@ -346,8 +346,21 @@ is reached through its data source's paths, on its own host
 Go to List of Records finds its record ids in calculation slot 7, and
 Show in new window (`0x20000`) opens a window with the step's name, bounds
 and style first, as Go to Related Record's does (script-steps.md 12.2).
-OpenMaker Server refuses the new window with error 3. Neither is compared
-with FileMaker, which has not been measured running the step.
+OpenMaker Server uses the step's name and opens the window once its
+layout and records have been resolved. When no listed IDs match, Go to
+List of Records returns 101. In the same window it applies the destination
+layout and clears the found set. With Show in new window it keeps the
+opener and its found set. Go to Related Record with Show in
+new window returns error 3 while a record is open. Committing can change
+the join result, so the script must commit or revert explicitly before
+using this option. FileMaker behavior for these options is unmeasured.
+
+OpenMaker Server allows up to 256 windows per script session. It checks
+a 128 MiB budget for found sets, sort orders, Find state, window names and
+active portal names. Opening a window checks the prepared state's retained
+capacity before committing the opener's record. An active window can
+grow during ordinary script operations and is checked again before it is
+parked. FileMaker Server's window limits are unmeasured.
 
 Fixes from a review of import data safety:
 - Each imported row is checked once with the import's own auto-enter and
@@ -811,6 +824,23 @@ Open items:
   FileMaker Pro's lock and upload sequence (scripts.md, "Saving scripts
   to a host"), then confirms the disk save through the extension and
   reads the catalog back (desktop-client.md, Script Workspace).
+- Server: Go to Portal Row, Go to Object and Go to Next/Previous Field
+  run as FileMaker Server's engine answered them (re/script-runtime.md
+  13.24), and a step's direct reference to a portal's related field reads
+  the active row's record (`GetNthRecord`, aggregates and field
+  calculations read the related set from the parent; Go to Object on a
+  button or text makes no object active; see that section's limits).
+  Each script window keeps its own active portal row. On return to a
+  parked window, the server clears the selection if the portal or row
+  no longer exists. A new window starts with none. These window behaviors
+  are unmeasured in FileMaker Server.
+  Set Field into a related field, Delete Portal Row and portals that sort
+  or filter their rows are still 3
+  ([#100](https://github.com/OpenMaker-Dev/openmaker/issues/100)).
+- Server Go to Field still focuses repetition 1 and returns 0 for a schema
+  field with no object on the layout. An Insert without a target writes to
+  that repetition. FileMaker Server returns 102 for the unshown field
+  ([#575](https://github.com/OpenMaker-Dev/openmaker/issues/575)).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
   - Account steps: Change Password sets the password of the account the
@@ -834,17 +864,22 @@ Open items:
     steps that rewrite an account (all but Delete Account) leave alone one
     whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
     ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    The Script Workspace reads Expire password and Deactivate from the
+    step value. Older OpenMaker steps that stored the option only in flag
+    `0x100` keep their stored bytes and show Off or Activate. Set the option
+    again to store the intended choice ([#525](https://github.com/OpenMaker-Dev/openmaker/issues/525)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
-    and answers Design functions as FileMaker Server's file context does
-    (empty, but `DatabaseNames`). With "do not evaluate if all referenced
-    fields are empty", which inputs count in a repetition above 1 is
-    OpenMaker's reading. It still skips these, leaving their values as
-    they were and logging the field: calculations of more than 255
-    repetitions; container results
-    ([#384](https://github.com/OpenMaker-Dev/openmaker/issues/384));
-    plug-in functions and `Get` selectors that need a window, whose
-    FileMaker Server answers there are unmeasured
+    stores container results in the library as a server script's commit
+    does, and answers Design functions as FileMaker Server's file context
+    does (empty, but `DatabaseNames`). With "do not evaluate if all
+    referenced fields are empty", which inputs count in a repetition above
+    1 is OpenMaker's reading, and how FileMaker Server stores a recomputed
+    container result is unmeasured. It still skips these, leaving their
+    values as they were and logging the field: calculations of more than
+    255 repetitions; a calculation reading a container result recomputed
+    in the same change; plug-in functions and `Get` selectors that need a
+    window, whose FileMaker Server answers there are unmeasured
     ([#385](https://github.com/OpenMaker-Dev/openmaker/issues/385)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
@@ -1128,10 +1163,16 @@ are the record the window painted there: a stored record, a record begun in
 the creation row, or the creation row itself. The triggers of the field the
 user is in read it (#1027). Rows a script moves to (Go to Portal Row, Go to
 Record) are numbered as Browse shows them, by the portal's sort and filter,
-and keep their record from then on (#192). Go to Related Record with "Show
-only related records" from a filtering portal's row finds the records the
-portal shows. Only a sort or filter that does not decode leaves the rows'
-order unknown, and steps reaching the active row's record are refused (3).
+and keep their record from then on (#192). Go to Related Record with
+"Show only related records" and "Match current record only" keeps the
+active row's record current in the destination found set when the set
+contains it. A scrolling filtered portal contributes all saved filter
+matches, including those before Initial Row. A non-scrolling filtered
+portal contributes matches before Initial Row and the saved matches
+within its visible rows. The effect of Initial Row and the non-scrolling
+row limit on this found set are unmeasured in FileMaker. Only a sort or
+filter that does not decode leaves the rows' order unknown, and steps
+reaching the active row's record are refused (3).
 
 Hidden objects, undecidable stand-ins, objects whose hide condition is still
 being calculated and the creation row's template take no clicks, as before.

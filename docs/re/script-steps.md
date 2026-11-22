@@ -1454,8 +1454,14 @@ window as Go to Related Record's (11.8): name slot 0, height, width, top,
 left slots 1-4, style word `[00 0, 03]`. Turning New Window off in a local
 Pro 26.0.3 file cleared `0x20000` but left the old slot-0 name calculation
 in place; slot 7 still held the record ids [O: [#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)]. So the flag, not
-slot 0, asks for the new window [I]. What the step does at run time (the
-window it opens, ids that are not records) is unmeasured.
+slot 0, asks for the new window [I].
+
+Claris documents that the step goes to the destination layout and replaces
+the found set with the records it located, in the requested order. Missing
+IDs are skipped and can produce error 101 or 401. For a same-window request
+with no matches, the documented replacement implies an empty found set [I].
+The exact error for zero matches and the window state after a failed
+new-window request are unmeasured. [Claris Help](https://help.claris.com/en/pro-help/content/go-to-list-of-records.html)
 
 **Configure Persistent Data (238)** [O; V1 `SetPersistentData`
 0x4f4c0a/0x4f4a1c]: `PersistentStore` with `Name value` = the key as text
@@ -2421,9 +2427,9 @@ unknown origin (`Origin::Unknown`). Then a `Stored …` option is taken only
 where it leaves every file-local id the step holds (its field, layout,
 table or script reference; the fields, occurrences and custom functions of
 its calculations; slot fields and occurrences; sort orders, find
-requests, file references, import and export orders) as the open file's
-names give them. A plug-in function a calculation calls counts too: its
-id is the plug-in's, not the file's, but a call the text cannot name
+requests, file references, privilege sets, import and export orders) as
+the open file's names give them. A plug-in function's id belongs to the
+plug-in, but a call the text cannot name
 (`<Function Missing>`) is code the text does not show, so it fails the
 step. Where the text names a part the options hold under other
 ids, the bytes can only be another file's, so the part is taken as the
@@ -2433,10 +2439,11 @@ with other ids in the same places, one for one (as sets, First Name and
 Last Name could not be told from the same two fields the other way
 round). Stored code that differs from what its text compiles to, or whose
 ids do not stand one for one for the named ones, fails the step: its text
-and code disagree. Ids the text names nothing for, and a reference whose
-name the file lacks, fail the step; reference bytes no flag uses are
-dropped. Only the text form's own round trip reads with
-`Origin::ThisFile`, taking every option as written.
+and code disagree. Ids the text names nothing for, including Add Account's
+flagless privilege-set key, fail the step, as does a reference whose name
+the file lacks. Unused inline reference bytes are dropped. Only the text
+form's own round trip reads with `Origin::ThisFile`, taking every option
+as written.
 
 **Lossless options.** When a step's display line alone does not give the
 step back, the text adds `Stored …` options after the displayed ones:
@@ -2681,6 +2688,19 @@ reads it, and write nothing unless another is chosen (138 of the
 templates' 160 Go to Layout steps store no slot 6). A calculation
 parameter named Repetition with nothing stored shows 1, as 35b does; it
 is written only when changed.
+
+**Account options.** Add Account and Reset Account Password show "Expire
+password" on for any nonzero step value. Enable Account shows "Deactivate"
+for any nonzero value. The dialog keeps the raw step value and flags when
+the logical choice is unchanged. A changed choice writes 0 or 1 with
+`kMenuSelection`, as the catalog's value setter does. Hand-written step
+text and XML without `Options` set that flag for value 1 and use zero with
+the flag clear for the off choice. XML with `Options` uses its flags word
+for `kMenuSelection`, including when the Boolean gives an explicit zero.
+OpenMaker uses these conventions because the values and flags written by
+FileMaker's editor and XML importer remain unverified (9).
+Add Account's privilege set remains read-only in the dialog. The XML
+reader refuses a nonzero `PrivilegeSetReference`.
 
 **Kept as stored.** A parameter no row edits shows "Kept as stored" when
 something is stored for it, and is never touched: compound parameters
@@ -2934,6 +2954,7 @@ forms listed at the end.
 | `Step id`, `enable="False"` | step id; disabled = negated id |
 | `Options` (decimal, signed 32-bit: `-2147483648`) | the flags word, taken as is; the Booleans only stand in when it is missing |
 | `Boolean id=bits value` | those bits (inverted for "With dialog" 0x80, PSOS "Wait for completion" 0x100, Convert File "Open File" 0x100); without `id`: "Exit after last" 0x2000, "With dialog" 0x80 inverted |
+| Account steps' `Boolean value` without `id` | OpenMaker stores step value 0 or 1. `True` means 1 for Expire password and 0 for Activate. The Boolean carries no original nonzero value. |
 | `Calculation position=n` (anywhere) | compiled into slot n against the open file's names; `datatype` is the result type |
 | `FieldReference` + `TableOccurrenceReference` (Parameter `FieldReference` or `Target`) | target field spec (`mReserved`, slot n for Show Custom Dialog input n + 1) |
 | `repetition` of a field or variable target | digits = the spec's repetition; anything else = spec repetition 0 and the calculation in its `position` (10 for a field, 0x20 + n for a target) |
@@ -2983,9 +3004,8 @@ Send Event, Send Mail, Speak, Perform AppleScript, Perform Find/Replace,
 Insert File's options, Import and Export orders, Save Records as Excel and
 PDF options, Print PDF, Insert from Device, the AVPlayer play and option
 lists, the AI steps' lists, Replace Field Contents (its "Skip auto-enter
-options" reads differently in the writer and the importer), the account
-steps' non-zero choices (the XML shows a Boolean for step values 1, 2 and
-4 alike), scripts and data sources in other files, privilege sets, and
+options" reads differently in the writer and the importer), scripts and
+data sources in other files, privilege sets, and
 `LayoutReferenceContainer External="True"`.
 
 **FileMaker's importer normalizes** what it stores from the same XML (the

@@ -142,7 +142,7 @@ impl Solver<'_> {
                 let before = self.dependency_mark();
                 let found = self
                     .host
-                    .related_record(occurrence, record, t.occurrence, 0);
+                    .referenced_record(occurrence, record, t.occurrence);
                 self.wait_for_field_target(&info, before)?;
                 match found {
                     Ok(Some(r)) => r,
@@ -228,6 +228,7 @@ impl Solver<'_> {
         if self.depth >= MAX_CALCULATION_DEPTH {
             return Ok(Value::invalid());
         }
+        self.count_calculation()?;
         self.check_interrupt()?;
         let skip_empty = !self.host.evaluate_always(t.occurrence, t.field);
         let occurrence = formula.occurrence().unwrap_or(t.occurrence);
@@ -730,7 +731,7 @@ mod nested_context_tests {
             extend_fields: true,
         };
         let before = format!("{context:?}");
-        let mut solver = Solver::new(&mut h, context);
+        let mut solver = Solver::new(&mut h, context, u64::MAX);
         solver.errors.record(CalcError::DIVIDE_BY_ZERO);
         solver.invalid = true;
         solver.precision = 57;
