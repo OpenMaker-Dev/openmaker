@@ -161,6 +161,16 @@ struct HeldKeysOwner {
     field: Option<String>,
 }
 
+/// The target of a field command at the time it was chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FieldMenuTarget {
+    owner: HeldKeysOwner,
+    object: Option<u64>,
+    related: Option<crate::document::RelatedFocus>,
+    focused: Option<egui::Id>,
+    container: Option<crate::document::ContainerSelection>,
+}
+
 /// Whether a field editor applies `event` to its text or selection: typed
 /// text, a paste or cut, an input method's text, a key pressed.
 fn edits_text(event: &egui::Event) -> bool {
@@ -171,6 +181,25 @@ fn edits_text(event: &egui::Event) -> bool {
             | egui::Event::Cut
             | egui::Event::Ime(_)
             | egui::Event::Key { pressed: true, .. }
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn native_field_step(step: u16) -> bool {
+    matches!(
+        step,
+        steps::COPY_RECORD
+            | steps::EXPORT_FIELD_CONTENTS
+            | steps::INSERT_CURRENT_DATE
+            | steps::INSERT_CURRENT_TIME
+            | steps::INSERT_CURRENT_USER_NAME
+            | steps::INSERT_FROM_INDEX
+            | steps::INSERT_FROM_LAST_VISITED
+            | steps::INSERT_PICTURE
+            | steps::INSERT_AUDIO_VIDEO
+            | steps::INSERT_PDF
+            | steps::INSERT_FILE
+            | om_data::scripts::relookup::STEP_ID
     )
 }
 
@@ -520,6 +549,10 @@ pub(crate) enum Action {
     /// A command that is one script step (found-set commands, Perform
     /// Find): the step id and its flags.
     Step(u16, u32),
+    /// A menu step that can only run against the field or record it targeted.
+    FieldMenuStep(u16, u32, Box<FieldMenuTarget>),
+    #[cfg(target_os = "macos")]
+    NativeEditField(egui::Id, EditCommand),
     /// Edit > Undo, Redo, Cut, Copy, Paste, Clear or Select All in the
     /// field the user is typing in.
     EditField(EditCommand),
@@ -722,7 +755,8 @@ impl Action {
     fn works_while_held(&self) -> bool {
         matches!(
             self,
-            Action::SelectWindow(_)
+            Action::ReadScripts
+                | Action::SelectWindow(_)
                 | Action::SetView(_)
                 | Action::Minimize
                 | Action::DismissAlert
@@ -849,6 +883,9 @@ pub struct OpenMakerApp {
     /// found for the other windows' viewports.
     web: crate::web_viewer::WebViewers,
     native_parent: Result<crate::web_viewer::NativeParent, crate::web_viewer::Unavailable>,
+    /// The macOS menu bar, while the app runs in a window of its own.
+    #[cfg(target_os = "macos")]
+    system_menu: Option<crate::system_menu::SystemMenuBar>,
     /// The app runs in a native window of the platform's (not a test
     /// harness's): the Insert commands use the platform's file panel.
     native_window: bool,
@@ -960,6 +997,8 @@ impl OpenMakerApp {
             settings_path: crate::settings::default_path(),
             web: Default::default(),
             native_parent: Err(crate::web_viewer::Unavailable::Window),
+            #[cfg(target_os = "macos")]
+            system_menu: None,
             native_window: false,
             viewport_windows: Default::default(),
             open_on_launch: false,
@@ -1360,7 +1399,135 @@ impl OpenMakerApp {
                 .is_none_or(|session| self.w.document.selected_container(session).is_none())
     }
 
-    pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) -> bool {
+    fn field_menu_target(&self, ctx: &egui::Context) -> FieldMenuTarget {
+        FieldMenuTarget {
+            owner: self.held_keys_owner(),
+            object: self.w.document.active_object,
+            related: self.w.document.active_related,
+            focused: ctx.memory(|memory| memory.focused()),
+            container: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| self.w.document.selected_container(session))
+                .cloned(),
+        }
+    }
+
+    fn held_keys_owner(&self) -> HeldKeysOwner {
+        HeldKeysOwner {
+            file: self.w.file_id,
+            mode: self.w.mode,
+            record: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| Some((session.layout?, session.current_record()?.1.id))),
+            field: self.w.document.active.clone(),
+        }
+    }
+
+    /// Returns whether this frame's pointer is on the window's own menu
+    /// bar or its open menus (`menubar::show`); never with the system menu
+    /// bar.
+    pub(super) fn menu_bar(&mut self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) -> bool {
+        let ctx = ui.ctx().clone();
+        // On macOS the system menu bar shows the front window's menus
+        // (`system_menu.rs`): the window draws none.
+        #[cfg(target_os = "macos")]
+        if let Some(mut bar) = self.system_menu.take() {
+            // Only the window AppKit has in front shows its menus there, and
+            // a choice made in them reaches only that window, also once
+            // another is in front. A modal dialog in the window's viewport
+            // (as of the last frame) leaves its rows disabled, as it does the
+            // window's own bar.
+            let owner = (self.epoch, self.w.id);
+            let key = input && ui.ctx().input(|i| i.viewport().focused == Some(true));
+            let open = self.window_ids();
+            let epoch = self.epoch;
+            bar.retain_choices(|(made, id)| made == epoch && open.contains(&id));
+            if !key {
+                bar.behind(owner);
+            }
+            if key || bar.has_choice_for(owner) {
+                // The window's own dialogs count from the frame they are
+                // asked for, before egui first draws them.
+                let blocked = !ui.is_enabled()
+                    || ui.ctx().memory(|m| m.top_modal_layer().is_some())
+                    || self.w.delete_record.is_some()
+                    || self.w.delete_layout.is_some()
+                    || self.w.delete_portal_row.is_some()
+                    || self.w.document.other_dialog_open();
+                let target = self.field_menu_target(&ctx);
+                let editor = if key && !egui::Popup::is_any_open(&ctx) {
+                    self.current_layout_record()
+                        .and_then(|(layout, record)| self.w.document.entered_editor(layout, record))
+                        .filter(|id| target.focused == Some(*id))
+                } else {
+                    None
+                };
+                let mut chosen = Vec::new();
+                let shown_target = self.with_menu_context(&ctx, input, true, editor, |context| {
+                    bar.record(owner, key, blocked, &target, |menu| {
+                        menubar::menus(context, &mut chosen, menu);
+                    })
+                });
+                for action in chosen {
+                    match action {
+                        Action::EditField(command) => {
+                            if let Some(editor) =
+                                editor.filter(|_| shown_target.as_ref() == Some(&target))
+                            {
+                                actions.push(Action::NativeEditField(editor, command));
+                            }
+                        }
+                        Action::Step(step, flags) if native_field_step(step) => {
+                            if shown_target.as_ref() == Some(&target) {
+                                actions.push(Action::FieldMenuStep(
+                                    step,
+                                    flags,
+                                    Box::new(target.clone()),
+                                ));
+                            }
+                        }
+                        action => actions.push(action),
+                    }
+                }
+            }
+            if bar.has_choices() {
+                // Choices answered one a frame: the rest on the next.
+                ui.ctx().request_repaint();
+            }
+            self.system_menu = Some(bar);
+            return false;
+        }
+        self.with_menu_context(&ctx, input, false, None, |context| {
+            menubar::show(ui, context, actions)
+        })
+    }
+
+    /// Whether the system menu bar shows the menus (macOS), so the windows
+    /// draw no menu bar of their own.
+    pub(super) fn system_menu_bar(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.system_menu.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// What the window's menus read, for `f`.
+    fn with_menu_context<R>(
+        &self,
+        ctx: &egui::Context,
+        input: bool,
+        native: bool,
+        native_editor: Option<egui::Id>,
+        f: impl FnOnce(&MenuContext<'_>) -> R,
+    ) -> R {
         let window_title = self.window_title();
         let selection = self.w.session.as_ref().and_then(|session| {
             if input
@@ -1384,115 +1551,114 @@ impl OpenMakerApp {
             .filter(|(id, _, _)| !self.is_card(*id))
             .cloned()
             .collect();
-        menubar::show(
-            ui,
-            &MenuContext {
-                mode: self.w.mode,
-                view: self.w.view,
-                zoom: self.w.document.zoom.percent(),
-                zooms: self.zooms(),
-                session: self.w.session.as_ref(),
-                find: &self.w.find,
-                toolbar: self.w.show_toolbar,
-                formatting: self.w.show_formatting,
-                inspector: self.w.inspector,
-                objects: self.w.objects,
-                window_title: &window_title,
-                windows: &windows,
-                window: self.w.id,
-                scripts: &self.w.scripts,
-                scripts_read: self.w.scripts_read == windows::ScriptsRead::Read,
-                set_access: self
-                    .w
-                    .calcs
-                    .schema()
-                    .and_then(|schema| schema.authenticated_account.set_access.as_ref()),
-                record_create: self.w.record_capabilities.create && !self.w.document.pending,
-                record_delete: self.delete_enabled(),
-                // Held edits wait for Keep or Discard My Changes, which
-                // refuses every other command until then.
-                revert_record: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && !self.recovery_holds()
-                    && om_data::scripts::revert_record::available(
-                        self.w.mode.runtime(),
-                        if self.w.mode == Mode::Find {
-                            self.w
-                                .find
-                                .current()
-                                .criteria
-                                .iter()
-                                .any(|(_, text)| !text.is_empty())
-                        } else {
-                            self.record_modified()
-                        },
-                        self.w.document.pending,
-                    ),
-                design: self.design_allowed(),
-                export_records: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && self.can_export_records()
-                    && self.exports(),
-                print: self.prints(),
-                menus: self.menu_commands(),
-                save_records: &self.save_records_enabled(input),
-                import_records: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && self.can_import_records(),
-                container: selection.is_some(),
-                // A related container's row was checked as it was selected.
-                container_insert: selection.is_some_and(|(selection, session)| {
-                    selection.allows_entry(session)
-                        && (self.w.record_capabilities.update || selection.row.is_some())
+        f(&MenuContext {
+            mode: self.w.mode,
+            view: self.w.view,
+            zoom: self.w.document.zoom.percent(),
+            zooms: self.zooms(),
+            session: self.w.session.as_ref(),
+            find: &self.w.find,
+            toolbar: self.w.show_toolbar,
+            formatting: self.w.show_formatting,
+            inspector: self.w.inspector,
+            objects: self.w.objects,
+            window_title: &window_title,
+            windows: &windows,
+            window: self.w.id,
+            scripts: &self.w.scripts,
+            scripts_read: self.w.scripts_read == windows::ScriptsRead::Read,
+            scripts_unread: self.w.scripts_read == windows::ScriptsRead::Unread,
+            set_access: self
+                .w
+                .calcs
+                .schema()
+                .and_then(|schema| schema.authenticated_account.set_access.as_ref()),
+            record_create: self.w.record_capabilities.create && !self.w.document.pending,
+            record_delete: self.delete_enabled(),
+            // Held edits wait for Keep or Discard My Changes, which
+            // refuses every other command until then.
+            revert_record: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && !self.recovery_holds()
+                && om_data::scripts::revert_record::available(
+                    self.w.mode.runtime(),
+                    if self.w.mode == Mode::Find {
+                        self.w
+                            .find
+                            .current()
+                            .criteria
+                            .iter()
+                            .any(|(_, text)| !text.is_empty())
+                    } else {
+                        self.record_modified()
+                    },
+                    self.w.document.pending,
+                ),
+            design: self.design_allowed(),
+            export_records: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.can_export_records()
+                && self.exports(),
+            print: self.prints(),
+            menus: self.menu_commands(),
+            save_records: &self.save_records_enabled(input),
+            import_records: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.can_import_records(),
+            container: selection.is_some(),
+            // A related container's row was checked as it was selected.
+            container_insert: selection.is_some_and(|(selection, session)| {
+                selection.allows_entry(session)
+                    && (self.w.record_capabilities.update || selection.row.is_some())
+            }),
+            container_interactive: selection
+                .is_some_and(|(selection, session)| selection.is_interactive(session)),
+            text_field: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.text_field_entered()
+                && (!native || native_editor.is_some()),
+            relookup: input && self.relookup_available() && (!native || native_editor.is_some()),
+            own_field: self.w.document.active_related.is_none(),
+            field_undo: self
+                .current_layout_record()
+                .filter(|_| self.text_field_entered())
+                .map_or((false, false), |(layout, record)| {
+                    self.w.document.field_undo(ctx, layout, record)
                 }),
-                container_interactive: selection
-                    .is_some_and(|(selection, session)| selection.is_interactive(session)),
-                text_field: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && self.text_field_entered(),
-                relookup: input && self.relookup_available(),
-                own_field: self.w.document.active_related.is_none(),
-                field_undo: self
-                    .current_layout_record()
-                    .filter(|_| self.text_field_entered())
-                    .map_or((false, false), |(layout, record)| {
-                        self.w.document.field_undo(ui.ctx(), layout, record)
-                    }),
-                record_copy: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && self.w.mode == Mode::Browse
-                    && self.w.connection_lost.is_none()
-                    && self.w.document.active.is_none()
-                    && selection.is_none()
-                    && self.current_layout_record().is_some(),
-                client_license: self.client_license,
-                layout_edit: self.w.mode == Mode::Layout
-                    && self.w.layout_workspace.has_changes()
-                    && !self.w.layout_workspace.saving,
-                layout_delete: self.w.mode == Mode::Layout
-                    && self.design_allowed()
-                    && self.w.session.as_ref().is_some_and(|session| {
-                        !self.w.layout_workspace.saving
-                            && self.w.layout_workspace.selection_count(session) > 0
-                    }),
-                layout_arrange: match self.w.session.as_ref() {
-                    Some(session)
-                        if self.w.mode == Mode::Layout
-                            && self.design_allowed()
-                            && !self.w.layout_workspace.saving =>
-                    {
-                        self.w.layout_workspace.arrangeable_count(session)
-                    }
-                    _ => 0,
-                },
+            record_copy: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.w.mode == Mode::Browse
+                && self.w.connection_lost.is_none()
+                && self.w.document.active.is_none()
+                && (!native || !ctx.egui_wants_keyboard_input())
+                && selection.is_none()
+                && self.current_layout_record().is_some(),
+            client_license: self.client_license,
+            layout_edit: self.w.mode == Mode::Layout
+                && self.w.layout_workspace.has_changes()
+                && !self.w.layout_workspace.saving,
+            layout_delete: self.w.mode == Mode::Layout
+                && self.design_allowed()
+                && self.w.session.as_ref().is_some_and(|session| {
+                    !self.w.layout_workspace.saving
+                        && self.w.layout_workspace.selection_count(session) > 0
+                }),
+            layout_arrange: match self.w.session.as_ref() {
+                Some(session)
+                    if self.w.mode == Mode::Layout
+                        && self.design_allowed()
+                        && !self.w.layout_workspace.saving =>
+                {
+                    self.w.layout_workspace.arrangeable_count(session)
+                }
+                _ => 0,
             },
-            actions,
-        )
+        })
     }
 
     /// Draw the window the app works on in `ui`. `input`: the window takes
@@ -1671,16 +1837,46 @@ impl OpenMakerApp {
             self.shortcuts(ui, &mut actions);
         }
 
-        self.w.menu_drawn = menu && self.w.menubar;
+        // With the system menu bar the window's menus are there, and take
+        // none of the window's height, shown or hidden: known, and nothing.
+        let system = self.system_menu_bar();
+        self.w.menu_drawn = (menu && self.w.menubar) || system;
         let mut on_menus = false;
-        if self.w.menu_drawn {
+        if self.w.menu_drawn && !system {
             let top = ui.available_rect_before_wrap().top();
             let mut chosen = Vec::new();
             on_menus = self.menu_bar(ui, input, &mut chosen);
             self.w.document.menu_leaves_field(ui, &mut chosen);
             actions.extend(chosen);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
+        } else if system && menu {
+            self.w.menu_height = 0.0;
+            // A choice in the system menu leaves the field entered, as a
+            // click in the window's own menus does.
+            let mut chosen = Vec::new();
+            self.menu_bar(ui, input, &mut chosen);
+            self.w.document.menu_leaves_field(ui, &mut chosen);
+            actions.extend(chosen);
         }
+        #[cfg(target_os = "macos")]
+        actions.retain(|action| {
+            if let Action::NativeEditField(editor, command) = *action {
+                if !self.w.document.keys_held
+                    && !self.recovery_holds()
+                    && !egui::Popup::is_any_open(&ctx)
+                    && !ctx.input(|input| {
+                        input.events.iter().any(|event| {
+                            matches!(event, egui::Event::PointerButton { pressed: true, .. })
+                        })
+                    })
+                {
+                    crate::system_menu::edit_field(&ctx, editor, command);
+                }
+                false
+            } else {
+                true
+            }
+        });
         if front {
             self.pause_bar(ui);
         }
@@ -1955,6 +2151,8 @@ impl OpenMakerApp {
                 self.forget_other_hosts();
             }
         }
+        #[cfg(target_os = "macos")]
+        crate::system_menu::clear_field_edit(&ctx);
         if content_rect.is_some() {
             self.w.content_rect = content_rect;
         }
@@ -2000,7 +2198,7 @@ impl OpenMakerApp {
                 None => {}
             }
         }
-        if self.w.delete_record {
+        if self.w.delete_record.is_some() {
             // FileMaker Pro's alert, local or hosted (client-ui.md,
             // "Delete confirmations"): its message and no more.
             egui::Modal::new(Id::unique(("delete_record", self.w.id))).show(&ctx, |ui| {
@@ -2095,7 +2293,7 @@ impl OpenMakerApp {
         // anything else in the window (portal_clicks.rs).
         if actions
             .iter()
-            .any(|action| !matches!(action, Action::LoadRecordRange(_)))
+            .any(|action| !matches!(action, Action::LoadRecordRange(_) | Action::ReadScripts))
         {
             self.w.document.drop_portal_click();
         }
@@ -2793,7 +2991,7 @@ impl OpenMakerApp {
                 .related_login
                 .as_ref()
                 .is_some_and(|login| login.window == self.w.id)
-            || self.w.delete_record
+            || self.w.delete_record.is_some()
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
             || self.error.is_some()
@@ -2898,6 +3096,12 @@ impl OpenMakerApp {
         // (`document::return_goes_on`).
         let enter_goes_next =
             enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_enter);
+        let return_goes_next = field.is_some_and(om_layout::FieldObject::next_object_on_return);
+        let traverses_fields = |event: &egui::Event| {
+            crate::document::tab_key(event).is_some()
+                || (enter_goes_next && crate::keypad::is_enter_press(event))
+                || (return_goes_next && crate::keypad::is_return_press(event))
+        };
         // A commit key that came after typing in the same frame waited for
         // this one: the editor has applied the typing (below). It goes back
         // only in the next frame, and only to the file, mode, layout, record
@@ -2906,16 +3110,8 @@ impl OpenMakerApp {
         // shows by then.
         let held_id = egui::Id::unique("held_commit_keys").with(ui.ctx().viewport_id());
         let frame = ui.ctx().cumulative_frame_nr();
-        let typed_in = HeldKeysOwner {
-            file: self.w.file_id,
-            mode: self.w.mode,
-            record: self
-                .w
-                .session
-                .as_ref()
-                .and_then(|session| Some((session.layout?, session.current_record()?.1.id))),
-            field: self.w.document.active.clone(),
-        };
+        let typed_in = self.held_keys_owner();
+        let field_target = (inserts || record_copy).then(|| self.field_menu_target(ui.ctx()));
         let held: Option<(u64, HeldKeysOwner, Vec<egui::Event>)> =
             ui.ctx().data_mut(|data| data.remove_temp(held_id));
         let mut hold = None;
@@ -2992,7 +3188,14 @@ impl OpenMakerApp {
             {
                 actions.push(Action::DeleteLayoutObject);
             }
-            if inserts {
+            if let Some(target) = field_target.as_ref().filter(|_| inserts) {
+                // The document may move focus in a later pass (including
+                // when a keystroke trigger still has to decide the key).
+                // Refuse the insert on either side of that key in this
+                // batch, but still consume its shortcut before Zoom Out.
+                let traversing = self.w.document.tab_in_progress()
+                    || input.events.iter().any(traverses_fields)
+                    || self.has_pending_keystroke(traverses_fields);
                 // Before New Record: egui's match of Command-N ignores Shift.
                 for (modifiers, key, step) in [
                     (Modifiers::COMMAND, Key::Minus, steps::INSERT_CURRENT_DATE),
@@ -3013,20 +3216,30 @@ impl OpenMakerApp {
                         steps::INSERT_FROM_LAST_VISITED,
                     ),
                 ] {
-                    if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
-                        actions.push(Action::Step(step, 0));
+                    if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) && !traversing
+                    {
+                        actions.push(Action::FieldMenuStep(step, 0, Box::new(target.clone())));
                     }
                 }
             }
             // With no field entered, Copy copies the record, as Edit > Copy
             // does then (`menubar::edit_menu`).
-            if record_copy {
+            if let Some(target) = field_target.as_ref().filter(|_| {
+                record_copy
+                    && !input.events.iter().any(|event| {
+                        matches!(event, egui::Event::PointerButton { pressed: true, .. })
+                    })
+            }) {
                 let copies = input.events.len();
                 input
                     .events
                     .retain(|event| !matches!(event, egui::Event::Copy));
                 if input.events.len() != copies {
-                    actions.push(Action::Step(steps::COPY_RECORD, 0));
+                    actions.push(Action::FieldMenuStep(
+                        steps::COPY_RECORD,
+                        0,
+                        Box::new(target.clone()),
+                    ));
                 }
             }
             if self.w.mode == Mode::Browse {
@@ -3672,6 +3885,15 @@ impl OpenMakerApp {
     }
 
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
+        let action = match action {
+            Action::FieldMenuStep(step, flags, target) => {
+                if self.dialog_over_document() || self.field_menu_target(ctx) != *target {
+                    return;
+                }
+                Action::Step(step, flags)
+            }
+            action => action,
+        };
         // A window's card closes before it (Claris: closing a card's
         // parent first closes the card); closing the file or quitting
         // goes on to the parent once the card has closed.
@@ -3778,7 +4000,11 @@ impl OpenMakerApp {
             return;
         }
         match action {
-            Action::MenuFieldExit(_) => unreachable!("resolved before dispatch"),
+            Action::MenuFieldExit(_) | Action::FieldMenuStep(..) => {
+                unreachable!("resolved before dispatch")
+            }
+            #[cfg(target_os = "macos")]
+            Action::NativeEditField(..) => unreachable!("delivered before drawing the field"),
             Action::ShowSettings => {
                 if self.settings.is_none() {
                     self.settings = Some(crate::settings::SettingsDialog::new());
@@ -3883,17 +4109,17 @@ impl OpenMakerApp {
             }
             Action::DeleteRecord => {
                 if !self.w.document.pending && self.w.record_capabilities.delete {
-                    self.w.delete_record = self
-                        .w
-                        .session
-                        .as_ref()
-                        .and_then(Session::current_record)
-                        .is_some();
+                    // The alert asks about this record: Delete deletes it or
+                    // nothing (`ConfirmDeleteRecord`).
+                    self.w.delete_record = self.w.session.as_ref().and_then(|session| {
+                        let (_, record) = session.current_record()?;
+                        Some((session.layout.unwrap_or_default(), record.id))
+                    });
                 }
             }
-            Action::CancelDeleteRecord => self.w.delete_record = false,
+            Action::CancelDeleteRecord => self.w.delete_record = None,
             Action::ConfirmDeleteRecord => {
-                self.w.delete_record = false;
+                let asked = self.w.delete_record.take();
                 if self.w.document.pending || !self.w.record_capabilities.delete {
                     return;
                 }
@@ -3904,6 +4130,11 @@ impl OpenMakerApp {
                     return;
                 };
                 let (layout_id, record_id) = (session.layout.unwrap_or_default(), record.id);
+                // Another record (or layout) than the alert asked about is
+                // current now (a command that ran meanwhile): delete nothing.
+                if asked != Some((layout_id, record_id)) {
+                    return;
+                }
                 // A new record the window's record session holds is not on
                 // the host: the window's own Delete Record releases it
                 // (#892). An existing record whose editing took its lock is
@@ -5773,7 +6004,7 @@ impl OpenMakerApp {
                 doc.reconnected = false;
                 doc.document.pending = false;
                 doc.deferred_action = None;
-                doc.delete_record = false;
+                doc.delete_record = None;
                 doc.delete_portal_row = None;
             });
         }
@@ -6325,9 +6556,15 @@ impl OpenMakerApp {
                             doc.scripts = catalog.clone();
                             doc.scripts_read = windows::ScriptsRead::Read;
                         }
-                        // The Scripts menu asks again when next shown.
+                        // The Scripts menu asks again when next shown; the
+                        // system menu bar's, when the window next comes to
+                        // the front.
                         Err(_) if doc.scripts_read == windows::ScriptsRead::Asked => {
                             doc.scripts_read = windows::ScriptsRead::Unread;
+                            #[cfg(target_os = "macos")]
+                            if let Some(bar) = &mut self.system_menu {
+                                bar.read_failed((self.epoch, doc.id));
+                            }
                         }
                         Err(_) => {}
                     }
@@ -6693,6 +6930,15 @@ impl eframe::App for OpenMakerApp {
                 Ok(RawWindowHandle::AppKit(_))
             )
         };
+        #[cfg(target_os = "macos")]
+        {
+            if self.system_menu.is_none() {
+                self.system_menu = crate::system_menu::SystemMenuBar::start(ui.ctx(), frame);
+            }
+            if let Some(bar) = &mut self.system_menu {
+                bar.begin();
+            }
+        }
         self.show(ui);
         self.web.flush(frame);
     }

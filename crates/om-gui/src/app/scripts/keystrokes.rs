@@ -401,6 +401,31 @@ impl OpenMakerApp {
             || self.script.resumes.iter().any(|(w, h, ..)| key(*w, h))
     }
 
+    /// A key taken by the trigger gate can still be awaiting a script's
+    /// decision or delivery to the editor.
+    pub(in crate::app) fn has_pending_keystroke(&self, matches: impl Fn(&Event) -> bool) -> bool {
+        let id = self.w.id;
+        let keys = &self.w.keys;
+        let held_key_matches = |window, held: &Held| {
+            window == id && matches!(held, Held::Key(key) if matches(&key.key.event))
+        };
+        keys.ahead.iter().any(|(_, _, key)| matches(&key.event))
+            || keys
+                .approved
+                .as_ref()
+                .is_some_and(|held| matches(&held.key.event))
+            || self
+                .script
+                .held
+                .values()
+                .any(|(w, h)| held_key_matches(*w, h))
+            || self
+                .script
+                .resumes
+                .iter()
+                .any(|(w, h, ..)| held_key_matches(*w, h))
+    }
+
     /// Something other than the document has the keyboard: a dialog, an
     /// alert, a menu or popup; or the record is being saved. The open list
     /// of the drop-down list being edited is not elsewhere: its editor

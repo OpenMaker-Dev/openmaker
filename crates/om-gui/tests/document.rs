@@ -912,6 +912,54 @@ fn the_insert_menu_puts_its_text_at_the_insertion_point() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
+/// An Insert shortcut that shares a frame with Tab leaves both fields
+/// alone. Command-minus still belongs to Insert in that frame.
+#[test]
+fn current_date_shortcut_does_not_follow_tab_to_another_field() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    common::text_field(&app, "Given").focus();
+    app.run_steps(2);
+    assert!(common::text_field(&app, "Given").is_focused());
+    let given = common::text_field(&app, "Given").value();
+    let family = common::text_field(&app, "Family").value();
+    let given_width = common::text_field(&app, "Given").rect().width();
+
+    let key = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let date = key(egui::Key::Minus, egui::Modifiers::COMMAND);
+    let tab = key(egui::Key::Tab, egui::Modifiers::NONE);
+    for events in [[date.clone(), tab.clone()], [tab, date.clone()]] {
+        common::text_field(&app, "Given").focus();
+        app.run_steps(2);
+        app.input_mut().events.extend(events);
+        app.run_steps(3);
+        common::wait_until(&mut app, "the Tab and shortcut", |app| {
+            app.state().is_settled()
+        });
+        assert!(common::text_field(&app, "Family").is_focused());
+        assert_eq!(common::text_field(&app, "Given").value(), given);
+        assert_eq!(common::text_field(&app, "Family").value(), family);
+        assert_eq!(
+            common::text_field(&app, "Given").rect().width(),
+            given_width
+        );
+    }
+
+    app.event(date);
+    common::wait_until(&mut app, "the date in Family", |app| {
+        common::text_field(app, "Family").value() != family
+    });
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert_eq!(common::text_field(&app, "Given").value(), given);
+}
+
 /// Edit > Select All, Clear and Undo act on the field being typed in,
 /// which a click on the menus leaves entered.
 #[test]

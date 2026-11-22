@@ -966,7 +966,9 @@ impl DocumentState {
     /// match field, then choose the command). Other menu commands
     /// surrender focus and wait for the exit triggers.
     pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
-        if chosen.is_empty() {
+        // A catalog read is background work, even when opening a menu
+        // requested it. It does not own a field exit or wait for one.
+        if chosen.iter().all(|action| *action == Action::ReadScripts) {
             return;
         }
         let preparing = self.preparing_edit() || self.failed_edit();
@@ -977,26 +979,27 @@ impl DocumentState {
         {
             // The first command owns the pending exit. Close remains
             // available to cancel the pending edit and close the file.
-            chosen.retain(|action| preparing && *action == Action::CloseFile);
+            chosen.retain(|action| {
+                *action == Action::ReadScripts || (preparing && *action == Action::CloseFile)
+            });
             return;
         }
-        let Some(action) = chosen.iter_mut().find(|action| {
-            let cancels_preparation = preparing && **action == Action::CloseFile;
-            !(cancels_preparation
-                || matches!(
-                    action,
-                    Action::EditField(_)
-                        | Action::Step(
-                            steps::INSERT_CURRENT_DATE
-                                | steps::INSERT_CURRENT_TIME
-                                | steps::INSERT_CURRENT_USER_NAME
-                                | steps::INSERT_FROM_INDEX
-                                | steps::INSERT_FROM_LAST_VISITED
-                                | om_data::scripts::revert_record::STEP_ID
-                                | om_data::scripts::relookup::STEP_ID,
-                            _
-                        )
-                ))
+        let Some(action) = chosen.iter_mut().find(|action| match action {
+            #[cfg(target_os = "macos")]
+            Action::NativeEditField(..) => false,
+            Action::EditField(_) | Action::ReadScripts => false,
+            Action::Step(step, _) | Action::FieldMenuStep(step, _, _) => !matches!(
+                *step,
+                steps::INSERT_CURRENT_DATE
+                    | steps::INSERT_CURRENT_TIME
+                    | steps::INSERT_CURRENT_USER_NAME
+                    | steps::INSERT_FROM_INDEX
+                    | steps::INSERT_FROM_LAST_VISITED
+                    | om_data::scripts::revert_record::STEP_ID
+                    | om_data::scripts::relookup::STEP_ID
+            ),
+            Action::CloseFile if preparing => false,
+            _ => true,
         }) else {
             return;
         };
@@ -1029,7 +1032,8 @@ impl DocumentState {
             for action in actions.drain(..) {
                 if matches!(
                     action,
-                    Action::RevertRecord
+                    Action::ReadScripts
+                        | Action::RevertRecord
                         | Action::CloseFile
                         | Action::DismissAlert
                         | Action::DismissHostMessage
@@ -1037,7 +1041,11 @@ impl DocumentState {
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);
-                } else if matches!(action, Action::Step(om_data::scripts::relookup::STEP_ID, _)) {
+                } else if matches!(
+                    action,
+                    Action::Step(om_data::scripts::relookup::STEP_ID, _)
+                        | Action::FieldMenuStep(om_data::scripts::relookup::STEP_ID, _, _)
+                ) {
                     // Relookup acts on the field entered when it was
                     // chosen, and the record had something to commit: not
                     // held for later, when the focus may have moved.
@@ -1346,6 +1354,10 @@ impl DocumentState {
         let held = ui.ctx().input_mut(|input| input.events.split_off(at + 1));
         self.tab_held = Some((backward, from, held));
         ui.ctx().request_repaint();
+    }
+
+    pub(crate) fn tab_in_progress(&self) -> bool {
+        self.tab_held.is_some() || self.tab_goal.is_some()
     }
 
     /// The second frame of [`Self::resolve_tab`]: `from`, the stop that had
@@ -2033,6 +2045,11 @@ impl DocumentState {
             .buffers
             .get(&(layout, record, selection.field.clone()))?;
         Some((selection.editor, buffer))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn entered_editor(&self, layout: u64, record: i64) -> Option<egui::Id> {
+        self.entered_buffer(layout, record).map(|(id, _)| id)
     }
 
     /// Whether Edit > Undo and Redo have a step to take back or again in
@@ -7312,7 +7329,7 @@ fn return_goes_on(
     ui.ctx().request_repaint();
 }
 
-fn tab_key(event: &egui::Event) -> Option<bool> {
+pub(crate) fn tab_key(event: &egui::Event) -> Option<bool> {
     match event {
         egui::Event::Key {
             key: egui::Key::Tab,
@@ -7474,6 +7491,10 @@ fn guarded_editor(
     actions: &mut Vec<Action>,
     show: impl FnOnce(&mut Ui, &mut String) -> egui::Response,
 ) -> (egui::Response, bool) {
+    #[cfg(target_os = "macos")]
+    let show = |ui: &mut Ui, buffer: &mut String| {
+        crate::system_menu::with_field_edit(ui, id, |ui| show(ui, buffer))
+    };
     let Some(refusal) = refusal else {
         let response = show(ui, buffer);
         let changed = response.changed();

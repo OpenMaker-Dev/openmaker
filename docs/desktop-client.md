@@ -17,8 +17,25 @@ FileMaker Pro's measured chrome is specified in
   from the file (layout-model.md). A layout without decodable geometry gets
   a generic Form, List or Table view built from its fields and records;
   nothing is ever specific to one file.
-- The menu bar is drawn inside the window on every platform, macOS
-  included. The window title is the platform's own.
+- On macOS the menus are in the system menu bar, as FileMaker Pro's are:
+  the menus of the window AppKit has in front, built each frame through the
+  same code as the window's bar (`menubar::MenuRows`, `system_menu.rs`),
+  with key equivalents on enabled rows. Editing, text insertion and zoom
+  shortcuts go through the window's keyboard handling, where Current Date
+  takes precedence over Zoom Out in an entered Browse field. A choice
+  reaches the window whose menus showed it in the order made. Native Edit
+  clicks act on a still-focused text editor of the current record. Portal
+  and related-field editors use keyboard editing. Field and record
+  commands are dropped if their target changes before they can run.
+  A modal dialog disables that window's native rows. The app menu adds macOS's Services, Hide,
+  Hide Others and Show All, and the Help menu the system's search field;
+  that FileMaker Pro's app menu has the same is inferred. The windows draw
+  no menu bar of their own. The Scripts menu reads the file's scripts once
+  its window is in front, since the system menu says nothing before it
+  opens; after a read that failed it asks again when the window next comes
+  to the front. Elsewhere, and in the GUI tests, which run without a native
+  window, the menu bar is drawn inside each window. The window title is the
+  platform's own.
 - The app menu is named OpenMaker. Mode and other shortcuts use the
   platform's command key: ⌘ on macOS, Ctrl on Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
@@ -1267,7 +1284,9 @@ Limits:
 - While edit preparation holds a menu command's field exit, later menu
   choices are ignored. File > Close can still cancel the pending edit.
 - An Insert shortcut typed in the same frame as other keys runs its step
-  after the editor took those keys.
+  after the editor took those keys. If field traversal is pending or its
+  key shares the frame, the Insert shortcut is dropped. Command-minus
+  still belongs to Insert while the field is entered.
 - ⌘- inserts the date while a field is entered and zooms out otherwise;
   FileMaker Pro's own shortcut for Zoom Out is unmeasured.
 

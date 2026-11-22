@@ -1,8 +1,9 @@
 //! The menu bar, with FileMaker's menus and items (captures 16-25).
 //!
-//! FileMaker on macOS uses the system menu bar; OpenMaker draws it in the
-//! window on every platform for now ([#55](https://github.com/OpenMaker-Dev/openmaker/issues/55)). The menus are built
-//! through [`MenuRows`], so that another place to show them shows the same.
+//! FileMaker on macOS uses the system menu bar, and so does OpenMaker when it
+//! runs in a window of its own there (`system_menu.rs`); elsewhere the bar is
+//! drawn in the window. The menus are built through [`MenuRows`], so both
+//! show the same rows.
 //! Items OpenMaker does not implement yet are present but disabled, so the
 //! menus read like FileMaker's and fill in as features land.
 
@@ -36,6 +37,7 @@ pub(crate) struct MenuContext<'a> {
     /// Whether `scripts` is the file's catalog as read: until it is, the
     /// Scripts menu asks for it ([`Action::ReadScripts`], #1053).
     pub scripts_read: bool,
+    pub scripts_unread: bool,
     /// The account's privilege set as the host enforces it: the Scripts
     /// menu leaves out the scripts it gives no access.
     pub set_access: Option<&'a om_data::host::security::SetAccess>,
@@ -143,6 +145,21 @@ pub(crate) trait MenuRows {
         checked: bool,
         enabled: bool,
     ) -> bool;
+    /// A command row of a list that can change while a menu shows it (the
+    /// file's windows, scripts, layouts): `key` names what it runs, so that a
+    /// choice reaches that and nothing else should the list change before
+    /// the choice is read (the system menu bar's). Drawn as [`Self::item`].
+    fn keyed_item(
+        &mut self,
+        key: &str,
+        label: &str,
+        shortcut: Option<KeyboardShortcut>,
+        checked: bool,
+        enabled: bool,
+    ) -> bool {
+        let _ = key;
+        self.item(label, shortcut, checked, enabled)
+    }
     fn separator(&mut self);
     /// A submenu, whose rows `rows` adds.
     fn submenu(&mut self, label: &str, enabled: bool, rows: &mut dyn FnMut(&mut dyn MenuRows));
@@ -151,6 +168,15 @@ pub(crate) trait MenuRows {
     /// The user is looking at these rows now: a menu that reads its
     /// content when shown asks for it.
     fn shown(&self) -> bool;
+    /// Whether a menu that reads its content when shown (`what`, the
+    /// Scripts menu's catalog) should ask for it now: whenever the rows are
+    /// [`Self::shown`], unless the rows say otherwise (the system menu bar
+    /// asks once while its window is in front, as it cannot tell when the
+    /// menu opens).
+    fn ask(&mut self, what: &str) -> bool {
+        let _ = what;
+        self.shown()
+    }
 }
 
 /// Rows drawn in an egui menu.
@@ -239,60 +265,20 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
                 .style(theme::menu_bar_style)
                 .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
                 .ui(ui, |ui| {
-                    open |= ui
-                        .menu_button(
-                            egui::RichText::new(crate::APP_TITLE)
-                                .font(egui::FontId::new(theme::BODY, theme::semibold())),
-                            |ui| app_menu(&mut Drawn(ui), context, actions),
-                        )
-                        .inner
-                        .is_some();
                     // Under Editing only or Minimum menus (session-identity.md
                     // 2.3) each menu gates its own items, so that a row's
                     // look and its click agree: a whole menu disabled at
                     // its start drew some rows as enabled.
-                    let mut menu =
-                        |ui: &mut Ui, title: &str, add: &mut dyn FnMut(&mut dyn MenuRows)| {
-                            open |= ui
-                                .menu_button(title, |ui| add(&mut Drawn(ui)))
-                                .inner
-                                .is_some();
+                    menus(context, actions, &mut |title, rows| {
+                        let opened = if title == crate::APP_TITLE {
+                            let title = egui::RichText::new(title)
+                                .font(egui::FontId::new(theme::BODY, theme::semibold()));
+                            ui.menu_button(title, |ui| rows(&mut Drawn(ui)))
+                        } else {
+                            ui.menu_button(title, |ui| rows(&mut Drawn(ui)))
                         };
-                    menu(ui, "File", &mut |rows| file_menu(rows, context, actions));
-                    menu(ui, "Edit", &mut |rows| edit_menu(rows, context, actions));
-                    menu(ui, "View", &mut |rows| view_menu(rows, context, actions));
-                    menu(ui, "Insert", &mut |rows| {
-                        insert_menu(rows, context, actions)
+                        open |= opened.inner.is_some();
                     });
-                    menu(ui, "Format", &mut |rows| format_menu(rows));
-                    match context.mode {
-                        Mode::Browse | Mode::Preview => {
-                            menu(ui, "Records", &mut |rows| {
-                                records_menu(rows, context, actions)
-                            });
-                        }
-                        Mode::Find => {
-                            menu(ui, "Requests", &mut |rows| {
-                                requests_menu(rows, context, actions)
-                            });
-                        }
-                        Mode::Layout => {
-                            menu(ui, "Layouts", &mut |rows| {
-                                layouts_menu(rows, context, actions)
-                            });
-                            menu(ui, "Arrange", &mut |rows| {
-                                arrange_menu(rows, context, actions)
-                            });
-                        }
-                    }
-                    menu(ui, "Scripts", &mut |rows| {
-                        scripts_menu(rows, context, actions)
-                    });
-                    menu(ui, "Tools", &mut |rows| tools_menu(rows));
-                    menu(ui, "Window", &mut |rows| {
-                        window_menu(rows, context, actions)
-                    });
-                    menu(ui, "Help", &mut |rows| help_menu(rows));
                 });
         });
     // The bar, or an open menu's popup (menus are foreground areas over the
@@ -305,6 +291,43 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
                     .layer_id_at(pos)
                     .is_some_and(|layer| layer.order == egui::Order::Foreground))
     })
+}
+
+/// The menu bar's menus in order, each with its title: the window's bar
+/// draws them, the system menu bar keeps them (`system_menu.rs`). Under
+/// Editing only or Minimum menus (session-identity.md 2.3) each menu gates
+/// its own items, so that a row's look and its click agree: a whole menu
+/// disabled at its start drew some rows as enabled.
+/// What adds a menu's rows.
+pub(crate) type MenuContents<'a> = dyn FnMut(&mut dyn MenuRows) + 'a;
+/// What takes each menu: its title and what adds its rows.
+pub(crate) type MenuSink<'a> = dyn FnMut(&str, &mut MenuContents<'_>) + 'a;
+
+pub(crate) fn menus(context: &MenuContext<'_>, actions: &mut Vec<Action>, menu: &mut MenuSink<'_>) {
+    menu(crate::APP_TITLE, &mut |rows| {
+        app_menu(rows, context, actions)
+    });
+    menu("File", &mut |rows| file_menu(rows, context, actions));
+    menu("Edit", &mut |rows| edit_menu(rows, context, actions));
+    menu("View", &mut |rows| view_menu(rows, context, actions));
+    menu("Insert", &mut |rows| insert_menu(rows, context, actions));
+    menu("Format", &mut |rows| format_menu(rows));
+    match context.mode {
+        Mode::Browse | Mode::Preview => {
+            menu("Records", &mut |rows| records_menu(rows, context, actions));
+        }
+        Mode::Find => menu("Requests", &mut |rows| {
+            requests_menu(rows, context, actions)
+        }),
+        Mode::Layout => {
+            menu("Layouts", &mut |rows| layouts_menu(rows, context, actions));
+            menu("Arrange", &mut |rows| arrange_menu(rows, context, actions));
+        }
+    }
+    menu("Scripts", &mut |rows| scripts_menu(rows, context, actions));
+    menu("Tools", &mut |rows| tools_menu(rows));
+    menu("Window", &mut |rows| window_menu(rows, context, actions));
+    menu("Help", &mut |rows| help_menu(rows));
 }
 
 fn app_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
@@ -986,7 +1009,7 @@ fn scripts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
         if context.open() {
             rows.separator();
             rows.item("Loading Scripts…", None, false, false);
-            if rows.shown() {
+            if context.scripts_unread && rows.ask("scripts") {
                 actions.push(Action::ReadScripts);
             }
         }
@@ -1032,7 +1055,8 @@ fn scripts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     for script in listed {
         match script.kind {
             om_data::ScriptKind::Script => {
-                if rows.item(&script.name, None, false, context.open()) {
+                let key = format!("script {}", script.id);
+                if rows.keyed_item(&key, &script.name, None, false, context.open()) {
                     actions.push(Action::RunScript(script.id));
                 }
             }
@@ -1086,7 +1110,7 @@ fn window_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut
         rows.separator();
         for (id, title, _) in context.windows {
             let this = *id == context.window;
-            if rows.item(title, None, this, true) && !this {
+            if rows.keyed_item(&format!("window {id}"), title, None, this, true) && !this {
                 actions.push(Action::SelectWindow(*id));
             }
         }

@@ -1604,10 +1604,7 @@ fn an_approved_tab_transfers_its_queued_text_to_the_next_editor() {
         .iter_mut()
         .find(|s| s.id == 50)
         .unwrap();
-    let mut pause = ScriptStep::new(62);
-    pause.value = 1;
-    pause.set_calculation(0, Some(&common::workspace::calc("0.5")));
-    field_script.steps.insert(0, pause);
+    field_script.steps.insert(0, ScriptStep::new(62));
     let (mut app, state) = open_state(initial);
     common::loaded_record_number(&mut app);
     app.query_all_by_role_and_label(egui::Role::TextInput, "Given")
@@ -1619,10 +1616,30 @@ fn an_approved_tab_transfers_its_queued_text_to_the_next_editor() {
     common::wait_until(&mut app, "Tab trigger paused", |a| {
         a.state().script_paused()
     });
+    // Tab is in the paused trigger rather than the input or typeahead
+    // queue. Command-minus must neither insert in the old field nor zoom.
+    let width = app
+        .query_all_by_role_and_label(egui::Role::TextInput, "Given")
+        .next()
+        .unwrap()
+        .rect()
+        .width();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+    app.run_steps(3);
+    assert!(app.state().script_paused());
+    let first = app
+        .query_all_by_role_and_label(egui::Role::TextInput, "Given")
+        .next()
+        .unwrap();
+    assert_eq!(first.value().as_deref(), Some("Original"));
+    assert_eq!(first.rect().width(), width);
+    assert!(!common::unsaved(&app));
+
     app.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
     app.event(egui::Event::Text("Y".into()));
     app.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
     app.run_steps(1);
+    continue_pause(&mut app);
     common::wait_until(&mut app, "Tab and its typeahead applied", |a| {
         a.query_all_by_role_and_label(egui::Role::TextInput, "Given")
             .nth(1)
