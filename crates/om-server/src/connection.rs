@@ -3073,7 +3073,8 @@ fn update_table(
         let changed = file
             .hosted
             .write_store()
-            .update_table(table, &mut environment);
+            .update_table(table, &mut environment)
+            .map_err(|reason| PerformError::Status(reason.into()))?;
         if changed {
             file.hosted.save();
         }

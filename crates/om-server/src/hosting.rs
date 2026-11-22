@@ -352,12 +352,10 @@ impl Hosted {
                 read_only = true;
             }
         }
-        // Loaded with content the writer cannot write back: served, never
-        // written (the store logged what it found).
-        read_only |= store.is_read_only();
         let mut environment =
             || crate::recalc::record_environment("", crate::recalc::random_uuid());
         let recovered = store.recover(&mut environment);
+        read_only |= store.is_read_only();
         let accounts = RwLock::new(Accounts::of(&store));
         Ok(Hosted {
             id,

@@ -2479,12 +2479,14 @@ result type changes to container has its old cells, derived values of
 the old type, dropped with the change; a normal field made a container
 calculation keeps its entered values until the recompute writes its
 results, so a calculation the recompute cannot evaluate loses nothing.
-A cell can still name a member without having counted a reference (text
-kept across such a change, or across a restart, whose recovery does not
-know the old types): every release is held so that a member's count
-stays at least the number of the table's cells that still name it, and
-a held release is logged, so no cell takes away another's reference
-(inf). The new container data held for the library during one walk is
+A cell can still name a member without having counted a reference,
+for example when an ordinary Text field becomes a container
+calculation and the calculation cannot be evaluated. Both recompute and
+deferred schema cleanup protect the references named by surviving
+record or global cells before releasing old names. Recompute reserves
+each new acquisition separately, including when a newly created member
+receives a key that old text happens to name. When names do not establish
+ownership, the server may retain a count and logs the held release (inf). The new container data held for the library during one walk is
 limited to 256 MiB, charged as each result is queued (its data, text and
 slot) and per queued record (its map and entry); past it a result fails
 on its record. A
@@ -2538,11 +2540,15 @@ disk holds either the state before op73 (old values, the list present) or
 the state after (new values, no list), never half a table. The op13 before
 op73 is saved at once, so a server that stops between the two (or during
 op73) leaves the new field catalog, its deferred list and the old values.
-When such a file is loaded, a table with a deferred list gets no basis and
-`Store::recover` runs its deferred work, recomputing all its stored
-calculations, before the file is served, and saves (inf: what FileMaker
-Server does with a list a stop left is unknown). Recomputing is
-idempotent, so finishing the work twice changes nothing more than once.
+When such a file is loaded, a table with a deferred list gets no old
+basis. For a recognized list that does not request removal or conversion
+of stored values, `Store::recover` finishes the work and recomputes
+the stored calculations with guarded library accounting. A malformed
+or unsupported list, or deferred removal or conversion that requires an
+unknown old field type, leaves the work and values in place. Startup
+hosts that file read-only. A live op73 rejects those cases before
+removing the work list or changing any stored values (inf: FileMaker
+Server's restart behavior is unmeasured).
 
 **What else read the schema (2026-10-29, review fix).** The store counts
 schema changes (`Store::schema_generation`: every catalog op13 or op86

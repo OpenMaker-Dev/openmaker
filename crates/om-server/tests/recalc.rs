@@ -421,7 +421,7 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
     let mut catalog = field_catalog(&root);
     set_formula(&mut catalog, DOUBLED, "Count * 4");
     defer(&mut catalog, DOUBLED, FORMULA_CHANGED);
-    root.put(&[&t, &[3]], catalog);
+    root.put(&[&t, &[3]], catalog.clone());
     let file = TempFile::from_tree("recalc-recover", &root);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
@@ -437,6 +437,19 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
         .and_then(|n| om_hbam::Cell::from_node(n).text())
         .and_then(Result::ok);
     assert_eq!(value.as_deref(), Some("12"));
+
+    // A pending removal has no old field definition after restart. Leave
+    // all pending work intact, including the otherwise replayable formula.
+    catalog.remove(&[&[5], &uint_segment(NAME)]);
+    defer(&mut catalog, NAME, 0x1e1);
+    root.put(&[&t, &[3]], catalog);
+    let file = TempFile::from_tree("recalc-recover-unknown-old-type", &root);
+    let before = std::fs::read(&file.0).unwrap();
+    let (mut client, _) = server::logged_in(server::start(&file), "client");
+    let records = records_of(&mut client, TABLE);
+    assert!(cell(&records, 1, NAME).is_some());
+    assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), before);
 }
 
 /// A script that runs while Manage Database changes a stored calculation
@@ -1033,4 +1046,98 @@ fn recovery_releases_no_reference_a_cell_did_not_count() {
         "Photo's data is kept"
     );
     assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+}
+
+/// Two old text cells name the key a generated file will receive. Startup
+/// must keep the new cell's acquisition even when both old names go away.
+#[test]
+fn recovery_keeps_new_container_acquisitions_when_old_names_are_removed() {
+    const SHAPED_A: u64 = 46;
+    const SHAPED_B: u64 = 47;
+    const GENERATED: u64 = 48;
+    let mut root = fixture::tree(&[], true);
+    let table = uint_segment(TABLE);
+    let reference = om_data::containers::reference_text(&[1]);
+    let names = fixture::names();
+    for (field, name, formula) in [
+        (SHAPED_A, "ShapedA", "\"\""),
+        (SHAPED_B, "ShapedB", "\"\""),
+        (
+            GENERATED,
+            "Generated",
+            "If ( Count = 3 ; Base64Decode ( \"aGVsbG8=\" ; \"a.txt\" ) ; \"\" )",
+        ),
+    ] {
+        fixture::add_field(&mut root, TABLE, field, name, 2, 6, 0, 0x20, 0);
+        fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), field, 5, formula);
+        if field != GENERATED {
+            root.put(
+                &[&table, &[5], &[1], &uint_segment(field)],
+                om_scripts::text_node(&[], &reference),
+            );
+        }
+    }
+    let mut catalog = field_catalog(&root);
+    for field in [SHAPED_A, SHAPED_B, GENERATED] {
+        defer(&mut catalog, field, 0x40 | FORMULA_CHANGED);
+    }
+    root.put(&[&table, &[3]], catalog);
+    assert!(root.at(&[&table, &[0x1f]]).is_none());
+    let file = TempFile::from_tree("recalc-recover-new-member", &root);
+    let (mut client, _) = server::logged_in(server::start(&file), "client");
+    let records = records_of(&mut client, TABLE);
+    assert_eq!(cell(&records, 1, SHAPED_A), None);
+    assert_eq!(cell(&records, 1, SHAPED_B), None);
+    assert_eq!(cell(&records, 1, GENERATED), Some(reference.as_str()));
+    assert_eq!(cell(&records, 2, GENERATED), None);
+    let count = client
+        .download(&[&table, &[0x1f], &[5], &[1], &[0x12]])
+        .unwrap();
+    assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
+    assert_eq!(count.value, 1u32.to_be_bytes());
+}
+
+/// A skipped Text-to-Container calculation keeps the entered value.
+/// Deleting that field later must leave Photo's sole counted reference.
+#[test]
+fn deleting_a_converted_field_preserves_the_member_owned_by_photo() {
+    const ENTERED: u64 = 46;
+    let mut root = fixture::tree(&[], true);
+    let table = uint_segment(TABLE);
+    let field = uint_segment(ENTERED);
+    fixture::add_photo(&mut root);
+    fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 1, 1, 0, 0, 0);
+    let reference = om_data::containers::reference_text(&[1]);
+    root.put(
+        &[&table, &[5], &[1], &field],
+        om_scripts::text_node(&[], &reference),
+    );
+    let file = TempFile::from_tree("recalc-delete-converted", &root);
+    let (mut designer, id) = server::logged_in(server::start(&file), "designer");
+    fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 2, 6, 0, 0x20, 0);
+    fixture::add_formula(
+        &mut root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        ENTERED,
+        5,
+        "Notes::Body",
+    );
+    let mut catalog = field_catalog(&root);
+    defer(&mut catalog, ENTERED, 0x40 | FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let records = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&records, 1, ENTERED), Some(reference.as_str()));
+
+    catalog.remove(&[&[5], &field]);
+    defer(&mut catalog, ENTERED, 0x1e9);
+    save_field_catalog(&mut designer, id, &catalog);
+    let records = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&records, 1, ENTERED), None);
+    assert_eq!(cell(&records, 1, fixture::PHOTO), Some(reference.as_str()));
+    let count = designer
+        .download(&[&table, &[0x1f], &[5], &[1], &[0x12]])
+        .unwrap();
+    assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
+    assert_eq!(count.value, 1u32.to_be_bytes());
 }

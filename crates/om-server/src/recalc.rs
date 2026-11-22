@@ -53,6 +53,19 @@ pub struct FieldBasis {
     formula: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+impl FieldBasis {
+    pub fn known_storage(&self) -> Option<(bool, bool)> {
+        if !(1..=3).contains(&self.kind) || !(1..=6).contains(&self.data_type) {
+            return None;
+        }
+        Some((self.data_type == 6, self.options & 0x1_0000 != 0))
+    }
+
+    fn is_stored_container_calculation(&self) -> bool {
+        self.kind == 2 && self.data_type == 6 && self.options & 0x3_0000 == 0
+    }
+}
+
 /// A table's fields by id.
 pub type TableBasis = BTreeMap<u64, FieldBasis>;
 
@@ -62,8 +75,19 @@ pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
     table
         .fields
         .iter()
-        .filter_map(|field| {
-            let options = field.decoded_options()?;
+        .map(|field| {
+            let Some(options) = field.decoded_options() else {
+                return (
+                    field.id,
+                    FieldBasis {
+                        kind: 0,
+                        data_type: 0,
+                        options: 0,
+                        repetitions: 0,
+                        formula: None,
+                    },
+                );
+            };
             let f = uint_segment(field.id);
             let formula = (options.field_kind == 2)
                 .then(|| {
@@ -75,7 +99,7 @@ pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
                     Some((part(CONTEXT)?, part(POLISH)?))
                 })
                 .flatten();
-            Some((
+            (
                 field.id,
                 FieldBasis {
                     kind: options.field_kind,
@@ -84,7 +108,7 @@ pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
                     repetitions: options.max_repetitions,
                     formula,
                 },
-            ))
+            )
         })
         .collect()
 }
@@ -125,24 +149,31 @@ pub fn changed_fields(
 /// made a container calculation) keeps them until the recompute writes
 /// its results, so that a calculation the recompute cannot evaluate loses
 /// nothing (#427's review); what FileMaker shows of them is unmeasured
-/// (#293). Without an `old` basis the old types are not known and nothing
-/// is dropped. Cells that name a member without a counted reference never
-/// release it: the recompute holds every release to the cells that still
-/// name the member ([`crate::store::Store`]'s `naming_cells`).
-pub fn retyped_to_container(old: Option<&TableBasis>, new: &TableBasis) -> BTreeSet<u64> {
-    const CONTAINER: u8 = 6;
-    const CALCULATION: u8 = 2;
+/// (#293). Without an `old` basis there is no eager cleanup, and releases
+/// during the recompute are restricted to the surviving cells' counts.
+pub fn retyped_to_container(
+    old: Option<&TableBasis>,
+    new: &TableBasis,
+) -> Result<BTreeSet<u64>, &'static str> {
     let Some(old) = old else {
-        return BTreeSet::new();
+        return Ok(BTreeSet::new());
     };
-    new.iter()
-        .filter(|(_, basis)| basis.kind == CALCULATION && basis.data_type == CONTAINER)
-        .filter(|(id, _)| {
-            old.get(*id)
-                .is_some_and(|was| was.kind == CALCULATION && was.data_type != CONTAINER)
-        })
-        .map(|(id, _)| *id)
-        .collect()
+    let mut retyped = BTreeSet::new();
+    for (id, basis) in new {
+        if !basis.is_stored_container_calculation() {
+            continue;
+        }
+        let Some(was) = old.get(id) else {
+            continue;
+        };
+        let Some((container, _)) = was.known_storage() else {
+            return Err("the old type of a stored container calculation is unknown");
+        };
+        if was.kind == 2 && was.options & 0x3_0000 == 0 && !container {
+            retyped.insert(*id);
+        }
+    }
+    Ok(retyped)
 }
 
 /// What a recomputation did.

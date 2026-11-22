@@ -473,6 +473,12 @@ fn evaluable(
     if !(1..=255).contains(&options.max_repetitions) {
         return Err("calculations of more than 255 repetitions are not recomputed.".into());
     }
+    if (2..=u32::from(options.max_repetitions))
+        .filter_map(|repetition| cell_of(field, repetition))
+        .any(|cell| table.field(cell).is_some())
+    {
+        return Err("one of its repetitions shares a key with another field.".into());
+    }
     let expression = parse_recomputed(code, context)?;
     if let Some(occurrence) = expression.formula.occurrence() {
         if calc
