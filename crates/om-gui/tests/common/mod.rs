@@ -49,6 +49,23 @@ pub fn mock() -> App {
     harness(Box::new(MockProvider::new()))
 }
 
+/// A license store with no saved license. Tests never touch the
+/// developer's own credential store: on macOS a test build is a program the
+/// Keychain item does not trust, and reading it waits for the user (#151).
+pub struct NoLicense;
+
+impl om_gui::licensing::LicenseStore for NoLicense {
+    fn load(&mut self) -> Result<Option<om_gui::licensing::LicenseKey>, DataError> {
+        Ok(None)
+    }
+    fn save(&mut self, _: &om_gui::licensing::LicenseKey) -> Result<(), DataError> {
+        Err(DataError::new("Tests do not save licenses."))
+    }
+    fn remove(&mut self) -> Result<(), DataError> {
+        Ok(())
+    }
+}
+
 /// Step the app until `done` holds. Provider replies arrive from another
 /// thread, so this sleeps between frames rather than spinning.
 pub fn wait_until(app: &mut App, what: &str, mut done: impl FnMut(&App) -> bool) {

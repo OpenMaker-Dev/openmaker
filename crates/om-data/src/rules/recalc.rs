@@ -5,10 +5,11 @@
 //! calc-values.md 8.8).
 //!
 //! The plan is per field, unlike [`RecordPlan`]: a calculation this
-//! evaluator cannot run (a related field, a plug-in, a container result)
-//! is listed in [`Recalculation::skipped`] and its stored values stay as
-//! they were, while the table's other calculations are recomputed. A
-//! repeating calculation is computed in each of its repetitions.
+//! evaluator cannot run (a related field, a plug-in) is listed in
+//! [`Recalculation::skipped`] and its stored values stay as they were,
+//! while the table's other calculations are recomputed. A repeating
+//! calculation is computed in each of its repetitions; a container result
+//! is handed to the host to store ([`Recomputed::containers`]).
 //! Auto-enter calculations are not recomputed (they apply when data is
 //! entered) and nothing is validated.
 
@@ -47,6 +48,9 @@ struct Target {
     repetitions: u32,
     /// How the formula reads each field it reads, for the check above.
     readings: BTreeMap<u64, Readings>,
+    /// Its result is a container, which the host stores
+    /// ([`Recomputed::containers`]).
+    container: bool,
 }
 
 /// How a formula reads a field of its own context, by every operation
@@ -79,9 +83,27 @@ pub struct Skipped {
 pub struct Recomputed {
     /// The cells whose text changed (`None`: now empty).
     pub values: BTreeMap<u64, Option<String>>,
+    /// The cells of container results that changed: what the host stores
+    /// in the table's library and the cell then names.
+    pub containers: BTreeMap<u64, ContainerResult>,
     /// Calculations that failed on this record; their cells keep their
     /// stored text.
     pub failed: Vec<(u64, DataError)>,
+}
+
+/// A recomputed container result as the host stores it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContainerResult {
+    /// No value: the cell goes, releasing a member it named.
+    Empty,
+    /// Text, stored as the cell's text (as text a script sets into a
+    /// container field is, containers.md "Implementation notes (OpenMaker
+    /// Server scripts)").
+    Text(String),
+    /// Container data: a member of a library the value names, or data to
+    /// store as a new member (or one more reference to a member holding
+    /// the same data).
+    Data(om_calc::Container),
 }
 
 impl Recalculation {
@@ -169,6 +191,42 @@ impl Recalculation {
                     name,
                     reason,
                 }),
+            }
+        }
+        // A container result is stored by the host after the walk, so a
+        // calculation reading one recomputed in the same pass would read
+        // its old value; so would one reading such a skipped calculation,
+        // and so on.
+        // A container calculation reading another is a reader too.
+        let producers: BTreeSet<u64> = ready
+            .iter()
+            .filter(|(_, t)| t.container)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut removed: BTreeSet<u64> = BTreeSet::new();
+        loop {
+            let readers: Vec<u64> = ready
+                .iter()
+                .filter(|(id, t)| {
+                    t.expression
+                        .dependencies
+                        .iter()
+                        .any(|d| (producers.contains(d) && d != *id) || removed.contains(d))
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            if readers.is_empty() {
+                break;
+            }
+            for id in readers {
+                removed.insert(id);
+                ready.remove(&id);
+                skipped.push(Skipped {
+                    field: id,
+                    name: table.field(id).map_or_else(String::new, |f| f.name.clone()),
+                    reason: "it reads a container calculation recomputed in the same change."
+                        .into(),
+                });
             }
         }
         // Formulas read the table through their context occurrence.
@@ -275,10 +333,14 @@ impl Recalculation {
 
     /// The new values of one record, `row` being its stored cells as text
     /// (repetition cells under `F * 256 + n`).
+    /// `budget` is what may still be held of container results for the
+    /// host to store after the walk: a result past it fails on the record,
+    /// which keeps its value.
     pub fn recompute(
         &self,
         row: &BTreeMap<u64, String>,
         environment: &RecordEnvironment,
+        budget: &mut usize,
     ) -> Recomputed {
         // The file's own calculation with no session, as FileMaker Server
         // recomputes stored values (calc-functions.md 6.1, file context).
@@ -298,6 +360,47 @@ impl Recalculation {
                 let skip = !target.always
                     && !target.readings.is_empty()
                     && !self.reads_a_value(target, repetition, &row);
+                if target.container {
+                    let result = if skip {
+                        Ok(ContainerResult::Empty)
+                    } else {
+                        self.plan
+                            .evaluate_repetition_value(
+                                target.id,
+                                repetition,
+                                &target.expression,
+                                &row,
+                                &session,
+                            )
+                            .and_then(|(value, text)| container_result(value, text))
+                    };
+                    match result {
+                        Ok(result) => {
+                            if holds(row.get(&cell), &result, self.plan.table, environment) {
+                                continue;
+                            }
+                            // What the host holds for the library until the
+                            // walk ends, charged as it is queued.
+                            let cost = held_cost(&result);
+                            if cost > *budget {
+                                out.failed.push((
+                                    target.id,
+                                    DataError::with_code(
+                                        super::error::UNAVAILABLE,
+                                        "the container data recomputed in one change passed its \
+                                         limit."
+                                            .to_string(),
+                                    ),
+                                ));
+                                continue;
+                            }
+                            *budget -= cost;
+                            out.containers.insert(cell, result);
+                        }
+                        Err(e) => out.failed.push((target.id, e)),
+                    }
+                    continue;
+                }
                 let text = if skip {
                     String::new()
                 } else {
@@ -362,13 +465,19 @@ fn evaluable(
     code: &[u8],
     context: &[u8],
 ) -> Result<Target, String> {
-    if matches!(data_type, DataType::Container | DataType::Unknown(_)) {
-        return Err("only text, number, date and time results are recomputed.".into());
+    if matches!(data_type, DataType::Unknown(_)) {
+        return Err("its result type is unknown.".into());
     }
     // Repetition n of field F is the cell `F * 256 + n` (calc-values.md,
     // "Repetitions in records"), so only 255 have cells.
     if !(1..=255).contains(&options.max_repetitions) {
         return Err("calculations of more than 255 repetitions are not recomputed.".into());
+    }
+    if (2..=u32::from(options.max_repetitions))
+        .filter_map(|repetition| cell_of(field, repetition))
+        .any(|cell| table.field(cell).is_some())
+    {
+        return Err("one of its repetitions shares a key with another field.".into());
     }
     let expression = parse_recomputed(code, context)?;
     if let Some(occurrence) = expression.formula.occurrence() {
@@ -415,7 +524,100 @@ fn evaluable(
         always: options.options & ALWAYS_EVALUATE != 0,
         repetitions: u32::from(options.max_repetitions),
         readings: found,
+        container: data_type == DataType::Container,
     })
+}
+
+/// What a container calculation's value `value` (shown as `text`)
+/// stores: nothing, its text, or container data. Text in the form a cell
+/// names a library member by (containers.md 1.4) cannot be stored as text:
+/// the cell would name that member without counting it, so the
+/// calculation fails on the record, which keeps its value.
+fn container_result(value: om_calc::Value, text: String) -> Result<ContainerResult, DataError> {
+    let text = match value {
+        om_calc::Value::Container(c) if c.is_empty() => return Ok(ContainerResult::Empty),
+        // A reference text without data stays text.
+        om_calc::Value::Container(c) if c.library.is_none() && c.streams.is_empty() => {
+            c.text.as_str().to_owned()
+        }
+        om_calc::Value::Container(c) => return Ok(ContainerResult::Data(c)),
+        _ => text,
+    };
+    if text.is_empty() {
+        return Ok(ContainerResult::Empty);
+    }
+    if containers::reference(&text).is_some() {
+        return Err(DataError::with_code(
+            super::error::UNAVAILABLE,
+            "its text result has the form of a container's library reference.".to_string(),
+        ));
+    }
+    Ok(ContainerResult::Text(text))
+}
+
+/// Charge each result for a whole map node so a split, including a new
+/// root, can never leave a sparsely filled node uncharged. Rust's B-tree
+/// nodes have 11 key/value slots and up to 12 edges. Allow four extra
+/// words for node metadata and alignment.
+fn held_cost(result: &ContainerResult) -> usize {
+    use std::mem::size_of;
+
+    const NODE: usize = 11 * size_of::<(u64, ContainerResult)>() + 16 * size_of::<usize>();
+    const ARC_HEADER: usize = 2 * size_of::<usize>();
+    NODE + match result {
+        ContainerResult::Empty => 0,
+        ContainerResult::Text(text) => text.capacity(),
+        ContainerResult::Data(c) => {
+            let streams = c.streams.capacity() * size_of::<(om_calc::StreamType, Vec<u8>)>()
+                + c.streams.iter().map(|(_, b)| b.capacity()).sum::<usize>();
+            let expanded = c.decompressed.as_ref().map_or(0, |bytes| {
+                ARC_HEADER + size_of::<Vec<u8>>() + bytes.capacity()
+            });
+            let library = c.library.as_ref().map_or(0, |reference| {
+                ARC_HEADER + size_of::<om_calc::LibraryRef>() + reference.member.capacity()
+            });
+            c.text.heap_capacity_bytes() + streams + expanded + library
+        }
+    }
+}
+
+/// Whether the cell text `stored` of a record of `table` already holds
+/// `result`: no value, the same text, or a member of the table's library
+/// with the same data (its own member, or one whose MD5 is the data's,
+/// containers.md 2.2) as `environment`'s reader reads it.
+fn holds(
+    stored: Option<&String>,
+    result: &ContainerResult,
+    table: u64,
+    environment: &RecordEnvironment,
+) -> bool {
+    let stored = stored.map_or("", String::as_str);
+    match result {
+        ContainerResult::Empty => stored.is_empty(),
+        ContainerResult::Text(text) => {
+            containers::reference(stored).is_none() && stored == text.as_str()
+        }
+        ContainerResult::Data(c) => {
+            let Some(member) = containers::reference(stored) else {
+                return false;
+            };
+            if let Some(library) = &c.library {
+                if library.table == table {
+                    return library.member == member;
+                }
+            }
+            let md5 = match (&c.library, containers::tree(c)) {
+                (_, Some((_, md5))) => md5,
+                (Some(library), None) => library.md5,
+                (None, None) => return false,
+            };
+            environment
+                .containers
+                .as_ref()
+                .and_then(|reader| reader.member(table, &member).ok().flatten())
+                .is_some_and(|info| info.md5 == md5)
+        }
+    }
 }
 
 /// Whether `op` takes a field parameter it expands to every repetition
@@ -849,7 +1051,8 @@ mod tests {
             (6, "old".to_string()),
             (7, "H".to_string()),
         ]);
-        let out = recalc.recompute(&row, &environment());
+        let mut budget = usize::MAX;
+        let out = recalc.recompute(&row, &environment(), &mut budget);
         assert!(out.failed.is_empty(), "{:?}", out.failed);
         assert_eq!(
             out.values,

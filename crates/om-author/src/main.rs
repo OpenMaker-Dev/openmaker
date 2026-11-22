@@ -5,7 +5,6 @@
 //! options are mapped to the command's parameters here.
 
 use std::io::Read;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use om_author::api::{
@@ -20,9 +19,9 @@ use om_author::api::{
     ChoiceParams, ChooseParams, CompletionParams, NoParams, OtherParams, ValueListParams,
     ValueListValuesParams,
 };
+use om_author::config::ConnectionOptions;
 use om_author::service::handle_offline;
-use om_author::{catalog, read_password, Command, Service, Target, DEFAULT_PORT};
-use om_provider::NativeConfig;
+use om_author::{catalog, Command, Service};
 
 const USAGE: &str = "\
 usage: om-author [connection] <command> [options]
@@ -156,24 +155,23 @@ error is not 0; a run whose answer is lost is outcome_unknown, and it may
 have run.
 
 connection (or the environment variable):
+  --config PATH          OPENMAKER_AUTHOR_CONFIG, else user author.json
   --host HOST            OPENMAKER_HOST
   --port PORT            OPENMAKER_PORT (default 5003)
   --file NAME            OPENMAKER_FILE
   --account NAME         OPENMAKER_ACCOUNT
   --password-file PATH   OPENMAKER_PASSWORD_FILE, else OPENMAKER_PASSWORD
+License: OPENMAKER_LICENSE_KEY, OPENMAKER_LICENSE_FILE (first line), or
+         license_file in author.json.
 TLS: OPENMAKER_CA_CERT, OPENMAKER_CLIENT_CERT and OPENMAKER_CLIENT_KEY.
-FileMaker client license: OPENMAKER_LICENSE_FILE (first line).
-Passwords are never taken as arguments.";
+Run om-author config-path to print the selected configuration file path.
+Passwords and license keys are never taken as arguments.";
 
 /// The arguments, parsed.
 #[derive(Clone, Default)]
 struct Args {
     command: Option<String>,
-    host: Option<String>,
-    port: Option<String>,
-    file: Option<String>,
-    account: Option<String>,
-    password_file: Option<PathBuf>,
+    connection: ConnectionOptions,
     script: Option<String>,
     script_name: Option<String>,
     source: Option<String>,
@@ -246,11 +244,12 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
     while let Some(arg) = raw.next() {
         let mut value = |name: &str| raw.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
-            "--host" => args.host = Some(value(&arg)?),
-            "--port" => args.port = Some(value(&arg)?),
-            "--file" => args.file = Some(value(&arg)?),
-            "--account" => args.account = Some(value(&arg)?),
-            "--password-file" => args.password_file = Some(value(&arg)?.into()),
+            "--config" => args.connection.config = Some(value(&arg)?.into()),
+            "--host" => args.connection.host = Some(value(&arg)?),
+            "--port" => args.connection.port = Some(value(&arg)?),
+            "--file" => args.connection.file = Some(value(&arg)?),
+            "--account" => args.connection.account = Some(value(&arg)?),
+            "--password-file" => args.connection.password_file = Some(value(&arg)?.into()),
             "--script" => args.script = Some(value(&arg)?),
             "--script-name" => args.script_name = Some(value(&arg)?),
             "--source" => args.source = Some(value(&arg)?),
@@ -315,42 +314,6 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
         }
     }
     Ok(args)
-}
-
-/// An option, else its environment variable.
-fn setting(arg: Option<String>, variable: &str) -> Option<String> {
-    arg.or_else(|| std::env::var(variable).ok())
-        .filter(|v| !v.is_empty())
-}
-
-fn target(args: &Args) -> Result<Target, String> {
-    let required = |arg: &Option<String>, variable: &str, option: &str| {
-        setting(arg.clone(), variable)
-            .ok_or_else(|| format!("No {option}: give --{option} or set {variable}."))
-    };
-    let host = required(&args.host, "OPENMAKER_HOST", "host")?;
-    let file = required(&args.file, "OPENMAKER_FILE", "file")?;
-    let account = required(&args.account, "OPENMAKER_ACCOUNT", "account")?;
-    let port = match setting(args.port.clone(), "OPENMAKER_PORT") {
-        Some(port) => port
-            .parse()
-            .map_err(|_| format!("“{port}” is not a port number."))?,
-        None => DEFAULT_PORT,
-    };
-    let password_file = args
-        .password_file
-        .clone()
-        .or_else(|| setting(None, "OPENMAKER_PASSWORD_FILE").map(PathBuf::from));
-    let password = read_password(password_file.as_deref())?;
-    let mut tls = NativeConfig::from_env().map_err(|e| e.to_string())?;
-    if let Some(path) = std::env::var_os("OPENMAKER_LICENSE_FILE").filter(|p| !p.is_empty()) {
-        let license = zeroize::Zeroizing::new(
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Cannot read the FileMaker client license file: {e}"))?,
-        );
-        tls.machine.install_code = license.lines().next().unwrap_or_default().trim().to_owned();
-    }
-    Ok(Target::new(host, port, file, account, password, tls))
 }
 
 /// The edited text: a file, or stdin for `-`.
@@ -848,12 +811,17 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
 fn respond(command: &Command, args: &Args) -> Result<serde_json::Value, String> {
     Ok(match handle_offline(command) {
         Some(response) => response,
-        None => Service::new(target(args)?).handle(command),
+        None => Service::new(args.connection.target()?).handle(command),
     })
 }
 
 fn run() -> Result<ExitCode, String> {
-    let args = parse_args(std::env::args().skip(1).collect())?;
+    let raw: Vec<_> = std::env::args().skip(1).collect();
+    if matches!(raw.as_slice(), [flag] if flag == "--help" || flag == "-h") {
+        println!("{USAGE}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let args = parse_args(raw)?;
     let name = match args.command.as_deref() {
         None | Some("help") => {
             println!("{USAGE}");
@@ -870,8 +838,15 @@ fn run() -> Result<ExitCode, String> {
         Some(name) => name.to_owned(),
     };
     let response = match name.as_str() {
+        "config-path" => {
+            let path = args.connection.config_path().ok_or(
+                "No user config directory is available. Give --config or set OPENMAKER_AUTHOR_CONFIG.",
+            )?;
+            println!("{}", path.display());
+            return Ok(ExitCode::SUCCESS);
+        }
         "mcp" => {
-            om_author::mcp::serve_stdio_lazy(move || target(&args).map(Service::new))?;
+            om_author::mcp::serve_stdio_lazy(move || args.connection.target().map(Service::new))?;
             return Ok(ExitCode::SUCCESS);
         }
         "request" => {

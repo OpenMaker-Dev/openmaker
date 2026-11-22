@@ -370,11 +370,25 @@ Persistence uses [keyring](https://docs.rs/keyring/3.6.3/keyring/)'s explicit
 native backends: macOS Keychain, Windows Credential Manager and Linux Secret
 Service with encrypted D-Bus transport. The service is
 `org.openmaker.OpenMaker` and the account is `filemaker-client-license`.
-Operations run on the provider worker, serialized with connection requests.
+Operations run in order on a thread of their own, for the provider worker.
 Failures do not write plaintext or silently switch to temporary storage; a
-failed save keeps the masked draft for retry. Loading a key fails the
-connection if the store is inaccessible; turning off **Use saved license**
-bypasses the store for an unlicensed server. The desktop client does not
+failed save keeps the masked draft for retry. Opening or reconnecting to a
+host waits for the saved key at most 3 seconds: the OS can hold a read
+while it asks the user (macOS Keychain asks whether a newly built OpenMaker
+may use the item, and the prompt can sit behind other windows). When the
+store fails or does not answer in time, the connection goes ahead without
+a key, which OpenMaker Server does not need; if the host refuses it, the
+error says the saved license was not sent and why. The next attempt takes
+the answer of a read that was still waiting rather than asking again, if it
+came within the last minute ([#151](https://github.com/OpenMaker-Dev/openmaker/issues/151)).
+While such a read waits, Save and Remove say so and change nothing;
+otherwise they wait for the store without a limit. When the dialog cannot
+tell whether a key is saved, **Check Again** reads the store again and keeps
+the draft. The app-wide dialog takes only the reply to its current request,
+even if the window that sent it closes or its session changes. License
+requests reach the store even when the window's host is gone. If the
+store's thread stops (its store failed), OpenMaker must be started again to
+reach it. Turning off **Use saved license** bypasses the store. The desktop client does not
 import license keys from `.env` or environment variables. License values and
 machine-info license fields are redacted in diagnostics.
 
@@ -1459,6 +1473,28 @@ too, so a hidden one takes nothing. A button there runs in that row, which
 the worker finds by its number (`enter_clicked_row` without a record
 identity): Set Field into the creation row creates a related record, and
 Delete Portal Row there deletes nothing (script-runtime.md 13.24).
+
+A portal saved with FileMaker Pro 26.1's "Place row for new record at top"
+(portal option `0x400`, layout-model.md 5.3.2) draws the creation row,
+and the rows begun in it, above its records, when it does not scroll
+(option `0x1` clear); a portal that scrolls keeps them last, as FileMaker
+Pro 26.1.1's `DataEntryModel::IsVisibleTopNewPortalRow` decides
+([#343](https://github.com/OpenMaker-Dev/openmaker/issues/343)). Rows are numbered where they are drawn, in Browse, for Tab and
+for scripts alike: the creation row is row 1, the records follow, and
+scripts reach the creation row there (Go to Portal Row, a button in the
+row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
+and whether a script reaches it, are unmeasured]. A portal whose initial
+row is past 1, scrolling or not, draws the records from that row on and
+numbers its rows from there, whether or not records fill the rows before
+it, also for scripts. Go to Portal Row [First] and Go to Field go to the
+initial row, Previous stops there, and a number before it is 101. Go to
+Related Record from a filtering portal's row includes earlier filter
+matches in the found set [I: the effect of Initial Row is unmeasured].
+A Go to Portal Row whose OnObjectExit begins or deletes a row moves to
+the row it chose, found again by what it shows (a record being created
+by its draft, whatever other drafts go), or fails with 101 when that row
+left the portal. The option's storage is read from FileMaker Pro 26.1.1's
+binaries, not from a file it saved, and Portal Setup does not offer it.
 
 A step that puts the focus in a field of a portal row (Go to Field, Go to
 Object, Go to Portal Row with a field active), as the starter solutions'
@@ -2739,10 +2775,10 @@ Limits:
   unmeasured.
 - **Printing and exporting** follow FileMaker Pro 26.0.3's readings on
   local files (session-identity.md 2.3, [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)). With errors captured, Copy
-  All Records shows no alert, which is unmeasured [I]. Save a Copy as and
-  Snapshot Link are not implemented, and Import Records reads no
-  FileMaker file, so their outcomes under a denying set (800, 0, 714) are
-  not reproduced.
+  All Records shows no alert, which is unmeasured [I]. Save a Copy as
+  returns 800 under a denying set, with no chooser (it has none yet).
+  Snapshot Link is not implemented, and Import Records reads no FileMaker
+  file, so their outcomes under a denying set (0, 714) are not reproduced.
 - **Editing only and Minimum menus** keep layout and record navigation,
   the status toolbar and formatting bar, zoom and Minimize Window, and
   disable modes, views, the record, omit, find and sort commands,

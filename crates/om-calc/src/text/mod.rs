@@ -131,6 +131,18 @@ pub struct Text {
 }
 
 impl Text {
+    /// Bytes reserved for the text, style runs and their font names.
+    pub fn heap_capacity_bytes(&self) -> usize {
+        self.text.capacity()
+            + self.runs.capacity() * std::mem::size_of::<(Range<usize>, CharStyle)>()
+            + self
+                .runs
+                .iter()
+                .filter_map(|(_, style)| style.font.as_ref())
+                .map(String::capacity)
+                .sum::<usize>()
+    }
+
     /// Empty text.
     pub fn new() -> Text {
         Text::default()

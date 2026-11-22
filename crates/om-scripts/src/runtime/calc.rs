@@ -228,6 +228,15 @@ impl CalcHost for ScriptCalc<'_> {
         self.host.related_record(occurrence, record, related, index)
     }
 
+    fn referenced_record(
+        &self,
+        occurrence: u64,
+        record: u64,
+        related: u64,
+    ) -> Result<Option<u64>, CalcError> {
+        self.host.referenced_record(occurrence, record, related)
+    }
+
     fn found_record(&self, occurrence: u64, index: usize) -> Result<Option<u64>, CalcError> {
         self.host.found_record(occurrence, index)
     }

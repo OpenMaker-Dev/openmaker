@@ -29,7 +29,9 @@ use om_hbam::{RidList, Table};
 use om_query::find::{
     self as finders, ClientFind, ClientFindError, Criterion, FieldIndex, FindContext, IndexKind,
 };
-use om_query::keys::{record_value_keys, word_keys, TextKeys, EMPTY_TEXT_KEY, INVALID_KEY};
+use om_query::keys::{
+    record_value_keys, word_keys, Reading, TextKeys, EMPTY_TEXT_KEY, INVALID_KEY,
+};
 
 use crate::calc::{check_sort_path, NativeSource};
 use crate::{download_records, download_tree, failure, record_ids, NativeProvider};
@@ -731,6 +733,14 @@ impl NativeProvider {
         Ok(found)
     }
 
+    /// How the file's stored numbers and dates read for their index keys
+    /// (query-program.md 7.3): its locale's date order and decimal and
+    /// thousands separators.
+    fn reading(&mut self) -> Result<Reading, DataError> {
+        let schema = self.calc_schema_cached()?;
+        Ok(reading_of(&schema.locale))
+    }
+
     /// The file's own language (`Locale::Type`), which an index in
     /// language 0 keys text in (query-program.md 7.2): `None` when the
     /// file's locale record does not decode
@@ -873,7 +883,7 @@ impl NativeProvider {
             .collect();
         let failed = |e: ClientFindError| client_find_error(table, e);
         let mut client = ClientFind::new(&finders, CLIENT_FIND_BUDGET).map_err(failed)?;
-        let order = self.calc_schema_cached()?.locale.date_order;
+        let reading = self.reading()?;
         let file_language = self.file_language()?;
         let reads: Vec<(om_hbam::Field, IndexKind, TextKeys)> = client
             .reads()
@@ -898,7 +908,7 @@ impl NativeProvider {
                         let texts = field_texts(&row, field);
                         match index {
                             IndexKind::Value => {
-                                record_value_keys(field.data_type, &texts, order, *text)
+                                record_value_keys(field.data_type, &texts, reading, *text)
                             }
                             IndexKind::Word => word_keys(&texts, *text),
                         }
@@ -1065,8 +1075,7 @@ impl NativeProvider {
     /// the complete path has already been checked for related-file hops.
     fn join_back(&mut self, path: &[Hop], records: RidList) -> Result<RidList, DataError> {
         let schema = self.calc_schema_cached()?;
-        // Stored dates and timestamps read in the file's order.
-        let order = schema.locale.date_order;
+        let reading = reading_of(&schema.locale);
         let mut current = records;
         for hop in path.iter().rev() {
             // Nothing related on this side relates nothing further back,
@@ -1145,7 +1154,8 @@ impl NativeProvider {
             let unkeyed = std::cell::Cell::new(None);
             let rows = self.join_rows(&far_table, &ids, &slots, |at, field, row| {
                 let texts = field_texts(row, field);
-                related_keys(projections[at].0, &texts, order, file_language).unwrap_or_else(|| {
+                let projection = projections[at].0;
+                related_keys(projection, &texts, reading, file_language).unwrap_or_else(|| {
                     unkeyed.set(Some(at));
                     Vec::new()
                 })
@@ -1233,7 +1243,7 @@ impl NativeProvider {
                                 .iter()
                                 .find(|(id, _)| *id == field.id)
                                 .map_or(TextKeys::Collated, |(_, form)| *form);
-                            record_value_keys(field.data_type, &texts, order, form)
+                            record_value_keys(field.data_type, &texts, reading, form)
                                 .into_iter()
                                 .collect()
                         })?;
@@ -2041,7 +2051,8 @@ struct Projection {
 
 /// The keys a far field's stored repetitions `texts` give a join under
 /// `projection`: each nonempty value keyed for the near field's type and
-/// index form, with lines as stored ([`record_value_keys`]). Empty and
+/// index form. Text is keyed by line and typed values are keyed whole
+/// with the file's reading rules ([`record_value_keys`]). Empty and
 /// invalid keys relate nothing (file-metadata.md 4, query-program.md 9.1).
 /// Returns `None` for text in an unsupported index form (including Japanese
 /// text outside the shared form, [`TextKeys::of_language_for`]) or when
@@ -2049,7 +2060,7 @@ struct Projection {
 fn related_keys(
     projection: Projection,
     texts: &[String],
-    order: DateOrder,
+    reading: Reading,
     file_language: Option<u32>,
 ) -> Option<Vec<Vec<u8>>> {
     use om_hbam::DataType;
@@ -2099,12 +2110,23 @@ fn related_keys(
     };
     let empty = form.key("");
     Some(
-        record_value_keys(data_type, &filled, order, form)
+        record_value_keys(data_type, &filled, reading, form)
             .into_iter()
             .filter(|key| key != EMPTY_TEXT_KEY && key != INVALID_KEY)
             .filter(|key| Some(key) != empty.as_ref())
             .collect(),
     )
+}
+
+/// [`Reading`] of a file's locale.
+fn reading_of(locale: &om_data::calc::Locale) -> Reading {
+    Reading {
+        order: locale.date_order,
+        numbers: om_collate::NumberFormat {
+            decimal: locale.decimal_separator,
+            thousands: locale.thousands_separator,
+        },
+    }
 }
 
 /// The error slot of a failed op86 reply, `[00] = 02 <u16>` (query-program.md
@@ -2166,7 +2188,7 @@ mod tests {
             related_keys(
                 projection,
                 &[text.to_owned()],
-                DateOrder::MonthDayYear,
+                DateOrder::MonthDayYear.into(),
                 Some(ENGLISH),
             )
         };
@@ -2186,6 +2208,33 @@ mod tests {
             );
         }
     }
+
+    /// A timestamp stored as a date alone keeps its midnight key. Empty
+    /// and invalid markers supply no source key.
+    #[test]
+    fn join_sources_key_typed_values_as_their_index() {
+        use om_hbam::DataType::{Number, Timestamp};
+        let keys = |data_type, value: &str| {
+            related_keys(
+                Projection {
+                    field: 1,
+                    source: data_type,
+                    data_type,
+                    language: ENGLISH,
+                },
+                &[value.to_owned()],
+                DateOrder::MonthDayYear.into(),
+                Some(ENGLISH),
+            )
+            .unwrap()
+        };
+        let midnight = keys(Timestamp, "10/27/2026 12:00:00 AM");
+        assert_eq!(midnight.len(), 1);
+        assert_eq!(keys(Timestamp, "10/27/2026"), midnight);
+        assert!(keys(Number, "N/A").is_empty());
+        assert!(keys(Number, " ").is_empty());
+    }
+
     /// Repetition n of field F is the cell `F * 256 + n`, F from the file
     /// (#388): the largest field id whose repetitions have keys reads its
     /// 255th from the cell `u64::MAX`; past it only the first repetition

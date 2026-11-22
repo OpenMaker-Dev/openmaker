@@ -1818,6 +1818,43 @@ fn a_join_back_keys_stored_dates_in_the_files_date_order() {
     assert_eq!(answers, (Ok(vec![1]), Ok(vec![1])));
 }
 
+/// A related Text value in repetition 2 projects to Number as a whole.
+/// In a German file, "$1,\r5" matches "1,50" through either join path.
+#[test]
+fn a_related_find_projects_a_whole_number_in_the_files_locale() {
+    const TAG: u64 = 2;
+    let answers = cold_and_warm_in(
+        "join-comma-decimal",
+        &[("Decimal", "1,50", ""), ("Integer", "15", "")],
+        |root| {
+            root.put(
+                &[&[2], &[0x0d]],
+                OwnedNode::leaf(Vec::new(), om_calc::Locale::de_de().to_record()),
+            );
+            fixture::add_field(root, fixture::NOTES, TAG, "Tag", 1, 1, 0, 0, 0);
+            fixture::set_field_repetitions(root, fixture::NOTES, TAG, 2);
+            root.put(
+                &[
+                    &uint_segment(fixture::NOTES),
+                    &[5],
+                    &serial::encode(1),
+                    &uint_segment(TAG * 256 + 2),
+                ],
+                text_node(&[], "$1,\r5"),
+            );
+            fixture::add_relationship(
+                root,
+                40,
+                (OCCURRENCE, COUNT),
+                0,
+                (fixture::NOTES_OCCURRENCE, TAG),
+            );
+        },
+        vec![request("Notes::Body", "==Hi")],
+    );
+    assert_eq!(answers, (Ok(vec![3]), Ok(vec![3])));
+}
+
 /// An index language whose keys are not established (25, one of the
 /// localized templates', query-program.md 7.2) is not keyed in English.
 /// Without the host's index the find fails, saying why; the host, which
