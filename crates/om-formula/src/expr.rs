@@ -130,6 +130,51 @@ impl Expr {
         deepest
     }
 
+    /// Whether evaluating this may read a `$` or `$$` variable, in any
+    /// branch: it names one (an assignment included), or reaches code not in
+    /// this tree that might (a custom function's body, `Evaluate`'s text,
+    /// `GetField`'s field, a plug-in, `ExecuteSQL`'s query). The fields it
+    /// references are the caller's to check. Checked without recursion.
+    pub fn may_read_variables(&self) -> bool {
+        let (itself, functions) = self.variable_reads();
+        itself || !functions.is_empty()
+    }
+
+    /// [`Self::may_read_variables`] in two parts: whether this tree itself
+    /// may read a variable (it names one, or calls `Evaluate`, `GetField`, a
+    /// plug-in or `ExecuteSQL`), and the custom functions it calls, each
+    /// once, whose bodies a caller that can resolve them checks the same way.
+    pub fn variable_reads(&self) -> (bool, Vec<Key>) {
+        // Each call once, by a set: a formula of many calls stays linear.
+        let mut functions = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![self];
+        while let Some(expr) = stack.pop() {
+            match expr {
+                Expr::Variable(_)
+                | Expr::Evaluate { .. }
+                | Expr::GetField { .. }
+                | Expr::PluginCall { .. } => return (true, functions),
+                Expr::Call { op, .. }
+                    if op.name().is_some_and(|name| {
+                        name.eq_ignore_ascii_case("ExecuteSQL")
+                            || name.eq_ignore_ascii_case("ExecuteSQLe")
+                    }) =>
+                {
+                    return (true, functions)
+                }
+                Expr::CustomCall { function, .. } => {
+                    if seen.insert(function) {
+                        functions.push(function.clone());
+                    }
+                    expr.for_each_child(|c| stack.push(c));
+                }
+                _ => expr.for_each_child(|c| stack.push(c)),
+            }
+        }
+        (false, functions)
+    }
+
     /// Whether evaluating this may read `Self`, in any branch: it calls the
     /// `Self` function, or reaches code not in this tree (a custom
     /// function's body, `Evaluate`'s text). Checked without recursion.

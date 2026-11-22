@@ -36,9 +36,9 @@
 //! - the last object key issued, `[4, 5, L, 05, 00]`, raised to the new
 //!   objects' keys.
 //!
-//! New objects are not added to the tab order (`[4, 5, L, 15]` and an
-//! object's `07`), are not named, and get no data formatting, script
-//! triggers, conditional formatting or hide condition.
+//! The edit box is appended to the tab order (`[4, 5, L, 15]` and its
+//! attribute `07`). New objects are unnamed and get no script triggers,
+//! conditional formatting or hide condition.
 
 use std::collections::BTreeSet;
 
@@ -81,9 +81,10 @@ pub(crate) const PART_OBJECTS: u8 = 0x07;
 /// The key under the attribute records holding the last object key issued
 /// (layout-model.md 10.5).
 const LAST_KEY: u8 = 0x00;
-/// Keys of an object's attribute record: its text, its data format
-/// (`KFormat`) and its name.
+/// Keys of an object's attribute record: its text, its tab position, its
+/// data format (`KFormat`) and its name.
 const TEXT: u8 = 0x01;
+const TAB_POSITION: u8 = 0x07;
 const FORMAT: u8 = 0x0d;
 const NAME: u8 = 0x10;
 /// A button's step data in its attribute record (its options, a script
@@ -1305,6 +1306,36 @@ pub fn part_lists_extended(base: &OwnedNode, member: &OwnedNode, objects: &[u64]
     appended == expected && objects.iter().all(|key| after.contains(key))
 }
 
+/// Whether `member` holds the object index and tab order [`plan`] writes
+/// when it places `placement`'s field on `base` as object `field_object`:
+/// `base`'s object index `[4, 5, L, 0a]` with the edit box's entry added,
+/// `base`'s tab order `[4, 5, L, 15]` with every stored entry and gap as it
+/// was and the same reference after the greatest stored position, and that
+/// position in the edit box's attribute `07` (layout-model.md 10.5,
+/// [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316)).
+pub fn object_index_and_tab_order_as_planned(
+    base: &OwnedNode,
+    member: &OwnedNode,
+    placement: &Placement,
+    field_object: u64,
+) -> bool {
+    let position = |m: &OwnedNode| {
+        m.at(&[
+            &[ATTRIBUTES],
+            &serial::encode(field_object),
+            &[TAB_POSITION],
+        ])
+        .cloned()
+    };
+    plan(base, placement).is_ok_and(|planned| {
+        planned.field_object == field_object
+            && planned.member.child(&[OBJECT_INDEX]) == member.child(&[OBJECT_INDEX])
+            && planned.member.child(&[TAB_ORDER]) == member.child(&[TAB_ORDER])
+            && position(&planned.member).is_some()
+            && position(&planned.member) == position(member)
+    })
+}
+
 fn next_object_key(key: u64) -> Result<u64, Refusal> {
     key.checked_add(1).ok_or_else(|| {
         Refusal::Unsupported(
@@ -1315,8 +1346,12 @@ fn next_object_key(key: u64) -> Result<u64, Refusal> {
 }
 
 /// The key after every object key `member` uses: in its object store
-/// (objects, the root stack, containers' children), its attribute records
-/// and its field reference index.
+/// (objects, the root stack, containers' children), its attribute records,
+/// its field reference index, and the entries of its object index `0a`
+/// and tab order `15`, nested ones included (a portal's object index
+/// entry holds its contents'). An entry left naming an object that is
+/// gone keeps its key from a new object, which the entry would then name
+/// too.
 fn next_key(member: &OwnedNode, store: &ObjectStore) -> Result<u64, Refusal> {
     let stored = store
         .objects
@@ -1335,7 +1370,30 @@ fn next_key(member: &OwnedNode, store: &ObjectStore) -> Result<u64, Refusal> {
         .flat_map(|occurrence| occurrence.children.iter())
         .flat_map(|field| field.children.iter())
         .filter_map(|object| serial::decode(&object.segment));
-    next_object_key(stored.chain(attributes).chain(indexed).max().unwrap_or(0))
+    let mut referenced = Vec::new();
+    let mut pending: Vec<&OwnedNode> = [OBJECT_INDEX, TAB_ORDER]
+        .into_iter()
+        .filter_map(|key| member.child(&[key]))
+        .collect();
+    while let Some(node) = pending.pop() {
+        for entry in &node.children {
+            referenced.extend(
+                entry
+                    .value
+                    .as_deref()
+                    .and_then(crate::layout_objects::indexed_object),
+            );
+            pending.push(entry);
+        }
+    }
+    next_object_key(
+        stored
+            .chain(attributes)
+            .chain(indexed)
+            .chain(referenced)
+            .max()
+            .unwrap_or(0),
+    )
 }
 
 /// The attribute record of a new object: its empty name, and its text.
@@ -1751,7 +1809,24 @@ fn plan_objects(
             }
             let (index_key, index_value) =
                 object_index_entry(placement.frame.top, placement.frame.left, sequence, key)?;
-            Some((index_key, index_value, sequence))
+            let tab_order = member.child(&[TAB_ORDER]);
+            let bad_order =
+                || unsupported("The layout's tab order is not one OpenMaker reads.".into());
+            if tab_order.is_some_and(|order| order.value.is_some()) {
+                return Err(bad_order());
+            }
+            let last = tab_order
+                .into_iter()
+                .flat_map(|order| &order.children)
+                .map(|entry| <[u8; 2]>::try_from(entry.segment.as_slice()).map(u16::from_be_bytes))
+                .try_fold(0u16, |last, position| {
+                    position.map(|position| last.max(position))
+                })
+                .map_err(|_| bad_order())?;
+            let position = last
+                .checked_add(1)
+                .ok_or_else(|| unsupported("The layout's tab order is full.".into()))?;
+            Some((index_key, index_value, sequence, position.to_be_bytes()))
         }
         _ => None,
     };
@@ -1791,11 +1866,12 @@ fn plan_objects(
             stored.len()
         ),
     ));
-    if let Some(key) = field_object {
-        let record = attributes(key, None);
+    if let (Some(key), Some((_, _, _, position))) = (field_object, &index_entry) {
+        let mut record = attributes(key, None);
+        record.set_child(OwnedNode::leaf(vec![TAB_POSITION], position.to_vec()));
         changes.push((
             format!("[4, 5, L, 05, {}]", hex(&record.segment)),
-            format!("object {key}'s attributes: no name, and the UUIDs d8 and d9 the host makes"),
+            format!("object {key}'s attributes: tab position {}, no name, and the UUIDs d8 and d9 the host makes", u16::from_be_bytes(*position)),
         ));
         next.put(&[&[ATTRIBUTES], &record.segment.clone()], record);
     }
@@ -1836,7 +1912,7 @@ fn plan_objects(
             OwnedNode::leaf(Vec::new(), Vec::new()),
         );
     }
-    if let (Some(placement), Some(key), Some((index_key, index_value, sequence))) =
+    if let (Some(placement), Some(key), Some((index_key, index_value, sequence, position))) =
         (field, field_object, index_entry)
     {
         changes.push((
@@ -1849,8 +1925,16 @@ fn plan_objects(
         ));
         next.put(
             &[&[OBJECT_INDEX], &index_key],
+            OwnedNode::leaf(Vec::new(), index_value.clone()),
+        );
+        next.put(
+            &[&[TAB_ORDER], &position],
             OwnedNode::leaf(Vec::new(), index_value),
         );
+        changes.push((
+            format!("[4, 5, L, 15, {}]", hex(&position)),
+            format!("the tab order: field object {key} after the existing entries"),
+        ));
     }
     let last = label_object
         .or(field_object)
@@ -2870,7 +2954,16 @@ mod tests {
 
     #[test]
     fn a_field_and_its_label_go_on_top_and_keep_everything_stored() {
-        let before = layout();
+        let mut before = layout();
+        let existing_entry = vec![0, 2, 1, 2, 0, 0, 0, 0, 1];
+        before.put(
+            &[&[ATTRIBUTES], &[2], &[TAB_POSITION]],
+            OwnedNode::leaf(Vec::new(), vec![0, 3]),
+        );
+        before.put(
+            &[&[TAB_ORDER], &[0, 3]],
+            OwnedNode::leaf(Vec::new(), existing_entry.clone()),
+        );
         let wanted = placement(rect(110.0, 80.0, 200.0, 20.0));
         let planned = plan(&before, &wanted).unwrap();
         assert_eq!(planned.field_object, 4);
@@ -2887,8 +2980,11 @@ mod tests {
         assert_eq!((spec.table_key, spec.field_key), (1_065_089, 128));
         assert_eq!(field.bounds.as_ref().unwrap().right, 310.0);
         assert!(is_placed_field(field, &wanted));
+        assert_eq!(field.tab_order, 4);
+        assert_eq!(layout.objects.get(2).unwrap().tab_order, 3);
         let label = layout.objects.get(5).unwrap();
         assert_eq!(label.text.as_deref(), Some("Follow up"));
+        assert_eq!(label.tab_order, 0);
         assert!(is_placed_label(label, wanted.label.as_ref().unwrap()));
         assert_eq!(layout.objects.other.len(), 1);
 
@@ -2916,6 +3012,30 @@ mod tests {
             entry.and_then(|e| e.value.clone()),
             Some(vec![0, 2, 1, 4, 0, 0, 0, 0, 1])
         );
+        let tab = planned.member.child(&[TAB_ORDER]).unwrap();
+        assert_eq!(
+            tab.child(&[0, 3]).unwrap().value.as_ref(),
+            Some(&existing_entry)
+        );
+        assert_eq!(tab.child(&[0, 4]).unwrap().value, entry.unwrap().value);
+        // What `place_field` checks on the read-back: a member that lost a
+        // stored entry or the edit box's position, or whose object index
+        // entry shows another repetition, is not the plan's.
+        let as_planned =
+            |member: &OwnedNode| object_index_and_tab_order_as_planned(&before, member, &wanted, 4);
+        assert!(as_planned(&planned.member));
+        let mut dropped = planned.member.clone();
+        dropped.remove(&[&[TAB_ORDER], &[0, 3]]);
+        assert!(!as_planned(&dropped));
+        let mut unpositioned = planned.member.clone();
+        unpositioned.remove(&[&[ATTRIBUTES], &[4], &[TAB_POSITION]]);
+        assert!(!as_planned(&unpositioned));
+        let mut repetition = planned.member.clone();
+        repetition.put(
+            &[&[OBJECT_INDEX], &[0, 80, 0, 110, 0, 3]],
+            OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 2]),
+        );
+        assert!(!as_planned(&repetition));
         assert!(indexes(&planned.member, 4) && !indexes(&planned.member, 5));
         let last = planned.member.at(&[&[ATTRIBUTES], &[LAST_KEY]]);
         assert_eq!(last.and_then(|n| n.value.clone()), Some(vec![1, 5]));
@@ -2944,7 +3064,7 @@ mod tests {
             &planned.member,
             &[4, 5]
         ));
-        assert_eq!(planned.changes.len(), 7);
+        assert_eq!(planned.changes.len(), 8);
         // A layout that issued a larger key: the new keys come after it.
         let mut issued = before.clone();
         issued.put(
@@ -2952,6 +3072,22 @@ mod tests {
             OwnedNode::leaf(Vec::new(), vec![1, 9]),
         );
         assert_eq!(plan(&issued, &wanted).unwrap().field_object, 10);
+        // A tab order entry left naming object 4, which is gone: the new
+        // edit box does not take its key, so the order names it once.
+        let mut stale = before.clone();
+        stale.put(
+            &[&[TAB_ORDER], &[0, 9]],
+            OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 1]),
+        );
+        assert_eq!(plan(&stale, &wanted).unwrap().field_object, 5);
+        // The same in an object index entry nested in a container's entry,
+        // as a portal's holds its fields'.
+        let mut nested = before.clone();
+        nested.put(
+            &[&[OBJECT_INDEX], &[0, 1, 0, 1, 0, 0], &[0, 2, 0, 2, 0, 1]],
+            OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 1]),
+        );
+        assert_eq!(plan(&nested, &wanted).unwrap().field_object, 5);
 
         // Placed: the same request finds its objects; another does not.
         assert_eq!(already_placed(&planned.member, &wanted), Some((4, Some(5))));
@@ -3570,6 +3706,10 @@ mod tests {
         // issued again.
         let planned = plan(&blank, &wanted).unwrap();
         assert_eq!((planned.field_object, planned.stacking), (3, 0));
+        assert_eq!(
+            decoded(&planned.member).objects.get(3).unwrap().tab_order,
+            1
+        );
     }
 
     #[test]

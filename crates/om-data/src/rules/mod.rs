@@ -2684,6 +2684,59 @@ impl RecordPlan {
         !entry.skip_auto_enter && !changes.contains_key(&id) && !lookup.matches.iter().any(replaced)
     }
 
+    /// Relookup Field Contents' target, field `name` of the table: one a
+    /// script may set (a normal field, not global), that a lookup the rules
+    /// perform matches through, an editable input of a calculated match
+    /// field included ([`Self::is_lookup_match`]), and that enters no value
+    /// of its own: writing it back would let an auto-entry (a variable such
+    /// as the modifying account, a serial, a constant, a lookup, a
+    /// calculation) replace it. Its id, or why not: 102 for no such field,
+    /// 201 for one a script cannot set (a calculation, a summary, a
+    /// global), 3 for one no lookup matches through or one with
+    /// auto-entry (OpenMaker's codes; FileMaker's are unmeasured).
+    pub fn relookup_target(&self, name: &str) -> Result<u64, DataError> {
+        let (&id, field) = self
+            .fields
+            .iter()
+            .find(|(_, f)| f.name == name)
+            .ok_or_else(|| {
+                DataError::with_code(
+                    error::FIELD_MISSING,
+                    format!("The table has no field named “{name}”."),
+                )
+            })?;
+        if !field.settable_by_script() {
+            return Err(DataError::with_code(
+                error::FIELD_LOCKED,
+                format!(
+                    "“{name}” is not a field a script sets: relook up through an editable \
+                     field the match uses."
+                ),
+            ));
+        }
+        if !self.is_lookup_match(id) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!("No lookup of this table matches through “{name}”."),
+            ));
+        }
+        let enters = field.options.auto_entry_variable().is_some()
+            || field.options.auto_entry_serial()
+            || field.constant.is_some()
+            || field.lookup.is_some()
+            || field.expression.is_some();
+        if enters {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "“{name}” enters a value of its own, which writing it again could \
+                     replace: OpenMaker does not relook up through it."
+                ),
+            ));
+        }
+        Ok(id)
+    }
+
     /// Whether `field` is a match field of a lookup the rules perform: a
     /// script that sets it, also to the value it has, fires the lookup
     /// (auto-entry.md, Lookups, battery s41).
@@ -2966,6 +3019,52 @@ impl RecordPlan {
             .any(|field| matches!(field.list, Some(ListRule::Related(_))))
     }
 
+    /// Whether a user's typing into `cell`, a repetition of global field
+    /// `field`, can be checked as it is entered, with no record's commit
+    /// after it: the cell is a repetition the field defines, and a value
+    /// list the field is validated by is a custom list or a field's values,
+    /// not a related-values list ([`ListRule::Related`], checked at a
+    /// record's commit) or one the rules cannot check
+    /// ([`ListRule::Unchecked`]).
+    pub fn checks_global_entry(&self, field: u64, cell: u64) -> bool {
+        self.cell_field(cell).is_some_and(|(at, _)| at == field)
+            && self.fields.get(&field).is_some_and(|planned| {
+                !matches!(
+                    planned.list,
+                    Some(ListRule::Related(_) | ListRule::Unchecked(_))
+                )
+            })
+    }
+
+    /// Whether this global's own entry rules are supported when another
+    /// field's rules have deferred the table plan. This only classifies
+    /// the editor. A save still builds the full plan before validation.
+    pub fn offers_global_while_plan_deferred(
+        table: u64,
+        field: u64,
+        options: &FieldOptions,
+        tree: &KeyTree<'_>,
+        file: &CalcSchema,
+    ) -> bool {
+        if options.validation_options & !SUPPORTED_VALIDATION != 0 {
+            return false;
+        }
+        if options.validation_options & VALIDATE_VALUE_LIST == 0 {
+            return true;
+        }
+        let node = tree.at(&[table, 3, 5, field]);
+        match list_rule(tree, node, file.value_lists()) {
+            Ok(ListRule::Custom(_)) => true,
+            Ok(ListRule::Field { occurrence, .. }) => {
+                file.data_source(occurrence).is_none()
+                    && file
+                        .table_of(occurrence)
+                        .is_some_and(|table| file.table_context(table.id).is_none())
+            }
+            _ => false,
+        }
+    }
+
     /// The related-values list a write by `entry` checks a changed value of
     /// `cell` against ([`ListRule::Related`]): the host computes it for the
     /// record as the write leaves it and checks the value at the commit
@@ -2988,6 +3087,7 @@ impl RecordPlan {
             error::NOT_UNIQUE => "a unique value",
             error::NOT_EXISTING => "an existing value",
             error::NOT_IN_LIST => "a value of its value list",
+            error::REQUIRED => "a value",
             _ => "a valid value",
         };
         match self.fields.get(&field) {
@@ -7246,6 +7346,17 @@ mod tests {
         assert!(plan.related_value_list(47, Entry::default()).is_some());
         assert!(plan.related_value_list(47, script).is_none());
         assert_eq!(plan.value_list_field(47, Entry::default()), None);
+        // Typing into a global is checked as it is entered, with no commit
+        // after it: against a custom list or a field's values, in a
+        // repetition the field has, not against a related-values list or
+        // one the rules cannot check.
+        assert!(plan.checks_global_entry(36, 36));
+        assert!(plan.checks_global_entry(36, rep(36, 3)));
+        assert!(!plan.checks_global_entry(36, rep(36, 4)));
+        assert!(plan.checks_global_entry(38, 38));
+        assert!(!plan.checks_global_entry(38, 36));
+        assert!(!plan.checks_global_entry(46, 46));
+        assert!(!plan.checks_global_entry(47, 47));
         assert_eq!(plan.existing_fields_for(script), vec![40, 41]);
         assert_eq!(
             plan.existing_fields_for(Entry::script(true, false)),
@@ -7691,6 +7802,20 @@ mod tests {
         // modification, indexed.
         let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65]).unwrap();
         assert!(plan.editable_fields().contains("Field2"));
+        // Relookup Field Contents' target: not this key, whose auto-entry
+        // a write of it could replace (3); not the looked-up field, which
+        // no lookup matches through (3); not a field the table lacks (102).
+        let refused = |name: &str| plan.relookup_target(name).unwrap_err();
+        let key = refused("Field1");
+        assert_eq!(key.code, Some(error::UNAVAILABLE));
+        assert!(key.message.contains("enters a value"), "{}", key.message);
+        let looked_up = refused("Field2");
+        assert!(
+            looked_up.message.contains("No lookup"),
+            "{}",
+            looked_up.message
+        );
+        assert_eq!(refused("Missing").code, Some(error::FIELD_MISSING));
         // Another auto-entry on the key (the creator's account name) keeps
         // the table read-only.
         let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65]);

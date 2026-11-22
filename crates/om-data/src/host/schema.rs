@@ -146,6 +146,24 @@ impl FieldDef {
         self.class == FieldClass::Data && self.options & 0x202 != 0
     }
 
+    /// Whether Duplicate Record copies the field's value into the copy: a
+    /// stored data field's, unless the field auto-enters a value, which
+    /// the copy gets anew. A lookup and a calculation that does not
+    /// replace an existing value are copied (auto-entry.md, "Serial
+    /// numbers"; script oracle s46-record-number-ae for a replacing
+    /// calculation). The auto-entry bits (schema-path.md 5.5): a selected
+    /// variable `0x1`, a serial `0x2` or `0x200`, a constant `0x4`, the
+    /// last visited record's value `0x10`, a calculation `0x8` replacing
+    /// with `0x80`.
+    pub fn duplicate_copies(&self) -> bool {
+        let replacing_calculation = self.options & 0x88 == 0x88;
+        self.class == FieldClass::Data
+            && self.stored
+            && !self.global
+            && self.options & (0x1 | 0x2 | 0x4 | 0x10 | 0x200) == 0
+            && !replacing_calculation
+    }
+
     /// The evaluator's view of the field.
     pub fn info(&self) -> FieldInfo {
         let storage = match (&self.class, &self.formula) {

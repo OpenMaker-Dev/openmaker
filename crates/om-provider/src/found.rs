@@ -309,7 +309,9 @@ impl NativeProvider {
     /// A saved sort as this provider sorts: fields of `table` reached
     /// through `occurrence` itself, by value or by a value list's order.
     /// `None` for anything else (a related field, a summary order, a
-    /// repetition), which leaves the found set unsorted.
+    /// repetition, a value list the provider cannot list, one of related
+    /// values only included), which leaves the found set unsorted rather
+    /// than sorted in another order.
     fn saved_sort(
         &mut self,
         occurrence: u64,
@@ -1085,11 +1087,10 @@ impl NativeProvider {
             // Each related record's keys for the predicates' fields, as the
             // near field's value index keys the values they are compared
             // with (#573): FileMaker relates records through that index, so
-            // a related value is converted to the near field's type (a
-            // projection's requested type, query-program.md 9.1) and keyed
-            // in its index language (7.2). A far field compared with near
-            // fields of different types or forms is uploaded under a source
-            // slot for each: B only labels a source row's keys (9.2).
+            // a related value is projected for the near field's type and
+            // index language (query-program.md 9.1, 7.2). A far field
+            // compared with near fields of different types or forms gets
+            // a source slot for each: B only labels a source row's keys (9.2).
             let near_table = self.table_def(near)?;
             let file_language = self.file_language()?;
             // Each projection, its slot and a near field it is for.
@@ -1610,15 +1611,12 @@ struct Projection {
 }
 
 /// The keys a far field's stored repetitions `texts` give a join under
-/// `projection`: each nonempty value converted to the near field's type
-/// and keyed as its value index keys it, lines as stored
-/// ([`record_value_keys`]), less the empty value's key and a value's that
-/// does not convert, which relate nothing (file-metadata.md 4,
-/// query-program.md 9.1). `None` when a text value's key in the near
-/// field's language is not one OpenMaker builds for it (the tailored
-/// languages, Japanese text with kana or kanji: [`TextKeys::of_language_for`];
-/// language 0 when the file's own language is unknown, `file_language`
-/// `None`).
+/// `projection`: each nonempty value keyed for the near field's type and
+/// index form, with lines as stored ([`record_value_keys`]). Empty and
+/// invalid keys relate nothing (file-metadata.md 4, query-program.md 9.1).
+/// Returns `None` for text in an unsupported index form (including Japanese
+/// text outside the shared form, [`TextKeys::of_language_for`]) or when
+/// language 0 cannot be resolved from `file_language`.
 fn related_keys(
     projection: Projection,
     texts: &[String],
@@ -1626,14 +1624,13 @@ fn related_keys(
     file_language: Option<u32>,
 ) -> Option<Vec<Vec<u8>>> {
     use om_hbam::DataType;
-    // A value converts to the near type from its own (9.1): a timestamp to
-    // a date or a time by its part, a date to a timestamp as its midnight,
-    // whose key is the date's (7.3); other values are read as stored.
+    // Date and timestamp keys compare directly: the date key is the key
+    // of midnight (7.3). Keep the full timestamp for comparison with a
+    // date (calc-values.md 6.2). For a time, take the timestamp's time
+    // part. Other values are read as the near field's type (9.1).
     let (data_type, part): (DataType, fn(&str) -> &str) =
         match (projection.source, projection.data_type) {
-            (DataType::Timestamp, DataType::Date) => (DataType::Date, |t| {
-                t.trim().split_once(' ').map_or(t, |(date, _)| date)
-            }),
+            (DataType::Timestamp, DataType::Date) => (DataType::Timestamp, |t| t),
             (DataType::Timestamp, DataType::Time) => (DataType::Time, |t| {
                 t.trim().split_once(' ').map_or(t, |(_, time)| time)
             }),
@@ -1696,10 +1693,9 @@ pub(crate) fn query_error(slots: &[u8]) -> Option<u16> {
 mod tests {
     use super::*;
 
-    /// A related value converts to the near field's type from its own
-    /// (#573): a midnight timestamp keys as the date it is on, as the base
-    /// gave it by its own type; a value of empty lines keys nothing, also
-    /// in the padded form, whose empty key is not `01`.
+    /// Date and timestamp keys agree at midnight and distinguish later
+    /// times on the same day. A value of empty lines gives no join key,
+    /// including in padded forms.
     #[test]
     fn related_values_key_as_the_near_field_from_their_own_type() {
         use om_hbam::DataType;
@@ -1718,13 +1714,11 @@ mod tests {
             )
         };
         let date = om_collate::date_key("10/27/2026", DateOrder::MonthDayYear).unwrap();
-        for stamp in ["10/27/2026 00:00:00", "10/27/2026 13:05:00"] {
-            assert_eq!(
-                keys(DataType::Timestamp, DataType::Date, ENGLISH, stamp),
-                Some(vec![date.clone()]),
-                "{stamp}"
-            );
-        }
+        let stamp = |value| keys(DataType::Timestamp, DataType::Date, ENGLISH, value);
+        assert_eq!(stamp("10/27/2026 00:00:00"), Some(vec![date.clone()]));
+        let afternoon = stamp("10/27/2026 13:05:00").unwrap();
+        assert_eq!(afternoon.len(), 1);
+        assert!(afternoon[0] > date);
         let midnight = keys(DataType::Date, DataType::Timestamp, ENGLISH, "10/27/2026");
         assert_eq!(midnight, Some(vec![date]));
         for language in [ENGLISH, 1, 3] {

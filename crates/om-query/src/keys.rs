@@ -75,6 +75,14 @@ pub enum TextKeys {
     CollatedPadded,
     /// Unicode raw (2): `01`, then the UTF-16BE code units.
     Raw,
+    /// Japanese (31): `01`, then the Japanese tailoring's weights for kana
+    /// and the kanji of JIS X 0208 level 1, the table's for every other
+    /// character ([`om_collate::japanese_key`]). A text holding a kanji
+    /// outside level 1 has no key in it ([`Self::key`] is `None`): a writer
+    /// or a check needing that text's key must refuse it, not skip it.
+    /// Not yet the form of [`Self::of_language`] 31, so no reader or writer
+    /// uses it (#299).
+    Japanese,
 }
 
 impl TextKeys {
@@ -91,29 +99,25 @@ impl TextKeys {
         }
     }
 
-    /// The form text keys in for an index of `language` when that is
-    /// known for this text: [`Self::of_language`]'s, or English's
-    /// ([`TextKeys::Collated`]) for Japanese (31) text without kana, their
-    /// sound marks or kanji, which alone its tailoring changes; every
-    /// other character keys from the shared table, Latin letters and
-    /// digits as in English and `ー` as `11dd` in both (query-program.md
-    /// 7.2, High). Kana (with their iteration marks and the halfwidth
-    /// forms), the sound marks, kanji and the kanji-like `々 〆 〇` have no
-    /// known form here; a kanji the table lacks keys from the shared table
-    /// (`㐀`), but which ones it lacks is not derived.
+    /// The form used for `text` in a stored value index: the usual
+    /// [`Self::of_language`] form, or [`Self::Collated`] for Japanese (31)
+    /// text in the shared form (query-program.md 7.2). This includes the
+    /// measured shared weights of `ー` (`11dd`) and `㐀` (`a3cb`). Other
+    /// kana, their marks and kanji are outside this shared-form check.
     pub fn of_language_for(language: u32, text: &str) -> Option<TextKeys> {
         const JAPANESE: u32 = 31;
         let tailored = |c: char| {
-            c != 'ー'
+            !matches!(c, 'ー' | '㐀')
                 && matches!(
                     u32::from(c),
                     0x3005..=0x3007
-                        | 0x3041..=0x30FF
+                        | 0x3040..=0x30FF
                         | 0x31F0..=0x31FF
                         | 0x3400..=0x4DBF
                         | 0x4E00..=0x9FFF
                         | 0xF900..=0xFAFF
-                        | 0xFF65..=0xFF9F
+                        | 0xFF61..=0xFF9F
+                        | 0x1_AFF0..=0x1_AFFF
                         | 0x1_B000..=0x1_B16F
                         | 0x2_0000..=0x3_FFFF
                 )
@@ -121,6 +125,18 @@ impl TextKeys {
         match language {
             JAPANESE if !text.chars().any(tailored) => Some(TextKeys::Collated),
             _ => TextKeys::of_language(language),
+        }
+    }
+
+    /// Whether every character of `text` keys in this form: always, but in
+    /// [`TextKeys::Japanese`], which does not key a kanji outside level 1
+    /// and the other characters [`om_collate::japanese_key`] names. A value
+    /// that does not has no index keys at all ([`record_value_keys`],
+    /// [`word_keys`]), and whoever needs them must refuse it.
+    pub fn keys(self, text: &str) -> bool {
+        match self {
+            TextKeys::Japanese => om_collate::japanese_key(text).is_some(),
+            _ => true,
         }
     }
 
@@ -142,6 +158,7 @@ impl TextKeys {
                     .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
                     .collect(),
             ),
+            TextKeys::Japanese => om_collate::japanese_key(text),
         }
     }
 }
@@ -171,6 +188,9 @@ fn whole_value_keys(
     text: TextKeys,
 ) -> Vec<Vec<u8>> {
     match data_type {
+        // A value with a character the form does not key has none, not the
+        // keys of its other lines (`TextKeys::keys`).
+        DataType::Text if !text.keys(value) => Vec::new(),
         DataType::Text => {
             let mut keys: Vec<Vec<u8>> = value
                 .split(['\r', '\n'])
@@ -266,6 +286,11 @@ fn held_value_keys(
         filled
     };
     let mut held = Held::default();
+    // A repetition with a character the form does not key leaves the
+    // record without keys, not with the others' (`TextKeys::keys`).
+    if data_type == DataType::Text && !values.iter().all(|value| text.keys(value)) {
+        return held;
+    }
     for value in values {
         for key in whole_value_keys(data_type, value, order, text) {
             held.add(key);
@@ -290,6 +315,10 @@ pub fn word_entries(texts: &[String], text: TextKeys) -> BTreeSet<Vec<u8>> {
 
 fn held_word_keys(texts: &[String], text: TextKeys) -> Held {
     let mut held = Held::default();
+    // As for value keys: none for a record with a keyless character.
+    if !texts.iter().all(|value| text.keys(value)) {
+        return held;
+    }
     for word in texts.iter().flat_map(|value| om_collate::words(value)) {
         if let Some(key) = text.whole_key(word) {
             held.add(key);
@@ -356,6 +385,27 @@ mod tests {
         assert_eq!(
             value_keys(DataType::Number, &fraction, order, english)[0].len(),
             2 + 100
+        );
+        // A Japanese value with a character the form does not key (a kanji
+        // outside JIS X 0208 level 1) has no keys at all: not the empty
+        // value's, nor its other lines' or repetitions' (#299).
+        let japanese = TextKeys::Japanese;
+        let japanese_value = |values: &[&str]| {
+            let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+            (
+                record_value_entries(DataType::Text, &values, order, japanese),
+                word_entries(&values, japanese),
+            )
+        };
+        let none = (BTreeSet::new(), BTreeSet::new());
+        assert_eq!(japanese_value(&["\u{f900}"]), none);
+        assert_eq!(japanese_value(&["中\r\u{f900}"]), none);
+        assert_eq!(japanese_value(&["中", "\u{f900}"]), none);
+        assert!(!japanese.keys("中\u{f900}") && japanese.keys("中"));
+        let key = om_collate::japanese_key("中").unwrap();
+        assert_eq!(
+            japanese_value(&["中"]),
+            ([key.clone()].into(), [key].into())
         );
     }
 

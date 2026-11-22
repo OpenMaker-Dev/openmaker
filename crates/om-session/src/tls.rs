@@ -28,6 +28,8 @@ pub const MAX_MESSAGE_LEN: usize = 64 * 1024 * 1024;
 
 /// How long a read waits for the server by default.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long writing a message may wait for the host to take it.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A server-certificate verifier that accepts any chain (lab use) while still
 /// delegating signature checks to the crypto provider.
@@ -153,6 +155,24 @@ pub struct Transport {
 struct Socket {
     tcp: TcpStream,
     deadline: Option<Instant>,
+    /// While set, each write of the socket waits only for the time left
+    /// ([`Transport::set_write_deadline`]).
+    write_deadline: Option<Instant>,
+}
+
+impl Socket {
+    /// The time left before the write deadline, as the socket's write
+    /// timeout; none left is a timeout.
+    fn bound_write(&mut self) -> std::io::Result<()> {
+        if let Some(deadline) = self.write_deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            self.tcp.set_write_timeout(Some(left))?;
+        }
+        Ok(())
+    }
 }
 
 impl Read for Socket {
@@ -170,10 +190,12 @@ impl Read for Socket {
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bound_write()?;
         self.tcp.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        self.bound_write()?;
         self.tcp.flush()
     }
 }
@@ -256,10 +278,11 @@ impl Transport {
 
         let tcp = TcpStream::connect((host, port))?;
         tcp.set_read_timeout(Some(READ_TIMEOUT))?;
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+        tcp.set_write_timeout(Some(WRITE_TIMEOUT))?;
         let socket = Socket {
             tcp,
             deadline: None,
+            write_deadline: None,
         };
         let mut stream = StreamOwned::new(conn, socket);
         // Force the handshake now so cert problems surface here.
@@ -289,6 +312,21 @@ impl Transport {
     /// seconds are set when connecting).
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), TransportError> {
         self.stream.sock.tcp.set_read_timeout(timeout)?;
+        Ok(())
+    }
+
+    /// Until it is cleared, every write of the socket, however TLS splits
+    /// a message, ends by `deadline`; cleared, writes wait
+    /// [`WRITE_TIMEOUT`] again. A write that times out leaves the stream
+    /// unusable: its caller drops the connection.
+    pub fn set_write_deadline(&mut self, deadline: Option<Instant>) -> Result<(), TransportError> {
+        self.stream.sock.write_deadline = deadline;
+        if deadline.is_none() {
+            self.stream
+                .sock
+                .tcp
+                .set_write_timeout(Some(WRITE_TIMEOUT))?;
+        }
         Ok(())
     }
 
