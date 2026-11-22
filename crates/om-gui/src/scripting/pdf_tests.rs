@@ -4414,7 +4414,9 @@ fn underlined_and_struck_through_text_prints_its_strokes() {
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
 /// the merged field's value. An unclosed `{{` prints as it is, and a
 /// symbol is read within one literal run, never across a merged field.
-/// Other layout symbols still refuse.
+/// `{{PageCount}}` and symbols Browse does not show refuse, as do merge
+/// variables and other symbols in an object whose data format presents
+/// values.
 #[test]
 fn page_number_symbols_print_each_pages_number() {
     use om_layout::TextRun::{Literal, MergeField};
@@ -4459,6 +4461,19 @@ fn page_number_symbols_print_each_pages_number() {
         Literal("<<Page {{PageNumber}}>> / ".into()),
         MergeField("Name".into()),
     ];
+    // A label the runs do not spell is numbered by whole symbols outside
+    // placeholders, by number too.
+    let mut stored = label(
+        8,
+        "Page {{1015}} of <<Name>> (draft)",
+        rect(12.0, 135.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    stored.text_runs = vec![
+        Literal("Page {{1015}} of ".into()),
+        MergeField("Name".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -4478,7 +4493,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5, 6, 7],
+            root: vec![1, 2, 3, 4, 5, 6, 7, 8],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -4493,6 +4508,7 @@ fn page_number_symbols_print_each_pages_number() {
                 noted,
                 named,
                 angled,
+                stored,
             ],
             ..Default::default()
         },
@@ -4551,6 +4567,7 @@ fn page_number_symbols_print_each_pages_number() {
             format!("Note {{{{ <<Name>> / Page {number}"),
             format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
             format!("<<Page {number}>> / <<Name>>"),
+            format!("Page {number} of <<Name>> (draft)"),
         ] {
             let found = text_origins(&labels, 2, &label);
             assert_eq!(
@@ -4560,10 +4577,179 @@ fn page_number_symbols_print_each_pages_number() {
             );
         }
     }
-    let mut dated = layout.clone();
-    dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
+    for symbol in ["{{PageCount}}", "{{1125}}", "{{AccountName}}"] {
+        let mut counted = layout.clone();
+        counted.objects.objects[1].text = Some(format!("Page {{{{PageNumber}}}} of {symbol}"));
+        assert_eq!(
+            render(&counted).unwrap_err(),
+            "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
+             {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+            "{symbol}"
+        );
+    }
+    // A variable name with a space, which Set Variable accepts and Browse
+    // shows as written.
+    let mut spaced = layout.clone();
+    spaced.objects.objects[1].text = Some("Printed by <<$$printed by>>".into());
     assert_eq!(
-        render(&dated).unwrap_err(),
-        "Layout merge symbols other than {{PageNumber}} are unsupported"
+        render(&spaced).unwrap_err(),
+        "Report object 2 holds a <<$...>> OpenMaker does not read as a merge variable; \
+         how FileMaker reads it is unmeasured"
     );
+    // A data format that presents dates (format 7, numeric with the full
+    // year): FileMaker's for a variable or symbol is unmeasured.
+    let mut formatted = layout.clone();
+    formatted.objects.objects[1].data_format = Some(DataFormat {
+        date: om_layout::DateFormat {
+            flags: 7 << 24,
+            ..Default::default()
+        },
+        ..DataFormat::new_field()
+    });
+    for (text, refused) in [
+        ("Page {{PageNumber}}", false),
+        ("Printed {{CurrentDate}}", true),
+        ("Total <<$$total>>", true),
+    ] {
+        formatted.objects.objects[1].text = Some(text.into());
+        assert_eq!(
+            render(&formatted).err(),
+            refused.then(|| {
+                "Report object 2 formats numbers, dates or times and holds a merge variable \
+                 or layout symbol; whether FileMaker formats them is unmeasured"
+                    .to_owned()
+            }),
+            "{text}"
+        );
+    }
+}
+
+/// [`document`] with layout symbols and a merge variable: the header shows
+/// the user name and the date, each body the record's number by name and
+/// by its selector's number (`{{1020}}`), then `$$suffix`'s second
+/// repetition.
+pub(super) fn symbols_document() -> RenderLayout {
+    let mut document = document();
+    let objects = &mut document.layout.objects;
+    objects.objects[1] = label(
+        2,
+        "By {{UserName}} on {{CurrentDate}}",
+        rect(12.0, 44.0, 500.0, 22.0),
+        10.0,
+        false,
+    );
+    objects.objects.push(label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}<<$$suffix[2]>>",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    ));
+    objects.root.push(11);
+    document
+}
+
+/// Layout symbols print as Browse shows them
+/// (`om_data::host::layout::merge_text`), on each record: the record
+/// number its found-set position, the header's user name and date the
+/// session's. In a portal row the record number is the row's, as in Browse
+/// and Preview. A merge variable refuses (#596): this host does not read
+/// the running script's variables.
+#[test]
+fn layout_symbols_print_as_browse_shows_them() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("symbols.pdf");
+    let steps = |path: &std::path::Path| {
+        vec![
+            var("$$suffix", "\" of 9\""),
+            var("$before", "Get ( CurrentDate )"),
+            pdf(&crate::scripting::files::file_line(path), false),
+            exit("Get ( LastError ) & \"|\" & Get ( UserName ) & \"|\" & $before & \"|\" & Get ( CurrentDate )"),
+        ]
+    };
+    let mut c = client(steps(&path));
+    let mut document = symbols_document();
+    let objects = &mut document.layout.objects.objects;
+    let body = objects.iter_mut().find(|o| o.id == 11).unwrap();
+    *body = label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    );
+    c.server.lock().unwrap().refresh_render = Some(document);
+    c.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    let result = c.result();
+    let [error, user, before, after] = result.split('|').collect::<Vec<_>>()[..] else {
+        panic!("{result}");
+    };
+    assert_eq!(error, "0", "{:?}", c.session.s.failure);
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    // Each record's once, in found-set order over the three pages.
+    let pages: Vec<usize> = (1..=9)
+        .map(|n| {
+            let numbered = text_origins(&pdf, 3, &format!("No. {n} / {n}"));
+            assert_eq!(numbered.len(), 1, "{n}");
+            numbered[0].0
+        })
+        .collect();
+    assert!(
+        pages.is_sorted() && pages[0] == 0 && pages[8] == 2,
+        "{pages:?}"
+    );
+    // The header on each page; the date is the day the script ran on.
+    let mut dates = vec![before];
+    if after != before {
+        dates.push(after);
+    }
+    let mut headers: Vec<usize> = (dates.iter())
+        .flat_map(|date| text_origins(&pdf, 3, &format!("By {user} on {date}")))
+        .map(|o| o.0)
+        .collect();
+    headers.sort();
+    assert_eq!(headers, [0, 1, 2], "{dates:?}");
+
+    // `$$suffix[2]` would print empty whatever the script set: refused, and
+    // nothing is written.
+    let refused = temporary.path().join("variables.pdf");
+    let mut v = client(steps(&refused));
+    v.server.lock().unwrap().refresh_render = Some(symbols_document());
+    v.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    assert!(v.result().starts_with("3|"), "{}", v.result());
+    assert!(!refused.exists());
+
+    // The report host answers a portal row's number there.
+    let mut store = Store;
+    let mut io = Io {
+        provider: &mut c.provider,
+        files: &mut c.files,
+        store: &mut store,
+        jobs: &c.jobs,
+        responses: &c.responses,
+    };
+    let mut host = WorkerHost::new(&mut io, &mut c.session.s);
+    host.report_record = Some((9, 2, 0));
+    let row = crate::report::PortalRowContext {
+        occurrence: 6,
+        record: 101,
+        number: 2,
+    };
+    for (row, shown) in [(None, "3"), (Some(row), "2")] {
+        let context = crate::report::in_row(om_data::calc::eval::Context::record(5, 9), row);
+        assert_eq!(
+            om_data::host::layout::merge_text(&mut host, "{{RecordNumber}}", &context),
+            shown
+        );
+    }
 }
