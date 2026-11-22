@@ -87,6 +87,9 @@ pub(super) struct Abort {
     /// Unknown execution must suspend callers too, even when a nested
     /// unstored calculation normally converts errors into invalid values.
     pub pending: bool,
+    /// The whole evaluation is past [`CalcLimits::calculations`]: the
+    /// unstored calculations it runs in end too.
+    pub exhausted: bool,
 }
 
 impl Abort {
@@ -94,6 +97,7 @@ impl Abort {
         Self {
             error,
             pending: false,
+            exhausted: false,
         }
     }
 
@@ -101,6 +105,16 @@ impl Abort {
         Self {
             error: CalcError::from_code(1224).expect("nonzero"),
             pending: true,
+            exhausted: false,
+        }
+    }
+
+    /// Error 7 for an evaluation past [`CalcLimits::calculations`].
+    pub fn exhausted() -> Self {
+        Self {
+            error: CalcError::OUT_OF_MEMORY,
+            pending: false,
+            exhausted: true,
         }
     }
 
@@ -108,7 +122,7 @@ impl Abort {
     /// unstored calculation otherwise turns it into its `?` value): data
     /// still being fetched, or the host's stop.
     pub fn propagates(&self) -> bool {
-        self.pending || self.error == CalcError::CANCELED
+        self.pending || self.exhausted || self.error == CalcError::CANCELED
     }
 }
 
@@ -313,10 +327,12 @@ pub(super) struct Solver<'h> {
     budget: CalcLimits,
     /// Custom function calls and `Evaluate`s running, nested.
     nesting: u32,
+    /// Unstored calculations left in the evaluation's allowance.
+    pub(super) calculations_remaining: u64,
 }
 
 impl<'h> Solver<'h> {
-    pub fn new(host: &'h mut dyn CalcHost, context: Context) -> Solver<'h> {
+    pub fn new(host: &'h mut dyn CalcHost, context: Context, remaining: u64) -> Solver<'h> {
         let today = host.today();
         let pending = host.pending();
         let budget = host.limits();
@@ -337,6 +353,7 @@ impl<'h> Solver<'h> {
             ticks: 0,
             budget,
             nesting: 0,
+            calculations_remaining: budget.calculations.min(remaining),
         }
     }
 
@@ -1186,6 +1203,16 @@ impl<'h> Solver<'h> {
             return Err(Abort::pending());
         }
         self.pending_seen = now;
+        Ok(())
+    }
+
+    /// Counts one more unstored calculation, ending the evaluation with
+    /// error 7 past [`CalcLimits::calculations`].
+    pub(super) fn count_calculation(&mut self) -> Flow<()> {
+        if self.calculations_remaining == 0 {
+            return Err(Abort::exhausted());
+        }
+        self.calculations_remaining -= 1;
         Ok(())
     }
 

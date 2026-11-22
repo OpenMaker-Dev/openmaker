@@ -171,6 +171,21 @@ impl Evaluation {
 /// Evaluates a compiled tree (`om_formula::compile`'s `expr` or a decoded
 /// Polish stream) in `context`.
 pub fn evaluate(expr: &Expr, host: &mut dyn CalcHost, context: &Context) -> Evaluation {
+    let mut remaining = u64::MAX;
+    evaluate_with_calculation_budget(expr, host, context, &mut remaining)
+        .unwrap_or_else(|_| Evaluation::failed(CalcError::OUT_OF_MEMORY))
+}
+
+/// The evaluation stopped after using its allowance for unstored calculations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CalculationBudgetExhausted;
+
+fn evaluate_with_calculation_budget(
+    expr: &Expr,
+    host: &mut dyn CalcHost,
+    context: &Context,
+    remaining: &mut u64,
+) -> Result<Evaluation, CalculationBudgetExhausted> {
     // SQL and layout callbacks create fresh evaluators over reborrowed
     // variables. Keep withheld assignments and control suspension alive
     // until the outermost evaluation ends. A host may use the same map for
@@ -178,10 +193,10 @@ pub fn evaluate(expr: &Expr, host: &mut dyn CalcHost, context: &Context) -> Eval
     for scope in [VarScope::Local, VarScope::Global] {
         host.variables(scope).begin_evaluation();
     }
-    let result = evaluate_in_scope(expr, host, context);
+    let result = evaluate_in_scope(expr, host, context, remaining);
     for scope in [VarScope::Local, VarScope::Global] {
         let vars = host.variables(scope);
-        if result.pending_execution {
+        if result.as_ref().is_ok_and(|result| result.pending_execution) {
             vars.suspend_execution();
         }
         vars.end_evaluation();
@@ -194,29 +209,37 @@ fn execution_pending(host: &mut dyn CalcHost) -> bool {
         || host.variables(VarScope::Global).execution_pending()
 }
 
-fn evaluate_in_scope(expr: &Expr, host: &mut dyn CalcHost, context: &Context) -> Evaluation {
-    let mut solver = Solver::new(host, context.clone());
+fn evaluate_in_scope(
+    expr: &Expr,
+    host: &mut dyn CalcHost,
+    context: &Context,
+    remaining: &mut u64,
+) -> Result<Evaluation, CalculationBudgetExhausted> {
+    let mut solver = Solver::new(host, context.clone(), *remaining);
+    let allowance = solver.calculations_remaining;
     let result = solver
         .check_execution()
         .and_then(|()| solver.solve(expr, false))
         .and_then(|op| solver.resolve(op));
     let result = solver.check_execution().and(result);
+    *remaining -= allowance - solver.calculations_remaining;
     match result {
         Ok(value) => {
             let value = match context.result_type {
                 Some(ty) => value.convert_declared(ty, &solver.cx()),
                 None => value,
             };
-            Evaluation {
+            Ok(Evaluation {
                 value,
                 error: solver.errors.get(),
                 pending_execution: false,
-            }
+            })
         }
-        Err(abort) => Evaluation {
+        Err(abort) if abort.exhausted => Err(CalculationBudgetExhausted),
+        Err(abort) => Ok(Evaluation {
             pending_execution: abort.pending,
             ..Evaluation::failed(abort.error)
-        },
+        }),
     }
 }
 
@@ -227,14 +250,28 @@ pub fn evaluate_formula(
     host: &mut dyn CalcHost,
     context: &Context,
 ) -> Evaluation {
+    let mut remaining = u64::MAX;
+    evaluate_formula_with_calculation_budget(formula, host, context, &mut remaining)
+        .unwrap_or_else(|_| Evaluation::failed(CalcError::OUT_OF_MEMORY))
+}
+
+/// Evaluates a stored formula, counting its unstored reads against both the
+/// host's per-evaluation limit and `remaining`. The caller can reuse the
+/// remaining allowance across evaluations that implement one operation.
+pub fn evaluate_formula_with_calculation_budget(
+    formula: &Formula,
+    host: &mut dyn CalcHost,
+    context: &Context,
+    remaining: &mut u64,
+) -> Result<Evaluation, CalculationBudgetExhausted> {
     if context.occurrence.is_none() && formula.occurrence().is_some() {
         let context = Context {
             occurrence: formula.occurrence(),
             ..context.clone()
         };
-        return evaluate(&formula.polish, host, &context);
+        return evaluate_with_calculation_budget(&formula.polish, host, &context, remaining);
     }
-    evaluate(&formula.polish, host, context)
+    evaluate_with_calculation_budget(&formula.polish, host, context, remaining)
 }
 
 /// Evaluates every repetition of a repeating calculation: repetition 1 to
