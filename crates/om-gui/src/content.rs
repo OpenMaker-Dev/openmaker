@@ -1268,6 +1268,22 @@ impl LayoutWorkspace {
         self.canvas.selection_count(session)
     }
 
+    /// How many selected objects Arrange's Align, Distribute and Resize To
+    /// apply to (`CanvasState::arrangeable_count`).
+    pub(crate) fn arrangeable_count(&self, session: &Session) -> usize {
+        self.canvas.arrangeable_count(session)
+    }
+
+    /// Arrange > Align, Distribute or Resize To on the selection, as
+    /// changes Save Layout stores.
+    pub(crate) fn arrange(
+        &mut self,
+        session: &Session,
+        arrangement: om_data::layout_arrange::Arrangement,
+    ) -> Result<bool, om_data::layout_placement::Refusal> {
+        self.canvas.arrange(session, arrangement)
+    }
+
     pub(crate) fn take_field_finished(&mut self) -> bool {
         self.canvas.take_field_finished()
     }

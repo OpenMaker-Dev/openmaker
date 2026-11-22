@@ -612,6 +612,12 @@ pub fn set_field_validation(root: &mut OwnedNode, table: u64, field: u64, valida
 /// Tasks::Name with no second field, validated always (script-runtime.md
 /// 13.21), in a tree [`tree`] built.
 pub fn code_in_names_list(root: &mut OwnedNode) {
+    code_in_list_of(root, NAME);
+}
+
+/// [`code_in_names_list`] with the values of Tasks' field `field` (an id
+/// below 128).
+pub fn code_in_list_of(root: &mut OwnedNode, field: u64) {
     set_field_validation(root, TABLE, CODE, 0x500);
     let (t, code) = (uint_segment(TABLE), uint_segment(CODE));
     let reference = vec![2, 1, 5, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff];
@@ -620,11 +626,32 @@ pub fn code_in_names_list(root: &mut OwnedNode) {
         OwnedNode::leaf(Vec::new(), reference),
     );
     root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
-    // Kind 1: Tasks::Name (occurrence d0 00 01, field 1), no second field.
-    // Then the counted separator text " " (one unit, SCSU as ASCII),
-    // spelled out: om-author includes this fixture without om-scsu.
+    // Kind 1: Tasks::`field` (occurrence d0 00 01), no second field. Then
+    // the counted separator text " " (one unit, SCSU as ASCII), spelled
+    // out: om-author includes this fixture without om-scsu.
     let list = vec![
-        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, b' ',
+        1,
+        0,
+        0,
+        4,
+        3,
+        0xd0,
+        0,
+        1,
+        2,
+        1,
+        field as u8,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        b' ',
     ];
     root.put(
         &[&[0x21], &[5], &[5], &[2]],

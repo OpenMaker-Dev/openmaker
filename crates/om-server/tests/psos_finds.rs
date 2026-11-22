@@ -455,6 +455,26 @@ fn server_quick_find_searches_the_layouts_quick_find_fields() {
     assert_eq!(run(&mut client, 47), (401, "401:5:Write tests".into()));
 }
 
+/// A find on a text field indexed in a language OpenMaker does not key
+/// (German), with no index built yet, is refused with 3 rather than
+/// answered from English keys, which would miss records German keys find
+/// (#572).
+#[test]
+fn a_find_on_an_index_this_server_cannot_key_is_3() {
+    let scripts = [find_by_set_field(
+        10,
+        "German",
+        &[(fixture::NAME, "\"Ship\"")],
+        ERRORS,
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 25);
+    let file = TempFile::from_tree("psos-finds-german", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 10), (3, "0/3".to_string()));
+}
+
 /// Find Matching Records on the server: the records holding the current
 /// record's value of the field, record 1's "Write tests" in Name, its
 /// empty Status (records 1 to 4) and its Count 3. From Find mode it
