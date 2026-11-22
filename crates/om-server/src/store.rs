@@ -253,6 +253,9 @@ pub struct Journal {
 /// An index whose counts leaf is due: table, field, index and counts keys.
 type Recount = (Vec<u8>, Vec<u8>, u8, u8);
 
+/// Pending field operations and the named cell keys used to resolve them.
+type DeferredFieldWork<'a> = (&'a [(Vec<u8>, u32)], &'a BTreeSet<Vec<u8>>);
+
 /// One index a record write changes: the field, the index (value 0, word
 /// 1), and the record's entries in it before and after.
 type Reindex = (Vec<u8>, u8, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>);
@@ -2183,7 +2186,7 @@ impl Store {
         table: &[u8],
         definition: &om_hbam::Table,
         stale: &BTreeSet<u64>,
-        deferred: (&[(Vec<u8>, u32)], &BTreeSet<Vec<u8>>),
+        deferred: DeferredFieldWork<'_>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
     ) -> Vec<u64> {
         let Some(plan) = self.with_calc_inputs(table, |tree, calc| {
