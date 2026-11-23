@@ -83,6 +83,10 @@ fn published_files_are_listed_searched_and_the_chosen_one_opens() {
             .with_settings_file(settings)
             .with_home()
         });
+    // Hosts opens from Home, and Cancel goes back.
+    common::click(&mut app, "Hosts");
+    common::click(&mut app, "Cancel");
+    common::wait_for_label(&mut app, "Recent");
     common::click(&mut app, "Hosts");
     fill_server(&mut app, hosted.connection.port);
 

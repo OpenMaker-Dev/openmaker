@@ -440,6 +440,7 @@ impl OpenMakerApp {
         doc.connection_lost = self.w.connection_lost.clone();
         if let Some(session) = &self.w.session {
             let mut new = Session::new(session.target.clone(), session.page_size);
+            new.destination = session.destination.clone();
             new.paper = session.paper.clone();
             new.layouts = session.layouts.clone();
             new.layout_menu = session.layout_menu.clone();

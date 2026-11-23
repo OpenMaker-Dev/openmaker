@@ -240,21 +240,54 @@ gray.
 
 ## Home window
 
-[O: FileMaker Pro 26.1.1 on macOS, Home window with Recent visible,
-visual and accessibility inspection.] Create and Open sit above the
-left navigation (Home, FileMaker Cloud and Resources). Home shows Favorites
-and Recent tabs, with a Name and Location table in Recent. A file on this
-computer shows its path and a hosted file shows its server. The accessibility
-tree advertises Add to Favorites and Remove on recent rows.
+[O: FileMaker Pro 26.1.1 on macOS in the light appearance with the default
+accent color: the Home window, 1101 by 729 pt, showing Recent, captured at
+2x while the window was inactive, and its accessibility tree.] Positions are
+points from the top-left of the window's content, below the title bar.
 
-Claris documents that the macOS startup window restores the last tab. It
-also documents adding local and hosted favorites, opening Favorites from
-the File menu, and removing a favorite while keeping the file.
-[Release notes](https://help.claris.com/en/pro-release-notes/content/),
-[favorite files help](https://help.claris.com/en/pro-help/content/favorite-files-hosts.html).
+- **Header.** A white band 51 pt tall with the Claris FileMaker Pro logo at
+  x 22, over a 1 pt `#E6E6E6` rule.
+- **Sidebar.** 198 pt wide and white, with a 1 pt `#E6E6E6` rule on its
+  right edge. Create and Open are capsule buttons 144 by 28 pt at x 25,
+  y 84 and 124, filled `#ECECEC`, with 13 pt near-black labels. A
+  full-width `#E6E6E6` rule at y 179.5 separates them from the pages: Home,
+  FileMaker Cloud and Resources, in rows 156 by 30 pt from x 20, 38 pt
+  apart from y 198, each a 17 pt gray glyph at x 31.5 and 13 pt gray text
+  (about `#737373`) at x 58.5. The selected page (Home) keeps its gray text
+  on a `#E9E9EB` fill with corners of about 5 pt.
+- **Page.** Its title, Home, is at x 227.5 in bold of about 19 pt (cap
+  height 13.5 pt). The Favorites and Recent tabs are 13 pt gray text (about
+  `#767676`) at x 220 and 288.5; the selected one differs only by a 2 pt
+  `#2D55E7` underline at y 152.
+- **Table.** It runs from x 211 to 38 pt short of the window's right edge,
+  with no frame, stripes or row rules. The header's Name and Location are
+  11 pt near-black, with `#E5E5E5` column rules from y 167.5 down to the
+  header's bottom rule at y 189, at x 463 and 13 pt before the table's end.
+  Rows are 50 pt tall from y 194.5: a 32 pt icon at x 230 (the solution's
+  own icon, or FileMaker's logo for a hosted file), the name at x 270.5 and
+  the location at x 474, both 13 pt near-black, the location cut with an
+  ellipsis. A file on this computer shows its full path, starting with
+  `/Volumes/` and the volume's name; a hosted file shows its host alone.
+- **Rows** are selectable, and each advertises the accessibility actions
+  Add to Favorites and Remove.
 
-The history count, tie-breaking for sorted rows and Windows startup behavior
-were not measured.
+Claris documents the commands
+([favorite files](https://help.claris.com/en/pro-help/content/favorite-files-hosts.html),
+[opening and managing files](https://help.claris.com/en/pro-help/content/opening-managing-files.html)):
+File > Favorites > Show Favorites and File > Recent > Show Recent show the
+lists, where a file opens with a double-click; both submenus also list the
+files. File > Favorites > Add Current File to Favorites pins the open file.
+A favorite is removed by right-clicking it and choosing Remove, or selecting
+it and pressing Delete; a recent file by right-clicking it and choosing
+Remove. Neither deletes the file. The macOS startup window restores the last
+tab ([release notes](https://help.claris.com/en/pro-release-notes/content/)).
+
+Unknowns: the active window's look (the capture is of an inactive window,
+whose title and window buttons are gray, so the gray page selection may be
+macOS's inactive style), a selected row, Favorites rows' actions beyond
+Remove, an empty list, the order of the File > Favorites and File > Recent
+submenus, the history's length and order, the FileMaker Cloud and Resources
+pages, and Windows.
 
 ## Dialogs
 

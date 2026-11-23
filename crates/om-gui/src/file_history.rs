@@ -1,5 +1,7 @@
-//! The desktop's Recent and Favorites commands and their per-user settings.
-//! A saved file identifies a destination only. Sign-in belongs to the open flow.
+//! The desktop's Recent and Favorites lists (Home and File > Recent,
+//! File > Favorites) and their per-user settings. A saved file identifies a
+//! destination only: account names and passwords belong to the open flow
+//! and are never stored here.
 
 use std::path::{Path, PathBuf};
 
@@ -75,7 +77,14 @@ pub(crate) enum Change {
     Opened(SavedFile),
     SetFavorite(SavedFile, bool),
     RemoveRecent(SavedFile),
-    ClearRecent,
+}
+
+impl Change {
+    /// Whether the user asked for this change directly (a star, a Remove),
+    /// rather than it following from an open or a tab switch.
+    pub fn requested(&self) -> bool {
+        matches!(self, Self::SetFavorite(..) | Self::RemoveRecent(_))
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -112,21 +121,33 @@ impl History {
         }
     }
 
+    /// Apply `change` and save it in the settings file at `path`, merged into
+    /// what another instance may have saved there since. When it cannot be
+    /// saved, the file is left as it was and the change still applies to
+    /// this list, so the window shows it until the app quits.
     pub fn change(&mut self, path: Option<&Path>, change: Change) -> Result<(), DataError> {
-        if let Some(path) = path {
-            *self = crate::settings::update(path, |map| {
-                let mut history = Self::from_settings(map)?;
-                history.apply(change);
-                let value = serde_json::to_value(&history).map_err(|err| {
-                    DataError::new(format!("File history could not be saved: {err}"))
-                })?;
-                map.insert(KEY.into(), value);
-                Ok(history)
-            })?;
-        } else {
+        let Some(path) = path else {
             self.apply(change);
+            return Ok(());
+        };
+        let saved = crate::settings::update(path, |map| {
+            let mut history = Self::from_settings(map)?;
+            history.apply(change.clone());
+            let value = serde_json::to_value(&history)
+                .map_err(|err| DataError::new(format!("File history could not be saved: {err}")))?;
+            map.insert(KEY.into(), value);
+            Ok(history)
+        });
+        match saved {
+            Ok(history) => {
+                *self = history;
+                Ok(())
+            }
+            Err(error) => {
+                self.apply(change);
+                Err(error)
+            }
         }
-        Ok(())
     }
 
     fn apply(&mut self, change: Change) {
@@ -143,7 +164,6 @@ impl History {
             Change::SetFavorite(_, true) => {}
             Change::SetFavorite(file, false) => self.favorites.retain(|entry| *entry != file),
             Change::RemoveRecent(file) => self.recent.retain(|entry| *entry != file),
-            Change::ClearRecent => self.recent.clear(),
         }
     }
 }
@@ -170,14 +190,33 @@ mod tests {
         second
             .change(Some(&path), Change::SetFavorite(hosted.clone(), true))
             .unwrap();
-        assert_eq!(second.files(Tab::Recent), &[local, hosted.clone()]);
-        second.change(Some(&path), Change::ClearRecent).unwrap();
+        assert_eq!(second.files(Tab::Recent), &[local.clone(), hosted.clone()]);
+        second
+            .change(Some(&path), Change::RemoveRecent(local))
+            .unwrap();
         first
             .change(Some(&path), Change::Select(Tab::Favorites))
             .unwrap();
         let restored = History::load(&path).unwrap();
         assert_eq!(restored.tab(), Tab::Favorites);
-        assert!(restored.files(Tab::Recent).is_empty());
+        assert_eq!(restored.files(Tab::Recent), std::slice::from_ref(&hosted));
         assert_eq!(restored.files(Tab::Favorites), &[hosted]);
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_is_kept_and_the_change_stays_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "not a settings file").unwrap();
+        let file = SavedFile::local(dir.path().join("Tasks.fmp12"));
+        let mut history = History::default();
+        assert!(history
+            .change(Some(&path), Change::Opened(file.clone()))
+            .is_err());
+        assert_eq!(history.files(Tab::Recent), &[file]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "not a settings file"
+        );
     }
 }

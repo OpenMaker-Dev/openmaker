@@ -11,7 +11,7 @@ use egui::{Key, KeyboardShortcut, Modifiers, Ui};
 use om_data::scripts::save_records::Format as SaveFormat;
 
 use crate::app::{shortcuts, steps, Action, EditCommand, FindState, Mode, ViewMode};
-use crate::file_history::{Change, History, Tab};
+use crate::file_history::{Change, History, SavedFile, Tab};
 use crate::session::Session;
 use crate::theme;
 use crate::widgets::{menu_item, menu_separator, submenu};
@@ -25,6 +25,8 @@ pub(crate) struct MenuContext<'a> {
     pub zooms: bool,
     pub session: Option<&'a Session>,
     pub file_history: &'a History,
+    /// The front window's file, when Recent can record it.
+    pub current_file: Option<&'a SavedFile>,
     pub launch_available: bool,
     pub find: &'a FindState,
     pub toolbar: bool,
@@ -359,6 +361,8 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     rows.separator();
     pending(rows, "Sign In to Claris ID", None);
+    // Claris documents Show Favorites, Add Current File to Favorites and
+    // Show Recent, and the files listed in each; their order is unmeasured.
     for tab in [Tab::Favorites, Tab::Recent] {
         rows.submenu(tab.label(), context.launch_available, &mut |rows| {
             let show = match tab {
@@ -367,6 +371,21 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
             };
             if rows.item(show, None, false, true) {
                 actions.push(Action::ShowHome(tab));
+            }
+            if tab == Tab::Favorites {
+                let current = context
+                    .current_file
+                    .filter(|file| !context.file_history.files(Tab::Favorites).contains(file));
+                if rows.item(
+                    "Add Current File to Favorites",
+                    None,
+                    false,
+                    current.is_some(),
+                ) {
+                    if let Some(file) = current {
+                        actions.push(Action::EditHistory(Change::SetFavorite(file.clone(), true)));
+                    }
+                }
             }
             let files = context.file_history.files(tab);
             if !files.is_empty() {
@@ -380,12 +399,6 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
                     };
                     if rows.item(&label, None, false, true) {
                         actions.push(Action::OpenSaved(file.clone()));
-                    }
-                }
-                if tab == Tab::Recent {
-                    rows.separator();
-                    if rows.item("Clear Recent Files", None, false, true) {
-                        actions.push(Action::EditHistory(Change::ClearRecent));
                     }
                 }
             }

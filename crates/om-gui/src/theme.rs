@@ -41,6 +41,10 @@ pub(crate) const BAR_BG: Color32 = Color32::from_rgb(0xEC, 0xEC, 0xEC);
 pub(crate) const HOVER_FILL: Color32 = Color32::from_rgb(0xDC, 0xDC, 0xDC);
 pub(crate) const MENU_FILL: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
 pub(crate) const SEARCH_FILL: Color32 = Color32::from_rgb(0xEE, 0xEE, 0xEE);
+/// Capsule buttons: Home's Create and Open, measured.
+pub(crate) const CAPSULE_FILL: Color32 = Color32::from_rgb(0xEC, 0xEC, 0xEC);
+/// The selected row of Home's sidebar, measured in an inactive window.
+pub(crate) const NAV_SELECTION: Color32 = Color32::from_rgb(0xE9, 0xE9, 0xEB);
 /// The dimming behind a modal dialog.
 pub(crate) const SCRIM: Color32 = Color32::from_black_alpha(24);
 
@@ -110,11 +114,6 @@ pub(crate) const TOOLBAR_HEIGHT: f32 = 54.0;
 pub(crate) const LAYOUT_BAR_HEIGHT: f32 = 25.0;
 pub(crate) const FORMATTING_BAR_HEIGHT: f32 = 27.0;
 pub(crate) const MENU_ROW_HEIGHT: f32 = 22.0;
-/// A large control (macOS's large control size), for a window's main
-/// actions; regular controls take egui's 22 pt `interact_size`.
-pub(crate) const LARGE_CONTROL_HEIGHT: f32 = 28.0;
-/// A sidebar or list row.
-pub(crate) const ROW_HEIGHT: f32 = 28.0;
 pub(crate) const INSPECTOR_WIDTH: f32 = 252.0;
 
 // Corner radii, in points.
@@ -133,8 +132,11 @@ pub(crate) const SMALL: f32 = 11.0;
 pub(crate) const BODY: f32 = 13.0;
 /// Title 3: section headings inside a window.
 pub(crate) const TITLE3: f32 = 15.0;
-/// Title 1: the heading of a window that has one, such as Home.
-pub(crate) const TITLE1: f32 = 22.0;
+/// Title 2: the app's name in Home's header.
+pub(crate) const TITLE2: f32 = 17.0;
+/// A page's heading inside a window, as Home's: measured, between Title 2
+/// and Title 1.
+pub(crate) const PAGE_TITLE: f32 = 19.0;
 
 /// The semibold UI face, for titles and the app menu.
 pub(crate) fn semibold() -> FontFamily {

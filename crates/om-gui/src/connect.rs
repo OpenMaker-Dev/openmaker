@@ -212,7 +212,9 @@ const TITLE_HEIGHT: f32 = 28.0;
 
 /// The Hosts dialog (capture 28), centered over a plain backdrop: hosts at
 /// the left, the selected host's files at the right, and the account,
-/// password and file to open along the bottom.
+/// password and file to open along the bottom. With `closable`, Cancel also
+/// closes the dialog when nothing is under way (it was opened from Home).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hosts_dialog(
     ui: &mut Ui,
     form: &mut ConnectForm,
@@ -220,6 +222,7 @@ pub(crate) fn hosts_dialog(
     status: ConnectStatus,
     client_license: bool,
     listing: &Listing,
+    closable: bool,
     actions: &mut Vec<Action>,
 ) {
     let area = ui.max_rect();
@@ -291,7 +294,7 @@ pub(crate) fn hosts_dialog(
             .max_rect(pane)
             .layout(Layout::top_down(Align::Min)),
     );
-    files_pane(&mut pane_ui, form, view, status, listing, actions);
+    files_pane(&mut pane_ui, form, view, status, listing, closable, actions);
     ui.allocate_rect(area, Sense::hover());
 }
 
@@ -392,6 +395,7 @@ fn files_pane(
     view: &mut HostsView,
     status: ConnectStatus,
     listing: &Listing,
+    closable: bool,
     actions: &mut Vec<Action>,
 ) {
     let idle = status == ConnectStatus::Idle;
@@ -504,7 +508,7 @@ fn files_pane(
             .max_rect(bottom)
             .layout(Layout::top_down(Align::Min)),
     );
-    credentials(&mut bottom_ui, form, status, actions);
+    credentials(&mut bottom_ui, form, status, closable, actions);
 }
 
 /// The host's name and version as it gave them, for the heading.
@@ -702,6 +706,7 @@ fn credentials(
     ui: &mut Ui,
     form: &mut ConnectForm,
     status: ConnectStatus,
+    closable: bool,
     actions: &mut Vec<Action>,
 ) {
     let idle = status == ConnectStatus::Idle;
@@ -764,7 +769,7 @@ fn credentials(
                 actions.push(Action::Connect);
             }
             let busy = status != ConnectStatus::Idle;
-            if dialog_button(ui, "Cancel", false, busy).clicked() {
+            if dialog_button(ui, "Cancel", false, busy || closable).clicked() {
                 actions.push(Action::CancelConnect);
             }
         });

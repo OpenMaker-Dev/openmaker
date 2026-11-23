@@ -21,13 +21,13 @@ in macOS's semantic colors and metrics (`docs/re/client-ui.md`). Following
 Apple's [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)
 (HIG) therefore serves both of OpenMaker's aims: a familiar interface for
 people moving from FileMaker, and a consistent one where FileMaker gives no
-reference (Home, OpenMaker-only dialogs).
+reference (OpenMaker-only dialogs).
 
 Two sources set the values, in this order:
 
 1. **Measured.** Where a region of FileMaker Pro 26 on macOS was measured
    from the captures (toolbar, layout bar, pasteboard, Hosts sidebar, menu
-   rows), the measured value is the token, as `AGENTS.md` rule 9 asks.
+   rows, Home), the measured value is the token, as `AGENTS.md` rule 9 asks.
 2. **Apple.** Everything else uses Apple's published values: the 2025
    system colors from the HIG's [Color](https://developer.apple.com/design/human-interface-guidelines/color)
    page (updated 2025-06-09) and the macOS text styles from
@@ -113,12 +113,14 @@ both appearances: `WINDOW_CLOSE` `#FF5F57`, `WINDOW_MINIMIZE` `#FEBC2E`,
 |---|---|---|---|
 | `CONTROL_BG`, `CONTENT_BG`, `INSPECTOR_BG` | Lists, tables, text fields; the content area; the Inspector | `#FFFFFF` | `#1E1E1E` |
 | `ALTERNATE_ROW` | Every other row of a striped list (Apple's alternating content color) | `#F4F5F5` | `#292929` |
-| `DIALOG_BG` | Window background: dialogs, panes, sheets, Home | `#F0F0F0` | `#323232` |
+| `DIALOG_BG` | Window background: dialogs, panes, sheets | `#F0F0F0` | `#323232` |
 | `TOOLBAR_BG` | The status toolbar and title (measured) | `#F4F4F4` | `#383838` |
 | `MENU_FILL` | Menus and popovers | `#F5F5F5` | `#2C2C2C` |
 | `SEARCH_FILL` | Search fields in bars | `#EEEEEE` | `#3A3A3A` |
 | `BAR_BG` | Button strips under lists, bars inside dialogs | `#ECECEC` | `#2B2B2B` |
-| `SIDEBAR_BG` | Sidebars: Hosts, Home (measured) | `#E3E3E4` | `#2A2A2A` |
+| `SIDEBAR_BG` | Sidebars: Hosts (measured) | `#E3E3E4` | `#2A2A2A` |
+| `CAPSULE_FILL` | Capsule buttons: Home's Create and Open (measured) | `#ECECEC` | `#3A3A3A` |
+| `NAV_SELECTION` | The selected page in Home's sidebar (measured in an inactive window) | `#E9E9EB` | `#353537` |
 | `LAYOUT_BAR_BG` | The layout bar (measured) | `#DEDEDF` | `#262626` |
 | `HOVER_FILL` | A hovered or pressed borderless control; a selection in a list without keyboard focus | `#DCDCDC` | `#464646` |
 | `PASTEBOARD` | Layout mode's pasteboard (measured) | `#E5E5E5` | `#262626` |
@@ -204,10 +206,11 @@ Sizes follow macOS's built-in text styles:
 | `SMALL` | Subheadline | 11 / 14 | Toolbar captions, layout-bar labels, column headers |
 | `BODY` | Body | 13 / 16 | Menus, dialogs, lists, buttons |
 | `TITLE3` | Title 3 | 15 / 20 | Section headings; egui's `Heading` |
-| `TITLE1` | Title 1 | 22 / 26 | A window's own heading (Home) |
+| `TITLE2` | Title 2 | 17 / 22 | The app's name in Home's header |
+| `PAGE_TITLE` | (measured) | 19 | A page's heading in a window: Home's, measured from FileMaker |
 
 Code uses egui's monospace at 12 pt. Add a token from the same table when a
-screen needs another size (Large Title 26, Title 2 17, Callout 12,
+screen needs another size (Large Title 26, Title 1 22, Callout 12,
 Footnote 10). Window titles are 13 pt semibold, as macOS draws them.
 
 A command that needs more input before it acts ends in an ellipsis
@@ -220,13 +223,13 @@ character (`Open File…`, not `Open File...`), as the HIG and FileMaker do.
 | `CONTROL_RADIUS` | 5 pt | Buttons, fields, list and sidebar rows |
 | `MENU_RADIUS` | 7 pt | Menus, popovers, grouped lists |
 | `WINDOW_RADIUS` | 10 pt | Windows, sheets, dialogs |
-| `ROW_HEIGHT` | 28 pt | Sidebar and list rows |
-| `LARGE_CONTROL_HEIGHT` | 28 pt | A window's main actions (macOS's large control size) |
 | `MENU_ROW_HEIGHT` | 22 pt | Menu rows |
 | egui `interact_size` | 22 pt | Regular controls (macOS's regular size) |
 
 Region heights are measured: menu bar 24, status toolbar 54, layout bar 25,
-formatting bar 27; the Inspector is 252 pt wide.
+formatting bar 27; the Inspector is 252 pt wide. Home's geometry is
+FileMaker's, measured (`home.rs`, `docs/re/client-ui.md`): a 51 pt header,
+a 198 pt sidebar and 50 pt rows.
 
 Spacing is OpenMaker's choice, in multiples of 4 pt where nothing measured
 says otherwise: 20 pt between a window's edge and its content, 8 pt between
@@ -250,9 +253,16 @@ popovers a smaller one (offset 4, blur 14, black at 18%).
   `HAIRLINE` frame; `CAPTION` column headers in `SMALL` semibold; a selected
   row is `SELECTED` with `ON_ACCENT` text, or `HOVER_FILL` when the list does
   not have keyboard focus.
-- **Sidebar.** `SIDEBAR_BG`, `ROW_HEIGHT` rows with `CONTROL_RADIUS`; the
-  selected row is `SELECTED` with `ON_ACCENT` text, a hovered row
-  `HOVER_FILL`. Home and Hosts share it.
+- **Sidebar.** `SIDEBAR_BG` with `CONTROL_RADIUS` rows; the selected row is
+  `SELECTED` with `ON_ACCENT` text, a hovered row `HOVER_FILL`. Hosts uses
+  it.
+- **Home.** FileMaker's own launcher look, measured: white surfaces
+  (`CONTENT_BG`) with `SEPARATOR` rules; `CAPSULE_FILL` capsule buttons
+  with `TEXT` labels, `HOVER_FILL` when pressed; sidebar pages in `CAPTION`
+  with `ICON` glyphs, the selected one on `NAV_SELECTION`; tabs in
+  `CAPTION`, the selected one underlined 2 pt in `ACCENT`; and a frameless
+  table of 50 pt rows, `TEXT` names and locations, a selected row
+  `SELECTED` with `ON_ACCENT` text.
 - **Menu.** `MENU_FILL`, `HAIRLINE` outline and separators, `MENU_RADIUS`,
   22 pt rows; the hovered or open row is `HIGHLIGHT` with `ON_ACCENT` text.
 - **Messages.** Error text is `RED`. An error banner is `RED_TINT` with `RED`
@@ -293,6 +303,8 @@ popovers a smaller one (offset 4, blur 14, black at 18%).
 - **Blues differ from the captures.** The captures show
   `#2F54E5` for the selected view glyph, `#3E62EC` for the default button,
   and a `#3D4FD1` to `#1429C8` gradient on Specify Calculation's default
-  button (capture 42). OpenMaker uses `ACCENT` for all of them. Whether the
-  captures' blues come from the capture Mac's accent color, its display
-  profile, or FileMaker's own control cells is unmeasured.
+  button (capture 42), and FileMaker 26.1.1's Home underlines its selected
+  tab in `#2D55E7` on a Mac set to the default accent color, so the accent
+  setting is not their cause. OpenMaker uses `ACCENT` for all of them.
+  Whether they come from the display profile or FileMaker's own drawing is
+  unmeasured.

@@ -83,6 +83,10 @@ struct CachedReport {
 #[derive(Debug)]
 pub(crate) struct Session {
     pub target: Target,
+    /// Where the file was opened from, as Recent and Favorites record it:
+    /// set when Home, the File menu or Hosts opened it, so File > Favorites
+    /// > Add Current File to Favorites can pin it.
+    pub destination: Option<crate::file_history::SavedFile>,
     pub layouts: Vec<LayoutInfo>,
     pub layout_menu: Vec<om_data::LayoutMenuEntry>,
     /// The layouts the account's custom set gives no access
@@ -146,6 +150,7 @@ impl Session {
     pub fn new(target: Target, page_size: u32) -> Self {
         Self {
             target,
+            destination: None,
             layouts: Vec::new(),
             layout_menu: Vec::new(),
             hidden_layouts: BTreeSet::new(),

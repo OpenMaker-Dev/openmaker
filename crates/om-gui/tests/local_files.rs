@@ -167,9 +167,15 @@ fn replace(app: &mut App, label: &str, text: &str) {
 
 /// Choose `path` in the Open dialog, already showing.
 fn choose(app: &mut App, path: &Path) {
+    use egui_kittest::kittest::NodeT as _;
     common::wait_for_label(app, "Open File");
     replace(app, "Path", &path.display().to_string());
-    common::click(app, "Open");
+    // Started from Home, Home's own Open shows, disabled, behind the dialog.
+    app.query_all_by_label("Open")
+        .find(|node| !node.accesskit_node().is_disabled())
+        .expect("the dialog's Open button")
+        .click();
+    app.run_steps(2);
 }
 
 /// Answer the account dialog with `password` for the suggested account.
@@ -243,6 +249,8 @@ fn a_file_on_this_computer_opens_saves_an_edit_and_reopens_with_it() {
 
 #[test]
 fn home_remembers_a_local_file_and_its_favorite_across_app_instances() {
+    use egui_kittest::kittest::NodeT as _;
+
     let folder = Folder::new("home");
     let settings = folder.0.join("settings.json");
     let start = || {
@@ -258,21 +266,27 @@ fn home_remembers_a_local_file_and_its_favorite_across_app_instances() {
     };
     let mut app = start();
     common::wait_for_label(&mut app, "No recent files");
-    common::click(&mut app, "Open File…");
+    common::click(&mut app, "Open");
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
     common::open_menu(&mut app, "File");
     common::click(&mut app, "Close");
-    common::wait_for_label(&mut app, "Add to Favorites: Tasks");
-    common::click(&mut app, "Add to Favorites: Tasks");
+    // Closing returns to Home, where Recent lists the file.
+    common::right_click(&mut app, "Tasks");
+    common::click(&mut app, "Add to Favorites");
     common::click(&mut app, "Favorites");
-    common::wait_for_label(&mut app, "Favorite files");
+    common::wait_for_label(&mut app, "Tasks");
     drop(app);
 
+    // Home opens on the list it showed last, and a double click opens.
     let mut app = start();
-    common::wait_for_label(&mut app, "Remove from Favorites: Tasks");
-    common::click(&mut app, "Tasks");
+    common::wait_for_label(&mut app, "Tasks");
+    assert_eq!(
+        app.get_by_label("Favorites").accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+    common::double_click(&mut app, "Tasks");
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
 }
