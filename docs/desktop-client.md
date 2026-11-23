@@ -79,11 +79,13 @@ unmeasured:
   ([design.md](design.md)).
 - Arrow keys move the selection, Delete also removes from Recent, and an
   empty list says what fills it.
-- Showing a list or opening a file from Home or the File menu closes every
-  open file first, one after another, through their usual commit path; a
-  veto or a refused save stops it, and a layout with unsaved changes keeps
-  every file open with the Save Layout or Revert Layout alert. FileMaker
-  shows Home in a window of its own.
+- Showing a list or opening a file from Home or the File menu closes the
+  open file first, through its usual commit path and close triggers; a
+  veto or a refused save stops it. With another file open, hidden ones
+  included, or a layout with unsaved changes, nothing closes and an alert
+  says why ("Other files are open. Close them first.", or the Save Layout
+  or Revert Layout alert). FileMaker shows Home in a window of its own and
+  closes nothing.
 - A local file's location is its path, without FileMaker's `/Volumes/`
   prefix on macOS. A hosted file's location adds its port when that is not
   5003.
