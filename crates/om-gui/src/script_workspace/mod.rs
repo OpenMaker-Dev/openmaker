@@ -1179,8 +1179,8 @@ impl ScriptWorkspace {
         };
         // A refused edit (red), else what a paste could not read (amber).
         let banner = match (&self.tabs[active].refusal, &self.tabs[active].notice) {
-            (Some(refusal), _) => Some((refusal.clone(), theme::RED_TINT, theme::RED)),
-            (None, Some(notice)) => Some((notice.clone(), theme::YELLOW_TINT, theme::YELLOW)),
+            (Some(refusal), _) => Some((refusal.clone(), theme::RED_TINT, theme::RED_INK)),
+            (None, Some(notice)) => Some((notice.clone(), theme::YELLOW_TINT, theme::YELLOW_INK)),
             (None, None) => None,
         };
         let footer = if banner.is_some() { 22.0 } else { 0.0 };

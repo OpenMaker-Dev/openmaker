@@ -97,9 +97,13 @@ pub(crate) const RING: Color32 = Color32::from_rgb(0x7A, 0xAF, 0xE6);
 /// Errors, failures and destructive actions.
 pub(crate) const RED: Color32 = Color32::from_rgb(0xE9, 0x15, 0x2D);
 pub(crate) const RED_TINT: Color32 = Color32::from_rgb(0xFD, 0xE8, 0xEA);
+/// Text on `RED_TINT`: the red darkened to keep 4.5:1 there.
+pub(crate) const RED_INK: Color32 = Color32::from_rgb(0xB8, 0x0E, 0x28);
 /// Warning text.
 pub(crate) const YELLOW: Color32 = Color32::from_rgb(0xA1, 0x6A, 0x00);
 pub(crate) const YELLOW_TINT: Color32 = Color32::from_rgb(0xFF, 0xF7, 0xD6);
+/// Text on `YELLOW_TINT`: the yellow darkened to keep 4.5:1 there.
+pub(crate) const YELLOW_INK: Color32 = Color32::from_rgb(0x86, 0x57, 0x00);
 /// The caution glyph's fill: Apple's default Yellow, with dark ink.
 pub(crate) const CAUTION: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
 

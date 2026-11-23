@@ -807,6 +807,12 @@ const HOST_MESSAGE_SECONDS: f64 = 30.0;
 
 /// FileMaker Pro's alert when the host disconnects a file
 /// (network-protocol.md 6.5); the administrator's text follows it.
+/// The alert for a command that would drop a layout's unsaved changes:
+/// the user saves or reverts them first (OpenMaker's choice; FileMaker Pro
+/// asks whether to save the layout).
+const LAYOUT_UNSAVED: &str =
+    "This layout's changes are not saved. Choose Layouts > Save Layout or Revert Layout first.";
+
 const HOST_DISCONNECTED: &str =
     "File has been forcefully disconnected by the host. All affected windows will be closed.";
 
@@ -996,9 +1002,10 @@ pub struct OpenMakerApp {
     related_asked: std::collections::BTreeSet<(u64, String)>,
     /// The account dialog of a related file, in the window that needed it.
     related_login: Option<RelatedLogin>,
-    /// A launch command waiting for the current file to close. A veto or
-    /// refused save leaves the file open and drops the command.
-    launch_after_close: Option<Launch>,
+    /// A launch command waiting for the open files to close, with the file
+    /// whose close it waits for. A veto or refused save leaves that file
+    /// open and drops the command.
+    launch_after_close: Option<(Launch, u64)>,
     /// The file Create New just made: when it opens, Manage Database opens
     /// on it, as in FileMaker Pro. Kept by path, so an open that was
     /// cancelled leaves no other file's open to take it.
@@ -1326,8 +1333,11 @@ impl OpenMakerApp {
         self.tick_timer(&ctx);
         self.abort_keys(&ctx);
         if self.closing.is_none() {
-            if let Some(launch) = self.launch_after_close.take() {
-                if self.w.session.is_none() {
+            if let Some((launch, closed)) = self.launch_after_close.take() {
+                // No file left, or another file came forward (it closes
+                // next); the same file still open means its close was
+                // vetoed, and the command is dropped.
+                if self.w.session.is_none() || self.w.file_id != closed {
                     self.launch(&ctx, launch);
                 }
             }
@@ -2262,11 +2272,7 @@ impl OpenMakerApp {
                 let view = crate::home::HomeView {
                     history: &self.file_history,
                     busy: self.status == ConnectStatus::Connecting,
-                    in_front: self.open_file.is_none()
-                        && self.create_new.is_none()
-                        && self.local_login.is_none()
-                        && self.change_password.is_none()
-                        && self.error.is_none(),
+                    in_front: !self.dialog_over_document(),
                     history_error: self.history_error.as_deref(),
                 };
                 self.home.show(ui, view, &mut actions);
@@ -3071,16 +3077,24 @@ impl OpenMakerApp {
         }
     }
 
-    /// Run a launch command once no file is open: an open file closes
-    /// first, through its usual commit path, and a veto or refused save
-    /// drops the command.
+    /// Run a launch command once no file is open: the open files close
+    /// first, one after another, through their usual commit path. A veto or
+    /// refused save drops the command, and a layout with unsaved changes in
+    /// any window keeps every file open.
     fn launch(&mut self, ctx: &egui::Context, launch: Launch) {
         use crate::file_history::{Change, SavedFile};
         if !self.can_launch() {
             return;
         }
         if self.w.session.is_some() {
-            self.launch_after_close = Some(launch);
+            let layout_unsaved = std::iter::once(&self.w)
+                .chain(&self.windows)
+                .any(|doc| doc.layout_workspace.has_changes() || doc.layout_workspace.saving);
+            if layout_unsaved {
+                self.error = Some(LAYOUT_UNSAVED.into());
+                return;
+            }
+            self.launch_after_close = Some((launch, self.w.file_id));
             self.apply(ctx, Action::CloseFile);
             return;
         }
@@ -4125,11 +4139,7 @@ impl OpenMakerApp {
             _ => false,
         };
         if leaves_layout && self.w.mode == Mode::Layout && self.w.layout_workspace.has_changes() {
-            self.error = Some(
-                "This layout's changes are not saved. Choose Layouts > Save Layout or Revert \
-                 Layout first."
-                    .into(),
-            );
+            self.error = Some(LAYOUT_UNSAVED.into());
             return;
         }
         // Before any trigger: nothing may save or script the held edits.
@@ -4678,11 +4688,7 @@ impl OpenMakerApp {
             | Action::PartSetup
                 if self.w.layout_workspace.has_changes() =>
             {
-                self.error = Some(
-                    "This layout's changes are not saved. Choose Layouts > Save Layout or \
-                     Revert Layout first."
-                        .into(),
-                );
+                self.error = Some(LAYOUT_UNSAVED.into());
             }
             Action::NewLayout => {
                 if let Some(session) = &self.w.session {
@@ -7979,6 +7985,35 @@ mod tests {
         app.w = window_with_records(1, &["Ada"]);
         app.windows = vec![window_with_records(2, &["Bob", "Cy"])];
         app
+    }
+
+    /// Home's and the File menu's file commands need no file open: with two
+    /// files open, both close before the command runs, and a layout with
+    /// unsaved changes in either keeps both open.
+    #[test]
+    fn a_launch_command_closes_every_open_file_unless_a_layout_is_unsaved() {
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.launcher = Launcher::Home { hosts: false };
+        app.w.file_id = 1;
+        app.windows[0].file_id = 2;
+
+        app.windows[0].layout_workspace.saving = true;
+        app.apply(&ctx, Action::ShowHosts);
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert_eq!(app.w.file_id, 1);
+        assert!(app.w.session.is_some() && app.launch_after_close.is_none());
+
+        app.error = None;
+        app.windows[0].layout_workspace.saving = false;
+        app.apply(&ctx, Action::ShowHosts);
+        for _ in 0..4 {
+            ctx.run_ui(egui::RawInput::default(), |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        }
+        assert!(app.w.session.is_none(), "{:?}", app.error);
+        assert!(app.windows.is_empty());
+        assert_eq!(app.launcher, Launcher::Home { hosts: true });
     }
 
     #[test]

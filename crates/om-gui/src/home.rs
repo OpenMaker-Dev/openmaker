@@ -235,7 +235,7 @@ impl Home {
                     let selected = self.selected.as_ref() == Some(file);
                     let response =
                         row(ui, view.history, file, selected, &columns, enabled, actions);
-                    if response.clicked() || response.secondary_clicked() {
+                    if enabled && (response.clicked() || response.secondary_clicked()) {
                         self.selected = Some(file.clone());
                     }
                     if response.double_clicked() && enabled {
@@ -504,8 +504,12 @@ fn row(
     enabled: bool,
     actions: &mut Vec<Action>,
 ) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), sense);
     let name = file.name();
     let location = file.location();
     let (ink, glyph) = if selected {

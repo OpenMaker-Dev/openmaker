@@ -95,8 +95,10 @@ Apple's system colors in their increased-contrast variants, which keep
 |---|---|---|---|
 | `RED` | Errors, failures, destructive actions | `#E9152D` | `#FF6165` |
 | `RED_TINT` | Background of an error banner or marked row | `#FDE8EA` | `#4A1E22` |
+| `RED_INK` | Text on `RED_TINT`: the red darkened to keep 4.5:1 | `#B80E28` | `#FF6165` |
 | `YELLOW` | Warning text | `#A16A00` | `#FEDF43` |
 | `YELLOW_TINT` | Background of a warning banner | `#FFF7D6` | `#3D3416` |
+| `YELLOW_INK` | Text on `YELLOW_TINT`: the yellow darkened to keep 4.5:1 | `#865700` | `#FEDF43` |
 | `CAUTION` | The caution glyph's fill, with `TEXT` ink (Apple's default Yellow) | `#FFCC00` | `#FFD600` |
 
 When a screen needs a status hue that has no token yet, take it from the
@@ -166,11 +168,13 @@ Measured with the WCAG formula over the light surfaces:
 | `ON_ACCENT` | 4.6:1 | `ACCENT` |
 | `ACCENT`, `RED`, `YELLOW` as text | 4.6:1 | `CONTROL_BG` |
 | `ACCENT`, `RED`, `YELLOW` as text | 4.0:1 | `DIALOG_BG` |
+| `RED_INK`, `YELLOW_INK` | 5.7:1 | `RED_TINT`, `YELLOW_TINT` |
 | `ICON` | 3.0:1 | `HOVER_FILL` |
 | `WEAK_TEXT` | 2.5:1 | `HOVER_FILL` |
 
 So: put colored text (`ACCENT`, `RED`, `YELLOW`) on `CONTROL_BG`, or make it
-13 pt semibold or 18 pt on darker surfaces, where 3:1 is enough. Keep
+13 pt semibold or 18 pt on darker surfaces, where 3:1 is enough. On a tint,
+text takes the tint's ink (`RED_INK`, `YELLOW_INK`). Keep
 `WEAK_TEXT` to hints that repeat what the control already says.
 
 ### Exceptions
@@ -265,8 +269,8 @@ popovers a smaller one (offset 4, blur 14, black at 18%).
   `SELECTED` with `ON_ACCENT` text.
 - **Menu.** `MENU_FILL`, `HAIRLINE` outline and separators, `MENU_RADIUS`,
   22 pt rows; the hovered or open row is `HIGHLIGHT` with `ON_ACCENT` text.
-- **Messages.** Error text is `RED`. An error banner is `RED_TINT` with `RED`
-  text; a warning banner is `YELLOW_TINT` with `YELLOW` text. The caution
+- **Messages.** Error text is `RED`. An error banner is `RED_TINT` with
+  `RED_INK` text; a warning banner is `YELLOW_TINT` with `YELLOW_INK` text. The caution
   glyph is `CAUTION` with `TEXT` ink, the stop glyph `RED` with `ON_ACCENT`
   ink.
 - **Glyphs.** Monochrome, `ICON` at rest, `SELECTED` when on, `DISABLED`

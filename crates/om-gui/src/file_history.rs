@@ -93,6 +93,10 @@ pub(crate) struct History {
     tab: Tab,
     recent: Vec<SavedFile>,
     favorites: Vec<SavedFile>,
+    /// Changes that could not be saved, in order: the next save replays
+    /// them onto the file's history.
+    #[serde(skip)]
+    unsaved: Vec<Change>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -124,15 +128,20 @@ impl History {
     /// Apply `change` and save it in the settings file at `path`, merged into
     /// what another instance may have saved there since. When it cannot be
     /// saved, the file is left as it was and the change still applies to
-    /// this list, so the window shows it until the app quits.
+    /// this list; it is saved with the next change that can be, or shows
+    /// until the app quits.
     pub fn change(&mut self, path: Option<&Path>, change: Change) -> Result<(), DataError> {
         let Some(path) = path else {
             self.apply(change);
             return Ok(());
         };
+        let mut changes = std::mem::take(&mut self.unsaved);
+        changes.push(change.clone());
         let saved = crate::settings::update(path, |map| {
             let mut history = Self::from_settings(map)?;
-            history.apply(change.clone());
+            for change in &changes {
+                history.apply(change.clone());
+            }
             let value = serde_json::to_value(&history)
                 .map_err(|err| DataError::new(format!("File history could not be saved: {err}")))?;
             map.insert(KEY.into(), value);
@@ -145,6 +154,7 @@ impl History {
             }
             Err(error) => {
                 self.apply(change);
+                self.unsaved = changes;
                 Err(error)
             }
         }
@@ -204,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_settings_file_is_kept_and_the_change_stays_in_memory() {
+    fn an_unreadable_settings_file_is_kept_and_its_changes_saved_later() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(&path, "not a settings file").unwrap();
@@ -213,10 +223,18 @@ mod tests {
         assert!(history
             .change(Some(&path), Change::Opened(file.clone()))
             .is_err());
-        assert_eq!(history.files(Tab::Recent), &[file]);
+        assert_eq!(history.files(Tab::Recent), std::slice::from_ref(&file));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "not a settings file"
         );
+        // Once the file can be saved, the next change carries the earlier one.
+        std::fs::write(&path, "{}").unwrap();
+        history
+            .change(Some(&path), Change::Select(Tab::Favorites))
+            .unwrap();
+        let restored = History::load(&path).unwrap();
+        assert_eq!(restored.tab(), Tab::Favorites);
+        assert_eq!(restored.files(Tab::Recent), &[file]);
     }
 }
