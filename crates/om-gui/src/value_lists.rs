@@ -15,8 +15,8 @@
 //! file's, never fills it.
 
 use egui::{
-    pos2, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Role, Sense, Stroke,
-    Ui, WidgetInfo,
+    pos2, vec2, Align, Align2, CornerRadius, Id, Layout, RichText, Role, Sense, Stroke, Ui,
+    WidgetInfo,
 };
 use om_data::value_lists::{CatalogList, ListSource, ValueListCatalog};
 use om_data::DataError;
@@ -79,14 +79,14 @@ impl ManageValueLists {
         let list_height = (ctx.content_rect().height() - 300.0).clamp(100.0, 300.0);
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(10))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
         let mut close = false;
         let response = egui::Modal::new(Id::unique("manage_value_lists"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(24))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.label(
@@ -99,8 +99,8 @@ impl ManageValueLists {
                     _ => &[],
                 };
                 egui::Frame::new()
-                    .fill(Color32::WHITE)
-                    .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+                    .fill(theme::CONTROL_BG)
+                    .stroke(Stroke::new(1.0, theme::BORDER))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         let (header, _) = ui.allocate_exact_size(vec2(width, 25.0), Sense::hover());
@@ -299,12 +299,12 @@ fn list_row(ui: &mut Ui, list: &CatalogList, selected: bool, alternate: bool) ->
     } else if response.hovered() {
         theme::CURRENT_ROW
     } else if alternate {
-        Color32::from_gray(0xF5)
+        theme::ALTERNATE_ROW
     } else {
-        Color32::WHITE
+        theme::CONTROL_BG
     };
     let (color, weak) = if selected {
-        (Color32::WHITE, Color32::WHITE)
+        (theme::ON_ACCENT, theme::ON_ACCENT)
     } else {
         (theme::TEXT, theme::WEAK_TEXT)
     };

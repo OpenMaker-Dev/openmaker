@@ -7,8 +7,7 @@
 //! requests, and replies are folded back in at the start of the next frame.
 
 use egui::{
-    vec2, Color32, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui,
-    ViewportCommand,
+    vec2, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui, ViewportCommand,
 };
 use om_data::found::FindRequest;
 use om_data::scripts::save_records::{Format as SaveFormat, SaveRecords};
@@ -487,8 +486,14 @@ pub(crate) enum Action {
     ShowCreateNew,
     /// Open this file on this computer.
     OpenLocal(std::path::PathBuf),
-    /// Close the open file (if any) and show the Hosts dialog: every
-    /// window closes, one at a time ([`Action::CloseWindow`]).
+    /// Reveal Home at the indicated file list, or reveal Hosts.
+    ShowHome(crate::file_history::Tab),
+    ShowHosts,
+    /// Reopen a saved destination through the normal open or sign-in flow.
+    OpenSaved(crate::file_history::SavedFile),
+    EditHistory(crate::file_history::Change),
+    /// Close the open file (if any): every window closes, one at a time
+    /// ([`Action::CloseWindow`]).
     CloseFile,
     /// Open the window's file again after its connection was lost
     /// (recovery.rs).
@@ -720,6 +725,10 @@ impl Action {
             self,
             Action::CloseFile
                 | Action::CloseWindow
+                | Action::ShowHosts
+                | Action::ShowHome(_)
+                | Action::OpenSaved(_)
+                | Action::EditHistory(_)
                 | Action::Reconnect
                 | Action::SelectWindow(_)
                 | Action::SetView(_)
@@ -804,6 +813,10 @@ pub struct OpenMakerApp {
     epoch: u64,
     form: ConnectForm,
     hosts: HostsView,
+    show_hosts: bool,
+    desktop_home: bool,
+    home: crate::home::Home,
+    file_history: crate::file_history::History,
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
     opening: Option<Target>,
@@ -911,12 +924,9 @@ pub struct OpenMakerApp {
     related_asked: std::collections::BTreeSet<(u64, String)>,
     /// The account dialog of a related file, in the window that needed it.
     related_login: Option<RelatedLogin>,
-    /// File > Open was chosen with a file open: the chooser shows once it
-    /// has closed (a veto or a refused save keeps it, and the chooser
-    /// does not show).
-    open_after_close: bool,
-    /// Create New waits for the open file to close.
-    create_after_close: bool,
+    /// A launch command waiting for the current file to close. A veto or
+    /// refused save leaves the file open and drops the command.
+    launch_after_close: Option<Action>,
     /// The file Create New just made: when it opens, Manage Database opens
     /// on it, as in FileMaker Pro. Kept by path, so an open that was
     /// cancelled leaves no other file's open to take it.
@@ -952,6 +962,10 @@ impl OpenMakerApp {
             epoch: 0,
             form: ConnectForm::default(),
             hosts: HostsView::default(),
+            show_hosts: true,
+            desktop_home: false,
+            home: Default::default(),
+            file_history: Default::default(),
             status: ConnectStatus::Idle,
             opening: None,
             listing: connect::Listing::None,
@@ -1011,17 +1025,34 @@ impl OpenMakerApp {
             related_sign_ins: Default::default(),
             related_asked: Default::default(),
             related_login: None,
-            open_after_close: false,
-            create_after_close: false,
+            launch_after_close: None,
             database_after_open: None,
             local_read_only: None,
         }
     }
 
-    /// Prefill the native Hosts form from `OPENMAKER_*` variables.
-    pub(crate) fn with_connection_defaults(mut self) -> Self {
-        if !self.sample_data {
-            self.form = ConnectForm::from_env();
+    /// Start the desktop launcher on Home. An explicit host prefill opens
+    /// Hosts directly, as in earlier versions of the desktop client.
+    pub(crate) fn with_desktop_startup(self) -> Self {
+        let mut app = self.with_home();
+        if !app.sample_data {
+            app.form = ConnectForm::from_env();
+        }
+        app.show_hosts = !app.form.host.trim().is_empty();
+        app
+    }
+
+    /// Start at Home and use the selected settings file for Recent and
+    /// Favorites. Call after [`Self::with_settings_file`] to isolate history.
+    #[must_use]
+    pub fn with_home(mut self) -> Self {
+        self.desktop_home = true;
+        self.show_hosts = false;
+        if let Some(path) = self.history_path() {
+            match crate::file_history::History::load(path) {
+                Ok(history) => self.file_history = history,
+                Err(error) => eprintln!("openmaker: {error}"),
+            }
         }
         self
     }
@@ -1215,22 +1246,18 @@ impl OpenMakerApp {
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
+            self.show_hosts = true;
             self.apply(&ctx, Action::Connect);
         }
         self.poll_worker(&ctx);
         self.web_viewer_outcomes(&ctx);
         self.tick_timer(&ctx);
         self.abort_keys(&ctx);
-        if self.open_after_close && self.closing.is_none() {
-            self.open_after_close = false;
-            if self.w.session.is_none() {
-                self.open_file = Some(crate::open_file::OpenFileDialog::new());
-            }
-        }
-        if self.create_after_close && self.closing.is_none() {
-            self.create_after_close = false;
-            if self.w.session.is_none() {
-                self.create_new = Some(crate::create_new::CreateNewDialog::new());
+        if self.closing.is_none() {
+            if let Some(action) = self.launch_after_close.take() {
+                if self.w.session.is_none() {
+                    self.apply(&ctx, action);
+                }
             }
         }
         // The root viewport shows the file's first window; each other
@@ -1557,6 +1584,8 @@ impl OpenMakerApp {
             zoom: self.w.document.zoom.percent(),
             zooms: self.zooms(),
             session: self.w.session.as_ref(),
+            file_history: &self.file_history,
+            launch_available: self.can_launch(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
             formatting: self.w.show_formatting,
@@ -2125,16 +2154,26 @@ impl OpenMakerApp {
                 ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
                 content_rect = Some(shown.response.rect);
             }
-            None if self.open_file.is_some()
-                || self.create_new.is_some()
-                || self.local_login.is_some() =>
+            None if self.show_hosts
+                && (self.open_file.is_some()
+                    || self.create_new.is_some()
+                    || self.local_login.is_some()) =>
             {
-                // File > Open's dialogs stand in for the Hosts dialog.
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(theme::PASTEBOARD))
                     .show(ui, |_| {});
             }
-            None => {
+            None if self.show_hosts => {
+                if self.desktop_home {
+                    egui::Panel::top("return_to_home").show(ui, |ui| {
+                        if ui
+                            .add_enabled(self.can_launch(), egui::Button::new("← Home"))
+                            .clicked()
+                        {
+                            actions.push(Action::ShowHome(self.file_history.tab()));
+                        }
+                    });
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new())
                     .show(ui, |ui| {
@@ -2150,6 +2189,12 @@ impl OpenMakerApp {
                     });
                 self.forget_other_hosts();
             }
+            None => self.home.show(
+                ui,
+                &self.file_history,
+                self.status == ConnectStatus::Connecting,
+                &mut actions,
+            ),
         }
         #[cfg(target_os = "macos")]
         crate::system_menu::clear_field_edit(&ctx);
@@ -2929,6 +2974,77 @@ impl OpenMakerApp {
         self.open_local_with(ctx, file, false);
     }
 
+    fn can_launch(&self) -> bool {
+        self.status == ConnectStatus::Idle
+            && self.local_login.is_none()
+            && self.change_password.is_none()
+            && self.closing.is_none()
+    }
+
+    fn history_path(&self) -> Option<&std::path::Path> {
+        self.settings_path
+            .as_deref()
+            .filter(|_| self.desktop_home && !self.sample_data)
+    }
+
+    fn edit_file_history(&mut self, change: crate::file_history::Change) {
+        let path = self.history_path().map(std::path::Path::to_path_buf);
+        if let Err(error) = self.file_history.change(path.as_deref(), change.clone()) {
+            // Keep Home navigation usable even if preferences cannot be saved.
+            if matches!(change, crate::file_history::Change::Select(_)) {
+                let _ = self.file_history.change(None, change);
+            }
+            self.error = Some(error.message);
+        }
+    }
+
+    /// The Home and File menu launch commands use the same close and
+    /// commit path before another file or chooser can take the window.
+    fn launch(&mut self, ctx: &egui::Context, action: Action) {
+        use crate::file_history::{Change, SavedFile};
+        if !self.can_launch() {
+            return;
+        }
+        if self.w.session.is_some() {
+            self.launch_after_close = Some(action);
+            self.apply(ctx, Action::CloseFile);
+            return;
+        }
+        match action {
+            Action::ShowCreateNew => {
+                self.open_file = None;
+                self.create_new = Some(crate::create_new::CreateNewDialog::new());
+            }
+            Action::ShowOpenFile => {
+                self.open_file = Some(crate::open_file::OpenFileDialog::new());
+            }
+            Action::ShowHome(tab) => {
+                self.show_hosts = false;
+                if self.file_history.tab() != tab {
+                    self.home = Default::default();
+                    self.edit_file_history(Change::Select(tab));
+                }
+            }
+            Action::ShowHosts => self.show_hosts = true,
+            Action::OpenSaved(SavedFile::Local { path }) => {
+                self.show_hosts = false;
+                self.apply(ctx, Action::OpenLocal(path));
+            }
+            Action::OpenSaved(SavedFile::Hosted { host, port, file }) => {
+                use zeroize::Zeroize;
+                self.form.password.zeroize();
+                self.form = ConnectForm {
+                    host,
+                    port: port.to_string(),
+                    file,
+                    ..Default::default()
+                };
+                self.show_hosts = true;
+            }
+            _ => unreachable!("only file launch commands enter this path"),
+        }
+    }
+
     /// [`Self::open_local`]; with `ask` and no credentials, asking for an
     /// account whatever File Options say.
     fn open_local_with(&mut self, ctx: &egui::Context, file: om_data::LocalFile, ask: bool) {
@@ -3463,13 +3579,13 @@ impl OpenMakerApp {
         };
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(12))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
         egui::Modal::new(Id::unique("alert"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(30))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(260.0);
                 ui.vertical_centered(|ui| {
@@ -3480,7 +3596,7 @@ impl OpenMakerApp {
                         ui.painter(),
                         rect.shrink(12.0),
                         Icon::Data,
-                        Color32::WHITE,
+                        theme::ON_ACCENT,
                         theme::DEFAULT_BUTTON,
                     );
                     ui.add_space(10.0);
@@ -3600,13 +3716,13 @@ impl OpenMakerApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(left.fract().max(0.05)));
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(12))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
         egui::Modal::new(Id::unique("host message"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(30))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(320.0);
                 ui.label(
@@ -4281,23 +4397,12 @@ impl OpenMakerApp {
             Action::DiscardUnsettledSave => self.settle_save(ctx, worker::Settle::Discard),
             Action::RecreateRecord => self.recreate(ctx, true),
             Action::DiscardNewRecord => self.recreate(ctx, false),
-            Action::ShowCreateNew => {
-                if self.w.session.is_some() {
-                    self.create_after_close = true;
-                    self.apply(ctx, Action::CloseFile);
-                } else if self.status == ConnectStatus::Idle && self.local_login.is_none() {
-                    self.open_file = None;
-                    self.create_new = Some(crate::create_new::CreateNewDialog::new());
-                }
-            }
-            Action::ShowOpenFile => {
-                if self.w.session.is_some() {
-                    self.open_after_close = true;
-                    self.apply(ctx, Action::CloseFile);
-                } else if self.status == ConnectStatus::Idle && self.local_login.is_none() {
-                    self.open_file = Some(crate::open_file::OpenFileDialog::new());
-                }
-            }
+            Action::ShowCreateNew
+            | Action::ShowOpenFile
+            | Action::ShowHome(_)
+            | Action::ShowHosts
+            | Action::OpenSaved(_) => self.launch(ctx, action),
+            Action::EditHistory(change) => self.edit_file_history(change),
             Action::OpenLocal(path) => {
                 self.open_file = None;
                 if self.status == ConnectStatus::Idle && self.w.session.is_none() {
@@ -4982,6 +5087,25 @@ impl OpenMakerApp {
         opened: crate::worker::Opened,
         account: String,
     ) {
+        use crate::file_history::{Change, SavedFile};
+        if !self.sample_data {
+            let file = if let Some(path) = &target.local {
+                Some(SavedFile::local(path.clone()))
+            } else {
+                self.form.port().ok().map(|port| SavedFile::Hosted {
+                    host: target.host.clone(),
+                    port,
+                    file: target.file.clone(),
+                })
+            };
+            if let Some(file) = file {
+                self.edit_file_history(Change::Opened(file));
+            }
+        }
+        if self.desktop_home {
+            self.show_hosts = false;
+            self.home = Default::default();
+        }
         self.closed_windows.clear();
         self.window_files = std::collections::HashMap::from([(windows::FIRST, 0)]);
         self.presentation = None;
@@ -6964,6 +7088,7 @@ fn layout_change_done<T>(result: &Result<T, DataError>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Color32;
 
     struct NoLicense;
     impl crate::licensing::LicenseStore for NoLicense {

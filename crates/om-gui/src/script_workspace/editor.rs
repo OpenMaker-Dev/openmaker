@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{
-    pos2, text::LayoutJob, vec2, Align2, Color32, FontId, Key, Rect, Role, Sense, Stroke,
-    TextFormat, Ui, WidgetInfo,
+    pos2, text::LayoutJob, vec2, Align2, FontId, Key, Rect, Role, Sense, Stroke, TextFormat, Ui,
+    WidgetInfo,
 };
 use om_data::scripts::display::{script_lines, LineKind, StepLine, StepNames, INDENT};
 use om_data::scripts::{
@@ -25,16 +25,6 @@ pub(super) const GUTTER: f32 = 36.0;
 /// The step text's left inset inside the editor.
 const TEXT_INSET: f32 = 15.0;
 const MONOSPACE: f32 = 12.5;
-/// The gutter's gray (35: the band left of the step text).
-const GUTTER_BG: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
-/// A selected line while the editor has the focus, and otherwise (35b).
-const SELECTED_FOCUSED: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xFB);
-const SELECTED: Color32 = Color32::from_rgb(0xE6, 0xE6, 0xE6);
-/// A pasted line that could not be read, and its gutter mark.
-const MARKED: Color32 = Color32::from_rgb(0xFD, 0xEC, 0xEA);
-const MARK: Color32 = Color32::from_rgb(0xD9, 0x3B, 0x30);
-/// The gear's blue (35b).
-const GEAR: Color32 = Color32::from_rgb(0x2F, 0x7C, 0xF6);
 
 /// Steps that open a block and the step FileMaker adds to close it.
 const BLOCKS: [(u16, u16); 3] = [
@@ -762,7 +752,7 @@ impl Editor {
         ui.painter().rect_filled(
             Rect::from_min_size(full.min, vec2(GUTTER, full.height())),
             0.0,
-            GUTTER_BG,
+            theme::BAR_BG,
         );
         let typing_at = self.typing.as_ref().map(|t| t.at);
         let rows = lines.len() + usize::from(typing_at.is_some());
@@ -789,7 +779,7 @@ impl Editor {
                 painter.rect_filled(
                     Rect::from_min_size(area.min, vec2(GUTTER, area.height())),
                     0.0,
-                    GUTTER_BG,
+                    theme::BAR_BG,
                 );
                 // A click below the last line clears the selection.
                 let below = Rect::from_min_max(
@@ -872,7 +862,7 @@ impl Editor {
             painter.rect_filled(
                 Rect::from_min_max(pos2(rect.left() + GUTTER, rect.top()), rect.max),
                 0.0,
-                MARKED,
+                theme::RED_TINT,
             );
             painter.rect_filled(
                 Rect::from_min_size(
@@ -880,7 +870,7 @@ impl Editor {
                     vec2(3.0, rect.height()),
                 ),
                 0.0,
-                MARK,
+                theme::RED,
             );
             response.clone().on_hover_text(reason);
         }
@@ -888,7 +878,13 @@ impl Editor {
             painter.rect_filled(
                 Rect::from_min_max(pos2(rect.left() + GUTTER, rect.top()), rect.max),
                 0.0,
-                if focused { SELECTED_FOCUSED } else { SELECTED },
+                // A selected line while the editor has the focus, and
+                // otherwise (35b).
+                if focused {
+                    theme::SELECTED_TEXT_BG
+                } else {
+                    theme::HOVER_FILL
+                },
             );
         }
         painter.text(
@@ -954,7 +950,7 @@ impl Editor {
         if selected && self.selection.len() == 1 && has_options(step) && !inline_here {
             let center = pos2(text_pos.x + galley.size().x + 13.0, rect.center().y);
             let gear_rect = Rect::from_center_size(center, vec2(18.0, 18.0));
-            glyphs::gear(&painter, center, 8.0, GEAR);
+            glyphs::gear(&painter, center, 8.0, theme::ACCENT);
             let gear = ui.interact(gear_rect, id.with("gear"), Sense::click());
             gear.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Step Options"));
             if gear.clicked() {

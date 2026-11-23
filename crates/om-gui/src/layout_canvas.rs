@@ -13,8 +13,7 @@ use std::f32::consts::FRAC_PI_2;
 use egui::emath::GuiRounding as _;
 use egui::epaint::TextShape;
 use egui::{
-    pos2, vec2, Align2, Color32, CornerRadius, Pos2, Rect, Role, Sense, Stroke, StrokeKind, Ui,
-    WidgetInfo,
+    pos2, vec2, Align2, CornerRadius, Pos2, Rect, Role, Sense, Stroke, StrokeKind, Ui, WidgetInfo,
 };
 use om_data::{GeomRect, LayoutGeometry, ObjectGeom, PartGeom};
 
@@ -1240,7 +1239,7 @@ fn draw(
                 }
             }
             let painter = ui.painter().clone();
-            painter.rect_filled(surface, CornerRadius::ZERO, Color32::WHITE);
+            painter.rect_filled(surface, CornerRadius::ZERO, theme::CONTENT_BG);
             painter.vline(
                 surface.right() - 0.5,
                 surface.y_range(),
@@ -1248,11 +1247,11 @@ fn draw(
             );
 
             let strip = Rect::from_min_max(area.min, pos2(origin.x, area.bottom()));
-            painter.rect_filled(strip, CornerRadius::ZERO, Color32::from_gray(0xEC));
+            painter.rect_filled(strip, CornerRadius::ZERO, theme::BAR_BG);
             painter.vline(
                 origin.x - 0.5,
                 strip.y_range(),
-                Stroke::new(1.0, Color32::from_gray(0xC4)),
+                Stroke::new(1.0, theme::BORDER),
             );
             for part in &geometry.parts {
                 draw_part(ui, origin, width, part);
@@ -1559,7 +1558,7 @@ fn draw(
                 let outline = if changed && object.key != 0 {
                     Stroke::new(1.0, theme::SELECTED)
                 } else {
-                    Stroke::new(1.0, Color32::from_gray(0xA0))
+                    Stroke::new(1.0, theme::BUTTON_BORDER)
                 };
                 if rect.width() < 1.0 || rect.height() < 1.0 {
                     painter.line_segment([rect.min, rect.max], outline);
@@ -1981,7 +1980,7 @@ fn draw_part(ui: &mut Ui, origin: Pos2, width: f32, part: &PartGeom) {
     painter.hline(
         origin.x..=origin.x + width,
         bottom - 0.5,
-        Stroke::new(1.0, Color32::from_gray(0x8C)),
+        Stroke::new(1.0, theme::POPUP_BORDER),
     );
     let tab = Rect::from_min_max(
         pos2(origin.x - PART_STRIP_WIDTH + 2.0, top + 2.0),
@@ -1993,7 +1992,7 @@ fn draw_part(ui: &mut Ui, origin: Pos2, width: f32, part: &PartGeom) {
     painter.rect_stroke(
         tab,
         CornerRadius::same(2),
-        Stroke::new(1.0, Color32::from_gray(0xB0)),
+        Stroke::new(1.0, theme::BUTTON_BORDER),
         StrokeKind::Inside,
     );
     let galley = painter.layout_no_wrap(part.kind_name.clone(), theme::small(), theme::CAPTION);
@@ -2390,7 +2389,7 @@ fn draw_selection(painter: &egui::Painter, rect: Rect) {
         painter.rect(
             Rect::from_center_size(position, vec2(5.0, 5.0)),
             CornerRadius::ZERO,
-            Color32::WHITE,
+            theme::CONTROL_BG,
             Stroke::new(1.0, theme::SELECTED),
             StrokeKind::Inside,
         );

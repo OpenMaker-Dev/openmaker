@@ -16,6 +16,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::Queryable;
+use egui_kittest::Harness;
 use fixture::{TempFile, ACCOUNT, PASSWORD};
 use om_server::Server;
 
@@ -68,7 +69,21 @@ fn published_files_are_listed_searched_and_the_chosen_one_opens() {
             .listing_file("Alpha.fmp12")
             .listing_file("Beta.fmp12")
     });
-    let mut app = common::harness(Box::new(hosted.provider()));
+    let settings = tempfile::tempdir().unwrap();
+    let provider = hosted.provider();
+    let settings = settings.path().join("settings.json");
+    let mut app = Harness::builder()
+        .with_size(egui::vec2(1060.0, 760.0))
+        .renderer(common::renderer())
+        .build_eframe(move |_| {
+            om_gui::OpenMakerApp::with_license_store(
+                Box::new(provider),
+                Box::new(common::NoLicense),
+            )
+            .with_settings_file(settings)
+            .with_home()
+        });
+    common::click(&mut app, "Hosts");
     fill_server(&mut app, hosted.connection.port);
 
     common::click(&mut app, "List files");
@@ -94,6 +109,30 @@ fn published_files_are_listed_searched_and_the_chosen_one_opens() {
     common::workspace::double_click_at(&mut app, at);
     common::wait_until(&mut app, "Beta to open", |app| app.state().is_open());
     assert_eq!(app.state().error(), None);
+    assert_eq!(app.state().window_name(), "Beta (127.0.0.1)");
+
+    // The File menu reuses the same destination, including its nonstandard
+    // port. The user signs in again before the file opens.
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Recent");
+    common::click(&mut app, "Beta");
+    common::wait_for_label(&mut app, "Host");
+    for (field, expected) in [
+        ("Host", "127.0.0.1".into()),
+        ("Port", hosted.connection.port.to_string()),
+        ("File", "Beta.fmp12".into()),
+        ("Account", String::new()),
+        ("Password", String::new()),
+    ] {
+        assert_eq!(
+            common::text_field(&app, field).value().unwrap_or_default(),
+            expected
+        );
+    }
+    common::fill(&mut app, "Account", ACCOUNT);
+    common::fill(&mut app, "Password", PASSWORD);
+    common::click(&mut app, "Open");
+    common::wait_until(&mut app, "Beta to reopen", |app| app.state().is_open());
     assert_eq!(app.state().window_name(), "Beta (127.0.0.1)");
 }
 

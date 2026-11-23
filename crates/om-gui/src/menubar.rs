@@ -11,6 +11,7 @@ use egui::{Key, KeyboardShortcut, Modifiers, Ui};
 use om_data::scripts::save_records::Format as SaveFormat;
 
 use crate::app::{shortcuts, steps, Action, EditCommand, FindState, Mode, ViewMode};
+use crate::file_history::{Change, History, Tab};
 use crate::session::Session;
 use crate::theme;
 use crate::widgets::{menu_item, menu_separator, submenu};
@@ -23,6 +24,8 @@ pub(crate) struct MenuContext<'a> {
     /// View's zoom commands can change it (`OpenMakerApp::zooms`).
     pub zooms: bool,
     pub session: Option<&'a Session>,
+    pub file_history: &'a History,
+    pub launch_available: bool,
     pub find: &'a FindState,
     pub toolbar: bool,
     pub formatting: bool,
@@ -356,11 +359,41 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     rows.separator();
     pending(rows, "Sign In to Claris ID", None);
-    pending_submenu(rows, "Favorites");
-    pending_submenu(rows, "Recent");
+    for tab in [Tab::Favorites, Tab::Recent] {
+        rows.submenu(tab.label(), context.launch_available, &mut |rows| {
+            let show = match tab {
+                Tab::Favorites => "Show Favorites",
+                Tab::Recent => "Show Recent",
+            };
+            if rows.item(show, None, false, true) {
+                actions.push(Action::ShowHome(tab));
+            }
+            let files = context.file_history.files(tab);
+            if !files.is_empty() {
+                rows.separator();
+                for file in files {
+                    let name = file.name();
+                    let label = if files.iter().filter(|entry| entry.name() == name).count() > 1 {
+                        format!("{name} ({})", file.location())
+                    } else {
+                        name
+                    };
+                    if rows.item(&label, None, false, true) {
+                        actions.push(Action::OpenSaved(file.clone()));
+                    }
+                }
+                if tab == Tab::Recent {
+                    rows.separator();
+                    if rows.item("Clear Recent Files", None, false, true) {
+                        actions.push(Action::EditHistory(Change::ClearRecent));
+                    }
+                }
+            }
+        });
+    }
     rows.submenu("Hosts", true, &mut |rows| {
-        if rows.item("Show Hosts...", None, false, true) {
-            actions.push(Action::CloseFile);
+        if rows.item("Show Hosts...", None, false, context.launch_available) {
+            actions.push(Action::ShowHosts);
         }
     });
     if rows.item("Open...", Some(shortcuts::OPEN), false, true) {

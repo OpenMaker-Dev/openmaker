@@ -7,9 +7,7 @@
 //! found-set ring at 169, then Show All at 335, New Record 418, Delete Record
 //! 502, Find 582, Sort 653, Share 705 and Quick Find from 745.
 
-use egui::{
-    pos2, vec2, Align2, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui,
-};
+use egui::{pos2, vec2, Align2, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui};
 
 use om_data::scripts::save_records::Format as SaveFormat;
 
@@ -213,7 +211,7 @@ fn browse(
         if !find_enabled {
             theme::DISABLED
         } else if response.is_pointer_button_down_on() {
-            Color32::from_gray(0x45)
+            theme::TEXT
         } else {
             theme::ICON
         },
@@ -349,7 +347,7 @@ fn quick_find(
         rect,
         CornerRadius::same(6),
         if focused && enabled {
-            Color32::WHITE
+            theme::CONTROL_BG
         } else {
             fill
         },
@@ -380,7 +378,7 @@ fn quick_find(
     );
     let text_rect = Rect::from_min_max(rect.min + vec2(30.0, 0.0), rect.max - vec2(6.0, 0.0));
     let hint = if enabled {
-        Color32::from_gray(0xA8)
+        theme::WEAK_TEXT
     } else {
         theme::DISABLED
     };
@@ -571,7 +569,7 @@ fn layout(ui: &mut Ui, bar: Rect, context: &ToolbarContext<'_>, actions: &mut Ve
                 vec2(32.0, 22.0),
             ),
             CornerRadius::same(5),
-            Color32::from_gray(0xDC),
+            theme::HOVER_FILL,
         );
     }
     if toolbar_button(
@@ -649,7 +647,7 @@ fn layout(ui: &mut Ui, bar: Rect, context: &ToolbarContext<'_>, actions: &mut Ve
             vec2(32.0, 22.0),
         );
         ui.painter()
-            .rect_filled(highlight, CornerRadius::same(5), Color32::from_gray(0xDC));
+            .rect_filled(highlight, CornerRadius::same(5), theme::HOVER_FILL);
     }
     if toolbar_button(ui, inspector, Icon::Inspector, "Inspector", true, false).clicked() {
         actions.push(Action::ToggleInspector);
@@ -671,7 +669,7 @@ fn tool_button(ui: &mut Ui, rect: Rect, tool: LayoutTool, selected: bool) -> Res
     let (color, background) = if selected {
         let highlight = Rect::from_center_size(icon_center, vec2(48.0, 21.0));
         painter.rect_filled(highlight, CornerRadius::same(5), theme::SELECTED);
-        (Color32::WHITE, theme::SELECTED)
+        (theme::ON_ACCENT, theme::SELECTED)
     } else {
         (theme::ICON, theme::TOOLBAR_BG)
     };
@@ -720,9 +718,9 @@ fn navigation(ui: &mut Ui, bar: Rect, nav: &Nav, text: &mut String) -> Option<u6
         let color = if !enabled {
             theme::DISABLED
         } else if response.is_pointer_button_down_on() {
-            Color32::from_gray(0x45)
+            theme::TEXT
         } else {
-            Color32::from_gray(0x9A)
+            theme::WEAK_TEXT
         };
         icons::paint(ui.painter(), rect, icon, color, theme::TOOLBAR_BG);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
@@ -766,8 +764,8 @@ fn navigation(ui: &mut Ui, bar: Rect, nav: &Nav, text: &mut String) -> Option<u6
     ui.painter().rect(
         number,
         CornerRadius::ZERO,
-        Color32::WHITE,
-        Stroke::new(1.0, theme::FIELD_BORDER),
+        theme::CONTROL_BG,
+        Stroke::new(1.0, theme::BORDER),
         StrokeKind::Inside,
     );
     // Let the edit be as short as the box so the number centers in it.
@@ -778,7 +776,7 @@ fn navigation(ui: &mut Ui, bar: Rect, nav: &Nav, text: &mut String) -> Option<u6
         egui::TextEdit::singleline(text)
             .id(id)
             .font(theme::small())
-            .text_color(Color32::from_gray(0x80))
+            .text_color(theme::CAPTION)
             .align(Align2::CENTER_CENTER)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
@@ -868,8 +866,8 @@ fn slider(ui: &mut Ui, bar: Rect, current: u64, count: u64) -> Option<u64> {
     painter.rect(
         track,
         CornerRadius::same(2),
-        Color32::from_gray(0xE2),
-        Stroke::new(1.0, Color32::from_gray(0xCA)),
+        theme::SEPARATOR,
+        Stroke::new(1.0, theme::BORDER),
         StrokeKind::Inside,
     );
     let knob_x = track.left() + 2.0 + fraction * (track.width() - 4.0);
@@ -877,8 +875,8 @@ fn slider(ui: &mut Ui, bar: Rect, current: u64, count: u64) -> Option<u64> {
     painter.rect(
         knob,
         CornerRadius::same(3),
-        Color32::WHITE,
-        Stroke::new(1.0, Color32::from_gray(0xB0)),
+        theme::CONTROL_BG,
+        Stroke::new(1.0, theme::BUTTON_BORDER),
         StrokeKind::Inside,
     );
     response.widget_info(|| {
@@ -911,14 +909,7 @@ fn ring(ui: &mut Ui, center: egui::Pos2, known: bool, loading: bool) {
     ui.painter().circle_stroke(
         center,
         9.5,
-        Stroke::new(
-            2.5,
-            if known {
-                theme::RING
-            } else {
-                Color32::from_gray(0xD4)
-            },
-        ),
+        Stroke::new(2.5, if known { theme::RING } else { theme::HAIRLINE }),
     );
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Percent in Found Set"));

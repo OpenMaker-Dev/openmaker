@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use egui::{Align, Color32, CornerRadius, Id, Layout, RichText, Stroke};
+use egui::{Align, CornerRadius, Id, Layout, RichText, Stroke};
 use om_data::field_options::{
     AutoCalculation, AutoEnterValue, EntryValue, FieldOptions, Indexing, Lookup, Message,
     OptionFormula, Serial, StrictType, ValidationCalculation,
@@ -347,7 +347,7 @@ impl OptionsDialog {
                 });
                 ui.add_space(8.0);
                 egui::Frame::new()
-                    .fill(Color32::from_gray(0xEC))
+                    .fill(theme::BAR_BG)
                     .stroke(Stroke::new(1.0, theme::DIVIDER))
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(14)
@@ -363,7 +363,7 @@ impl OptionsDialog {
                     });
                 if let Some(error) = &self.error {
                     ui.add_space(6.0);
-                    ui.colored_label(Color32::from_rgb(175, 35, 35), error);
+                    ui.colored_label(theme::RED, error);
                 }
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

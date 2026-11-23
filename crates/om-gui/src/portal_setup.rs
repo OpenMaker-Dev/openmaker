@@ -7,11 +7,11 @@
 //! Portal Setup's other options are shown at the defaults Pro gives a new
 //! portal, not offered.
 
-use egui::{vec2, Color32, CornerRadius, Rect, Stroke, UiBuilder};
+use egui::{vec2, CornerRadius, Rect, Stroke, UiBuilder};
 use om_data::layout_placement::{portal_field_frames, PortalPlacement, MAX_PORTAL_FIELDS};
 
 use crate::part_setup::dialog;
-use crate::widgets;
+use crate::{theme, widgets};
 
 const NOT_YET: &str = "OpenMaker places a portal with this option as FileMaker Pro sets it for a \
                        new portal; it does not change it yet.";
@@ -270,7 +270,7 @@ impl PortalSetup {
                 ui.painter().hline(
                     line.x_range(),
                     line.top(),
-                    Stroke::new(1.0, Color32::from_gray(0xD0)),
+                    Stroke::new(1.0, theme::HAIRLINE),
                 );
                 place(ui, at(101.0, 242.0, 72.0, 17.0), &mut |ui| {
                     ui.label("Initial row:");
@@ -547,11 +547,11 @@ fn list<'a>(
     activated: &mut Option<usize>,
 ) {
     ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+        .rect_filled(rect, CornerRadius::ZERO, theme::CONTROL_BG);
     ui.painter().rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, Color32::from_gray(0xC8)),
+        Stroke::new(1.0, theme::BORDER),
         egui::StrokeKind::Inside,
     );
     ui.scope_builder(UiBuilder::new().max_rect(rect.shrink(2.0)), |ui| {

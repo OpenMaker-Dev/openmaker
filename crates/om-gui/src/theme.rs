@@ -1,9 +1,14 @@
-//! FileMaker-style visuals: the chrome palette and metrics sampled from the
-//! FileMaker Pro 26 captures (`docs/re/client-ui.md`), the bundled UI font,
-//! and the egui [`Style`] built from them.
+//! OpenMaker's chrome design tokens: the colors, type sizes and metrics that
+//! `docs/design.md` defines, the bundled UI font, and the egui [`Style`]
+//! built from them.
 //!
 //! Only application chrome is styled here. The content area renders the
-//! file's layout, whose colors and fonts are document data.
+//! file's layout, whose colors and fonts are document data. Chrome code uses
+//! these tokens rather than its own color literals, so the palette stays one
+//! scheme and a later dark appearance changes one file. Region colors marked
+//! "measured" were sampled from FileMaker Pro 26 on macOS
+//! (`docs/re/client-ui.md`); the rest follow Apple's Human Interface
+//! Guidelines.
 
 use std::sync::Arc;
 
@@ -12,7 +17,7 @@ use egui::{
     Style, TextStyle, Theme, Vec2, Visuals,
 };
 
-// Chrome backgrounds and rules, sampled from captures 10, 14 and 28.
+// Surfaces. Region fills are measured from captures 10, 14 and 28.
 pub(crate) const TOOLBAR_BG: Color32 = Color32::from_rgb(0xF4, 0xF4, 0xF4);
 pub(crate) const LAYOUT_BAR_BG: Color32 = Color32::from_rgb(0xDE, 0xDE, 0xDF);
 pub(crate) const LAYOUT_BAR_TOP_RULE: Color32 = Color32::from_rgb(0xB8, 0xB8, 0xB9);
@@ -21,36 +26,83 @@ pub(crate) const MENU_BAR_RULE: Color32 = Color32::from_rgb(0xE2, 0xE2, 0xE2);
 pub(crate) const PASTEBOARD: Color32 = Color32::from_rgb(0xE5, 0xE5, 0xE5);
 pub(crate) const PRINT_WORKSPACE: Color32 = Color32::from_rgb(0x9C, 0x9C, 0x9C);
 pub(crate) const INSPECTOR_BG: Color32 = Color32::WHITE;
+/// Window background: dialogs, panes and sheets.
 pub(crate) const DIALOG_BG: Color32 = Color32::from_rgb(0xF0, 0xF0, 0xF0);
 pub(crate) const SIDEBAR_BG: Color32 = Color32::from_rgb(0xE3, 0xE3, 0xE4);
 pub(crate) const CONTENT_BG: Color32 = Color32::WHITE;
+/// Lists, tables, text fields and other large controls.
+pub(crate) const CONTROL_BG: Color32 = Color32::WHITE;
+/// Every other row of a striped list (Apple's alternating content color).
+pub(crate) const ALTERNATE_ROW: Color32 = Color32::from_rgb(0xF4, 0xF5, 0xF5);
+/// Button strips under lists and the bars inside dialogs.
+pub(crate) const BAR_BG: Color32 = Color32::from_rgb(0xEC, 0xEC, 0xEC);
+/// A hovered or pressed borderless button, and a selection in a list that
+/// does not have keyboard focus.
+pub(crate) const HOVER_FILL: Color32 = Color32::from_rgb(0xDC, 0xDC, 0xDC);
+pub(crate) const MENU_FILL: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
+pub(crate) const SEARCH_FILL: Color32 = Color32::from_rgb(0xEE, 0xEE, 0xEE);
+/// The dimming behind a modal dialog.
+pub(crate) const SCRIM: Color32 = Color32::from_black_alpha(24);
 
-// Text and glyphs.
+// Text and glyphs. Each text color keeps 4.5:1 on the surfaces above,
+// except `WEAK_TEXT` (hints and placeholders) and `DISABLED`.
 pub(crate) const TEXT: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
 pub(crate) const CAPTION: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x5E);
 pub(crate) const WEAK_TEXT: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 pub(crate) const DISABLED: Color32 = Color32::from_rgb(0xC4, 0xC4, 0xC4);
 pub(crate) const ICON: Color32 = Color32::from_rgb(0x7D, 0x7D, 0x7D);
 pub(crate) const VIEW_GLYPH: Color32 = Color32::from_rgb(0xA5, 0xA5, 0xA6);
-pub(crate) const DIVIDER: Color32 = Color32::from_rgb(0xB4, 0xB4, 0xB5);
-pub(crate) const HAIRLINE: Color32 = Color32::from_rgb(0xD6, 0xD6, 0xD6);
+/// Text and glyphs on an `ACCENT` or `RED` fill.
+pub(crate) const ON_ACCENT: Color32 = Color32::WHITE;
 
-// Blues: selected controls, the found-set ring, menu highlight, default
-// buttons and focus rings.
-pub(crate) const SELECTED: Color32 = Color32::from_rgb(0x2F, 0x54, 0xE5);
-pub(crate) const RING: Color32 = Color32::from_rgb(0x7A, 0xAF, 0xE6);
-pub(crate) const HIGHLIGHT: Color32 = Color32::from_rgb(0x3D, 0x86, 0xF5);
-pub(crate) const DEFAULT_BUTTON: Color32 = Color32::from_rgb(0x3E, 0x62, 0xEC);
-pub(crate) const FOCUS: Color32 = Color32::from_rgb(0x7C, 0x8C, 0xF4);
-pub(crate) const CURRENT_ROW: Color32 = Color32::from_rgb(0xE6, 0xEF, 0xFB);
-
-// Controls.
-pub(crate) const FIELD_BORDER: Color32 = Color32::from_rgb(0xC5, 0xC5, 0xC5);
-pub(crate) const BUTTON_BORDER: Color32 = Color32::from_rgb(0xB9, 0xB9, 0xBA);
-pub(crate) const POPUP_BORDER: Color32 = Color32::from_rgb(0x9B, 0x9B, 0x9C);
-pub(crate) const SEARCH_FILL: Color32 = Color32::from_rgb(0xEE, 0xEE, 0xEE);
+// Lines, lightest to darkest.
+/// Rules between rows and sections inside a pane (Apple's grid color).
+pub(crate) const SEPARATOR: Color32 = Color32::from_rgb(0xE6, 0xE6, 0xE6);
 pub(crate) const SEARCH_BORDER: Color32 = Color32::from_rgb(0xE0, 0xE0, 0xE0);
-pub(crate) const MENU_FILL: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
+/// Pane edges and the frames of grouped content.
+pub(crate) const HAIRLINE: Color32 = Color32::from_rgb(0xD6, 0xD6, 0xD6);
+/// Text fields, list boxes and the frames of in-window dialogs.
+pub(crate) const BORDER: Color32 = Color32::from_rgb(0xC5, 0xC5, 0xC5);
+pub(crate) const BUTTON_BORDER: Color32 = Color32::from_rgb(0xB9, 0xB9, 0xBA);
+/// Dividers between toolbar groups and bar sections.
+pub(crate) const DIVIDER: Color32 = Color32::from_rgb(0xB4, 0xB4, 0xB5);
+pub(crate) const POPUP_BORDER: Color32 = Color32::from_rgb(0x9B, 0x9B, 0x9C);
+
+// Accent. One blue for every selected, default, highlighted and focused
+// state: Apple's Blue in its increased-contrast variant, on which white
+// labels keep 4.5:1. Apple's default Blue (#0088FF) gives them 3.5:1.
+pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x1E, 0x6E, 0xF4);
+/// Selected controls, rows and view glyphs.
+pub(crate) const SELECTED: Color32 = ACCENT;
+/// The hovered or open menu row.
+pub(crate) const HIGHLIGHT: Color32 = ACCENT;
+/// The default button's fill.
+pub(crate) const DEFAULT_BUTTON: Color32 = ACCENT;
+/// The keyboard focus ring: the accent at three quarters over white, the
+/// palest that keeps 3:1 against a white field.
+pub(crate) const FOCUS: Color32 = Color32::from_rgb(0x56, 0x92, 0xF7);
+/// The current row of a list: the accent at a tenth over white.
+pub(crate) const CURRENT_ROW: Color32 = Color32::from_rgb(0xE8, 0xF0, 0xFE);
+/// Selected text (Apple's selected text background).
+pub(crate) const SELECTED_TEXT_BG: Color32 = Color32::from_rgb(0xB4, 0xD5, 0xFE);
+/// The found-set ring, measured.
+pub(crate) const RING: Color32 = Color32::from_rgb(0x7A, 0xAF, 0xE6);
+
+// Status: Apple's system colors in their increased-contrast variants, so
+// text in them keeps 4.5:1 on white. Tints are 10-16% over white.
+/// Errors, failures and destructive actions.
+pub(crate) const RED: Color32 = Color32::from_rgb(0xE9, 0x15, 0x2D);
+pub(crate) const RED_TINT: Color32 = Color32::from_rgb(0xFD, 0xE8, 0xEA);
+/// Warning text.
+pub(crate) const YELLOW: Color32 = Color32::from_rgb(0xA1, 0x6A, 0x00);
+pub(crate) const YELLOW_TINT: Color32 = Color32::from_rgb(0xFF, 0xF7, 0xD6);
+/// The caution glyph's fill: Apple's default Yellow, with dark ink.
+pub(crate) const CAUTION: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
+
+// The window controls drawn on in-window dialogs, as macOS colors them.
+pub(crate) const WINDOW_CLOSE: Color32 = Color32::from_rgb(0xFF, 0x5F, 0x57);
+pub(crate) const WINDOW_MINIMIZE: Color32 = Color32::from_rgb(0xFE, 0xBC, 0x2E);
+pub(crate) const WINDOW_ZOOM: Color32 = Color32::from_rgb(0x28, 0xC8, 0x40);
 
 // Metrics, in points.
 pub(crate) const MENU_BAR_HEIGHT: f32 = 24.0;
@@ -58,12 +110,31 @@ pub(crate) const TOOLBAR_HEIGHT: f32 = 54.0;
 pub(crate) const LAYOUT_BAR_HEIGHT: f32 = 25.0;
 pub(crate) const FORMATTING_BAR_HEIGHT: f32 = 27.0;
 pub(crate) const MENU_ROW_HEIGHT: f32 = 22.0;
+/// A large control (macOS's large control size), for a window's main
+/// actions; regular controls take egui's 22 pt `interact_size`.
+pub(crate) const LARGE_CONTROL_HEIGHT: f32 = 28.0;
+/// A sidebar or list row.
+pub(crate) const ROW_HEIGHT: f32 = 28.0;
 pub(crate) const INSPECTOR_WIDTH: f32 = 252.0;
 
-/// Toolbar captions, layout-bar labels and other small chrome text.
+// Corner radii, in points.
+/// Buttons, fields, list rows and other controls.
+pub(crate) const CONTROL_RADIUS: u8 = 5;
+/// Menus, popovers and grouped lists.
+pub(crate) const MENU_RADIUS: u8 = 7;
+/// Windows, sheets and dialogs.
+pub(crate) const WINDOW_RADIUS: u8 = 10;
+
+// Type sizes, in points: macOS's built-in text styles.
+/// Subheadline: toolbar captions, layout-bar labels and other small chrome
+/// text.
 pub(crate) const SMALL: f32 = 11.0;
-/// Menus, dialogs and body text.
+/// Body: menus, dialogs and body text.
 pub(crate) const BODY: f32 = 13.0;
+/// Title 3: section headings inside a window.
+pub(crate) const TITLE3: f32 = 15.0;
+/// Title 1: the heading of a window that has one, such as Home.
+pub(crate) const TITLE1: f32 = 22.0;
 
 /// The semibold UI face, for titles and the app menu.
 pub(crate) fn semibold() -> FontFamily {
@@ -250,7 +321,7 @@ fn style() -> Style {
             (TextStyle::Small, FontId::proportional(SMALL)),
             (TextStyle::Body, FontId::proportional(BODY)),
             (TextStyle::Button, FontId::proportional(BODY)),
-            (TextStyle::Heading, FontId::new(15.0, semibold())),
+            (TextStyle::Heading, FontId::new(TITLE3, semibold())),
             (TextStyle::Monospace, FontId::monospace(12.0)),
         ]
         .into(),
@@ -271,39 +342,39 @@ fn visuals() -> Visuals {
     let mut visuals = Visuals::light();
     visuals.panel_fill = CONTENT_BG;
     visuals.window_fill = DIALOG_BG;
-    visuals.window_stroke = Stroke::new(1.0, Color32::from_gray(0xC8));
-    visuals.window_corner_radius = CornerRadius::same(10);
+    visuals.window_stroke = Stroke::new(1.0, BORDER);
+    visuals.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
     visuals.window_shadow = Shadow {
         offset: [0, 10],
         blur: 30,
         spread: 0,
         color: Color32::from_black_alpha(60),
     };
-    visuals.menu_corner_radius = CornerRadius::same(7);
+    visuals.menu_corner_radius = CornerRadius::same(MENU_RADIUS);
     visuals.popup_shadow = Shadow {
         offset: [0, 4],
         blur: 14,
         spread: 0,
         color: Color32::from_black_alpha(45),
     };
-    visuals.extreme_bg_color = Color32::WHITE;
-    visuals.faint_bg_color = Color32::from_rgb(0xF5, 0xF5, 0xF5);
-    visuals.hyperlink_color = SELECTED;
-    visuals.selection.bg_fill = Color32::from_rgb(0xB4, 0xD5, 0xFE);
+    visuals.extreme_bg_color = CONTROL_BG;
+    visuals.faint_bg_color = ALTERNATE_ROW;
+    visuals.hyperlink_color = ACCENT;
+    visuals.selection.bg_fill = SELECTED_TEXT_BG;
     visuals.selection.stroke = Stroke::new(1.0, FOCUS);
-    visuals.text_cursor.stroke = Stroke::new(1.5, SELECTED);
+    visuals.text_cursor.stroke = Stroke::new(1.5, ACCENT);
     visuals.override_text_color = None;
     visuals.weak_text_color = Some(WEAK_TEXT);
 
     // Compact white rounded buttons with a gray outline, as in FileMaker's
     // bars and dialogs.
-    let radius = CornerRadius::same(5);
+    let radius = CornerRadius::same(CONTROL_RADIUS);
     let widgets = &mut visuals.widgets;
     widgets.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
     widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
     widgets.noninteractive.corner_radius = radius;
-    widgets.inactive.weak_bg_fill = Color32::WHITE;
-    widgets.inactive.bg_fill = Color32::WHITE;
+    widgets.inactive.weak_bg_fill = CONTROL_BG;
+    widgets.inactive.bg_fill = CONTROL_BG;
     widgets.inactive.bg_stroke = Stroke::new(1.0, BUTTON_BORDER);
     widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
     widgets.inactive.corner_radius = radius;
@@ -313,9 +384,9 @@ fn visuals() -> Visuals {
     widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
     widgets.hovered.corner_radius = radius;
     widgets.hovered.expansion = 0.0;
-    widgets.active.weak_bg_fill = Color32::from_gray(0xE4);
-    widgets.active.bg_fill = Color32::from_gray(0xE4);
-    widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_gray(0x9C));
+    widgets.active.weak_bg_fill = HOVER_FILL;
+    widgets.active.bg_fill = HOVER_FILL;
+    widgets.active.bg_stroke = Stroke::new(1.0, POPUP_BORDER);
     widgets.active.fg_stroke = Stroke::new(1.0, TEXT);
     widgets.active.corner_radius = radius;
     widgets.active.expansion = 0.0;
@@ -329,7 +400,7 @@ pub(crate) fn menu_bar_style(style: &mut Style) {
     egui::containers::menu::menu_style(style);
     style.spacing.button_padding = Vec2::new(8.0, 2.0);
     style.spacing.item_spacing.x = 0.0;
-    let fill = Color32::from_gray(0xDD);
+    let fill = HOVER_FILL;
     for widget in [
         &mut style.visuals.widgets.hovered,
         &mut style.visuals.widgets.active,
@@ -350,8 +421,8 @@ pub(crate) fn menu_popup_style(style: &mut Style) {
     style.spacing.item_spacing = Vec2::new(6.0, 0.0);
     style.spacing.interact_size.y = MENU_ROW_HEIGHT;
     style.visuals.window_fill = MENU_FILL;
-    style.visuals.window_stroke = Stroke::new(1.0, Color32::from_gray(0xD2));
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_gray(0xDE));
+    style.visuals.window_stroke = Stroke::new(1.0, HAIRLINE);
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
     for widget in [
         &mut style.visuals.widgets.hovered,
         &mut style.visuals.widgets.active,
@@ -359,8 +430,8 @@ pub(crate) fn menu_popup_style(style: &mut Style) {
     ] {
         widget.weak_bg_fill = HIGHLIGHT;
         widget.bg_fill = HIGHLIGHT;
-        widget.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-        widget.corner_radius = CornerRadius::same(5);
+        widget.fg_stroke = Stroke::new(1.0, ON_ACCENT);
+        widget.corner_radius = CornerRadius::same(CONTROL_RADIUS);
         widget.expansion = 0.0;
     }
 }

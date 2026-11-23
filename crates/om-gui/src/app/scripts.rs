@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
-use egui::{Color32, CornerRadius, Id, Key, RichText};
+use egui::{CornerRadius, Id, Key, RichText};
 use om_data::found::FindRequest;
 use om_data::runtime::{AlertChoice, DialogResponse, Mode as RunMode, TriggerEvent, TriggerInfo};
 use om_data::ScriptStep;
@@ -2582,7 +2582,7 @@ impl OpenMakerApp {
         };
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(12))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
@@ -2622,7 +2622,7 @@ impl OpenMakerApp {
         }
         egui::Modal::new(Id::unique(("script_prompt", view.id)))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(30))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(match view.prompt {
                     Prompt::Export(_)

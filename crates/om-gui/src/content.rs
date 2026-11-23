@@ -124,20 +124,23 @@ fn commit_canvas_click(
     }
 }
 
+/// The gray page that stands in for a layout the account cannot see. No
+/// theme surface has this role.
+const NO_ACCESS_PAGE: Color32 = Color32::from_gray(0xC8);
+
 /// A layout the account's privilege set gives no access: a gray page, with
 /// `<No Access>` in its middle when `text` (a layout gone to, not the one
 /// the window opened on).
 fn no_access_page(ui: &mut Ui, text: bool) {
     let rect = ui.max_rect();
-    ui.painter()
-        .rect_filled(rect, 0.0, egui::Color32::from_gray(0xC8));
+    ui.painter().rect_filled(rect, 0.0, NO_ACCESS_PAGE);
     if text {
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "<No Access>",
             egui::FontId::proportional(14.0),
-            egui::Color32::from_gray(0x40),
+            theme::TEXT,
         );
     }
 }
@@ -244,8 +247,8 @@ fn field_box(ui: &mut Ui, width: f32, value: &str, compact: bool) {
         egui::Label::new(text).wrap()
     };
     egui::Frame::new()
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+        .fill(theme::CONTROL_BG)
+        .stroke(Stroke::new(1.0, theme::BORDER))
         .corner_radius(3.0)
         .inner_margin(egui::Margin::symmetric(6, 3))
         .show(ui, |ui| {
@@ -363,17 +366,17 @@ fn geometry_view(
             // The part-label strip runs down the whole visible height, like
             // Layout mode's.
             let strip = Rect::from_x_y_ranges(area.left()..=origin.x, ui.clip_rect().y_range());
-            painter.rect_filled(strip, CornerRadius::ZERO, Color32::from_gray(0xEC));
+            painter.rect_filled(strip, CornerRadius::ZERO, theme::BAR_BG);
             painter.vline(
                 origin.x - 0.5,
                 strip.y_range(),
-                Stroke::new(1.0, Color32::from_gray(0xC4)),
+                Stroke::new(1.0, theme::BORDER),
             );
             // The layout's right edge.
             painter.vline(
                 origin.x + width - 0.5,
                 origin.y..=origin.y + size.y,
-                Stroke::new(1.0, Color32::from_gray(0xD6)),
+                Stroke::new(1.0, theme::HAIRLINE),
             );
 
             for part in &geometry.parts {
@@ -382,7 +385,7 @@ fn geometry_view(
                 painter.hline(
                     origin.x..=origin.x + width,
                     bottom - 0.5,
-                    Stroke::new(1.0, Color32::from_gray(0x8C)),
+                    Stroke::new(1.0, theme::POPUP_BORDER),
                 );
                 let tab =
                     Rect::from_x_y_ranges(area.left()..=origin.x - 1.0, top..=bottom).shrink(2.0);
@@ -390,14 +393,14 @@ fn geometry_view(
                     painter.rect_stroke(
                         tab,
                         CornerRadius::same(2),
-                        Stroke::new(1.0, Color32::from_gray(0xB0)),
+                        Stroke::new(1.0, theme::BUTTON_BORDER),
                         StrokeKind::Inside,
                     );
                     box_caption(ui, tab, &part.kind_name);
                 }
             }
 
-            let outline = Stroke::new(1.0, Color32::from_gray(0xA0));
+            let outline = Stroke::new(1.0, theme::BUTTON_BORDER);
             for object in &geometry.objects {
                 let rect = layout_rect(origin, &object.rect);
                 if rect.width() < 1.0 || rect.height() < 1.0 {
@@ -477,7 +480,7 @@ fn list_view(
 ) {
     let fields = &page.data.fields;
     let header = egui::Frame::new()
-        .fill(Color32::from_gray(0xF4))
+        .fill(theme::TOOLBAR_BG)
         .inner_margin(egui::Margin {
             left: 28,
             right: 12,
@@ -512,7 +515,7 @@ fn list_view(
     ui.painter().hline(
         header_rect.x_range(),
         header_rect.bottom(),
-        Stroke::new(1.0, Color32::from_gray(0xD8)),
+        Stroke::new(1.0, theme::HAIRLINE),
     );
     let stride = 32.0 + ui.spacing().item_spacing.y;
     let selected = session.current as f32 * stride;
@@ -594,7 +597,7 @@ fn list_row(
         .fill(if selected {
             theme::CURRENT_ROW
         } else {
-            Color32::WHITE
+            theme::CONTROL_BG
         })
         .inner_margin(egui::Margin {
             left: 28,
@@ -646,7 +649,7 @@ fn list_row(
     ui.painter().hline(
         rect.x_range(),
         rect.bottom(),
-        Stroke::new(1.0, Color32::from_gray(0xE6)),
+        Stroke::new(1.0, theme::SEPARATOR),
     );
     let response = response.interact(Sense::click());
     if response.clicked() {
@@ -963,16 +966,16 @@ fn focus_asked(document: &crate::document::DocumentState) -> bool {
 fn table_header_cell(ui: &mut Ui, text: &str) {
     let rect = ui.max_rect().expand2(vec2(4.0, 2.0));
     ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(0xF2));
+        .rect_filled(rect, CornerRadius::ZERO, theme::BAR_BG);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, Color32::from_gray(0xC8)),
+        Stroke::new(1.0, theme::BORDER),
     );
     ui.painter().vline(
         rect.right() - 0.5,
         rect.y_range(),
-        Stroke::new(1.0, Color32::from_gray(0xD6)),
+        Stroke::new(1.0, theme::HAIRLINE),
     );
     table_label(
         ui,
@@ -1064,7 +1067,7 @@ fn table_label(ui: &mut Ui, text: RichText, truncate: bool) -> egui::Response {
 
 fn table_cell_rule(ui: &Ui) {
     let rect = ui.max_rect().expand2(vec2(4.0, 2.0));
-    let stroke = Stroke::new(1.0, Color32::from_gray(0xE4));
+    let stroke = Stroke::new(1.0, theme::SEPARATOR);
     ui.painter()
         .hline(rect.x_range(), rect.bottom() - 0.5, stroke);
     ui.painter()
@@ -1184,7 +1187,7 @@ pub(crate) fn find(
                             glyph,
                             Icon::Search,
                             theme::DISABLED,
-                            Color32::WHITE,
+                            theme::CONTROL_BG,
                         );
                         ui.end_row();
                     }

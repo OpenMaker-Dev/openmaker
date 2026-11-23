@@ -188,6 +188,10 @@ pub(crate) fn show(
     scroll_state.finish(frame, &output);
 }
 
+/// The dashed printable-area guide Preview draws on the page. It sits on
+/// the white paper, not on a theme surface, so no line token fits.
+const MARGIN_GUIDE: Color32 = Color32::GRAY;
+
 fn color(c: Color) -> Color32 {
     Color32::from_rgba_unmultiplied(
         (c.red * 255.0) as u8,
@@ -553,7 +557,7 @@ pub(crate) fn paint(
     ] {
         painter.add(egui::Shape::dashed_line(
             &[a, b],
-            Stroke::new(0.7, Color32::GRAY),
+            Stroke::new(0.7, MARGIN_GUIDE),
             2.0,
             3.0,
         ));

@@ -241,6 +241,42 @@ fn a_file_on_this_computer_opens_saves_an_edit_and_reopens_with_it() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
+#[test]
+fn home_remembers_a_local_file_and_its_favorite_across_app_instances() {
+    let folder = Folder::new("home");
+    let settings = folder.0.join("settings.json");
+    let start = || {
+        let settings = settings.clone();
+        Harness::builder()
+            .with_size(egui::vec2(720.0, 480.0))
+            .renderer(common::renderer())
+            .build_eframe(move |_| {
+                OpenMakerApp::with_license_store(Box::new(clean_provider()), Box::new(Untouchable))
+                    .with_settings_file(settings)
+                    .with_home()
+            })
+    };
+    let mut app = start();
+    common::wait_for_label(&mut app, "No recent files");
+    common::click(&mut app, "Open File…");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Close");
+    common::wait_for_label(&mut app, "Add to Favorites: Tasks");
+    common::click(&mut app, "Add to Favorites: Tasks");
+    common::click(&mut app, "Favorites");
+    common::wait_for_label(&mut app, "Favorite files");
+    drop(app);
+
+    let mut app = start();
+    common::wait_for_label(&mut app, "Remove from Favorites: Tasks");
+    common::click(&mut app, "Tasks");
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+}
+
 /// New Script in a file on this computer, through the window: named in
 /// the scripts pane, given a step and saved, the script is in the file on
 /// disk once the window closes it, and in the Scripts menu when the file

@@ -516,11 +516,10 @@ pub(super) fn is_interactive(object: &om_layout::LayoutObject) -> bool {
         .is_some_and(om_layout::GraphicFormat::interactive)
 }
 
-/// Space between pages and around them in the PDF view, in points, and
-/// its background (OpenMaker's choices [I: FileMaker Pro's interactive
-/// container is unmeasured]).
+/// Space between pages and around them in the PDF view, in points
+/// (OpenMaker's choice [I: FileMaker Pro's interactive container is
+/// unmeasured]). The pages sit on the under-page gray Preview uses.
 const PAGE_GAP: f32 = 6.0;
-const VIEW_BACKGROUND: Color32 = Color32::from_gray(0xd6);
 /// The height of the page bar at the view's foot, in points.
 const PAGE_BAR: f32 = 22.0;
 
@@ -581,7 +580,7 @@ pub(super) fn paint_pdf_view(
             .layer_transform_to_global(ui.layer_id())
             .map_or(1.0, |t| t.scaling);
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(frame));
-    painter.rect_filled(frame, 0.0, VIEW_BACKGROUND);
+    painter.rect_filled(frame, 0.0, crate::theme::PRINT_WORKSPACE);
     let pages = sizes.len();
     let bar = (pages > 1)
         .then(|| Rect::from_min_max(pos2(frame.left(), frame.bottom() - PAGE_BAR), frame.max));
@@ -636,7 +635,7 @@ pub(super) fn paint_pdf_view(
     // The page bar: previous, which page shows, next.
     ui.painter()
         .with_clip_rect(ui.clip_rect().intersect(frame))
-        .rect_filled(bar, 0.0, Color32::from_gray(0xf2));
+        .rect_filled(bar, 0.0, crate::theme::BAR_BG);
     let mut go = None;
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(bar.shrink2(vec2(4.0, 1.0))),
@@ -1239,7 +1238,7 @@ fn paint_file(ui: &mut Ui, frame: Rect, name: &str, style: &ResolvedStyle) {
     let icon = FILE_ICON
         .min(frame.height() - text - 4.0)
         .min(frame.width());
-    let color = style.color.map_or(Color32::from_gray(90), super::color);
+    let color = style.color.map_or(crate::theme::ICON, super::color);
     let top = frame.top() + ((frame.height() - icon.max(0.0) - 2.0 - text) / 2.0).max(0.0);
     if icon >= 8.0 {
         let rect =

@@ -6,16 +6,13 @@
 //! dialog shows no editing controls. The layout is OpenMaker's; FileMaker
 //! Pro's dialog was not compared.
 
-use egui::{Align, Color32, CornerRadius, Id, Layout, RichText, Stroke};
+use egui::{Align, CornerRadius, Id, Layout, RichText, Stroke};
 use om_data::security_catalog::{
     AccountKind, RecordAccess, SecurityAccount, SecurityCatalog, EDITING_UNSUPPORTED,
 };
 use om_data::DataError;
 
 use crate::{theme, widgets};
-
-/// The color of the host's refusal, as Manage Database shows errors.
-const ERROR: Color32 = Color32::from_rgb(175, 35, 35);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SecurityAction {
@@ -96,7 +93,7 @@ impl ManageSecurity {
                     .inner_margin(18)
                     .shadow(ctx.global_style().visuals.window_shadow),
             )
-            .backdrop_color(Color32::from_black_alpha(24))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.label(
@@ -136,7 +133,7 @@ impl ManageSecurity {
                                     ui.spinner();
                                 }
                                 (Some(error), false) => {
-                                    ui.colored_label(ERROR, error);
+                                    ui.colored_label(theme::RED, error);
                                 }
                                 (None, false) => {
                                     ui.label("The file's security could not be read.");
@@ -147,7 +144,7 @@ impl ManageSecurity {
                 }
                 if let (Some(error), Some(_)) = (&self.error, &self.catalog) {
                     ui.add_space(6.0);
-                    ui.colored_label(ERROR, error);
+                    ui.colored_label(theme::RED, error);
                 }
                 if self.catalog.is_some() {
                     ui.add_space(6.0);
@@ -321,8 +318,8 @@ fn hex(bytes: &[u8]) -> String {
 
 fn list_frame(ui: &mut egui::Ui, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+        .fill(theme::CONTROL_BG)
+        .stroke(Stroke::new(1.0, theme::BORDER))
         .inner_margin(8)
         .show(ui, |ui| {
             egui::ScrollArea::both()

@@ -3,7 +3,8 @@
 What `om-gui` builds of FileMaker Pro's application chrome and workspaces,
 the choices it makes where FileMaker's behavior is not known, and its limits.
 FileMaker Pro's measured chrome is specified in
-[re/client-ui.md](re/client-ui.md). Related notes:
+[re/client-ui.md](re/client-ui.md); the colors, type and shapes OpenMaker's
+own chrome uses are in [design.md](design.md). Related notes:
 [recovery.md](recovery.md) (lost connections, reconnecting, save conflicts),
 [desktop-files.md](desktop-files.md) (Open File),
 [record-writes.md](record-writes.md) (hosted record writes),
@@ -45,6 +46,25 @@ FileMaker Pro's measured chrome is specified in
 
 ## Opening files
 
+The desktop starts on **Home**. **Recent** shows the last 20 distinct files
+successfully opened through the launcher, most recent first. **Favorites**
+keeps files starred from the list. Both lists show file names and locations
+and support filtering by either. The star removes or adds a favorite, and
+the Recent file's context menu can remove a history entry. File > Recent
+and File > Favorites also list the entries and open the corresponding
+Home view. These commands use the client's existing close and commit path
+when a document is open in the launcher window.
+
+Use **Open File** for a file on this computer, **Create** to make a blank
+file, and **Hosts** to connect to a server. Choosing a hosted recent or
+favorite fills in its destination in Hosts for sign-in. Home saves paths,
+host addresses, ports, file names and the selected list in the current OS
+account's `settings.json`. Account names and passwords are excluded from
+file history. The launcher follows [design.md](design.md) (a source-list
+sidebar, a striped list) and supports OpenMaker's existing local and hosted
+open flows. Claris Cloud and Resources are outside
+this launcher, and Open Quickly remains disabled ([#56](https://github.com/OpenMaker-Dev/openmaker/issues/56)).
+
 The GUI defaults to the native provider (`om-provider`). Opening a hosted
 file performs verified TLS, Connect, Open and Login, then authenticated
 downloads of the schema, layouts, themes, fonts and records. Each file's
@@ -54,7 +74,8 @@ reads it (network-protocol.md 5.6.9b). The provider
 never substitutes sample records after a failure: sample data needs
 `OPENMAKER_PROVIDER=mock` and is labeled in the window title and a banner.
 `OPENMAKER_HOST`, `OPENMAKER_PORT`, `OPENMAKER_FILE` and `OPENMAKER_ACCOUNT`
-prefill the Hosts form; the password never is. A local file opens through a
+prefill the Hosts form, and a nonempty `OPENMAKER_HOST` starts the desktop in
+Hosts. The password is always entered separately. A local file opens through a
 private embedded host (local-files.md).
 
 A hosted file's related files open when the window first reads them, not

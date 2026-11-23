@@ -238,6 +238,24 @@ gray.
 - **Help**: search, FileMaker Pro Help, Keyboard Shortcuts | documentation and
   support links. Plug-in items (MBS) in the captures are not baseline chrome.
 
+## Home window
+
+[O: FileMaker Pro 26.1.1 on macOS, Home window with Recent visible,
+visual and accessibility inspection.] Create and Open sit above the
+left navigation (Home, FileMaker Cloud and Resources). Home shows Favorites
+and Recent tabs, with a Name and Location table in Recent. A file on this
+computer shows its path and a hosted file shows its server. The accessibility
+tree advertises Add to Favorites and Remove on recent rows.
+
+Claris documents that the macOS startup window restores the last tab. It
+also documents adding local and hosted favorites, opening Favorites from
+the File menu, and removing a favorite while keeping the file.
+[Release notes](https://help.claris.com/en/pro-release-notes/content/),
+[favorite files help](https://help.claris.com/en/pro-help/content/favorite-files-hosts.html).
+
+The history count, tie-breaking for sorted rows and Windows startup behavior
+were not measured.
+
 ## Dialogs
 
 - Buttons: compact white rounded rectangles ~22 px tall; the default action is
