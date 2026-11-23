@@ -77,8 +77,9 @@ unmeasured:
 - The colors measured in FileMaker's inactive window serve the active one
   too. A selected row is the accent with white text, as in a macOS table
   ([design.md](design.md)).
-- Arrow keys move the selection, Delete also removes from Recent, and an
-  empty list says what fills it.
+- The list is one Tab stop, as a macOS table is, and the arrow keys move
+  its selection. Delete also removes from Recent, and an empty list says
+  what fills it.
 - Showing a list or opening a file from Home or the File menu closes the
   open file first, through its usual commit path and close triggers; a
   veto or a refused save stops it. With another file open, hidden ones

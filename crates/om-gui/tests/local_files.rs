@@ -279,14 +279,22 @@ fn home_remembers_a_local_file_and_its_favorite_across_app_instances() {
     common::wait_for_label(&mut app, "Tasks");
     drop(app);
 
-    // Home opens on the list it showed last, and a double click opens.
+    // Home opens on the list it showed last. With the keyboard focus in
+    // the list, as Tab leaves it, Down selects the file and Return opens it.
     let mut app = start();
     common::wait_for_label(&mut app, "Tasks");
+    let toggled = |app: &App, label: &str| app.get_by_label(label).accesskit_node().toggled();
     assert_eq!(
-        app.get_by_label("Favorites").accesskit_node().toggled(),
+        toggled(&app, "Favorites"),
         Some(egui::accesskit::Toggled::True)
     );
-    common::double_click(&mut app, "Tasks");
+    app.get_by_label("Favorite files").focus();
+    app.run_steps(2);
+    app.key_press(egui::Key::ArrowDown);
+    app.run_steps(2);
+    assert_eq!(toggled(&app, "Tasks"), Some(egui::accesskit::Toggled::True));
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
 }

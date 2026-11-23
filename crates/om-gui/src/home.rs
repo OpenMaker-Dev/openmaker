@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
-    pos2, vec2, Align, Align2, Color32, CornerRadius, FontFamily, FontId, Galley, Key, Layout,
-    Modifiers, Rect, Response, Sense, Stroke, Ui, UiBuilder,
+    pos2, vec2, Align, Align2, Color32, CornerRadius, EventFilter, FontFamily, FontId, Galley, Id,
+    Key, Layout, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder,
 };
 
 use crate::app::Action;
@@ -219,8 +219,35 @@ impl Home {
             self.selected = None;
         }
         let enabled = !view.busy && view.in_front;
+        // The list is one keyboard focus stop, as a macOS table is: Tab
+        // reaches it, and while it has the focus the arrows move its
+        // selection rather than the focus. Its rows are not focus stops, so
+        // Return and Delete always act on the selection.
+        let list = ui.interact(
+            rows,
+            ui.scope_id().with("home_list"),
+            if enabled {
+                Sense::focusable_noninteractive()
+            } else {
+                Sense::hover()
+            },
+        );
+        let list_label = match tab {
+            Tab::Recent => "Recent files",
+            Tab::Favorites => "Favorite files",
+        };
+        list.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ListBox, enabled, list_label));
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                list.id,
+                EventFilter {
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
         if enabled {
-            self.keys(ui, files, tab, actions);
+            self.keys(ui, list.id, files, tab, actions);
         }
         let columns = Columns {
             name: name_rule - table.left(),
@@ -246,14 +273,25 @@ impl Home {
                     }
                 }
             });
+        if list.has_focus() {
+            focus_ring(ui.painter(), rows.shrink(4.0), 0.0);
+        }
     }
 
     /// The list's keys, as a macOS table takes them: arrows move the
     /// selection, Return opens the selected file and Delete removes it.
-    fn keys(&mut self, ui: &Ui, files: &[SavedFile], tab: Tab, actions: &mut Vec<Action>) {
-        let free = ui
-            .ctx()
-            .memory(|memory| memory.focused().is_none() && memory.top_modal_layer().is_none());
+    /// They work while the list or nothing has the keyboard focus.
+    fn keys(
+        &mut self,
+        ui: &Ui,
+        list: Id,
+        files: &[SavedFile],
+        tab: Tab,
+        actions: &mut Vec<Action>,
+    ) {
+        let free = ui.ctx().memory(|memory| {
+            memory.top_modal_layer().is_none() && memory.focused().is_none_or(|id| id == list)
+        });
         if !free {
             return;
         }
@@ -316,6 +354,9 @@ fn capsule(ui: &mut Ui, rect: Rect, label: &str, enabled: bool) -> Response {
     };
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same((rect.height() / 2.0) as u8), fill);
+    if response.has_focus() {
+        focus_ring(painter, rect, rect.height() / 2.0);
+    }
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -354,6 +395,9 @@ fn navigation(
             CornerRadius::same(theme::CONTROL_RADIUS),
             theme::NAV_SELECTION,
         );
+    }
+    if response.has_focus() {
+        focus_ring(painter, rect, f32::from(theme::CONTROL_RADIUS));
     }
     let color = if enabled {
         theme::CAPTION
@@ -413,12 +457,12 @@ fn tab_button(
     } else {
         Sense::hover()
     };
-    let response = ui.interact(
-        text.expand2(vec2(4.0, 6.0)),
-        ui.scope_id().with(("home_tab", label)),
-        sense,
-    );
+    let target = text.expand2(vec2(4.0, 6.0));
+    let response = ui.interact(target, ui.scope_id().with(("home_tab", label)), sense);
     let painter = ui.painter();
+    if response.has_focus() {
+        focus_ring(painter, target, f32::from(theme::CONTROL_RADIUS));
+    }
     painter.galley(text.min, galley, theme::CAPTION);
     if selected {
         painter.rect_filled(
@@ -487,6 +531,17 @@ fn empty(ui: &mut Ui, tab: Tab) {
     });
 }
 
+/// The keyboard focus ring just outside `rect`, as push buttons draw it
+/// (`widgets.rs`).
+fn focus_ring(painter: &egui::Painter, rect: Rect, radius: f32) {
+    painter.rect_stroke(
+        rect.expand(2.0),
+        CornerRadius::same((radius + 2.0) as u8),
+        Stroke::new(2.0, theme::FOCUS.gamma_multiply(0.6)),
+        StrokeKind::Outside,
+    );
+}
+
 /// The widths of the Name and Location columns.
 struct Columns {
     name: f32,
@@ -504,8 +559,9 @@ fn row(
     enabled: bool,
     actions: &mut Vec<Action>,
 ) -> Response {
+    // Clicks only: the list, not each row, takes the keyboard focus.
     let sense = if enabled {
-        Sense::click()
+        Sense::CLICK
     } else {
         Sense::hover()
     };
