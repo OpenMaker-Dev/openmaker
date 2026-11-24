@@ -661,6 +661,13 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         content_revision(&node(&definition).unwrap()),
         content_revision(&steps)
     );
+    // Stamped at the environment's time, not the host's.
+    let time = crate::connection::host_time_key_at(&Seeded(AtomicU64::new(0)).now());
+    let stamp = [definition.clone(), vec![design::MOD_TIME.to_vec()]].concat();
+    assert_eq!(
+        node(&stamp).and_then(|n| n.value),
+        Some([&[time.len() as u8][..], &time].concat())
+    );
 
     // A new field.
     let fields = vec![uint_segment(fixture::TABLE), vec![3]];
