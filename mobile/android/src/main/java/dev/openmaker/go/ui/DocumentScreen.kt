@@ -97,12 +97,22 @@ private fun Effects(session: DocumentSession) {
                     context
                         .getSystemService(ClipboardManager::class.java)
                         .setPrimaryClip(ClipData.newPlainText("FileMaker", effect.text))
-                is Effect.OpenUrl ->
-                    try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(effect.url)))
-                    } catch (_: ActivityNotFoundException) {
-                        // FileMaker Go shows nothing when no app opens a URL.
+                is Effect.OpenUrl -> {
+                    val uri = Uri.parse(effect.url)
+                    // Android refuses to hand another app a file: URL
+                    // (FileUriExposedException), and the app's files are
+                    // its own: such a URL is not opened.
+                    if (!uri.scheme.equals("file", ignoreCase = true)) {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                        } catch (_: ActivityNotFoundException) {
+                            // FileMaker Go shows nothing when no app opens a URL.
+                        } catch (_: RuntimeException) {
+                            // Nor when the system refuses it (a URI it will not
+                            // expose, an app that may not be started).
+                        }
                     }
+                }
             }
         }
     }

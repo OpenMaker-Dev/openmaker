@@ -6954,9 +6954,38 @@ fn field_galley(
 /// color and insets, and its placeholder as the read-only field shows it,
 /// beside the drop-down arrow the field has. Conditional formatting is
 /// ignored while a field is in focus. With `lines`, Return types a line
-/// break, the text wraps as at rest and scrolls in the field.
+/// break, the text wraps as at rest and scrolls in the field. A focused
+/// editor's text is kept for [`focused_field_text`], in Browse, Find mode
+/// and portal rows alike.
 #[allow(clippy::too_many_arguments)]
 fn field_editor(
+    ui: &mut Ui,
+    cache: &layout_cache::LayoutCache,
+    geometry: (&Layout, &LayoutObject, Rect),
+    id: egui::Id,
+    buffer: &mut String,
+    placeholder_text: Option<&str>,
+    keys: egui::EventFilter,
+    interactive: bool,
+    lines: bool,
+) -> egui::Response {
+    let response = show_field_editor(
+        ui,
+        cache,
+        geometry,
+        id,
+        buffer,
+        placeholder_text,
+        keys,
+        interactive,
+        lines,
+    );
+    note_focused_text(ui, id, buffer);
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_field_editor(
     ui: &mut Ui,
     cache: &layout_cache::LayoutCache,
     (layout, object, rect): (&Layout, &LayoutObject, Rect),

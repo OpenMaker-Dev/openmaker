@@ -84,6 +84,40 @@ impl Shown {
 }
 
 #[test]
+fn a_composition_is_committed_in_its_field_before_a_tap_moves_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("Field Notes.fmp12");
+    support::fixture(&file);
+    let mut local = Shown::open(Source::Local {
+        path: file.to_str().unwrap().into(),
+    });
+    local.until("the file's button", |state, elements| {
+        state.count == 2 && elements.iter().any(|e| e.label == "Next task")
+    });
+    local.doc.send(Input::Tap { x: 80., y: 42. });
+    local.until("the keyboard", |state, _| state.keyboard);
+    // Android commits what the input method composes, and the tap on the
+    // file's Next button follows at once: the field reads the commit before
+    // the tap moves on, and the record keeps it.
+    local.doc.send(Input::Compose {
+        text: "Draf".into(),
+    });
+    local.doc.send(Input::Text {
+        text: "Drafted".into(),
+    });
+    local.doc.send(Input::Tap { x: 80., y: 110. });
+    local.until("the next record", |state, _| state.position == 1);
+    local.command(Command::Previous);
+    local.until("the first record's text", |state, elements| {
+        state.position == 0
+            && elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Field && e.value.contains("Drafted"))
+    });
+    assert!(local.doc.close(10_000), "the file did not close");
+}
+
+#[test]
 fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("Field Notes.fmp12");

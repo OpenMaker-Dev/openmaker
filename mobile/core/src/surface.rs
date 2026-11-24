@@ -267,9 +267,10 @@ impl Surface {
     }
 
     /// Run one pass with as much of `inputs` as one frame takes. A command
-    /// or menu choice gets a pass of its own, after the field has taken
-    /// everything typed before it: it may leave the field, and what the field
-    /// had not read would be lost. What is left stays queued.
+    /// or menu choice, a tap and an element's action get a pass of their
+    /// own, after the field has taken everything typed before them: they may
+    /// leave the field, and what the field had not read would be lost or go
+    /// to the next field. What is left stays queued.
     pub(crate) fn step(&mut self, inputs: &mut VecDeque<Input>) -> Step {
         let mut events = Vec::new();
         if std::mem::take(&mut self.pointer_leaves) {
@@ -277,10 +278,15 @@ impl Surface {
         }
         let mut took = false;
         while let Some(input) = inputs.front() {
+            // A tap or an element's action can move the focus to another
+            // field: it gets a pass of its own, so that the field reads what
+            // was typed or committed before it, and what comes after reaches
+            // the field it focuses.
+            let moves_focus = matches!(input, Input::Tap { .. } | Input::Activate { .. });
             // A deletion around the selection reads the field's selection
             // and text as the last pass left them: it waits for a pass of
             // its own.
-            if took && matches!(input, Input::DeleteAround { .. }) {
+            if took && (moves_focus || matches!(input, Input::DeleteAround { .. })) {
                 break;
             }
             if matches!(input, Input::Run { .. } | Input::Menu { .. }) {
@@ -300,6 +306,9 @@ impl Surface {
             let input = inputs.pop_front().expect("peeked");
             self.take(input, &mut events);
             took = true;
+            if moves_focus {
+                break;
+            }
         }
         self.glide(&mut events);
         if !took {
