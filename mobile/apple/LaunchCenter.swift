@@ -320,7 +320,9 @@ struct LaunchCenter: View {
   /// The certificate authority saved for the host and port typed, never
   /// another host's.
   private func restoreCertificate() {
-    certificate = UInt16(port).flatMap { authorities[authority(address, $0)] } ?? ""
+    // Saved under the trimmed address, as browseHost saves it.
+    let name = address.trimmingCharacters(in: .whitespacesAndNewlines)
+    certificate = UInt16(port).flatMap { authorities[authority(name, $0)] } ?? ""
   }
 
   private func saveCertificate(_ name: String, _ number: UInt16) {

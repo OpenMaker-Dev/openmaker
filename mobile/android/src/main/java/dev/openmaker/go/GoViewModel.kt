@@ -48,7 +48,13 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var recent by mutableStateOf(library.recent)
         private set
-    var hostForm by mutableStateOf(HostForm(library.lastHost, library.lastPort.toString()))
+    var hostForm by mutableStateOf(
+        HostForm(
+            library.lastHost,
+            library.lastPort.toString(),
+            certificate = library.certificate(library.lastHost.trim(), library.lastPort),
+        )
+    )
     var hosted by mutableStateOf(emptyList<Entry>())
         private set
     var working by mutableStateOf(false)
@@ -62,6 +68,9 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
     var licenseSaved by mutableStateOf(vault.saved)
         private set
     private var opening: Job? = null
+
+    /** The activity is started (between ON_START and ON_STOP). */
+    private var foreground = true
 
     fun refresh() {
         local = library.localFiles()
@@ -122,8 +131,10 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
             message = "Enter a host and a port from 1 to 65535."
             return
         }
-        // A certificate authority belongs to the host and port it was entered for.
-        val certificate = form.certificate.ifBlank { library.certificate(address, port) }
+        // A certificate authority belongs to the host and port it was
+        // entered for. The form shows the one saved for them, so a field
+        // the user cleared removes it.
+        val certificate = form.certificate.trim()
         val remember = {
             library.lastHost = address
             library.lastPort = port
@@ -197,6 +208,8 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                         if (session != null) return@onSuccess
                         session = DocumentSession(entry, document, signal)
                         opened = null
+                        // The app may have left the foreground during the open.
+                        if (!foreground) session?.send(Input.Active(false))
                         library.recent = listOf(entry) + library.recent
                         refresh()
                     }
@@ -233,6 +246,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The app left the foreground or came back: leaving saves the record. */
     fun setActive(active: Boolean) {
+        foreground = active
         session?.send(Input.Active(active))
     }
 

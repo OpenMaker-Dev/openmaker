@@ -194,6 +194,10 @@ documented, so reconnecting by itself is OpenMaker Go's own choice.
   Auto-Correction setting are not applied: the keyboard is plain text with
   autocorrection off ([#662](https://github.com/OpenMaker-Dev/openmaker/issues/662)). Text can be pasted into a field but not
   copied or cut from one ([#663](https://github.com/OpenMaker-Dev/openmaker/issues/663)).
+- **Screen readers** get the visible fields, labels and buttons, but no
+  checked state for checkboxes and radio buttons ([#668](https://github.com/OpenMaker-Dev/openmaker/issues/668)), and
+  rectangles that miss where a card or Form zoom moved the layout
+  ([#669](https://github.com/OpenMaker-Dev/openmaker/issues/669)).
 - **The device's own features**: camera, barcode scanning, signature,
   location and other Get functions answer as on the desktop ([#666](https://github.com/OpenMaker-Dev/openmaker/issues/666)).
 - **Hosted files in the background** keep no connection on Android, and

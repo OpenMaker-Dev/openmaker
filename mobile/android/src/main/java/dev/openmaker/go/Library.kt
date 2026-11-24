@@ -61,8 +61,11 @@ class Library(context: Context) {
     /** The PEM certificate authority trusted for one host and port only. */
     fun certificate(host: String, port: Int): String = prefs.getString("ca:$host:$port", "").orEmpty()
 
+    /** Save [pem] as the host's certificate authority; an empty one removes it. */
     fun trust(host: String, port: Int, pem: String) {
-        prefs.edit().putString("ca:$host:$port", pem).apply()
+        val edit = prefs.edit()
+        if (pem.isBlank()) edit.remove("ca:$host:$port") else edit.putString("ca:$host:$port", pem)
+        edit.apply()
     }
 
     /**

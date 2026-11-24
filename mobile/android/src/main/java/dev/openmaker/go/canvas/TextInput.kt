@@ -55,6 +55,12 @@ internal class TextInput(private val canvas: CanvasView, private val session: Do
         return true
     }
 
+    // Keyboards that count in code points delete through this one; the
+    // inherited version would edit only this connection's own editor.
+    // The engine's Backspace and Delete take a character each.
+    override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
+        deleteSurroundingText(beforeLength, afterLength)
+
     override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) canvas.key(event)
         return true
