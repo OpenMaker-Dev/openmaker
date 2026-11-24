@@ -52,9 +52,9 @@ use crate::authoring;
 use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
-    AdjustContainerCount, AdvanceSerial, ChangeSchema, CommitRecords, FileEngine, Operation,
-    ReleaseLock, ReleaseLocks, Reply, ReserveRecordIds, StoreContainerData, StoreIndexes, TakeLock,
-    UpdateTable, UpgradeLock, UploadToCatalog,
+    AdjustContainerCount, AdvanceSerial, CommitRecords, Draft, FileEngine, Operation, ReleaseLock,
+    ReleaseLocks, Reply, ReserveRecordIds, StoreContainerData, TakeLock, UpdateTable, UpgradeLock,
+    UploadToCatalog,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
@@ -2540,13 +2540,13 @@ fn query(
             // Manage Database's instructions change the file,
             // GenerateMemberKey's issued ids go into their catalogs
             // (schema-path.md 3.4), and indexes the query built on demand are
-            // stored (query-program.md 7.1), with what other queries left
-            // waiting.
-            let (member_keys, indexes) = {
+            // stored (query-program.md 7.1): those of other queries too, as
+            // the engine completes the draft (`engine`, "Drafts").
+            let pending = {
                 let store = file.hosted.read_store();
-                (store.issued_member_keys(), store.indexes_on_demand())
+                store.has_issued_member_keys() || store.has_indexes_on_demand()
             };
-            let operation = if !member_keys.is_empty() || !outcome.writes.is_empty() {
+            if pending || !outcome.writes.is_empty() {
                 for write in &outcome.writes {
                     let (done, path) = match write {
                         om_query::Write::Put { path, .. } => ("stored", path),
@@ -2554,18 +2554,15 @@ fn query(
                     };
                     info!("{peer}: {:?}: {done} {path:02x?}", file.hosted.name);
                 }
-                Some(Operation::ChangeSchema(ChangeSchema {
+                let draft = Draft::ChangeSchema {
                     writes: outcome.writes,
-                    member_keys,
-                    indexes,
-                }))
-            } else if !indexes.is_empty() {
-                Some(Operation::StoreIndexes(StoreIndexes { indexes }))
-            } else {
-                None
-            };
-            if let Some(operation) = operation {
-                match shared.engine.submit(&file.hosted, operation).reply {
+                };
+                match shared
+                    .engine
+                    .submit_draft(&file.hosted, draft)
+                    .outcome
+                    .reply
+                {
                     Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes => {}
                     Reply::ChangeSchema(Err(_)) => return Err(Refused.into()),
                     other => return Err(mismatched(&other)),

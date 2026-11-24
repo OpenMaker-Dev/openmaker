@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use om_hbam::slot::uint_segment;
-use om_hbam::{serial, OwnedNode};
+use om_hbam::{serial, OwnedNode, RidList};
 use om_protocol::write::{
     attention, CreateRecord, GetSerial, KillAllLocks, Lock, LockReply, Unlock, COMMIT_DELETED,
     COMMIT_NEW, LOCK_CONFLICT, LOCK_WRITE, SERIAL_INCREMENT,
@@ -36,14 +37,63 @@ fn engine() -> FileEngine {
 }
 
 /// `tree` hosted from a file of its own, tagged `tag`.
-fn host(tag: &str, tree: &OwnedNode) -> (fixture::TempFile, std::sync::Arc<Hosted>) {
+fn host(tag: &str, tree: &OwnedNode) -> (fixture::TempFile, Arc<Hosted>) {
     let file = fixture::TempFile::from_tree(tag, tree);
+    let hosted = load(&file);
+    (file, hosted)
+}
+
+/// The file at `file` hosted as it is on disk.
+fn load(file: &fixture::TempFile) -> Arc<Hosted> {
     let hosted = HostedFile {
         name: fixture::FILE.into(),
         path: file.0.clone(),
     };
     let hosting = Hosting::load(&[hosted], false, &EventLog::default()).unwrap();
-    (file, hosting.by_name(fixture::FILE).unwrap())
+    hosting.by_name(fixture::FILE).unwrap()
+}
+
+/// The node at `path` in `file`'s tree.
+fn node_at(file: &Hosted, path: &[Vec<u8>]) -> Option<OwnedNode> {
+    let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    file.read_store().node(&path).cloned()
+}
+
+/// Each key's records in index `index` (`[T, 01, F, k]`), and its counts
+/// leaf (`[T, 01, F, k | 10]`) as (entries, distinct keys).
+fn postings(file: &Hosted, index: &[Vec<u8>]) -> (Vec<Vec<u64>>, (u64, u64)) {
+    let keys = node_at(file, index).expect("the index");
+    let records = keys
+        .children
+        .iter()
+        .map(|key| RidList::from_owned(key).unwrap().iter().collect())
+        .collect();
+    let mut counts = index.to_vec();
+    let kind = counts.pop().unwrap()[0];
+    counts.push(vec![kind | 0x10]);
+    let value = node_at(file, &counts)
+        .and_then(|n| n.value)
+        .expect("counts");
+    let number = |bytes: &[u8]| u64::from_be_bytes(bytes.try_into().unwrap());
+    (records, (number(&value[..8]), number(&value[8..])))
+}
+
+/// A field catalog `[T, 03]` in which `field` has the formula `text` in
+/// the Tasks context, as Specify Calculation stores it (schema-path.md
+/// 5.5).
+fn set_formula(catalog: &mut OwnedNode, field: u64, text: &str) {
+    let calc = fixture::calc(text);
+    let f = uint_segment(field);
+    for (child, bytes) in [
+        (4u8, om_formula::Key::from_id(fixture::OCCURRENCE).0),
+        (5, calc.formatted.unwrap()),
+        (6, calc.polish.unwrap()),
+    ] {
+        catalog.put(
+            &[&[5], &f, &[5], &[child]],
+            OwnedNode::leaf(Vec::new(), bytes),
+        );
+    }
 }
 
 /// docs/server-storage.md 5: operations are values, so a sequence of them
@@ -266,17 +316,23 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
     }
 }
 
-/// The schema operations replay the same way (docs/server-storage.md 5):
-/// what a find and GenerateMemberKey left waiting in the store travels in
-/// the operation, so a fresh load with nothing waiting gets the same tree
-/// after each step. A find builds Name's value index, which is stored; op13
-/// uploads a table's deferred field work (drop Name's indexes; Count
-/// changed, so Doubled, stored stale on record 1, is recomputed), which
-/// op73 does; an op86 program
-/// renames Tasks, deletes Notes and its catalog member, writes the layout
-/// key GenerateMemberKey issued and stores the word index another find
-/// built. Each step is checked for its effect, so an operation that did
-/// nothing fails here.
+/// What a step of a recording submits: a completed operation, or a draft
+/// the engine completes.
+enum Step {
+    Operation(Operation),
+    Draft(Draft),
+}
+
+/// The schema operations replay the same way (docs/server-storage.md 5).
+/// Drafts are recorded as the engine completed them, with what reads left
+/// waiting, and a fresh load with nothing waiting replays those to the same
+/// replies and tree after each step. A find builds Name's value index,
+/// which is stored; op13 uploads a table's deferred field work (drop Name's
+/// indexes; Count changed, so Doubled, stored stale on record 1, is
+/// recomputed), which op73 does; an op86 program renames Tasks, deletes
+/// Notes and its catalog member, writes the layout key GenerateMemberKey
+/// issued and stores the word index another find built. Each effect is
+/// checked against the fixture.
 #[test]
 fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree() {
     use om_query::{Source as _, Write};
@@ -303,7 +359,6 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
             .index_on_demand(&table, &name, kind)
             .unwrap()
             .is_some());
-        store.indexes_on_demand()
     };
     // `[T, 03, 01, fd]`: the deferred field work (schema-path.md 7.2).
     let deferred = vec![table.clone(), vec![0x03], vec![0x01], vec![0xfd]];
@@ -315,97 +370,119 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
         ],
     );
     let tasks = vec![vec![3], vec![0x10], vec![5], table.clone()];
-    let mut renamed = file
-        .read_store()
-        .node(&[&[3], &[0x10], &[5], &table])
-        .unwrap()
-        .clone();
+    let notes_member = vec![vec![3], vec![0x10], vec![5], notes.clone()];
+    let mut renamed = node_at(&file, &tasks).unwrap();
     renamed.set_child(text_node(&[0x10], "Jobs"));
+    let layouts_index = |key: u8| vec![vec![4], vec![1], vec![key]];
+    assert!(node_at(&file, &notes_member).is_some());
     let mut recorded: Vec<(Operation, Outcome, OwnedNode)> = Vec::new();
     let recording = engine();
-    let mut submit = |operation: Operation| {
-        let outcome = recording.submit(&file, operation.clone());
+    let mut submit = |step: Step| {
+        let submitted = match step {
+            Step::Operation(operation) => Submitted {
+                outcome: recording.submit(&file, operation.clone()),
+                operation,
+            },
+            Step::Draft(draft) => recording.submit_draft(&file, draft),
+        };
         let after = file.read_store().node(&[]).unwrap().clone();
-        recorded.push((operation, outcome.clone(), after));
-        outcome
-    };
-    let node = |path: &[Vec<u8>]| {
-        let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        file.read_store().node(&path).cloned()
+        recorded.push((
+            submitted.operation.clone(),
+            submitted.outcome.clone(),
+            after,
+        ));
+        submitted
     };
 
-    let indexes = find(0);
-    assert_eq!(indexes.len(), 1);
-    let outcome = submit(Operation::StoreIndexes(StoreIndexes { indexes }));
-    assert_eq!(outcome.reply, Reply::StoreIndexes);
-    assert!(node(&index(0x10)).is_some(), "the value index is stored");
+    find(0);
+    let stored = submit(Step::Draft(Draft::StoreIndexes));
+    assert_eq!(
+        stored.operation,
+        Operation::StoreIndexes(StoreIndexes {
+            indexes: vec![(table.clone(), name.clone(), 0)],
+        })
+    );
+    assert_eq!(stored.outcome.reply, Reply::StoreIndexes);
+    // "Task 1" to "Task 3": one key each.
+    assert_eq!(
+        postings(&file, &index(0)),
+        (vec![vec![1], vec![2], vec![3]], (3, 3))
+    );
 
     let upload = UploadToCatalog {
         path: deferred.clone(),
         node: work,
     };
-    let outcome = submit(Operation::UploadToCatalog(upload));
+    let outcome = submit(Step::Operation(Operation::UploadToCatalog(upload))).outcome;
     assert_eq!(outcome.reply, Reply::UploadToCatalog(true));
-    assert!(node(&deferred).is_some());
+    assert!(node_at(&file, &deferred).is_some());
 
     let update = UpdateTable {
         table: table.clone(),
         account: fixture::ACCOUNT.into(),
     };
-    let outcome = submit(Operation::UpdateTable(update));
+    let outcome = submit(Step::Operation(Operation::UpdateTable(update))).outcome;
     assert_eq!(outcome.reply, Reply::UpdateTable(Ok(true)));
-    assert!(node(&deferred).is_none(), "the work list is done");
-    assert!(node(&index(0x10)).is_none(), "Name's indexes are dropped");
+    assert!(node_at(&file, &deferred).is_none(), "the work list is done");
+    assert!(
+        node_at(&file, &index(0x10)).is_none(),
+        "Name's indexes are dropped"
+    );
     assert_eq!(
-        node(&doubled).and_then(|n| n.value),
+        node_at(&file, &doubled).and_then(|n| n.value),
         text_node(&[], "2").value,
         "Doubled is recomputed"
     );
 
-    let words = find(1);
+    find(1);
     let issued = file.read_store().generate_member_key(&[vec![4]]).unwrap();
-    let member_keys = file.read_store().issued_member_keys();
-    let change = ChangeSchema {
-        writes: vec![
-            Write::Put {
-                path: tasks.clone(),
-                node: renamed.clone(),
-            },
-            Write::Remove {
-                path: vec![vec![3], vec![0x10], vec![5], notes.clone()],
-            },
-            Write::Remove {
-                path: vec![notes.clone()],
-            },
-        ],
-        member_keys,
-        indexes: words,
+    let writes = vec![
+        Write::Put {
+            path: tasks.clone(),
+            node: renamed.clone(),
+        },
+        Write::Remove {
+            path: notes_member.clone(),
+        },
+        Write::Remove {
+            path: vec![notes.clone()],
+        },
+    ];
+    let changed = submit(Step::Draft(Draft::ChangeSchema {
+        writes: writes.clone(),
+    }));
+    assert_eq!(changed.outcome.reply, Reply::ChangeSchema(Ok(())));
+    let Operation::ChangeSchema(completed) = &changed.operation else {
+        panic!("{:?}", changed.operation);
     };
-    let outcome = submit(Operation::ChangeSchema(change));
-    assert_eq!(outcome.reply, Reply::ChangeSchema(Ok(())));
-    assert_eq!(
-        node(&tasks).map(|n| n.child(&[0x10]).cloned()),
-        Some(renamed.child(&[0x10]).cloned())
+    assert_eq!(completed.writes, writes);
+    assert_eq!(completed.indexes, [(table.clone(), name.clone(), 1)]);
+    assert_eq!(completed.member_keys.len(), 1);
+    assert_eq!(node_at(&file, &tasks), Some(renamed));
+    assert!(
+        node_at(&file, &notes_member).is_none(),
+        "Notes' member is gone"
     );
-    assert!(node(&[notes]).is_none(), "Notes is deleted");
+    assert!(node_at(&file, &[notes]).is_none(), "Notes is deleted");
+    let value = |path: Vec<Vec<u8>>| node_at(&file, &path).and_then(|n| n.value);
+    assert_eq!(value(layouts_index(0x00)), Some(issued.0), "the layout id");
+    assert_eq!(value(layouts_index(0xfc)), Some(issued.1), "its mod count");
+    // "task" in every record, and each number in one.
     assert_eq!(
-        node(&[vec![4], vec![1], vec![0]]).and_then(|n| n.value),
-        Some(issued.0),
-        "the issued layout id is written"
+        postings(&file, &index(1)),
+        (vec![vec![1], vec![2], vec![3], vec![1, 2, 3]], (6, 4))
     );
-    assert!(node(&index(0x11)).is_some(), "the word index is stored");
     assert!(recorded
         .iter()
         .all(|(_, outcome, _)| outcome.notices.changes.is_empty()));
     {
         let store = file.read_store();
-        assert!(store.indexes_on_demand().is_empty());
-        assert!(store.issued_member_keys().is_empty());
+        assert!(!store.has_indexes_on_demand());
+        assert!(!store.has_issued_member_keys());
     }
 
     let (_second, again) = host("engine-schema-replayed", &tree);
     let replaying = engine();
-    let mut before = again.read_store().node(&[]).unwrap().clone();
     for (operation, outcome, after) in &recorded {
         assert_eq!(
             &replaying.submit(&again, operation.clone()),
@@ -414,8 +491,6 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
         );
         let now = again.read_store().node(&[]).unwrap().clone();
         assert_eq!(&now, after, "the tree after {operation:?}");
-        assert_ne!(now, before, "{operation:?} changed nothing");
-        before = now;
     }
 }
 
@@ -876,4 +951,173 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         before = now;
     }
     assert_eq!(again.lock_table().held_by(DESIGNER), 0);
+}
+
+/// What reads leave waiting is taken by the first write that holds the
+/// store, as before the engine interface (the module doc's "Drafts"), in
+/// three schedules a snapshot taken as each query ended got wrong:
+/// GenerateMemberKey for a table's field catalog followed by its
+/// DeleteTable, an index build that a refused query took back, and two
+/// requests that both saw the same key waiting.
+#[test]
+fn drafts_take_what_reads_left_waiting_when_they_hold_the_store() {
+    use om_query::{Source as _, Write};
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    fixture::index_layouts(&mut tree);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let engine = engine();
+    let nothing = Operation::StoreIndexes(StoreIndexes {
+        indexes: Vec::new(),
+    });
+
+    // A ran a DeleteTable program for Tasks; B then had a key issued for
+    // Tasks' field catalog, and A's write holds the store first.
+    let (_deleted, file) = host("drafts-delete-table", &tree);
+    file.read_store()
+        .generate_member_key(&[table.clone(), vec![3]])
+        .unwrap();
+    let a = engine.submit_draft(
+        &file,
+        Draft::ChangeSchema {
+            writes: vec![Write::Remove {
+                path: vec![table.clone()],
+            }],
+        },
+    );
+    assert_eq!(a.outcome.reply, Reply::ChangeSchema(Ok(())));
+    let b = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
+    assert_eq!(b.operation, nothing, "A wrote B's key before the delete");
+    // What NodeExists reads (`om_query::exec`, NodeExists).
+    let store = file.read_store();
+    assert!(store.node(&[&table]).is_none());
+    assert!(om_query::Source::node(&*store, &[&table])
+        .unwrap()
+        .is_none());
+    drop(store);
+
+    // B built Name's value index, A saw it waiting, and B, refused for an
+    // index it cannot key, took it back before A's write.
+    let (_refused, file) = host("drafts-refused-index", &tree);
+    let built = (table.clone(), name.clone(), 0);
+    file.read_store()
+        .index_on_demand(&table, &name, 0)
+        .unwrap()
+        .unwrap();
+    assert!(file.read_store().has_indexes_on_demand());
+    file.read_store()
+        .forget_indexes_on_demand(std::slice::from_ref(&built));
+    let a = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
+    assert_eq!(a.operation, nothing);
+    // The next check for the index finds none.
+    let counts = vec![table.clone(), vec![0x01], name.clone(), vec![0x10]];
+    assert!(node_at(&file, &counts).is_none());
+
+    // A layout key was issued, and two requests saw it waiting: one save.
+    let (saved, file) = host("drafts-one-save", &tree);
+    file.read_store().generate_member_key(&[vec![4]]).unwrap();
+    let saves = file.read_store().saves();
+    let first = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
+    assert!(matches!(&first.operation, Operation::ChangeSchema(op) if op.member_keys.len() == 1));
+    let bytes = std::fs::read(&saved.0).unwrap();
+    let second = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
+    assert_eq!(second.operation, nothing);
+    assert_eq!(file.read_store().saves(), saves + 1);
+    assert_eq!(
+        std::fs::read(&saved.0).unwrap(),
+        bytes,
+        "the file, and its change number, as the first save left them"
+    );
+}
+
+/// op73 finds the stored calculations to recompute by comparing the field
+/// definitions with the basis the store keeps, which a fresh load takes
+/// from the file as loaded (`Store::load`): so a server that stops between
+/// op13 and op73 loses what changed in between. A table with deferred
+/// work gets no basis, and its stored calculations are recomputed when it
+/// is loaded (`Store::recover`). A formula change always lists
+/// `0x40 | 0x80` (schema-path.md 7.2; `om_data::schema_draft` writes the
+/// same), so Doubled changed to `Count * 3` is recomputed after a reload.
+#[test]
+fn a_formula_change_is_recomputed_when_the_file_is_loaded_between_op13_and_op73() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let table = uint_segment(fixture::TABLE);
+    let (saved, file) = host("engine-formula-reloaded", &tree);
+    let mut catalog = tree.at(&[&table, &[3]]).unwrap().clone();
+    set_formula(&mut catalog, fixture::DOUBLED, "Count * 3");
+    catalog.put(
+        &[&[1], &[0xfd], &uint_segment(fixture::DOUBLED)],
+        OwnedNode::leaf(Vec::new(), 0xc0u32.to_be_bytes().to_vec()),
+    );
+    let upload = UploadToCatalog {
+        path: vec![table.clone(), vec![3]],
+        node: catalog,
+    };
+    let engine = engine();
+    let outcome = engine.submit(&file, Operation::UploadToCatalog(upload));
+    assert_eq!(outcome.reply, Reply::UploadToCatalog(true));
+    drop(file);
+    let file = load(&saved);
+    let update = UpdateTable {
+        table: table.clone(),
+        account: fixture::ACCOUNT.into(),
+    };
+    engine.submit(&file, Operation::UpdateTable(update));
+    for (record, value) in [(1, "3"), (2, "6"), (3, "9")] {
+        let path = vec![
+            table.clone(),
+            vec![0x05],
+            serial::encode(record),
+            uint_segment(fixture::DOUBLED),
+        ];
+        assert_eq!(
+            node_at(&file, &path).and_then(|n| n.value),
+            text_node(&[], value).value,
+            "record {record}"
+        );
+    }
+}
+
+/// A new stored calculation comes with no deferred work (the server sees
+/// it is new by its basis; `tests/recalc.rs`, as `om_data::schema_draft`
+/// writes it), so a server that stops between op13 and op73 never computes
+/// it: the reload's basis already has it.
+#[test]
+#[ignore = "requires https://github.com/OpenMaker-Dev/openmaker/issues/707: a reload takes the new field into the basis"]
+fn a_new_stored_calculation_is_computed_when_the_file_is_loaded_between_op13_and_op73() {
+    const TRIPLED: u64 = 18;
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let table = uint_segment(fixture::TABLE);
+    let (saved, file) = host("engine-new-calculation-reloaded", &tree);
+    let mut catalog = tree.at(&[&table, &[3]]).unwrap().clone();
+    let mut definition = vec![0; 26];
+    definition[0] = 2;
+    definition[1] = 2;
+    definition[4..8].copy_from_slice(&21u32.to_be_bytes());
+    definition[24..26].copy_from_slice(&1u16.to_be_bytes());
+    let f = uint_segment(TRIPLED);
+    catalog.put(&[&[5], &f, &[2]], OwnedNode::leaf(Vec::new(), definition));
+    catalog.put(&[&[5], &f, &[16]], text_node(&[], "Tripled"));
+    set_formula(&mut catalog, TRIPLED, "Count * 3");
+    let upload = UploadToCatalog {
+        path: vec![table.clone(), vec![3]],
+        node: catalog,
+    };
+    let engine = engine();
+    engine.submit(&file, Operation::UploadToCatalog(upload));
+    drop(file);
+    let file = load(&saved);
+    let update = UpdateTable {
+        table: table.clone(),
+        account: fixture::ACCOUNT.into(),
+    };
+    engine.submit(&file, Operation::UpdateTable(update));
+    let path = vec![table.clone(), vec![0x05], serial::encode(1), f.clone()];
+    assert_eq!(
+        node_at(&file, &path).and_then(|n| n.value),
+        text_node(&[], "3").value
+    );
 }

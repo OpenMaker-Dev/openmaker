@@ -28,10 +28,12 @@
 //! of the lock table first; dropping the store's write guard takes the
 //! file's accounts while it still holds the store
 //! (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
-//! table, as before. An authoring edit (op240) takes the lock table only
-//! while it takes its locks, and again while it releases them when it is
-//! refused after taking them; it saves under the store alone, and its
-//! locks are released after the engine lets go of the store, the lock
+//! table, as before. [`FileEngine::submit_draft`] completes its draft
+//! right after it takes the store, from state the write guard gives it
+//! alone (see "Drafts"). An authoring edit (op240) takes the lock table
+//! only while it takes its locks, and again while it releases them when
+//! it is refused after taking them; it saves under the store alone, and
+//! its locks are released after the engine lets go of the store, the lock
 //! table taken on its own for that ([`Locks::lock_while_stored`]), as
 //! op240 always held them. The one other lock taken inside `submit` is the
 //! file's thumbnail cache (`Hosted::thumbnails`), under the store, when
@@ -45,10 +47,22 @@
 //! (store, lock table, registrations, mailboxes), with the last two no
 //! longer inside the first two.
 //!
-//! A find and an op86 program run under the store's read lock before
-//! their operation is submitted, as reads; what they leave waiting in the
-//! store (indexes built on demand, member keys GenerateMemberKey issued)
-//! is read under that lock too, and travels in the operation.
+//! # Drafts
+//!
+//! Finds and op86 programs run under the store's read lock, as reads, and
+//! leave state of the running server outside the file's tree: the indexes
+//! they built on demand and the member keys GenerateMemberKey issued wait
+//! in the store until a write stores them. Whichever write first holds the
+//! store stores everything waiting then, as before the engine interface.
+//! So the request that stores them submits a [`Draft`], which names no
+//! indexes or keys, and [`FileEngine::submit_draft`] completes it under the
+//! store's write lock, taking what waits into the [`Operation`] it then
+//! runs and gives back with the outcome. [`run`] only sees completed
+//! operations, and a completed one is submitted with
+//! [`FileEngine::submit`], which never completes it again: that is what a
+//! recording holds and a replay submits. The store engine will have to
+//! make issuing a member key and building an index operations of their
+//! own.
 
 mod file;
 mod schema;
@@ -105,11 +119,10 @@ pub enum Operation {
     ReleaseLocks(ReleaseLocks),
     /// op13 UploadToHost into the file.
     UploadToCatalog(UploadToCatalog),
-    /// What an op86 program stores once it ran, when it wrote or member
-    /// keys wait to be written: its UploadMultiple and DeleteTable writes
-    /// and what queries left waiting.
+    /// What an op86 program stores once it ran: its UploadMultiple and
+    /// DeleteTable writes and what reads left waiting ([`Draft`]).
     ChangeSchema(ChangeSchema),
-    /// The indexes a find built on demand (op86, a server script's find).
+    /// The indexes finds built on demand ([`Draft`]).
     StoreIndexes(StoreIndexes),
     /// op73 HostUpdateTable.
     UpdateTable(UpdateTable),
@@ -225,32 +238,54 @@ pub struct UploadToCatalog {
     pub node: OwnedNode,
 }
 
-/// What an op86 program stores once it ran, when it wrote (UploadMultiple,
-/// DeleteTable) or member keys GenerateMemberKey issued wait to be written
-/// (schema-path.md 3.4, query-program.md 7.1): the program ran against the
-/// file under its read lock, and this is the rest of the request. The
-/// caller checked the session's Full Access for a program with schema
-/// instructions; they take and check no lock.
+/// What an op86 program stores once it ran, completed from
+/// [`Draft::ChangeSchema`] (schema-path.md 3.4, query-program.md 7.1): the
+/// program ran against the file under its read lock, and this is the rest
+/// of the request. The caller checked the session's Full Access for a
+/// program with schema instructions; they take and check no lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeSchema {
     /// Its UploadMultiple and DeleteTable writes, in order
     /// (`Store::apply`).
     pub writes: Vec<om_query::Write>,
-    /// The member keys GenerateMemberKey issued that were not yet written
-    /// when the program ended, its own among them
-    /// (`Store::issued_member_keys`).
+    /// The member keys GenerateMemberKey issued that were waiting
+    /// (`Store::take_issued_member_keys`).
     pub member_keys: Vec<MemberKey>,
-    /// The indexes finds built on demand that were not yet stored when the
-    /// program ended (`Store::indexes_on_demand`).
+    /// The indexes finds built on demand that were waiting
+    /// (`Store::take_indexes_on_demand`).
     pub indexes: Vec<IndexId>,
 }
 
-/// Store the indexes finds built on demand that were not yet stored when a
-/// find ended, its own among them (query-program.md 7.1;
-/// `Store::store_indexes`).
+/// Store the indexes finds built on demand that were waiting
+/// (query-program.md 7.1; `Store::store_indexes`), completed from a
+/// [`Draft`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreIndexes {
     pub indexes: Vec<IndexId>,
+}
+
+/// An operation still to be completed with what reads left waiting in the
+/// running server (the module doc's "Drafts"; [`FileEngine::submit_draft`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Draft {
+    /// What an op86 program stores once it ran: its UploadMultiple and
+    /// DeleteTable writes, with the member keys and indexes waiting.
+    /// Completed as [`Operation::ChangeSchema`], or as
+    /// [`Operation::StoreIndexes`] when there are no writes and no member
+    /// keys to write.
+    ChangeSchema { writes: Vec<om_query::Write> },
+    /// What a server script's find or related-record lookup stores: the
+    /// indexes waiting, as [`Operation::StoreIndexes`]. Member keys wait on,
+    /// as they did.
+    StoreIndexes,
+}
+
+/// A submitted [`Draft`]: the operation the engine completed it to, which
+/// replays with [`FileEngine::submit`], and its outcome.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Submitted {
+    pub operation: Operation,
+    pub outcome: Outcome,
 }
 
 /// op73: do the field work the client listed for a table, recomputing the

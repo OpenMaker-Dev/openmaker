@@ -185,12 +185,12 @@ pub struct Store {
     generation: u64,
     /// The member ids and modification counts GenerateMemberKey issued per
     /// catalog while the tree was shared for reading, until
-    /// [`Store::write_member_keys`] writes them into the catalogs
-    /// (schema-path.md 3.4).
+    /// [`Store::take_issued_member_keys`] takes them to be written into the
+    /// catalogs (schema-path.md 3.4).
     issued: Mutex<IssuedKeys>,
     /// The indexes (table, field, kind) queries built on demand while the
-    /// tree was shared for reading, until [`Store::store_indexes`] stores
-    /// them.
+    /// tree was shared for reading, until [`Store::take_indexes_on_demand`]
+    /// takes them to be stored.
     on_demand: Mutex<BTreeSet<IndexId>>,
     /// Whether each index a write checked holds the keys the current rules
     /// give its records ([`Store::index_agrees`]), at schema generation
@@ -1822,37 +1822,30 @@ impl Store {
         self.issued.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The member ids and modification counts GenerateMemberKey issued
-    /// that are not yet written, by catalog ([`Store::write_member_keys`]).
-    pub fn issued_member_keys(&self) -> Vec<MemberKey> {
+    /// Whether GenerateMemberKey issued ids not yet written.
+    pub fn has_issued_member_keys(&self) -> bool {
+        !self.issued().is_empty()
+    }
+
+    /// Take the member ids and modification counts GenerateMemberKey
+    /// issued and nobody wrote yet, by catalog, for
+    /// [`Store::write_member_keys`]: they are no longer waiting.
+    pub fn take_issued_member_keys(&mut self) -> Vec<MemberKey> {
         let mut keys: Vec<MemberKey> = self
-            .issued()
-            .iter()
-            .map(|(catalog, issued)| (catalog.clone(), *issued))
+            .issued
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
             .collect();
         keys.sort();
         keys
     }
 
-    /// Write the member ids and modification counts GenerateMemberKey
-    /// issued (`keys`, [`Store::issued_member_keys`]) into their catalogs'
-    /// indexes, as FileMaker Server does (schema-path.md 3.4). A value the
-    /// index already passed stays. Each catalog's issued key is then no
-    /// longer waiting to be written, unless a later one was issued for it
-    /// since `keys` were taken: that one waits for the query that issued it.
+    /// Write member ids and modification counts GenerateMemberKey issued
+    /// ([`Store::take_issued_member_keys`]) into their catalogs' indexes, as
+    /// FileMaker Server does (schema-path.md 3.4). A value the index
+    /// already passed stays.
     pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
-        let issued = self
-            .issued
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (catalog, (id, count)) in &keys {
-            if issued
-                .get(catalog)
-                .is_some_and(|(issued_id, issued_count)| issued_id <= id && issued_count <= count)
-            {
-                issued.remove(catalog);
-            }
-        }
         for (catalog, (id, count)) in keys {
             let mut path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
             // Checked again here: the tree may have changed since the key
@@ -2992,28 +2985,25 @@ impl Store {
         }
     }
 
-    /// The indexes queries built on demand that are not yet stored
-    /// ([`Store::store_indexes`]).
-    pub fn indexes_on_demand(&self) -> Vec<IndexId> {
-        self.on_demand
-            .lock()
-            .expect("index lock")
-            .iter()
-            .cloned()
+    /// Whether a query read indexes that were built on demand and are not
+    /// yet stored.
+    pub fn has_indexes_on_demand(&self) -> bool {
+        !self.on_demand.lock().expect("index lock").is_empty()
+    }
+
+    /// Take the indexes queries built on demand and nobody stored yet, for
+    /// [`Store::store_indexes`]: they are no longer waiting.
+    pub fn take_indexes_on_demand(&mut self) -> Vec<IndexId> {
+        std::mem::take(self.on_demand.get_mut().expect("index lock"))
+            .into_iter()
             .collect()
     }
 
     /// Store `indexes`, which queries built on demand
-    /// ([`Store::indexes_on_demand`]), so that record writes keep them
-    /// current from now on (query-program.md 7.1); they are no longer
-    /// waiting to be stored. Each is built again here, under the write
-    /// lock, from the records as they are now, unless the field has it
-    /// already.
+    /// ([`Store::take_indexes_on_demand`]), so that record writes keep them
+    /// current from now on (query-program.md 7.1). Each is built again
+    /// here, under the write lock, from the records as they are now.
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
-        let due = self.on_demand.get_mut().expect("index lock");
-        for index in &indexes {
-            due.remove(index);
-        }
         for (table, field, kind) in indexes {
             let index = [table.as_slice(), &[keys::INDEXES], &field];
             if self
@@ -4268,10 +4258,10 @@ mod tests {
         );
         assert_eq!(generate(&layouts), (vec![1, 7], vec![1, 0x10]));
         // The issued values go into the indexes (live:s4 g_41_after, s5).
-        let issued = store.issued_member_keys();
-        assert_eq!(issued.len(), 2);
+        assert!(store.has_issued_member_keys());
+        let issued = store.take_issued_member_keys();
         store.write_member_keys(issued);
-        assert!(store.issued_member_keys().is_empty());
+        assert!(!store.has_issued_member_keys());
         let value = |path: &[&[u8]]| store.node(path).unwrap().value.clone().unwrap();
         assert_eq!(value(&[&[4], &[1], &[0]]), [1, 7]);
         assert_eq!(value(&[&[4], &[1], &[0xfc]]), [1, 0x10]);
