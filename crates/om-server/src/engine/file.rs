@@ -4,8 +4,9 @@
 use log::{info, warn};
 
 use super::transaction::{Hold, Locks, Transaction};
-use super::{run, Environment, HostEnvironment, Operation, Outcome};
+use super::{run, Environment, HostEnvironment, Operation, Outcome, Reply};
 use crate::hosting::Hosted;
+use crate::store::Store;
 
 /// The file engine. Its environment is the one operations read the clock
 /// and randomness from ([`Environment`]).
@@ -21,7 +22,9 @@ impl Default for FileEngine {
 
 /// What of the file the engine holds for an operation: what today's code
 /// took for each request. op61, op62 and op65 never took the store, and
-/// op60 only read it.
+/// op60 only read it. op13, op73, op86's writes and a find's indexes took
+/// the store for writing and never the lock table, which their runs do not
+/// use.
 enum Needs {
     LockTable,
     View,
@@ -41,16 +44,24 @@ enum Save {
     /// A client's op71: its reservation is saved before the ids are
     /// answered (`Hosted::save_held`); a failed save takes it back.
     Reservation,
-    /// op72: the file saved if it changed, and a failed save not reported,
-    /// as `Hosted::save` does.
+    /// op72, op13, op86's writes and a find's indexes: the file saved if it
+    /// changed, and a failed save not reported, as `Hosted::save` does and
+    /// as op13 dropped the result of `Hosted::save_held`.
     Unchecked,
+    /// op73: [`Save::Unchecked`] when its work changed the file, which is
+    /// otherwise not saved.
+    UncheckedIfChanged,
 }
 
 fn needs(operation: &Operation) -> Needs {
     match operation {
         Operation::ReserveRecordIds(_)
         | Operation::AdvanceSerial(_)
-        | Operation::CommitRecords(_) => Needs::Transaction,
+        | Operation::CommitRecords(_)
+        | Operation::UploadToCatalog(_)
+        | Operation::ChangeSchema(_)
+        | Operation::StoreIndexes(_)
+        | Operation::UpdateTable(_) => Needs::Transaction,
         Operation::TakeLock(_) => Needs::View,
         Operation::UpgradeLock(_) | Operation::ReleaseLock(_) | Operation::ReleaseLocks(_) => {
             Needs::LockTable
@@ -62,8 +73,22 @@ fn save(operation: &Operation) -> Save {
     match operation {
         Operation::ReserveRecordIds(op) if op.durable => Save::Reservation,
         Operation::CommitRecords(_) => Save::Commit,
-        Operation::AdvanceSerial(_) => Save::Unchecked,
+        Operation::AdvanceSerial(_)
+        | Operation::UploadToCatalog(_)
+        | Operation::ChangeSchema(_)
+        | Operation::StoreIndexes(_) => Save::Unchecked,
+        Operation::UpdateTable(_) => Save::UncheckedIfChanged,
         _ => Save::Nothing,
+    }
+}
+
+/// Save the file if it changed, as `Hosted::save` does: not a read-only
+/// one, and a failed save is not reported.
+fn save_unchecked(file: &Hosted, store: &mut Store) {
+    // A failed save leaves the change in memory for the next one, and the
+    // reply does not say so (#673 step 1's follow-up reports it).
+    if !store.is_read_only() {
+        let _ = file.save_held(store);
     }
 }
 
@@ -77,9 +102,10 @@ impl FileEngine {
     /// encoded, the notices delivered. Operations on one file run one at a
     /// time under the store's write lock, or the lock table's mutex for
     /// those that only edit it (lock order: the module doc of
-    /// [`super`]). When what it changed cannot be saved, it is taken back,
-    /// locks it took included, and the outcome is the storage error with
-    /// no notices.
+    /// [`super`]). When what op70 or a client's op71 changed cannot be
+    /// saved, it is taken back, locks it took included, and the outcome is
+    /// the storage error with no notices; the other operations' failed
+    /// saves are not reported yet ([`Save`]).
     pub fn submit(&self, file: &Hosted, operation: Operation) -> Outcome {
         let environment = &*self.environment;
         match needs(&operation) {
@@ -128,18 +154,26 @@ impl FileEngine {
             journal,
             reservation,
             stored_lines,
+            released_libraries,
             ..
         } = tx;
+        if !released_libraries.is_empty() {
+            // A deleted table's library is gone: so are its thumbnails.
+            let mut thumbnails = file.thumbnails.lock().expect("thumbnail lock");
+            for library in &released_libraries {
+                thumbnails.forget_library(library);
+            }
+        }
+        let changed = matches!(outcome.reply, Reply::UpdateTable(Ok(true)));
         let saved = match (journal, save) {
             (Some(journal), _) => file.save_commit(&mut store, journal),
             (None, Save::Reservation) if reservation.is_some() => file.save_held(&mut store),
             (None, Save::Unchecked) => {
-                // A failed save leaves the change in memory for the next
-                // one, and the reply does not say so (#673 step 1's
-                // follow-up reports it).
-                if !store.is_read_only() {
-                    let _ = file.save_held(&mut store);
-                }
+                save_unchecked(file, &mut store);
+                Ok(())
+            }
+            (None, Save::UncheckedIfChanged) if changed => {
+                save_unchecked(file, &mut store);
                 Ok(())
             }
             _ => Ok(()),

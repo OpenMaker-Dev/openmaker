@@ -148,16 +148,18 @@ belongs to the file as a whole: it is exported, and never deployed.
 The rest of the server reaches a file's contents only through this
 interface. It has three parts.
 
-**Status.** Write operations are built for record writes and locks, with
-the file engine behind them (`crates/om-server/src/engine/`): op70, op71,
-op72, op60, op61, op62 and op65 from clients, and the same operations of
-server scripts (reserving a record id, advancing a serial, releasing a
-transaction's or a session's locks). Everything else still changes a file
-from its request handler: op13, op73, op86's uploads and stored indexes,
-op87, op88, op240, account edits, a server script's commit and its record
-and account locks, the release of a closed session's locks, and the
-desktop's saved found sets. Views, `export`, `import` and `capabilities`
-are not built.
+**Status.** Write operations are built for record writes, locks and
+schema changes, with the file engine behind them
+(`crates/om-server/src/engine/`): op70, op71, op72, op60, op61, op62,
+op65, op13, op73, and op86's schema instructions and stored indexes from
+clients, and the same operations of server scripts (reserving a record id,
+advancing a serial, releasing a transaction's or a session's locks,
+storing the indexes a find or a related-record lookup built). Everything
+else still changes a file from its request handler: op87, op88, op240,
+account edits, a server script's commit and its record and account locks,
+the release of a closed session's locks, the desktop's saved found sets,
+and the deferred field work a file is opened with (`Store::recover`) with
+its save. Views, `export`, `import` and `capabilities` are not built.
 
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
@@ -174,28 +176,35 @@ today and is not part of this design.
 **Write operations.** Every change the server makes is a value of one
 type, a write operation (`engine::Operation`): commit records (op70,
 `CommitRecords`), reserve record ids (op71, `ReserveRecordIds`), advance a
-serial (op72, `AdvanceSerial`), upload to a catalog (op13 and op86's
-UploadMultiple and DeleteTable), update a table (op73), store an index
-built for a find, store or release container data (op88, op87), an
+serial (op72, `AdvanceSerial`), upload to a catalog (op13,
+`UploadToCatalog`; op86's UploadMultiple and DeleteTable, `ChangeSchema`),
+update a table (op73, `UpdateTable`), store an index built for a find
+(`StoreIndexes`), store or release container data (op88, op87), an
 authoring edit (op240), a deploy (section 9), and taking, upgrading and
 releasing locks (op60, op61, op62, op65: `TakeLock`, `UpgradeLock`,
 `ReleaseLock`, `ReleaseLocks`). An operation owns its data and names who
 asks: the lock user (connection and transaction), the name other users see
-for it, and for op70 the account, its privilege set at login and those of
-the listed records the session was served without their values. op70's
-staged records travel in it: the session's temporary area lends them
-(`writes::TempArea::lend`) and takes back those the commit did not take. A
-commit that was not stored has still taken the records it reached, as
-before the interface: the file is put back, the staged edits are gone, and
-the client uploads them again to retry.
+for it, for op70 the account, its privilege set at login and those of
+the listed records the session was served without their values, and for
+op73 the account its calculations see. A find and an op86 program run
+before their operation, as reads of the file under its read lock; what
+they leave waiting in the store is read under that lock as they end and
+travels in the operation: the indexes finds built on demand and the member
+keys GenerateMemberKey issued (schema-path.md 3.4), those of overlapping
+queries included; an operation stores each only where the file lacks it.
+op70's staged records travel in it: the session's temporary area lends
+them (`writes::TempArea::lend`) and takes back those the commit did not
+take. A commit that was not stored has still taken the records it reached,
+as before the interface: the file is put back, the staged edits are gone,
+and the client uploads them again to retry.
 
 One function, `engine::run`, runs an operation against a transaction (a
 view plus put, delete and replace-subtree), the file's lock table
 (`engine::Locks`) and an environment (`engine::Environment`), from which
 it takes the clock and randomness. Formulas an operation evaluates are not
-covered yet: a privilege set's record limit takes today's date, `Random`
-and its time budget from the process
-([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)). It returns the
+covered yet: a privilege set's record limit and the stored calculations
+op73 recomputes take today's date, `Random` and their time budget from the
+process ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)). It returns the
 **reply** and the **notices** for other clients (`engine::Outcome`); the
 **effects** (edits to the tree and to the lock table) are what it did to
 the transaction and the lock table, which keep what the engine needs to
@@ -264,12 +273,16 @@ cached by the version they were computed from. They are not part of an
 engine.
 
 **The file engine behind it.** `FileEngine::submit` takes what each
-request took before the interface: the store's write lock for op70, op71
-and op72, its read lock for op60, and for op61, op62 and op65 only the lock
-table. It takes the store first and the lock table when the operation first
-uses it, holds both while it saves, and lets go of the lock table first;
-the caller then delivers the notices, taking the file's registrations and
-then the mailboxes (the order is in the module doc of `engine`).
+request took before the interface: the store's write lock for op70, op71,
+op72, op13, op73, op86's schema instructions and stored indexes, its read
+lock for op60, and for op61, op62 and op65 only the lock table. It takes
+the store first and the lock table when the operation first uses it (op13,
+op73 and op86's operations never do), holds both while it saves, and lets
+go of the lock table first; the caller then delivers the notices, taking
+the file's registrations and then the mailboxes (the order is in the
+module doc of `engine`). op13, op73 and op86 raise no notices: the other
+clients learn of a schema change when the client releases its lock
+(schema-path.md 9).
 
 Operations that change the tree therefore run one at a time. op61, op62
 and op65 run under the lock table alone: they wait for an op70 or op71
@@ -297,15 +310,43 @@ FileMaker Server's behaviour here is unmeasured.
   (`Hosted::save_held`, #927). A failed save takes back the reservation and
   the locks it took, and the reply is the save's error. A server script's
   op71 is saved by the script's commit;
-- op72: the file is saved if it changed, and a failed save leaves the
-  change in memory and is not reported, as `Hosted::save` does;
+- op72, op13, op86's schema instructions and the indexes a find built
+  (a client's or a server script's): the file is saved if it changed, and
+  a failed save leaves the change in memory and is not reported, as
+  `Hosted::save` does and as op13 dropped the result of `save_held`;
+- op73: the same, only when its work changed the file;
 - the lock requests save nothing.
+
+op86's schema instructions and stored indexes, and a server script's
+stored indexes, were made under one hold of the store and saved under a
+second one; `submit` does both under one, so a request that overlaps sees
+the file before them or after the save, as it could before. The
+thumbnails of a library DeleteTable took are forgotten under that hold,
+before the save, where they were forgotten between the two.
+
+What a query leaves waiting in the store is stored differently when
+queries overlap. Before, the first query to take the store for writing
+stored every index built on demand and wrote every member key that any
+query had left waiting by then. Now each query's operation stores what was
+waiting when its read ended, its own among it; what starts waiting after
+that is stored by the query that left it, which answers only afterwards,
+as before. An index or member key that another query's operation stored in
+the meantime is stored again only where the file lacks it: so an index
+op73 dropped, or a failed save took out, in between is built again, an
+index that a query refused for an index it cannot key took back from the
+waiting ones is stored, and a member key is written again into a catalog
+index that op13 or UploadMultiple replaced with a lower one, or that
+DeleteTable removed with its table, where before none of them was. Without
+overlapping queries the two are the same. FileMaker Server writes a member
+key into the file when it issues it (schema-path.md 3.4) and builds an
+index after the find that needed it (query-program.md 7.1); what it does
+when such requests overlap is unmeasured.
 
 The follow-up of #673's step 1, once every write goes through `submit`,
 changes what the file engine does when a save fails, on purpose. Today
-op72, op86's stored indexes, op87, op88 and server scripts call
-`Hosted::save` or its rule, which reports nothing, and op13 and op73 drop
-the result of `save_held`, so a client can be told a serial, catalog or
+`submit` reports nothing for op72, op13, op73 and op86's operations, and
+op87, op88 and server scripts' other saves call `Hosted::save`, which
+reports nothing either, so a client can be told a serial, catalog or
 container is stored when it is not. Behind the interface:
 
 - a save that fails before the rename takes the operation's effects back,

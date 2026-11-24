@@ -1,35 +1,48 @@
-//! The engine interface (`docs/server-storage.md` 5) for record writes and
-//! locks: every change of this kind a request makes is an [`Operation`], a
-//! value that owns its data, [`run`] against what the engine holds of the
-//! file, and answered with an [`Outcome`]: the reply and the notices for
-//! other clients. Effects are what the run did to the [`Transaction`] and
-//! the [`Locks`]. The file engine ([`FileEngine`]) stores them, and only
-//! then does the caller encode the reply and deliver the notices.
+//! The engine interface (`docs/server-storage.md` 5) for record writes,
+//! locks and schema changes: every change of this kind a request makes is
+//! an [`Operation`], a value that owns its data, [`run`] against what the
+//! engine holds of the file, and answered with an [`Outcome`]: the reply
+//! and the notices for other clients. Effects are what the run did to the
+//! [`Transaction`] and the [`Locks`]. The file engine ([`FileEngine`])
+//! stores them, and only then does the caller encode the reply and deliver
+//! the notices.
 //!
 //! Operations so far: commit records (op70), reserve record ids (op71),
-//! advance a serial (op72), and take, upgrade and release locks (op60,
-//! op61, op62, op65). The other writes (op13, op73, op86, op87, op88,
-//! op240, accounts, a server script's commit) still change the file from
-//! their handlers (#673).
+//! advance a serial (op72), take, upgrade and release locks (op60, op61,
+//! op62, op65), upload to a catalog (op13), store what an op86 program's
+//! schema instructions changed (UploadMultiple, GenerateMemberKey,
+//! DeleteTable), store the indexes a find built on demand, and update a
+//! table (op73). The other writes (op87, op88, op240, accounts, a server
+//! script's commit) still change the file from their handlers (#673).
 //!
 //! # Lock order
 //!
 //! [`FileEngine::submit`] takes, in this order and only what the operation
 //! needs: the file's store (`Hosted::read_store` for op60,
-//! `Hosted::write_store` for op70, op71 and op72), then its lock table
-//! (`Hosted::locks`, when the operation first uses it, [`Locks`]). It holds
-//! both while it saves, and lets go of the lock table first; dropping the
-//! store's write guard takes the file's accounts while it still holds the
-//! store (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the
-//! lock table, as before. Nothing else is taken inside `submit`: the
-//! caller delivers notices after it returns, taking the file's
+//! `Hosted::write_store` for op70, op71, op72 and the schema operations),
+//! then its lock table (`Hosted::locks`, when the operation first uses it,
+//! [`Locks`]; the schema operations never do). It holds both while it
+//! saves, and lets go of the lock table first; dropping the store's write
+//! guard takes the file's accounts while it still holds the store
+//! (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
+//! table, as before. The one other lock taken inside `submit` is the
+//! file's thumbnail cache (`Hosted::thumbnails`), under the store, when
+//! op86's DeleteTable took a table's container library: store, then
+//! thumbnails, as a server script's commit and op96 take them. Nothing
+//! else: the caller delivers notices after it returns, taking the file's
 //! registrations and then the mailboxes (`writes::notify`), and a
 //! session's own state (its temporary area, the records it was served
 //! withheld) is read before and settled after. This is the order the write
 //! path has always used (store, lock table, registrations, mailboxes),
 //! with the last two no longer inside the first two.
+//!
+//! A find and an op86 program run under the store's read lock before
+//! their operation is submitted, as reads; what they leave waiting in the
+//! store (indexes built on demand, member keys GenerateMemberKey issued)
+//! is read under that lock too, and travels in the operation.
 
 mod file;
+mod schema;
 mod transaction;
 
 #[cfg(test)]
@@ -48,6 +61,7 @@ use om_protocol::write::{
 
 use crate::hosting::Hosted;
 use crate::locks::LockUser;
+use crate::store::{IndexId, MemberKey};
 use crate::views::Withheld;
 use crate::writes::{self, Change, CommitError, Mailboxes};
 
@@ -56,9 +70,10 @@ pub(crate) use transaction::{Hold, Locks, Transaction};
 
 /// A change the server makes to a hosted file: one request's work, as a
 /// value. Who asks is part of it (the lock user, the name other users see
-/// for it, the account and privilege set a commit is checked against), so
-/// that it can be run by another engine, recorded with its outcome and
-/// replayed (docs/server-storage.md 5, 7.2, 7.3, 12).
+/// for it, the account and privilege set a commit is checked against, the
+/// account op73's calculations see), so that it can be run by another
+/// engine, recorded with its outcome and replayed (docs/server-storage.md
+/// 5, 7.2, 7.3, 12).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operation {
     /// op71 HostCreateRecord.
@@ -75,6 +90,16 @@ pub enum Operation {
     ReleaseLock(ReleaseLock),
     /// op65 KillAllLocks.
     ReleaseLocks(ReleaseLocks),
+    /// op13 UploadToHost into the file.
+    UploadToCatalog(UploadToCatalog),
+    /// What an op86 program stores once it ran, when it wrote or member
+    /// keys wait to be written: its UploadMultiple and DeleteTable writes
+    /// and what queries left waiting.
+    ChangeSchema(ChangeSchema),
+    /// The indexes a find built on demand (op86, a server script's find).
+    StoreIndexes(StoreIndexes),
+    /// op73 HostUpdateTable.
+    UpdateTable(UpdateTable),
 }
 
 /// op71: reserve record ids and lock them for a transaction
@@ -165,6 +190,58 @@ pub struct ReleaseLocks {
     pub request: KillAllLocks,
 }
 
+/// op13: put an uploaded subtree, or a single value, at its destination in
+/// the file, replacing what was there (schema-path.md 3.3;
+/// `Store::put_subtree`). The caller checked the session's Full Access;
+/// op13 takes and checks no lock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UploadToCatalog {
+    /// The destination, never the whole file.
+    pub path: KeyPath,
+    pub node: OwnedNode,
+}
+
+/// What an op86 program stores once it ran, when it wrote (UploadMultiple,
+/// DeleteTable) or member keys GenerateMemberKey issued wait to be written
+/// (schema-path.md 3.4, query-program.md 7.1): the program ran against the
+/// file under its read lock, and this is the rest of the request. The
+/// caller checked the session's Full Access for a program with schema
+/// instructions; they take and check no lock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeSchema {
+    /// Its UploadMultiple and DeleteTable writes, in order
+    /// (`Store::apply`).
+    pub writes: Vec<om_query::Write>,
+    /// The member keys GenerateMemberKey issued that were not yet written
+    /// when the program ended, its own among them
+    /// (`Store::issued_member_keys`).
+    pub member_keys: Vec<MemberKey>,
+    /// The indexes finds built on demand that were not yet stored when the
+    /// program ended (`Store::indexes_on_demand`).
+    pub indexes: Vec<IndexId>,
+}
+
+/// Store the indexes finds built on demand that were not yet stored when a
+/// find ended, its own among them (query-program.md 7.1;
+/// `Store::store_indexes`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreIndexes {
+    pub indexes: Vec<IndexId>,
+}
+
+/// op73: do the field work the client listed for a table, recomputing the
+/// stored calculations the change made stale (schema-path.md 3.6, 7.2;
+/// `Store::update_table`). The other clients learn of it when the client
+/// releases the table's lock, after the reply (schema-path.md 9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateTable {
+    /// The table key `[T]`.
+    pub table: Vec<u8>,
+    /// The account that saved the change, which calculations reading
+    /// `Get ( AccountName )` see.
+    pub account: String,
+}
+
 /// What an operation answers, one shape per operation; the caller encodes
 /// it for the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +255,19 @@ pub enum Reply {
     ReleaseLock,
     /// op65 is answered with the request's own header (write-path.md 4.4).
     ReleaseLocks,
+    /// Whether the subtree was stored: it is not on a read-only file or
+    /// where the file cannot hold it. op13's reply is the same either way
+    /// (schema-path.md 3.3).
+    UploadToCatalog(bool),
+    /// op86's reply is what its program answered when it ran; this is
+    /// only whether its writes were refused because the file became
+    /// read-only after it ran, which fails the request.
+    ChangeSchema(Result<(), &'static str>),
+    /// A find's reply is what it answered when it ran.
+    StoreIndexes,
+    /// Whether the work changed the file, or why it was refused, which
+    /// leaves the file hosted read-only (`Store::update_table`).
+    UpdateTable(Result<bool, &'static str>),
 }
 
 /// op70's reply: whether the commit was written, and the staged records it
@@ -254,12 +344,14 @@ impl Outcome {
 /// What an operation may read of the world besides the file: the clock and
 /// a random source, so that two engines can be given the same seeded source
 /// (docs/server-storage.md 12). [`run`] itself reads them only through
-/// this: the time and the UUID of a write's record environment. The
+/// this: the time and the UUID of a write's record environment, and the
+/// unique ids of container data op73's recalculation stores. The
 /// calculation engine below it does not yet: a formula an operation
-/// evaluates (a privilege set's record limit, `writes::refused_action`)
-/// takes today's date, `Random` and its time budget from the process
+/// evaluates (a privilege set's record limit, `writes::refused_action`;
+/// the stored calculations op73 recomputes, `Store::update_table`) takes
+/// today's date, `Random` and its time budget from the process
 /// (`om_data::rules`, `om_calc::eval::CalcHost::random`), so an operation
-/// whose formulas read them need not replay to the same reply
+/// whose formulas read them need not replay to the same reply or tree
 /// ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)).
 pub trait Environment: Send + Sync {
     /// The host's time now, in its time zone.
@@ -345,6 +437,19 @@ pub fn run(
             writes::kill_all_locks(op, locks);
             Outcome::new(Reply::ReleaseLocks)
         }
+        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::UploadToCatalog(schema::upload_to_catalog(op, tx)))
+        }
+        (Operation::ChangeSchema(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::ChangeSchema(schema::change_schema(op, tx)))
+        }
+        (Operation::StoreIndexes(op), Hold::Transaction(tx)) => {
+            tx.store_indexes(op.indexes);
+            Outcome::new(Reply::StoreIndexes)
+        }
+        (Operation::UpdateTable(op), Hold::Transaction(tx)) => Outcome::new(Reply::UpdateTable(
+            schema::update_table(op, tx, environment),
+        )),
         (operation, _) => not_held(operation, file),
     }
 }
@@ -379,5 +484,11 @@ fn not_held(operation: Operation, file: &str) -> Outcome {
         Operation::UpgradeLock(_) => Reply::UpgradeLock(refused_lock),
         Operation::ReleaseLock(_) => Reply::ReleaseLock,
         Operation::ReleaseLocks(_) => Reply::ReleaseLocks,
+        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(false),
+        Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(NOT_HELD)),
+        Operation::StoreIndexes(_) => Reply::StoreIndexes,
+        Operation::UpdateTable(_) => Reply::UpdateTable(Err(NOT_HELD)),
     })
 }
+
+const NOT_HELD: &str = "the engine did not hold the file";

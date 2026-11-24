@@ -81,7 +81,9 @@ use super::find::{self, FindError, Request};
 use super::{values, Control};
 use crate::config::{Privileges, SCRIPT_CALC_LIMITS};
 use crate::connection::Shared;
-use crate::engine::{AdvanceSerial, Operation, ReleaseLocks, Reply, ReserveRecordIds};
+use crate::engine::{
+    AdvanceSerial, Operation, ReleaseLocks, Reply, ReserveRecordIds, StoreIndexes,
+};
 use crate::hosting::Hosted;
 use crate::locks::LockUser;
 use crate::modcount;
@@ -2876,16 +2878,16 @@ impl ServerHost {
             file_id: self.hosted.id,
             connection_key: None,
         };
-        let (outcome, built) = {
+        let (outcome, indexes) = {
             let store = self.hosted.read_store();
             let outcome = om_query::execute(&*store, &program, &context);
-            (outcome, store.has_indexes_on_demand())
+            (outcome, store.indexes_on_demand())
         };
-        if built {
+        if !indexes.is_empty() {
             // Indexes the find built on demand are stored (query-program.md
             // 7.1), as for a client's find.
-            self.hosted.write_store().store_indexes_on_demand();
-            self.hosted.save();
+            let operation = Operation::StoreIndexes(StoreIndexes { indexes });
+            self.shared.engine.submit(&self.hosted, operation);
         }
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);

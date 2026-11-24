@@ -52,14 +52,13 @@ use crate::authoring;
 use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
-    AdvanceSerial, CommitRecords, FileEngine, Operation, ReleaseLock, ReleaseLocks, Reply,
-    ReserveRecordIds, TakeLock, UpgradeLock,
+    AdvanceSerial, ChangeSchema, CommitRecords, FileEngine, Operation, ReleaseLock, ReleaseLocks,
+    Reply, ReserveRecordIds, StoreIndexes, TakeLock, UpdateTable, UpgradeLock, UploadToCatalog,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
 use crate::locks::LockUser;
 use crate::login_limits::{Attempt, LoginLimits, LOGIN_TOO_MANY_ATTEMPTS};
-use crate::recalc;
 use crate::record::{Recorder, Recordings};
 use crate::scripts::{self, ScriptEngine};
 use crate::transfer::{
@@ -2540,12 +2539,13 @@ fn query(
             // Manage Database's instructions change the file,
             // GenerateMemberKey's issued ids go into their catalogs
             // (schema-path.md 3.4), and indexes the query built on demand are
-            // stored (query-program.md 7.1).
-            let pending = {
+            // stored (query-program.md 7.1), with what other queries left
+            // waiting.
+            let (member_keys, indexes) = {
                 let store = file.hosted.read_store();
-                store.has_issued_member_keys() || store.has_indexes_on_demand()
+                (store.issued_member_keys(), store.indexes_on_demand())
             };
-            if pending || !outcome.writes.is_empty() {
+            let operation = if !member_keys.is_empty() || !outcome.writes.is_empty() {
                 for write in &outcome.writes {
                     let (done, path) = match write {
                         om_query::Write::Put { path, .. } => ("stored", path),
@@ -2553,26 +2553,22 @@ fn query(
                     };
                     info!("{peer}: {:?}: {done} {path:02x?}", file.hosted.name);
                 }
-                let released = {
-                    let mut store = file.hosted.write_store();
-                    if store.is_read_only() && !outcome.writes.is_empty() {
-                        return Err(Refused.into());
-                    }
-                    store.store_indexes_on_demand();
-                    if store.is_read_only() {
-                        Vec::new()
-                    } else {
-                        store.write_issued_member_keys();
-                        store.apply(outcome.writes)
-                    }
-                };
-                // A deleted table's library is gone: so are its thumbnails.
-                let mut thumbnails = file.hosted.thumbnails.lock().expect("thumbnail lock");
-                for library in &released {
-                    thumbnails.forget_library(library);
+                Some(Operation::ChangeSchema(ChangeSchema {
+                    writes: outcome.writes,
+                    member_keys,
+                    indexes,
+                }))
+            } else if !indexes.is_empty() {
+                Some(Operation::StoreIndexes(StoreIndexes { indexes }))
+            } else {
+                None
+            };
+            if let Some(operation) = operation {
+                match shared.engine.submit(&file.hosted, operation).reply {
+                    Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes => {}
+                    Reply::ChangeSchema(Err(_)) => return Err(Refused.into()),
+                    other => return Err(mismatched(&other)),
                 }
-                drop(thumbnails);
-                file.hosted.save();
             }
             outcome.slots
         }
@@ -3026,7 +3022,7 @@ fn upload(
         };
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
-        upload_to_file(peer, &hosted, &request, &payload, reading.bytes())?;
+        upload_to_file(shared, peer, &hosted, &request, &payload, reading.bytes())?;
         return Ok(done);
     }
     let client = session.client;
@@ -3070,12 +3066,13 @@ fn reserve_up_to(shared: &Shared, session: &Session, most: usize) -> Charge {
 /// its destination, replacing what was there (schema-path.md 3.3). Manage
 /// Database saves each catalog's index this way.
 fn upload_to_file(
+    shared: &Shared,
     peer: &str,
     hosted: &Hosted,
     request: &write::Upload,
     payload: &[u8],
     room: usize,
-) -> Result<(), Refused> {
+) -> Result<(), PerformError> {
     if request.dest.is_empty() {
         warn!("{peer}: refusing an upload over the whole file");
         return Ok(());
@@ -3094,7 +3091,7 @@ fn upload_to_file(
             }
             Err(writes::StageError::Full) => {
                 warn!("{peer}: refusing to read an upload past the connection's limit");
-                return Err(Refused);
+                return Err(Refused.into());
             }
         }
     };
@@ -3104,12 +3101,18 @@ fn upload_to_file(
         request.dest,
         payload.len().max(request.terminal.len())
     );
-    let mut store = hosted.write_store();
-    if !store.is_read_only() {
-        store.put_subtree(&request.dest, node);
-        let _ = hosted.save_held(&mut store);
+    let upload = UploadToCatalog {
+        path: request.dest.clone(),
+        node,
+    };
+    match shared
+        .engine
+        .submit(hosted, Operation::UploadToCatalog(upload))
+        .reply
+    {
+        Reply::UploadToCatalog(_) => Ok(()),
+        other => Err(mismatched(&other)),
     }
-    Ok(())
 }
 
 /// op73 HostUpdateTable: do the field work the client listed for a table
@@ -3126,17 +3129,19 @@ fn update_table(
 ) -> Result<Vec<u8>, PerformError> {
     let table = schema::parse_update_table_request(txn)?;
     if let (Some(file), [table]) = (writable(peer, session, header), table.as_slice()) {
-        // Calculations that read `Get ( AccountName )` see the account that
-        // saved the change.
         let account = file.account.as_deref().map_or("", |account| &account.name);
-        let mut environment =
-            || recalc::record_environment(account, recalc::uuid_text(shared.random()));
-        let mut store = file.hosted.write_store();
-        let changed = store
-            .update_table(table, &mut environment)
-            .map_err(|reason| PerformError::Status(reason.into()))?;
-        if changed {
-            let _ = file.hosted.save_held(&mut store);
+        let update = UpdateTable {
+            table: table.clone(),
+            account: account.to_owned(),
+        };
+        match shared
+            .engine
+            .submit(&file.hosted, Operation::UpdateTable(update))
+            .reply
+        {
+            Reply::UpdateTable(Ok(_)) => {}
+            Reply::UpdateTable(Err(reason)) => return Err(PerformError::Status(reason.into())),
+            other => return Err(mismatched(&other)),
         }
     }
     Ok(schema::update_table_reply())

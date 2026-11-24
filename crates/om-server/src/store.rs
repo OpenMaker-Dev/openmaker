@@ -185,12 +185,12 @@ pub struct Store {
     generation: u64,
     /// The member ids and modification counts GenerateMemberKey issued per
     /// catalog while the tree was shared for reading, until
-    /// [`Store::write_issued_member_keys`] writes them into the catalogs
+    /// [`Store::write_member_keys`] writes them into the catalogs
     /// (schema-path.md 3.4).
     issued: Mutex<IssuedKeys>,
     /// The indexes (table, field, kind) queries built on demand while the
-    /// tree was shared for reading, until [`Store::store_indexes_on_demand`]
-    /// stores them.
+    /// tree was shared for reading, until [`Store::store_indexes`] stores
+    /// them.
     on_demand: Mutex<BTreeSet<IndexId>>,
     /// Whether each index a write checked holds the keys the current rules
     /// give its records ([`Store::index_agrees`]), at schema generation
@@ -217,8 +217,23 @@ pub struct Store {
 /// An index: its table, field and kind (value 0, word 1).
 pub type IndexId = (Vec<u8>, Vec<u8>, u8);
 
+/// A container library member's unique id from the system's random source
+/// (`library::store`).
+pub(crate) fn system_unique_id() -> [u8; 16] {
+    use ring::rand::SecureRandom as _;
+    let mut id = [0u8; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut id)
+        .expect("the system random source");
+    id
+}
+
 /// Per catalog path: the last member id and modification count issued.
 type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
+
+/// A catalog path with the last member id and modification count
+/// GenerateMemberKey issued for it (schema-path.md 3.4).
+pub type MemberKey = (Vec<Vec<u8>>, (u64, u64));
 
 /// What a commit changed ([`Store::begin_commit`]), to put back when its
 /// save fails, and the bookkeeping it does once at its end: each table's
@@ -432,7 +447,11 @@ impl Store {
     /// file (the save that would have removed it never happened), so it
     /// runs now, before the file is served, as op73 would have. Returns
     /// whether anything changed.
-    pub fn recover(&mut self, environment: &mut dyn FnMut() -> RecordEnvironment) -> bool {
+    pub fn recover(
+        &mut self,
+        environment: &mut dyn FnMut() -> RecordEnvironment,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
+    ) -> bool {
         let pending: Vec<Vec<u8>> = self
             .catalog
             .tables
@@ -461,7 +480,9 @@ impl Store {
                 self.name
             );
             // The preflight checked every pending table before any changed.
-            changed |= self.update_table(&table, environment).unwrap_or(false);
+            changed |= self
+                .update_table(&table, environment, unique_id)
+                .unwrap_or(false);
         }
         changed
     }
@@ -1061,6 +1082,18 @@ impl Store {
         table: &[u8],
         data: BinaryData,
     ) -> Vec<u8> {
+        self.store_container_with(journal, table, data, &mut system_unique_id)
+    }
+
+    /// [`Store::store_container_in`], a new member's unique id taken from
+    /// `unique_id`.
+    fn store_container_with(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        data: BinaryData,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
+    ) -> Vec<u8> {
         let base = vec![table.to_vec(), vec![LIBRARY]];
         if let Some(reason) = self.library_refusal(&[table, &[LIBRARY]], Some(&data), None) {
             journal.refused.get_or_insert(reason);
@@ -1077,13 +1110,6 @@ impl Store {
             }
         }
         self.dirty = true;
-        let random = ring::rand::SystemRandom::new();
-        let unique_id = || {
-            use ring::rand::SecureRandom as _;
-            let mut id = [0u8; 16];
-            random.fill(&mut id).expect("the system random source");
-            id
-        };
         match library::store(self.root.ensure(&[table, &[LIBRARY]]), data, unique_id) {
             Some(Stored::New(member) | Stored::Existing(member)) => member,
             // Not reached: `library_refusal` checked the same counters.
@@ -1796,22 +1822,38 @@ impl Store {
         self.issued.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Whether GenerateMemberKey issued ids not yet written.
-    pub fn has_issued_member_keys(&self) -> bool {
-        !self.issued().is_empty()
+    /// The member ids and modification counts GenerateMemberKey issued
+    /// that are not yet written, by catalog ([`Store::write_member_keys`]).
+    pub fn issued_member_keys(&self) -> Vec<MemberKey> {
+        let mut keys: Vec<MemberKey> = self
+            .issued()
+            .iter()
+            .map(|(catalog, issued)| (catalog.clone(), *issued))
+            .collect();
+        keys.sort();
+        keys
     }
 
     /// Write the member ids and modification counts GenerateMemberKey
-    /// issued into their catalogs' indexes, as FileMaker Server does
-    /// (schema-path.md 3.4). A value the index already passed stays.
-    pub fn write_issued_member_keys(&mut self) {
-        let issued: Vec<_> = self
+    /// issued (`keys`, [`Store::issued_member_keys`]) into their catalogs'
+    /// indexes, as FileMaker Server does (schema-path.md 3.4). A value the
+    /// index already passed stays. Each catalog's issued key is then no
+    /// longer waiting to be written, unless a later one was issued for it
+    /// since `keys` were taken: that one waits for the query that issued it.
+    pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
+        let issued = self
             .issued
             .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drain()
-            .collect();
-        for (catalog, (id, count)) in issued {
+            .unwrap_or_else(PoisonError::into_inner);
+        for (catalog, (id, count)) in &keys {
+            if issued
+                .get(catalog)
+                .is_some_and(|(issued_id, issued_count)| issued_id <= id && issued_count <= count)
+            {
+                issued.remove(catalog);
+            }
+        }
+        for (catalog, (id, count)) in keys {
             let mut path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
             // Checked again here: the tree may have changed since the key
             // was issued.
@@ -2062,7 +2104,8 @@ impl Store {
     /// clear the list (schema-path.md 7.2): drop the values of deleted
     /// fields (releasing container data), recompute the stored calculations
     /// the change made stale ([`recalc`]; `environment` gives what `Get`
-    /// answers), and delete or build field indexes. A field defined as
+    /// answers, `unique_id` the unique ids of container data a calculation
+    /// made), and delete or build field indexes. A field defined as
     /// indexed that has no index yet gets one too: how FileMaker Pro has a
     /// new table's indexes built is not established (schema-path.md 12.1).
     /// Everything happens in memory under the caller's write lock; the
@@ -2073,6 +2116,7 @@ impl Store {
         &mut self,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Result<bool, &'static str> {
         if self.is_read_only() {
             return Err("the file is hosted read-only");
@@ -2152,7 +2196,14 @@ impl Store {
         let recomputed = if stale.is_empty() {
             Vec::new()
         } else {
-            self.recalculate(table, &definition, &stale, (&work, &named), environment)
+            self.recalculate(
+                table,
+                &definition,
+                &stale,
+                (&work, &named),
+                environment,
+                unique_id,
+            )
         };
         changed |= !recomputed.is_empty();
         let mut rebuild: BTreeSet<Vec<u8>> = work
@@ -2162,7 +2213,7 @@ impl Store {
             .collect();
         // A field whose type changed is keyed anew in every index it has.
         // `0x10` names an index the definition asks for; one a query built
-        // on demand (`store_indexes_on_demand`) sets no option bit, so it
+        // on demand (`store_indexes`) sets no option bit, so it
         // would keep the old type's keys (#441).
         rebuild.extend(
             work.iter()
@@ -2284,6 +2335,7 @@ impl Store {
         stale: &BTreeSet<u64>,
         deferred: DeferredFieldWork<'_>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Vec<u64> {
         let Some(plan) = self.with_calc_inputs(table, |tree, calc| {
             Recalculation::plan(definition, tree, calc, stale)
@@ -2350,6 +2402,7 @@ impl Store {
                     cells,
                     &definition.name,
                     &mut naming,
+                    unique_id,
                 );
             }
         }
@@ -2442,6 +2495,7 @@ impl Store {
         cells: &BTreeMap<u64, ContainerResult>,
         name: &str,
         naming: &mut BTreeMap<Vec<u8>, i64>,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
     ) {
         let path: [&[u8]; 3] = [table, &[keys::RECORDS], record];
         let Some(old) = self.node(&path).cloned() else {
@@ -2460,7 +2514,8 @@ impl Store {
                 ContainerResult::Empty => None,
                 ContainerResult::Text(text) => Some(text.clone()),
                 ContainerResult::Data(value) => {
-                    let Some((member, stored)) = self.recomputed_member(&mut journal, table, value)
+                    let Some((member, stored)) =
+                        self.recomputed_member(&mut journal, table, value, unique_id)
                     else {
                         journal.refused.get_or_insert_with(|| {
                             "the container value has no data to store".to_string()
@@ -2515,7 +2570,7 @@ impl Store {
 
     /// The member of `table`'s library a recomputed container value names
     /// when it is one of that library's, with `false`; else the member
-    /// [`Self::store_container_in`] stores its data in, counted, with
+    /// [`Self::store_container_with`] stores its data in, counted, with
     /// `true`: another table's member's tree as stored there, or the tree
     /// the field stores for data a calculation made
     /// (`om_data::containers::tree`). `None` without data to store, or
@@ -2525,6 +2580,7 @@ impl Store {
         journal: &mut Journal,
         table: &[u8],
         value: &om_calc::Container,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Option<(Vec<u8>, bool)> {
         let mut data = None;
         if let Some(r) = &value.library {
@@ -2548,7 +2604,7 @@ impl Store {
                 BinaryData::from_tree(keys, md5)
             }
         };
-        let member = self.store_container_in(journal, table, data);
+        let member = self.store_container_with(journal, table, data, unique_id);
         (!member.is_empty()).then_some((member, true))
     }
 
@@ -2924,7 +2980,7 @@ impl Store {
     }
 
     /// Take `built` back from the indexes due to be stored
-    /// ([`Store::store_indexes_on_demand`]). A query refused for an index
+    /// ([`Store::store_indexes`]). A query refused for an index
     /// this server cannot key keeps none of the others it built (#572), so
     /// the client that asks next which indexes are missing sees the file as
     /// the query found it, whichever query stores the due indexes first. A
@@ -2936,18 +2992,29 @@ impl Store {
         }
     }
 
-    /// Whether a query read indexes that were built on demand and are not
-    /// yet stored.
-    pub fn has_indexes_on_demand(&self) -> bool {
-        !self.on_demand.lock().expect("index lock").is_empty()
+    /// The indexes queries built on demand that are not yet stored
+    /// ([`Store::store_indexes`]).
+    pub fn indexes_on_demand(&self) -> Vec<IndexId> {
+        self.on_demand
+            .lock()
+            .expect("index lock")
+            .iter()
+            .cloned()
+            .collect()
     }
 
-    /// Store the indexes queries built on demand, so that record writes keep
-    /// them current from now on (query-program.md 7.1). Each is built again
-    /// here, under the write lock, from the records as they are now.
-    pub fn store_indexes_on_demand(&mut self) {
-        let built = std::mem::take(self.on_demand.get_mut().expect("index lock"));
-        for (table, field, kind) in built {
+    /// Store `indexes`, which queries built on demand
+    /// ([`Store::indexes_on_demand`]), so that record writes keep them
+    /// current from now on (query-program.md 7.1); they are no longer
+    /// waiting to be stored. Each is built again here, under the write
+    /// lock, from the records as they are now, unless the field has it
+    /// already.
+    pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
+        let due = self.on_demand.get_mut().expect("index lock");
+        for index in &indexes {
+            due.remove(index);
+        }
+        for (table, field, kind) in indexes {
             let index = [table.as_slice(), &[keys::INDEXES], &field];
             if self
                 .node(&[index[0], index[1], index[2], &[counts_key(kind)]])
@@ -3630,7 +3697,7 @@ impl om_query::Source for Store {
     }
 
     /// Build a missing index from the stored records for a query that reads
-    /// it; [`Store::store_indexes_on_demand`] stores it afterwards. A field
+    /// it; [`Store::store_indexes`] stores it afterwards. A field
     /// whose index exists but has no keys (only its counts) reads as empty.
     fn index_on_demand(
         &self,
@@ -3677,10 +3744,10 @@ impl om_query::Source for Store {
     /// Issue the catalog's next member id and modification count: one more
     /// than its last issued id `[C, 01, 00]` and count `[C, 01, fc]` (or than
     /// what was issued since) (schema-path.md 3.4). The tree is only read
-    /// here; [`Store::write_issued_member_keys`] stores them.
+    /// here; [`Store::write_member_keys`] stores them.
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
         let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
-        // [`Store::write_issued_member_keys`] stores `[C, 01, 00]` and
+        // [`Store::write_member_keys`] stores `[C, 01, 00]` and
         // `[C, 01, fc]`: a catalog the tree cannot take them under as it is
         // gets no key.
         if self.member_key_refusal(&path).is_some() {
@@ -4201,9 +4268,10 @@ mod tests {
         );
         assert_eq!(generate(&layouts), (vec![1, 7], vec![1, 0x10]));
         // The issued values go into the indexes (live:s4 g_41_after, s5).
-        assert!(store.has_issued_member_keys());
-        store.write_issued_member_keys();
-        assert!(!store.has_issued_member_keys());
+        let issued = store.issued_member_keys();
+        assert_eq!(issued.len(), 2);
+        store.write_member_keys(issued);
+        assert!(store.issued_member_keys().is_empty());
         let value = |path: &[&[u8]]| store.node(path).unwrap().value.clone().unwrap();
         assert_eq!(value(&[&[4], &[1], &[0]]), [1, 7]);
         assert_eq!(value(&[&[4], &[1], &[0xfc]]), [1, 0x10]);

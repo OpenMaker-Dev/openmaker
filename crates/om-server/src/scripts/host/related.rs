@@ -28,6 +28,7 @@ use om_hbam::{FieldKind, OwnedNode, RidList};
 use om_scripts::runtime::{ErrorCode, HostError, HostResult, LayoutTarget, RelatedRecords};
 
 use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
+use crate::engine::{Operation, StoreIndexes};
 use crate::modcount;
 
 /// The session's records as calculation data (`om_data::host`).
@@ -301,7 +302,7 @@ impl ServerHost {
         };
         let (t, f) = (uint_segment(table), uint_segment(field));
         let mut found = RidList::new();
-        let built = {
+        let indexes = {
             let store = self.hosted.read_store();
             let keys: BTreeSet<Vec<u8>> = texts
                 .iter()
@@ -325,11 +326,11 @@ impl ServerHost {
                     found = found.or(&ids);
                 }
             }
-            store.has_indexes_on_demand()
+            store.indexes_on_demand()
         };
-        if built {
-            self.hosted.write_store().store_indexes_on_demand();
-            self.hosted.save();
+        if !indexes.is_empty() {
+            let operation = Operation::StoreIndexes(StoreIndexes { indexes });
+            self.shared.engine.submit(&self.hosted, operation);
         }
         Ok(found)
     }

@@ -5,11 +5,12 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use om_data::rules::RecordEnvironment;
 use om_hbam::OwnedNode;
 use om_protocol::write::{Conflict, KeyPath};
 
 use crate::locks::{LockTable, LockUser};
-use crate::store::{Journal, Store};
+use crate::store::{IndexId, Journal, MemberKey, Store};
 
 /// What the engine holds of a file for an operation: what the operation
 /// needs, and no more (`FileEngine::submit`).
@@ -18,7 +19,8 @@ pub enum Hold<'h, 'a> {
     LockTable,
     /// The tree, for reading (op60).
     View(&'h Store),
-    /// A transaction on the tree (op70, op71, op72).
+    /// A transaction on the tree (op70, op71, op72, op13, op73, op86's
+    /// writes and a find's indexes).
     Transaction(&'h mut Transaction<'a>),
 }
 
@@ -29,7 +31,9 @@ pub enum Hold<'h, 'a> {
 /// It exposes the `Store` methods the operations use, and `view` for the
 /// state derived from the tree (a privilege set's hidden fields and record
 /// limits). The changes are a commit's record writes (`Journal`), op71's
-/// reservation and op72's serial value.
+/// reservation and op72's serial value, and the schema changes of op13,
+/// op73 and op86 with a find's stored indexes, which are made in place and
+/// not taken back (their saves are not checked yet).
 pub struct Transaction<'a> {
     pub(super) store: &'a mut Store,
     /// The commit the record writes go into ([`Self::begin_commit`]).
@@ -38,6 +42,9 @@ pub struct Transaction<'a> {
     pub(super) reservation: Option<Reservation>,
     /// Log lines that say a change was made, written once it is stored.
     pub(super) stored_lines: Vec<String>,
+    /// The container libraries deleted tables took with them
+    /// ([`Self::apply`]), whose thumbnails the engine forgets.
+    pub(super) released_libraries: Vec<Vec<Vec<u8>>>,
 }
 
 /// The last issued id of `table` as it was before a reservation
@@ -55,6 +62,7 @@ impl<'a> Transaction<'a> {
             journal: None,
             reservation: None,
             stored_lines: Vec::new(),
+            released_libraries: Vec::new(),
         }
     }
 
@@ -149,6 +157,42 @@ impl<'a> Transaction<'a> {
     /// Log `line` once the transaction is stored, and not if it is not.
     pub fn once_stored(&mut self, line: String) {
         self.stored_lines.push(line);
+    }
+
+    /// op13: put `node` at `path` (`Store::put_subtree`); whether it was
+    /// stored.
+    pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
+        self.store.put_subtree(path, node)
+    }
+
+    /// op86's UploadMultiple and DeleteTable writes (`Store::apply`). The
+    /// libraries deleted tables took go with them, and so do their
+    /// thumbnails ([`Self::released_libraries`]).
+    pub fn apply(&mut self, writes: Vec<om_query::Write>) {
+        let released = self.store.apply(writes);
+        self.released_libraries.extend(released);
+    }
+
+    /// GenerateMemberKey's issued keys (`Store::write_member_keys`).
+    pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
+        self.store.write_member_keys(keys);
+    }
+
+    /// Indexes finds built on demand (`Store::store_indexes`).
+    pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
+        self.store.store_indexes(indexes);
+    }
+
+    /// op73: a table's deferred field work (`Store::update_table`), each
+    /// record's environment for a recalculation from `environment`, and
+    /// the unique ids of container data it stores from `unique_id`.
+    pub fn update_table(
+        &mut self,
+        table: &[u8],
+        environment: &mut dyn FnMut() -> RecordEnvironment,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
+    ) -> Result<bool, &'static str> {
+        self.store.update_table(table, environment, unique_id)
     }
 }
 

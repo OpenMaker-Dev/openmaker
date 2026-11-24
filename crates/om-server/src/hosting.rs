@@ -353,7 +353,7 @@ impl Hosted {
         }
         let mut environment =
             || crate::recalc::record_environment("", crate::recalc::random_uuid());
-        let recovered = store.recover(&mut environment);
+        let recovered = store.recover(&mut environment, &mut crate::store::system_unique_id);
         let accounts = RwLock::new(Accounts::of(&store));
         Ok(Hosted {
             id,
