@@ -234,7 +234,18 @@ in the form the request named, so an older client reads back the token it
 computes and goes on working. A newer client against an older host cannot
 be helped: for such content every edit is a `conflict`, reading the
 object again gives the same token and the next edit the same answer,
-until the host is updated.
+until the host is updated. An older client against a newer host can also
+report `verification_failed` after a save that was made: when the edit
+itself makes a value split (Set Value List Values with text such as
+`タスク` that is stored in pieces, in a list held whole before), or when
+it repeats an edit that already succeeded with the token from before it
+(an exact retry), the host cannot tell which form the client speaks, as
+both forms agreed or the token is the earlier content's, and answers in
+the new one. The client then reads the object back, computes the older
+form and reports the mismatch. The save was made: reading the object
+again shows it, with a token the client accepts. `om-author`, the desktop
+client and OpenMaker Server are released together, so this needs a mixed
+installation.
 
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,

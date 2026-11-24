@@ -396,6 +396,21 @@ fn step_data_whose_step_is_not_identified_with_certainty_is_secret() {
                 profile,
             ),
         ),
+        // A credential slot whose field spec `10` is not 14 bytes, and a
+        // descriptor whose data key is no serial key.
+        (
+            "short field spec",
+            script(
+                steps(63),
+                list(&[0, 11], vec![leaf(&[0x10], b"secret")]),
+                profile,
+            ),
+        ),
+        ("data key no serial key", {
+            let mut d = steps(63);
+            d[2] = 0x80;
+            script(d, slot(11, b"\"pw\"", 0), profile)
+        }),
     ];
     for (case, member) in cases {
         let root = script_tree(member);
@@ -430,11 +445,17 @@ fn message(field: u32, bytes: &[u8], out: &mut Vec<u8>) {
 /// the ids `ids`, and the button's step data `11` with Re-Login's account
 /// and password.
 fn layout(ids: &[u64]) -> OwnedNode {
+    layout_with(ids, &[])
+}
+
+/// [`layout`] with `extra` bytes at the end of the button's step message.
+fn layout_with(ids: &[u64], extra: &[u8]) -> OwnedNode {
     let mut step = Vec::new();
     for &id in ids {
         varint(1 << 3, &mut step);
         varint(id, &mut step);
     }
+    step.extend_from_slice(extra);
     let mut button = Vec::new();
     message(3, &step, &mut button);
     let mut object = Vec::new();
@@ -484,6 +505,43 @@ fn a_buttons_credentials_are_secret_and_a_disputed_button_step_is_no_step() {
     // Perform Script: no credential.
     let plain = layout(&[1]);
     assert_eq!(in_button(&plain, 1), Group::Design);
+    // A field number 0 in the step message, which om-layout's reader
+    // refuses: the button is not identified.
+    let refused = layout_with(&[1], &[0x00, 0x00]);
+    assert_eq!(in_button(&refused, 2), Group::Secret);
+}
+
+#[test]
+fn a_member_whose_keys_can_read_as_others_by_number_is_secret_whole() {
+    // The decoders find the step list by number: `[00 04]` reads as 4 and
+    // sorts before `[04]`, so they take Re-Login (138) for data key 1 where
+    // `[04]` says Perform Script (1).
+    let mut member = script(steps(1), slot(11, b"\"pw\"", 0), b"TABS");
+    member.set_child(leaf(&[0, 4], &steps(138)));
+    let root = script_tree(member);
+    assert_eq!(
+        in_script(&root, &[&[5], &[1], &[0, 7], &[5]]),
+        Group::Secret
+    );
+    assert_eq!(
+        in_script(&root, &[&[5], &[1], &[0, 3], &[5]]),
+        Group::Secret
+    );
+    assert_eq!(in_script(&root, &[&[0x10]]), Group::Secret);
+    // A layout whose object store or a record's step data has an alias.
+    let mut aliased_store = layout(&[1]);
+    aliased_store.put(&[&[4], &[5], &[1], &[0, 7]], leaf(&[], &[]));
+    let mut aliased_record = layout(&[1]);
+    aliased_record.put(&[&[4], &[5], &[1], &[5], &[5], &[0, 0x11]], leaf(&[], &[]));
+    let path: [&[u8]; 8] = [&[4], &[5], &[1], &[5], &[5], &[0x11], &[0, 1], &[5]];
+    for root in [aliased_store, aliased_record] {
+        assert_eq!(group_in(&root, &path), Group::Secret);
+    }
+    // A web viewer's address `00 00` reads as 0, which no decoder looks
+    // up: the layout is read as before.
+    let mut web_viewer = layout(&[1]);
+    web_viewer.put(&[&[4], &[5], &[1], &[5], &[5], &[0, 0]], leaf(&[], &[]));
+    assert_eq!(group_in(&web_viewer, &path), Group::Design);
 }
 
 #[test]

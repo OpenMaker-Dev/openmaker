@@ -1155,11 +1155,14 @@ pub fn markdown_secrets() -> String {
     );
     out.push_str(
         "| a step not identified with certainty | every slot, whole: no step list or object \
-         store, one that does not decode to its end, a data key that does not decode or that \
-         two descriptors or buttons give different steps, a button whose step fields disagree, \
-         a step id the step catalog does not have (0 included), a data key no step names, a \
-         credential slot not shaped as script-steps.md 4.2 gives | script-steps.md 2, 4.2; \
-         catalogs/script-steps.csv |\n",
+         store, one that does not decode to its end (a protobuf field om-layout's reader \
+         refuses or reads otherwise included), a data key that is no serial key or that two \
+         descriptors or buttons give different steps, a button whose step fields disagree, a \
+         step id the step catalog does not have (0 included), a data key no step names, a \
+         credential slot not shaped as script-steps.md 4.2 gives; and a script or layout member \
+         or attribute record, whole, with a key of more than one byte that reads by number as \
+         one the decoders look up there (`[00 04]` as the step list `04`) | script-steps.md 2, \
+         4.2; catalogs/script-steps.csv |\n",
     );
     out
 }

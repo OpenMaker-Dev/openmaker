@@ -31,6 +31,19 @@
 //! repeated fields, `om_layout`), a step id the step catalog does not have
 //! (0, a button with no action, included), a data key no step names; and
 //! when a credential slot of the step does not have the shape above.
+//!
+//! The decoders find a script's step list `04` and step data `05`, a
+//! layout's attribute records `05` and object store `07`, and a button's
+//! step data `11` by number (`Node::get`, a key of 1 to 8 bytes read
+//! big-endian: `[00 04]` reads as 4 and, sorting first, wins over `[04]`);
+//! data nodes, slots and attribute records by exact key; and om-layout's
+//! protobuf reader refuses field number 0 and numbers above 2^29 - 1. This
+//! reading follows them or is stricter: a member, or a layout's attribute
+//! record, with a key of more than one byte that reads as one of those
+//! numbers is Secret whole (a web viewer's address `00 00`, number 0, is
+//! not); a data key must be a serial key (4.2); a protobuf field this
+//! reader does not take as om-layout does (a group, a field number out of
+//! range, an id that is no `int32`) leaves the button unidentified.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
@@ -39,6 +52,7 @@ use super::revision::split_value;
 use super::rules::{is_odbc_profile, PROFILE, STEP_SECRETS};
 use super::{Kind, Path};
 use crate::serial;
+use crate::slot::be_uint;
 use crate::tree::OwnedNode;
 
 /// Step data's key in a script member.
@@ -140,27 +154,75 @@ fn resolve(at: &[Vec<u8>], data: Option<&OwnedNode>, steps: &Steps) -> Option<u1
 
 /// Whether a slot has the shape script-steps.md 4.2 gives it.
 fn slot_shape(slot: &OwnedNode) -> bool {
+    // A leaf holding bytes, or a split value (file-format.md 3.6).
+    let bytes =
+        |n: &OwnedNode| (n.children.is_empty() && n.value.is_some()) || split_value(n).is_some();
     if slot.value.as_ref().is_some_and(|v| v.len() != 4) {
         return false;
     }
     slot.children.iter().all(|c| match c.segment.as_slice() {
-        [0x01] | [0x82] => c.children.is_empty() || split_value(c).is_some(),
-        [0x03] => c.children.is_empty() && c.value.as_ref().is_some_and(|v| v.len() <= 8),
+        // Text, a path list: text values.
+        [0x01] | [0x82] => bytes(c),
+        // Numeric data: 1 to 4 bytes (`SetNumericData<T>`, 4.2, 11.7).
+        [0x03] => {
+            c.children.is_empty() && c.value.as_ref().is_some_and(|v| (1..=4).contains(&v.len()))
+        }
+        // A calculation: context, formatted and Polish streams (calc-encoding.md 1).
         [0x05] => {
             c.value.is_none()
                 && c.children
                     .iter()
-                    .all(|f| matches!(f.segment.as_slice(), [4] | [5] | [6]))
+                    .all(|f| matches!(f.segment.as_slice(), [4] | [5] | [6]) && bytes(f))
         }
-        [0x10] => c.children.is_empty(),
-        [0x11] => true,
+        // A field spec: 14 bytes (`DBFieldSpec`).
+        [0x10] => c.children.is_empty() && c.value.as_ref().is_some_and(|v| v.len() == 14),
+        // Occurrence keys, with a count `04` when several.
+        [0x11] => {
+            bytes(c) || (c.value.is_none() && c.children.iter().all(|k| k.children.is_empty()))
+        }
         _ => false,
     })
+}
+
+/// Whether a key of `node` longer than one byte reads by number as one of
+/// `numbers`, which the decoders look up in it by number.
+fn aliasing(node: &OwnedNode, numbers: &[u8]) -> bool {
+    node.children.iter().any(|c| {
+        c.segment.len() > 1
+            && be_uint(&c.segment).is_some_and(|n| numbers.iter().any(|&k| n == u64::from(k)))
+    })
+}
+
+/// Whether the decoders could find another node than this reading does in
+/// a member of `kind`: a key that reads as the step list or step data of a
+/// script, the attribute records or object store of a layout, or a
+/// button's step data in an attribute record.
+fn misread(kind: Kind, member: &OwnedNode) -> bool {
+    match kind {
+        Kind::Script => aliasing(member, &[0x04, STEP_DATA[0]]),
+        Kind::Layout => {
+            aliasing(member, &[0x05, 0x07])
+                || member.child(&[0x05]).is_some_and(|records| {
+                    records.children.iter().any(|r| aliasing(r, BUTTON_STEP))
+                })
+        }
+        _ => false,
+    }
 }
 
 /// The Secret paths of `member`, relative to it.
 pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
     let mut out = Vec::new();
+    if misread(kind, member) {
+        return member
+            .children
+            .iter()
+            .map(|c| Secret {
+                path: vec![c.segment.clone()],
+                holds: "a member whose keys the decoders can read differently",
+            })
+            .collect();
+    }
     let Some((nodes, steps)) = step_data(kind, member) else {
         return out;
     };
@@ -226,6 +288,9 @@ fn profile_is_secret(node: &OwnedNode) -> bool {
 /// or above a Secret path of [`of`], or, for a path the member does not
 /// hold, where one would be.
 pub(super) fn is_secret(kind: Kind, member: &OwnedNode, below: &[&[u8]]) -> bool {
+    if misread(kind, member) {
+        return true;
+    }
     let related = |path: &Path| path.iter().zip(below).all(|(a, b)| a == b);
     if of(kind, member).iter().any(|s| related(&s.path)) {
         return true;
@@ -283,7 +348,7 @@ fn script_steps(member: &OwnedNode) -> Steps {
         }
         let key = d.get(1..1 + len).filter(|_| len <= 5)?;
         let (&seg_len, segment) = key.split_first()?;
-        if usize::from(seg_len) != segment.len() || segment.is_empty() {
+        if usize::from(seg_len) != segment.len() || serial::decode(segment).is_none() {
             return None;
         }
         let step = i16::from_be_bytes([d[20], d[21]]).unsigned_abs();
@@ -422,7 +487,11 @@ impl<'a> Fields<'a> {
 
     fn field(&mut self) -> Option<(u32, Wire<'a>)> {
         let tag = self.varint()?;
-        let field = u32::try_from(tag >> 3).ok()?;
+        // om-layout's reader refuses field number 0 and numbers above
+        // 2^29 - 1, the largest protobuf allows.
+        let field = u32::try_from(tag >> 3)
+            .ok()
+            .filter(|f| (1..=(1 << 29) - 1).contains(f))?;
         let value = match tag & 7 {
             0 => Wire::Varint(self.varint()?),
             1 => {

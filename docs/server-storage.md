@@ -222,9 +222,11 @@ another setting (Create PDF's slot 7 also holds "allow screen reader"). An
 ODBC profile is Secret whole. A path whose subtree holds a Secret path
 (the slot, the member) is Secret too. "Not Secret" means identified and
 known not to hold a credential: when a step is not identified with
-certainty, every slot of its data is Secret whole
-(`om_hbam::design_paths::STEP_SECRETS`; a test keeps this table equal to
-the code's):
+certainty, every slot of its data is Secret whole. The classifier sits
+below the decoders (`om-scripts`, `om-layout`) and cannot call them, so
+it reads as they do or more strictly, and what it cannot read as they do
+is Secret (`om_hbam::design_paths::STEP_SECRETS`; a test keeps this table
+equal to the code's):
 
 | Step | Slots whose calculation `05` (and text `01`) is Secret | Spec |
 |---|---|---|
@@ -242,7 +244,7 @@ the code's):
 | 244 Append PDF | 7 the PDF's password | script-steps.md 12.2 |
 | 246 Open PDF | 7 the PDF's password | script-steps.md 12.2 |
 | any step | its profile `86`, whole, when an ODBC connection profile (it holds the user name and password) or one that does not read | script-steps.md 11.0, 11.5 |
-| a step not identified with certainty | every slot, whole: no step list or object store, one that does not decode to its end, a data key that does not decode or that two descriptors or buttons give different steps, a button whose step fields disagree, a step id the step catalog does not have (0 included), a data key no step names, a credential slot not shaped as script-steps.md 4.2 gives | script-steps.md 2, 4.2; catalogs/script-steps.csv |
+| a step not identified with certainty | every slot, whole: no step list or object store, one that does not decode to its end (a protobuf field om-layout's reader refuses or reads otherwise included), a data key that is no serial key or that two descriptors or buttons give different steps, a button whose step fields disagree, a step id the step catalog does not have (0 included), a data key no step names, a credential slot not shaped as script-steps.md 4.2 gives; and a script or layout member or attribute record, whole, with a key of more than one byte that reads by number as one the decoders look up there (`[00 04]` as the step list `04`) | script-steps.md 2, 4.2; catalogs/script-steps.csv |
 
 There is no grouping by path alone: `om_hbam::design_paths::group_in`
 takes the tree, since a path-only answer of Design for a stored password
