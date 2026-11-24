@@ -43,14 +43,9 @@ fn entry(index: u64) -> EntryId {
 /// as much again whenever the entry needs more (the apply that ran out
 /// changed nothing). Returns the new root and the pages the entry took.
 fn apply(pf: &PageFile, root: Root, index: u64, edits: &[Edit], pages: u64) -> (Root, u64) {
-    let res: Reservation<'_> = loop {
-        match pf.reserve(index, pages, Purpose::Entry) {
-            Ok(res) => break res,
-            Err(om_store::pagefile::SpaceError::CheckpointNeeded { .. }) => {
-                panic!("checkpoint needed in the middle of a load")
-            }
-            Err(e) => panic!("{e}"),
-        }
+    let res: Reservation<'_> = match pf.reserve(index, pages, Purpose::Entry) {
+        Ok(res) => res,
+        Err(e) => panic!("entry {index}: {e}"),
     };
     loop {
         match tree::apply(&res, root, index, edits) {
