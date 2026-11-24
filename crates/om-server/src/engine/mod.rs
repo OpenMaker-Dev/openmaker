@@ -252,8 +252,15 @@ impl Outcome {
 }
 
 /// What an operation may read of the world besides the file: the clock and
-/// a random source. [`run`] reads them only through this, so that two
-/// engines can be given the same seeded source (docs/server-storage.md 12).
+/// a random source, so that two engines can be given the same seeded source
+/// (docs/server-storage.md 12). [`run`] itself reads them only through
+/// this: the time and the UUID of a write's record environment. The
+/// calculation engine below it does not yet: a formula an operation
+/// evaluates (a privilege set's record limit, `writes::refused_action`)
+/// takes today's date, `Random` and its time budget from the process
+/// (`om_data::rules`, `om_calc::eval::CalcHost::random`), so an operation
+/// whose formulas read them need not replay to the same reply
+/// ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)).
 pub trait Environment: Send + Sync {
     /// The host's time now, in its time zone.
     fn now(&self) -> jiff::Zoned;
@@ -286,8 +293,9 @@ pub fn uuid(environment: &dyn Environment) -> String {
 }
 
 /// Run `operation` on the file named `file` (for log lines), against what
-/// the engine holds of it (`hold`) and its lock table (`locks`), reading
-/// the clock and randomness only from `environment`. It sends nothing,
+/// the engine holds of it (`hold`) and its lock table (`locks`), taking
+/// the clock and randomness from `environment` (formulas it evaluates
+/// excepted, [`Environment`]). It sends nothing,
 /// saves nothing and takes no lock of its own: the effects are what it did
 /// to the transaction and the lock table, and the engine stores them
 /// before the outcome may go out. A refusal can keep effects: op71 refused

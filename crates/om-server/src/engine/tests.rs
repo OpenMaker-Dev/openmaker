@@ -42,7 +42,7 @@ fn engine() -> FileEngine {
 /// lock; op72 advances a serial; op70 creates record 4 and deletes 2 and
 /// leaves record 1, which the other user holds, staged; that user
 /// upgrades and releases its lock, telling of a change; op65 ends the
-/// first user's locks.
+/// first user's locks; a second op72 reads the serial the first advanced.
 #[test]
 fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
     let mut tree = fixture::tree(&[], true);
@@ -181,6 +181,15 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
                 all: true,
             },
         }),
+        Operation::AdvanceSerial(AdvanceSerial {
+            request: GetSerial {
+                table: vec![table.clone()],
+                field: vec![uint_segment(fixture::COUNT)],
+                value: String::new(),
+                increment: 1,
+                flags: SERIAL_INCREMENT,
+            },
+        }),
     ];
     let recording = engine();
     let recorded: Vec<(Operation, Outcome)> = operations
@@ -204,6 +213,13 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
         Reply::TakeLock(LockReply::Granted { mod_count: Some(_) })
     ));
     assert!(matches!(replies[3], Reply::AdvanceSerial(r) if r.status == 0 && r.value == "1"));
+    // The first op72 stored the next value: an engine that only read the
+    // serial would answer "1" again.
+    assert!(
+        matches!(replies[8], Reply::AdvanceSerial(r) if r.status == 0 && r.value == "2"),
+        "{:?}",
+        replies[8]
+    );
     assert_eq!(
         *replies[4],
         Reply::CommitRecords(CommitReply {

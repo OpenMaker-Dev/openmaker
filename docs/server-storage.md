@@ -184,12 +184,18 @@ asks: the lock user (connection and transaction), the name other users see
 for it, and for op70 the account, its privilege set at login and those of
 the listed records the session was served without their values. op70's
 staged records travel in it: the session's temporary area lends them
-(`writes::TempArea::lend`) and takes back those the commit did not write.
+(`writes::TempArea::lend`) and takes back those the commit did not take. A
+commit that was not stored has still taken the records it reached, as
+before the interface: the file is put back, the staged edits are gone, and
+the client uploads them again to retry.
 
 One function, `engine::run`, runs an operation against a transaction (a
 view plus put, delete and replace-subtree), the file's lock table
-(`engine::Locks`) and an environment (`engine::Environment`), the only
-place an operation reads the clock or randomness from. It returns the
+(`engine::Locks`) and an environment (`engine::Environment`), from which
+it takes the clock and randomness. Formulas an operation evaluates are not
+covered yet: a privilege set's record limit takes today's date, `Random`
+and its time budget from the process
+([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)). It returns the
 **reply** and the **notices** for other clients (`engine::Outcome`); the
 **effects** (edits to the tree and to the lock table) are what it did to
 the transaction and the lock table, which keep what the engine needs to
@@ -201,12 +207,16 @@ store and its journal: it exposes the store's methods the operations use,
 and the store itself as the view that derived state is computed from. The
 reply is typed, one shape per operation (`engine::Reply`); the caller
 encodes it for the wire. Operations on one file run one at a time, in one
-order.
+order; how far the file engine does that today is under "The file engine
+behind it".
 
 Reply and effects are separate, because the protocol separates them. A
 refusal can keep effects: op71 refused for a lock another user holds on a
 reserved id has still used up the ids, as on FileMaker Server
-(write-path.md 3.1). What an engine guarantees is about effects:
+(write-path.md 3.1). What an engine guarantees is about effects. This is
+the contract of the finished interface; what the file engine does for each
+operation today, where it still falls short, is listed under "The file
+engine behind it":
 
 - the effects an operation returned are stored whole or not at all;
 - when the engine knows they were not stored, none is, and the reply is
@@ -258,9 +268,23 @@ and op72, its read lock for op60, and for op61, op62 and op65 only the lock
 table. It takes the store first and the lock table when the operation first
 uses it, holds both while it saves, and lets go of the lock table first;
 the caller then delivers the notices, taking the file's registrations and
-then the mailboxes (the order is in the module doc of `engine`). op71 now
-holds the lock table while it saves, as op70 always did. `submit` saves as
-each request saved before:
+then the mailboxes (the order is in the module doc of `engine`).
+
+Operations that change the tree therefore run one at a time. A lock
+request runs under the lock table alone: it waits for an op70 or op71 that
+holds the lock table while it saves, and can run beside an op72, which
+holds only the store.
+
+op71 now holds the lock table while it saves, as op70 always did, because
+the locks it took must be released again if the save fails. That changes
+what two overlapping requests can get. Before, op71 saved first and locked
+its ids afterwards, so an exclusive lock on the table's records requested
+during the save (op61) was granted, and op71 was then refused with its ids
+used up. Now the lock request waits for the save and is refused, and op71
+gets its ids. Both are orders the two requests could have run in;
+FileMaker Server's behaviour here is unmeasured.
+
+`submit` saves as each request saved before:
 
 - op70: the commit's journal (`Hosted::save_commit`). A failed save takes
   the commit back, its records stay locked, and the reply is the storage
