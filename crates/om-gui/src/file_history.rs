@@ -167,7 +167,13 @@ impl History {
             Ok(history)
         });
         match saved {
-            Ok(history) => {
+            Ok(mut history) => {
+                // The list shown is this instance's: another's tab choice
+                // saved meanwhile is only where the next start opens.
+                history.tab = match change {
+                    Change::Select(tab) => tab,
+                    _ => self.tab,
+                };
                 *self = history;
                 Ok(())
             }
@@ -252,6 +258,12 @@ mod tests {
         first
             .change(Some(&path), Change::Select(Tab::Favorites))
             .unwrap();
+        // The second instance goes on showing its own tab after a save;
+        // the first's choice is where the next start opens.
+        second
+            .change(Some(&path), Change::Opened(hosted.clone()))
+            .unwrap();
+        assert_eq!(second.tab(), Tab::Recent);
         let restored = History::load(&path).unwrap();
         assert_eq!(restored.tab(), Tab::Favorites);
         assert_eq!(restored.files(Tab::Recent), std::slice::from_ref(&hosted));
