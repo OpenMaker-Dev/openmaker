@@ -327,13 +327,21 @@ as computed by the server that ran it (section 7.2). Applying an entry is a
 function of the state before it and the entry alone. Each entry is applied
 once: lock counts and share counts are not safe to apply twice.
 
-**Segments.** The log is a sequence of files of one fixed size. A
-segment's space is allocated when it is created, so an append never fails
-for lack of space. A segment is used only after its header and its folder
-are flushed and `state` lists it. The header holds the store's id, the
-segment's first index and the hash of the entry before it. A listed
-segment that is missing, or has no valid header, is damage
-(section 6.12), whatever the other segments hold.
+**Segments.** The log is a sequence of files of one fixed size, 64 MiB by
+default (`om_store::log`; the byte formats and the order of every write
+are in [server-storage-format.md](server-storage-format.md) section 3). A
+segment's space is allocated when it is created, ahead of need, so that
+an append never waits for an allocation where that can be avoided and
+never fails half way for lack of space: an append that needs a segment
+the disk has no room for is refused before anything of it is kept. A
+segment is used only after its header and its folder are flushed and
+`state` lists it. The header holds the store's id, the segment's first
+index and the term and hash of the entry before it. A listed segment that
+is missing, or has no valid header, is damage (section 6.12), whatever
+the other segments hold. An entry never spans segments, so its payload is
+at most what an empty segment holds (16 MiB by default); a batch that does
+not fit in what is left of a segment is written as two batches, the second
+at the start of the next segment.
 
 **Batches and the marker.** The entries appended between two flushes are
 a batch: a header with its first index, its entry count, its length and a
@@ -356,9 +364,12 @@ whole, every entry through the marker has lost something confirmed,
 however cleanly it ends. Whatever follows the marker was never
 acknowledged to anyone.
 
-Segments are opened for direct, synchronous writes where the system
-offers them, so that a failed flush cannot be hidden by the system's
-cache.
+Segments are written with synchronous writes (`O_DSYNC` on Linux;
+elsewhere each write is followed by a flush of the file's data), and that
+write is the log's flush: it returns once the device holds the batch, and
+a failure is reported by the write itself, so that it cannot be hidden by
+the system's cache. What follows the marker at a start is kept or cut by
+whole batches (section 6.7).
 
 Entries of different files share the log, so they share flushes, and a
 cluster has one election and one replication stream. Each entry names its
@@ -617,8 +628,9 @@ store take unbounded memory or disk:
   largest value the format's length fields allow; import refuses a file
   beyond that;
 - an entry is at most as large as the request limits the server already
-  enforces allow (`ConnectionLimits::upload_memory`); larger work is a
-  group, whose parts have a fixed largest size;
+  enforces allow (`ConnectionLimits::upload_memory`), and at most what one
+  log segment holds (section 6.3); larger work is a group, whose parts
+  have a fixed largest size;
 - the entries appended and not yet published, the groups open at once and
   the size staged in them each have a limit; an operation past one waits
   or is refused;
