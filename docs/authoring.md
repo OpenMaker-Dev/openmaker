@@ -190,18 +190,31 @@ a table the same way, `layout_name` a layout and `field_name` a field of
 the layout's table. Occurrences of another file's tables have no `table`
 and name their `data_source`.
 
-**Revisions** are `sha256:` of a script's stored definition `[17, 5, S]`
-in a canonical form, leaving out its modification stamp (`fc`, `fc 01`
-to `fc 03`): a save that stores the same content keeps the revision. A
-table's `fields_revision` (`inspect`) is the same over its whole field
-catalog `[T, 3]`, leaving out every stamp in it: any field added, renamed,
-changed or deleted, by anyone, changes it. Each table's listed fields and
-revision come from the same downloaded catalog. A concurrent edit leaves
-that observation stale together, so its token detects the change. This
-is not a transaction covering all metadata in the inspection. A layout's
-`revision` (`get_layout`) is the same over its whole catalog member
-`[4, 5, L]` (definition, parts, objects, object attributes and the
-layout's indexes), leaving out every stamp in it.
+**Revisions** are `sha256:` of an object's content in a canonical form,
+defined once in `om_hbam::design_paths` for every design object and used
+by `om-author`, the host and the desktop client alike
+([server-storage.md](server-storage.md) sections 4 and 9). An object is
+a catalog member: a script `[17, 5, S]`, a layout `[4, 5, L]` (its
+definition, parts, objects, object attributes and the layout's indexes),
+a value list `[21, 5, V]`, a field `[T, 3, 5, F]` and the rest. Its
+revision covers the member without its Data and Access paths (a serial
+field's next value, a field's data version) and without modification
+stamps (`fc`, `fc 01` to `fc 03`), so a save that stores the same
+content, or a new record taking a serial number, keeps it; keys OpenMaker
+does not understand stay in. A script's revision leaves out the member's
+own stamp only and counts whether each key is stored as a list, the form
+scripts always had; every other object's leaves out every stamp in it
+and does not count list flags. Both forms are byte for byte what `om-author`
+reported before the module existed, so no revision a client holds became
+stale. A table's `fields_revision` (`inspect`) is the second form over
+its whole field catalog `[T, 3]`, the catalog's index and every field's
+Data paths included: any field added, renamed, changed or deleted, by
+anyone, changes it, and so does a serial number taken by a new record.
+Each table's listed fields and revision come from the same downloaded
+catalog. A concurrent edit leaves that observation stale together, so its
+token detects the change. This is not a transaction covering all
+metadata in the inspection. The file's `layouts_revision` is the second
+form over the layout catalog's index `[4, 1]`.
 
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,

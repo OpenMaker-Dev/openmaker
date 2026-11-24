@@ -130,16 +130,67 @@ nothing about how a file is stored.
 
 | Group | Holds | Changed by |
 |---|---|---|
-| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus, value lists, privilege sets, extended privileges | developers |
-| Data | each table's records, indexes, record list and counters; container data | users |
-| Access | accounts | administrators |
+| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus and menu sets, value lists, privilege sets, extended privileges, fonts, the file library, data sources, base directories | developers |
+| Data | each table's records, indexes, record list and counters; container data and library reference counts; the data keys inside design members: a serial field's next value, a table's and a field's data version, pending field work; an occurrence's saved found set | users, and the host for them |
+| Access | accounts, file access authorizations | administrators |
 
-The paths of each group are listed in one place in code, from
-file-format.md 3.4 and [schema-path.md](re/schema-path.md) 5. The list is
-by path, not by catalog member, because a member can hold both: a serial
-field's next value is a key inside its field definition
-([write-path.md](re/write-path.md) 3.2) and is Data. A path in no group
-belongs to the file as a whole: it is exported, and never deployed.
+The rules are one table in code, `om_hbam::design_paths::rules()`, each
+with what its paths hold and the `docs/re/` section that says so. They
+are by path, not by catalog member, because a member can hold both: a
+serial field's next value is a key inside its field definition
+([write-path.md](re/write-path.md) 3.2) and is Data. A rule covers its
+path and everything below it, and the longest rule that matches a path
+decides. A catalog that is one group as a whole has one rule. A Design
+catalog has one rule per key of its index `[cat, 1]` and per first-level
+key of its members `[cat, 5, id]`, those every catalog shares
+([schema-path.md](re/schema-path.md) 5.1, 8.1) and those its spec names.
+At catalog level, with the keys of Design catalogs that are another group
+(`T` a table's data key, `O` an occurrence's, `*` a member's id; a test
+keeps this table equal to the code's):
+
+| Paths | Holds | Group | Objects | Spec |
+|---|---|---|---|---|
+| `[03, 10]` | base tables | Design | table | schema-path.md 5.2 |
+| `[03, 10, 05, *, fb]` | the table's data version, raised when a change affects stored values | Data |  | schema-path.md 5.8 |
+| `[03, 11]` | table occurrences | Design | occurrence | schema-path.md 5.3 |
+| `[03, fb]` | relationships | Design | relationship | schema-path.md 5.4 |
+| `[04]` | layouts | Design | layout | layout-model.md 10.5, 10.6 |
+| `[06]` | themes | Design | theme | layout-model.md 7.5 |
+| `[10]` | custom functions | Design | custom_function | calc-encoding.md 8 |
+| `[11]` | scripts | Design | script | scripts.md; script-steps.md 1 |
+| `[17, 01]` | accounts | Access |  | session-identity.md 1, 3; local-files.md 3 |
+| `[17, 02]` | privilege sets | Design | privilege_set | session-identity.md 2 |
+| `[17, 03]` | extended privileges | Design | extended_privilege | session-identity.md 4.2 |
+| `[17, 04]` | file access | Access |  | session-identity.md 4.3 |
+| `[19]` | fonts | Design | font | layout-model.md 8 |
+| `[1f]` | file library | Design | library_item | containers.md 1 |
+| `[1f, 05, *, 12]` | the reference count | Data |  | containers.md 1.3, 5 |
+| `[20]` | data sources | Design | data_source | file-metadata.md 1.1 |
+| `[21]` | value lists | Design | value_list | file-metadata.md 6 |
+| `[26]` | base directories | Design | base_directory | containers.md 8.1 |
+| `[40]` | custom menu sets | Design | custom_menu_set | catalogs/hbkey-constants.csv (KCustomMenuSets) [I] |
+| `[41]` | custom menus | Design | custom_menu | calc-encoding.md 8 |
+| `[T, 03]` | fields | Design | field | schema-path.md 5.5 |
+| `[T, 03, 01, fd]` | work pending on the table's records, which the host does and deletes | Data |  | schema-path.md 7.2 |
+| `[T, 03, 05, *, 0c]` | the next serial number | Data |  | schema-path.md 5.5; write-path.md 3.2 |
+| `[T, 03, 05, *, fb]` | the field's data version, raised when a change affects stored values | Data |  | schema-path.md 5.5, 5.8 |
+| `[T, 1f]` | table libraries | Data |  | containers.md 1.1 |
+| `[02]` | the file's status: format, version, history, locale, File Options, icons, page setup, creation stamp | none |  | file-format.md 3.4; file-metadata.md 2, 3 |
+| `[1a]` | the file's own icon image (KOrigThumbImg) | none |  | containers.md 2.3; catalogs/hbkey-constants.csv |
+| `[T, 00]` | the table's last issued record id | Data |  | write-path.md 5.1 |
+| `[T, 01]` | the field value indexes | Data |  | write-path.md 5.5 |
+| `[T, 05]` | the records | Data |  | write-path.md 5.2, 5.4 |
+| `[T, 0d]` | the record list | Data |  | write-path.md 5.3 |
+| `[O, 07]` | the saved found set, sort, current record and last find | Data |  | file-metadata.md 11 |
+
+A path in no group is the file as a whole (`[2]`, `[1a]`), or a key no
+rule names: no spec says what it is, so it is not guessed. Neither is an
+error. A path in no group is exported, and never deployed; a member that
+holds one is not deployed over an existing one (section 9). The report
+(`cargo run -p om-hbam --example design_paths -- <file>`) lists such
+paths by shape, and the catalog members that are no design object; the
+keys of FileMaker Pro 26's starter files that no spec explains are listed
+in [file-format.md](re/file-format.md) 3.7.
 
 ## 5. The engine interface
 
@@ -931,12 +982,21 @@ serving them to clients is
 These are commands (AGENTS.md rule 3) in `om-author`'s catalog. The Admin
 Console, the CLI and MCP tools call the same operations.
 
-**Objects and revisions.** A design object is a catalog member: a layout,
-a script, a table, a field, a value list, a custom function, a theme, a
-menu, a privilege set, a relationship, a table occurrence. Its revision is
-the `sha256:` of its Design paths' content without modification stamps,
-the definition `om-author` already uses ([authoring.md](authoring.md),
-"Revisions").
+**Objects and revisions.** A design object is a member `[cat, 5, id]` of
+a Design catalog (section 4), decoded by OpenMaker or not: a table, a
+table occurrence, a relationship, a field, a layout, a theme, a custom
+function, a script, a privilege set, an extended privilege, a font, a
+file library item, a data source, a value list, a base directory, a
+custom menu set or a custom menu (`om_hbam::design_paths::objects`). It
+is identified by its kind and its key (and a field by its table's key).
+An object is its member alone. What a catalog's index `[cat, 1]` holds
+(name lists, the display order, member caches and digests, a field
+catalog's lists by type and dependencies) belongs to the catalog as a
+whole: it is derived from the members or orders them. An emptied member,
+a deletion, is no object. Its revision is the `sha256:` of its member
+without its Data and Access paths and without modification stamps, in
+the canonical form `om-author` uses ([authoring.md](authoring.md),
+"Revisions"); paths in no group stay in it.
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the

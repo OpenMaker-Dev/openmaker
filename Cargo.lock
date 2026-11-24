@@ -4684,6 +4684,7 @@ dependencies = [
 name = "om-hbam"
 version = "0.0.0"
 dependencies = [
+ "om-crypto",
  "om-scsu",
 ]
 

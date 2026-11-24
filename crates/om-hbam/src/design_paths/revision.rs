@@ -1,0 +1,220 @@
+//! Revisions: the SHA-256 of content in a canonical form, without
+//! modification stamps (schema-path.md 8).
+//!
+//! The canonical form walks a subtree in key order, its top node first.
+//! Each node is written as its segment (a `u64` big-endian length, then
+//! the bytes), whether it holds a value (`1` and the value framed the same
+//! way, or `0`), and its number of children (`u64` big-endian), then each
+//! child the same way. Every part is framed by a length or a count, so two
+//! different subtrees never give the same bytes. The top node's segment is
+//! written too: a member's revision includes its key, its id.
+//!
+//! There are two forms, both kept byte for byte from before this module
+//! existed so that revisions clients hold stay valid:
+//!
+//! - [`catalog_revision`], the general form: stamps are left out wherever
+//!   they occur, and whether a node is stored as a list is not written, so
+//!   reading a subtree back from the file keeps its revision. Every object
+//!   but a script uses it, as do a table's `fields_revision` and a
+//!   catalog's index.
+//! - [`content_revision`], the script form: only the member's own stamp is
+//!   left out, and each node's list flag (`1` a list, `0` a leaf) is
+//!   written after its segment. Scripts used it first; it stays theirs.
+
+use crate::tree::OwnedNode;
+
+/// A content revision.
+pub type Revision = [u8; 32];
+
+/// The keys of a modification stamp (schema-path.md 8.1): `fc` the
+/// modification count, `fc 01` the user name, `fc 02` the account, `fc 03`
+/// the host time.
+pub const MOD_COUNT: &[u8] = &[0xfc];
+pub const MOD_USER: &[u8] = &[0xfc, 0x01];
+pub const MOD_ACCOUNT: &[u8] = &[0xfc, 0x02];
+pub const MOD_TIME: &[u8] = &[0xfc, 0x03];
+
+/// Whether `segment` is a key of a modification stamp.
+pub fn is_stamp(segment: &[u8]) -> bool {
+    [MOD_COUNT, MOD_USER, MOD_ACCOUNT, MOD_TIME].contains(&segment)
+}
+
+/// The script form: the SHA-256 of a member's key, values and children in
+/// key order, leaving out its own modification stamp, so a save that
+/// stores the same content does not count as a change.
+pub fn content_revision(member: &OwnedNode) -> Revision {
+    let mut bytes = Vec::new();
+    canonical(member, Stamps::Own, &mut bytes);
+    om_crypto::sha256(&bytes)
+}
+
+/// The general form: the SHA-256 of a subtree's keys and values in key
+/// order, leaving out every modification stamp in it (the catalog index's
+/// and each member's) and whether a key is stored as a list, so saving the
+/// same content, or reading it back from the file, keeps the revision.
+pub fn catalog_revision(node: &OwnedNode) -> Revision {
+    let mut bytes = Vec::new();
+    canonical(node, Stamps::Everywhere, &mut bytes);
+    om_crypto::sha256(&bytes)
+}
+
+/// A revision as text: `sha256:` and 64 lowercase hex digits.
+pub fn revision_text(revision: &Revision) -> String {
+    format!("sha256:{}", super::rules::hex(revision))
+}
+
+/// A revision from its text, `None` when it is not one.
+pub fn parse_revision(text: &str) -> Option<Revision> {
+    let hex = text.strip_prefix("sha256:")?;
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut revision = [0u8; 32];
+    for (i, byte) in revision.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(revision)
+}
+
+/// Which modification stamps a canonical form leaves out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stamps {
+    /// The node's own (and list flags are written).
+    Own,
+    /// None below the node's own.
+    Kept,
+    /// Every one, at any depth (and no list flags).
+    Everywhere,
+}
+
+fn canonical(node: &OwnedNode, stamps: Stamps, out: &mut Vec<u8>) {
+    fn bytes(out: &mut Vec<u8>, b: &[u8]) {
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(b);
+    }
+    bytes(out, &node.segment);
+    if stamps != Stamps::Everywhere {
+        out.push(u8::from(node.push));
+    }
+    match &node.value {
+        Some(value) => {
+            out.push(1);
+            bytes(out, value);
+        }
+        None => out.push(0),
+    }
+    let children: Vec<&OwnedNode> = node
+        .children
+        .iter()
+        .filter(|c| stamps == Stamps::Kept || !is_stamp(&c.segment))
+        .collect();
+    out.extend_from_slice(&(children.len() as u64).to_be_bytes());
+    let below = match stamps {
+        Stamps::Own | Stamps::Kept => Stamps::Kept,
+        Stamps::Everywhere => Stamps::Everywhere,
+    };
+    for child in children {
+        canonical(child, below, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn definition(steps: &[u8]) -> OwnedNode {
+        OwnedNode::list(
+            vec![0x05],
+            vec![
+                OwnedNode::leaf(vec![0x04], steps.to_vec()),
+                OwnedNode::leaf(vec![0x10], b"Greeting".to_vec()),
+                OwnedNode::leaf(MOD_COUNT.to_vec(), vec![1, 1]),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_script_form_leaves_out_the_stamp_only() {
+        let a = definition(&[1; 28]);
+        let mut stamped = a.clone();
+        stamped.children[2].value = Some(vec![1, 2]);
+        stamped.set_child(OwnedNode::leaf(MOD_USER.to_vec(), b"x".to_vec()));
+        assert_eq!(content_revision(&a), content_revision(&stamped));
+        assert_ne!(
+            content_revision(&a),
+            content_revision(&definition(&[2; 28]))
+        );
+        let mut renamed = a.clone();
+        renamed.children[1].value = Some(b"other".to_vec());
+        assert_ne!(content_revision(&a), content_revision(&renamed));
+        // A stamp below the member's own is content in the script form.
+        let mut nested = a.clone();
+        nested.children[0] = OwnedNode::list(
+            vec![0x04],
+            vec![OwnedNode::leaf(MOD_COUNT.to_vec(), vec![1, 1])],
+        );
+        let mut renested = nested.clone();
+        renested.children[0].children[0].value = Some(vec![1, 2]);
+        assert_ne!(content_revision(&nested), content_revision(&renested));
+    }
+
+    #[test]
+    fn the_general_form_leaves_out_every_stamp_and_list_flag() {
+        let field = |name: &[u8], stamp: &[u8]| {
+            OwnedNode::list(
+                vec![1],
+                vec![
+                    OwnedNode::leaf(vec![0x10], name.to_vec()),
+                    OwnedNode::leaf(MOD_TIME.to_vec(), stamp.to_vec()),
+                ],
+            )
+        };
+        let catalog = |name: &[u8], stamp: &[u8]| {
+            OwnedNode::list(
+                vec![3],
+                vec![
+                    OwnedNode::list(
+                        vec![1],
+                        vec![OwnedNode::leaf(MOD_COUNT.to_vec(), stamp.to_vec())],
+                    ),
+                    OwnedNode::list(vec![5], vec![field(name, stamp)]),
+                ],
+            )
+        };
+        let a = catalog(b"Name", &[1]);
+        let mut restamped = catalog(b"Name", &[2]);
+        restamped.children[1].push = false;
+        assert_eq!(catalog_revision(&a), catalog_revision(&restamped));
+        assert_ne!(
+            catalog_revision(&a),
+            catalog_revision(&catalog(b"Other", &[1]))
+        );
+        // The script form keeps the stamps below the member's own.
+        assert_ne!(content_revision(&a), content_revision(&restamped));
+    }
+
+    #[test]
+    fn framing_keeps_a_value_apart_from_a_key() {
+        // One leaf `01` = `02`, against two leaves `01` and `02`; and a
+        // value against an empty list of the same key.
+        let one = OwnedNode::list(vec![], vec![OwnedNode::leaf(vec![1], vec![2])]);
+        let two = OwnedNode::list(
+            vec![],
+            vec![
+                OwnedNode::leaf(vec![1], vec![]),
+                OwnedNode::leaf(vec![2], vec![]),
+            ],
+        );
+        let list = OwnedNode::list(vec![], vec![OwnedNode::list(vec![1], vec![])]);
+        let empty = OwnedNode::list(vec![], vec![OwnedNode::leaf(vec![1], vec![])]);
+        let revisions = [&one, &two, &list, &empty].map(catalog_revision);
+        for (i, a) in revisions.iter().enumerate() {
+            for b in &revisions[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        let text = revision_text(&revisions[0]);
+        assert_eq!(parse_revision(&text), Some(revisions[0]));
+        assert_eq!(parse_revision("sha256:00"), None);
+    }
+}
