@@ -195,8 +195,8 @@ fn bound(store: &impl PageStore, model: &Model, ops: &[(TreeName, Op)]) -> Resul
                     .height();
                 entry_bound(edits, height)
             }
-            // A root page, and room for the name in a checkpoint's table.
-            Op::Create | Op::Recreate => 2,
+            // A root page, and room for the name in two checkpoints' tables.
+            Op::Create | Op::Recreate => 3,
         };
     }
     Ok(total)
@@ -398,6 +398,14 @@ struct Run<'r> {
     mark: (u64, u64),
     /// Every checkpoint confirmed or opened, with its entry.
     seen: BTreeSet<(u64, u64)>,
+    /// The checkpoint that was newest on disk when each checkpoint was
+    /// written: what the page file must keep beside it.
+    pred: BTreeMap<u64, Option<u64>>,
+    /// The map after every step, when a test compares runs.
+    images: Option<Vec<Vec<u8>>>,
+    /// Replaying the entries after a checkpoint must never be refused for
+    /// space.
+    replay_must_fit: bool,
     /// A read failed during an open (one that succeeded or not) since the
     /// last checkpoint confirmed: such an open passes over the checkpoint
     /// it could not read and clears it (section 6.12).
@@ -426,7 +434,16 @@ impl Drop for Run<'_> {
 
 impl<'r> Run<'r> {
     fn new(disk: Disk, device: Device, seed: u64, reached: &'r mut Reached) -> Self {
-        let config = config();
+        Self::with(disk, device, seed, reached, config())
+    }
+
+    fn with(
+        disk: Disk,
+        device: Device,
+        seed: u64,
+        reached: &'r mut Reached,
+        config: Config,
+    ) -> Self {
         let proc = create_proc(&disk, config);
         let mut checkpoints = BTreeMap::new();
         checkpoints.insert(1, Model::default());
@@ -449,6 +466,9 @@ impl<'r> Run<'r> {
             last_full: None,
             mark: (0, 0),
             seen: BTreeSet::new(),
+            pred: [(1, None)].into(),
+            images: None,
+            replay_must_fit: false,
             open_read_failed: false,
             reached,
             trace: Vec::new(),
@@ -466,7 +486,7 @@ impl<'r> Run<'r> {
         &self.proc.as_ref().expect("a running process").pf
     }
 
-    fn go(mut self, steps: usize, rates: Rates) {
+    fn go(mut self, steps: usize, rates: Rates) -> Option<Vec<Vec<u8>>> {
         if let Some(sim) = self.disk.sim() {
             sim.set_rates(rates);
         }
@@ -477,6 +497,10 @@ impl<'r> Run<'r> {
             if self.proc.is_none() {
                 self.reopen();
                 continue;
+            }
+            if let Some(images) = self.images.as_mut() {
+                let image = self.proc.as_ref().map(|p| p.pf.map_image());
+                images.push(image.unwrap_or_default());
             }
             match self.plan.below(100) {
                 0..=51 => self.entry(),
@@ -495,7 +519,7 @@ impl<'r> Run<'r> {
         }
         if self.dead {
             self.end();
-            return;
+            return self.images.take();
         }
         // Recovery with no faults drawn: the store opens and every check
         // holds, with dying pages drained.
@@ -537,6 +561,7 @@ impl<'r> Run<'r> {
             }
         }
         self.end();
+        self.images.take()
     }
 
     fn end(&mut self) {
@@ -709,11 +734,24 @@ impl<'r> Run<'r> {
         };
         let pf = &proc.pf;
         let number = pf.next_checkpoint();
-        let name = keep.then(|| {
-            self.names += 1;
-            format!("rp{}", self.names)
-        });
+        // Names come from a small pool, so that a name dropped is kept
+        // again while the old restore point is still on disk.
+        let listed: Vec<String> = pf
+            .restore_points()
+            .into_iter()
+            .filter(|(_, dropped)| !dropped)
+            .map(|(rp, _)| rp.name)
+            .collect();
+        let name = keep
+            .then(|| {
+                (1..=3)
+                    .map(|i| format!("rp{i}"))
+                    .find(|n| !listed.contains(n))
+            })
+            .flatten();
+        self.names += u64::from(name.is_some());
         self.checkpoints.insert(number, self.newest.clone());
+        self.pred.insert(number, Some(self.confirmed));
         let result = pf.checkpoint(self.newest.entry, &self.newest.roots(), name.as_deref());
         self.trace.push(format!(
             "checkpoint {number} at {} (keep {name:?}): {result:?}",
@@ -946,6 +984,9 @@ impl<'r> Run<'r> {
                         continue;
                     }
                     Err(Ok(SpaceError::Refused(why))) => panic!("replay refused: {why}"),
+                    Err(Ok(e @ SpaceError::Full { .. })) if self.replay_must_fit => {
+                        panic!("replaying entry {index} ran out of space: {e}")
+                    }
                     Err(Ok(e)) => {
                         self.trace.push(format!("replay of {index}: {e}"));
                         assert_ne!(self.device, Device::Clean, "{e}");
@@ -1074,6 +1115,14 @@ impl<'r> Run<'r> {
         let pf = &self.proc.as_ref().unwrap().pf;
         let kept = pf.kept_checkpoints();
         let restore = pf.restore_points();
+        if self.device != Device::Lying && !self.open_read_failed && !self.allow_fallback {
+            // The newest on disk, and the one that was newest when it was
+            // written.
+            let mut expected = vec![self.confirmed];
+            expected.extend(self.pred.get(&self.confirmed).copied().flatten());
+            let numbers: Vec<u64> = kept.iter().map(|k| k.number).collect();
+            assert_eq!(numbers, expected, "the checkpoints on disk");
+        }
         let mut versions = Vec::new();
         for kc in &kept {
             versions.push((
@@ -1986,6 +2035,446 @@ fn a_unit_dropped_or_refused_changes_nothing() {
     assert!(!dying.contains(&root.page) && !dying.contains(&child));
     run.newest.entry = late;
     run.checkpoints.insert(done.number, run.newest.clone());
+    run.pred.insert(done.number, Some(run.confirmed));
     run.confirmed = done.number;
     run.check(true);
+}
+
+/// Review of #719 (P0): a restore point's name dropped and kept again names
+/// a new restore point. The old one stays kept while the older checkpoint
+/// on disk lists it: pages freed and reused meanwhile, a checkpoint cut
+/// off after writing them, and an open that passes over the newest
+/// checkpoint still read the first restore point whole.
+#[test]
+fn a_restore_point_name_kept_again_keeps_the_old_one_while_a_superblock_lists_it() {
+    let mut reached = Reached::default();
+    let marks = std::cell::Cell::new((0u64, 0u64, 0u64));
+    let scenario = |run: &mut Run<'_>| {
+        for _ in 0..6 {
+            run.entry_all();
+        }
+        run.checkpoint(true);
+        let first = run.confirmed;
+        for _ in 0..6 {
+            run.entry_all();
+        }
+        run.checkpoint(false);
+        let older = run.confirmed;
+        run.drop_restore_point();
+        run.entry_all();
+        run.checkpoint(true);
+        let newest = run.confirmed;
+        let listed = run.pf().restore_points();
+        assert!(
+            listed
+                .iter()
+                .filter(|(rp, _)| rp.name == "rp1")
+                .map(|(rp, _)| rp.checkpoint)
+                .eq([newest, first]),
+            "both restore points named rp1 are kept: {listed:?}"
+        );
+        for _ in 0..20 {
+            if run.pf().reclaim(100_000).drained {
+                break;
+            }
+        }
+        for _ in 0..10 {
+            run.entry_all();
+        }
+        marks.set((first, older, newest));
+    };
+    let (before, end) = {
+        let (sim, mut run) = quiet_run(31, &mut reached);
+        scenario(&mut run);
+        let before = sim.steps();
+        run.checkpoint(false);
+        assert!(run.proc.is_some());
+        (before, sim.steps())
+    };
+    // The last four steps of a checkpoint write and flush its two copies:
+    // cut it off at the first, after its pages are flushed.
+    let (sim, mut run) = quiet_run(31, &mut reached);
+    scenario(&mut run);
+    assert_eq!(sim.steps(), before);
+    let (first, older, newest) = marks.get();
+    let root = run.checkpoints[&newest].trees[&tree_name(0)].0;
+    sim.set_crash_fates(Fates::LoseAll);
+    sim.place(end - 3, SimFault::Crash);
+    run.checkpoint(false);
+    assert_eq!(crashes(&sim), 1);
+    if run.proc.is_some() {
+        run.stop(false);
+    }
+    // The newest checkpoint's root damaged: the open takes the older one,
+    // which lists the first rp1, and reads it (Run::check).
+    sim.damage(FILE, root.page * PAGE + 64, 2).unwrap();
+    run.allow_fallback = true;
+    run.reopen();
+    assert_eq!(run.confirmed, older);
+    assert!(run
+        .pf()
+        .restore_points()
+        .iter()
+        .any(|(rp, _)| rp.name == "rp1" && rp.checkpoint == first));
+    run.check(true);
+}
+
+/// Review of #719 (P1): recovery frees what normal running frees, so the
+/// entries after a checkpoint, replayed, fit in the space the first run
+/// had. The disk is filled to its limit, a tree dropped to make some room,
+/// then a long tail of updates to a few keys with no checkpoint and no pin
+/// (each update's old pages freed at once), a power loss, and the replay.
+#[test]
+fn replay_fits_in_the_space_the_first_run_had() {
+    for seed in seeds(6) {
+        let sim = Sim::new(seed);
+        sim.set_capacity((6 + seed % 4) << 20);
+        let mut reached = Reached::default();
+        let mut run = Run::new(Disk::Sim(sim.clone()), Device::Honest, seed, &mut reached);
+        run.replay_must_fit = true;
+        for _ in 0..2_000 {
+            let before = run.reached.full;
+            let index = run.next_index();
+            let edits = (0..4u8)
+                .map(|i| {
+                    Edit::leaf(
+                        vec![b"big".to_vec(), [index as u8, i].to_vec()],
+                        vec![i; 9_000],
+                    )
+                })
+                .collect();
+            run.append(Logged {
+                entry: entry_id(index),
+                ops: vec![(tree_name(index as usize % 2), Op::Edits(edits))],
+                taken: None,
+            });
+            assert!(run.proc.is_some());
+            if run.reached.full > before {
+                break;
+            }
+        }
+        assert!(run.reached.full > 0, "seed {seed}: the disk never filled");
+        let index = run.next_index();
+        run.append_for(
+            Logged {
+                entry: entry_id(index),
+                ops: vec![(tree_name(0), Op::Recreate)],
+                taken: None,
+            },
+            Purpose::Discard,
+        );
+        run.checkpoint(false);
+        run.checkpoint(false);
+        run.check(true);
+        let mut rng = Rng::stream(seed, 5);
+        let tail = 300;
+        for _ in 0..tail {
+            let index = run.next_index();
+            let key = vec![b'k', rng.below(3) as u8];
+            run.append(Logged {
+                entry: entry_id(index),
+                ops: vec![(
+                    tree_name(2),
+                    Op::Edits(vec![Edit::leaf(vec![key], value(&mut rng))]),
+                )],
+                taken: None,
+            });
+        }
+        assert!(run.proc.is_some(), "seed {seed}: the tail fitted");
+        let replayed = run.reached.replayed;
+        run.stop(true);
+        run.reopen();
+        assert!(run.proc.is_some(), "seed {seed}: the store recovered");
+        assert!(run.reached.replayed >= replayed + tail as u64);
+        run.check(true);
+    }
+}
+
+/// Review of #719 (P1): an open reads and checks each root and lets it go,
+/// so a store of thousands of trees opens under a cache of four pages.
+#[test]
+fn a_store_of_many_trees_opens_under_a_small_cache() {
+    let sim = Sim::new(40);
+    let disk = Disk::Sim(sim.clone());
+    let config = Config {
+        cache_bytes: 4 * PAGE,
+        ..config()
+    };
+    let proc = create_proc(&disk, config);
+    let n = 3_000u64;
+    let res = proc.pf.reserve(1, 3 * n, Purpose::Entry).unwrap();
+    let mut trees: Vec<(TreeName, Root)> = (0..n)
+        .map(|i| {
+            let name = TreeName::new(format!("file/{i:05}")).unwrap();
+            let root = res.create_tree(&name).unwrap();
+            (name, root)
+        })
+        .collect();
+    drop(res);
+    trees.sort_by(|a, b| a.0.cmp(&b.0));
+    proc.pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    drop(proc);
+    sim.restart();
+    let (proc, opened) = open_proc(&disk, config).unwrap();
+    assert_eq!(opened.checkpoint, 2);
+    assert!(proc.pf.space().cached <= 4);
+    assert_eq!(proc.pf.checkpoint_trees(), trees);
+    assert_eq!(proc.pf.tree_names().len(), n as usize);
+    for (_, root) in trees.iter().step_by(500) {
+        assert!(Tree::open(&proc.pf, *root)
+            .unwrap()
+            .get(&[b"x"])
+            .unwrap()
+            .is_none());
+    }
+    proc.pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    assert!(proc.pf.space().cached <= 4);
+}
+
+/// Review of #719 (P1): the room kept for a checkpoint counts the trees
+/// that exist now, so trees made until reservations are refused still
+/// leave room to checkpoint them all.
+#[test]
+fn trees_made_until_reservations_are_refused_still_leave_room_to_checkpoint() {
+    let sim = Sim::new(41);
+    sim.set_capacity(4 << 20);
+    let disk = Disk::Sim(sim.clone());
+    let config = Config {
+        growth: 1,
+        reserve: 0,
+        ..config()
+    };
+    let proc = create_proc(&disk, config);
+    let pf = &proc.pf;
+    let mut trees = Vec::new();
+    let mut index = 1;
+    loop {
+        let res = match pf.reserve(index, 3, Purpose::Entry) {
+            Ok(res) => res,
+            Err(SpaceError::Full { .. }) => break,
+            Err(e) => panic!("{e}"),
+        };
+        let name = TreeName::new(format!("{index:0255}")).unwrap();
+        match res.create_tree(&name) {
+            Ok(root) => trees.push((name, root)),
+            Err(tree::Error::Store(StoreError::Full)) => break,
+            Err(e) => panic!("{e}"),
+        }
+        index += 1;
+    }
+    assert!(trees.len() > 100, "{} trees", trees.len());
+    let done = pf.checkpoint(entry_id(index - 1), &trees, None).unwrap();
+    assert!(done.meta_pages >= 3, "the table spans pages: {done:?}");
+    // And again, with every tree's name in the table.
+    pf.checkpoint(entry_id(index - 1), &trees, None).unwrap();
+}
+
+/// Review of #719 (P2): the map is a function of the checkpoint's map and
+/// the calls made, never of the cache: the same schedule under caches of
+/// 0, 4 and 512 pages gives the same map after every step.
+#[test]
+fn the_map_does_not_depend_on_the_cache() {
+    for seed in seeds(3) {
+        let mut runs = Vec::new();
+        for pages in [0u64, 4, 512] {
+            let mut reached = Reached::default();
+            let config = Config {
+                cache_bytes: pages * PAGE,
+                ..config()
+            };
+            let mut run = Run::with(
+                Disk::Sim(Sim::new(seed)),
+                Device::Honest,
+                seed,
+                &mut reached,
+                config,
+            );
+            run.images = Some(Vec::new());
+            runs.push(run.go(steps(120), Rates::default()).unwrap());
+        }
+        for other in &runs[1..] {
+            assert_eq!(other.len(), runs[0].len());
+            if let Some(step) = (0..other.len()).find(|&i| other[i] != runs[0][i]) {
+                panic!("seed {seed}: the maps differ after step {step}");
+            }
+        }
+    }
+}
+
+/// The gate's state (armed, paused, released) and its signal.
+type Gate = Arc<(Mutex<(bool, bool, bool)>, std::sync::Condvar)>;
+
+/// An `Fs` over the simulator whose `pages` file, once armed, stops at its
+/// next flush until released: it holds a checkpoint between its plan and
+/// its install.
+#[derive(Clone)]
+struct Gated {
+    inner: crate::sim::SimFs,
+    gate: Gate,
+}
+
+struct GatedFile {
+    inner: Box<dyn File>,
+    gate: Gate,
+}
+
+impl File for GatedFile {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+        self.inner.read_at(offset, buf)
+    }
+    fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
+        self.inner.write_at(offset, data)
+    }
+    fn flush(&self) -> sys::Result<()> {
+        let (state, cv) = &*self.gate;
+        let mut s = state.lock().unwrap();
+        // (armed, paused, released)
+        if s.0 && !s.2 {
+            s.1 = true;
+            cv.notify_all();
+            while !s.2 {
+                s = cv.wait(s).unwrap();
+            }
+        }
+        drop(s);
+        self.inner.flush()
+    }
+    fn allocate(&self, size: u64) -> sys::Result<()> {
+        self.inner.allocate(size)
+    }
+    fn size(&self) -> sys::Result<u64> {
+        self.inner.size()
+    }
+}
+
+impl Fs for Gated {
+    fn create_root(&self) -> sys::Result<()> {
+        self.inner.create_root()
+    }
+    fn lock(&self) -> sys::Result<FolderLock> {
+        self.inner.lock()
+    }
+    fn owns(&self, lock: &FolderLock) -> bool {
+        self.inner.owns(lock)
+    }
+    fn create(&self, path: &str, options: FileOptions) -> sys::Result<Box<dyn File>> {
+        self.inner.create(path, options)
+    }
+    fn open(&self, path: &str, options: FileOptions) -> sys::Result<Box<dyn File>> {
+        let inner = self.inner.open(path, options)?;
+        Ok(Box::new(GatedFile {
+            inner,
+            gate: self.gate.clone(),
+        }))
+    }
+    fn create_folder(&self, path: &str) -> sys::Result<()> {
+        self.inner.create_folder(path)
+    }
+    fn flush_folder(&self, path: &str) -> sys::Result<()> {
+        self.inner.flush_folder(path)
+    }
+    fn rename(&self, from: &str, to: &str) -> sys::Result<()> {
+        self.inner.rename(from, to)
+    }
+    fn remove(&self, path: &str) -> sys::Result<()> {
+        self.inner.remove(path)
+    }
+    fn list(&self, path: &str) -> sys::Result<Vec<String>> {
+        self.inner.list(path)
+    }
+}
+
+/// Review of #719 (P2): a restore point dropped while a checkpoint is being
+/// written waits for it, and stays dropped: the checkpoint does not install
+/// the list it started from over the drop.
+#[test]
+fn a_restore_point_dropped_during_a_checkpoint_stays_dropped() {
+    let sim = Sim::new(42);
+    let fs = Gated {
+        inner: sim.fs(),
+        gate: Arc::default(),
+    };
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&fs, &lock, config()).unwrap();
+    let name = tree_name(0);
+    let res = pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let root = res.create_tree(&name).unwrap();
+    drop(res);
+    let trees = vec![(name, root)];
+    pf.checkpoint(entry_id(1), &trees, Some("a")).unwrap();
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    {
+        let (state, _) = &*fs.gate;
+        state.lock().unwrap().0 = true;
+    }
+    let dropped = std::thread::scope(|scope| {
+        let writing = scope.spawn(|| pf.checkpoint(entry_id(1), &trees, None));
+        let (state, cv) = &*fs.gate;
+        let mut s = state.lock().unwrap();
+        while !s.1 {
+            s = cv.wait(s).unwrap();
+        }
+        drop(s);
+        // The checkpoint holds its plan; the drop comes now, and must not
+        // return before the checkpoint installs what it wrote.
+        let dropping = scope.spawn(|| pf.drop_restore_point("a"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let early = dropping.is_finished();
+        let mut s = state.lock().unwrap();
+        s.2 = true;
+        cv.notify_all();
+        drop(s);
+        writing.join().unwrap().unwrap();
+        (early, dropping.join().unwrap())
+    });
+    assert_eq!(
+        dropped,
+        (false, Ok(())),
+        "the drop waited for the checkpoint"
+    );
+    // The next checkpoint does not list it; the one after retires it.
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    assert!(pf.restore_points().is_empty(), "{:?}", pf.restore_points());
+}
+
+/// Review of #719 (P2): a valid superblock copy at the highest checkpoint
+/// number is a typed refusal before anything is written, never a wrap.
+#[test]
+fn a_checkpoint_number_at_its_limit_refuses_the_open() {
+    let sim = Sim::new(43);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let res = proc.pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let root = res.create_tree(&tree_name(0)).unwrap();
+    drop(res);
+    proc.pf
+        .checkpoint(entry_id(1), &[(tree_name(0), root)], None)
+        .unwrap();
+    let meta = proc.pf.kept_checkpoints()[0].meta;
+    drop(proc);
+    sim.restart();
+    // Checkpoint 2 is in slots 1 and 3; a forged copy at the limit in
+    // slot 0, valid, whose meta stream names another number.
+    let forged = superblock::encode(&Superblock {
+        number: u64::MAX,
+        entry: entry_id(1),
+        tree_format: page::FORMAT_VERSION,
+        meta,
+    });
+    let fs = disk.fs();
+    let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+    file.write_at(0, &forged).unwrap();
+    file.flush().unwrap();
+    let mut before = vec![0u8; PAGE_SIZE];
+    file.read_at(0, &mut before).unwrap();
+    drop(file);
+    match open_proc(&disk, config()) {
+        Err(OpenError::NumbersExhausted) => {}
+        other => panic!("{:?}", other.map(|(_, o)| o)),
+    }
+    let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+    let mut after = vec![0u8; PAGE_SIZE];
+    file.read_at(0, &mut after).unwrap();
+    assert!(before == after, "the open wrote nothing");
 }

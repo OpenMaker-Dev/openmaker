@@ -783,8 +783,13 @@ impl Inner {
         meta::pages_for(len) as u64 + 1
     }
 
+    /// The room every reservation leaves: two checkpoints' meta streams,
+    /// since the next checkpoint retires nothing when the other pair is
+    /// empty (after creation, or after an open that kept no predecessor),
+    /// and the one after it frees the first's pages only once it is on
+    /// disk; plus, for an ordinary entry, the reserve.
     fn floor(&self, purpose: Purpose, config: &Config) -> u64 {
-        let meta = self.meta_room(self.trees.len(), self.names);
+        let meta = 2 * self.meta_room(self.trees.len(), self.names);
         match purpose {
             Purpose::Entry => meta + config.reserve,
             Purpose::Recovery | Purpose::Discard => meta,
@@ -1661,6 +1666,16 @@ impl PageFile {
                 ));
             }
         }
+        // Short of room for the meta stream: free what can be freed first
+        // (the checkpoint before last's meta stream, retired by the last).
+        let short = {
+            let inner = self.lock();
+            let room = inner.meta_room(inner.trees.len(), inner.names);
+            room.saturating_sub(inner.map.free_count().saturating_sub(inner.promised))
+        };
+        if short > 0 {
+            self.reclaim_for(short);
+        }
         let plan = {
             let mut inner = self.lock();
             self.plan(&mut inner, entry, trees, keep_as)?
@@ -2145,10 +2160,11 @@ impl Reservation<'_> {
 
     /// Makes tree `name`, empty, at this entry ([`tree::create`]), and adds
     /// it to the trees that exist, which the next checkpoint must name.
-    /// Making a tree takes its root page and the room its name takes in a
-    /// checkpoint's table of trees, both from this reservation: reserve 2
-    /// pages for each. Refused, with nothing done, when a tree of that name
-    /// exists or the reservation is short.
+    /// Making a tree takes its root page and the room its name takes in
+    /// the tables of the two checkpoints the floor keeps room for, both
+    /// from this reservation: reserve 3 pages for each. Refused, with
+    /// nothing done, when a tree of that name exists or the reservation is
+    /// short.
     pub fn create_tree(&self, name: &TreeName) -> Result<Root, tree::Error> {
         let room = self.table_room(None, Some(name))?;
         match tree::create(self, self.entry) {
@@ -2215,8 +2231,8 @@ impl Reservation<'_> {
             ))));
         }
         let names = inner.names - len(from) + len(to);
-        let before = inner.meta_room(inner.trees.len(), inner.names);
-        let room = inner.meta_room(count, names).saturating_sub(before);
+        let before = 2 * inner.meta_room(inner.trees.len(), inner.names);
+        let room = (2 * inner.meta_room(count, names)).saturating_sub(before);
         // A tree made needs its root page from the reservation as well.
         let needed = room + u64::from(to.is_some() && from.is_none());
         if self.remaining.load(Ordering::Relaxed) < needed {

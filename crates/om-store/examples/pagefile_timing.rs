@@ -82,7 +82,7 @@ fn main() {
     // The tree: `items` records of 16 bytes, 1,000 puts an entry, in key
     // order.
     let start = Instant::now();
-    let res = pf.reserve(1, 2, Purpose::Entry).unwrap();
+    let res = pf.reserve(1, 3, Purpose::Entry).unwrap();
     let mut root = res.create_tree(&name).unwrap();
     drop(res);
     let mut index = 1;
