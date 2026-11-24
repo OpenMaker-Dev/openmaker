@@ -300,16 +300,21 @@ fn browse(
             }
         });
 
-    // Layout Setup's "Enable Quick Find" (layout-model.md 4.2).
-    let enabled = match &context.session.render {
+    let enabled = layout_quick_find(context.session);
+    quick_find(ui, bar, 745.0, enabled && context.commands, state, actions);
+}
+
+/// The shown layout has loaded and allows Quick Find: Layout Setup's
+/// "Enable Quick Find" (layout-model.md 4.2).
+pub(crate) fn layout_quick_find(session: &crate::session::Session) -> bool {
+    match &session.render {
         crate::session::RenderState::Loaded(render) => render
             .layout
             .def
             .as_ref()
             .is_none_or(om_layout::LayoutDef::quick_find),
         _ => false,
-    };
-    quick_find(ui, bar, 745.0, enabled && context.commands, state, actions);
+    }
 }
 
 /// The Quick Find search field filling the rest of the toolbar; Return

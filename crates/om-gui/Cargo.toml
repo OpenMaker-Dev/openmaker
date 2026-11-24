@@ -17,7 +17,6 @@ om-url = { path = "../om-url" }
 cap = "0.1"
 # Import Records, Export Records, Save Records as Excel.
 om-transfer = { path = "../om-transfer" }
-eframe = "0.37"
 # Bundled emoji/icon fonts, so toolbar glyphs render the same on every platform.
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 # Raster library images and tables. Not its `svg` feature: Browse draws SVG
@@ -46,11 +45,13 @@ quick-xml = "0.41"
 # The root viewport's native window, which web viewers are children of
 # (the version eframe uses; MIT OR Apache-2.0 OR Zlib).
 raw-window-handle = "0.6"
-# The app's event loop, which tells the keypad's Enter from Return
-# (src/keypad.rs), and the error eframe logs as that loop ends (the
-# versions eframe uses; winit Apache-2.0, log MIT OR Apache-2.0).
-winit = { version = "0.30", default-features = false }
+# Diagnostics from the client and its event loop.
 log = "0.4"
+
+# Phone and tablet shells supply their own window and event loop.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+eframe = "0.37"
+winit = { version = "0.30", default-features = false }
 
 [features]
 # Embedded web viewers: WebKitGTK through wry on Linux/X11 (through XWayland

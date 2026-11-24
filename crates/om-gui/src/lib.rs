@@ -20,6 +20,12 @@
 //! om_gui::run(Box::new(MockProvider::new())).expect("OpenMaker failed");
 //! ```
 
+// OpenMaker Go (mobile/) builds this crate for phones and tablets without
+// the desktop event loop ([`run`], eframe and winit): what only that loop
+// uses (the OS keychain, the native window's handle, environment defaults)
+// is unused there. Desktop builds check for dead code.
+#![cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code))]
+
 mod app;
 mod calc;
 mod connect;
@@ -44,6 +50,7 @@ mod layout_setup;
 pub mod licensing;
 mod list_build;
 mod manage_layouts;
+mod menu_record;
 mod menubar;
 mod new_layout;
 mod open_file;
@@ -73,6 +80,7 @@ mod web_viewer;
 mod widgets;
 mod worker;
 
+pub use app::mobile::{ChromeCommand, ChromeMenu, ChromeState, MenuRow, MenuRowKind};
 pub use app::{CardFrame, Mode, OpenMakerApp, ViewMode, APP_TITLE};
 pub use document::PdfViewer;
 pub use theme::install as install_theme;
@@ -112,6 +120,7 @@ pub fn provider_from_env() -> Result<Box<dyn DataProvider>, String> {
 /// feature on Linux they choose winit's X11 backend whenever an X server
 /// answers, also on a Wayland session (through XWayland), since the web
 /// viewers are X11 child windows.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -135,6 +144,7 @@ pub fn prepare_web_viewers() {
 }
 
 /// Open the OpenMaker window with `provider` and run until it is closed.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub fn run(provider: Box<dyn DataProvider>) -> eframe::Result {
     prepare_web_viewers();
     // The User Name the account chose last time (Settings).

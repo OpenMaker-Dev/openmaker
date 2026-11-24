@@ -242,7 +242,11 @@ impl OpenMakerApp {
         }
         let mut menu = Vec::new();
         let system = self.system_menu_bar();
-        if system || self.with_window(id, |app| app.w.menubar).unwrap_or(false) {
+        if self.mobile.is_some() {
+            // OpenMaker Go's chrome works on the card in front, as a menu
+            // bar does.
+            self.with_window(top, |app| app.mobile_menus(ui, input, &mut menu));
+        } else if system || self.with_window(id, |app| app.w.menubar).unwrap_or(false) {
             self.with_window(top, |app| {
                 if dialog.is_some() {
                     ui.disable();

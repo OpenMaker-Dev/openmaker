@@ -2047,7 +2047,8 @@ impl DocumentState {
         Some((selection.editor, buffer))
     }
 
-    #[cfg(target_os = "macos")]
+    /// The editor of the field entered on this record, for menus shown
+    /// outside egui (the macOS system menu bar, OpenMaker Go's).
     pub(crate) fn entered_editor(&self, layout: u64, record: i64) -> Option<egui::Id> {
         self.entered_buffer(layout, record).map(|(id, _)| id)
     }

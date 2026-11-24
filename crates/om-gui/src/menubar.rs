@@ -17,6 +17,9 @@ use crate::widgets::{menu_item, menu_separator, submenu};
 
 /// Everything the menus read.
 pub(crate) struct MenuContext<'a> {
+    /// The window is OpenMaker Go's (`app/mobile.rs`): its menus leave out
+    /// what FileMaker Go has none of, such as the Script Workspace.
+    pub go: bool,
     pub mode: Mode,
     pub view: ViewMode,
     pub zoom: u16,
@@ -330,6 +333,34 @@ pub(crate) fn menus(context: &MenuContext<'_>, actions: &mut Vec<Action>, menu: 
     menu("Help", &mut |rows| help_menu(rows));
 }
 
+/// OpenMaker Go's menus (`app/mobile.rs`), which its native toolbars
+/// show: the layout menu, Browse's Records or Find's Requests, a View
+/// menu of the modes and views FileMaker Go has, and Scripts. Each is the
+/// window's own, so its rows read, enable and act as they do there.
+pub(crate) fn go_menus(
+    context: &MenuContext<'_>,
+    actions: &mut Vec<Action>,
+    menu: &mut MenuSink<'_>,
+) {
+    menu("Layouts", &mut |rows| {
+        if let Some(session) = context.session {
+            crate::layout_menu::show(rows, session, context.mode, actions);
+        }
+    });
+    match context.mode {
+        Mode::Find => menu("Requests", &mut |rows| {
+            requests_menu(rows, context, actions)
+        }),
+        _ => menu("Records", &mut |rows| records_menu(rows, context, actions)),
+    }
+    menu("View", &mut |rows| {
+        mode_rows(rows, context, &[Mode::Browse, Mode::Find], actions);
+        rows.separator();
+        view_as_rows(rows, context, actions);
+    });
+    menu("Scripts", &mut |rows| scripts_menu(rows, context, actions));
+}
+
 fn app_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     pending(rows, &format!("About {}", crate::APP_TITLE), None);
     rows.separator();
@@ -550,17 +581,7 @@ fn edit_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
 
 fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     let open = context.open();
-    for mode in Mode::ALL {
-        if rows.item(
-            mode.menu_label(),
-            Some(mode.shortcut()),
-            open && context.mode == mode,
-            open && context.full_menus() && (mode != Mode::Layout || context.design),
-        ) && context.mode != mode
-        {
-            actions.push(Action::SetMode(mode));
-        }
-    }
+    mode_rows(rows, context, &Mode::ALL, actions);
     rows.separator();
     rows.submenu("Go to Layout", open, &mut |rows| {
         if let Some(session) = context.session {
@@ -568,26 +589,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
         }
     });
     rows.separator();
-    // Editing only and Minimum leave out the views, still checking the
-    // current one, and keep the bars and zoom (FileMaker Pro 26.0.3, #651's
-    // reading).
-    let views_shown = open && context.mode != Mode::Layout;
-    for view in ViewMode::ALL {
-        let label = format!("View as {}", view.label());
-        if rows.item(
-            &label,
-            None,
-            views_shown && context.view == view,
-            views_shown
-                && context.full_menus()
-                && context
-                    .session
-                    .is_some_and(|session| session.view_enabled(view)),
-        ) && context.view != view
-        {
-            actions.push(Action::SetView(view));
-        }
-    }
+    view_as_rows(rows, context, actions);
     rows.separator();
     if rows.item(
         "Status Toolbar",
@@ -719,6 +721,51 @@ fn format_menu(rows: &mut dyn MenuRows) {
         "Text Color",
     ] {
         pending_submenu(rows, label);
+    }
+}
+
+/// View's mode rows, of `modes`.
+fn mode_rows(
+    rows: &mut dyn MenuRows,
+    context: &MenuContext<'_>,
+    modes: &[Mode],
+    actions: &mut Vec<Action>,
+) {
+    let open = context.open();
+    for &mode in modes {
+        if rows.item(
+            mode.menu_label(),
+            Some(mode.shortcut()),
+            open && context.mode == mode,
+            open && context.full_menus() && (mode != Mode::Layout || context.design),
+        ) && context.mode != mode
+        {
+            actions.push(Action::SetMode(mode));
+        }
+    }
+}
+
+/// View's View as Form, List and Table.
+fn view_as_rows(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
+    // Editing only and Minimum leave out the views, still checking the
+    // current one, and keep the bars and zoom (FileMaker Pro 26.0.3, #651's
+    // reading).
+    let views_shown = context.open() && context.mode != Mode::Layout;
+    for view in ViewMode::ALL {
+        let label = format!("View as {}", view.label());
+        if rows.item(
+            &label,
+            None,
+            views_shown && context.view == view,
+            views_shown
+                && context.full_menus()
+                && context
+                    .session
+                    .is_some_and(|session| session.view_enabled(view)),
+        ) && context.view != view
+        {
+            actions.push(Action::SetView(view));
+        }
     }
 }
 
@@ -996,12 +1043,14 @@ fn arrange_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
 
 /// Script Workspace and the scripts supplied by this file's catalog.
 fn scripts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
-    if rows.item(
-        "Script Workspace...",
-        command(SHIFT_CMD, Key::S),
-        false,
-        context.open() && context.design,
-    ) {
+    if !context.go
+        && rows.item(
+            "Script Workspace...",
+            command(SHIFT_CMD, Key::S),
+            false,
+            context.open() && context.design,
+        )
+    {
         actions.push(Action::ScriptWorkspace);
     }
     // The catalog is read the first time the menu shows it.

@@ -31,6 +31,7 @@ use crate::toolbar::{self, ToolbarContext};
 use crate::widgets;
 use crate::worker::{self, PollError, Reply, Request, Worker};
 
+pub mod mobile;
 mod portal_clicks;
 mod recovery;
 mod scripts;
@@ -184,7 +185,8 @@ fn edits_text(event: &egui::Event) -> bool {
     )
 }
 
-#[cfg(target_os = "macos")]
+/// A menu step on the field entered: a menu shown outside egui (the macOS
+/// system menu bar, OpenMaker Go's) runs it on the field it was chosen for.
 fn native_field_step(step: u16) -> bool {
     matches!(
         step,
@@ -798,6 +800,9 @@ const HOST_DISCONNECTED: &str =
     "File has been forcefully disconnected by the host. All affected windows will be closed.";
 
 pub struct OpenMakerApp {
+    /// OpenMaker Go's chrome around the window (`app/mobile.rs`), which
+    /// replaces the menu bar and status toolbar; `None` on the desktop.
+    mobile: Option<Box<mobile::Chrome>>,
     worker: Worker,
     /// Bumped whenever a session is abandoned; replies from older epochs are
     /// dropped.
@@ -831,6 +836,9 @@ pub struct OpenMakerApp {
     value_list_edit: Option<(u32, crate::document::value_dialogs::EditDialog)>,
     part_setup: Option<PartSetup>,
     error: Option<String>,
+    /// The error code and message of the last failure `fail` reported, for
+    /// OpenMaker Go to tell a refused account from other failures.
+    failure: Option<(Option<i32>, String)>,
     /// The host administrators' messages still to show, the first shown
     /// now ([`Self::host_message`]; #156), and when it was first shown
     /// (`InputState::time`).
@@ -969,6 +977,7 @@ impl OpenMakerApp {
             value_list_edit: None,
             part_setup: None,
             error: None,
+            failure: None,
             host_messages: Default::default(),
             forced_disconnects: Default::default(),
             forced_alert: None,
@@ -980,6 +989,7 @@ impl OpenMakerApp {
             title: APP_TITLE.to_owned(),
             styled: false,
             sample_data,
+            mobile: None,
             database: None,
             security: None,
             security_requests: 0,
@@ -1450,14 +1460,7 @@ impl OpenMakerApp {
                 bar.behind(owner);
             }
             if key || bar.has_choice_for(owner) {
-                // The window's own dialogs count from the frame they are
-                // asked for, before egui first draws them.
-                let blocked = !ui.is_enabled()
-                    || ui.ctx().memory(|m| m.top_modal_layer().is_some())
-                    || self.w.delete_record.is_some()
-                    || self.w.delete_layout.is_some()
-                    || self.w.delete_portal_row.is_some()
-                    || self.w.document.other_dialog_open();
+                let blocked = self.menus_blocked(ui);
                 let target = self.field_menu_target(&ctx);
                 let editor = if key && !egui::Popup::is_any_open(&ctx) {
                     self.current_layout_record()
@@ -1472,27 +1475,7 @@ impl OpenMakerApp {
                         menubar::menus(context, &mut chosen, menu);
                     })
                 });
-                for action in chosen {
-                    match action {
-                        Action::EditField(command) => {
-                            if let Some(editor) =
-                                editor.filter(|_| shown_target.as_ref() == Some(&target))
-                            {
-                                actions.push(Action::NativeEditField(editor, command));
-                            }
-                        }
-                        Action::Step(step, flags) if native_field_step(step) => {
-                            if shown_target.as_ref() == Some(&target) {
-                                actions.push(Action::FieldMenuStep(
-                                    step,
-                                    flags,
-                                    Box::new(target.clone()),
-                                ));
-                            }
-                        }
-                        action => actions.push(action),
-                    }
-                }
+                Self::native_menu_actions(chosen, shown_target, &target, editor, actions);
             }
             if bar.has_choices() {
                 // Choices answered one a frame: the rest on the next.
@@ -1504,6 +1487,52 @@ impl OpenMakerApp {
         self.with_menu_context(&ctx, input, false, None, |context| {
             menubar::show(ui, context, actions)
         })
+    }
+
+    /// A dialog is over the window: menus shown outside egui (the macOS
+    /// system menu bar, OpenMaker Go's) run none of their rows. The
+    /// window's own dialogs count from the frame they are asked for, before
+    /// egui first draws them.
+    fn menus_blocked(&self, ui: &Ui) -> bool {
+        !ui.is_enabled()
+            || ui.ctx().memory(|m| m.top_modal_layer().is_some())
+            || self.w.delete_record.is_some()
+            || self.w.delete_layout.is_some()
+            || self.w.delete_portal_row.is_some()
+            || self.w.document.other_dialog_open()
+    }
+
+    /// The actions of rows chosen in menus shown outside egui. A field
+    /// command runs only on the field the menu was shown for (`shown`),
+    /// which must still be the one entered (`target`): an editing command
+    /// in that field's `editor`, a field step with its target.
+    fn native_menu_actions(
+        chosen: Vec<Action>,
+        shown: Option<FieldMenuTarget>,
+        target: &FieldMenuTarget,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] editor: Option<egui::Id>,
+        actions: &mut Vec<Action>,
+    ) {
+        for action in chosen {
+            match action {
+                // Editing commands in a field go to its editor (the macOS
+                // menu bar's Edit menu); Go's menus have none.
+                #[cfg(target_os = "macos")]
+                Action::EditField(command) => {
+                    if let Some(editor) = editor.filter(|_| shown.as_ref() == Some(target)) {
+                        actions.push(Action::NativeEditField(editor, command));
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                Action::EditField(_) => {}
+                Action::Step(step, flags) if native_field_step(step) => {
+                    if shown.as_ref() == Some(target) {
+                        actions.push(Action::FieldMenuStep(step, flags, Box::new(target.clone())));
+                    }
+                }
+                action => actions.push(action),
+            }
+        }
     }
 
     /// Whether the system menu bar shows the menus (macOS), so the windows
@@ -1552,6 +1581,7 @@ impl OpenMakerApp {
             .cloned()
             .collect();
         f(&MenuContext {
+            go: self.mobile.is_some(),
             mode: self.w.mode,
             view: self.w.view,
             zoom: self.w.document.zoom.percent(),
@@ -1840,8 +1870,16 @@ impl OpenMakerApp {
         // With the system menu bar the window's menus are there, and take
         // none of the window's height, shown or hidden: known, and nothing.
         let system = self.system_menu_bar();
-        self.w.menu_drawn = (menu && self.w.menubar) || system;
+        self.w.menu_drawn = self.mobile.is_none() && ((menu && self.w.menubar) || system);
         let mut on_menus = false;
+        if self.mobile.is_some() && menu {
+            // A choice in Go's menus or chrome leaves the field entered, as
+            // a click in the window's own menus does.
+            let mut chosen = Vec::new();
+            self.mobile_menus(ui, input, &mut chosen);
+            self.w.document.menu_leaves_field(ui, &mut chosen);
+            actions.extend(chosen);
+        }
         if self.w.menu_drawn && !system {
             let top = ui.available_rect_before_wrap().top();
             let mut chosen = Vec::new();
@@ -1947,7 +1985,7 @@ impl OpenMakerApp {
         match &self.w.session {
             Some(session) => {
                 let bars_top = ui.available_rect_before_wrap().top();
-                if self.w.show_toolbar {
+                if self.w.show_toolbar && self.mobile.is_none() {
                     toolbar::show(
                         ui,
                         &ToolbarContext {
@@ -2970,6 +3008,12 @@ impl OpenMakerApp {
     /// A dialog, alert or confirmation of the app's is open: the host's
     /// message waits for it ([`Self::host_message_shown`]).
     fn dialog_open(&self) -> bool {
+        self.error.is_some() || self.dialog_open_besides_error()
+    }
+
+    /// A dialog of the app's other than its error alert (a failure, such as
+    /// a save the host refused) is open.
+    fn dialog_open_besides_error(&self) -> bool {
         self.manage_layouts.is_some()
             || self.layout_setup.is_some()
             || self.part_setup.is_some()
@@ -2994,7 +3038,6 @@ impl OpenMakerApp {
             || self.w.delete_record.is_some()
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
-            || self.error.is_some()
             || self.forced_alert.is_some()
             || self.script.prompt.is_some()
             || self.w.document.other_dialog_open()
@@ -5889,6 +5932,7 @@ impl OpenMakerApp {
             return;
         }
         self.error = Some(err.message.clone());
+        self.failure = Some((err.code, err.message.clone()));
         self.status = ConnectStatus::Idle;
         self.opening = None;
     }
@@ -6565,6 +6609,9 @@ impl OpenMakerApp {
                             if let Some(bar) = &mut self.system_menu {
                                 bar.read_failed((self.epoch, doc.id));
                             }
+                            if let Some(chrome) = &mut self.mobile {
+                                chrome.scripts_failed = true;
+                            }
                         }
                         Err(_) => {}
                     }
@@ -6920,6 +6967,7 @@ impl OpenMakerApp {
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);

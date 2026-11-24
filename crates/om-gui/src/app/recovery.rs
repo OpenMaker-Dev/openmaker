@@ -183,6 +183,9 @@ pub(crate) struct ReconnectDialog {
     target: String,
     account: String,
     password: Zeroizing<String>,
+    /// Where `password` was typed for when the dialog did not ask for it
+    /// ([`OpenMakerApp::reconnect_with`]).
+    typed_for: Option<(String, u16, String)>,
     pending: bool,
     error: Option<String>,
     /// What the file's windows held when the reconnect was sent.
@@ -455,6 +458,7 @@ impl OpenMakerApp {
             target: format!("“{stem}” ({})", session.target.host),
             account: self.w.calcs.account.clone(),
             password: Zeroizing::new(String::new()),
+            typed_for: None,
             pending: false,
             error: None,
             probes: Vec::new(),
@@ -525,6 +529,37 @@ impl OpenMakerApp {
         } else if submit {
             self.send_reconnect(ctx);
         }
+    }
+
+    /// The banner's Reconnect with `password` already typed: OpenMaker Go
+    /// holds the sign-in for as long as the file is open. It was typed for
+    /// `typed_for` (host, port and account), and the worker sends it
+    /// nowhere else: a file opened elsewhere gets the dialog's error and
+    /// waits for its own password. The dialog shows the reconnect's
+    /// progress, and keeps the host's refusal (or why the file cannot be
+    /// reconnected) for the user. `false` while a script runs, which keeps
+    /// the banner's Reconnect from starting too.
+    pub(super) fn reconnect_with(
+        &mut self,
+        ctx: &egui::Context,
+        typed_for: (String, u16, String),
+        password: &str,
+    ) -> bool {
+        if self.script.running {
+            return false;
+        }
+        self.open_reconnect();
+        if let Some(dialog) = self.reconnect.as_mut().filter(|d| !d.pending) {
+            dialog.password = Zeroizing::new(password.to_owned());
+            dialog.typed_for = Some(typed_for);
+            self.send_reconnect(ctx);
+        }
+        true
+    }
+
+    /// A reconnect is on its way.
+    pub(super) fn reconnect_pending(&self) -> bool {
+        self.reconnect.as_ref().is_some_and(|dialog| dialog.pending)
     }
 
     /// Send the reconnect, with what the file's windows hold now.
@@ -635,11 +670,14 @@ impl OpenMakerApp {
         }
         let dialog = self.reconnect.as_mut().expect("checked above");
         let password = std::mem::replace(&mut dialog.password, Zeroizing::new(String::new()));
+        // A password typed into the dialog afterwards is for this file.
+        let typed_for = dialog.typed_for.take();
         dialog.pending = true;
         dialog.error = None;
         dialog.probes = probes;
         let job = ReconnectJob {
             password,
+            typed_for,
             use_saved_license: self.hosts.use_saved_license,
             records: records.into_iter().collect(),
             current,
