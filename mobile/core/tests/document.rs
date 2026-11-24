@@ -15,6 +15,11 @@ impl DocumentObserver for Headless {
     fn frame_ready(&self) {}
 }
 
+/// How long a close may take to save and close the file: about a second
+/// on an idle machine, several on one other builds load (a close that took
+/// over ten seconds failed a run there); a hang still fails.
+const CLOSE_WAIT_MS: u32 = 30_000;
+
 /// A document and what its frames showed last, as the app's chrome sees it.
 struct Shown {
     doc: Arc<Document>,
@@ -78,6 +83,21 @@ impl Shown {
         }
     }
 
+    /// The text the next frames copy to the clipboard.
+    fn copied(&mut self, what: &str) -> String {
+        let end = Instant::now() + Duration::from_secs(20);
+        loop {
+            while let Some(frame) = self.doc.take_frame() {
+                self.state = Some(frame.state);
+                if let Some(copied) = frame.copied {
+                    return copied;
+                }
+            }
+            assert!(Instant::now() < end, "{what}: {:?}", self.state);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn command(&self, command: Command) {
         self.doc.send(Input::Run { command });
     }
@@ -114,7 +134,20 @@ fn a_composition_is_committed_in_its_field_before_a_tap_moves_on() {
                 .iter()
                 .any(|e| e.kind == ElementKind::Field && e.value.contains("Drafted"))
     });
-    assert!(local.doc.close(10_000), "the file did not close");
+    // A hardware keyboard's Command-A and Command-C (Ctrl on Android) copy
+    // the field's text, which is the engine's.
+    local.doc.send(Input::Tap { x: 80., y: 42. });
+    local.until("the keyboard", |state, _| state.keyboard);
+    for key in [Key::A, Key::C] {
+        local.doc.send(Input::Press {
+            key,
+            shift: false,
+            command: true,
+        });
+    }
+    let copied = local.copied("the field's text copied");
+    assert!(copied.contains("Drafted"), "{copied:?}");
+    assert!(local.doc.close(CLOSE_WAIT_MS), "the file did not close");
 }
 
 #[test]
@@ -166,7 +199,7 @@ fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
     local.doc.send(Input::Text { text: "f".into() });
     // No Done, and no wait for the text to show: closing the file saves
     // what was typed, the keys the field had not read yet included.
-    assert!(local.doc.close(10_000), "the file did not close");
+    assert!(local.doc.close(CLOSE_WAIT_MS), "the file did not close");
     drop(local);
 
     let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();

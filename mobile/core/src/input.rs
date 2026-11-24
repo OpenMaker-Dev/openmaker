@@ -67,6 +67,14 @@ pub enum Key {
     /// A hardware keyboard's Space: it types a space in a field and
     /// selects a checkbox or radio button item.
     Space,
+    /// With `command`: Select All in the field being edited.
+    A,
+    /// With `command`: Copy the field's selection.
+    C,
+    /// With `command`: Cut the field's selection.
+    X,
+    /// With `command`: Undo the field's typing (with `shift`, Redo).
+    Z,
     Tab,
     Escape,
     ArrowLeft,
@@ -86,6 +94,10 @@ impl Key {
             Key::Delete => egui::Key::Delete,
             Key::Enter | Key::KeypadEnter => egui::Key::Enter,
             Key::Space => egui::Key::Space,
+            Key::A => egui::Key::A,
+            Key::C => egui::Key::C,
+            Key::X => egui::Key::X,
+            Key::Z => egui::Key::Z,
             Key::Tab => egui::Key::Tab,
             Key::Escape => egui::Key::Escape,
             Key::ArrowLeft => egui::Key::ArrowLeft,

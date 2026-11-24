@@ -13,10 +13,11 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   copies one in: the copy is made under a temporary name and linked in
   under its own, so the list never shows half a file and a file already
   there of that name is kept. On iOS the documents are also in the Files
-  app, and `.fmp12` files from Files, Mail or AirDrop open in OpenMaker Go
-  (it declares FileMaker Pro's type identifier, `com.filemaker.doc.fmp12`,
-  read from FileMaker Pro 26.1.1 for macOS; FileMaker Go's own declaration
-  is not documented). Local edits go to that copy.
+  app, and a `.fmp12` file opened with OpenMaker Go from Files, Mail or
+  AirDrop is imported so, into My Apps, where a tap opens it (it declares
+  FileMaker Pro's type identifier, `com.filemaker.doc.fmp12`, read from
+  FileMaker Pro 26.1.1 for macOS; FileMaker Go's own declaration is not
+  documented). Local edits go to that copy.
 - **Hosts** takes a host name or address and a port (5003), lists the
   files the host shares or opens one by name. A private certificate
   authority (PEM) can be saved for a host and port; it is used for that
@@ -62,8 +63,12 @@ enabled by the same rule as the desktop command it runs. Two fingers swiped
 left or right go to the next or previous record (FileMaker Go's gesture).
 
 A tap on the layout is a click; a pan scrolls what is under the finger
-and glides on after it lifts. Typing goes through the platform keyboard
-and its input methods (marked text included) to the field. The editing
+and glides on after it lifts, unless it starts on a handle (a Table view
+column's divider, anything that shows a resize pointer there), which it
+drags. Typing goes through the platform keyboard and its input methods
+(marked text included) to the field. Select All, Copy, Cut and Undo, from
+a hardware keyboard (Command, or Ctrl on Android), the edit menu or the
+keyboard's own commands, act on the field's text. The editing
 bar above the keyboard has the previous and next field and Done, which
 saves the record as a tap outside every field does. In Find mode the
 keyboard's Search key performs the find. Hardware keyboards' Tab, arrow,
@@ -195,8 +200,9 @@ documented, so reconnecting by itself is OpenMaker Go's own choice.
   ([#661](https://github.com/OpenMaker-Dev/openmaker/issues/661)).
 - **Keyboards.** The field's touch keyboard type and FileMaker Go's
   Auto-Correction setting are not applied: the keyboard is plain text with
-  autocorrection off ([#662](https://github.com/OpenMaker-Dev/openmaker/issues/662)). Text can be pasted into a field but not
-  copied or cut from one ([#663](https://github.com/OpenMaker-Dev/openmaker/issues/663)).
+  autocorrection off ([#662](https://github.com/OpenMaker-Dev/openmaker/issues/662)). Selecting text in a field by touch
+  (with handles) is not offered: a field's text is selected with a
+  hardware keyboard or Select All.
 - **Screen readers** get the visible fields, labels and buttons, but no
   checked state for checkboxes and radio buttons ([#668](https://github.com/OpenMaker-Dev/openmaker/issues/668)), and
   rectangles that miss where a card or Form zoom moved the layout

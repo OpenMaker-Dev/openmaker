@@ -109,7 +109,7 @@ pub(crate) struct Surface {
     /// The pointer leaves after the next pass: a tap's or a pan's ended.
     pointer_leaves: bool,
     /// Where the pan in progress began.
-    pan: Option<Pos2>,
+    pan: Option<Pan>,
     glide: Option<Glide>,
     /// An input method's composition shows in the field: its text so far.
     preedit: Option<String>,
@@ -294,20 +294,32 @@ impl Surface {
             // field: it gets a pass of its own, so that the field reads what
             // was typed or committed before it, and what comes after reaches
             // the field it focuses.
-            let moves_focus = matches!(input, Input::Tap { .. } | Input::Activate { .. });
+            // A pan's start gets one too: the pointer shows there first, and
+            // what it shows decides whether the pan drags or scrolls.
+            let moves_focus = matches!(
+                input,
+                Input::Tap { .. } | Input::Activate { .. } | Input::PanBegan { .. }
+            );
             // A deletion around the selection reads the field's selection
             // and text as the last pass left them: it waits for a pass of
             // its own, and while a Tab or Return still moves the focus to
             // another field (om-gui gives it in a later pass), so that it
             // counts against the field it will delete in.
             let deletes = matches!(input, Input::DeleteAround { .. });
+            let moving = deletes && self.app.focus_moving();
             // The wait is bounded: a trigger's script can wait for the
-            // user, whose taps are queued behind the deletion.
-            let waits = deletes && self.app.focus_moving() && self.delete_waits < DELETE_WAITS;
-            if waits {
+            // user, whose taps are queued behind the deletion. A deletion
+            // whose field is still unknown then is dropped rather than made
+            // in the field the focus is leaving.
+            if moving && self.delete_waits >= DELETE_WAITS {
+                inputs.pop_front();
+                self.delete_waits = 0;
+                continue;
+            }
+            if moving {
                 self.delete_waits += 1;
             }
-            if (took && (moves_focus || deletes)) || waits {
+            if (took && (moves_focus || deletes)) || moving {
                 break;
             }
             if deletes {
@@ -513,17 +525,46 @@ impl Surface {
             Input::PanBegan { x, y } => {
                 self.stop_glide(events);
                 let pos = egui::pos2(x, y);
-                self.pan = Some(pos);
+                // The pointer goes there first: what it shows over that
+                // spot (`Surface::pass`) says whether the pan drags or
+                // scrolls.
+                self.pan = Some(Pan {
+                    at: pos,
+                    drags: None,
+                    pressed: false,
+                    scrolling: false,
+                });
                 events.push(Event::PointerMoved(pos));
-                events.push(wheel(Vec2::ZERO, TouchPhase::Start));
             }
             Input::PanMoved { dx, dy } => {
-                if self.pan.is_some() {
-                    events.push(wheel(egui::vec2(dx, dy), TouchPhase::Move));
+                if let Some(pan) = &mut self.pan {
+                    if pan.drags == Some(true) {
+                        // A handle: pressed where the pan began, then
+                        // dragged with the finger.
+                        if !pan.pressed {
+                            pan.pressed = true;
+                            events.push(pointer_button(pan.at, true));
+                        }
+                        pan.at += egui::vec2(dx, dy);
+                        events.push(Event::PointerMoved(pan.at));
+                    } else {
+                        if !pan.scrolling {
+                            pan.scrolling = true;
+                            events.push(wheel(Vec2::ZERO, TouchPhase::Start));
+                        }
+                        events.push(wheel(egui::vec2(dx, dy), TouchPhase::Move));
+                    }
                 }
             }
             Input::PanEnded { vx, vy } => {
-                if self.pan.take().is_some() {
+                if let Some(pan) = self.pan.take() {
+                    if pan.drags == Some(true) {
+                        if pan.pressed {
+                            events.push(pointer_button(pan.at, false));
+                        }
+                        self.pointer_leaves = true;
+                        return;
+                    }
                     let velocity = egui::vec2(vx, vy);
                     if velocity.is_finite() && velocity.length() > GLIDE_STOP {
                         self.glide = Some(Glide {
@@ -556,6 +597,16 @@ impl Surface {
                 command,
             } => {
                 let modifiers = input::modifiers(shift, command);
+                // Copy and Cut are egui's own events, as a desktop event
+                // loop gives them for Command-C and Command-X.
+                if command && matches!(key, input::Key::C | input::Key::X) {
+                    events.push(if key == input::Key::C {
+                        Event::Copy
+                    } else {
+                        Event::Cut
+                    });
+                    return;
+                }
                 for pressed in [true, false] {
                     // Space types a space and is the key option controls
                     // take, as a desktop keyboard's Space gives both.
@@ -727,6 +778,13 @@ impl Surface {
         self.textures.extend(updates);
         self.freed.extend(freed);
         let platform = std::mem::take(&mut output.platform_output);
+        // A pan that began on a handle (a Table view column's divider, any
+        // widget that shows a resize cursor) drags it; elsewhere it scrolls.
+        if let Some(pan) = &mut self.pan {
+            if pan.drags.is_none() {
+                pan.drags = Some(resizes(platform.cursor_icon));
+            }
+        }
         self.caret = platform.ime.map(|ime| crate::state::Caret {
             x: ime.cursor_rect.min.x,
             y: ime.cursor_rect.min.y,
@@ -928,6 +986,50 @@ fn wheel(delta: Vec2, phase: TouchPhase) -> Event {
         source: MouseWheelSource::Trackpad,
         modifiers: egui::Modifiers::NONE,
     }
+}
+
+/// A finger panning over the canvas.
+struct Pan {
+    /// Where the finger is.
+    at: Pos2,
+    /// Whether it drags a handle rather than scrolling, once the pass that
+    /// showed the pointer where it began has said.
+    drags: Option<bool>,
+    /// The handle has been pressed (dragging), or the scroll has begun.
+    pressed: bool,
+    scrolling: bool,
+}
+
+/// The primary button pressed or released at `pos`, as a touch's is.
+fn pointer_button(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+/// Whether a widget showing `cursor` under the pointer is a handle to drag.
+fn resizes(cursor: egui::CursorIcon) -> bool {
+    use egui::CursorIcon as C;
+    matches!(
+        cursor,
+        C::ResizeHorizontal
+            | C::ResizeNeSw
+            | C::ResizeNwSe
+            | C::ResizeVertical
+            | C::ResizeEast
+            | C::ResizeSouthEast
+            | C::ResizeSouth
+            | C::ResizeSouthWest
+            | C::ResizeWest
+            | C::ResizeNorthWest
+            | C::ResizeNorth
+            | C::ResizeNorthEast
+            | C::ResizeColumn
+            | C::ResizeRow
+    )
 }
 
 /// How many of `side`'s characters, nearest first, make up `units` units

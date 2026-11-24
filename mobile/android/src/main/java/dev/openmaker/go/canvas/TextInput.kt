@@ -65,6 +65,10 @@ internal class TextInput(private val canvas: CanvasView, private val session: Do
         return true
     }
 
+    // The keyboard's own Select All, Copy, Cut and Paste act on the field's
+    // text, which is the engine's, not this editor's.
+    override fun performContextMenuAction(id: Int): Boolean = canvas.editCommand(id) || super.performContextMenuAction(id)
+
     override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) canvas.key(event)
         return true

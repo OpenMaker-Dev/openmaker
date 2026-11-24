@@ -282,6 +282,20 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
     return bar
   }
 
+  // The field's text is the engine's: the edit menu's (and the keyboard's)
+  // Select All, Copy and Cut act there. Paste puts the text into this field,
+  // which sends it on as typing.
+  override func selectAll(_ sender: Any?) { send?(.press(key: .a, shift: false, command: true)) }
+  override func copy(_ sender: Any?) { send?(.press(key: .c, shift: false, command: true)) }
+  override func cut(_ sender: Any?) { send?(.press(key: .x, shift: false, command: true)) }
+
+  override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+    switch action {
+    case #selector(selectAll(_:)), #selector(copy(_:)), #selector(cut(_:)): return true
+    default: return super.canPerformAction(action, withSender: sender)
+    }
+  }
+
   /// Commit the input method's marked text as it shows, then send `input`:
   /// a save or a move to another field never takes a provisional candidate.
   func settle(then input: Input) {
@@ -360,6 +374,12 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
     case .keyboardTab: engine = .tab
     // Space types a space and selects a checkbox or radio button item.
     case .keyboardSpacebar: engine = .space
+    // Select All, Copy, Cut and Undo (Shift: Redo) act on the field's text,
+    // which is the engine's.
+    case .keyboardA where key.modifierFlags.contains(.command): engine = .a
+    case .keyboardC where key.modifierFlags.contains(.command): engine = .c
+    case .keyboardX where key.modifierFlags.contains(.command): engine = .x
+    case .keyboardZ where key.modifierFlags.contains(.command): engine = .z
     case .keyboardEscape: engine = .escape
     case .keyboardUpArrow: engine = .arrowUp
     case .keyboardDownArrow: engine = .arrowDown

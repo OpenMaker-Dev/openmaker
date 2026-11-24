@@ -236,13 +236,49 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = key(event) || super.onKeyDown(keyCode, event)
 
+    /** The clipboard's text into the field being edited. */
+    internal fun paste() {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
+        if (!text.isNullOrEmpty()) session.send(Input.Paste(text.toString()))
+    }
+
+    /** An edit command of the input method (its own Select All, Copy, Cut, Paste). */
+    internal fun editCommand(id: Int): Boolean {
+        val key =
+            when (id) {
+                android.R.id.selectAll -> Key.A
+                android.R.id.copy -> Key.C
+                android.R.id.cut -> Key.X
+                android.R.id.paste -> {
+                    paste()
+                    return true
+                }
+                else -> return false
+            }
+        session.send(Input.Press(key, false, true))
+        return true
+    }
+
     /** A key from a hardware keyboard or the input method; false if the engine takes none. */
     internal fun key(event: KeyEvent): Boolean {
         val command = event.isCtrlPressed || event.isMetaPressed
         if (command && event.keyCode == KeyEvent.KEYCODE_V) {
-            val clipboard = context.getSystemService(ClipboardManager::class.java)
-            val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
-            if (!text.isNullOrEmpty()) session.send(Input.Paste(text.toString()))
+            paste()
+            return true
+        }
+        // Select All, Copy, Cut and Undo (Shift: Redo) act on the field's
+        // text, which is the engine's.
+        val edit =
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_A -> Key.A
+                KeyEvent.KEYCODE_C -> Key.C
+                KeyEvent.KEYCODE_X -> Key.X
+                KeyEvent.KEYCODE_Z -> Key.Z
+                else -> null
+            }
+        if (command && edit != null) {
+            session.send(Input.Press(edit, event.isShiftPressed, true))
             return true
         }
         val key =

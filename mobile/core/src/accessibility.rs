@@ -59,7 +59,9 @@ pub fn visible(update: &TreeUpdate, viewport: Rect) -> Vec<Element> {
             | Role::DefaultButton
             | Role::CheckBox
             | Role::RadioButton
-            | Role::MenuItem => (ElementKind::Button, Some(Action::Click)),
+            | Role::MenuItem
+            // A tab panel's tab: activating it shows its panel.
+            | Role::Tab => (ElementKind::Button, Some(Action::Click)),
             Role::TextInput | Role::MultilineTextInput | Role::PasswordInput => {
                 (ElementKind::Field, Some(Action::Focus))
             }
