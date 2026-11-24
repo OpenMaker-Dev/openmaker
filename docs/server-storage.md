@@ -215,14 +215,14 @@ slot `[00 n]` (script-steps.md 4.2) of a step's data that holds a
 password depends on the step, whose id is in the script's step list
 `[11, 5, S, 04]` or the button's object in the layout's object store
 `[4, 5, L, 07]` (layout-model.md 5.3.3). A step keeps its data at
-`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. Only the
-credential inside a slot is Secret: its calculation `05` (the specs name
-these credentials as calculations), and its text `01` if it has one; the
-slot's number `03` is another setting (Create PDF's slot 7 also holds
-"allow screen reader"). In an ODBC profile only the user name and password
-strings are Secret; its data source name, flags and query are design.
-When the step cannot be identified, every slot of its data is Secret
-whole: not knowing fails toward keeping a value out of anything shown
+`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. Of a credential
+slot its calculation `05` is Secret (the specs name these credentials as
+calculations), and its text `01` if it has one; the slot's number `03` is
+another setting (Create PDF's slot 7 also holds "allow screen reader"). An
+ODBC profile is Secret whole. A path whose subtree holds a Secret path
+(the slot, the member) is Secret too. "Not Secret" means identified and
+known not to hold a credential: when a step is not identified with
+certainty, every slot of its data is Secret whole
 (`om_hbam::design_paths::STEP_SECRETS`; a test keeps this table equal to
 the code's):
 
@@ -241,16 +241,12 @@ the code's):
 | 243 Create PDF | 7 the password to open; 8 the password to control | script-steps.md 12.2 |
 | 244 Append PDF | 7 the PDF's password | script-steps.md 12.2 |
 | 246 Open PDF | 7 the PDF's password | script-steps.md 12.2 |
-| any step | in its profile `86`, when an ODBC connection profile, the user name and password strings; the whole profile when it does not read so | script-steps.md 11.0, 11.5 |
-| a step OpenMaker cannot identify | every slot, whole: no step list, one that does not read, a data key no step names, a step id the step catalog does not have | script-steps.md 2, 4.2; catalogs/script-steps.csv |
+| any step | its profile `86`, whole, when an ODBC connection profile (it holds the user name and password) or one that does not read | script-steps.md 11.0, 11.5 |
+| a step not identified with certainty | every slot, whole: no step list or object store, one that does not decode to its end, a data key that does not decode or that two descriptors or buttons give different steps, a button whose step fields disagree, a step id the step catalog does not have (0 included), a data key no step names, a credential slot not shaped as script-steps.md 4.2 gives | script-steps.md 2, 4.2; catalogs/script-steps.csv |
 
 There is no grouping by path alone: `om_hbam::design_paths::group_in`
 takes the tree, since a path-only answer of Design for a stored password
-could be taken as final. Where a Secret is marked whole, a design change
-inside it (another formula in a slot of an unidentified step, another
-query in an ODBC profile that does not read as script-steps.md 11.5 gives
-it) shows only as a change of the object, not as another design
-revision (section 9).
+could be taken as final.
 
 What the rules cannot see is not Secret. The rules reach the first-level
 keys of members and catalog indexes and the slots above; below them
@@ -1078,30 +1074,23 @@ and its key (and a field by its table's key), a catalog by its kind (and
 a field catalog by its table). A member object is its member and the
 entries its catalog's index keeps for it of what a tool shows (a
 script's cached name and flags, with the full-access badge Script
-Workspace shows, scripts.md). A catalog object is the rest of its index:
-its Design paths are the display order, and so the order of scripts and
+Workspace shows, scripts.md). A catalog object is its index, whose
+Design paths are the display order, and so the order of scripts and
 their folders, and the catalog's settings; the name lists, digests,
 counts and dependency lists there are Derived, and the last issued id is
-Data. So a change that only moves a script is a change of the script
-catalog's object. An emptied member, a deletion, is no object.
-
-An object has two hashes. Its **edit token** (`Object::edit_token`, a
-`sha256:` revision) covers the whole member or index, stored passwords
-included, without modification stamps: what authoring exchanges to guard
-an edit ([authoring.md](authoring.md), "Revisions"), and only between a
-client that holds the member and the host. Its **design revision**
-(`Object::design_revision`, a `design-sha256:` text of another type)
-covers its Design content: Data, Access and Derived paths left out, a
-Secret value replaced by a marker, paths in no group kept. History, a
-comparison, the text form and a mirror show and keep design revisions;
-none of them decides an edit. Whether an object changed is decided on its
-full content, the edit token computed then, and reported with the design
-revisions: when the full content differs and the design revisions are
-equal, the change is reported as "a stored secret or derived content
-changed", without the content. Derived paths are recomputed by whoever
-writes the paths they come from, a deploy too: a privilege set's
-checksum covers the file's creation stamp, so one copied from another
-file would fail FileMaker's check at open (session-identity.md 4.4).
+Data. An emptied member, a deletion, is no object. An object's revision
+today is its edit token (`Object::edit_token`): the `sha256:` of its whole
+member or index, stored passwords included, without modification stamps,
+what `om-author` reports and the host checks to guard an edit
+([authoring.md](authoring.md), "Revisions"); it is exchanged only between
+a client that holds the member and the host. A revision that can be
+shown and kept in history, comparisons, the text form and a mirror, and
+that carries no stored password, is not built
+([#723](https://github.com/OpenMaker-Dev/openmaker/issues/723)). Derived
+paths are recomputed by whoever writes the paths they come from, a deploy
+too: a privilege set's checksum covers the file's creation stamp, so one
+copied from another file would fail FileMaker's check at open
+(session-identity.md 4.4).
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the
@@ -1161,9 +1150,9 @@ file without closing it:
    what it needs and refused if it would leave a reference broken. Access
    paths are never deployed. A member is written path by path: its Design
    paths from the source, its Data paths kept from the target (a serial
-   field keeps its next value). A member's Secret paths are kept from the
-   target, like its Data paths, unless the administrator chooses to bring
-   them from the source. A member holding a path that is in no
+   field keeps its next value). Stored credentials of the target are kept
+   unless the administrator chooses otherwise. A member holding a path
+   that is in no
    group is not deployed over an existing one. A changed privilege set is
    shown with the accounts it affects, and one that accounts use cannot be
    deleted.

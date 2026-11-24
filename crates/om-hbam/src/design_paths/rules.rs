@@ -60,13 +60,6 @@ impl Group {
             Group::None => "none",
         }
     }
-
-    /// Whether the group's paths are left out of an object's content:
-    /// Data, Access and Derived paths. A Secret path stays, without its
-    /// value.
-    pub fn left_out(self) -> bool {
-        matches!(self, Group::Data | Group::Access | Group::Derived)
-    }
 }
 
 /// The first occurrence id's base: occurrences are numbered from serial
@@ -1157,13 +1150,16 @@ pub fn markdown_secrets() -> String {
         ));
     }
     out.push_str(
-        "| any step | in its profile `86`, when an ODBC connection profile, the user name and \
-         password strings; the whole profile when it does not read so | script-steps.md 11.0, 11.5 |\n",
+        "| any step | its profile `86`, whole, when an ODBC connection profile (it holds the user \
+         name and password) or one that does not read | script-steps.md 11.0, 11.5 |\n",
     );
     out.push_str(
-        "| a step OpenMaker cannot identify | every slot, whole: no step list, one that does not \
-         read, a data key no step names, a step id the step catalog does not have | \
-         script-steps.md 2, 4.2; catalogs/script-steps.csv |\n",
+        "| a step not identified with certainty | every slot, whole: no step list or object \
+         store, one that does not decode to its end, a data key that does not decode or that \
+         two descriptors or buttons give different steps, a button whose step fields disagree, \
+         a step id the step catalog does not have (0 included), a data key no step names, a \
+         credential slot not shaped as script-steps.md 4.2 gives | script-steps.md 2, 4.2; \
+         catalogs/script-steps.csv |\n",
     );
     out
 }

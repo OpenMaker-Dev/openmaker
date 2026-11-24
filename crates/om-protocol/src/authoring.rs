@@ -178,10 +178,9 @@ pub const MAX_LAYOUT_NAME_CHARS: usize = 100;
 /// an edit token: the whole member (or catalog), stored passwords
 /// included, without modification stamps ([`content_revision`] for a
 /// script, [`layout_revision`] for a layout, [`catalog_revision`] for
-/// anything else). A design revision is never one.
-/// [`legacy_content_revision`] and [`legacy_catalog_revision`] are the
-/// tokens an older client computes, which a host accepts for comparison
-/// only.
+/// anything else). [`legacy_content_revision`] and
+/// [`legacy_catalog_revision`] are the tokens an older client computes,
+/// which a host accepts and answers in.
 pub use om_hbam::design_paths::{
     catalog_revision, is_stamp, legacy_catalog_revision,
     legacy_script_form_revision as legacy_content_revision, Revision, MOD_ACCOUNT, MOD_COUNT,

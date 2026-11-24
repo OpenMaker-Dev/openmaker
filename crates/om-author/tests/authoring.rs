@@ -719,8 +719,8 @@ fn stored_script(file: &TempFile, id: u64) -> om_hbam::OwnedNode {
 /// included (docs/authoring.md, "Revisions"): an edit that changes only a
 /// password is applied, and a client holding the token from before another
 /// client's password change is refused. A token as an older client computes
-/// it, which hashed a split value as its pieces, is accepted; any other
-/// stale token is not.
+/// it, which hashed a split value as its pieces, is accepted and answered
+/// in that form; any other stale token is not.
 #[test]
 fn password_edits_and_older_clients_tokens_are_guarded_by_the_whole_member() {
     let mut all = scripts();
@@ -768,6 +768,8 @@ fn password_edits_and_older_clients_tokens_are_guarded_by_the_whole_member() {
     let long = stored_script(&file, 9);
     let legacy = authoring::legacy_content_revision(&long);
     assert_ne!(legacy, content_revision(&long), "the step list is split");
+    // One step fewer, the step list still split into a header and pieces,
+    // as an older client sends what it read.
     let mut shorter = long.clone();
     let steps = shorter
         .child(&[4])
@@ -775,10 +777,21 @@ fn password_edits_and_older_clients_tokens_are_guarded_by_the_whole_member() {
         .assembled()
         .unwrap()
         .into_owned();
-    shorter.set_child(om_hbam::OwnedNode::leaf(
+    let steps = &steps[..steps.len() - 28];
+    let mut split = om_hbam::OwnedNode::list(
         vec![4],
-        steps[..steps.len() - 28].to_vec(),
-    ));
+        vec![om_hbam::OwnedNode::leaf(
+            vec![0],
+            (steps.len() as u32).to_be_bytes().to_vec(),
+        )],
+    );
+    for (n, piece) in steps.chunks(1000).enumerate() {
+        split.children.push(om_hbam::OwnedNode::leaf(
+            serial::encode(n as u64 + 1),
+            piece.to_vec(),
+        ));
+    }
+    shorter.set_child(split);
     match replace(9, [7; 32], shorter.clone()) {
         Reply::Refused {
             status: status::CONFLICT,
@@ -786,12 +799,17 @@ fn password_edits_and_older_clients_tokens_are_guarded_by_the_whole_member() {
         } => {}
         other => panic!("{other:?}"),
     }
-    match replace(9, legacy, shorter.clone()) {
+    let answered = match replace(9, legacy, shorter.clone()) {
         Reply::Replaced(replaced) => {
             assert!(replaced.changed);
-            assert_eq!(replaced.revision, content_revision(&shorter));
+            replaced.revision
         }
         other => panic!("{other:?}"),
-    }
+    };
+    // Answered in the form it was asked in: what the older computation
+    // gives for the member as saved.
+    let saved = stored_script(&file, 9);
+    assert_eq!(answered, authoring::legacy_content_revision(&saved));
+    assert_ne!(answered, content_revision(&saved));
     host.stop();
 }

@@ -1,42 +1,30 @@
-//! The path groups, design revisions and edit tokens of
-//! `om_hbam::design_paths` on the synthetic Tasks file the authoring tests
-//! host (`common::form_tree`): which changes move which object's design
-//! revision, and that a file written and read back keeps every design
-//! revision and edit token.
+//! The path groups and edit tokens of `om_hbam::design_paths`, through
+//! which `om-author`'s revisions are computed, on the synthetic Tasks file
+//! the authoring tests host (`common::form_tree`): how paths are grouped,
+//! which changes move which object's token, and that a file written and
+//! read back keeps every token.
 
 mod common;
 
 use std::collections::BTreeMap;
 
 use common::fixture;
-use om_hbam::design_paths::{self, group_in, DesignRevision, Group, Kind, Revision};
+use om_hbam::design_paths::{self, group_in, Group, Kind, Revision};
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, HbamFile, OwnedNode};
 
 type Id = (Kind, Option<Vec<u8>>, Vec<u8>);
 
-fn revisions(root: &OwnedNode) -> BTreeMap<Id, DesignRevision> {
-    design_paths::objects(root)
-        .iter()
-        .map(|o| {
-            (
-                (o.kind, o.table.clone(), o.key.clone()),
-                o.design_revision(),
-            )
-        })
-        .collect()
-}
-
-fn tokens(root: &OwnedNode) -> BTreeMap<Id, Revision> {
+fn revisions(root: &OwnedNode) -> BTreeMap<Id, Revision> {
     design_paths::objects(root)
         .iter()
         .map(|o| ((o.kind, o.table.clone(), o.key.clone()), o.edit_token()))
         .collect()
 }
 
-/// The objects whose design revision differs between `a` and `b`, or that
-/// only one has.
-fn changed(a: &BTreeMap<Id, DesignRevision>, b: &BTreeMap<Id, DesignRevision>) -> Vec<Id> {
+/// The objects whose token differs between `a` and `b`, or that only one
+/// has.
+fn changed(a: &BTreeMap<Id, Revision>, b: &BTreeMap<Id, Revision>) -> Vec<Id> {
     let mut out: Vec<Id> = a
         .iter()
         .filter(|(id, revision)| b.get(*id) != Some(revision))
@@ -94,7 +82,7 @@ fn restamp(node: &mut OwnedNode) {
 }
 
 #[test]
-fn stamps_serial_numbers_and_accounts_change_no_revision() {
+fn stamps_and_accounts_change_no_token_and_a_serial_only_its_fields() {
     let root = tree();
     let before = revisions(&root);
     assert!(before.keys().any(|(kind, ..)| *kind == Kind::Script));
@@ -111,7 +99,15 @@ fn stamps_serial_numbers_and_accounts_change_no_revision() {
     next.push(vec![0x0c]);
     assert_eq!(group_in(&served, &at(&next)), Group::Data);
     served.put(&at(&next), om_scripts::text_node(&[], "2"));
-    assert_eq!(changed(&before, &revisions(&served)), Vec::<Id>::new());
+    // The token covers the whole member: the field's moves, nothing else.
+    assert_eq!(
+        changed(&before, &revisions(&served)),
+        vec![(
+            Kind::Field,
+            Some(uint_segment(fixture::TABLE)),
+            uint_segment(fixture::COUNT)
+        )]
+    );
 
     // Clerk's account renamed, and its password changed.
     let mut accounts = root.clone();
@@ -124,7 +120,7 @@ fn stamps_serial_numbers_and_accounts_change_no_revision() {
 }
 
 #[test]
-fn a_change_moves_its_own_objects_revision_and_no_other() {
+fn a_change_moves_its_own_objects_token_and_no_other() {
     let root = tree();
     let before = revisions(&root);
 
@@ -168,7 +164,7 @@ fn a_change_moves_its_own_objects_revision_and_no_other() {
 }
 
 #[test]
-fn a_file_written_and_read_back_keeps_every_revision() {
+fn a_file_written_and_read_back_keeps_every_token() {
     let root = tree();
     let before = revisions(&root);
     let superblock = om_hbam::new_superblock("Tasks").expect("a superblock");
@@ -181,7 +177,6 @@ fn a_file_written_and_read_back_keeps_every_revision() {
         "split on write"
     );
     assert_eq!(revisions(&reread), before);
-    assert_eq!(tokens(&reread), tokens(&root));
     // The report sees the keys the fixture adds that FileMaker does not
     // define, and nothing else outside the rules.
     let report = design_paths::report(&reread);

@@ -543,18 +543,18 @@ fn replace_script_steps(
     }
     let revision = content_revision(&request.definition);
     let current_revision = content_revision(&current);
-    if current_revision == revision {
-        return Reply::Replaced(Replaced {
-            changed: false,
-            revision,
-        });
-    }
-    let expected = expected_now(
+    let (expected, older) = expected_now(
         &request.expected,
         &current,
         content_revision,
         legacy_content_revision,
     );
+    if current_revision == revision {
+        return Reply::Replaced(Replaced {
+            changed: false,
+            revision: answer(older, &current, content_revision, legacy_content_revision),
+        });
+    }
     if current_revision != expected {
         return Reply::Refused {
             status: status::CONFLICT,
@@ -642,7 +642,12 @@ fn replace_script_steps(
     );
     Reply::Replaced(Replaced {
         changed: true,
-        revision,
+        revision: answer(
+            older,
+            &request.definition,
+            content_revision,
+            legacy_content_revision,
+        ),
     })
 }
 
@@ -737,7 +742,7 @@ fn create_field(
     let current = store.node(&[&table, &[FIELDS]]).cloned();
     let empty = OwnedNode::list(vec![FIELDS], Vec::new());
     let current_revision = catalog_revision(current.as_ref().unwrap_or(&empty));
-    let expected = expected_now(
+    let (expected, older) = expected_now(
         &request.expected,
         current.as_ref().unwrap_or(&empty),
         catalog_revision,
@@ -760,7 +765,12 @@ fn create_field(
             return Reply::Created(Created {
                 changed: false,
                 field: id,
-                revision: current_revision,
+                revision: answer(
+                    older,
+                    current.as_ref().unwrap_or(&empty),
+                    catalog_revision,
+                    legacy_catalog_revision,
+                ),
             });
         }
     }
@@ -819,7 +829,7 @@ fn create_field(
     if let Some(index) = catalog.child(&[1]).cloned() {
         catalog.set_child(stamped(index, caller.session_name, account, &time));
     }
-    let revision = catalog_revision(&catalog);
+    let revision = answer(older, &catalog, catalog_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, catalog_path.clone(), catalog);
     let saved = hosted.save_commit(&mut store, journal);
@@ -896,6 +906,8 @@ fn create_layout(
         );
     }
     let like = (request.like != 0).then_some(request.like);
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
         let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
             return refused(
@@ -917,12 +929,13 @@ fn create_layout(
         let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
         let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
         let current_revision = catalog_revision(index_now);
-        let expected = expected_now(
+        let (expected, was_older) = expected_now(
             &request.expected,
             index_now,
             catalog_revision,
             legacy_catalog_revision,
         );
+        older = was_older;
         let Some((theme, width)) = layout_catalog::model(layouts, like) else {
             return refused(
                 status::UNSUPPORTED,
@@ -943,7 +956,7 @@ fn create_layout(
             return Reply::LayoutCreated(LayoutCreated {
                 changed: false,
                 layout: om_hbam::slot::be_uint(&made.segment).unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
             });
         }
         if current_revision != expected {
@@ -994,7 +1007,7 @@ fn create_layout(
     let mut member = stamped(member, caller.session_name, account, &time);
     member.children.retain(|c| c.segment != MOD_COUNT);
     let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&index);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path, member);
@@ -1086,7 +1099,7 @@ fn field_control(
         };
         // At another revision, `edit_objects` answers: already applied, or
         // a conflict (306), even when the object is gone since.
-        let expected = expected_now(
+        let (expected, _) = expected_now(
             &request.expected,
             member,
             layout_revision,
@@ -1428,7 +1441,7 @@ where
         ));
     };
     let current_revision = layout_revision(&current);
-    let expected = expected_now(
+    let (expected, older) = expected_now(
         &edit.expected,
         &current,
         layout_revision,
@@ -1436,7 +1449,10 @@ where
     );
     if current_revision != expected {
         if (edit.already)(&current, &store) {
-            return Ok((false, current_revision));
+            return Ok((
+                false,
+                answer(older, &current, layout_revision, legacy_catalog_revision),
+            ));
         }
         return Err(Reply::Refused {
             status: status::CONFLICT,
@@ -1459,7 +1475,7 @@ where
     }
     let time = host_time_key();
     let member = stamped(planned.member, caller.session_name, account, &time);
-    let revision = layout_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -1519,6 +1535,8 @@ fn layout_setup(
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
     let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
         let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
             return refused(status::UNSUPPORTED, "The file has no layout catalog [4].");
@@ -1530,12 +1548,13 @@ fn layout_setup(
             );
         };
         let current = layout_revision(member);
-        let expected = expected_now(
+        let (expected, was_older) = expected_now(
             &request.expected,
             member,
             layout_revision,
             legacy_catalog_revision,
         );
+        older = was_older;
         let planned =
             layout_catalog::plan_setup(layouts, id, &request.name, request.flags, request.hidden);
         // A layout that holds the setup already answers it unchanged: an
@@ -1543,7 +1562,7 @@ fn layout_setup(
         if planned.as_ref().is_ok_and(|p| !p.changed) {
             return Reply::Framed(Framed {
                 changed: false,
-                revision: current,
+                revision: answer(older, member, layout_revision, legacy_catalog_revision),
             });
         }
         if current != expected {
@@ -1597,7 +1616,7 @@ fn layout_setup(
     let time = host_time_key();
     let member = stamped(planned.member, caller.session_name, account, &time);
     let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = layout_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path, member);
     store.replace_schema_in(&mut journal, index_path, index);
@@ -1655,6 +1674,8 @@ fn value_list_values(
         uint_segment(id),
     ];
     let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
         let Some(catalog) = store.node(&[&[VALUE_LISTS]]) else {
             return refused(
@@ -1673,18 +1694,9 @@ fn value_list_values(
                 return refused(code, refusal.to_string());
             }
         };
-        let current = catalog_revision(&planned.member);
-        // A list that holds the values already answers unchanged: an
-        // earlier sending's, whose answer was lost, or the same values.
-        if !planned.changed {
-            return Reply::Framed(Framed {
-                changed: false,
-                revision: current,
-            });
-        }
         let stored_member = catalog.at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)]);
         let stored = stored_member.map(catalog_revision);
-        let expected = stored_member.map_or(request.expected, |member| {
+        let (expected, was_older) = stored_member.map_or((request.expected, false), |member| {
             expected_now(
                 &request.expected,
                 member,
@@ -1692,6 +1704,20 @@ fn value_list_values(
                 legacy_catalog_revision,
             )
         });
+        older = was_older;
+        // A list that holds the values already answers unchanged: an
+        // earlier sending's, whose answer was lost, or the same values.
+        if !planned.changed {
+            return Reply::Framed(Framed {
+                changed: false,
+                revision: answer(
+                    older,
+                    &planned.member,
+                    catalog_revision,
+                    legacy_catalog_revision,
+                ),
+            });
+        }
         if stored != Some(expected) {
             return Reply::Refused {
                 status: status::CONFLICT,
@@ -1732,7 +1758,7 @@ fn value_list_values(
     let time = host_time_key();
     let member = stamped(planned.member, caller.session_name, account, &time);
     let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, catalog_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path, member);
     store.replace_schema_in(&mut journal, index_path, index);
@@ -1817,7 +1843,7 @@ fn place_field(
         );
     };
     let current_revision = layout_revision(&current);
-    let expected = expected_now(
+    let (expected, older) = expected_now(
         &request.expected,
         &current,
         layout_revision,
@@ -1870,7 +1896,7 @@ fn place_field(
                 changed: false,
                 field_object,
                 label_object: label_object.unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -1917,7 +1943,7 @@ fn place_field(
         }
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = layout_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -1989,6 +2015,8 @@ fn duplicate_layout(
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let (duplicated, items) = {
         let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
             return refused(
@@ -1999,12 +2027,13 @@ fn duplicate_layout(
         let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
         let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
         let current_revision = catalog_revision(index_now);
-        let expected = expected_now(
+        let (expected, was_older) = expected_now(
             &request.expected,
             index_now,
             catalog_revision,
             legacy_catalog_revision,
         );
+        older = was_older;
         // Made by an earlier sending of this request, whose answer was
         // lost: its UUID is on the copy. Nothing to do.
         if let Some(made) = layout_catalog::members(layouts).iter().find(|m| {
@@ -2013,7 +2042,7 @@ fn duplicate_layout(
             return Reply::LayoutCreated(LayoutCreated {
                 changed: false,
                 layout: om_hbam::slot::be_uint(&made.segment).unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
             });
         }
         if layouts
@@ -2141,7 +2170,7 @@ fn duplicate_layout(
         None => member.children.retain(|c| c.segment != MOD_COUNT),
     }
     let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&index);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path, member);
@@ -2211,6 +2240,8 @@ fn delete_layout(
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
     let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let (planned, released) = {
         let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
             return refused(
@@ -2221,12 +2252,13 @@ fn delete_layout(
         let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
         let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
         let current_revision = catalog_revision(index_now);
-        let expected = expected_now(
+        let (expected, was_older) = expected_now(
             &request.expected,
             index_now,
             catalog_revision,
             legacy_catalog_revision,
         );
+        older = was_older;
         let exists = layouts
             .at(&[&[LAYOUT_MEMBERS], &uint_segment(id)])
             .is_some();
@@ -2236,7 +2268,7 @@ fn delete_layout(
             if !exists {
                 return Reply::Deleted(Deleted {
                     changed: false,
-                    revision: current_revision,
+                    revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
                 });
             }
             return Reply::Refused {
@@ -2303,7 +2335,7 @@ fn delete_layout(
     }
     let time = host_time_key();
     let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&index);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.remove_schema_in(&mut journal, member_path);
     store.replace_schema_in(&mut journal, index_path, index);
@@ -2391,7 +2423,7 @@ fn place_text(
         );
     };
     let current_revision = layout_revision(&current);
-    let expected = expected_now(
+    let (expected, older) = expected_now(
         &request.expected,
         &current,
         layout_revision,
@@ -2404,7 +2436,7 @@ fn place_text(
                 changed: false,
                 field_object: text_object,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2451,7 +2483,7 @@ fn place_text(
         ));
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = layout_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -2561,7 +2593,7 @@ fn place_portal(
         );
     };
     let current_revision = layout_revision(&current);
-    let expected = expected_now(
+    let (expected, older) = expected_now(
         &request.expected,
         &current,
         layout_revision,
@@ -2614,7 +2646,7 @@ fn place_portal(
                 changed: false,
                 field_object: portal,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2677,7 +2709,7 @@ fn place_portal(
         }
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = layout_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -2875,7 +2907,8 @@ fn place_planned_button(
         );
     };
     let current_revision = layout_revision(&current);
-    let expected = expected_now(expected, &current, layout_revision, legacy_catalog_revision);
+    let (expected, older) =
+        expected_now(expected, &current, layout_revision, legacy_catalog_revision);
     // A script the step names: one of the file's, not a folder or
     // separator.
     if let Some(key) = step.script_key() {
@@ -2909,7 +2942,7 @@ fn place_planned_button(
                 changed: false,
                 field_object: button,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2947,7 +2980,7 @@ fn place_planned_button(
         ));
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = layout_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -2987,20 +3020,36 @@ fn place_planned_button(
 /// The revision a request names, read as the current content's edit
 /// token when it is the token a client one version behind computes for
 /// that content: before split values were hashed as the value they join to
-/// (`om_hbam::design_paths`; docs/authoring.md, "Revisions"). Any other
-/// revision is kept as sent, so a stale one is still a conflict; the host
-/// answers with its own form.
+/// (`om_hbam::design_paths`; docs/authoring.md, "Revisions"); and whether
+/// it was, so the answer is given in that form ([`answer`]). Any other
+/// revision is kept as sent, so a stale one is still a conflict.
 fn expected_now(
     expected: &Revision,
     current: &OwnedNode,
     token: fn(&OwnedNode) -> Revision,
     legacy: fn(&OwnedNode) -> Revision,
-) -> Revision {
+) -> (Revision, bool) {
     let now = token(current);
     if *expected != now && *expected == legacy(current) {
-        now
+        (now, true)
     } else {
-        *expected
+        (*expected, false)
+    }
+}
+
+/// A revision in the form the request was made in: the older form when
+/// its token was in that form ([`expected_now`]), so a client always reads
+/// back the token it computes itself.
+fn answer(
+    older: bool,
+    node: &OwnedNode,
+    token: fn(&OwnedNode) -> Revision,
+    legacy: fn(&OwnedNode) -> Revision,
+) -> Revision {
+    if older {
+        legacy(node)
+    } else {
+        token(node)
     }
 }
 

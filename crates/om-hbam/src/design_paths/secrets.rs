@@ -1,7 +1,7 @@
 //! The Secret paths of a script or layout member: the credentials in a
 //! step's data that [`STEP_SECRETS`] names for the step they belong to,
-//! the user name and password in an ODBC profile, and every slot of step
-//! data whose step OpenMaker cannot identify.
+//! ODBC profiles, and every slot of step data whose step OpenMaker cannot
+//! identify with certainty.
 //!
 //! A script's step list `[11, 5, S, 04]` is its steps' 28-byte descriptors
 //! (script-steps.md 2): the data key `mDataKey` in bytes 0-5 (a length,
@@ -14,21 +14,28 @@
 //! `[4, 5, L, 05, <object key as a serial key>, 11]` (layout-model.md
 //! 5.3.3).
 //!
-//! In step data a slot is a two-byte segment `[00 n]` holding a text `01`,
-//! a number `03`, a calculation `05` and other parts (script-steps.md 4.2).
+//! In step data a slot is a two-byte segment `[00 n]` holding a list value
+//! (a `u32`), a text `01`, a number `03`, a calculation `05`, a field spec
+//! `10`, occurrence keys `11` and a path list `82` (script-steps.md 4.2).
 //! The credentials the specs name are calculations, so of a credential
-//! slot the calculation `05` is Secret, and the text `01` when a slot has
-//! one; its number `03` is another setting (Create PDF's slot 7 also holds
-//! "allow screen reader", 12.2). When the step cannot be identified (no
-//! step list, one that does not read, no descriptor naming the data key,
-//! a step id the step catalog does not have), every slot of its data is
-//! Secret whole: not knowing fails toward keeping a value out of anything
-//! shown. Input is hostile: what does not decode finds nothing to trust.
+//! slot the calculation `05` is Secret, and the text `01` if it has one;
+//! its number `03` is another setting (Create PDF's slot 7 also holds
+//! "allow screen reader", 12.2). An ODBC profile `86` is Secret whole.
+//!
+//! "Not Secret" means identified and known not to hold a credential. So
+//! every slot of a step's data is Secret, whole, when the step is not
+//! identified with certainty: no step list or object store, one that does
+//! not decode to its end, a descriptor whose data key does not decode, two
+//! descriptors or objects naming one data key with different steps, a
+//! button whose step fields disagree (the layout decoder takes the last of
+//! repeated fields, `om_layout`), a step id the step catalog does not have
+//! (0, a button with no action, included), a data key no step names; and
+//! when a credential slot of the step does not have the shape above.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use super::revision::Mark;
+use super::revision::split_value;
 use super::rules::{is_odbc_profile, PROFILE, STEP_SECRETS};
 use super::{Kind, Path};
 use crate::serial;
@@ -45,12 +52,11 @@ const SLOT_FORMULA: &[u8] = &[0x05];
 /// The step catalog (`docs/re/catalogs/script-steps.csv`).
 const STEPS: &str = include_str!("../../../../docs/re/catalogs/script-steps.csv");
 
-/// The step ids the catalog names, and 0, a button with no action
-/// (layout-model.md 5.3.3).
+/// The step ids the catalog names.
 fn known_steps() -> &'static BTreeSet<u16> {
     static KNOWN: OnceLock<BTreeSet<u16>> = OnceLock::new();
     KNOWN.get_or_init(|| {
-        let mut out: BTreeSet<u16> = STEPS
+        STEPS
             .lines()
             .skip(1)
             .filter_map(|line| {
@@ -59,9 +65,7 @@ fn known_steps() -> &'static BTreeSet<u16> {
                 let name = fields.next()?;
                 (!name.is_empty()).then_some(id)
             })
-            .collect();
-        out.insert(0);
-        out
+            .collect()
     })
 }
 
@@ -71,12 +75,12 @@ pub(super) struct Secret {
     /// Relative to the member.
     pub path: Path,
     pub holds: &'static str,
-    pub mark: Mark,
 }
 
-/// The step each data node belongs to: by data key, from what holds the
-/// steps. `None` when that does not read.
-type Steps = Option<BTreeMap<Vec<u8>, u16>>;
+/// The step each data node belongs to, by data key: `None` inside where
+/// two sources disagree. `None` outside when what holds the steps does not
+/// decode.
+type Steps = Option<BTreeMap<Vec<u8>, Option<u16>>>;
 
 /// Step data in a member: each data node's path (relative to the member)
 /// and node, and the steps they belong to.
@@ -104,29 +108,54 @@ fn step_data(kind: Kind, member: &OwnedNode) -> Option<(Vec<(Path, &OwnedNode)>,
                     ))
                 })
                 .collect();
-            let steps = button_steps(member).map(|steps| {
-                steps
-                    .into_iter()
-                    .map(|(key, step)| (serial::encode(key), step))
-                    .collect()
-            });
-            Some((nodes, steps))
+            Some((nodes, button_steps(member)))
         }
         _ => None,
     }
 }
 
 /// The step that the data at `at` (relative to the member) belongs to,
-/// when it can be identified.
-fn step_of(at: &[Vec<u8>], steps: &Steps) -> Option<u16> {
+/// when it is identified with certainty and its credential slots have the
+/// shape the spec gives.
+fn resolve(at: &[Vec<u8>], data: Option<&OwnedNode>, steps: &Steps) -> Option<u16> {
     // The data key: `K` of `[05, K]` in a script, `O` of `[05, O, 11]` on
     // a layout.
     let key = at.get(1)?;
-    steps
-        .as_ref()?
-        .get(key)
-        .copied()
-        .filter(|id| known_steps().contains(id))
+    let step = (*steps.as_ref()?.get(key)?)?;
+    if !known_steps().contains(&step) {
+        return None;
+    }
+    if let (Some(secret), Some(data)) = (STEP_SECRETS.iter().find(|s| s.step == step), data) {
+        for (slot, _) in secret.slots {
+            if data
+                .child(&slot.to_be_bytes())
+                .is_some_and(|s| !slot_shape(s))
+            {
+                return None;
+            }
+        }
+    }
+    Some(step)
+}
+
+/// Whether a slot has the shape script-steps.md 4.2 gives it.
+fn slot_shape(slot: &OwnedNode) -> bool {
+    if slot.value.as_ref().is_some_and(|v| v.len() != 4) {
+        return false;
+    }
+    slot.children.iter().all(|c| match c.segment.as_slice() {
+        [0x01] | [0x82] => c.children.is_empty() || split_value(c).is_some(),
+        [0x03] => c.children.is_empty() && c.value.as_ref().is_some_and(|v| v.len() <= 8),
+        [0x05] => {
+            c.value.is_none()
+                && c.children
+                    .iter()
+                    .all(|f| matches!(f.segment.as_slice(), [4] | [5] | [6]))
+        }
+        [0x10] => c.children.is_empty(),
+        [0x11] => true,
+        _ => false,
+    })
 }
 
 /// The Secret paths of `member`, relative to it.
@@ -136,16 +165,15 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
         return out;
     };
     for (at, data) in nodes {
-        let step = step_of(&at, &steps);
+        let step = resolve(&at, Some(data), &steps);
         for child in &data.children {
             let mut slot = at.clone();
             slot.push(child.segment.clone());
             if child.segment == PROFILE {
-                if let Some(mark) = profile_mark(child) {
+                if profile_is_secret(child) {
                     out.push(Secret {
                         path: slot,
-                        holds: "an ODBC connection profile's user name and password",
-                        mark,
+                        holds: "an ODBC connection profile, with its user name and password",
                     });
                 }
                 continue;
@@ -156,8 +184,7 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
             match step {
                 None => out.push(Secret {
                     path: slot,
-                    holds: "a slot of a step OpenMaker cannot identify",
-                    mark: Mark::Whole,
+                    holds: "a slot of a step OpenMaker cannot identify with certainty",
                 }),
                 Some(step) => {
                     let Some(holds) = credential(step, &child.segment) else {
@@ -167,11 +194,7 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
                         if child.child(part).is_some() {
                             let mut path = slot.clone();
                             path.push(part.to_vec());
-                            out.push(Secret {
-                                path,
-                                holds,
-                                mark: Mark::Whole,
-                            });
+                            out.push(Secret { path, holds });
                         }
                     }
                 }
@@ -193,13 +216,18 @@ fn credential(step: u16, segment: &[u8]) -> Option<&'static str> {
         .map(|(_, holds)| *holds)
 }
 
+/// Whether a step's profile `86` is Secret: an ODBC connection profile, or
+/// one that does not read.
+fn profile_is_secret(node: &OwnedNode) -> bool {
+    node.assembled().is_none_or(|value| is_odbc_profile(&value))
+}
+
 /// Whether the path `below` (relative to a member of `kind`) is Secret: in
-/// or below a Secret path of [`of`], or, for a path the member does not
+/// or above a Secret path of [`of`], or, for a path the member does not
 /// hold, where one would be.
 pub(super) fn is_secret(kind: Kind, member: &OwnedNode, below: &[&[u8]]) -> bool {
-    let within =
-        |path: &Path| path.len() <= below.len() && path.iter().zip(below).all(|(a, b)| a == b);
-    if of(kind, member).iter().any(|s| within(&s.path)) {
+    let related = |path: &Path| path.iter().zip(below).all(|(a, b)| a == b);
+    if of(kind, member).iter().any(|s| related(&s.path)) {
         return true;
     }
     // A path the member does not hold: decide by where it would be.
@@ -228,7 +256,8 @@ pub(super) fn is_secret(kind: Kind, member: &OwnedNode, below: &[&[u8]]) -> bool
         return true;
     };
     let at: Path = below[..depth].iter().map(|s| s.to_vec()).collect();
-    match step_of(&at, &steps) {
+    let data = member.at(&below[..depth]);
+    match resolve(&at, data, &steps) {
         None => true,
         Some(step) => {
             credential(step, part).is_some()
@@ -239,139 +268,135 @@ pub(super) fn is_secret(kind: Kind, member: &OwnedNode, below: &[&[u8]]) -> bool
     }
 }
 
-/// How an ODBC profile `86` is marked: its user name and password strings,
-/// or the whole profile when it does not read as the spec gives it.
-fn profile_mark(node: &OwnedNode) -> Option<Mark> {
-    let Some(value) = node.assembled() else {
-        return Some(Mark::Whole);
-    };
-    if !is_odbc_profile(&value) {
-        return None;
-    }
-    Some(odbc_credentials(&value).map_or(Mark::Whole, |ranges| Mark::Parts(ranges.to_vec())))
-}
-
-/// The byte ranges of an ODBC profile's user name and password: after the
-/// type `ODBC` and a `u16`, the strings data source name, user name and
-/// password, each a byte count then its bytes (script-steps.md 11.0,
-/// 11.5), then a `u16` of flags.
-fn odbc_credentials(value: &[u8]) -> Option<[std::ops::Range<usize>; 2]> {
-    let mut at = 6;
-    let mut string = || {
-        let first = *value.get(at)?;
-        let (header, len) = match first {
-            0x00..=0x7f => (1, usize::from(first)),
-            0x80..=0xbf => (
-                2,
-                usize::from(u16::from_be_bytes([first, *value.get(at + 1)?]) & 0x7fff),
-            ),
-            0xc2 => (
-                3,
-                usize::from(u16::from_be_bytes(
-                    value.get(at + 1..at + 3)?.try_into().ok()?,
-                )),
-            ),
-            0xc4 => (
-                5,
-                u32::from_be_bytes(value.get(at + 1..at + 5)?.try_into().ok()?) as usize,
-            ),
-            _ => return None,
-        };
-        let start = at;
-        at = at.checked_add(header)?.checked_add(len)?;
-        (at <= value.len()).then_some(start..at)
-    };
-    let _source = string()?;
-    let user = string()?;
-    let password = string()?;
-    (value.len() >= password.end + 2).then_some([user, password])
-}
-
-/// Each step of a script's step list: its data key's segment and its step
-/// id; `None` when the list does not read.
-fn script_steps(member: &OwnedNode) -> Option<BTreeMap<Vec<u8>, u16>> {
+/// Each step of a script's step list, by its data key's segment; `None`
+/// when the list or a descriptor's data key does not decode.
+fn script_steps(member: &OwnedNode) -> Steps {
     let list = member.child(&[0x04])?.assembled()?;
     if list.len() % 28 != 0 {
         return None;
     }
-    let mut out = BTreeMap::new();
+    let mut out: BTreeMap<Vec<u8>, Option<u16>> = BTreeMap::new();
     for d in list.chunks_exact(28) {
         let len = usize::from(d[0]);
+        if len == 0 {
+            continue;
+        }
+        let key = d.get(1..1 + len).filter(|_| len <= 5)?;
+        let (&seg_len, segment) = key.split_first()?;
+        if usize::from(seg_len) != segment.len() || segment.is_empty() {
+            return None;
+        }
         let step = i16::from_be_bytes([d[20], d[21]]).unsigned_abs();
-        let Some(key) = d.get(1..1 + len).filter(|_| (2..=5).contains(&len)) else {
-            continue;
-        };
-        let Some((&seg_len, segment)) = key.split_first() else {
-            continue;
-        };
-        if usize::from(seg_len) == segment.len() {
-            out.insert(segment.to_vec(), step);
+        let entry = out.entry(segment.to_vec()).or_insert(Some(step));
+        if *entry != Some(step) {
+            *entry = None;
         }
     }
     Some(out)
 }
 
-/// Each button and button group of a layout's object store: its object
-/// key and its step id; `None` when the store does not read.
-fn button_steps(member: &OwnedNode) -> Option<Vec<(u64, u16)>> {
+/// Each button and button group of a layout's object store, by its object
+/// key as a serial key; `None` when the store or an object in it does not
+/// decode.
+fn button_steps(member: &OwnedNode) -> Steps {
     let store = member.child(&[0x07])?.assembled()?;
-    let mut out = Vec::new();
-    let mut fields = Fields::new(&store);
-    for (field, value) in fields.by_ref() {
+    let mut out: BTreeMap<Vec<u8>, Option<u16>> = BTreeMap::new();
+    for (field, value) in message(&store)? {
         let (2, Wire::Bytes(object)) = (field, value) else {
             continue;
         };
-        let mut key = None;
-        let mut step = None;
-        for (field, value) in Fields::new(object) {
-            match (field, value) {
-                (2, Wire::Varint(k)) => key = Some(k),
-                // buttonObj (16): scriptStep is field 3; groupObj (12): 1.
-                (16, Wire::Bytes(button)) => step = step.or(step_id(button, 3)),
-                (12, Wire::Bytes(group)) => step = step.or(step_id(group, 1)),
-                _ => {}
-            }
-        }
-        if let (Some(key), Some(step)) = (key, step) {
-            out.push((key, step));
+        let (key, step) = object_step(object)?;
+        let Some(step) = step else { continue };
+        let entry = out.entry(serial::encode(key)).or_insert(step);
+        if *entry != step {
+            *entry = None;
         }
     }
-    // A store that stops before its end does not read.
-    (fields.at >= store.len()).then_some(out)
+    Some(out)
 }
 
-/// The id (field 1) of the `ScriptStep` at `field` of `message`.
-fn step_id(message: &[u8], field: u32) -> Option<u16> {
-    let (_, Wire::Bytes(step)) = Fields::new(message).find(|(f, _)| *f == field)? else {
-        return None;
+/// A `LayoutObject`'s key and, when it is a button or a button group, its
+/// step: `Some(None)` when its step fields are missing or disagree. `None`
+/// when the object does not decode or has no single key.
+fn object_step(object: &[u8]) -> Option<(u64, Option<Option<u16>>)> {
+    let fields = message(object)?;
+    let mut keys = fields.iter().filter(|(f, _)| *f == 2);
+    let key = match (keys.next(), keys.next()) {
+        (Some((_, Wire::Varint(key))), None) => *key,
+        _ => return None,
     };
-    let (_, Wire::Varint(id)) = Fields::new(step).find(|(f, _)| *f == 1)? else {
-        return None;
+    let mut holders = 0;
+    let mut ids = Vec::new();
+    for (field, value) in &fields {
+        // buttonObj (16): scriptStep is field 3; groupObj (12): 1.
+        let step_field = match field {
+            16 => 3,
+            12 => 1,
+            _ => continue,
+        };
+        holders += 1;
+        let Wire::Bytes(holder) = value else {
+            return None;
+        };
+        for (field, value) in message(holder)? {
+            if field != step_field {
+                continue;
+            }
+            let Wire::Bytes(step) = value else {
+                return None;
+            };
+            for (field, value) in message(step)? {
+                match (field, value) {
+                    (1, Wire::Varint(id)) => ids.push(id),
+                    (1, _) => return None,
+                    _ => {}
+                }
+            }
+        }
+    }
+    if holders == 0 {
+        return Some((key, None));
+    }
+    let id = match ids.split_first() {
+        Some((first, rest)) if rest.iter().all(|id| id == first) => int32_id(*first),
+        _ => None,
     };
-    // An `int32`: a negative one is written as 64 bits.
-    u16::try_from((id as i64 as i32).unsigned_abs()).ok()
+    Some((key, Some(id)))
+}
+
+/// A step id written as an `int32` (negative written as 64 bits), as a
+/// step number; `None` when it is no `int32`.
+fn int32_id(raw: u64) -> Option<u16> {
+    let value = i32::try_from(raw as i64).ok()?;
+    u16::try_from(value.unsigned_abs()).ok()
 }
 
 /// A protobuf field's value.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Wire<'a> {
     Varint(u64),
     Bytes(&'a [u8]),
     Fixed,
 }
 
-/// The fields of a protobuf message, until the end or the first that does
-/// not decode.
+/// Every field of a protobuf message; `None` when it does not decode to
+/// its end.
+fn message(buf: &[u8]) -> Option<Vec<(u32, Wire<'_>)>> {
+    let mut fields = Fields { buf, at: 0 };
+    let mut out = Vec::new();
+    while fields.at < buf.len() {
+        out.push(fields.field()?);
+    }
+    Some(out)
+}
+
+/// A reader of a protobuf message's fields.
 struct Fields<'a> {
     buf: &'a [u8],
     at: usize,
 }
 
 impl<'a> Fields<'a> {
-    fn new(buf: &'a [u8]) -> Self {
-        Fields { buf, at: 0 }
-    }
-
     fn varint(&mut self) -> Option<u64> {
         let mut value = 0u64;
         for shift in (0..70).step_by(7) {
@@ -384,41 +409,32 @@ impl<'a> Fields<'a> {
         }
         None
     }
-}
 
-impl<'a> Iterator for Fields<'a> {
-    type Item = (u32, Wire<'a>);
+    fn skip(&mut self, len: usize) -> Option<&'a [u8]> {
+        let end = self
+            .at
+            .checked_add(len)
+            .filter(|&end| end <= self.buf.len())?;
+        let bytes = &self.buf[self.at..end];
+        self.at = end;
+        Some(bytes)
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.at >= self.buf.len() {
-            return None;
-        }
+    fn field(&mut self) -> Option<(u32, Wire<'a>)> {
         let tag = self.varint()?;
         let field = u32::try_from(tag >> 3).ok()?;
         let value = match tag & 7 {
             0 => Wire::Varint(self.varint()?),
             1 => {
-                self.at = self
-                    .at
-                    .checked_add(8)
-                    .filter(|&end| end <= self.buf.len())?;
+                self.skip(8)?;
                 Wire::Fixed
             }
             2 => {
                 let len = usize::try_from(self.varint()?).ok()?;
-                let end = self
-                    .at
-                    .checked_add(len)
-                    .filter(|&end| end <= self.buf.len())?;
-                let bytes = &self.buf[self.at..end];
-                self.at = end;
-                Wire::Bytes(bytes)
+                Wire::Bytes(self.skip(len)?)
             }
             5 => {
-                self.at = self
-                    .at
-                    .checked_add(4)
-                    .filter(|&end| end <= self.buf.len())?;
+                self.skip(4)?;
                 Wire::Fixed
             }
             _ => return None,
@@ -449,29 +465,95 @@ mod tests {
         out.extend_from_slice(bytes);
     }
 
-    #[test]
-    fn button_steps_come_from_buttons_and_groups() {
-        let step = |id: i64| {
-            let mut s = Vec::new();
+    /// A `ScriptStep` holding the ids `ids` in its field 1.
+    fn step(ids: &[i64]) -> Vec<u8> {
+        let mut s = Vec::new();
+        for &id in ids {
             varint(1 << 3, &mut s);
             varint(id as u64, &mut s);
-            s
-        };
-        let object = |key: u64, field: u32, inner: u32, id: i64| {
-            let mut holder = Vec::new();
-            message(inner, &step(id), &mut holder);
-            let mut o = Vec::new();
-            varint(2 << 3, &mut o);
-            varint(key, &mut o);
-            message(field, &holder, &mut o);
-            o
-        };
+        }
+        s
+    }
+
+    /// A `LayoutObject` with key `key` and, in its field `field` (16 a
+    /// button, 12 a group), a holder whose field `inner` is each of `steps`.
+    fn object(key: u64, field: u32, inner: u32, steps: &[Vec<u8>]) -> Vec<u8> {
+        let mut holder = Vec::new();
+        for s in steps {
+            message(inner, s, &mut holder);
+        }
+        let mut o = Vec::new();
+        varint(2 << 3, &mut o);
+        varint(key, &mut o);
+        message(field, &holder, &mut o);
+        o
+    }
+
+    fn steps_of(objects: &[Vec<u8>]) -> Steps {
         let mut store = Vec::new();
-        message(2, &object(5, 16, 3, 138), &mut store);
-        message(2, &object(200, 12, 1, -63), &mut store);
-        let member = OwnedNode::list(vec![1], vec![OwnedNode::leaf(vec![7], store.clone())]);
-        assert_eq!(button_steps(&member), Some(vec![(5, 138), (200, 63)]));
-        // A cut store does not read.
+        for o in objects {
+            message(2, o, &mut store);
+        }
+        button_steps(&OwnedNode::list(
+            vec![1],
+            vec![OwnedNode::leaf(vec![7], store)],
+        ))
+    }
+
+    #[test]
+    fn button_steps_come_from_buttons_and_groups_and_disagreement_is_no_step() {
+        let found = |pairs: &[(u64, Option<u16>)]| {
+            Some(
+                pairs
+                    .iter()
+                    .map(|(k, s)| (serial::encode(*k), *s))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        };
+        assert_eq!(
+            steps_of(&[
+                object(5, 16, 3, &[step(&[138])]),
+                object(200, 12, 1, &[step(&[-63])])
+            ]),
+            found(&[(5, Some(138)), (200, Some(63))])
+        );
+        // Repeated id fields, repeated step messages and two objects of
+        // one key that disagree: no step. Repeated ones that agree: it.
+        assert_eq!(
+            steps_of(&[object(5, 16, 3, &[step(&[1, 138])])]),
+            found(&[(5, None)])
+        );
+        assert_eq!(
+            steps_of(&[object(5, 16, 3, &[step(&[1]), step(&[138])])]),
+            found(&[(5, None)])
+        );
+        assert_eq!(
+            steps_of(&[object(5, 16, 3, &[step(&[138, 138])])]),
+            found(&[(5, Some(138))])
+        );
+        assert_eq!(
+            steps_of(&[
+                object(5, 16, 3, &[step(&[1])]),
+                object(5, 12, 1, &[step(&[138])])
+            ]),
+            found(&[(5, None)])
+        );
+        // A button without a step, an id that is no int32.
+        assert_eq!(steps_of(&[object(5, 16, 3, &[])]), found(&[(5, None)]));
+        assert_eq!(
+            steps_of(&[object(5, 16, 3, &[step(&[1 << 40])])]),
+            found(&[(5, None)])
+        );
+        // A step message with a malformed suffix, an object without a key,
+        // a cut store: nothing decodes.
+        let mut torn = step(&[138]);
+        torn.push(0x0a);
+        assert_eq!(steps_of(&[object(5, 16, 3, &[torn])]), None);
+        let mut keyless = Vec::new();
+        message(16, &[], &mut keyless);
+        assert_eq!(steps_of(&[keyless]), None);
+        let mut store = Vec::new();
+        message(2, &object(5, 16, 3, &[step(&[138])]), &mut store);
         store.truncate(store.len() - 2);
         let member = OwnedNode::list(vec![1], vec![OwnedNode::leaf(vec![7], store)]);
         assert_eq!(button_steps(&member), None);

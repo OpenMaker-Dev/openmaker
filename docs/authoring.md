@@ -214,10 +214,7 @@ table's listed fields and revision come from the same downloaded
 catalog. A concurrent edit leaves that observation stale together, so its
 token detects the change. This is not a transaction covering all
 metadata in the inspection. The file's `layouts_revision` is the second
-form over the layout catalog's index `[4, 1]`. A design revision
-(`design-sha256:`), which leaves Data and stored credentials out, is
-something else: no command takes or returns one, and none decides an
-edit.
+form over the layout catalog's index `[4, 1]`.
 
 A value is hashed as the bytes it holds, the same whether the file keeps
 it whole or split, so a file written and read back keeps every token. A
@@ -232,11 +229,12 @@ pieces, so tokens of content holding one have new strings: in FileMaker
 Pro 26's 66 starter files 75 of 330 scripts, 245 of 418 layouts, 72 of
 264 value lists and 94 of 341 `fields_revision`, `layouts_revision` and
 script catalog index tokens; every other token is the string it was. The
-host accepts a token in either form for the current content, and answers
-with the new one, so an older client goes on working. A newer client
-against an older host cannot be helped: for such content every edit is a
-`conflict`, reading the object again gives the same token and the next
-edit the same answer, until the host is updated.
+host accepts a token in either form for the current content and answers
+in the form the request named, so an older client reads back the token it
+computes and goes on working. A newer client against an older host cannot
+be helped: for such content every edit is a `conflict`, reading the
+object again gives the same token and the next edit the same answer,
+until the host is updated.
 
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,

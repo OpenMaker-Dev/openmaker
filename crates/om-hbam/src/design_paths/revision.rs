@@ -1,30 +1,19 @@
-//! The two hashes of an object, both SHA-256 over a canonical form.
-//!
-//! - The **edit token** ([`Revision`], `sha256:` text): what an authoring
-//!   client and the host exchange as `expected_revision` and `revision` to
-//!   guard an edit. It covers the whole member, stored passwords included,
-//!   leaving out only modification stamps (schema-path.md 8): any other
-//!   change changes it, so no edit is lost. Only a client that has the
-//!   member already sees it. [`script_form_revision`] for a script,
-//!   [`catalog_revision`] for everything else.
-//! - The **design revision** ([`DesignRevision`], `design-sha256:` text):
-//!   for what is shown or kept beyond that exchange (history, comparisons,
-//!   a text form). It covers Design content only: Data, Access and Derived
-//!   paths left out, a Secret value replaced by a marker
-//!   ([`super::Object::design_revision`]). It never decides whether an
-//!   edit may be applied or was applied.
+//! Edit tokens: the SHA-256 of a member's content in a canonical form,
+//! what an authoring client and the host exchange as `expected_revision`
+//! and `revision` to guard an edit ([`Revision`], `sha256:` text). A token
+//! covers the whole member, stored passwords included, leaving out only
+//! modification stamps (schema-path.md 8): any other change changes it, so
+//! no edit is lost. Only a client that has the member already sees it.
+//! [`script_form_revision`] for a script, [`catalog_revision`] for
+//! everything else.
 //!
 //! The canonical form walks a subtree in key order, its top node first.
 //! Each node is written as its segment (a `u64` big-endian length, then
-//! the bytes), a tag and what it holds, and its number of children (`u64`
-//! big-endian), then each child the same way. The tag is `0` for no value
-//! and `1` for a value (framed as the segment is); the design revision adds
-//! `2` for a Secret path, whose value and children are not written, and
-//! `3` for a value with Secret parts (a count, then each part: `0` and its
-//! bytes framed, or `1` for a Secret). Every part is framed by a length, a
-//! tag or a count, so two different subtrees never give the same bytes.
-//! The top node's segment is written too: a member's hash includes its
-//! key, its id.
+//! the bytes), whether it holds a value (`1` and the value framed the same
+//! way, or `0`), and its number of children (`u64` big-endian), then each
+//! child the same way. Every part is framed by a length or a count, so two
+//! different subtrees never give the same bytes. The top node's segment is
+//! written too: a member's token includes its key, its id.
 //!
 //! A value is written as its bytes, however the tree holds it. A node is a
 //! **split value** by the format's rule (file-format.md 3.6): no value of
@@ -44,28 +33,14 @@
 //! every other object the general one.
 //!
 //! [`legacy_script_form_revision`] and [`legacy_catalog_revision`] are the
-//! edit tokens as clients computed them before split values were hashed
-//! whole: a host accepts them from an older client, for comparison only.
-
-use std::ops::Range;
+//! tokens as clients computed them before split values were hashed whole:
+//! a host accepts them from an older client and answers in them, for
+//! comparison only.
 
 use crate::tree::OwnedNode;
 
 /// An edit token.
 pub type Revision = [u8; 32];
-
-/// A design revision: a different type from an edit token, so one cannot
-/// be passed where the other is expected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DesignRevision(pub [u8; 32]);
-
-impl DesignRevision {
-    /// The text form: `design-sha256:` and 64 lowercase hex digits, never
-    /// read as an edit token's `sha256:`.
-    pub fn text(&self) -> String {
-        format!("design-sha256:{}", super::rules::hex(&self.0))
-    }
-}
 
 /// The keys of a modification stamp (schema-path.md 8.1): `fc` the
 /// modification count, `fc 01` the user name, `fc 02` the account, `fc 03`
@@ -82,7 +57,7 @@ pub fn is_stamp(segment: &[u8]) -> bool {
 
 /// A script's edit token: the script form over its whole member.
 pub fn script_form_revision(node: &OwnedNode) -> Revision {
-    digest(node, Form::Script, &Marks::default(), true)
+    digest(node, Stamps::Own, true)
 }
 
 /// The edit token of everything but a script: the general form over a
@@ -90,68 +65,24 @@ pub fn script_form_revision(node: &OwnedNode) -> Revision {
 /// table's field catalog `[T, 3]` for `fields_revision`, the layout
 /// catalog's index `[4, 1]` for `layouts_revision`).
 pub fn catalog_revision(node: &OwnedNode) -> Revision {
-    digest(node, Form::General, &Marks::default(), true)
+    digest(node, Stamps::Everywhere, true)
 }
 
 /// [`script_form_revision`] as clients computed it before split values
-/// were hashed whole, for accepting an older client's token only.
+/// were hashed whole, for an older client only.
 pub fn legacy_script_form_revision(node: &OwnedNode) -> Revision {
-    digest(node, Form::Script, &Marks::default(), false)
+    digest(node, Stamps::Own, false)
 }
 
 /// [`catalog_revision`] as clients computed it before split values were
-/// hashed whole, for accepting an older client's token only.
+/// hashed whole, for an older client only.
 pub fn legacy_catalog_revision(node: &OwnedNode) -> Revision {
-    digest(node, Form::General, &Marks::default(), false)
+    digest(node, Stamps::Everywhere, false)
 }
 
-/// The two canonical forms.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Form {
-    General,
-    Script,
-}
-
-/// How the design revision writes a Secret path.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Mark {
-    /// The whole node: tag 2.
-    Whole,
-    /// Parts of the node's value (byte ranges of it), each written as a
-    /// Secret: tag 3.
-    Parts(Vec<Range<usize>>),
-}
-
-/// The Secret paths of a node, relative to it, and how each is written.
-pub(crate) type Marks = Vec<(super::Path, Mark)>;
-
-/// The design revision over `parts`: each a path and its projected node
-/// with its marks, framed by the path.
-pub(crate) fn design_digest(parts: &[(super::Path, OwnedNode, Marks, Form)]) -> DesignRevision {
+fn digest(node: &OwnedNode, stamps: Stamps, whole_values: bool) -> Revision {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(&(parts.len() as u64).to_be_bytes());
-    for (path, node, marks, form) in parts {
-        bytes.extend_from_slice(&(path.len() as u64).to_be_bytes());
-        for segment in path {
-            framed(&mut bytes, segment);
-        }
-        let mut at = Vec::new();
-        canonical(node, stamps(*form), marks, true, &mut at, &mut bytes);
-    }
-    DesignRevision(om_crypto::sha256(&bytes))
-}
-
-fn stamps(form: Form) -> Stamps {
-    match form {
-        Form::General => Stamps::Everywhere,
-        Form::Script => Stamps::Own,
-    }
-}
-
-fn digest(node: &OwnedNode, form: Form, marks: &Marks, whole_values: bool) -> Revision {
-    let mut bytes = Vec::new();
-    let mut at = Vec::new();
-    canonical(node, stamps(form), marks, whole_values, &mut at, &mut bytes);
+    canonical(node, stamps, whole_values, &mut bytes);
     om_crypto::sha256(&bytes)
 }
 
@@ -160,8 +91,7 @@ pub fn revision_text(revision: &Revision) -> String {
     format!("sha256:{}", super::rules::hex(revision))
 }
 
-/// An edit token from its text, `None` when it is not one (a design
-/// revision's `design-sha256:` text is not).
+/// An edit token from its text, `None` when it is not one.
 pub fn parse_revision(text: &str) -> Option<Revision> {
     let hex = text.strip_prefix("sha256:")?;
     if hex.len() != 64 || !hex.is_ascii() {
@@ -204,10 +134,8 @@ pub fn split_value(node: &OwnedNode) -> Option<Vec<u8>> {
         if crate::serial::decode(&piece.segment) != Some(n as u64 + 1)
             || !piece.children.is_empty()
             || !fits
+            || out.len() + value.len() > total
         {
-            return None;
-        }
-        if out.len() + value.len() > total {
             return None;
         }
         out.extend_from_slice(value);
@@ -231,51 +159,29 @@ fn framed(out: &mut Vec<u8>, b: &[u8]) {
     out.extend_from_slice(b);
 }
 
-fn canonical(
-    node: &OwnedNode,
-    stamps: Stamps,
-    marks: &Marks,
-    whole_values: bool,
-    at: &mut super::Path,
-    out: &mut Vec<u8>,
-) {
+fn canonical(node: &OwnedNode, stamps: Stamps, whole_values: bool, out: &mut Vec<u8>) {
     framed(out, &node.segment);
     let list_flag = stamps != Stamps::Everywhere;
-    let mark = if at.is_empty() {
-        None
-    } else {
-        marks
-            .iter()
-            .find(|(path, _)| path == at)
-            .map(|(_, mark)| mark)
-    };
-    if let Some(Mark::Whole) = mark {
+    // A split value is written as the value it joins to, as a leaf.
+    if let Some(value) = whole_values.then(|| split_value(node)).flatten() {
         if list_flag {
             out.push(0);
         }
-        out.push(2);
-        out.extend_from_slice(&0u64.to_be_bytes());
-        return;
-    }
-    // A split value is written as the value it joins to, and a value with
-    // Secret parts as its parts: as a leaf, no children.
-    let joined = if whole_values {
-        split_value(node)
-    } else {
-        None
-    };
-    if joined.is_some() || mark.is_some() {
-        if list_flag {
-            out.push(0);
-        }
-        write_value(joined.as_deref().or(node.value.as_deref()), mark, out);
+        out.push(1);
+        framed(out, &value);
         out.extend_from_slice(&0u64.to_be_bytes());
         return;
     }
     if list_flag {
         out.push(u8::from(node.push));
     }
-    write_value(node.value.as_deref(), None, out);
+    match &node.value {
+        Some(value) => {
+            out.push(1);
+            framed(out, value);
+        }
+        None => out.push(0),
+    }
     let children: Vec<&OwnedNode> = node
         .children
         .iter()
@@ -287,46 +193,7 @@ fn canonical(
         Stamps::Everywhere => Stamps::Everywhere,
     };
     for child in children {
-        at.push(child.segment.clone());
-        canonical(child, below, marks, whole_values, at, out);
-        at.pop();
-    }
-}
-
-/// A value's tag and bytes: `0` none, `1` plain, `3` with Secret parts.
-fn write_value(value: Option<&[u8]>, mark: Option<&Mark>, out: &mut Vec<u8>) {
-    match (value, mark) {
-        (Some(value), Some(Mark::Parts(ranges))) => {
-            out.push(3);
-            let mut parts: Vec<Option<&[u8]>> = Vec::new();
-            let mut from = 0;
-            for range in ranges {
-                let range = range.start.min(value.len())..range.end.min(value.len());
-                if range.start > from {
-                    parts.push(Some(&value[from..range.start]));
-                }
-                parts.push(None);
-                from = from.max(range.end);
-            }
-            if from < value.len() {
-                parts.push(Some(&value[from..]));
-            }
-            out.extend_from_slice(&(parts.len() as u64).to_be_bytes());
-            for part in parts {
-                match part {
-                    Some(bytes) => {
-                        out.push(0);
-                        framed(out, bytes);
-                    }
-                    None => out.push(1),
-                }
-            }
-        }
-        (Some(value), _) => {
-            out.push(1);
-            framed(out, value);
-        }
-        (None, _) => out.push(0),
+        canonical(child, below, whole_values, out);
     }
 }
 

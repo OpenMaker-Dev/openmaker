@@ -1,5 +1,5 @@
 //! Which paths of a file are Design, Data, Access, Secret or Derived, the
-//! file's design objects, and their two hashes (`docs/server-storage.md`
+//! file's design objects, and their edit tokens (`docs/server-storage.md`
 //! sections 4 and 9; `docs/authoring.md`, "Revisions").
 //!
 //! **Groups.** [`group_in`] puts a path of a tree in a [`Group`] by the
@@ -13,7 +13,9 @@
 //! error. There is no grouping by path alone in the API: which slot of a
 //! step's data holds a password depends on the step, which only the tree
 //! shows, and a path-only answer of Design for a stored password could be
-//! taken as final. The rules reach the first-level keys of members and
+//! taken as final. "Not Secret" means identified and known not to hold a
+//! credential: what cannot be identified with certainty is Secret. The
+//! rules reach the first-level keys of members and
 //! catalog indexes; below a rule everything is that rule's, so what a
 //! value or a step's data holds beyond the rules is not seen (a password
 //! typed into a calculation is formula text, Design).
@@ -21,24 +23,22 @@
 //! **Objects.** [`objects`] lists a tree's design objects: every member
 //! `[cat, 5, id]` of a Design catalog, decoded by OpenMaker or not, and
 //! each Design catalog as a whole. A member object is its member and its
-//! entries in the catalog's index, where an index keeps one per member of
-//! what a tool shows of it (a script's cached name and full-access flag,
-//! scripts.md). A catalog object is the rest of its index: the display
-//! order and the catalog's settings are Design; name lists, digests,
-//! counts and dependency lists are Derived (they follow from the members,
-//! and no tool shows them); the last issued id is Data. A field is an
+//! entries in the catalog's index ([`Object::entries`]), where an index
+//! keeps one per member of what a tool shows of it (a script's cached name
+//! and full-access flag, scripts.md). A catalog object is its index: the
+//! display order and the catalog's settings are Design; name lists,
+//! digests, counts and dependency lists are Derived (they follow from the
+//! members, and no tool shows them); the last issued id is Data. A field is an
 //! object of its own; its table's field catalog index `[T, 3, 1]` is the
 //! field catalog's object. A table is its member `[3, 10, 5, T]`; its
 //! fields and its data under `[T]` are not part of it. An emptied member
 //! (a deletion, scripts.md) is no object.
 //!
-//! **Hashes** ([`revision`]). An object's [`Object::edit_token`] covers
-//! its whole member, stored passwords included, without modification
-//! stamps: what authoring exchanges to guard an edit. Its
-//! [`Object::design_revision`] covers its Design content only (Data,
-//! Access and Derived left out, a Secret value marked), for what is shown
-//! or kept; it never decides an edit. Whether an object changed is decided
-//! on the full content and reported with the design revisions.
+//! **Edit tokens** ([`revision`]). An object's [`Object::edit_token`]
+//! covers its whole member (or index), stored passwords included, without
+//! modification stamps: what `om-author`, `om-provider` and `om-server`
+//! exchange as a revision to guard an edit. A revision for history that
+//! carries no stored password is not built here.
 
 mod report;
 mod revision;
@@ -48,8 +48,8 @@ mod secrets;
 pub use report::{report, Member, MemberIs, Report};
 pub use revision::{
     catalog_revision, is_stamp, legacy_catalog_revision, legacy_script_form_revision,
-    parse_revision, revision_text, script_form_revision, split_value, DesignRevision, Revision,
-    MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER,
+    parse_revision, revision_text, script_form_revision, split_value, Revision, MOD_ACCOUNT,
+    MOD_COUNT, MOD_TIME, MOD_USER,
 };
 pub use rules::{
     hex, is_odbc_profile, markdown_secrets, markdown_table, pattern_text, rules, Catalog, Group,
@@ -57,7 +57,6 @@ pub use rules::{
     STEP_SECRETS, TABLE_BASE,
 };
 
-use revision::{design_digest, Form, Mark, Marks};
 use rules::group_of;
 
 use crate::tree::OwnedNode;
@@ -146,22 +145,6 @@ pub struct Object<'t> {
     pub entries: Vec<(Path, &'t OwnedNode)>,
 }
 
-/// One part of an object's design content: its path, the node without
-/// its Data, Access and Derived paths, each Secret path emptied (no value,
-/// no children) or, for Secret parts of a value, with those parts removed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Part {
-    pub path: Path,
-    pub node: OwnedNode,
-}
-
-/// A part's projection, with what the design revision needs.
-struct Projection {
-    node: OwnedNode,
-    marks: Marks,
-    excluded: Vec<(Path, Group)>,
-}
-
 impl Object<'_> {
     /// The id FileMaker shows for it: the key read as a serial key
     /// (file-metadata.md 1), except a base directory's four-byte key
@@ -176,61 +159,13 @@ impl Object<'_> {
         }
     }
 
-    /// The edit token: the whole member (or index), stored passwords
+    /// The edit token of the member (or index), stored passwords
     /// included, without modification stamps; the script form for a
     /// script. What authoring exchanges as `revision` and
-    /// `expected_revision`, and what decides whether the object changed.
+    /// `expected_revision`. It covers the member alone, not its
+    /// [`Object::entries`].
     pub fn edit_token(&self) -> Revision {
         edit_token(if self.catalog { None } else { Some(self.kind) }, self.node)
-    }
-
-    fn form(&self) -> Form {
-        match self.kind {
-            Kind::Script if !self.catalog => Form::Script,
-            _ => Form::General,
-        }
-    }
-
-    fn projections(&self) -> Vec<(Path, Projection)> {
-        let secrets = if self.catalog {
-            Vec::new()
-        } else {
-            secrets::of(self.kind, self.node)
-        };
-        let marks: Marks = secrets.into_iter().map(|s| (s.path, s.mark)).collect();
-        let mut out = vec![(
-            self.path.clone(),
-            project(&self.path, self.node, marks, self.catalog),
-        )];
-        for (path, node) in &self.entries {
-            out.push((path.clone(), project(path, node, Vec::new(), false)));
-        }
-        out
-    }
-
-    /// The object's design content, part by part, the member (or index)
-    /// first: what its design revision covers, and what a deploy takes
-    /// from a source.
-    pub fn design(&self) -> Vec<Part> {
-        self.projections()
-            .into_iter()
-            .map(|(path, p)| Part { path, node: p.node })
-            .collect()
-    }
-
-    /// The paths of the object's parts that its design content leaves out
-    /// or empties, with their group: Data, Access, Derived and Secret,
-    /// which a deploy keeps from its target or recomputes. Paths are full.
-    pub fn excluded(&self) -> Vec<(Path, Group)> {
-        let mut out = Vec::new();
-        for (path, p) in self.projections() {
-            for (below, group) in p.excluded {
-                let mut full = path.clone();
-                full.extend(below);
-                out.push((full, group));
-            }
-        }
-        out
     }
 
     /// The member's Secret paths, relative to it, with what each holds.
@@ -254,21 +189,6 @@ impl Object<'_> {
         let segments: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
         report::count_under(self.node, &segments, &mut report);
         report.unclassified.into_keys().collect()
-    }
-
-    /// The design revision: never an edit token.
-    pub fn design_revision(&self) -> DesignRevision {
-        let form = self.form();
-        let parts: Vec<(Path, OwnedNode, Marks, Form)> = self
-            .projections()
-            .into_iter()
-            .enumerate()
-            .map(|(i, (path, p))| {
-                let form = if i == 0 { form } else { Form::General };
-                (path, p.node, p.marks, form)
-            })
-            .collect();
-        design_digest(&parts)
     }
 }
 
@@ -397,9 +317,11 @@ fn member_of(path: &[&[u8]]) -> Option<(Kind, usize)> {
 }
 
 /// The group of `path` in the tree `root`. Secret where a step rule finds
-/// a credential at or above it, and for any slot of step data whose step
-/// cannot be identified, or a path in step data under a member the tree
-/// does not hold; otherwise its path rule's.
+/// a credential at, below or above it (a member or slot holding one is
+/// Secret), for every slot of step data whose step is not identified with
+/// certainty, and for a path in step data under a member the tree does not
+/// hold; otherwise its path rule's. "Not Secret" means identified and
+/// known not to hold a credential.
 pub fn group_in(root: &OwnedNode, path: &[&[u8]]) -> Group {
     if let Some((kind, depth)) = member_of(path) {
         let below = &path[depth..];
@@ -457,143 +379,6 @@ fn step(
         best = here;
     }
     (deeper, best)
-}
-
-/// Whether a path of `marks` lies strictly below `at`.
-fn marked_below(marks: &Marks, at: &[Vec<u8>]) -> bool {
-    marks
-        .iter()
-        .any(|(s, _)| s.len() > at.len() && s.iter().zip(at).all(|(a, b)| a == b))
-}
-
-/// `node` at `path` without its Data, Access and Derived paths (and, for
-/// a catalog's index, the entries that belong to its members), its
-/// `marks` (relative to it) applied.
-fn project(path: &[Vec<u8>], node: &OwnedNode, marks: Marks, catalog: bool) -> Projection {
-    let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-    let (cands, best) = candidates(&segments);
-    let mut excluded = Vec::new();
-    let mut at = Vec::new();
-    let walk = Walk {
-        marks: &marks,
-        catalog,
-    };
-    let node = walk.prune(node, path.len(), &cands, best, &mut at, &mut excluded);
-    // The design content holds a value with Secret parts without them; its
-    // marks name where they were, in the value it holds.
-    let marks = marks
-        .into_iter()
-        .map(|(path, mark)| match mark {
-            Mark::Parts(mut ranges) => {
-                ranges.sort_by_key(|r| r.start);
-                let mut removed = 0;
-                let at = ranges
-                    .into_iter()
-                    .map(|r| {
-                        let position = r.start - removed;
-                        removed += r.len();
-                        position..position
-                    })
-                    .collect();
-                (path, Mark::Parts(at))
-            }
-            whole => (path, whole),
-        })
-        .collect();
-    Projection {
-        node,
-        marks,
-        excluded,
-    }
-}
-
-struct Walk<'m> {
-    marks: &'m Marks,
-    catalog: bool,
-}
-
-impl Walk<'_> {
-    /// Whether the rule's paths are left out of this node's content.
-    fn outside(&self, rule: Option<&Rule>) -> Option<Group> {
-        let rule = rule?;
-        if rule.group.left_out() {
-            Some(rule.group)
-        } else if self.catalog && rule.entries {
-            // Part of the members' objects.
-            Some(Group::Design)
-        } else {
-            None
-        }
-    }
-
-    fn prune(
-        &self,
-        node: &OwnedNode,
-        depth: usize,
-        cands: &[&'static Rule],
-        best: Option<&'static Rule>,
-        at: &mut Path,
-        excluded: &mut Vec<(Path, Group)>,
-    ) -> OwnedNode {
-        let mut out = OwnedNode {
-            segment: node.segment.clone(),
-            value: node.value.clone(),
-            push: node.push,
-            children: Vec::with_capacity(node.children.len()),
-        };
-        for child in &node.children {
-            let (deeper, best) = step(cands, depth, &child.segment, best);
-            at.push(child.segment.clone());
-            if let Some((_, mark)) = self.marks.iter().find(|(p, _)| p == at) {
-                excluded.push((at.clone(), Group::Secret));
-                out.children.push(emptied(child, mark));
-                at.pop();
-                continue;
-            }
-            let whole = deeper.is_empty() && !marked_below(self.marks, at);
-            match self.outside(best) {
-                Some(Group::Design) if whole => {}
-                Some(group) if whole => excluded.push((at.clone(), group)),
-                _ if whole => out.children.push(child.clone()),
-                own => {
-                    // A rule or a Secret path goes deeper: decide the
-                    // children one by one, and drop the node's own value
-                    // when it is outside.
-                    let mut kept = self.prune(child, depth + 1, &deeper, best, at, excluded);
-                    if let Some(group) = own {
-                        if kept.value.take().is_some() && group != Group::Design {
-                            excluded.push((at.clone(), group));
-                        }
-                    }
-                    out.children.push(kept);
-                }
-            }
-            at.pop();
-        }
-        out
-    }
-}
-
-/// A Secret node as design content shows it: emptied, or for Secret parts
-/// of a value, the value without them.
-fn emptied(node: &OwnedNode, mark: &Mark) -> OwnedNode {
-    match mark {
-        Mark::Whole => OwnedNode {
-            segment: node.segment.clone(),
-            ..OwnedNode::default()
-        },
-        Mark::Parts(ranges) => {
-            let value = node.assembled().map(|v| v.into_owned()).unwrap_or_default();
-            let mut kept = Vec::new();
-            let mut from = 0;
-            for range in ranges {
-                kept.extend_from_slice(&value[from.min(value.len())..range.start.min(value.len())]);
-                from = from.max(range.end);
-            }
-            kept.extend_from_slice(&value[from.min(value.len())..]);
-            OwnedNode::leaf(node.segment.clone(), kept)
-        }
-    }
 }
 
 #[cfg(test)]

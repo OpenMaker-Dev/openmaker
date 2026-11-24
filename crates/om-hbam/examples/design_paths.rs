@@ -3,7 +3,7 @@
 //! terminal paths per group, the paths no rule covers by shape, and the
 //! catalog members that are no design object. With `--objects`, also each
 //! design object (each catalog as a whole, then its members) with its
-//! kind, key, name, design revision and how many Secret paths it holds. Several
+//! kind, key, name, edit token and how many Secret paths it holds. Several
 //! files give one report over all of them.
 //!
 //! `cargo run -p om-hbam --example design_paths -- [--objects] <file.fmp12>...`
@@ -58,7 +58,7 @@ fn main() {
                     "  {:<18} {table}{key:<8} {:<40} {}{}",
                     object.kind.name(),
                     object.name.as_deref().unwrap_or("-"),
-                    object.design_revision().text(),
+                    design_paths::revision_text(&object.edit_token()),
                     if secrets > 0 {
                         format!(" ({secrets} Secret)")
                     } else {

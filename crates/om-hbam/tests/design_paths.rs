@@ -257,13 +257,13 @@ fn tree(path: &Path) -> (HbamFile, OwnedNode) {
 
 type Id = (Kind, bool, Option<Vec<u8>>, Vec<u8>);
 
-fn revisions(root: &OwnedNode) -> BTreeMap<Id, ([u8; 32], design_paths::DesignRevision)> {
+fn revisions(root: &OwnedNode) -> BTreeMap<Id, [u8; 32]> {
     design_paths::objects(root)
         .iter()
         .map(|o| {
             (
                 (o.kind, o.catalog, o.table.clone(), o.key.clone()),
-                (o.edit_token(), o.design_revision()),
+                o.edit_token(),
             )
         })
         .collect()

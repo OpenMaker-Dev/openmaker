@@ -137,21 +137,6 @@ fn table_and_occurrence_keys_of_every_length_are_classified() {
 }
 
 #[test]
-fn value_list_members_hold_only_design() {
-    // `om-server` and `om-provider` hash a value list member whole
-    // (`catalog_revision`) as its edit token; no step rule reaches it, so
-    // its design revision leaves nothing out either.
-    for rule in rules() {
-        if rule
-            .pattern
-            .starts_with(&[Seg::Key(&[0x21]), Seg::Key(&[0x05])])
-        {
-            assert_eq!(rule.group, Group::Design, "{}", rule.pattern_text());
-        }
-    }
-}
-
-#[test]
 fn every_kind_has_one_catalog() {
     let kinds: Vec<Kind> = CATALOGS.iter().filter_map(|c| c.kind).collect();
     let mut unique = kinds.clone();
@@ -164,16 +149,16 @@ fn every_kind_has_one_catalog() {
 }
 
 #[test]
-fn data_inside_a_member_is_left_out_of_its_design_revision_not_its_token() {
-    let field = |next: &[u8], name: &[u8]| {
+fn keys_inside_a_member_take_their_own_group_and_the_token_covers_them_all() {
+    let field = |next: &[u8]| {
         list(
             &[0x07],
             vec![
                 leaf(&[0x02], &[1, 2]),
                 leaf(&[0x0c], next),
-                leaf(&[0x10], name),
+                leaf(&[0x10], b"Name"),
                 leaf(&[0x77], &[9]),
-                leaf(&[0xfb], next),
+                leaf(&[0xfb], &[1, 1]),
                 leaf(MOD_COUNT, next),
             ],
         )
@@ -183,38 +168,30 @@ fn data_inside_a_member_is_left_out_of_its_design_revision_not_its_token() {
         root.put(&[&[0x80, 0x01], &[3], &[5], &[7]], member);
         root
     };
-    let hashes = |root: &OwnedNode| {
-        let object = member(root, Kind::Field);
-        (object.design_revision(), object.edit_token())
-    };
-    let (design, token) = hashes(&tree(field(b"1", b"Name")));
-    let (served, served_token) = hashes(&tree(field(b"2", b"Name")));
-    assert_eq!(design, served);
-    assert_ne!(token, served_token);
-    assert_ne!(design, hashes(&tree(field(b"1", b"Other"))).0);
-    // A key no rule names stays in: OpenMaker does not know what it is.
-    let mut unknown = field(b"1", b"Name");
-    unknown.children[3].value = Some(vec![8]);
-    assert_ne!(design, hashes(&tree(unknown)).0);
-
-    let root = tree(field(b"1", b"Name"));
+    let root = tree(field(b"1"));
+    let path = |key: u8| [vec![0x80, 0x01], vec![3], vec![5], vec![7], vec![key]];
+    assert_eq!(group_in(&root, &at(&path(0x0c))), Group::Data);
+    assert_eq!(group_in(&root, &at(&path(0xfb))), Group::Data);
+    assert_eq!(group_in(&root, &at(&path(0x10))), Group::Design);
+    assert_eq!(group_in(&root, &at(&path(0x77))), Group::None);
     let object = member(&root, Kind::Field);
     assert_eq!(object.id(), Some(7));
-    let base = [vec![0x80, 0x01], vec![3], vec![5], vec![7]];
-    let full = |key: u8| {
-        let mut path = base.to_vec();
-        path.push(vec![key]);
-        path
-    };
-    assert_eq!(
-        object.excluded(),
-        vec![(full(0x0c), Group::Data), (full(0xfb), Group::Data)]
-    );
     assert_eq!(
         object.unclassified(),
         vec!["[T, 03, 05, *, 77]".to_string()]
     );
-    assert_eq!(object.design()[0].node.child(&[0x0c]), None);
+    // The edit token covers the whole member, the serial's next value
+    // included; the stamp only is left out.
+    let mut restamped = field(b"1");
+    restamped.children[5].value = Some(vec![9]);
+    assert_eq!(
+        member(&tree(restamped), Kind::Field).edit_token(),
+        object.edit_token()
+    );
+    assert_ne!(
+        member(&tree(field(b"2")), Kind::Field).edit_token(),
+        object.edit_token()
+    );
 }
 
 /// A script step descriptor (script-steps.md 2): data key `01 <key>`, step
@@ -239,30 +216,9 @@ fn slot(n: u8, text: &[u8], number: u8) -> OwnedNode {
     )
 }
 
-/// A string as step streams hold it (script-steps.md 11.0).
-fn string(text: &[u8]) -> Vec<u8> {
-    let mut out = vec![text.len() as u8];
-    out.extend(text);
-    out
-}
-
-/// An ODBC profile (script-steps.md 11.5).
-fn odbc(user: &[u8], password: &[u8], query: &[u8]) -> Vec<u8> {
-    let mut out = b"ODBC".to_vec();
-    out.extend([0, 1]);
-    out.extend(string(b"dsn"));
-    out.extend(string(user));
-    out.extend(string(password));
-    out.extend([0, 0]);
-    out.extend(string(query));
-    out
-}
-
-/// A script: step `step` (data key 1) with slots 7 and 11, an Import
+/// A script: step `step` (data key 1) with slots 3, 7 and 11, an Import
 /// Records (35, data key 2) with `profile`.
-fn script(slot7: (&[u8], u8), slot11: &[u8], profile: &[u8], step: i16) -> OwnedNode {
-    let mut steps = descriptor(1, step);
-    steps.extend(descriptor(2, 35));
+fn script(steps: Vec<u8>, slot11: OwnedNode, profile: &[u8]) -> OwnedNode {
     list(
         &[3],
         vec![
@@ -270,7 +226,10 @@ fn script(slot7: (&[u8], u8), slot11: &[u8], profile: &[u8], step: i16) -> Owned
             list(
                 &[5],
                 vec![
-                    list(&[1], vec![slot(7, slot7.0, slot7.1), slot(11, slot11, 0)]),
+                    list(
+                        &[1],
+                        vec![slot(3, b"\"Hi\"", 0), slot(7, b"\"pw\"", 1), slot11],
+                    ),
                     list(&[2], vec![leaf(&[0x86], profile)]),
                 ],
             ),
@@ -279,178 +238,203 @@ fn script(slot7: (&[u8], u8), slot11: &[u8], profile: &[u8], step: i16) -> Owned
     )
 }
 
+fn steps(step: i16) -> Vec<u8> {
+    [descriptor(1, step), descriptor(2, 35)].concat()
+}
+
 fn script_tree(member: OwnedNode) -> OwnedNode {
     let mut root = OwnedNode::default();
     root.put(&[&[0x11], &[5], &[3]], member);
     root
 }
 
-fn hashes(member: OwnedNode) -> (DesignRevision, Revision) {
-    let root = script_tree(member);
-    let object = self::member(&root, Kind::Script);
-    (object.design_revision(), object.edit_token())
+/// The group of `rest` below script 3's member.
+fn in_script(root: &OwnedNode, rest: &[&[u8]]) -> Group {
+    let mut path: Vec<&[u8]> = vec![&[0x11], &[5], &[3]];
+    path.extend_from_slice(rest);
+    group_in(root, &path)
 }
 
 #[test]
-fn a_stored_credential_never_enters_the_design_revision_but_moves_the_token() {
-    let profile = odbc(b"user", b"pw", b"SELECT 1");
-    let base = hashes(script((b"\"Hi\"", 0), b"\"pw\"", &profile, 63));
-    // Another password, or another ODBC user or password: the same design
-    // revision, another edit token.
-    for other in [
-        script((b"\"Hi\"", 0), b"\"other\"", &profile, 63),
-        script(
-            (b"\"Hi\"", 0),
-            b"\"pw\"",
-            &odbc(b"admin", b"secret", b"SELECT 1"),
-            63,
-        ),
-        script(
-            (b"\"Hi\"", 0),
-            b"\"pw\"",
-            &odbc(b"user", b"a much longer one", b"SELECT 1"),
-            63,
-        ),
-    ] {
-        let (design, token) = hashes(other);
-        assert_eq!(design, base.0);
-        assert_ne!(token, base.1);
-    }
-    // What lies beside a credential is design: the ODBC query, another
-    // slot, and in Create PDF (243) the number beside the password slot 7
-    // (allow screen reader, script-steps.md 12.2).
-    assert_ne!(
-        hashes(script(
-            (b"\"Hi\"", 0),
-            b"\"pw\"",
-            &odbc(b"user", b"pw", b"SELECT 2"),
-            63
-        ))
-        .0,
-        base.0
-    );
-    assert_ne!(
-        hashes(script((b"\"Bye\"", 0), b"\"pw\"", &profile, 63)).0,
-        base.0
-    );
-    let pdf = |password: &[u8], screen_reader: u8| {
-        hashes(script((password, screen_reader), b"x", &profile, 243)).0
-    };
-    assert_eq!(pdf(b"\"a\"", 1), pdf(b"\"b\"", 1));
-    assert_ne!(pdf(b"\"a\"", 1), pdf(b"\"a\"", 0));
-    // A disabled step stores its id negative: still Send Mail.
+fn a_stored_credential_is_secret_and_what_lies_beside_it_is_design() {
+    let root = script_tree(script(steps(63), slot(11, b"\"pw\"", 0), b"TABS\x00\x00"));
+    // Send Mail's SMTP password: its calculation, and so the slot and the
+    // member holding it.
     assert_eq!(
-        hashes(script((b"\"Hi\"", 0), b"\"x\"", &profile, -63)).0,
-        hashes(script((b"\"Hi\"", 0), b"\"y\"", &profile, -63)).0
-    );
-    // Whether a credential is stored counts.
-    let mut without = script((b"\"Hi\"", 0), b"\"pw\"", &profile, 63);
-    without.at_mut(&[&[5], &[1]]).unwrap().remove(&[&[0, 11]]);
-    assert_ne!(hashes(without).0, base.0);
-    // Slot 11 of a step that keeps no credential there is design.
-    assert_ne!(
-        hashes(script((b"\"Hi\"", 0), b"\"x\"", &profile, 1)).0,
-        hashes(script((b"\"Hi\"", 0), b"\"y\"", &profile, 1)).0
-    );
-
-    let root = script_tree(script((b"\"Hi\"", 0), b"\"pw\"", &profile, 63));
-    let in_script = |rest: &[&[u8]]| {
-        let mut path: Vec<&[u8]> = vec![&[0x11], &[5], &[3]];
-        path.extend_from_slice(rest);
-        group_in(&root, &path)
-    };
-    assert_eq!(in_script(&[&[5], &[1], &[0, 11], &[5]]), Group::Secret);
-    assert_eq!(
-        in_script(&[&[5], &[1], &[0, 11], &[5], &[6]]),
+        in_script(&root, &[&[5], &[1], &[0, 11], &[5]]),
         Group::Secret
     );
-    assert_eq!(in_script(&[&[5], &[1], &[0, 11], &[3]]), Group::Design);
-    assert_eq!(in_script(&[&[5], &[1], &[0, 7], &[5]]), Group::Design);
-    assert_eq!(in_script(&[&[5], &[2], &[0x86]]), Group::Secret);
-    let object = member(&root, Kind::Script);
-    let full = |rest: &[&[u8]]| {
-        let mut path: Path = vec![vec![0x11], vec![5], vec![3]];
-        path.extend(rest.iter().map(|s| s.to_vec()));
-        path
-    };
     assert_eq!(
-        object.excluded(),
-        vec![
-            (full(&[&[5], &[1], &[0, 11], &[5]]), Group::Secret),
-            (full(&[&[5], &[2], &[0x86]]), Group::Secret)
-        ]
+        in_script(&root, &[&[5], &[1], &[0, 11], &[5], &[6]]),
+        Group::Secret
     );
-    // Design content keeps the query and leaves the user and password out.
-    let design = &object.design()[0].node;
-    let shown = design
-        .at(&[&[5], &[2], &[0x86]])
-        .unwrap()
-        .value
-        .clone()
-        .unwrap();
-    assert!(shown.windows(8).any(|w| w == b"SELECT 1"));
-    assert!(!shown.windows(4).any(|w| w == b"user"));
+    assert_eq!(in_script(&root, &[&[5], &[1], &[0, 11]]), Group::Secret);
+    assert_eq!(in_script(&root, &[]), Group::Secret);
+    // Beside it: the slot's number, another slot, a file profile.
+    assert_eq!(
+        in_script(&root, &[&[5], &[1], &[0, 11], &[3]]),
+        Group::Design
+    );
+    assert_eq!(
+        in_script(&root, &[&[5], &[1], &[0, 3], &[5]]),
+        Group::Design
+    );
+    assert_eq!(in_script(&root, &[&[5], &[2], &[0x86]]), Group::Design);
+    // A slot the step does not hold yet, where a credential would be.
+    assert_eq!(
+        in_script(&root, &[&[5], &[1], &[0, 21], &[5]]),
+        Group::Secret
+    );
+    // Create PDF (243): the password calculation of slot 7 is Secret, the
+    // number beside it (allow screen reader) is not.
+    let pdf = script_tree(script(steps(243), slot(11, b"x", 0), b"TABS"));
+    assert_eq!(in_script(&pdf, &[&[5], &[1], &[0, 7], &[5]]), Group::Secret);
+    assert_eq!(in_script(&pdf, &[&[5], &[1], &[0, 7], &[3]]), Group::Design);
+    // A disabled step stores its id negative: still Send Mail.
+    let disabled = script_tree(script(steps(-63), slot(11, b"\"pw\"", 0), b"TABS"));
+    assert_eq!(
+        in_script(&disabled, &[&[5], &[1], &[0, 11], &[5]]),
+        Group::Secret
+    );
+    // An ODBC profile, and one that does not read.
+    let odbc = script_tree(script(steps(63), slot(11, b"x", 0), b"ODBC\x00\x01\x03dsn"));
+    assert_eq!(in_script(&odbc, &[&[5], &[2], &[0x86]]), Group::Secret);
+    let mut torn = script(steps(63), slot(11, b"x", 0), b"");
+    torn.put(
+        &[&[5], &[2], &[0x86]],
+        list(&[], vec![leaf(&[0], &[0, 0, 0, 9])]),
+    );
+    assert_eq!(
+        in_script(&script_tree(torn), &[&[5], &[2], &[0x86]]),
+        Group::Secret
+    );
+    // A step that keeps no credential: design.
+    let plain = script_tree(script(steps(1), slot(11, b"\"pw\"", 0), b"TABS"));
+    assert_eq!(
+        in_script(&plain, &[&[5], &[1], &[0, 11], &[5]]),
+        Group::Design
+    );
+    assert_eq!(in_script(&plain, &[]), Group::None);
+    let object = member(&root, Kind::Script);
+    assert_eq!(
+        object.secrets(),
+        vec![(
+            vec![vec![5], vec![1], vec![0, 11], vec![5]],
+            "the SMTP password"
+        )]
+    );
     let counted = report(&root);
-    assert_eq!(counted.groups.get(&Group::Secret), Some(&3), "{counted}");
+    assert_eq!(counted.groups.get(&Group::Secret), Some(&2), "{counted}");
 }
 
 #[test]
-fn step_data_whose_step_is_not_known_is_secret() {
-    let profile = odbc(b"user", b"pw", b"SELECT 1");
-    let slot11: [&[u8]; 6] = [&[0x11], &[5], &[3], &[5], &[1], &[0, 11]];
-    let slot7: [&[u8]; 7] = [&[0x11], &[5], &[3], &[5], &[1], &[0, 7], &[3]];
-    // A step id the catalog does not have, no step list, a list that does
-    // not read, a data key no step names: every slot is Secret whole.
-    let unknown = script_tree(script((b"\"Hi\"", 0), b"\"pw\"", &profile, 248));
-    let mut no_list = script((b"\"Hi\"", 0), b"\"pw\"", &profile, 63);
-    no_list.remove(&[&[4]]);
-    let mut torn = script((b"\"Hi\"", 0), b"\"pw\"", &profile, 63);
-    torn.set_child(leaf(&[4], &[0; 30]));
-    let mut orphan = script((b"\"Hi\"", 0), b"\"pw\"", &profile, 63);
-    orphan.set_child(leaf(&[4], &descriptor(9, 63)));
-    for root in [
-        unknown,
-        script_tree(no_list),
-        script_tree(torn),
-        script_tree(orphan),
-    ] {
-        assert_eq!(group_in(&root, &slot11), Group::Secret);
-        assert_eq!(group_in(&root, &slot7), Group::Secret);
-        assert_eq!(
-            group_in(&root, &[&[0x11], &[5], &[3], &[0x10]]),
-            Group::Design
-        );
+fn step_data_whose_step_is_not_identified_with_certainty_is_secret() {
+    let password: [&[u8]; 4] = [&[5], &[1], &[0, 11], &[5]];
+    let subject: [&[u8]; 4] = [&[5], &[1], &[0, 3], &[5]];
+    let profile = b"TABS".as_slice();
+    let cases: Vec<(&str, OwnedNode)> = vec![
+        // A step id the catalog does not have, and 0 (a button's no
+        // action) in a script.
+        (
+            "unknown id",
+            script(steps(248), slot(11, b"\"pw\"", 0), profile),
+        ),
+        ("id 0", script(steps(0), slot(11, b"\"pw\"", 0), profile)),
+        // No step list, one that does not divide into descriptors, a
+        // descriptor whose data key does not decode, two descriptors
+        // naming one data key with different steps, a data key no
+        // descriptor names.
+        ("no list", {
+            let mut s = script(steps(63), slot(11, b"\"pw\"", 0), profile);
+            s.remove(&[&[4]]);
+            s
+        }),
+        (
+            "torn list",
+            script(vec![0; 30], slot(11, b"\"pw\"", 0), profile),
+        ),
+        ("bad key", {
+            let mut d = steps(63);
+            d[0] = 9;
+            script(d, slot(11, b"\"pw\"", 0), profile)
+        }),
+        (
+            "conflicting",
+            script(
+                [steps(63), descriptor(1, 1)].concat(),
+                slot(11, b"\"pw\"", 0),
+                profile,
+            ),
+        ),
+        (
+            "orphan",
+            script(descriptor(9, 63), slot(11, b"\"pw\"", 0), profile),
+        ),
+        // A credential slot not shaped as script-steps.md 4.2 gives: the
+        // password as the slot's own value, the slot a split value, an
+        // unknown part.
+        (
+            "value on the slot",
+            script(steps(63), leaf(&[0, 11], b"secret"), profile),
+        ),
+        (
+            "split slot",
+            script(
+                steps(63),
+                list(
+                    &[0, 11],
+                    vec![leaf(&[0], &[0, 0, 0, 6]), leaf(&[1], b"secret")],
+                ),
+                profile,
+            ),
+        ),
+        (
+            "unknown part",
+            script(
+                steps(63),
+                list(&[0, 11], vec![leaf(&[0x77], b"secret")]),
+                profile,
+            ),
+        ),
+    ];
+    for (case, member) in cases {
+        let root = script_tree(member);
+        assert_eq!(in_script(&root, &password), Group::Secret, "{case}");
+        assert_eq!(in_script(&root, &subject), Group::Secret, "{case}");
+        assert_eq!(in_script(&root, &[&[0x10]]), Group::Design, "{case}");
     }
     // A path under a member the tree does not hold.
-    assert_eq!(group_in(&OwnedNode::default(), &slot11), Group::Secret);
-    // A known step that keeps no credential: design.
-    let known = script_tree(script((b"\"Hi\"", 0), b"\"pw\"", &profile, 1));
-    assert_eq!(group_in(&known, &slot11), Group::Design);
+    assert_eq!(in_script(&OwnedNode::default(), &password), Group::Secret);
 }
 
-#[test]
-fn a_button_keeps_its_steps_credentials_secret() {
-    // A layout whose object store holds a button (object 5) running
-    // Re-Login (138), and its attribute record's step data `11`.
-    fn varint(mut v: u64, out: &mut Vec<u8>) {
-        loop {
-            let byte = (v & 0x7f) as u8;
-            v >>= 7;
-            if v == 0 {
-                out.push(byte);
-                return;
-            }
-            out.push(byte | 0x80);
+/// A varint and a length-delimited protobuf field.
+fn varint(mut v: u64, out: &mut Vec<u8>) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            return;
         }
+        out.push(byte | 0x80);
     }
-    fn message(field: u32, bytes: &[u8], out: &mut Vec<u8>) {
-        varint(u64::from(field) << 3 | 2, out);
-        varint(bytes.len() as u64, out);
-        out.extend_from_slice(bytes);
-    }
+}
+
+fn message(field: u32, bytes: &[u8], out: &mut Vec<u8>) {
+    varint(u64::from(field) << 3 | 2, out);
+    varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+}
+
+/// A layout whose object store holds button 5 with a `ScriptStep` holding
+/// the ids `ids`, and the button's step data `11` with Re-Login's account
+/// and password.
+fn layout(ids: &[u64]) -> OwnedNode {
     let mut step = Vec::new();
-    varint(1 << 3, &mut step);
-    varint(138, &mut step);
+    for &id in ids {
+        varint(1 << 3, &mut step);
+        varint(id, &mut step);
+    }
     let mut button = Vec::new();
     message(3, &step, &mut button);
     let mut object = Vec::new();
@@ -459,24 +443,51 @@ fn a_button_keeps_its_steps_credentials_secret() {
     message(16, &button, &mut object);
     let mut store = Vec::new();
     message(2, &object, &mut store);
-    let layout = |password: &[u8]| {
-        let mut root = OwnedNode::default();
-        root.put(&[&[4], &[5], &[1], &[7]], leaf(&[], &store));
-        root.put(
-            &[&[4], &[5], &[1], &[5], &[5], &[0x11]],
-            list(&[], vec![slot(0, b"\"me\"", 0), slot(1, password, 0)]),
-        );
-        root
-    };
-    let design = |root: &OwnedNode| member(root, Kind::Layout).design_revision();
-    assert_eq!(design(&layout(b"\"a\"")), design(&layout(b"\"b\"")));
-    let root = layout(b"\"a\"");
-    let password: [&[u8]; 9] = [&[4], &[5], &[1], &[5], &[5], &[0x11], &[0, 1], &[5], &[5]];
-    assert_eq!(group_in(&root, &password), Group::Secret);
+    let mut root = OwnedNode::default();
+    root.put(&[&[4], &[5], &[1], &[7]], leaf(&[], &store));
+    root.put(
+        &[&[4], &[5], &[1], &[5], &[5], &[0x11]],
+        list(
+            &[],
+            vec![
+                slot(0, b"\"me\"", 0),
+                slot(1, b"\"pw\"", 0),
+                slot(2, b"1", 0),
+            ],
+        ),
+    );
+    root
 }
 
 #[test]
-fn a_value_has_one_hash_inline_or_split_by_the_formats_rule() {
+fn a_buttons_credentials_are_secret_and_a_disputed_button_step_is_no_step() {
+    let in_button = |root: &OwnedNode, slot: u8| {
+        group_in(
+            root,
+            &[&[4], &[5], &[1], &[5], &[5], &[0x11], &[0, slot], &[5]],
+        )
+    };
+    // Re-Login: account and password Secret, slot 2 design.
+    let root = layout(&[138]);
+    assert_eq!(
+        (
+            in_button(&root, 0),
+            in_button(&root, 1),
+            in_button(&root, 2)
+        ),
+        (Group::Secret, Group::Secret, Group::Design)
+    );
+    // Perform Script, then Re-Login in a repeated field: the layout decoder
+    // takes the last, a first-wins reading the first. Neither is trusted.
+    let disputed = layout(&[1, 138]);
+    assert_eq!(in_button(&disputed, 2), Group::Secret);
+    // Perform Script: no credential.
+    let plain = layout(&[1]);
+    assert_eq!(in_button(&plain, 1), Group::Design);
+}
+
+#[test]
+fn a_value_has_one_token_inline_or_split_by_the_formats_rule() {
     let bytes: Vec<u8> = (0..2500u32).map(|i| i as u8).collect();
     let split_from = |bytes: &[u8], header: Vec<u8>, size: usize| {
         let mut node = list(&[0x04], vec![leaf(&[0], &header)]);
@@ -496,24 +507,39 @@ fn a_value_has_one_hash_inline_or_split_by_the_formats_rule() {
         legacy_catalog_revision(&inline),
         legacy_catalog_revision(&split)
     );
-    let design = |m: OwnedNode| member_design(script_tree(m));
-    fn member_design(root: OwnedNode) -> DesignRevision {
-        member(&root, Kind::Script).design_revision()
-    }
-    assert_eq!(design(inline.clone()), design(split.clone()));
     // Near misses of the rule hash as the lists they are: pieces of 999
-    // bytes, a total that does not add up, a header of another length, a
-    // piece out of order, a node with a value of its own.
+    // bytes, a total that does not add up, a header of another length or
+    // under another key, a piece out of order or with a child, an extra
+    // node, an empty or an oversized last piece, a node with a value of
+    // its own.
     let mut out_of_order = split_from(&bytes, total.clone(), 1000);
     out_of_order.children.swap(1, 2);
     let mut valued = split_from(&bytes, total.clone(), 1000);
     valued.value = Some(vec![1]);
+    let mut header_key = split_from(&bytes, total.clone(), 1000);
+    header_key.children[0].segment = vec![0x7f];
+    let mut child = split_from(&bytes, total.clone(), 1000);
+    child.children[1].children.push(leaf(&[1], &[1]));
+    let mut extra = split_from(&bytes, total.clone(), 1000);
+    extra.children.push(leaf(&[0x7e], &[]));
+    let mut empty_last = split_from(&bytes, total.clone(), 1000);
+    empty_last.children.push(leaf(&serial::encode(4), &[]));
+    let oversized = {
+        let mut node = list(&[0x04], vec![leaf(&[0], &1001u32.to_be_bytes())]);
+        node.children.push(leaf(&[1], &[7; 1001]));
+        node
+    };
     for near in [
         split_from(&bytes, total.clone(), 999),
         split_from(&bytes, 2499u32.to_be_bytes().to_vec(), 1000),
         split_from(&bytes, [total.clone(), vec![0]].concat(), 1000),
         out_of_order,
         valued,
+        header_key,
+        child,
+        extra,
+        empty_last,
+        oversized,
     ] {
         assert_eq!(split_value(&near), None);
         assert_ne!(
@@ -535,94 +561,48 @@ fn a_value_has_one_hash_inline_or_split_by_the_formats_rule() {
 }
 
 #[test]
-fn a_catalog_is_an_object_over_its_order_and_settings() {
-    let index = |order: [u8; 2], last: u8, digest: u8, full_access: u8| {
+fn a_catalog_and_its_members_are_objects_with_their_index_entries() {
+    let mut root = OwnedNode::default();
+    root.put(
+        &[&[0x11], &[1]],
         list(
             &[1],
             vec![
-                leaf(&[0], &[1, last]),
-                list(
-                    &[1],
-                    vec![leaf(b"name a", &[1, 1]), leaf(b"name b", &[1, 2])],
-                ),
+                leaf(&[0], &[1, 2]),
                 list(
                     &[3],
-                    vec![
-                        leaf(&[0, 0, 0, 1], &[1, order[0]]),
-                        leaf(&[0, 0, 0, 2], &[1, order[1]]),
-                    ],
+                    vec![leaf(&[0, 0, 0, 1], &[1, 1]), leaf(&[0, 0, 0, 2], &[1, 2])],
                 ),
-                leaf(&[4], &[0, 0, 0, 2]),
                 list(
                     &[7],
-                    vec![
-                        list(
-                            &[1],
-                            vec![leaf(&[0xf1], &[0, 0, 0, 0, 0, 0, 0, full_access])],
-                        ),
-                        list(&[2], vec![leaf(&[0xf1], &[0; 8])]),
-                    ],
+                    vec![list(&[1], vec![leaf(&[0xf1], &[0, 0, 0, 0, 0, 0, 0, 1])])],
                 ),
-                leaf(&[8], &[digest; 16]),
+                leaf(&[8], &[7; 16]),
             ],
-        )
-    };
-    let revisions = |index: OwnedNode| {
-        let mut root = OwnedNode::default();
-        root.put(&[&[0x11], &[1]], index);
-        for id in [1u8, 2] {
-            root.put(
-                &[&[0x11], &[5], &[id]],
-                list(&[], vec![leaf(&[0x10], &[id])]),
-            );
-        }
-        objects(&root)
-            .iter()
-            .map(|o| o.design_revision())
-            .collect::<Vec<_>>()
-    };
-    let a = revisions(index([1, 2], 2, 7, 0));
-    // Moving a script changes the catalog only; a counter or a digest
-    // changes nothing; a script's cached full-access flag, which Script
-    // Workspace shows (scripts.md), is that script's.
-    let moved = revisions(index([2, 1], 2, 7, 0));
-    assert_eq!(
-        (moved[0] != a[0], moved[1] == a[1], moved[2] == a[2]),
-        (true, true, true)
+        ),
     );
-    assert_eq!(a, revisions(index([1, 2], 9, 8, 0)));
-    let granted = revisions(index([1, 2], 2, 7, 1));
-    assert_eq!(
-        (granted[0] == a[0], granted[1] != a[1], granted[2] == a[2]),
-        (true, true, true)
-    );
-
-    // A privilege set's checksum, which covers the file's creation stamp,
-    // is no part of the set's design revision; neither is pending field
-    // work part of the field catalog's.
-    let set = |checksum: u8| {
-        let mut root = OwnedNode::default();
+    for id in [1u8, 2] {
         root.put(
-            &[&[0x17], &[2], &[5], &[1]],
-            list(
-                &[],
-                vec![leaf(&[2], &[0x55, 3]), leaf(&[4], &[checksum; 16])],
-            ),
+            &[&[0x11], &[5], &[id]],
+            list(&[], vec![leaf(&[0x10], &[id])]),
         );
-        member(&root, Kind::PrivilegeSet).design_revision()
-    };
-    assert_eq!(set(1), set(2));
-    let mut root = OwnedNode::default();
-    root.put(
-        &[&[0x80, 0x01], &[3], &[1], &[0xfd], &[1]],
-        leaf(&[], &[0, 0, 0, 1]),
+    }
+    let found = objects(&root);
+    assert_eq!(found.len(), 3);
+    assert!(found[0].catalog && found[0].entries.is_empty());
+    let entries: Vec<Path> = found[1].entries.iter().map(|(p, _)| p.clone()).collect();
+    assert_eq!(entries, vec![vec![vec![0x11], vec![1], vec![7], vec![1]]]);
+    assert!(found[2].entries.is_empty());
+    let index = |key: u8| [vec![0x11], vec![1], vec![key]];
+    assert_eq!(group_in(&root, &at(&index(3))), Group::Design);
+    assert_eq!(group_in(&root, &at(&index(7))), Group::Design);
+    assert_eq!(group_in(&root, &at(&index(8))), Group::Derived);
+    assert_eq!(group_in(&root, &at(&index(0))), Group::Data);
+    // A privilege set's checksum covers the file's creation stamp.
+    assert_eq!(
+        group_in(&root, &[&[0x17], &[2], &[5], &[1], &[4]]),
+        Group::Derived
     );
-    let before = objects(&root)[0].design_revision();
-    root.put(
-        &[&[0x80, 0x01], &[3], &[1], &[0xfd], &[1]],
-        leaf(&[], &[0, 0, 0, 0x10]),
-    );
-    assert_eq!(objects(&root)[0].design_revision(), before);
 }
 
 #[test]
@@ -656,7 +636,4 @@ fn base_directories_fonts_and_themes_have_their_own_ids_and_names() {
             (Kind::BaseDirectory, Some(0), Some("Tasks/".into())),
         ]
     );
-    let design = member(&root, Kind::Font).design_revision();
-    assert!(design.text().starts_with("design-sha256:"));
-    assert_eq!(parse_revision(&design.text()), None);
 }
