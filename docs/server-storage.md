@@ -373,15 +373,19 @@ commit them together.
 
 ### 6.4 Trees and pages
 
-Each tree is a B+tree of fixed-size pages (16 KiB) in the page file. A
+Each tree is a B+tree of fixed-size pages (16 KiB) in the page file,
+built by `om_store::tree` over the page store interface
+`om_store::page::PageStore`; the byte format and the shape rules are in
+[server-storage-format.md](server-storage-format.md) section 2. A
 file's keys are paths in an encoding that sorts as the key tree does: each
 segment's bytes with `00` written as `00 ff`, followed by `00 01`. A
 subtree is then one contiguous key range, in depth-first order. An item's
-value is a kind byte (list, value, or both) and the node's value. An item
-too large for a quarter of a page keeps its start in the page and the rest
-in overflow pages, hashed like any page. An index page holds, for each
-child, the shortest key that separates it from the child before, and that
-key spills to overflow pages by the same rule.
+value is a kind byte (list, value, or both) and the node's value. A path
+has at most 64 segments, which bounds the ancestors one edit can create.
+An item too large for a quarter of a page keeps its first 1,024 bytes in
+the page and the rest in overflow pages, hashed like any page. An index
+page holds, for each child, the shortest key that separates it from the
+child before, and that key spills to overflow pages by the same rule.
 
 Pages are **copy-on-write**: a change writes new pages for the leaf and
 for every page above it, and the old pages stay as they were. An index
@@ -389,14 +393,21 @@ page also holds, for each child, its page number, its hash and the index
 of the entry that last wrote it. A page's hash is SHA-256 over its items
 and, for an index page, over its children's hashes, without their page
 numbers. Each page also carries a checksum of all its bytes, page numbers
-included, so damage to a pointer is found in the page that holds it. So:
+included (SHA-256 over the page's hash and the bytes the hash leaves out,
+cut to 64 bits), so damage to a pointer is found in the page that holds
+it. So:
 
 - reading a page recomputes its hash from its bytes and checks it against
   the hash its parent holds, which finds damaged pages, pages written to
   the wrong place and pages never written. The `.fmp12` format has no such
   check (file-format.md 5);
 - the store can tell from a few pages whether anything under a path changed
-  since a given entry;
+  since a given entry: from the index pages along the two ends of the
+  path's key range, at most two a level, and no leaf. The answer is never
+  "no" when something under the path changed, and can be "yes" when only
+  another path in the same page did. The cache of section 6.6 and the
+  check of section 6.9 rely only on the first: a false "yes" costs a cache
+  miss or another pass;
 - a tree's root hash depends on its content and its shape, and not on
   where a server put its pages.
 
@@ -404,8 +415,11 @@ included, so damage to a pointer is found in the page that holds it. So:
 **tree format version**, which is part of the state. Every server applies
 entries with the same version, and the version changes only by a `members`
 entry once every member supports the new one (section 7.6). Applying an
-entry is deterministic, so every server has the same root hashes at the
-same entry. A tree is never rebuilt in another shape except by an entry.
+entry is deterministic: the shape is a function of the sequence of edits
+alone, never of page numbers, timing or what is cached, so every server
+has the same root hashes at the same entry. Every page an entry writes
+carries the entry's index, and an entry that changes a tree writes its
+root. A tree is never rebuilt in another shape except by an entry.
 
 The page cache is keyed by page number and hash, so a page number that is
 reused never returns the page that was there before.
