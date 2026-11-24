@@ -1282,3 +1282,35 @@ fn changed_since_reads_no_separator_it_need_not() {
     assert!(tree.changed_since(&[vec![1u8]], 1).unwrap());
     assert!(!tree.changed_since(&[vec![1u8]], 2).unwrap());
 }
+
+/// Final re-check of #697: a key that ends exactly where the bytes a page
+/// holds of a longer stored key end is decided without that key's overflow
+/// pages, in a lookup and in a reverse listing.
+#[test]
+fn a_comparison_decided_at_a_page_boundary_reads_no_further() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    // `[p]` encodes to 1,024 bytes, all of which its spilled child's item
+    // keeps in its page.
+    let p = vec![0x70u8; 1022];
+    let edits = [
+        Edit::list(vec![p.clone()]),
+        Edit::list(vec![p.clone(), vec![0x67u8; 3500]]),
+    ];
+    let root = apply(&store, root, 2, &edits).unwrap();
+    let pages = check(&store, root).unwrap().pages;
+    assert_eq!(pages.len(), 2, "the leaf and the child's overflow page");
+    store.remove(pages[1].0);
+    let tree = Tree::open(&store, root).unwrap();
+    assert_eq!(
+        tree.get(std::slice::from_ref(&p)).unwrap(),
+        Some(Node::List)
+    );
+    for direction in [Direction::Forward, Direction::Backward] {
+        let kids: Vec<_> = tree
+            .children::<Vec<u8>>(&[], Bound::Unbounded, direction)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kids, vec![(p.clone(), Node::List)], "{direction:?}");
+    }
+}

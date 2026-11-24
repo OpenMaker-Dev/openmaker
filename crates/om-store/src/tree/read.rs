@@ -36,6 +36,8 @@ struct Stored<'p> {
     /// overflow pages.
     rest: usize,
     page: &'p Page,
+    /// What the page is when the stored bytes break the format.
+    broken: &'static str,
 }
 
 /// A key found in a tree: its bytes, or the item that holds it, read only
@@ -59,7 +61,41 @@ fn cmp_chunk(chunk: &[u8], key: &[u8], pos: &mut usize, len: usize) -> Option<Or
         return Some(Ordering::Greater);
     }
     *pos += chunk.len();
-    (*pos >= len).then(|| len.cmp(&key.len()))
+    if *pos >= len {
+        return Some(len.cmp(&key.len()));
+    }
+    // `key` ended where the bytes so far end, and the stored key goes on.
+    (*pos >= key.len()).then_some(Ordering::Greater)
+}
+
+/// The segment ends of a stored key or separator, counted as its bytes are
+/// walked across pages: at most [`super::MAX_DEPTH`], with no byte after the
+/// last of them, and escapes well formed (format section 2.1).
+#[derive(Default)]
+struct Depth {
+    ends: usize,
+    after_zero: bool,
+}
+
+impl Depth {
+    /// Takes the next bytes; false when they break the bound.
+    fn feed(&mut self, bytes: &[u8]) -> bool {
+        for &b in bytes {
+            if self.after_zero {
+                self.after_zero = false;
+                match b {
+                    0x01 => self.ends += 1,
+                    0xff => {}
+                    _ => return false,
+                }
+            } else if self.ends == super::MAX_DEPTH {
+                return false;
+            } else if b == 0 {
+                self.after_zero = true;
+            }
+        }
+        true
+    }
 }
 
 impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
@@ -237,6 +273,7 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
             refs: item.refs,
             rest: (item.key_len + item.value_len).saturating_sub(SPILL_INLINE),
             page,
+            broken: "a key that is not an encoded path",
         }
     }
 
@@ -250,21 +287,30 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
             refs: separator.refs,
             rest: separator.len.saturating_sub(SPILL_INLINE),
             page,
+            broken: "a separator that begins no path",
         })
     }
 
     /// How a stored key or separator compares with `key`: the bytes its page
     /// holds first, then its overflow pages one at a time, only while it is
-    /// equal to `key` as far as both go.
+    /// equal to `key` as far as both go. Bytes read from overflow pages are
+    /// held to the depth bound as they are read.
     fn cmp_stored(&self, s: Stored<'_>, key: &[u8]) -> Result<Ordering> {
         let mut pos = 0;
         if let Some(order) = cmp_chunk(s.part, key, &mut pos, s.len) {
             return Ok(order);
         }
+        let mut depth = Depth::default();
+        if !depth.feed(s.part) {
+            return Err(malformed(s.page, s.broken));
+        }
         for i in 0..s.refs.len() {
             let over = self.overflow(s.refs, i, s.rest, s.page)?;
-            let take = over.data().len().min(s.len - pos);
-            if let Some(order) = cmp_chunk(&over.data()[..take], key, &mut pos, s.len) {
+            let chunk = &over.data()[..over.data().len().min(s.len - pos)];
+            if !depth.feed(chunk) {
+                return Err(malformed(s.page, s.broken));
+            }
+            if let Some(order) = cmp_chunk(chunk, key, &mut pos, s.len) {
                 return Ok(order);
             }
         }
@@ -926,5 +972,44 @@ mod tests {
         ));
         let kept = apply(&store, root, 2, &[Edit::list(vec![b"c".to_vec()])]).unwrap();
         assert!(named(check(&store, kept).unwrap_err()));
+    }
+
+    /// Final re-check of #697: a spilled separator is held to the depth bound
+    /// by a comparison that reads it, not only when it is read whole.
+    #[test]
+    fn a_separator_too_deep_is_found_while_compared() {
+        let mut sep = vec![0x61u8; 4096];
+        sep.extend(b"\x00\x01".repeat(65));
+        let store = MemStore::new(Numbering::Sequential);
+        let mut out = store.begin().unwrap();
+        let number = out.allocate().unwrap();
+        let mut over = Builder::new(PageKind::Overflow, 0, 1);
+        over.data(&sep[crate::page::SPILL_INLINE..]);
+        let over = over.finish(number).unwrap();
+        let refs = [(number, over.hash())];
+        out.write(Arc::new(over)).unwrap();
+        out.commit().unwrap();
+        let mut index = Builder::new(PageKind::Index, 1, 1);
+        index.child(100, &Hash([1; 32]), 1, None);
+        let inline = &sep[..crate::page::SPILL_INLINE];
+        index.child(101, &Hash([2; 32]), 1, Some((sep.len(), inline, &refs)));
+        let index = index.finish(99).unwrap();
+        let pages = Pages { store: &store };
+        let mut key = vec![0x61u8; 4096];
+        key.extend(b"\x00\x01");
+        let err = pages.cmp_separator(&index, 1, &key).unwrap_err();
+        assert_eq!(
+            err,
+            fault(
+                99,
+                index.hash(),
+                Fault::Malformed("a separator that begins no path")
+            )
+        );
+        // Decided by the bytes its page holds, it is not read at all.
+        assert_eq!(
+            pages.cmp_separator(&index, 1, b"b").unwrap(),
+            Ordering::Less
+        );
     }
 }
