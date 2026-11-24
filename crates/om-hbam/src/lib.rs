@@ -23,6 +23,14 @@
 //! bits not explicitly decoded, occurrence definitions, layout protobufs (unparsed), and
 //! every key not decoded into a typed struct (reachable via [`KeyTree`]).
 //! Nothing is copied or rewritten, so [`HbamFile::as_bytes`] round-trips.
+//!
+//! Written: a whole file from a key tree, in the shape of FileMaker's
+//! compacted copies ([`writer`], `docs/re/hbam-writer.md` 7.2). The nodes
+//! go in key order through [`writer::NodeWriter`], which writes the pages
+//! to a target it can seek in and reads them back to build the index, with
+//! memory that does not grow with the file (the server store's export,
+//! `docs/server-storage.md` 6.10); [`writer::rebuild`] gives it a tree held
+//! in memory and returns the file.
 
 pub mod catalog;
 pub mod container;

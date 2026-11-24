@@ -194,25 +194,43 @@ pub fn minimal_code(push: bool, key_len: usize, value: Option<usize>) -> Option<
 /// Encode a push or leaf chunk with an explicit code. Returns `None` when the
 /// code's size classes cannot carry this key and value.
 pub fn encode_chunk(code: u8, key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(4 + key.len() + value.len());
+    encode_chunk_into(code, key, value, &mut out)?;
+    Some(out)
+}
+
+/// [`encode_chunk`] appended to `out`, which is left as it was when the
+/// code's size classes cannot carry this key and value.
+pub(crate) fn encode_chunk_into(
+    code: u8,
+    key: &[u8],
+    value: &[u8],
+    out: &mut Vec<u8>,
+) -> Option<()> {
     if !matches!(kind_of(code, 0).ok()?, ChunkKind::Push | ChunkKind::Leaf) {
         return None;
     }
-    let mut out = Vec::with_capacity(4 + key.len() + value.len());
-    out.push(code);
-    match ((code >> 3) & 3, key.len()) {
-        (0, 1) | (1, 2) | (2, 3) => {}
-        (3, n) if n <= 255 => out.push(n as u8),
+    let key_len = match ((code >> 3) & 3, key.len()) {
+        (0, 1) | (1, 2) | (2, 3) => None,
+        (3, n) if n <= 255 => Some(n as u8),
         _ => return None,
-    }
-    out.extend_from_slice(key);
+    };
     match (code & 7, value.len()) {
         (0, 0) | (1, 1) | (2, 2) | (3, 4) | (4, 6) | (5, 8) => {}
-        (6, n) if n <= 255 => out.push(n as u8),
-        (7, n) if n <= 65535 => out.extend_from_slice(&(n as u16).to_be_bytes()),
+        (6, n) if n <= 255 => {}
+        (7, n) if n <= 65535 => {}
         _ => return None,
     }
+    out.push(code);
+    out.extend(key_len);
+    out.extend_from_slice(key);
+    match code & 7 {
+        6 => out.push(value.len() as u8),
+        7 => out.extend_from_slice(&(value.len() as u16).to_be_bytes()),
+        _ => {}
+    }
     out.extend_from_slice(value);
-    Some(out)
+    Some(())
 }
 
 /// One segment of a hierarchical key, borrowed from the slot buffer.
@@ -228,6 +246,15 @@ impl<'a> KeySegment<'a> {
     /// ids, field ids, and record ids are stored this way.
     pub fn as_uint(self) -> Option<u64> {
         be_uint(self.0)
+    }
+}
+
+/// A path of segments, as a [`crate::SlotReader`] or [`crate::Node::walk`]
+/// gives it, can be passed where raw segment bytes are taken
+/// ([`crate::writer::NodeWriter::node`]).
+impl AsRef<[u8]> for KeySegment<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.0
     }
 }
 
