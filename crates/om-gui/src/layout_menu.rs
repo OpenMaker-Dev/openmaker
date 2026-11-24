@@ -103,6 +103,6 @@ mod tests {
         assert!(actions.is_empty());
         assert!(output.shapes.iter().any(|s| matches!(&s.shape,
             egui::Shape::LineSegment { points, stroke }
-                if points[0].y == points[1].y && stroke.color == egui::Color32::from_gray(0xDA))));
+                if points[0].y == points[1].y && stroke.color == crate::theme::HAIRLINE)));
     }
 }

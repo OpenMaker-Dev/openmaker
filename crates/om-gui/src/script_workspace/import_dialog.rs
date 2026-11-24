@@ -735,7 +735,7 @@ impl ImportMapping {
                         egui::Label::new(
                             egui::RichText::new(error)
                                 .font(pickers::body())
-                                .color(egui::Color32::from_rgb(0xC0, 0x1C, 0x28)),
+                                .color(theme::RED_INK),
                         )
                         .wrap(),
                     );

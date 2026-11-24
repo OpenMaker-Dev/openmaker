@@ -39,7 +39,9 @@ mod database_relationship;
 mod database_summary;
 mod desktop;
 mod document;
+mod file_history;
 mod file_panel;
+mod home;
 mod icons;
 mod inspector;
 pub mod keypad;
@@ -160,9 +162,7 @@ pub fn run(provider: Box<dyn DataProvider>) -> eframe::Result {
         native_options(),
         Box::new(|cc| {
             install_theme(&cc.egui_ctx);
-            Ok(Box::new(
-                OpenMakerApp::new(provider).with_connection_defaults(),
-            ))
+            Ok(Box::new(OpenMakerApp::new(provider).with_desktop_startup()))
         }),
     )
 }

@@ -11,7 +11,7 @@
 //! user types one (OpenMaker's choice; what FileMaker Pro fills in is not
 //! measured).
 
-use egui::{Align, Color32, CornerRadius, Id, Layout, RichText, Stroke};
+use egui::{Align, CornerRadius, Id, Layout, RichText, Stroke};
 use om_data::layout_catalog::{LayoutRequest, MAX_NAME_CHARS};
 
 use crate::theme;
@@ -80,13 +80,13 @@ impl NewLayout {
         let mut answer = NewLayoutAnswer::Open;
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(10))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
         let response = egui::Modal::new(Id::unique("new_layout"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(24))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(440.0);
                 ui.label(

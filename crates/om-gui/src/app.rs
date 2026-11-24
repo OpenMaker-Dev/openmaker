@@ -7,8 +7,7 @@
 //! requests, and replies are folded back in at the start of the next frame.
 
 use egui::{
-    vec2, Color32, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui,
-    ViewportCommand,
+    vec2, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui, ViewportCommand,
 };
 use om_data::found::FindRequest;
 use om_data::scripts::save_records::{Format as SaveFormat, SaveRecords};
@@ -489,8 +488,18 @@ pub(crate) enum Action {
     ShowCreateNew,
     /// Open this file on this computer.
     OpenLocal(std::path::PathBuf),
-    /// Close the open file (if any) and show the Hosts dialog: every
-    /// window closes, one at a time ([`Action::CloseWindow`]).
+    /// Home on this list (Home's tabs, File > Favorites > Show Favorites,
+    /// File > Recent > Show Recent); the file open closes first.
+    ShowHome(crate::file_history::Tab),
+    /// File > Hosts > Show Hosts, and Home's Hosts: the Hosts dialog.
+    ShowHosts,
+    /// Open a Recent or Favorites file: one on this computer opens, and a
+    /// hosted one fills in the Hosts dialog for its sign-in.
+    OpenSaved(crate::file_history::SavedFile),
+    /// Pin, unpin or forget a Recent or Favorites file.
+    EditHistory(crate::file_history::Change),
+    /// Close the open file (if any): every window closes, one at a time
+    /// ([`Action::CloseWindow`]).
     CloseFile,
     /// Open the window's file again after its connection was lost
     /// (recovery.rs).
@@ -722,6 +731,10 @@ impl Action {
             self,
             Action::CloseFile
                 | Action::CloseWindow
+                | Action::ShowHosts
+                | Action::ShowHome(_)
+                | Action::OpenSaved(_)
+                | Action::EditHistory(_)
                 | Action::Reconnect
                 | Action::SelectWindow(_)
                 | Action::SetView(_)
@@ -788,7 +801,6 @@ impl Action {
     }
 }
 
-/// The OpenMaker application.
 /// How long the host administrator's message stays up, in seconds:
 /// FileMaker Pro's closed itself about 30 s after it came
 /// (network-protocol.md 6.5, Medium: polled every 20 s).
@@ -799,6 +811,110 @@ const HOST_MESSAGE_SECONDS: f64 = 30.0;
 const HOST_DISCONNECTED: &str =
     "File has been forcefully disconnected by the host. All affected windows will be closed.";
 
+/// The alert for a command that would drop a layout's unsaved changes:
+/// the user saves or reverts them first (OpenMaker's choice; FileMaker Pro
+/// asks whether to save the layout).
+const LAYOUT_UNSAVED: &str =
+    "This layout's changes are not saved. Choose Layouts > Save Layout or Revert Layout first.";
+
+/// The alert for a launch command while the front file, its connection
+/// lost, holds unsaved changes: closing it for the command would lose them
+/// (the lost banner offers Reconnect, and Close File to give them up).
+const LOST_EDITS: &str = "The connection to this file was lost, and closing it would lose \
+     its unsaved changes. Reconnect to save them, or choose File > Close to give them up.";
+
+/// The alert for a launch command while files other than the front one
+/// are open: OpenMaker shows Home and opens files in a window no file
+/// holds, and closes only the front file to free it.
+const OTHER_FILES_OPEN: &str = "Other files are open. Close them first.";
+
+/// What the window shows while no file is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Launcher {
+    /// The Hosts dialog alone: an app built without Home (embedding hosts,
+    /// most tests).
+    Hosts,
+    /// Home ([`OpenMakerApp::with_home`]); `hosts` shows the Hosts dialog in
+    /// its place until the dialog is canceled or a file opens.
+    Home { hosts: bool },
+}
+
+impl Launcher {
+    fn showing_hosts(self) -> bool {
+        matches!(self, Launcher::Hosts | Launcher::Home { hosts: true })
+    }
+
+    fn has_home(self) -> bool {
+        matches!(self, Launcher::Home { .. })
+    }
+
+    /// Show or close the Hosts dialog over Home; without Home it always
+    /// shows.
+    fn set_hosts(&mut self, show: bool) {
+        if let Launcher::Home { hosts } = self {
+            *hosts = show;
+        }
+    }
+}
+
+/// A command that starts something with no file open: Home's and the File
+/// menu's file commands. Each waits for the open file to close first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Launch {
+    OpenFile,
+    CreateNew,
+    Home(crate::file_history::Tab),
+    Hosts,
+    Saved(crate::file_history::SavedFile),
+}
+
+/// A file being opened: where, for its window, and where Recent records it
+/// once it opens (with a hosted file's port, which `Target` lacks).
+#[derive(Clone, Debug)]
+struct Opening {
+    target: Target,
+    destination: crate::file_history::SavedFile,
+}
+
+impl Opening {
+    fn local(path: std::path::PathBuf) -> Self {
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self {
+            destination: crate::file_history::SavedFile::local(path.clone()),
+            target: Target {
+                host: String::new(),
+                file,
+                local: Some(path),
+            },
+        }
+    }
+}
+
+/// File > Close or Quit closing the front file, one window at a time.
+#[derive(Clone, Debug, PartialEq)]
+struct Closing {
+    file: u64,
+    /// The file's windows when the close began, closed in turn whichever
+    /// window comes to the front meanwhile
+    /// ([#652](https://github.com/OpenMaker-Dev/openmaker/issues/652)). A
+    /// window of the file a close trigger opens is not among them: the
+    /// close stops there and leaves it open, edits and all, rather than
+    /// close it unasked or loop
+    /// ([#653](https://github.com/OpenMaker-Dev/openmaker/issues/653)).
+    windows: Vec<u32>,
+    /// Quit once the files are closed.
+    quit: bool,
+    /// The windows close without their close triggers, each still
+    /// committing: a close trigger's own Close File or Exit Application
+    /// took the close over (`take_over_close`, app/scripts.rs), and its
+    /// triggers running again would run it again without end.
+    quiet: bool,
+}
+
+/// The OpenMaker application.
 pub struct OpenMakerApp {
     /// OpenMaker Go's chrome around the window (`app/mobile.rs`), which
     /// replaces the menu bar and status toolbar; `None` on the desktop.
@@ -809,9 +925,16 @@ pub struct OpenMakerApp {
     epoch: u64,
     form: ConnectForm,
     hosts: HostsView,
+    launcher: Launcher,
+    home: crate::home::Home,
+    /// Recent and Favorites (file_history.rs), from the settings file once
+    /// Home is on.
+    file_history: crate::file_history::History,
+    /// Why Recent and Favorites could not be read or saved, shown on Home.
+    history_error: Option<String>,
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
-    opening: Option<Target>,
+    opening: Option<Opening>,
     /// The Hosts dialog's file list, for the host it was asked of.
     listing: connect::Listing,
     /// The token of the last listing asked for.
@@ -850,9 +973,9 @@ pub struct OpenMakerApp {
     forced_alert: Option<(u64, String)>,
     host_message_since: Option<f64>,
     worker_stopped: bool,
-    /// Closing the file (and then quitting, when `true`): each window
-    /// that closes closes the next, until a trigger or a save stops it.
-    closing: Option<bool>,
+    /// File > Close or Quit under way: each window that closes closes the
+    /// next, until a trigger or a save stops it.
+    closing: Option<Closing>,
     /// Every window closed for Quit: the root viewport may close now.
     quit_ready: bool,
     /// Quit waits from then for the provider to handle the files' Closes,
@@ -919,12 +1042,10 @@ pub struct OpenMakerApp {
     related_asked: std::collections::BTreeSet<(u64, String)>,
     /// The account dialog of a related file, in the window that needed it.
     related_login: Option<RelatedLogin>,
-    /// File > Open was chosen with a file open: the chooser shows once it
-    /// has closed (a veto or a refused save keeps it, and the chooser
-    /// does not show).
-    open_after_close: bool,
-    /// Create New waits for the open file to close.
-    create_after_close: bool,
+    /// A launch command waiting for the front file to close, with that
+    /// file. A veto or refused save leaves the file open and drops the
+    /// command; so does a quit.
+    launch_after_close: Option<(Launch, u64)>,
     /// The file Create New just made: when it opens, Manage Database opens
     /// on it, as in FileMaker Pro. Kept by path, so an open that was
     /// cancelled leaves no other file's open to take it.
@@ -960,6 +1081,10 @@ impl OpenMakerApp {
             epoch: 0,
             form: ConnectForm::default(),
             hosts: HostsView::default(),
+            launcher: Launcher::Hosts,
+            home: Default::default(),
+            file_history: Default::default(),
+            history_error: None,
             status: ConnectStatus::Idle,
             opening: None,
             listing: connect::Listing::None,
@@ -1021,17 +1146,34 @@ impl OpenMakerApp {
             related_sign_ins: Default::default(),
             related_asked: Default::default(),
             related_login: None,
-            open_after_close: false,
-            create_after_close: false,
+            launch_after_close: None,
             database_after_open: None,
             local_read_only: None,
         }
     }
 
-    /// Prefill the native Hosts form from `OPENMAKER_*` variables.
-    pub(crate) fn with_connection_defaults(mut self) -> Self {
-        if !self.sample_data {
-            self.form = ConnectForm::from_env();
+    /// Start the desktop launcher on Home. An explicit host prefill opens
+    /// Hosts directly, as in earlier versions of the desktop client.
+    pub(crate) fn with_desktop_startup(self) -> Self {
+        let mut app = self.with_home();
+        if !app.sample_data {
+            app.form = ConnectForm::from_env();
+        }
+        let prefilled = !app.form.host.trim().is_empty();
+        app.launcher.set_hosts(prefilled);
+        app
+    }
+
+    /// Start at Home and use the selected settings file for Recent and
+    /// Favorites. Call after [`Self::with_settings_file`] to isolate history.
+    #[must_use]
+    pub fn with_home(mut self) -> Self {
+        self.launcher = Launcher::Home { hosts: false };
+        if let Some(path) = self.history_path() {
+            match crate::file_history::History::load(path) {
+                Ok(history) => self.file_history = history,
+                Err(error) => self.history_error = Some(error.message),
+            }
         }
         self
     }
@@ -1225,22 +1367,30 @@ impl OpenMakerApp {
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
+            self.launcher.set_hosts(true);
             self.apply(&ctx, Action::Connect);
         }
         self.poll_worker(&ctx);
         self.web_viewer_outcomes(&ctx);
         self.tick_timer(&ctx);
         self.abort_keys(&ctx);
-        if self.open_after_close && self.closing.is_none() {
-            self.open_after_close = false;
-            if self.w.session.is_none() {
-                self.open_file = Some(crate::open_file::OpenFileDialog::new());
-            }
-        }
-        if self.create_after_close && self.closing.is_none() {
-            self.create_after_close = false;
-            if self.w.session.is_none() {
-                self.create_new = Some(crate::create_new::CreateNewDialog::new());
+        if self.closing.is_none() {
+            if let Some((launch, closed)) = self.launch_after_close.take() {
+                let open: Vec<u64> = self
+                    .docs()
+                    .filter(|doc| doc.session.is_some())
+                    .map(|doc| doc.file_id)
+                    .collect();
+                if open.contains(&closed) {
+                    // Its close was vetoed, its save refused (which said
+                    // why) or it stopped at a window a close trigger
+                    // opened: the command is dropped.
+                } else if !open.is_empty() {
+                    // A close trigger opened another file.
+                    self.error = Some(OTHER_FILES_OPEN.into());
+                } else {
+                    self.launch(&ctx, launch);
+                }
             }
         }
         // The root viewport shows the file's first window; each other
@@ -1258,18 +1408,16 @@ impl OpenMakerApp {
             })
             .collect();
         self.quit_after_closes_done(&ctx);
-        // The root window's close box quits: every window of the file
-        // closes first, as Quit does, and a veto or a refused save keeps
-        // the app open.
+        // The root window's close box quits: every open file's windows,
+        // a hidden file's too, close first, as Quit closes them, and a
+        // veto or a refused save keeps the app open.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
             if self.quit_waiting.is_some() {
                 // Quit already waits for the files to close.
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            } else if self.w.session.is_some() {
+            } else if self.docs().any(|doc| doc.session.is_some()) {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-                if !self.script.busy() && self.closing.is_none() {
-                    self.apply(&ctx, Action::Quit);
-                }
+                self.apply(&ctx, Action::Quit);
             }
         }
         let root = self.root_window();
@@ -1587,6 +1735,14 @@ impl OpenMakerApp {
             zoom: self.w.document.zoom.percent(),
             zooms: self.zooms(),
             session: self.w.session.as_ref(),
+            file_history: &self.file_history,
+            current_file: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| session.destination.as_ref()),
+            launch_available: self.can_launch(),
+            home: self.launcher.has_home(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
             formatting: self.w.show_formatting,
@@ -2163,16 +2319,17 @@ impl OpenMakerApp {
                 ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
                 content_rect = Some(shown.response.rect);
             }
-            None if self.open_file.is_some()
-                || self.create_new.is_some()
-                || self.local_login.is_some() =>
+            None if self.launcher.showing_hosts()
+                && (self.open_file.is_some()
+                    || self.create_new.is_some()
+                    || self.local_login.is_some()) =>
             {
-                // File > Open's dialogs stand in for the Hosts dialog.
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(theme::PASTEBOARD))
                     .show(ui, |_| {});
             }
-            None => {
+            None if self.launcher.showing_hosts() => {
+                let closable = self.launcher.has_home();
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new())
                     .show(ui, |ui| {
@@ -2183,10 +2340,20 @@ impl OpenMakerApp {
                             self.status,
                             self.client_license,
                             &self.listing,
+                            closable,
                             &mut actions,
                         );
                     });
                 self.forget_other_hosts();
+            }
+            None => {
+                let view = crate::home::HomeView {
+                    history: &self.file_history,
+                    busy: self.status == ConnectStatus::Connecting,
+                    in_front: !self.dialog_over_document(),
+                    history_error: self.history_error.as_deref(),
+                };
+                self.home.show(ui, view, &mut actions);
             }
         }
         #[cfg(target_os = "macos")]
@@ -2886,14 +3053,7 @@ impl OpenMakerApp {
                 self.error = None;
                 self.epoch += 1;
                 self.status = ConnectStatus::Connecting;
-                self.opening = Some(Target {
-                    host: String::new(),
-                    file: path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    local: Some(path),
-                });
+                self.opening = Some(Opening::local(path));
                 self.request(
                     ctx,
                     Request::ChangeDuePassword(Box::new(worker::NewPassword(new))),
@@ -2967,22 +3127,205 @@ impl OpenMakerApp {
         self.open_local_with(ctx, file, false);
     }
 
+    fn can_launch(&self) -> bool {
+        self.status == ConnectStatus::Idle
+            && self.local_login.is_none()
+            && self.change_password.is_none()
+            && self.closing.is_none()
+    }
+
+    /// A File > Close (or, with `quit`, a Quit) of the front file.
+    fn closing_front(&self, quit: bool) -> Closing {
+        self.closing_of(self.w.file_id, quit)
+    }
+
+    /// A File > Close (or, with `quit`, a Quit) of `file`, with the windows
+    /// it has now.
+    fn closing_of(&self, file: u64, quit: bool) -> Closing {
+        Closing {
+            file,
+            windows: self
+                .docs()
+                .filter(|doc| doc.file_id == file)
+                .map(|doc| doc.id)
+                .collect(),
+            quit,
+            quiet: false,
+        }
+    }
+
+    /// The window File > Close or Quit closes next: the first of the
+    /// closing file's windows still open.
+    fn next_to_close(&self) -> Option<u32> {
+        let closing = self.closing.as_ref()?;
+        closing.windows.iter().copied().find(|id| {
+            self.docs()
+                .any(|doc| doc.id == *id && doc.file_id == closing.file)
+        })
+    }
+
+    /// Window `closed` of the file File > Close or Quit is closing has
+    /// gone, not the file's last: the close goes on with the next of the
+    /// windows it began with, not whichever is in front now (a close
+    /// trigger may have brought another file forward). Past those, or
+    /// after a window it did not begin with, it stops (`Closing`).
+    fn close_next(&mut self, ctx: &egui::Context, closed: u32) {
+        let next = self
+            .closing
+            .as_ref()
+            .filter(|closing| closing.windows.contains(&closed))
+            .and_then(|_| self.next_to_close());
+        match next {
+            Some(next) => {
+                self.with_window(next, |app| app.close_window(ctx));
+            }
+            None => self.closing = None,
+        }
+    }
+
+    /// Close the window as the close under way closes it: with its close
+    /// triggers, or without them in a close a trigger took over
+    /// (`Closing::quiet`).
+    fn close_window(&mut self, ctx: &egui::Context) {
+        let file = self.w.file_id;
+        let quiet = self
+            .closing
+            .as_ref()
+            .is_some_and(|closing| closing.file == file && closing.quiet);
+        self.script.bypass = quiet;
+        self.apply(ctx, Action::CloseWindow);
+        self.script.bypass = false;
+    }
+
+    /// Quit closes the next open file as File > Close does, a hidden one
+    /// (a close trigger may have opened it) too, and quits once none is
+    /// left.
+    fn quit_next(&mut self, ctx: &egui::Context) {
+        let next = self
+            .docs()
+            .find(|doc| doc.session.is_some())
+            .map(|doc| doc.id);
+        match next {
+            Some(next) => {
+                self.with_window(next, |app| {
+                    app.closing = Some(app.closing_front(true));
+                    app.apply(ctx, Action::CloseWindow);
+                });
+            }
+            None => self.quit_after_closes(ctx),
+        }
+    }
+
+    fn history_path(&self) -> Option<&std::path::Path> {
+        self.settings_path
+            .as_deref()
+            .filter(|_| self.launcher.has_home() && !self.sample_data)
+    }
+
+    /// Change Recent or Favorites and save them. One the user asked for
+    /// that cannot be saved is an alert; one that follows from opening a
+    /// file or switching tabs is noted on Home instead, once, so a settings
+    /// file that cannot be written does not alert on every open. Either way
+    /// the change shows until the app quits.
+    fn edit_file_history(&mut self, change: crate::file_history::Change) {
+        let path = self.history_path().map(std::path::Path::to_path_buf);
+        let requested = change.requested();
+        match self.file_history.change(path.as_deref(), change) {
+            Ok(()) => self.history_error = None,
+            Err(error) if requested => self.error = Some(error.message),
+            Err(error) => self.history_error = Some(error.message),
+        }
+    }
+
+    /// Run a launch command once no file is open: the front file closes
+    /// first, through its usual commit path and close triggers, and a veto
+    /// or refused save drops the command. Nothing closes while another file
+    /// is open, hidden ones included, or while a window of the front file
+    /// has unsaved layout changes: an alert says which.
+    fn launch(&mut self, ctx: &egui::Context, launch: Launch) {
+        use crate::file_history::{Change, SavedFile};
+        if !self.can_launch() {
+            return;
+        }
+        let front = self.w.session.is_some().then_some(self.w.file_id);
+        let open = || self.docs().filter(|doc| doc.session.is_some());
+        // A file left open behind Home, such as a hidden one a close
+        // trigger opened, refuses every command that would open a file:
+        // the provider would close it under its windows. Switching Home's
+        // tab opens nothing.
+        let others = open().any(|doc| Some(doc.file_id) != front);
+        if others && (front.is_some() || !matches!(launch, Launch::Home(_))) {
+            self.error = Some(OTHER_FILES_OPEN.into());
+            return;
+        }
+        // Without Home (an embedding with the Hosts dialog alone) there is
+        // no list to show, and nothing closes for one.
+        if matches!(launch, Launch::Home(_)) && !self.launcher.has_home() {
+            return;
+        }
+        if front.is_some() {
+            let layout_unsaved =
+                open().any(|doc| doc.layout_workspace.has_changes() || doc.layout_workspace.saving);
+            if layout_unsaved {
+                self.error = Some(LAYOUT_UNSAVED.into());
+                return;
+            }
+            // Offline the close cannot save, and would drop what the
+            // windows hold: a command that only closes the file on its way
+            // leaves that choice to the user.
+            let lost_edits = open().any(|doc| {
+                doc.connection_lost.is_some()
+                    && (doc.document.unsaved() > 0 || doc.uncommitted.is_some())
+            });
+            if lost_edits {
+                self.error = Some(LOST_EDITS.into());
+                return;
+            }
+            self.launch_after_close = Some((launch, self.w.file_id));
+            self.apply(ctx, Action::CloseFile);
+            return;
+        }
+        match launch {
+            Launch::CreateNew => {
+                self.open_file = None;
+                self.create_new = Some(crate::create_new::CreateNewDialog::new());
+            }
+            Launch::OpenFile => {
+                self.open_file = Some(crate::open_file::OpenFileDialog::new());
+            }
+            Launch::Home(tab) => {
+                self.launcher.set_hosts(false);
+                if self.file_history.tab() != tab {
+                    self.home = Default::default();
+                    self.edit_file_history(Change::Select(tab));
+                }
+            }
+            Launch::Hosts => self.launcher.set_hosts(true),
+            Launch::Saved(SavedFile::Local { path }) => {
+                self.launcher.set_hosts(false);
+                self.apply(ctx, Action::OpenLocal(path));
+            }
+            Launch::Saved(SavedFile::Hosted { host, port, file }) => {
+                use zeroize::Zeroize;
+                self.form.password.zeroize();
+                self.form = ConnectForm {
+                    host,
+                    port: port.to_string(),
+                    file,
+                    ..Default::default()
+                };
+                self.launcher.set_hosts(true);
+            }
+        }
+    }
+
     /// [`Self::open_local`]; with `ask` and no credentials, asking for an
     /// account whatever File Options say.
     fn open_local_with(&mut self, ctx: &egui::Context, file: om_data::LocalFile, ask: bool) {
         self.error = None;
         self.epoch += 1;
         self.status = ConnectStatus::Connecting;
-        let name = file
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        self.opening = Some(Target {
-            host: String::new(),
-            file: name,
-            local: Some(file.path.clone()),
-        });
+        self.opening = Some(Opening::local(file.path.clone()));
         if ask && file.credentials.is_none() {
             self.request(ctx, Request::OpenLocalAsking(file.path));
         } else {
@@ -3506,13 +3849,13 @@ impl OpenMakerApp {
         };
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(12))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
         egui::Modal::new(Id::unique("alert"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(30))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(260.0);
                 ui.vertical_centered(|ui| {
@@ -3523,7 +3866,7 @@ impl OpenMakerApp {
                         ui.painter(),
                         rect.shrink(12.0),
                         Icon::Data,
-                        Color32::WHITE,
+                        theme::ON_ACCENT,
                         theme::DEFAULT_BUTTON,
                     );
                     ui.add_space(10.0);
@@ -3592,7 +3935,11 @@ impl OpenMakerApp {
         // files' windows, a close of them under way and their script go on.
         let lost = om_data::DataError::connection_lost(HOST_DISCONNECTED);
         if self.with_window(window, |app| app.mark_file_lost(&lost)) == Some(true) {
-            if self.front_doc().file_id == file {
+            if self
+                .closing
+                .as_ref()
+                .is_some_and(|closing| closing.file == file)
+            {
                 self.closing = None;
             }
             if self.script.owner_file == Some(file) {
@@ -3643,13 +3990,13 @@ impl OpenMakerApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(left.fract().max(0.05)));
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(12))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
         egui::Modal::new(Id::unique("host message"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(30))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(320.0);
                 ui.label(
@@ -3942,7 +4289,25 @@ impl OpenMakerApp {
         // goes on to the parent once the card has closed.
         if action == Action::CloseWindow && self.w.session.is_some() {
             if let Some(card) = self.card_of(self.w.id) {
-                self.with_window(card, |app| app.apply(ctx, Action::CloseWindow));
+                let closing = self
+                    .closing
+                    .as_ref()
+                    .filter(|closing| closing.file == self.w.file_id);
+                // The parent's close triggers let the parent go, not the
+                // card: the card's own run, and may stop its close, unless
+                // the close runs none (`Closing::quiet`).
+                if !closing.is_some_and(|closing| closing.quiet) {
+                    self.script.bypass = false;
+                }
+                // A card a close trigger opened stops File > Close and
+                // Quit, as any window opened since they began does
+                // (`Closing`).
+                let opened_since = closing.is_some_and(|closing| !closing.windows.contains(&card));
+                if opened_since {
+                    self.closing = None;
+                } else {
+                    self.with_window(card, |app| app.apply(ctx, Action::CloseWindow));
+                }
                 return;
             }
         }
@@ -3988,11 +4353,7 @@ impl OpenMakerApp {
             _ => false,
         };
         if leaves_layout && self.w.mode == Mode::Layout && self.w.layout_workspace.has_changes() {
-            self.error = Some(
-                "This layout's changes are not saved. Choose Layouts > Save Layout or Revert \
-                 Layout first."
-                    .into(),
-            );
+            self.error = Some(LAYOUT_UNSAVED.into());
             return;
         }
         // Before any trigger: nothing may save or script the held edits.
@@ -4088,6 +4449,20 @@ impl OpenMakerApp {
                     // edited its related records: they are committed with
                     // the user's own changes, together.
                     self.save_on_worker(ctx, Start::Commit);
+                    return;
+                }
+                // Nothing left to save (an approving OnRecordCommit
+                // reverted it, say): what the save was for goes on, a
+                // close too.
+                let nothing = self
+                    .w
+                    .session
+                    .as_ref()
+                    .is_none_or(|session| self.w.document.changes(session).is_empty());
+                if nothing {
+                    if let Some(action) = self.w.deferred_action.take() {
+                        self.resume_saved_action(ctx, action);
+                    }
                     return;
                 }
                 if !self.w.record_capabilities.update {
@@ -4288,10 +4663,17 @@ impl OpenMakerApp {
                         self.error = None;
                         self.epoch += 1;
                         self.status = ConnectStatus::Connecting;
-                        self.opening = Some(Target {
-                            host: connection.host.clone(),
-                            file: connection.file.clone(),
-                            local: None,
+                        self.opening = Some(Opening {
+                            target: Target {
+                                host: connection.host.clone(),
+                                file: connection.file.clone(),
+                                local: None,
+                            },
+                            destination: crate::file_history::SavedFile::Hosted {
+                                host: connection.host.clone(),
+                                port: connection.port,
+                                file: connection.file.clone(),
+                            },
                         });
                         self.request(
                             ctx,
@@ -4305,13 +4687,24 @@ impl OpenMakerApp {
                 }
             }
             Action::CloseFile if self.w.session.is_some() => {
-                self.closing = Some(false);
+                // A Quit under way (a close trigger's Close File, say)
+                // stays one.
+                let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
+                self.closing = Some(self.closing_front(quit));
                 self.apply(ctx, Action::CloseWindow);
             }
             // Stops the listing; nothing goes to the provider.
             Action::CancelConnect if self.status == ConnectStatus::ListingFiles => {
                 self.listing.cancel();
                 self.status = ConnectStatus::Idle;
+            }
+            // Cancel with nothing under way closes Hosts opened from Home.
+            Action::CancelConnect
+                if self.status == ConnectStatus::Idle
+                    && self.w.session.is_none()
+                    && self.launcher.has_home() =>
+            {
+                self.launcher.set_hosts(false);
             }
             Action::CancelConnect | Action::CloseFile => self.close_file(ctx),
             Action::Reconnect => self.open_reconnect(),
@@ -4324,23 +4717,12 @@ impl OpenMakerApp {
             Action::DiscardUnsettledSave => self.settle_save(ctx, worker::Settle::Discard),
             Action::RecreateRecord => self.recreate(ctx, true),
             Action::DiscardNewRecord => self.recreate(ctx, false),
-            Action::ShowCreateNew => {
-                if self.w.session.is_some() {
-                    self.create_after_close = true;
-                    self.apply(ctx, Action::CloseFile);
-                } else if self.status == ConnectStatus::Idle && self.local_login.is_none() {
-                    self.open_file = None;
-                    self.create_new = Some(crate::create_new::CreateNewDialog::new());
-                }
-            }
-            Action::ShowOpenFile => {
-                if self.w.session.is_some() {
-                    self.open_after_close = true;
-                    self.apply(ctx, Action::CloseFile);
-                } else if self.status == ConnectStatus::Idle && self.local_login.is_none() {
-                    self.open_file = Some(crate::open_file::OpenFileDialog::new());
-                }
-            }
+            Action::ShowCreateNew => self.launch(ctx, Launch::CreateNew),
+            Action::ShowOpenFile => self.launch(ctx, Launch::OpenFile),
+            Action::ShowHome(tab) => self.launch(ctx, Launch::Home(tab)),
+            Action::ShowHosts => self.launch(ctx, Launch::Hosts),
+            Action::OpenSaved(file) => self.launch(ctx, Launch::Saved(file)),
+            Action::EditHistory(change) => self.edit_file_history(change),
             Action::OpenLocal(path) => {
                 self.open_file = None;
                 if self.status == ConnectStatus::Idle && self.w.session.is_none() {
@@ -4362,18 +4744,20 @@ impl OpenMakerApp {
                 if self.w.session.is_none() {
                     self.closing = None;
                 } else if !self.windows.iter().any(|d| d.file_id == self.w.file_id) {
-                    // The file's last window: the file closes.
-                    let quit = self.closing == Some(true);
+                    // The file's last window: the file closes. Another
+                    // file's close under way goes on.
+                    let file = self.w.file_id;
+                    let closing = self.closing.take();
+                    let quit = closing
+                        .as_ref()
+                        .is_some_and(|closing| closing.file == file && closing.quit);
                     self.close_file(ctx);
+                    self.closing = closing.filter(|closing| closing.file != file);
                     if quit {
-                        if self.w.session.is_some() {
-                            self.closing = Some(true);
-                            self.apply(ctx, Action::CloseWindow);
-                        } else {
-                            self.quit_after_closes(ctx);
-                        }
+                        self.quit_next(ctx);
                     }
                 } else {
+                    let (id, file) = (self.w.id, self.w.file_id);
                     let returns = self.w.style.parent().is_some();
                     if let Some((window, request)) = self.w.found_set_to_keep() {
                         if let Err(err) = self.worker.send(ctx, self.epoch, window, request) {
@@ -4386,8 +4770,12 @@ impl OpenMakerApp {
                         let viewport = self.viewport_of(self.w.id);
                         ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
                     }
-                    if self.closing.is_some() {
-                        self.apply(ctx, Action::CloseWindow);
+                    if self
+                        .closing
+                        .as_ref()
+                        .is_some_and(|closing| closing.file == file)
+                    {
+                        self.close_next(ctx, id);
                     }
                 }
             }
@@ -4537,11 +4925,7 @@ impl OpenMakerApp {
             | Action::PartSetup
                 if self.w.layout_workspace.has_changes() =>
             {
-                self.error = Some(
-                    "This layout's changes are not saved. Choose Layouts > Save Layout or \
-                     Revert Layout first."
-                        .into(),
-                );
+                self.error = Some(LAYOUT_UNSAVED.into());
             }
             Action::NewLayout => {
                 if let Some(session) = &self.w.session {
@@ -4723,13 +5107,17 @@ impl OpenMakerApp {
                     .find(|doc| doc.file_id == file)
                     .map(|doc| doc.id);
                 if let Some(window) = window {
-                    // `close_file` resets what the front file's close or
-                    // open had under way: another file's stays.
+                    // `close_file` resets the close and the open under
+                    // way: another file's close stays, wherever its file
+                    // is, and so does an open while this file was not in
+                    // front.
                     let front = self.front_doc().file_id;
-                    let kept = (self.closing, self.opening.clone(), self.status);
+                    let (closing, opening, status) =
+                        (self.closing.clone(), self.opening.clone(), self.status);
                     self.with_window(window, |app| app.close_file(ctx));
+                    self.closing = closing.filter(|closing| closing.file != file);
                     if front != file {
-                        (self.closing, self.opening, self.status) = kept;
+                        (self.opening, self.status) = (opening, status);
                     }
                 }
             }
@@ -4759,11 +5147,23 @@ impl OpenMakerApp {
                 ctx.send_viewport_cmd_to(self.viewport_of(id), ViewportCommand::Focus);
             }
             Action::Minimize => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
-            Action::Quit if self.w.session.is_some() => {
-                self.closing = Some(true);
-                self.apply(ctx, Action::CloseWindow);
+            Action::Quit => {
+                self.launch_after_close = None;
+                let waits = self.close_waits();
+                if let Some(closing) = self.closing.as_mut().filter(|_| waits) {
+                    // A close waiting on its triggers or a save becomes a
+                    // Quit: a veto or refused save still stops it. One left
+                    // with nothing to wait for is over, and Quit begins.
+                    closing.quit = true;
+                } else if self.quit_after_script_close() {
+                    // A script's Close File closes first, when the script
+                    // has ended.
+                } else if !self.script.busy() {
+                    self.quit_next(ctx);
+                }
+                // A running script owns the windows: Quit waits for it,
+                // as the root close box does (Esc or Cmd-period stops it).
             }
-            Action::Quit => self.quit_after_closes(ctx),
         }
     }
 
@@ -5021,10 +5421,19 @@ impl OpenMakerApp {
     fn file_opened(
         &mut self,
         ctx: &egui::Context,
-        target: Target,
+        opening: Opening,
         opened: crate::worker::Opened,
         account: String,
     ) {
+        let Opening {
+            target,
+            destination,
+        } = opening;
+        if !self.sample_data {
+            self.edit_file_history(crate::file_history::Change::Opened(destination.clone()));
+        }
+        self.launcher.set_hosts(false);
+        self.home = Default::default();
         self.closed_windows.clear();
         self.window_files = std::collections::HashMap::from([(windows::FIRST, 0)]);
         self.presentation = None;
@@ -5032,7 +5441,9 @@ impl OpenMakerApp {
         self.related_sign_ins.clear();
         self.related_asked.clear();
         self.related_login = None;
-        self.w.session = Some(Session::new(target, DEFAULT_PAGE_SIZE));
+        let mut session = Session::new(target, DEFAULT_PAGE_SIZE);
+        session.destination = Some(destination);
+        self.w.session = Some(session);
         self.w.calcs.reset();
         self.w.calcs.account = account;
         self.w.calcs.host_version = opened.host_version.unwrap_or_default();
@@ -6195,13 +6606,13 @@ impl OpenMakerApp {
             Reply::License { id, result } => self.license_reply(id, result),
             Reply::Files(listed) => self.on_listed(listed),
             Reply::Opened(result) => {
-                let target = self.opening.take();
+                let opening = self.opening.take();
                 self.status = ConnectStatus::Idle;
-                match (result, target) {
-                    (Ok(opened), Some(target)) => {
+                match (result, opening) {
+                    (Ok(opened), Some(opening)) => {
                         self.form.password.clear();
                         let account = self.form.account.clone();
-                        self.file_opened(ctx, target, opened, account);
+                        self.file_opened(ctx, opening, opened, account);
                     }
                     (Ok(_), None) => {}
                     (Err(err), _) => self.fail(&err),
@@ -6216,28 +6627,28 @@ impl OpenMakerApp {
                 }
             }
             Reply::OpenedLocal(result) => {
-                let target = self.opening.take();
+                let opening = self.opening.take();
                 // Only the open of the file Create New made opens Manage
                 // Database.
                 let created = self.database_after_open.take();
                 self.status = ConnectStatus::Idle;
-                match (result, target) {
-                    (Ok((LocalOpen::Opened { read_only }, opened)), Some(target)) => {
+                match (result, opening) {
+                    (Ok((LocalOpen::Opened { read_only }, opened)), Some(opening)) => {
                         self.local_login = None;
                         self.change_password = None;
                         self.local_read_only = read_only;
                         let account = opened.account.clone().unwrap_or_default();
-                        let made = created.is_some() && created == target.local;
-                        self.file_opened(ctx, target, opened, account);
+                        let made = created.is_some() && created == opening.target.local;
+                        self.file_opened(ctx, opening, opened, account);
                         if made {
                             self.apply(ctx, Action::ManageDatabase);
                         }
                     }
-                    (Ok((LocalOpen::NeedsLogin { account }, _)), Some(target)) => {
+                    (Ok((LocalOpen::NeedsLogin { account }, _)), Some(opening)) => {
                         match &mut self.local_login {
                             Some(dialog) => dialog.pending = false,
                             None => {
-                                let path = target.local.unwrap_or_default();
+                                let path = opening.target.local.unwrap_or_default();
                                 self.local_login =
                                     Some(crate::open_file::LoginDialog::new(path, account));
                             }
@@ -7012,6 +7423,7 @@ fn layout_change_done<T>(result: &Result<T, DataError>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Color32;
 
     struct NoLicense;
     impl crate::licensing::LicenseStore for NoLicense {
@@ -7831,6 +8243,291 @@ mod tests {
         app.w = window_with_records(1, &["Ada"]);
         app.windows = vec![window_with_records(2, &["Bob", "Cy"])];
         app
+    }
+
+    /// Home's and the File menu's file commands close the front file first,
+    /// and nothing while another file is open or a layout has unsaved
+    /// changes.
+    #[test]
+    fn a_launch_command_closes_the_front_file_only_when_nothing_else_is_lost() {
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.launcher = Launcher::Home { hosts: false };
+        app.w.file_id = 1;
+        app.windows[0].file_id = 2;
+        app.windows[0].hidden = true;
+        app.apply(&ctx, Action::ShowHosts);
+        assert_eq!(app.error.as_deref(), Some(OTHER_FILES_OPEN));
+        assert_eq!(app.windows.len(), 1);
+        assert!(app.w.session.is_some() && app.launch_after_close.is_none());
+
+        // Behind a blank Home, the hidden file refuses a command that
+        // would open a file; showing a list of Home opens nothing.
+        let front = std::mem::replace(&mut app.w, windows::Doc::new(windows::FIRST));
+        app.error = None;
+        app.apply(
+            &ctx,
+            Action::OpenSaved(crate::file_history::SavedFile::Local {
+                path: "/nowhere/Other.fmp12".into(),
+            }),
+        );
+        assert_eq!(app.error.as_deref(), Some(OTHER_FILES_OPEN));
+        assert!(app.opening.is_none() && app.status == ConnectStatus::Idle);
+        app.error = None;
+        app.apply(&ctx, Action::ShowHome(app.file_history.tab()));
+        assert!(app.error.is_none());
+        app.w = front;
+
+        // A second window of the same file, with a layout save under way.
+        app.error = None;
+        app.windows[0].file_id = 1;
+        app.windows[0].layout_workspace.saving = true;
+        app.apply(&ctx, Action::ShowHosts);
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert!(app.w.session.is_some() && app.launch_after_close.is_none());
+
+        // The connection lost, with a change the window holds: closing for
+        // Show Recent would lose it, so nothing closes.
+        app.windows[0].layout_workspace.saving = false;
+        app.error = None;
+        app.w.connection_lost = Some("gone".into());
+        app.w
+            .document
+            .put_draft(1, 1, "Name", "Ada".into(), "Ada Lovelace".into());
+        app.apply(&ctx, Action::ShowHome(crate::file_history::Tab::Recent));
+        assert_eq!(app.error.as_deref(), Some(LOST_EDITS));
+        assert!(app.w.session.is_some() && app.launch_after_close.is_none());
+        assert_eq!(app.w.document.unsaved(), 1);
+        app.w.connection_lost = None;
+        app.w.document = Default::default();
+
+        // Without Home, Show Recent has nothing to show and closes nothing.
+        app.error = None;
+        app.launcher = Launcher::Hosts;
+        app.apply(&ctx, Action::ShowHome(crate::file_history::Tab::Recent));
+        assert!(app.error.is_none() && app.w.session.is_some() && app.closing.is_none());
+        app.launcher = Launcher::Home { hosts: false };
+
+        app.error = None;
+        app.apply(&ctx, Action::ShowHosts);
+        for _ in 0..3 {
+            ctx.run_ui(egui::RawInput::default(), |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        }
+        assert!(app.w.session.is_none(), "{:?}", app.error);
+        assert!(app.windows.is_empty());
+        assert_eq!(app.launcher, Launcher::Home { hosts: true });
+    }
+
+    /// File > Close closes the windows its file had when it began, one at
+    /// a time, whichever window a close trigger brings to the front, and
+    /// stops at a window of the file a close trigger opened since, a card
+    /// too, which stays open with its edits: when the close goes on
+    /// directly and when a trigger's held close goes on (`resume_held`).
+    #[test]
+    fn file_close_goes_through_the_windows_it_began_with_and_stops_at_new_ones() {
+        let ctx = egui::Context::default();
+        let close = || scripts::Held::Action(Action::CloseWindow, 1);
+        let mut app = two_record_windows();
+        app.w.file_id = 1;
+        app.windows[0].file_id = 1;
+        let mut other = window_with_records(3, &["Zed"]);
+        other.file_id = 2;
+        app.windows.push(other);
+        // As a trigger leaves it: File > Close began with windows 1 and 2,
+        // and file 2's window, which the trigger opened, is in front.
+        app.closing = Some(Closing {
+            file: 1,
+            windows: vec![1, 2],
+            quit: false,
+            quiet: false,
+        });
+        let front = app.windows.len() - 1;
+        std::mem::swap(&mut app.w, &mut app.windows[front]);
+        app.with_window(1, |app| app.apply(&ctx, Action::CloseWindow));
+        assert_eq!(app.window_ids(), [3]);
+        assert!(app.w.session.is_some() && app.closing.is_none());
+
+        // Window 2 came from a close trigger after File > Close began: the
+        // close stops past the windows it began with, and at one a trigger
+        // opened, leaving it open with whatever it holds.
+        for closed in [1, 2] {
+            let mut app = two_record_windows();
+            app.w.file_id = 1;
+            app.windows[0].file_id = 1;
+            app.closing = Some(Closing {
+                file: 1,
+                windows: vec![1],
+                quit: false,
+                quiet: false,
+            });
+            app.with_window(closed, |app| app.apply(&ctx, Action::CloseWindow));
+            assert_eq!(app.window_ids(), [3 - closed], "closed {closed}");
+            assert!(
+                app.w.session.is_some() && app.closing.is_none(),
+                "closed {closed}"
+            );
+        }
+
+        // Window 1's OnWindowClose opened a card on it and let the close
+        // go on: the card is not one the close began with, so the close
+        // stops there rather than close the card without its own triggers.
+        let mut app = two_record_windows();
+        app.windows[0].file_id = app.w.file_id;
+        app.closing = Some(app.closing_front(false));
+        app.add_window(4);
+        app.windows[1].style = crate::scripting::WindowStyle::Card(crate::scripting::Card {
+            parent: 1,
+            dim: true,
+            close: true,
+            left: None,
+            top: None,
+            width: None,
+            height: None,
+        });
+        app.resume_held(&ctx, 1, close(), true, None);
+        assert_eq!(app.window_ids(), [1, 4, 2]);
+        assert!(app.closing.is_none());
+
+        // Window 1's OnWindowClose closed window 1 itself (Close Window):
+        // a close it let go on goes on with window 2 and closes the file,
+        // and one it stopped ends there.
+        for proceed in [true, false] {
+            let mut app = two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.closing = Some(app.closing_front(false));
+            app.remove_window(1);
+            app.resume_held(&ctx, 1, close(), proceed, None);
+            assert_eq!(app.w.session.is_none(), proceed, "proceed {proceed}");
+            assert!(app.closing.is_none(), "proceed {proceed}");
+        }
+
+        // The close's commit finds nothing left to save (an approving
+        // OnRecordCommit reverted the record): the close goes on.
+        let mut app = two_record_windows();
+        app.windows[0].file_id = app.w.file_id;
+        app.closing = Some(app.closing_front(false));
+        app.w.deferred_action = Some(Action::CloseWindow);
+        app.apply(&ctx, Action::CommitRecord);
+        assert!(app.docs().all(|doc| doc.session.is_none()));
+        assert!(app.closing.is_none());
+
+        // File 1's close waits on its trigger while file 2's window is in
+        // front: acknowledging file 2's forced disconnect leaves it.
+        let mut app = two_record_windows();
+        app.w.file_id = 2;
+        app.windows[0].file_id = 1;
+        let closing = Closing {
+            file: 1,
+            windows: vec![2],
+            quit: false,
+            quiet: false,
+        };
+        app.closing = Some(closing.clone());
+        app.apply(&ctx, Action::CloseDisconnectedFile(2));
+        assert_eq!(app.window_ids(), [2]);
+        assert_eq!(app.closing, Some(closing));
+    }
+
+    /// Quit closes every open file as File > Close does, a hidden one too,
+    /// whether it starts from the menu, behind a blank Home or from the
+    /// root window's close box; a close trigger's Close File keeps it a
+    /// Quit.
+    #[test]
+    fn quit_closes_every_open_file_hidden_ones_too() {
+        for (how, blank, close_box) in [
+            ("Quit", false, false),
+            ("Quit behind Home", true, false),
+            ("the close box behind Home", true, true),
+            ("Close File during Quit", false, false),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.w.file_id = 1;
+            app.windows[0].file_id = 2;
+            app.windows[0].hidden = true;
+            if blank {
+                app.w = windows::Doc::new(windows::FIRST);
+            }
+            if close_box {
+                let mut input = egui::RawInput::default();
+                input
+                    .viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+                ctx.run_ui(input, |ui| app.show(ui))
+                    .drop_without_applying_deltas();
+            } else if how == "Close File during Quit" {
+                app.closing = Some(app.closing_front(true));
+                app.apply(&ctx, Action::CloseFile);
+            } else {
+                app.apply(&ctx, Action::Quit);
+            }
+            assert!(app.docs().all(|doc| doc.session.is_none()), "{how}");
+            assert!(app.quit_ready || app.quit_waiting.is_some(), "{how}");
+        }
+    }
+
+    /// Quit while File > Close waits on a close trigger, from the menu or
+    /// the root close box, makes that close a Quit: the trigger's veto
+    /// still keeps the file open, and its approval quits. While a script
+    /// runs with no close under way, Quit waits for it.
+    #[test]
+    fn quit_waits_for_a_pending_close_and_a_running_script() {
+        let close = || scripts::Held::Action(Action::CloseWindow, 1);
+        for (how, close_box, proceed) in [
+            ("menu, veto", false, false),
+            ("close box, veto", true, false),
+            ("menu, approval", false, true),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.closing = Some(app.closing_front(false));
+            app.script.running = true;
+            if close_box {
+                let mut input = egui::RawInput::default();
+                input
+                    .viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+                ctx.run_ui(input, |ui| app.show(ui))
+                    .drop_without_applying_deltas();
+            } else {
+                app.apply(&ctx, Action::Quit);
+            }
+            assert_eq!(app.window_ids(), [1, 2], "{how}");
+            assert!(app.closing.as_ref().is_some_and(|c| c.quit), "{how}");
+            // The trigger ends.
+            app.script.running = false;
+            app.resume_held(&ctx, 1, close(), proceed, None);
+            let quit = app.quit_ready || app.quit_waiting.is_some();
+            assert_eq!(quit, proceed, "{how}");
+            assert_eq!(app.w.session.is_none(), proceed, "{how}");
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.script.running = true;
+        app.apply(&ctx, Action::Quit);
+        assert_eq!(app.window_ids(), [1, 2]);
+        assert!(app.closing.is_none() && app.quit_waiting.is_none() && !app.quit_ready);
+
+        // Quit with a close left waiting on nothing begins at once.
+        let mut stale = two_record_windows();
+        stale.closing = Some(stale.closing_front(false));
+        stale.apply(&ctx, Action::Quit);
+        assert!(stale.quit_ready || stale.quit_waiting.is_some());
+
+        // A script's Exit Application drops a command waiting for the
+        // close, as Quit does.
+        app.launch_after_close = Some((Launch::Hosts, app.w.file_id));
+        app.on_script_event(&ctx, crate::scripting::ScriptEvent::Quit);
+        assert!(app.launch_after_close.is_none());
     }
 
     #[test]

@@ -1,6 +1,4 @@
-//! The desktop's Settings (FileMaker Pro's Settings dialog, docs/desktop-client.md
-//! "Settings"): today its General tab's User Name, kept in a JSON file for the
-//! OS account.
+//! The desktop's preferences, kept in a JSON file for the OS account.
 //!
 //! The file keeps keys this version does not know, and a file that cannot be
 //! read is never written over.
@@ -27,7 +25,7 @@ pub fn default_path() -> Option<PathBuf> {
 const USER_NAME: &str = "user_name";
 
 /// The JSON object in `path`; an empty one when there is no file.
-fn read(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, DataError> {
+pub(crate) fn read(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, DataError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
@@ -70,6 +68,60 @@ pub fn load_user_name(path: &Path) -> Result<UserNameSetting, DataError> {
 /// permissions. Refused, with nothing changed, when the file there cannot be
 /// read as a settings file, is read-only, or cannot be written.
 pub fn save_user_name(path: &Path, setting: &UserNameSetting) -> Result<(), DataError> {
+    let value = match setting {
+        UserNameSetting::System => serde_json::json!({ "choice": "system" }),
+        UserNameSetting::Other(name) => serde_json::json!({ "choice": "other", "name": name }),
+    };
+    update(path, |map| {
+        map.insert(USER_NAME.into(), value);
+        Ok(())
+    })
+}
+
+/// How long a save waits for another OpenMaker's save of the settings to
+/// end before it fails: saves run on the window's thread, and an instance
+/// stopped while it held the lock must not freeze this one.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Apply a change to the latest settings under a lock on a stable sibling
+/// file. Locking the settings file itself would lose the lock on replacement.
+pub(crate) fn update<T>(
+    path: &Path,
+    change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<T, DataError>,
+) -> Result<T, DataError> {
+    let failed = |e: &dyn std::fmt::Display| {
+        DataError::new(format!(
+            "The settings could not be saved in {}: {e}",
+            path.display()
+        ))
+    };
+    let folder = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(folder).map_err(|e| failed(&e))?;
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|e| failed(&e))?;
+    let since = std::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if since.elapsed() < LOCK_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(failed(&"another OpenMaker is saving its settings"));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(failed(&e)),
+        }
+    }
     let permissions = match std::fs::metadata(path) {
         Ok(metadata) => Some(metadata.permissions()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -91,22 +143,7 @@ pub fn save_user_name(path: &Path, setting: &UserNameSetting) -> Result<(), Data
         )));
     }
     let mut map = read(path)?;
-    let value = match setting {
-        UserNameSetting::System => serde_json::json!({ "choice": "system" }),
-        UserNameSetting::Other(name) => serde_json::json!({ "choice": "other", "name": name }),
-    };
-    map.insert(USER_NAME.into(), value);
-    let failed = |e: &dyn std::fmt::Display| {
-        DataError::new(format!(
-            "The settings could not be saved in {}: {e}",
-            path.display()
-        ))
-    };
-    let folder = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(folder).map_err(|e| failed(&e))?;
+    let value = change(&mut map)?;
     let mut text = serde_json::to_string_pretty(&map).map_err(|e| failed(&e))?;
     text.push('\n');
     // Written whole beside the file, then moved over it: a failed save
@@ -117,7 +154,7 @@ pub fn save_user_name(path: &Path, setting: &UserNameSetting) -> Result<(), Data
         std::fs::set_permissions(temporary.path(), permissions).map_err(|e| failed(&e))?;
     }
     temporary.persist(path).map_err(|e| failed(&e.error))?;
-    Ok(())
+    Ok(value)
 }
 
 /// Settings' OK: save `setting` in `path` (when the system gives a settings
@@ -226,6 +263,24 @@ impl SettingsDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A save waits a bounded time for another instance's lock, then
+    /// fails with nothing changed, rather than freeze the window.
+    #[test]
+    fn a_save_gives_up_on_a_lock_another_instance_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let other = UserNameSetting::Other("Pat Doe".into());
+        let held = std::fs::File::create(dir.path().join("settings.json.lock")).unwrap();
+        held.lock().unwrap();
+        let since = std::time::Instant::now();
+        assert!(save_user_name(&path, &other).is_err());
+        assert!(since.elapsed() < 10 * LOCK_WAIT);
+        assert!(!path.exists());
+        held.unlock().unwrap();
+        save_user_name(&path, &other).unwrap();
+        assert_eq!(load_user_name(&path).unwrap(), other);
+    }
 
     #[test]
     fn the_user_name_keeps_other_settings_and_an_unreadable_file() {

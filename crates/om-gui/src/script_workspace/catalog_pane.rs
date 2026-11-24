@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use egui::{pos2, vec2, Align2, Color32, Key, Rect, Role, Sense, Stroke, Ui, WidgetInfo};
+use egui::{pos2, vec2, Align2, Key, Rect, Role, Sense, Stroke, Ui, WidgetInfo};
 use om_data::{Script, ScriptCatalog, ScriptKind};
 
 use super::glyphs::{self, Glyph};
@@ -607,12 +607,12 @@ impl ScriptsPane {
                 if focused {
                     theme::SELECTED
                 } else {
-                    Color32::from_gray(0xDC)
+                    theme::HOVER_FILL
                 },
             );
         }
         let text_color = if selected && focused {
-            Color32::WHITE
+            theme::ON_ACCENT
         } else {
             theme::TEXT
         };
@@ -636,9 +636,9 @@ impl ScriptsPane {
                 if in_menu {
                     theme::SELECTED
                 } else {
-                    Color32::WHITE
+                    theme::CONTROL_BG
                 },
-                Stroke::new(1.0, theme::FIELD_BORDER),
+                Stroke::new(1.0, theme::BORDER),
                 egui::StrokeKind::Inside,
             );
             if in_menu {
@@ -646,7 +646,7 @@ impl ScriptsPane {
                     &painter,
                     box_rect.shrink(1.0),
                     Glyph::DisclosureDown,
-                    Color32::WHITE,
+                    theme::ON_ACCENT,
                 );
             }
             let label = format!("Include {} in Scripts Menu", row.name);
@@ -693,7 +693,7 @@ impl ScriptsPane {
                     Rect::from_center_size(pos2(x + 22.0, rect.center().y), vec2(17.0, 17.0)),
                     Glyph::Folder,
                     if selected && focused {
-                        Color32::WHITE
+                        theme::ON_ACCENT
                     } else {
                         theme::ICON
                     },
@@ -706,7 +706,7 @@ impl ScriptsPane {
                     Rect::from_center_size(pos2(x + 22.0, rect.center().y), vec2(17.0, 17.0)),
                     Glyph::Script,
                     if selected && focused {
-                        Color32::WHITE
+                        theme::ON_ACCENT
                     } else {
                         theme::ICON
                     },

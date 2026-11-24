@@ -3437,7 +3437,11 @@ Execution (2.1, 6)
   otherwise.
 - Exit Application, Close File and Close Window on the file's only window
   halt the scripts; with Allow User Abort Off the script may go on until
-  the end of its 50 ms slice.
+  the end of its 50 ms slice. The file closes, or the app quits, once the
+  script has ended, after the worker has sent every window's last state,
+  so a window under Freeze Window commits what the script left in it; the
+  script counts as running until then, and a Quit chosen meanwhile, or an
+  Exit Application after Close File, quits after that close.
 - The worker keeps the window the script works on (layout, mode, view,
   found-set position, current record and its unsaved values, Find mode
   requests, title, toolbars, zoom). A script starts from the window as the
@@ -4087,14 +4091,30 @@ Steps
   in, each committing what is left on its record (the user's typing and
   what scripts left) before it goes; a veto or a refused commit stops
   there with that window and the ones after it open and their changes
-  kept, the windows closed before having committed theirs. FileMaker's
-  order of these events for several windows is not measured. The next
+  kept, the windows closed before having committed theirs. They close the
+  windows the file had when the close began, even when a close trigger
+  brings another file's window to the front. A window of the file that a
+  close trigger opened (a card too) stops the close and stays open with
+  its edits; a close trigger that closes its own window lets the close go
+  on with the next. A close trigger that runs Close File or Exit
+  Application takes the close over, even after closing its own window:
+  once its script has ended, so that a window it froze has sent what the
+  script left, the file's windows close without their close triggers,
+  each committing, as a script's Close File closes another file's (their
+  triggers would run the script again without end), and with Exit
+  Application, or in a Quit, the other files then close as Quit closes
+  them. Quit goes on to a file a close trigger opened hidden,
+  from Home or the root close box too (OpenMaker's choices). FileMaker's
+  order of these events for several windows, and what it does with
+  windows a close trigger opens or closes, are not measured. The next
   file starts from a fresh window (title, toolbars, zoom, view, `Get (
   WindowUUID )`). Exit Application commits its own window, and once its
-  script has ended every other window closes as Quit closes them; while a
-  script runs the root close box does nothing (Esc or Cmd-period stops
-  the script first). Before, closing the file kept only the acting window's
-  record and dropped every other window's changes, and the root close box
+  script has ended every other window closes as Quit closes them. While a
+  script runs, Quit and the root close box wait (Esc or Cmd-period stops
+  the script first); during a close that waits on its triggers or a save,
+  they make it a Quit, which a veto still stops (OpenMaker's choice).
+  Before, closing the file kept only the acting window's record and
+  dropped every other window's changes, and the root close box
   quit without committing anything. The script step Close Window still
   commits without OnWindowClose (as before). Records a window commits, creates or deletes (by
   the user or a script) make the file's other windows read their records

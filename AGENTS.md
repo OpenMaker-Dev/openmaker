@@ -19,6 +19,7 @@ Read this file first, then the documents it points to.
 | [ROADMAP.md](ROADMAP.md) | Status by area, the alpha gate |
 | [docs/architecture.md](docs/architecture.md) | Principles, crate map, seams, testing method |
 | [docs/development.md](docs/development.md) | Build, run, check and debug; the research tools |
+| [docs/design.md](docs/design.md) | OpenMaker's own look: the color, type and shape tokens chrome code uses |
 | [docs/re/README.md](docs/re/README.md) | Index of the FileMaker specs and the findings ledger |
 | The spec and feature note for your area | `docs/re/<topic>.md` says how FileMaker behaves; `docs/<feature>.md` says what OpenMaker does and its limits (both linked from ROADMAP.md) |
 | Issues and pull requests for your area | `gh issue list --label "area: scripts"`, `gh pr list`: avoid duplicating work in flight |

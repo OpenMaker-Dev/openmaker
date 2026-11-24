@@ -178,8 +178,8 @@ pub(crate) fn show(
     }
     let mut events = Vec::new();
     egui::Frame::new()
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, Color32::from_gray(0x40)))
+        .fill(theme::CONTROL_BG)
+        .stroke(Stroke::new(1.0, theme::BORDER))
         .show(ui, |ui| {
             egui::ScrollArea::both()
                 .id_salt("database_relationship_graph")
@@ -1371,7 +1371,7 @@ fn tools(
                             rect,
                             CornerRadius::same(3),
                             Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]),
-                            Stroke::new(1.0, Color32::from_gray(0x60)),
+                            Stroke::new(1.0, theme::POPUP_BORDER),
                             StrokeKind::Inside,
                         );
                         let name = format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2]);
@@ -1526,8 +1526,8 @@ fn group(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui)) {
             theme::TEXT,
         );
         egui::Frame::new()
-            .fill(Color32::from_gray(0xE9))
-            .stroke(Stroke::new(1.0, Color32::from_gray(0xDB)))
+            .fill(theme::BAR_BG)
+            .stroke(Stroke::new(1.0, theme::HAIRLINE))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::symmetric(10, 3))
             .show(ui, |ui| {
@@ -1560,16 +1560,16 @@ fn tool(
     );
     let painter = ui.painter_at(rect);
     if active {
-        painter.rect_filled(rect, CornerRadius::same(3), Color32::from_gray(0xD6));
+        painter.rect_filled(rect, CornerRadius::same(3), theme::HOVER_FILL);
     }
     let color = if !enabled {
-        Color32::from_gray(0xAF)
+        theme::DISABLED
     } else if active {
-        Color32::from_rgb(0x1F, 0x4F, 0xF0)
+        theme::SELECTED
     } else if response.is_pointer_button_down_on() {
-        Color32::from_gray(0x45)
+        theme::TEXT
     } else {
-        Color32::from_gray(0x74)
+        theme::ICON
     };
     paint_glyph(&painter, rect.shrink(2.5), glyph, color);
     response.widget_info(|| {
@@ -1624,7 +1624,8 @@ fn paint_glyph(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::AddOccurrence => {
             outline(r(1.5, 2.0, 13.5, 13.0), 1);
             fill(r(1.5, 2.0, 13.5, 4.5));
-            painter.circle_filled(p(12.5, 12.5), 3.6 * unit, Color32::from_gray(0xE9));
+            // Knocked out of the occurrence in the tool panel's own fill.
+            painter.circle_filled(p(12.5, 12.5), 3.6 * unit, theme::BAR_BG);
             line(&[(12.5, 9.5), (12.5, 15.5)]);
             line(&[(9.5, 12.5), (15.5, 12.5)]);
         }

@@ -8,7 +8,7 @@
 //! The General tab's pop-ups and Reset Quick Find show the layout's values,
 //! not offered; the Printing and Script Triggers tabs are not offered yet.
 
-use egui::{vec2, Align2, Color32, CornerRadius, Id, Rect, Stroke, StrokeKind, UiBuilder};
+use egui::{vec2, Align2, CornerRadius, Id, Rect, Stroke, StrokeKind, UiBuilder};
 use om_data::layout_catalog::{general, views, LayoutSetupChange, MAX_NAME_CHARS};
 
 use crate::icons::{self, Icon};
@@ -113,12 +113,12 @@ impl LayoutSetup {
         let mut answer = LayoutSetupAnswer::Open;
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(10))
             .shadow(ctx.global_style().visuals.window_shadow);
         let response = egui::Modal::new(Id::unique("layout_setup"))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(24))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 // The title bar, then the nib's 485 x 428 content.
                 let (title, _) = ui.allocate_exact_size(vec2(485.0, 28.0), egui::Sense::hover());
@@ -138,8 +138,8 @@ impl LayoutSetup {
                 ui.painter().rect(
                     at(20.0, 24.0, 453.0, 354.0),
                     CornerRadius::same(5),
-                    Color32::from_gray(0xEC),
-                    Stroke::new(1.0, Color32::from_gray(0xC8)),
+                    theme::BAR_BG,
+                    Stroke::new(1.0, theme::BORDER),
                     StrokeKind::Inside,
                 );
                 let tabs = ["General", "Views", "Printing", "Script Triggers"];
@@ -228,7 +228,7 @@ impl LayoutSetup {
                                 picture.shrink(10.0),
                                 icon,
                                 theme::ICON,
-                                Color32::from_gray(0xEC),
+                                theme::BAR_BG,
                             );
                             place(ui, content(154.0, top + 15.0, 125.0, 18.0), &mut |ui| {
                                 ui.checkbox(&mut self.views[index], VIEW_NAMES[index]);

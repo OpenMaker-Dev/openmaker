@@ -12,7 +12,7 @@
 //! output file type) are rows of the step's own options here, and Add
 //! File… (a file chooser) is not offered.
 
-use egui::{vec2, Color32, Sense};
+use egui::{vec2, Sense};
 use om_data::scripts::paths;
 
 use super::pickers::{self, dialog, Picked};
@@ -95,7 +95,7 @@ impl SpecifyFile {
                     egui::Label::new(
                         egui::RichText::new(error)
                             .font(pickers::body())
-                            .color(Color32::from_rgb(0xC0, 0x1C, 0x28)),
+                            .color(theme::RED_INK),
                     )
                     .wrap(),
                 );

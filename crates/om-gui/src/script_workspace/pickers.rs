@@ -34,26 +34,8 @@ pub(super) const BUTTON_GAP: f32 = 14.0;
 /// One row of a list box.
 pub(super) const LIST_ROW: f32 = 19.0;
 
-const FILL: Color32 = Color32::from_rgb(0xF6, 0xF6, 0xF6);
-const TITLE_FILL: Color32 = Color32::from_rgb(0xFC, 0xFC, 0xFC);
-const TITLE_RULE: Color32 = Color32::from_rgb(0xDE, 0xDE, 0xDE);
-const WINDOW_BORDER: Color32 = Color32::from_rgb(0xC8, 0xC8, 0xC8);
-/// The inactive close and minimize buttons, and zoom (35b).
-const LIGHT_OFF: Color32 = Color32::from_rgb(0xE1, 0xE1, 0xE1);
-const ZOOM: Color32 = Color32::from_rgb(0x28, 0xC8, 0x40);
-const FIELD_EDGE: Color32 = Color32::from_rgb(0xE2, 0xE2, 0xE2);
-const FIELD_BOTTOM: Color32 = Color32::from_rgb(0xD2, 0xD2, 0xD2);
-const BUTTON_EDGE: Color32 = Color32::from_rgb(0xDC, 0xDC, 0xDC);
-const LIST_BORDER: Color32 = Color32::from_rgb(0xD0, 0xD0, 0xD0);
-const TITLE_TEXT: Color32 = Color32::from_rgb(0x3C, 0x3C, 0x3C);
-/// A text field's focus ring and selected text (35b).
-const FOCUS_RING: Color32 = Color32::from_rgb(0x89, 0xA2, 0xE8);
-const SELECTION: Color32 = Color32::from_rgb(0xC1, 0xCC, 0xF7);
-/// The default button's blue in 35b (its gradient runs `#3648D0` to
-/// `#1E29C8`), also the checked checkboxes' and radio buttons'. It is
-/// deeper than `theme::DEFAULT_BUTTON`, which no capture of an enabled
-/// default button backs.
-const ACCENT: Color32 = Color32::from_rgb(0x2B, 0x3C, 0xCC);
+/// The soft shadow macOS draws under a push button or pop-up button.
+const BUTTON_SHADOW: Color32 = Color32::from_black_alpha(18);
 
 /// A picker's answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,13 +64,13 @@ pub(super) fn dialog(
     content: impl FnOnce(&mut Ui),
 ) -> Shown {
     let frame = egui::Frame::new()
-        .fill(FILL)
-        .stroke(Stroke::new(1.0, WINDOW_BORDER))
+        .fill(theme::DIALOG_BG)
+        .stroke(Stroke::new(1.0, theme::BORDER))
         .corner_radius(CornerRadius::same(10))
         .shadow(ctx.global_style().visuals.window_shadow);
     egui::Modal::new(Id::unique(id))
         .frame(frame)
-        .backdrop_color(Color32::from_black_alpha(24))
+        .backdrop_color(theme::SCRIM)
         .show(ctx, |ui| {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
@@ -125,14 +107,16 @@ fn title_bar(ui: &mut Ui, title: &str, width: f32) {
             sw: 0,
             se: 0,
         },
-        TITLE_FILL,
+        theme::TOOLBAR_BG,
     );
     painter.hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, TITLE_RULE),
+        Stroke::new(1.0, theme::HAIRLINE),
     );
-    for (n, color) in [LIGHT_OFF, LIGHT_OFF, ZOOM].into_iter().enumerate() {
+    // The inactive close and minimize buttons, and zoom (35b).
+    let lights = [theme::HOVER_FILL, theme::HOVER_FILL, theme::WINDOW_ZOOM];
+    for (n, color) in lights.into_iter().enumerate() {
         let center = pos2(rect.left() + 15.5 + n as f32 * 20.0, rect.center().y);
         painter.circle(
             center,
@@ -146,7 +130,7 @@ fn title_bar(ui: &mut Ui, title: &str, width: f32) {
         Rect::from_center_size(rect.center(), vec2(width - 160.0, TITLE_BAR)),
         title,
         FontId::new(theme::BODY, theme::semibold()),
-        TITLE_TEXT,
+        theme::TEXT,
         Align::Center,
     );
 }
@@ -223,14 +207,18 @@ pub(super) fn push_button(
     painter.rect_filled(
         rect.translate(vec2(0.0, 0.5)).expand(0.5),
         radius,
-        Color32::from_black_alpha(18),
+        BUTTON_SHADOW,
     );
     let (fill, stroke, color) = match (default && enabled, pressed) {
-        (true, false) => (ACCENT, Stroke::NONE, Color32::WHITE),
-        (true, true) => (ACCENT.gamma_multiply(0.85), Stroke::NONE, Color32::WHITE),
+        (true, false) => (theme::DEFAULT_BUTTON, Stroke::NONE, theme::ON_ACCENT),
+        (true, true) => (
+            theme::DEFAULT_BUTTON.gamma_multiply(0.85),
+            Stroke::NONE,
+            theme::ON_ACCENT,
+        ),
         (false, false) => (
-            Color32::WHITE,
-            Stroke::new(0.5, BUTTON_EDGE),
+            theme::CONTROL_BG,
+            Stroke::new(0.5, theme::HAIRLINE),
             if enabled {
                 theme::TEXT
             } else {
@@ -238,8 +226,8 @@ pub(super) fn push_button(
             },
         ),
         (false, true) => (
-            Color32::from_gray(0xE2),
-            Stroke::new(0.5, Color32::from_gray(0xB0)),
+            theme::HOVER_FILL,
+            Stroke::new(0.5, theme::BUTTON_BORDER),
             theme::TEXT,
         ),
     };
@@ -277,17 +265,17 @@ pub(super) fn text_field(
         rect,
         CornerRadius::ZERO,
         if enabled {
-            Color32::WHITE
+            theme::CONTROL_BG
         } else {
-            Color32::from_gray(0xF2)
+            theme::DIALOG_BG
         },
-        Stroke::new(1.0, FIELD_EDGE),
+        Stroke::new(1.0, theme::HAIRLINE),
         StrokeKind::Inside,
     );
     painter.hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, FIELD_BOTTOM),
+        Stroke::new(1.0, theme::BORDER),
     );
     // Inter sits lower in its line than the system font: the text is
     // raised a little so it shares the row label's baseline (35b).
@@ -298,7 +286,7 @@ pub(super) fn text_field(
         egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
         |ui| {
             let visuals = ui.visuals_mut();
-            visuals.selection.bg_fill = SELECTION;
+            visuals.selection.bg_fill = theme::SELECTED_TEXT_BG;
             visuals.selection.stroke.color = theme::TEXT;
             ui.add(
                 egui::TextEdit::singleline(text)
@@ -328,7 +316,7 @@ pub(super) fn focus_ring(ui: &Ui, rect: Rect, radius: u8) {
     ui.painter().rect_stroke(
         rect.expand(0.5),
         CornerRadius::same(radius.saturating_add(2)),
-        Stroke::new(3.0, FOCUS_RING),
+        Stroke::new(3.0, theme::FOCUS),
         StrokeKind::Outside,
     );
 }
@@ -351,8 +339,8 @@ pub(super) fn value_box(ui: &mut Ui, rect: Rect, text: &str, accessible: &str, e
     painter.rect(
         rect,
         CornerRadius::ZERO,
-        Color32::from_gray(0xFB),
-        Stroke::new(1.0, FIELD_EDGE),
+        theme::CONTROL_BG,
+        Stroke::new(1.0, theme::HAIRLINE),
         StrokeKind::Inside,
     );
     let inner = Rect::from_min_max(rect.min + vec2(6.0, 0.0), rect.max - vec2(4.0, 0.0));
@@ -407,13 +395,13 @@ pub(super) fn popup_menu(
     painter.rect_filled(
         rect.translate(vec2(0.0, 0.5)).expand(0.5),
         radius,
-        Color32::from_black_alpha(18),
+        BUTTON_SHADOW,
     );
     painter.rect(
         rect,
         radius,
-        Color32::WHITE,
-        Stroke::new(0.5, BUTTON_EDGE),
+        theme::CONTROL_BG,
+        Stroke::new(0.5, theme::HAIRLINE),
         StrokeKind::Inside,
     );
     let arrows =
@@ -421,9 +409,13 @@ pub(super) fn popup_menu(
     painter.rect_filled(
         arrows,
         CornerRadius::same(4),
-        if enabled { ACCENT } else { theme::DISABLED },
+        if enabled {
+            theme::SELECTED
+        } else {
+            theme::DISABLED
+        },
     );
-    let stroke = Stroke::new(1.3, Color32::WHITE);
+    let stroke = Stroke::new(1.3, theme::ON_ACCENT);
     let c = arrows.center();
     painter.line(
         vec![
@@ -506,7 +498,11 @@ pub(super) fn checkbox(ui: &mut Ui, rect: Rect, on: &mut bool, label: &str, enab
         painter.rect_filled(
             boxed,
             CornerRadius::same(3),
-            if enabled { ACCENT } else { theme::DISABLED },
+            if enabled {
+                theme::SELECTED
+            } else {
+                theme::DISABLED
+            },
         );
         let c = boxed.center();
         painter.line(
@@ -515,14 +511,14 @@ pub(super) fn checkbox(ui: &mut Ui, rect: Rect, on: &mut bool, label: &str, enab
                 c + vec2(-1.0, 2.8),
                 c + vec2(3.8, -2.8),
             ],
-            Stroke::new(1.8, Color32::WHITE),
+            Stroke::new(1.8, theme::ON_ACCENT),
         );
     } else {
         painter.rect(
             boxed,
             CornerRadius::same(3),
-            Color32::WHITE,
-            Stroke::new(1.0, Color32::from_gray(0xB8)),
+            theme::CONTROL_BG,
+            Stroke::new(1.0, theme::BUTTON_BORDER),
             StrokeKind::Inside,
         );
     }
@@ -559,14 +555,19 @@ pub(super) fn radio(ui: &mut Ui, rect: Rect, on: bool, label: &str, enabled: boo
     let center = pos2(rect.left() + 7.0, rect.center().y);
     let painter = ui.painter();
     if on {
-        painter.circle_filled(center, 7.0, if enabled { ACCENT } else { theme::DISABLED });
-        painter.circle_filled(center, 2.6, Color32::WHITE);
+        let fill = if enabled {
+            theme::SELECTED
+        } else {
+            theme::DISABLED
+        };
+        painter.circle_filled(center, 7.0, fill);
+        painter.circle_filled(center, 2.6, theme::ON_ACCENT);
     } else {
         painter.circle(
             center,
             6.5,
-            Color32::WHITE,
-            Stroke::new(1.0, Color32::from_gray(0xB8)),
+            theme::CONTROL_BG,
+            Stroke::new(1.0, theme::BUTTON_BORDER),
         );
     }
     painter.text(
@@ -665,8 +666,8 @@ pub(super) fn list_box_with(
     ui.painter().rect(
         rect,
         CornerRadius::ZERO,
-        Color32::WHITE,
-        Stroke::new(1.0, LIST_BORDER),
+        theme::CONTROL_BG,
+        Stroke::new(1.0, theme::BORDER),
         StrokeKind::Inside,
     );
     let mut click = ListClick::default();
@@ -741,7 +742,7 @@ pub(super) fn list_box_with(
                 let color = if !enabled {
                     theme::WEAK_TEXT
                 } else if is_selected {
-                    Color32::WHITE
+                    theme::ON_ACCENT
                 } else {
                     theme::TEXT
                 };
@@ -825,7 +826,7 @@ pub(super) fn list_box_with(
                         &row.detail,
                         body(),
                         if is_selected {
-                            Color32::WHITE
+                            theme::ON_ACCENT
                         } else {
                             theme::WEAK_TEXT
                         },

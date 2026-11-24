@@ -11,6 +11,7 @@ use egui::{Key, KeyboardShortcut, Modifiers, Ui};
 use om_data::scripts::save_records::Format as SaveFormat;
 
 use crate::app::{shortcuts, steps, Action, EditCommand, FindState, Mode, ViewMode};
+use crate::file_history::{Change, History, SavedFile, Tab};
 use crate::session::Session;
 use crate::theme;
 use crate::widgets::{menu_item, menu_separator, submenu};
@@ -26,6 +27,12 @@ pub(crate) struct MenuContext<'a> {
     /// View's zoom commands can change it (`OpenMakerApp::zooms`).
     pub zooms: bool,
     pub session: Option<&'a Session>,
+    pub file_history: &'a History,
+    /// The front window's file, when Recent can record it.
+    pub current_file: Option<&'a SavedFile>,
+    pub launch_available: bool,
+    /// The window has Home (not an embedding with the Hosts dialog alone).
+    pub home: bool,
     pub find: &'a FindState,
     pub toolbar: bool,
     pub formatting: bool,
@@ -168,6 +175,10 @@ pub(crate) trait MenuRows {
     fn submenu(&mut self, label: &str, enabled: bool, rows: &mut dyn FnMut(&mut dyn MenuRows));
     /// A line of text that is not a command (a script folder's name).
     fn note(&mut self, text: &str);
+    /// Rows of a list that can be longer than the screen is tall (File >
+    /// Favorites' files), which `rows` adds: they scroll where the menu
+    /// itself does not.
+    fn scrolled(&mut self, rows: &mut dyn FnMut(&mut dyn MenuRows));
     /// The user is looking at these rows now: a menu that reads its
     /// content when shown asks for it.
     fn shown(&self) -> bool;
@@ -207,6 +218,15 @@ impl MenuRows for Drawn<'_> {
 
     fn note(&mut self, text: &str) {
         self.0.weak(text);
+    }
+
+    fn scrolled(&mut self, rows: &mut dyn FnMut(&mut dyn MenuRows)) {
+        // The list keeps clear of the screen's edges and of a few rows
+        // above it, so the whole menu fits and egui keeps it on screen.
+        let room = self.0.ctx().content_rect().height() - 6.0 * theme::MENU_ROW_HEIGHT;
+        egui::ScrollArea::vertical()
+            .max_height(room.max(3.0 * theme::MENU_ROW_HEIGHT))
+            .show(self.0, |ui| rows(&mut Drawn(ui)));
     }
 
     fn shown(&self) -> bool {
@@ -387,11 +407,56 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     rows.separator();
     pending(rows, "Sign In to Claris ID", None);
-    pending_submenu(rows, "Favorites");
-    pending_submenu(rows, "Recent");
+    // Claris documents Show Favorites, Add Current File to Favorites and
+    // Show Recent, and the files listed in each; their order is unmeasured.
+    for tab in [Tab::Favorites, Tab::Recent] {
+        rows.submenu(tab.label(), context.launch_available, &mut |rows| {
+            let show = match tab {
+                Tab::Favorites => "Show Favorites",
+                Tab::Recent => "Show Recent",
+            };
+            if rows.item(show, None, false, context.home) {
+                actions.push(Action::ShowHome(tab));
+            }
+            if tab == Tab::Favorites {
+                let current = context
+                    .current_file
+                    .filter(|file| !context.file_history.files(Tab::Favorites).contains(file));
+                if rows.item(
+                    "Add Current File to Favorites",
+                    None,
+                    false,
+                    current.is_some(),
+                ) {
+                    if let Some(file) = current {
+                        actions.push(Action::EditHistory(Change::SetFavorite(file.clone(), true)));
+                    }
+                }
+            }
+            let files = context.file_history.files(tab);
+            if !files.is_empty() {
+                rows.separator();
+                // Favorites have no limit; Recent keeps 20.
+                rows.scrolled(&mut |rows| {
+                    for file in files {
+                        let name = file.name();
+                        let label = if files.iter().filter(|entry| entry.name() == name).count() > 1
+                        {
+                            format!("{name} ({})", file.location())
+                        } else {
+                            name
+                        };
+                        if rows.item(&label, None, false, true) {
+                            actions.push(Action::OpenSaved(file.clone()));
+                        }
+                    }
+                });
+            }
+        });
+    }
     rows.submenu("Hosts", true, &mut |rows| {
-        if rows.item("Show Hosts...", None, false, true) {
-            actions.push(Action::CloseFile);
+        if rows.item("Show Hosts...", None, false, context.launch_available) {
+            actions.push(Action::ShowHosts);
         }
     });
     if rows.item("Open...", Some(shortcuts::OPEN), false, true) {

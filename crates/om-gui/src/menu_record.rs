@@ -187,6 +187,11 @@ impl MenuRows for Recorder<'_> {
         });
     }
 
+    fn scrolled(&mut self, rows: &mut dyn FnMut(&mut dyn MenuRows)) {
+        // The system's menus and OpenMaker Go's scroll on their own.
+        rows(self);
+    }
+
     fn note(&mut self, text: &str) {
         let id = self.id(text);
         self.rows.push(Row::Item {

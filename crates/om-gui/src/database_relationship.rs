@@ -4,9 +4,7 @@
 //! (`om_data::schema_draft`): a new or changed relationship, a new or
 //! renamed table occurrence.
 
-use egui::{
-    vec2, Align, Color32, CornerRadius, Id, Layout, RichText, Role, Sense, Stroke, WidgetInfo,
-};
+use egui::{vec2, Align, CornerRadius, Id, Layout, RichText, Role, Sense, Stroke, WidgetInfo};
 use om_data::scripts::specs::SortSpec;
 use om_data::{
     DatabaseSchema, RelationshipMatch, RelationshipSide, SchemaChange, SchemaOccurrence,
@@ -181,8 +179,8 @@ impl EditRelationship {
                     });
                     let list = fields(*chosen);
                     egui::Frame::new()
-                        .fill(Color32::WHITE)
-                        .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+                        .fill(theme::CONTROL_BG)
+                        .stroke(Stroke::new(1.0, theme::BORDER))
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
                                 .id_salt(("relationship_fields", side))
@@ -255,8 +253,8 @@ impl EditRelationship {
                 widgets::put_label(ui, cell, &title, theme::body(), theme::TEXT, Align::Center);
             }
             egui::Frame::new()
-                .fill(Color32::WHITE)
-                .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+                .fill(theme::CONTROL_BG)
+                .stroke(Stroke::new(1.0, theme::BORDER))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("relationship_pairs")
@@ -444,8 +442,8 @@ impl SpecifyTable {
             });
             let editing = self.occurrence.is_some();
             egui::Frame::new()
-                .fill(Color32::WHITE)
-                .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+                .fill(theme::CONTROL_BG)
+                .stroke(Stroke::new(1.0, theme::BORDER))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("specify_table_tables")
@@ -506,7 +504,7 @@ fn pair_row(ui: &mut egui::Ui, cells: &[String; 3], selected: bool) -> bool {
             .rect_filled(rect, CornerRadius::ZERO, theme::DEFAULT_BUTTON);
     }
     let color = if selected {
-        Color32::WHITE
+        theme::ON_ACCENT
     } else {
         theme::TEXT
     };
@@ -536,7 +534,7 @@ fn row(ui: &mut egui::Ui, text: &str, selected: bool) -> bool {
         text,
         theme::body(),
         if selected {
-            Color32::WHITE
+            theme::ON_ACCENT
         } else {
             theme::TEXT
         },

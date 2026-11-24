@@ -119,7 +119,7 @@ impl OpenFileDialog {
             ui.add_space(4.0);
             let mut navigate = None;
             egui::Frame::new()
-                .fill(egui::Color32::WHITE)
+                .fill(theme::CONTROL_BG)
                 .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
                 .inner_margin(4.0)
                 .show(ui, |ui| {
@@ -316,7 +316,7 @@ impl SaveChooser {
             });
         ui.add_space(4.0);
         egui::Frame::new()
-            .fill(egui::Color32::WHITE)
+            .fill(theme::CONTROL_BG)
             .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
             .inner_margin(4.0)
             .show(ui, |ui| {
