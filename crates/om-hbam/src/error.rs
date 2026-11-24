@@ -15,7 +15,9 @@ pub enum Error {
     PartialPage { len: usize, page_size: u32 },
     /// A page header is internally inconsistent (free space larger than the body).
     BadPageHeader { page: u32, reason: &'static str },
-    /// The level-0 leaf chain is broken: no head, a cycle, a bad link, or a non-leaf page.
+    /// The level-0 leaf chain is broken: no head, a cycle, a bad link, or a
+    /// non-leaf page; for a [`crate::stream::NodeStream`], also a chain
+    /// that ends before its stream closes the root list or goes on after.
     BrokenChain { page: u32, reason: &'static str },
     /// A chunk runs past the end of its buffer.
     Truncated { offset: usize },
@@ -25,7 +27,9 @@ pub enum Error {
     PopUnderflow { offset: usize },
     /// More nested key segments than the 17 levels the format allows.
     TooDeep { offset: usize },
-    /// Sibling keys are not in ascending order, or a value is stored twice.
+    /// Sibling keys are not in ascending order, or a value is stored twice;
+    /// for a [`crate::stream::NodeStream`], also a value given to a key
+    /// after its children.
     KeyOrder { path: String },
     /// Text that is not valid masked SCSU.
     Text(om_scsu::DecodeError),

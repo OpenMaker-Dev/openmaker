@@ -33,6 +33,11 @@ fn sample(lang: &str) -> HbamFile {
 }
 
 fn all_files() -> Vec<PathBuf> {
+    files_in(&[WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES])
+}
+
+/// The files under `dirs`, each of which must be present.
+fn files_in(dirs: &[&str]) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("directory present") {
             let path = entry.unwrap().path();
@@ -46,7 +51,7 @@ fn all_files() -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    for dir in [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES] {
+    for dir in dirs {
         walk(Path::new(dir), &mut out);
     }
     out.sort();
@@ -615,5 +620,56 @@ fn streamed_files_match_rebuild() {
         );
     }
     std::fs::remove_file(&target).unwrap();
+    println!("{} files, {nodes} nodes", files.len());
+}
+
+/// The streaming reader gives every shipped file's nodes exactly as a
+/// depth-first walk of the tree `HbamFile` builds from it, kinds included
+/// (`docs/server-storage.md` 6.10), and the same page 0. Reads whichever of
+/// the extractions this host has.
+#[test]
+#[ignore = "requires the git-ignored extracted templates or FileMaker Server samples"]
+fn stream_matches_the_key_tree() {
+    let dirs: Vec<&str> = [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES]
+        .into_iter()
+        .filter(|dir| Path::new(dir).is_dir())
+        .collect();
+    let files = files_in(&dirs);
+    assert!(!files.is_empty(), "no extracted files");
+    let mut nodes = 0;
+    for path in &files {
+        let ctx = path.display();
+        let file = HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        let mut walked = Vec::new();
+        tree.root.walk(&mut |path, node| {
+            if !path.is_empty() {
+                walked.push((path.to_vec(), node.push, node.value));
+            }
+        });
+        let mut stream = om_hbam::NodeStream::open(path).unwrap();
+        assert_eq!(stream.superblock().raw, file.superblock().raw, "{ctx}");
+        let mut read = 0;
+        while let Some(node) = stream.next_node().unwrap_or_else(|e| panic!("{ctx}: {e}")) {
+            let (path, push, value) = walked
+                .get(read)
+                .unwrap_or_else(|| panic!("{ctx}: more nodes than the tree"));
+            assert!(
+                node.path
+                    .iter()
+                    .map(Vec::as_slice)
+                    .eq(path.iter().map(|s| s.0)),
+                "{ctx} node {read}"
+            );
+            assert_eq!(
+                (node.push, node.value),
+                (*push, *value),
+                "{ctx} node {read}"
+            );
+            read += 1;
+        }
+        assert_eq!(read, walked.len(), "{ctx}");
+        nodes += read;
+    }
     println!("{} files, {nodes} nodes", files.len());
 }
