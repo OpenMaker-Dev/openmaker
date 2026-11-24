@@ -815,6 +815,12 @@ const HOST_DISCONNECTED: &str =
 const LAYOUT_UNSAVED: &str =
     "This layout's changes are not saved. Choose Layouts > Save Layout or Revert Layout first.";
 
+/// The alert for a launch command while the front file, its connection
+/// lost, holds unsaved changes: closing it for the command would lose them
+/// (the lost banner offers Reconnect, and Close File to give them up).
+const LOST_EDITS: &str = "The connection to this file was lost, and closing it would lose \
+     its unsaved changes. Reconnect to save them, or choose File > Close to give them up.";
+
 /// The alert for a launch command while files other than the front one
 /// are open: OpenMaker shows Home and opens files in a window no file
 /// holds, and closes only the front file to free it.
@@ -1706,6 +1712,7 @@ impl OpenMakerApp {
                 .as_ref()
                 .and_then(|session| session.destination.as_ref()),
             launch_available: self.can_launch(),
+            home: self.launcher.has_home(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
             formatting: self.w.show_formatting,
@@ -3213,11 +3220,27 @@ impl OpenMakerApp {
             self.error = Some(OTHER_FILES_OPEN.into());
             return;
         }
+        // Without Home (an embedding with the Hosts dialog alone) there is
+        // no list to show, and nothing closes for one.
+        if matches!(launch, Launch::Home(_)) && !self.launcher.has_home() {
+            return;
+        }
         if front.is_some() {
             let layout_unsaved =
                 open().any(|doc| doc.layout_workspace.has_changes() || doc.layout_workspace.saving);
             if layout_unsaved {
                 self.error = Some(LAYOUT_UNSAVED.into());
+                return;
+            }
+            // Offline the close cannot save, and would drop what the
+            // windows hold: a command that only closes the file on its way
+            // leaves that choice to the user.
+            let lost_edits = open().any(|doc| {
+                doc.connection_lost.is_some()
+                    && (doc.document.unsaved() > 0 || doc.uncommitted.is_some())
+            });
+            if lost_edits {
+                self.error = Some(LOST_EDITS.into());
                 return;
             }
             self.launch_after_close = Some((launch, self.w.file_id));
@@ -8215,8 +8238,29 @@ mod tests {
         assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
         assert!(app.w.session.is_some() && app.launch_after_close.is_none());
 
-        app.error = None;
+        // The connection lost, with a change the window holds: closing for
+        // Show Recent would lose it, so nothing closes.
         app.windows[0].layout_workspace.saving = false;
+        app.error = None;
+        app.w.connection_lost = Some("gone".into());
+        app.w
+            .document
+            .put_draft(1, 1, "Name", "Ada".into(), "Ada Lovelace".into());
+        app.apply(&ctx, Action::ShowHome(crate::file_history::Tab::Recent));
+        assert_eq!(app.error.as_deref(), Some(LOST_EDITS));
+        assert!(app.w.session.is_some() && app.launch_after_close.is_none());
+        assert_eq!(app.w.document.unsaved(), 1);
+        app.w.connection_lost = None;
+        app.w.document = Default::default();
+
+        // Without Home, Show Recent has nothing to show and closes nothing.
+        app.error = None;
+        app.launcher = Launcher::Hosts;
+        app.apply(&ctx, Action::ShowHome(crate::file_history::Tab::Recent));
+        assert!(app.error.is_none() && app.w.session.is_some() && app.closing.is_none());
+        app.launcher = Launcher::Home { hosts: false };
+
+        app.error = None;
         app.apply(&ctx, Action::ShowHosts);
         for _ in 0..3 {
             ctx.run_ui(egui::RawInput::default(), |ui| app.show(ui))

@@ -83,10 +83,11 @@ unmeasured:
 - Showing a list or opening a file from Home or the File menu closes the
   open file first, through its usual commit path and close triggers; a
   veto or a refused save stops it. With another file open, hidden ones
-  included, or a layout with unsaved changes, nothing closes and an alert
-  says why ("Other files are open. Close them first.", or the Save Layout
-  or Revert Layout alert). FileMaker shows Home in a window of its own and
-  closes nothing.
+  included, a layout with unsaved changes, or a lost connection with
+  unsaved record changes, nothing closes and an alert says why ("Other
+  files are open. Close them first.", the Save Layout or Revert Layout
+  alert, or Reconnect or File > Close). FileMaker shows Home in a window
+  of its own and closes nothing.
 - A local file's location is its path, without FileMaker's `/Volumes/`
   prefix on macOS. A hosted file's location adds its port when that is not
   5003.

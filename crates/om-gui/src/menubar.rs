@@ -28,6 +28,8 @@ pub(crate) struct MenuContext<'a> {
     /// The front window's file, when Recent can record it.
     pub current_file: Option<&'a SavedFile>,
     pub launch_available: bool,
+    /// The window has Home (not an embedding with the Hosts dialog alone).
+    pub home: bool,
     pub find: &'a FindState,
     pub toolbar: bool,
     pub formatting: bool,
@@ -382,7 +384,7 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
                 Tab::Favorites => "Show Favorites",
                 Tab::Recent => "Show Recent",
             };
-            if rows.item(show, None, false, true) {
+            if rows.item(show, None, false, context.home) {
                 actions.push(Action::ShowHome(tab));
             }
             if tab == Tab::Favorites {
