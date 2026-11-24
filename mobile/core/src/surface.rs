@@ -13,6 +13,10 @@ use zeroize::Zeroizing;
 
 use crate::frame::{self, Frame, FrameTimings, Geometry, TextureUpdate};
 use crate::input::{self, Input};
+
+/// How many passes a deletion around the selection waits at most for a Tab
+/// or Return to give the focus to the next field.
+const DELETE_WAITS: u8 = 30;
 use crate::state::{self, DocumentState};
 use crate::{
     accessibility, provider, Element, ElementKind, GoError, Menu, SignIn, Source, Viewport,
@@ -109,6 +113,11 @@ pub(crate) struct Surface {
     glide: Option<Glide>,
     /// An input method's composition shows in the field: its text so far.
     preedit: Option<String>,
+    /// Passes a deletion around the selection has waited for the focus to
+    /// settle ([`DELETE_WAITS`] at most).
+    delete_waits: u8,
+    /// Taps that left a field taking typing ([`DocumentState::field_taps`]).
+    field_taps: u32,
     /// The insertion point of the field that takes typing.
     caret: Option<crate::state::Caret>,
     /// What the app asked to happen to the record or file once the window
@@ -215,6 +224,8 @@ impl Surface {
             pan: None,
             glide: None,
             preedit: None,
+            delete_waits: 0,
+            field_taps: 0,
             caret: None,
             intent: None,
             asked: Vec::new(),
@@ -277,6 +288,7 @@ impl Surface {
             events.push(Event::PointerGone);
         }
         let mut took = false;
+        let mut tapped = false;
         while let Some(input) = inputs.front() {
             // A tap or an element's action can move the focus to another
             // field: it gets a pass of its own, so that the field reads what
@@ -289,8 +301,17 @@ impl Surface {
             // another field (om-gui gives it in a later pass), so that it
             // counts against the field it will delete in.
             let deletes = matches!(input, Input::DeleteAround { .. });
-            if (took && (moves_focus || deletes)) || (deletes && self.app.focus_moving()) {
+            // The wait is bounded: a trigger's script can wait for the
+            // user, whose taps are queued behind the deletion.
+            let waits = deletes && self.app.focus_moving() && self.delete_waits < DELETE_WAITS;
+            if waits {
+                self.delete_waits += 1;
+            }
+            if (took && (moves_focus || deletes)) || waits {
                 break;
+            }
+            if deletes {
+                self.delete_waits = 0;
             }
             if matches!(input, Input::Run { .. } | Input::Menu { .. }) {
                 if !took {
@@ -307,6 +328,7 @@ impl Surface {
                 break;
             }
             let input = inputs.pop_front().expect("peeked");
+            tapped |= matches!(input, Input::Tap { .. });
             self.take(input, &mut events);
             took = true;
             if moves_focus {
@@ -333,7 +355,13 @@ impl Surface {
         let started = Instant::now();
         let geometry = frame::pack(&primitives, self.viewport);
         let pack = started.elapsed();
-        let state = DocumentState::of(&self.app, self.caret);
+        let mut state = DocumentState::of(&self.app, self.caret);
+        // A tap that leaves a field taking typing asks for the keyboard
+        // again: the user may have put it away (Android's Back).
+        if tapped && state.keyboard {
+            self.field_taps = self.field_taps.wrapping_add(1);
+        }
+        state.field_taps = self.field_taps;
         // The soonest any viewport asked for: with no native windows, all
         // of them are drawn in the root's pass.
         let mut repaint_after = viewport_output
@@ -528,6 +556,11 @@ impl Surface {
             } => {
                 let modifiers = input::modifiers(shift, command);
                 for pressed in [true, false] {
+                    // Space types a space and is the key option controls
+                    // take, as a desktop keyboard's Space gives both.
+                    if key == input::Key::Space && !pressed {
+                        events.push(Event::Text(" ".to_owned()));
+                    }
                     events.push(if key == input::Key::KeypadEnter {
                         // Marked as om-gui's event loop marks it on the
                         // desktop, so Browse tells it from Return.

@@ -193,9 +193,10 @@ impl OpenMakerApp {
 
     /// A Tab or a Return that goes on to the next field is still moving
     /// the front window's focus: the field it goes to takes it in a later
-    /// pass (bounded, for a portal row's field that has yet to draw).
+    /// pass (bounded, for a portal row's field that has yet to draw), or a
+    /// keystroke trigger has yet to let it through.
     pub fn focus_moving(&self) -> bool {
-        self.w.document.tab_in_progress()
+        self.w.document.tab_in_progress() || self.navigation_key_pending()
     }
 
     /// The file the front window shows, by its id in this app.

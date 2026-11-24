@@ -64,6 +64,9 @@ pub enum Key {
     /// A hardware keyboard's numeric keypad Enter, which FileMaker tells
     /// apart from Return (it commits the record in Browse).
     KeypadEnter,
+    /// A hardware keyboard's Space: it types a space in a field and
+    /// selects a checkbox or radio button item.
+    Space,
     Tab,
     Escape,
     ArrowLeft,
@@ -82,6 +85,7 @@ impl Key {
             Key::Backspace => egui::Key::Backspace,
             Key::Delete => egui::Key::Delete,
             Key::Enter | Key::KeypadEnter => egui::Key::Enter,
+            Key::Space => egui::Key::Space,
             Key::Tab => egui::Key::Tab,
             Key::Escape => egui::Key::Escape,
             Key::ArrowLeft => egui::Key::ArrowLeft,

@@ -59,7 +59,9 @@ fun DocumentScreen(session: DocumentSession, onClosed: (failure: String?) -> Uni
     Effects(session)
     ScreenReader(session)
     CanvasLifecycle(canvas)
-    LaunchedEffect(canvas, state?.keyboard) { canvas?.showKeyboard(state?.keyboard == true) }
+    // A tap that leaves a field taking typing shows the keyboard again, if
+    // the user put it away with Back.
+    LaunchedEffect(canvas, state?.keyboard, state?.fieldTaps) { canvas?.showKeyboard(state?.keyboard == true) }
     LaunchedEffect(canvas, state?.caret) { canvas?.moveCaret(state?.caret) }
     LaunchedEffect(canvas, state?.mode) { canvas?.finding = state?.mode == DocumentMode.FIND }
     LaunchedEffect(canvas, elements) { canvas?.present(elements) }

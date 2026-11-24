@@ -261,6 +261,9 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
                 KeyEvent.KEYCODE_PAGE_DOWN -> Key.PAGE_DOWN
                 // The keypad's Enter is FileMaker's Enter, not Return.
                 KeyEvent.KEYCODE_NUMPAD_ENTER -> Key.KEYPAD_ENTER
+                // Space types a space and selects an option item; after a
+                // dead key it types the accent, below.
+                KeyEvent.KEYCODE_SPACE -> if (accent == 0 && !command) Key.SPACE else null
                 // Ctrl+Return is a shortcut of its own (Commit); plain
                 // Return also performs a find in Find mode.
                 KeyEvent.KEYCODE_ENTER ->

@@ -34,6 +34,9 @@ pub struct DocumentState {
     pub unsaved: bool,
     /// A field takes typing: the keyboard shows.
     pub keyboard: bool,
+    /// How many taps have left a field taking typing: an app shows its
+    /// keyboard again on each, after the user put it away.
+    pub field_taps: u32,
     /// Where the field's insertion point is, for the platform's input
     /// method (its marked text and candidates show there).
     pub caret: Option<Caret>,
@@ -68,6 +71,7 @@ impl DocumentState {
             busy: false,
             unsaved: false,
             keyboard: false,
+            field_taps: 0,
             caret: None,
             closed: true,
             failure: Some(failure),
@@ -102,6 +106,7 @@ impl DocumentState {
             busy: state.busy,
             unsaved: state.unsaved,
             keyboard: caret.is_some(),
+            field_taps: 0,
             caret,
             closed: !app.is_open(),
             failure: None,

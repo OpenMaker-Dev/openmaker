@@ -358,6 +358,8 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
     let engine: Key
     switch key.keyCode {
     case .keyboardTab: engine = .tab
+    // Space types a space and selects a checkbox or radio button item.
+    case .keyboardSpacebar: engine = .space
     case .keyboardEscape: engine = .escape
     case .keyboardUpArrow: engine = .arrowUp
     case .keyboardDownArrow: engine = .arrowDown
