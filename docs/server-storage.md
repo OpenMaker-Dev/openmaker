@@ -242,13 +242,15 @@ One store folder per server, used by one process at a time (a lock file):
 <store>/pages      the page file: superblock slots, then pages
 <store>/blobs/     container data by content hash (section 8)
 <store>/state      this server's id, its start count, its term and vote,
-                   the list of log segments, and whether it is in repair
+                   the list of log segments, the marker (section 6.3),
+                   and whether it is in repair (section 7.5)
 ```
 
 The start count is raised and flushed each time the server starts, before
 it writes or sends anything else. `state` is written as two copies in
-turn, each with a number and a hash; a server without a valid copy does
-not start.
+turn, each with a number and a hash, and the valid copy with the highest
+number counts. A server without a valid copy does not know what it
+confirmed, and does not start (section 7.5).
 
 ### 6.2 State and positions
 
@@ -309,29 +311,29 @@ segment's space is allocated when it is created, so an append never fails
 for lack of space. A segment is used only after its header and its folder
 are flushed and `state` lists it. The header holds the store's id, the
 segment's first index and the hash of the entry before it. A listed
-segment that is missing, or has no valid header, is damage at or before
-the last marker (section 6.12), whatever the other segments hold.
+segment that is missing, or has no valid header, is damage
+(section 6.12), whatever the other segments hold.
 
-**Batches and markers.** The entries appended between two flushes are a
-batch: a header with its first index, its entry count, its length and a
+**Batches and the marker.** The entries appended between two flushes are
+a batch: a header with its first index, its entry count, its length and a
 hash, then the entries. Appends wait for no timer: one flush covers every
 entry appended while the previous flush ran. After a batch's flush
-succeeds, the server writes a **marker**: the index and hash of the
-batch's last entry and the committed position it knows, twice, in sectors
-of their own, each copy with its own hash. An entry is **durable** when a
-marker that covers it is flushed. Only then is it acknowledged to a
-client or to another server, or counted in a vote. While batches follow
-each other, a batch's marker is written and flushed with the next batch,
-so the number of flushes does not grow; a commit waits for two. Markers
-are numbered, and the valid marker with the highest number is the last.
-When a leader's log requires a follower to cut entries a marker covers
-(section 7.1), the follower first writes and flushes a marker at the
-lower position, then cuts.
+succeeds, the server records the **marker** in `state` (section 6.1) and
+flushes it: the index and hash of the batch's last entry, and the highest
+committed position it has heard of. An entry is **durable** when the
+marker covers it. Only then is it acknowledged to a client or to another
+server, or counted in a vote. A commit waits for two flushes, one of the
+log and one of `state`. When a leader's log requires a follower to cut
+entries the marker covers (section 7.1), the follower first records and
+flushes the lower marker, then cuts.
 
-A marker says "everything through here was written and flushed". That is
-what lets a damaged log be read correctly (section 6.12): damage at or
-before the last marker is damage to something confirmed, and whatever
-follows the last marker was never acknowledged to anyone.
+The marker says "everything through here was written and flushed", and it
+is kept outside the log on purpose: a segment, or the end of one, can be
+lost without taking the record of what it held. That is what lets a
+damaged log be read correctly (section 6.12). A log that does not hold,
+whole, every entry through the marker has lost something confirmed,
+however cleanly it ends. Whatever follows the marker was never
+acknowledged to anyone.
 
 Segments are opened for direct, synchronous writes where the system
 offers them, so that a failed flush cannot be hidden by the system's
@@ -414,7 +416,7 @@ files run in parallel. An operation that must be all-or-nothing is one
 entry, or one group (section 6.9).
 
 New pages stay in memory until a checkpoint writes them, so a commit costs
-its share of two log flushes and the pages on its path.
+its share of two flushes and the pages on its path.
 
 ### 6.6 Reading
 
@@ -457,23 +459,30 @@ since a checkpoint are rebuilt by applying the log.
 
 **Starting up.**
 
-1. Of the two checkpoints on disk, newest first, take the first whose
+1. Read `state`. With no valid copy the server does not start.
+2. Of the two checkpoints on disk, newest first, take the first whose
    superblock copy is valid and whose tree roots read back with the hashes
    it names. Deeper damage is page damage (section 6.12), found when a
    page is read, and does not send the server back to an older checkpoint.
-2. Read the log from that checkpoint. What follows the last marker and is
-   whole is kept: it is flushed and marked before anything is published
-   from it. What is damaged or incomplete after the last marker is cut.
-3. Apply the entries after the checkpoint, each once, in order, as far as
+3. Read the log from that checkpoint and check it against the marker: the
+   entry at the marker's index must be there, whole, with the marker's
+   hash, and so must every entry between the checkpoint and it. A
+   checkpoint that covers the marker's entry answers for it, as after an
+   installed state (section 7.5). What follows the marker and is whole is
+   kept: it is flushed and the marker moved over it before anything is
+   published from it. What is damaged or incomplete after the marker is
+   cut.
+4. Apply the entries after the checkpoint, each once, in order, as far as
    the committed position. On one server that is every durable entry. A
    member of a cluster applies as far as the committed position its
-   markers recorded and learns the rest from the leader (section 7.1).
-4. Free nothing, in the log or the page file, before step 3 is done.
+   marker recorded and learns the rest from the leader (section 7.1).
+5. Free nothing, in the log or the page file, before step 4 is done.
 
-If the log at or before the last marker is damaged, or neither checkpoint
-can be used, the server cannot produce what it confirmed. A
+If the log does not hold every entry through the marker, or neither
+checkpoint can be used, the server cannot produce what it confirmed. A
 single server stops and reports (section 6.12). A cluster member is **in
-repair** (section 7.5).
+repair** (section 7.5), as is one that `state` already records as in
+repair.
 
 ### 6.8 Clones
 
@@ -608,8 +617,9 @@ store take unbounded memory or disk:
 
 | Fault | Found by | Response |
 |---|---|---|
-| The log after the last marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the last marker was acknowledged |
-| The log at or before the last marker is damaged, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
+| The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged |
+| The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
+| `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
 | The newest checkpoint's superblock or roots cannot be read | hashes | use the checkpoint before it, which is kept whole (section 6.7) |
@@ -618,13 +628,14 @@ store take unbounded memory or disk:
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
 
 **What is not found.** The store finds writes a crash interrupted, damage
-to any byte it stored, and the loss of a file it listed. It cannot find a
-device that reported a flush as done and then holds neither the batch nor
-either copy of its marker: every local record of that write is part of
-what was lost. On a single server such a device loses confirmed changes
-without a sign. On a cluster the server concerned may believe its log
-ends earlier than it does; section 7.1's last rule narrows what that can
-do, and the comparison of section 7.5 finds it afterwards.
+to any byte it stored, the loss of a file it listed, and a log that ends
+before its marker. It cannot find a device that reported both flushes as
+done and then holds neither the end of the log nor the marker that
+recorded it: the log and `state` have then gone back together to an
+earlier pair that agrees. On a single server such a device loses confirmed
+changes without a sign. On a cluster the server concerned believes its
+log ends earlier than it does; section 7.1's last rule narrows what that
+can do, and the comparison of section 7.5 finds it afterwards.
 
 ## 7. Replication
 
@@ -653,7 +664,7 @@ in `om-store`, with these rules as the paper gives them:
 - A leader that cannot reach a majority steps down.
 - The members in force for a server are those of the latest `members`
   entry in its log, committed or not (section 7.6).
-- Beyond the paper: a server records, with its markers, the highest
+- Beyond the paper: a server records, in its marker, the highest
   committed position it has heard of. It does not stand for election, and
   does not vote for a candidate, whose log ends before that position.
 
@@ -794,22 +805,38 @@ of the current term.
   installed entry with the same term; otherwise it discards its log.
   Entries after the installed one follow from the leader.
 - A server that is not in repair never installs a state older than the
-  one it has published.
+  one it has published. After an install its marker is the installed
+  entry, or a later entry of its own that it kept.
 - A server that installs a state has skipped the entries before it, and
   their notices. It drops its client connections before it serves from
   the installed state; clients that reconnect ask what changed (op89).
 
-**In repair.** A server that cannot produce what it confirmed - its log is
-damaged at or before its last marker, neither checkpoint on disk can be
-used, or it has no space to apply a committed entry - is in repair. Before
-anything else it records in `state`, flushed, that it is in repair and
-the position it had confirmed, its last marker's. It casts no vote,
-acknowledges no entry and serves no client, across restarts, until it
-again holds, checked and durable, a usable state and every entry through
-that position. Only then does it clear the record. Whatever it installs
-or discards on the way (above), it cannot rejoin short of what it had
-acknowledged. A cluster with a majority in repair waits for an
-administrator, as a single server does.
+**In repair.** A server that cannot produce what it confirmed - its log
+does not hold every entry through its marker, neither checkpoint on disk
+can be used, or it has no space to apply a committed entry - is in repair.
+
+- **The required end.** Before anything else it records in `state`,
+  flushed, that it is in repair and its **required end**: the marker's
+  index as it was when it entered repair. The marker is outside the log,
+  so the required end is known however much of the log is gone.
+- **Nothing lowers it.** Installing a checkpoint, discarding or replacing
+  its log, a restart, and any marker written while in repair leave the
+  required end as it is.
+- **Fenced.** It casts no vote, acknowledges no entry and serves no
+  client, across restarts.
+- **Leaving.** It clears the record only when it holds a usable state
+  and, durable, the log of the current term's leader through at least the
+  required end, each entry checked by the hash chain against what the
+  leader holds. Whatever was committed with its acknowledgement is in
+  that leader's log, so it then holds everything its vote must protect.
+- **No valid `state`.** A server without a valid copy of `state` does not
+  know its required end, and no evidence on its own disk can establish
+  it. It does not start. It comes back only when an administrator removes
+  it from the cluster and adds it again as a new server, which has
+  acknowledged nothing.
+
+A cluster with a majority in repair waits for an administrator, as a
+single server does.
 
 **Page repair.** A page whose bytes do not match the hash its parent
 holds is damaged on this server. It is fetched from another server by its
