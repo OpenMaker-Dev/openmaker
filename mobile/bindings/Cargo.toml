@@ -1,0 +1,13 @@
+# UniFFI's bindings generator for mobile/build-core.sh, in a workspace of its
+# own so that the OpenMaker workspace does not build its CLI dependencies.
+[package]
+name = "go-bindings"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# The version openmaker-go uses.
+uniffi = { version = "=0.29.5", features = ["cli"] }
+
+[workspace]

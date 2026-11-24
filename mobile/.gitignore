@@ -1,0 +1,6 @@
+/build/
+/bindings/target/
+/android/.gradle/
+/android/build/
+/android/local.properties
+xcuserdata/

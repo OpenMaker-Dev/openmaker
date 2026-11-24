@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenMaker - the open-source client and server for FileMaker solutions</title>
-<meta name="description" content="OpenMaker is a clean-room, open-source desktop client and server, written in Rust, that opens and hosts .fmp12 files and works with FileMaker Pro 26 and FileMaker Server 26. Pre-alpha.">
+<meta name="description" content="OpenMaker is a clean-room, open-source desktop client, mobile client and server, written in Rust, that opens and hosts .fmp12 files and works with FileMaker Pro 26 and FileMaker Server 26, on the desktop and on iPhone, iPad and Android. Pre-alpha.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
@@ -14,7 +14,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://openmaker.dev/">
 <meta property="og:title" content="OpenMaker">
-<meta property="og:description" content="The open-source client and server for FileMaker solutions. Clean-room, written in Rust. Pre-alpha.">
+<meta property="og:description" content="The open-source client and server for FileMaker solutions, on the desktop, iPhone, iPad and Android. Clean-room, written in Rust. Pre-alpha.">
 <meta property="og:image" content="https://openmaker.dev/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
 <style>
@@ -388,6 +388,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
     </a>
     <nav class="nav-right" aria-label="Main">
       <a class="nav-link hide-sm" href="#modes">Client</a>
+      <a class="nav-link hide-sm" href="#mobile">Mobile</a>
       <a class="nav-link hide-sm" href="#agents">Agents</a>
       <a class="nav-link" href="#status">Status</a>
       <a class="nav-link hide-sm" href="https://github.com/OpenMaker-Dev/openmaker/tree/main/docs">Docs</a>
@@ -411,16 +412,16 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
     <div class="float-mark fm-server"><div class="float-card orange"><svg><use href="#i-server"/></svg></div></div>
   </div>
   <div class="container hero-inner">
-    <div data-rise><span class="hero-pill"><b>Pre-alpha</b>Linux first &middot; MIT licensed<span class="hide-xs"> &middot; Written in Rust</span></span></div>
+    <div data-rise><span class="hero-pill"><b>Pre-alpha</b>Desktop and mobile &middot; MIT licensed<span class="hide-xs"> &middot; Written in Rust</span></span></div>
     <h1 class="display hero-title" data-rise style="--d:.08s">The open-source client and server for <em>FileMaker</em> solutions.</h1>
-    <p class="hero-sub" data-rise style="--d:.16s">OpenMaker opens your <code>.fmp12</code> files, on your computer or hosted by FileMaker&nbsp;Server, with Browse, Find, Layout and Preview modes as FileMaker&nbsp;Pro&nbsp;26 has them. OpenMaker&nbsp;Server hosts the same files for FileMaker&nbsp;Pro.</p>
+    <p class="hero-sub" data-rise style="--d:.16s">OpenMaker opens your <code>.fmp12</code> files, on your computer or hosted by FileMaker&nbsp;Server, with Browse, Find, Layout and Preview modes as FileMaker&nbsp;Pro&nbsp;26 has them. OpenMaker&nbsp;Go opens them on iPhone, iPad and Android, and OpenMaker&nbsp;Server hosts them for FileMaker&nbsp;Pro.</p>
     <div class="hero-actions" data-rise style="--d:.24s">
       <div class="hero-buttons">
         <a class="btn btn-primary btn-lg" href="https://github.com/OpenMaker-Dev/openmaker"><svg width="16" height="16" aria-hidden="true"><use href="#i-github"/></svg>View the source</a>
         <a class="btn btn-ghost btn-lg" href="#status">See what works</a>
       </div>
       <div class="cmd"><span><span class="p">$</span> cargo run -p om-gui</span><button type="button" data-copy="cargo run -p om-gui" aria-label="Copy command"><svg class="cp" width="15" height="15"><use href="#i-copy"/></svg><svg class="ok" width="15" height="15"><use href="#i-check"/></svg></button></div>
-      <span class="hero-note">No published releases yet. Linux (Ubuntu) first, then macOS and Windows.</span>
+      <span class="hero-note">No published releases yet. Desktop: Linux (Ubuntu) first, then macOS and Windows. Mobile: iOS, iPadOS and Android.</span>
     </div>
   </div>
   <div class="container">
@@ -460,7 +461,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
       </div>
       <div class="compat">
         <div class="compat-mark"><svg><use href="#i-terminal"/></svg></div>
-        <div><div class="compat-name">Linux first</div><div class="compat-desc">Claris ships no Linux client, so Ubuntu comes first. The crates are portable; macOS and Windows follow.</div><div class="compat-tag">ubuntu &middot; macos &middot; windows</div></div>
+        <div><div class="compat-name">Desktop and mobile</div><div class="compat-desc">Claris ships no Linux client, so Ubuntu comes first, then macOS and Windows. OpenMaker&nbsp;Go runs on iPhone, iPad and Android.</div><div class="compat-tag">ubuntu &middot; macos &middot; windows &middot; ios &middot; android</div></div>
       </div>
       <div class="compat">
         <div class="compat-mark orange"><svg><use href="#i-agent"/></svg></div>
@@ -537,13 +538,31 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
   </div>
 </section>
 
+<!-- Mobile -->
+<section id="mobile">
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">OpenMaker Go</span>
+      <h2>Your solutions on iPhone, iPad and Android.</h2>
+      <p>OpenMaker&nbsp;Go opens the same <code>.fmp12</code> files, on the device or hosted by FileMaker&nbsp;Server or OpenMaker&nbsp;Server. The Launch Center, sign-in, toolbars and menus are the platform's own; the layouts are drawn and run by the desktop client's window, so they look and behave alike.</p>
+      <p>Early: tried on the iOS Simulator and an Android tablet, and not yet compared with FileMaker&nbsp;Go. SVG icons, web viewers, printing and export are not there yet, and there are no app store builds (<a href="https://github.com/OpenMaker-Dev/openmaker/blob/main/docs/mobile-client.md">what works and what doesn't</a>).</p>
+    </div>
+    <div class="principles">
+      <div class="tile"><span class="num">swiftui &middot; compose</span><h3>Native chrome</h3><p>A Launch Center with your files, Favorites, Recent and hosts; the layout menu, Records, View and Scripts menus; the platform's keyboard.</p></div>
+      <div class="tile"><span class="num">om-gui</span><h3>The desktop's layouts</h3><p>Browse and Find run in the desktop client's own window, drawn by the device's GPU at its pixel density.</p></div>
+      <div class="tile"><span class="num">saves</span><h3>Saves as you leave</h3><p>Leaving the app or closing the file saves a record's changes, unless a validation rule or trigger holds them for you, and a dropped connection tries to sign in again by itself.</p></div>
+      <div class="tile"><span class="num">rust</span><h3>One engine</h3><p>Calculations, scripts and the data access are the same Rust code as on the desktop. Swift and Kotlin add the chrome and paint the frames the engine lays out.</p></div>
+    </div>
+  </div>
+</section>
+
 <!-- Engines -->
 <section id="engines">
   <div class="container">
     <div class="section-head">
       <span class="eyebrow">Engines</span>
       <h2>Down to the quirks.</h2>
-      <p>Calculations, scripts, SQL and finds are Rust implementations of FileMaker's behavior. The same engines run in the desktop client and in OpenMaker&nbsp;Server, and each is checked against FileMaker wherever it can be measured.</p>
+      <p>Calculations, scripts, SQL and finds are Rust implementations of FileMaker's behavior. The same engines run in the desktop client, OpenMaker&nbsp;Go and OpenMaker&nbsp;Server, and each is checked against FileMaker wherever it can be measured.</p>
     </div>
     <div class="bento">
       <div class="tile b-calc">
@@ -644,10 +663,10 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
       <p>OpenMaker is measured against FileMaker&nbsp;Pro and Server 26.0.3. FileMaker&nbsp;Pro 26.1's changes are recorded but not matched yet, and an Update or Replace import does not yet keep target data the way 26.1's new option does (<a href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md#filemaker-261">FileMaker 26.1 in the roadmap</a>).</p>
     </div>
     <div class="status-summary">
-      <div class="legend"><span><i class="s-working"></i>Working: 2</span><span><i class="s-partial"></i>Partial: 15</span><span><i class="s-early"></i>Early: 2</span></div>
-      <a class="status-date" href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md">ROADMAP.md &middot; updated 2026-11-19 &#8599;</a>
+      <div class="legend"><span><i class="s-working"></i>Working: 2</span><span><i class="s-partial"></i>Partial: 15</span><span><i class="s-early"></i>Early: 3</span></div>
+      <a class="status-date" href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md">ROADMAP.md &middot; updated 2026-11-23 &#8599;</a>
     </div>
-    <div class="stack" aria-hidden="true"><i class="s-working" style="flex:2"></i><i class="s-partial" style="flex:15"></i><i class="s-early" style="flex:2"></i></div>
+    <div class="stack" aria-hidden="true"><i class="s-working" style="flex:2"></i><i class="s-partial" style="flex:15"></i><i class="s-early" style="flex:3"></i></div>
     <div class="status-grid">
       <div class="area"><div class="area-top"><span class="area-name">Hosted files</span><span class="badge working">Working</span></div><p>Connect, open and log in to FileMaker Server and OpenMaker Server over mutual TLS; reconnect after a lost connection. <span class="gap">Reconnecting is manual and loses the session's locks and script state.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Calculations</span><span class="badge working">Working</span></div><p>Decimal arithmetic and the function library, matched against FileMaker Server. <span class="gap">20 functions missing (AI, location, Furigana).</span></p></div>
@@ -660,13 +679,14 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
       <div class="area"><div class="area-top"><span class="area-name">Scripts and triggers</span><span class="badge partial">Partial</span></div><p>129 of 210 desktop steps, including every step the starter solutions use. <span class="gap">No Send Mail, plug-ins, accounts or AI steps.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Import and export</span><span class="badge partial">Partial</span></div><p>CSV and Excel, Save Records as Excel, Insert from URL. <span class="gap">No ODBC, XSLT, or import from FileMaker files.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Preview, print, PDF</span><span class="badge partial">Partial</span></div><p>One-column reports with summaries and sliding. <span class="gap">Multi-column reports; Windows printing.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Web viewers</span><span class="badge partial">Partial</span></div><p>WebKitGTK with the JavaScript script bridge, in Form and List view. <span class="gap">Linux only; macOS and Windows show a note.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Web viewers</span><span class="badge partial">Partial</span></div><p>WebKitGTK on Linux and WKWebView on macOS, with the JavaScript script bridge, in Form and List view. <span class="gap">Not on Windows or in OpenMaker&nbsp;Go.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Application chrome</span><span class="badge partial">Partial</span></div><p>Menus, status toolbar, layout bar, the four modes, windows, cards and dialogs. <span class="gap">Data-entry and Format commands disabled in Browse.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Developer tools</span><span class="badge partial">Partial</span></div><p>Layout mode, Manage Layouts, Script Workspace, Manage Database. <span class="gap">Value Lists and Security read-only; no Themes or Custom Functions.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Accounts and privileges</span><span class="badge partial">Partial</span></div><p>Each file's own accounts, locally and on OpenMaker Server, with privilege sets enforced. <span class="gap">OpenMaker Server refuses custom sets; accounts can't be edited.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">OpenMaker Server</span><span class="badge partial">Partial</span></div><p>Hosts FileMaker Pro 26; schedules, backups, Admin Console and Admin API. <span class="gap">Rewrites the whole file per change.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Platforms</span><span class="badge partial">Partial</span></div><p>Linux (Ubuntu) first; the crates are portable. <span class="gap">Packages only for Ubuntu 24.04 on amd64; no releases yet.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Platforms</span><span class="badge partial">Partial</span></div><p>Linux (Ubuntu) first; the crates are portable. OpenMaker&nbsp;Go builds for iOS, iPadOS and Android. <span class="gap">Packages only for Ubuntu 24.04 on amd64; no releases or app store builds yet.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Native MBS capabilities</span><span class="badge early">Early</span></div><p>A clean-room subset of 49 MBS commands: idle scripts, dialogs, files and PDFs. <span class="gap">The full MBS feature set is a longer-term goal.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Mobile client</span><span class="badge early">Early</span></div><p>OpenMaker&nbsp;Go for iPhone, iPad and Android: Browse and Find in the file's own layouts, with native chrome. <span class="gap">Not compared with FileMaker&nbsp;Go; no SVG icons, web viewers, printing or export.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Agent authoring</span><span class="badge early">Early</span></div><p>Inspects solutions; edits script steps, fields, layouts and objects on OpenMaker Server. <span class="gap">No edits on FileMaker Server or local files.</span></p></div>
     </div>
 
@@ -707,7 +727,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
     <div class="facts">
       <div class="fact"><b>27</b><span>specifications of FileMaker</span></div>
       <div class="fact"><b>20</b><span>catalogs and test-vector sets</span></div>
-      <div class="fact"><b>23</b><span>Rust crates</span></div>
+      <div class="fact"><b>25</b><span>Rust crates</span></div>
       <div class="fact"><b>0</b><span>uses of <code>unsafe</code></span></div>
     </div>
   </div>

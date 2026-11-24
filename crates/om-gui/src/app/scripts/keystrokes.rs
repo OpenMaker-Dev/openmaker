@@ -426,6 +426,23 @@ impl OpenMakerApp {
                 .any(|(w, h, ..)| held_key_matches(*w, h))
     }
 
+    /// A Tab or Return the trigger gate took still waits for a script's
+    /// decision or for its editor, or a key let through goes back into the
+    /// window's next pass: the keyboard may still move to another field.
+    pub(in crate::app) fn navigation_key_pending(&self) -> bool {
+        self.w.keys.released
+            || self.w.keys.navigation.is_some()
+            || self.has_pending_keystroke(|event| {
+                matches!(
+                    event,
+                    Event::Key {
+                        key: Key::Tab | Key::Enter,
+                        ..
+                    }
+                )
+            })
+    }
+
     /// Something other than the document has the keyboard: a dialog, an
     /// alert, a menu or popup; or the record is being saved. The open list
     /// of the drop-down list being edited is not elsewhere: its editor

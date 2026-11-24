@@ -39,8 +39,9 @@ status by area see [ROADMAP.md](../ROADMAP.md).
 ## Crate map
 
 Dependencies point down the table: a crate depends only on crates in
-earlier groups (or earlier in its own group). Only `om-gui` depends on a UI
-toolkit (egui/eframe).
+earlier groups (or earlier in its own group). Only `om-gui` and
+`openmaker-go` depend on a UI toolkit (egui and eframe; `openmaker-go`
+uses egui alone).
 
 | Group | Crate | Role |
 |---|---|---|
@@ -67,6 +68,7 @@ toolkit (egui/eframe).
 | | `om-server` | OpenMaker Server: hosts `.fmp12` files for FileMaker-protocol clients |
 | Client | `om-provider` | `NativeProvider`: hosted files over the protocol, and local files through a private embedded host |
 | | `om-gui` | The desktop application (egui/eframe) |
+| | `openmaker-go` | OpenMaker Go's engine (`mobile/core`): an `om-gui` window per open file, its frames handed to the iOS and Android apps to draw, behind a UniFFI interface ([mobile-client.md](mobile-client.md)) |
 | | `om-client` | Command-line protocol probe (`isa`, `connect`, `open`, `login`, `files`) |
 | Agents | `om-author` | Agent authoring: a versioned JSON service, CLI and MCP server ([authoring.md](authoring.md)) |
 
@@ -114,6 +116,16 @@ computer starts a private, in-process OpenMaker Server
 client can use, and the client connects to it like any host. One code path
 serves hosted and local files; files a window opens together share one
 host per file ([local-files.md](re/local-files.md)).
+
+**One window on the desktop and on mobile.** OpenMaker Go does not
+reimplement Browse or Find. `openmaker-go` runs `om_gui::OpenMakerApp`,
+the desktop's window, one per open file on a thread of its own, and hands
+each frame's triangles to the app, which draws them with Metal on iOS and
+OpenGL ES on Android. The chrome around the layout is the platform's own
+(SwiftUI, Jetpack Compose) and reaches the window only through commands
+`om-gui` exposes for it (`om_gui::ChromeCommand` and the recorded menus),
+so a menu row enables and runs as the desktop's does
+([mobile-client.md](mobile-client.md)).
 
 **Storage engines.** OpenMaker Server may work differently from FileMaker
 Server inside. What stays exact is what clients see on the wire, and that
