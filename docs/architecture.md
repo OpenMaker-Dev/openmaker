@@ -134,8 +134,10 @@ written back whole (`om-server/src/store.rs`); it also serves the desktop's
 local files. [server-storage.md](server-storage.md) specifies the
 interface the rest of the server uses to reach a file's contents (views
 and write operations) and a second engine behind it, the store engine,
-with replication, design history, deploys and SQL on top. That design is
-not built yet.
+with replication, design history, deploys and SQL on top. Of that design
+only the write operations of record writes and locks are built, with the
+file engine behind them (`om-server/src/engine/`); the other writes still
+change a file from their request handlers.
 
 **Host traits for the engines.** `om_calc::CalcHost`,
 `om_scripts::ScriptHost` and `om_sql::SqlSource` are what the engines need
