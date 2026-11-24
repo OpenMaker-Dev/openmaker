@@ -245,8 +245,9 @@ one file on a file system that ignores case (`om_store::sys`):
 <store>/pages      the page file: superblock slots, then pages
 <store>/blobs/     container data by content hash (section 8)
 <store>/state      this server's id, its start count, its term and vote,
-                   the run of log segments in use, the marker (section 6.3),
-                   and whether it is in repair (section 7.5)
+                   the run of log segments in use, the marker and the cut
+                   count (section 6.3), and whether it is in repair
+                   (section 7.5)
 ```
 
 The start count is raised by one and flushed each time the server starts,
@@ -256,9 +257,9 @@ slots, each with a number and a hash, and the valid copy with the highest
 number counts. A marker advance writes the next number in place over the
 slot that does not hold the current copy and flushes: one write and one
 flush per commit batch. Every other change - the start count, the term
-and vote, the segment run, the repair record, a marker that goes back -
-is written to both slots, one after the other, each flushed, before it
-counts. Losing either slot therefore costs at most one marker advance:
+and vote, the segment run, the cut count, the repair record, a marker
+that goes back - is written to both slots, one after the other, each
+flushed, before it counts. Losing either slot therefore costs at most one marker advance:
 step 3 of section 6.7 re-establishes its index and hash from the log when
 the log's tail is whole, and its committed position equals the durable
 one on a single server and is learned again from the leader in a cluster
@@ -327,21 +328,24 @@ as computed by the server that ran it (section 7.2). Applying an entry is a
 function of the state before it and the entry alone. Each entry is applied
 once: lock counts and share counts are not safe to apply twice.
 
-**Segments.** The log is a sequence of files of one fixed size, 64 MiB by
-default (`om_store::log`; the byte formats and the order of every write
-are in [server-storage-format.md](server-storage-format.md) section 3). A
-segment's space is allocated when it is created, ahead of need, so that
-an append never waits for an allocation where that can be avoided and
-never fails half way for lack of space: an append that needs a segment
-the disk has no room for is refused before anything of it is kept. A
-segment is used only after its header and its folder are flushed and
-`state` lists it. The header holds the store's id, the segment's first
-index and the term and hash of the entry before it. A listed segment that
-is missing, or has no valid header, is damage (section 6.12), whatever
-the other segments hold. An entry never spans segments, so its payload is
-at most what an empty segment holds (16 MiB by default); a batch that does
-not fit in what is left of a segment is written as two batches, the second
-at the start of the next segment.
+**Segments.** The log is a sequence of files of one fixed size
+(`om_store::log`; the byte formats and the order of every write are in
+[server-storage-format.md](server-storage-format.md) section 3). The size
+is a setting, 64 MiB by default; a segment keeps the size it was made
+with, so after the setting changes, segments of other sizes remain in the
+log. A segment's space is allocated when it is created, ahead of need, so
+that an append never waits for an allocation where that can be avoided
+and never fails half way for lack of space: an append that needs a
+segment the disk has no room for is refused before anything of it is
+kept. A segment is used only after its header and its folder are flushed
+and `state` lists it. The header holds the store's id, the segment's
+first index and the term and hash of the entry before it. A listed
+segment that is missing, or has no valid header, is damage (section
+6.12), whatever the other segments hold. An entry never spans segments.
+Its payload is bounded by another setting, 16 MiB by default, which must
+fit in an empty segment, and in any case by the format, 64 MiB; a batch
+that does not fit in what is left of a segment is written as two batches,
+the second at the start of the next segment.
 
 **Batches and the marker.** The entries appended between two flushes are
 a batch: a header with its first index, its entry count, its length and a
@@ -352,9 +356,19 @@ flushes it: the index and hash of the batch's last entry, and the highest
 committed position it has heard of. An entry is **durable** when the
 marker covers it. Only then is it acknowledged to a client or to another
 server, or counted in a vote. A commit waits for two flushes, one of the
-log and one of `state`. When a leader's log requires a follower to cut
-entries the marker covers (section 7.1), the follower first records and
-flushes the lower marker, then cuts.
+log and one of `state`; a batch that reaches a new segment waits for two
+writes to the log and for both slots of `state`, since the new segment is
+listed with the marker. When a leader's log requires a follower to cut
+entries the marker covers (section 7.1), the follower records the lower
+marker and a raised **cut count** in both slots of `state`; from then the
+cut is done. Every batch carries the cut count it was written under, and
+no batch written before a cut is read after it, even when the cut entries
+are sent again exactly and what followed them on disk chains again. A
+follower cuts only with a committed position given since it last
+started: after a restart the one its marker recorded can be one advance
+behind (a lost copy of `state`, section 6.1), so until the leader gives
+it again the log refuses every cut, and then any at or before it. On a
+single server nothing cuts.
 
 The marker says "everything through here was written and flushed", and it
 is kept outside the log on purpose: a segment, or the end of one, can be

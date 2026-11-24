@@ -21,11 +21,11 @@ its store folders in `<folder>`.
 ## Method
 
 - Each entry has a 100-byte payload, so it takes 164 bytes in the log; a
-  batch adds a 96-byte header. Segments are the default 64 MiB, made
+  batch adds a 104-byte header. Segments are the default 64 MiB, made
   before the timed loop, so no batch waits for an allocation.
 - A **batch** is `per` appends and one `flush_batch`: one synchronous
   write of the batch to the current segment (`O_DSYNC`), then a marker
-  advance in `state` (one write of 178 bytes and one `fdatasync`).
+  advance in `state` (one write of 186 bytes and one `fdatasync`).
 - **Apart**: the same synchronous write of a one-entry batch to a 64 MiB
   file made beforehand; that write followed by `fdatasync` as well; a plain
   write followed by `fdatasync`; and a marker advance alone.
@@ -33,7 +33,9 @@ its store folders in `<folder>`.
 ## Results
 
 2026-11-24, branch `t3/implement-store-change-log` (pull request for
-#708), the development VM: ext4 on a virtual disk shared with other
+#708) as it was before the cut count was added, when a batch header was
+96 bytes and a copy of `state` 178: 8 bytes less for each, well within
+the spread below. The development VM: ext4 on a virtual disk shared with other
 agents' builds. The disk was busy: `/proc/pressure/io` showed 19 to 31%
 of the time with some task stalled on I/O in the 10 seconds before and
 after the run. Two-second runs, seven of each.
