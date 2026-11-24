@@ -246,12 +246,22 @@ impl OpenMakerApp {
         }
         let mut menu = Vec::new();
         let system = self.system_menu_bar();
-        if system || self.with_window(id, |app| app.w.menubar).unwrap_or(false) {
+        // A choice leaves the card's entered field first, as a choice in a
+        // window's own menus does, so its exit triggers can run or refuse.
+        if self.mobile.is_some() {
+            // OpenMaker Go's chrome works on the card in front, as a menu
+            // bar does.
+            self.with_window(top, |app| {
+                app.mobile_menus(ui, input, &mut menu);
+                app.w.document.menu_leaves_field(ui, &mut menu);
+            });
+        } else if system || self.with_window(id, |app| app.w.menubar).unwrap_or(false) {
             self.with_window(top, |app| {
                 if dialog.is_some() {
                     ui.disable();
                 }
                 app.menu_bar(ui, input, &mut menu);
+                app.w.document.menu_leaves_field(ui, &mut menu);
             });
         }
         // The parent and any card under the top one take no input; they

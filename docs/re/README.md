@@ -240,6 +240,7 @@ in [catalogs/](catalogs/README.md); recovered `.proto` files are in
 
 - [architecture.md](architecture.md) - subsystem map, dependencies, third-party components
 - [protobuf-schemas.md](protobuf-schemas.md) - recovered `.proto` schemas (files in `protobuf/`)
+- [go-client.md](go-client.md) - FileMaker Go from Claris's documentation: Launch Center, Browse and Find chrome, editing, the app in the background, script compatibility
 - [client-ui.md](client-ui.md) - FileMaker Pro's application chrome, measured: window regions, toolbars, menus, modes, dialogs, Specify Calculation
 
 ### Protocol and hosting
