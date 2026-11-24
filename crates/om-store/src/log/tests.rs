@@ -354,9 +354,12 @@ struct Model {
     committed: u64,
     appended: Position,
     /// Cuts of durable entries reported done, and those also attempted by
-    /// calls that failed: the cut count `state` holds is between them.
+    /// calls that failed: the cut count `state` holds is between them, plus
+    /// one for each open since the last check, which raises it when a read
+    /// fails after the firm position.
     cuts: u64,
     cuts_attempted: u64,
+    opens: u64,
     /// `state` was made and confirmed.
     state_made: bool,
 }
@@ -374,6 +377,7 @@ impl Model {
             appended: Position::START,
             cuts: 0,
             cuts_attempted: 0,
+            opens: 0,
             state_made: false,
         }
     }
@@ -752,6 +756,7 @@ impl<'a> Run<'a> {
         let mut state = state;
         let mut tries = 0;
         loop {
+            self.model.opens += 1;
             let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
             self.trace.push(stamp(
                 &*self.machine,
@@ -982,13 +987,18 @@ impl<'a> Run<'a> {
         let cut_count = log.state().values().cut_count;
         assert_eq!(opened.cut_count, cut_count, "seed {seed}");
         assert!(
-            lying || (self.model.cuts..=self.model.cuts_attempted).contains(&cut_count),
-            "seed {seed}: cut count {cut_count}, though {} cuts were done and {} attempted",
+            lying
+                || (self.model.cuts..=self.model.cuts_attempted + self.model.opens)
+                    .contains(&cut_count),
+            "seed {seed}: cut count {cut_count}, though {} cuts were done, {} attempted, and \
+             {} opens tried",
             self.model.cuts,
-            self.model.cuts_attempted
+            self.model.cuts_attempted,
+            self.model.opens
         );
         self.model.cuts = cut_count;
         self.model.cuts_attempted = cut_count;
+        self.model.opens = 0;
         let last_term = self
             .model
             .acked
@@ -1260,6 +1270,12 @@ impl<'a> Run<'a> {
                         position
                     })
                 };
+                if position != expected && self.device == Device::Lying {
+                    // The device dropped writes the model counts on: start
+                    // again from what it holds.
+                    self.stop(false);
+                    return;
+                }
                 assert_eq!(position, expected, "seed {seed}");
                 assert_eq!(log.appended(), position, "seed {seed}");
                 let removed: Vec<Entry> = self.model.acked.split_off(&from).into_values().collect();
