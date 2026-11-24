@@ -73,6 +73,13 @@ pub(crate) fn well_formed(bytes: &[u8], complete: bool) -> bool {
     }
 }
 
+/// Whether `bytes` can be a separator: a prefix of a key within
+/// [`MAX_DEPTH`] segments, as every separator is made from one (format
+/// section 2.4). That is a whole key, or the start of one.
+pub(crate) fn separator_ok(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && (well_formed(bytes, true) || well_formed(bytes, false))
+}
+
 /// Where the segment that starts at `from` in `key` ends, its terminator
 /// included.
 pub(crate) fn segment_end(key: &[u8], from: usize) -> Option<usize> {
@@ -236,5 +243,11 @@ mod tests {
         assert!(!well_formed(&b"\x00\x01".repeat(MAX_DEPTH + 1), true));
         assert!(!well_formed(&deepest, false));
         assert!(well_formed(&b"\x00\x01".repeat(MAX_DEPTH - 1), false));
+        // A separator: a prefix of such a key, ending anywhere.
+        assert!(separator_ok(&deepest));
+        assert!(separator_ok(b"a\x00\x01\x00"));
+        assert!(!separator_ok(&b"\x00\x01".repeat(MAX_DEPTH + 1)));
+        assert!(!separator_ok(&[deepest.as_slice(), b"a"].concat()));
+        assert!(!separator_ok(b"a\x00\x02"));
     }
 }

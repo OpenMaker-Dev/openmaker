@@ -1193,3 +1193,92 @@ fn a_failed_entry_leaves_the_store_as_it_was() {
         rough_root = got;
     }
 }
+
+/// The children of an index page, as (page, hash), and their counts.
+fn index_children(store: &MemStore, number: PageNo, hash: Hash) -> Vec<(PageNo, Hash, usize)> {
+    let page = store.read(number, &hash).unwrap();
+    page.references()[..page.count()]
+        .iter()
+        .map(|(n, h)| (*n, *h, store.read(*n, h).unwrap().count()))
+        .collect()
+}
+
+/// Re-check of #697, format section 2.7's example: the hint in an index page
+/// is the place of the second part of the split child. Twenty-one empty
+/// lists whose keys share 3,600 bytes fill leaves four at a time; the 21st
+/// makes the index of six leaves too big, and it splits before its sixth
+/// child (5 and 1), not in the middle (3 and 3).
+#[test]
+fn an_index_page_splits_at_the_second_part_of_its_split_child() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    let edits: Vec<Edit> = (1..=21u8)
+        .map(|i| {
+            let mut segment = vec![0x42u8; 3600];
+            segment.push(i);
+            Edit::list(vec![segment])
+        })
+        .collect();
+    let root = apply(&store, root, 2, &edits).unwrap();
+    let top = index_children(&store, root.page, root.hash);
+    let counts: Vec<usize> = top.iter().map(|c| c.2).collect();
+    assert_eq!(counts, vec![5, 1]);
+    let leaves: Vec<usize> = top
+        .iter()
+        .flat_map(|(n, h, _)| index_children(&store, *n, *h))
+        .map(|c| c.2)
+        .collect();
+    assert_eq!(leaves, vec![4, 4, 4, 4, 4, 1]);
+    assert_eq!(
+        root.hash.to_hex(),
+        "a56ee5392a0d5484a3f4902a81d2d1edef060bb8b341c97f17f62a7f4d54667c",
+    );
+}
+
+/// Re-check of #697: a reverse listing reads the overflow pages of a
+/// descendant's key only as far as the child's own key goes.
+#[test]
+fn a_reverse_listing_reads_a_long_key_only_through_the_child() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    let child = vec![0x63u8; 1100];
+    let edits = [Edit::list(vec![child.clone(), vec![0x67u8; 20_000]])];
+    let root = apply(&store, root, 2, &edits).unwrap();
+    let pages = check(&store, root).unwrap().pages;
+    // The leaf, then the grandchild's two overflow pages.
+    assert_eq!(pages.len(), 3);
+    store.remove(pages[2].0);
+    let tree = Tree::open(&store, root).unwrap();
+    for direction in [Direction::Forward, Direction::Backward] {
+        let kids: Vec<_> = tree
+            .children::<Vec<u8>>(&[], Bound::Unbounded, direction)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kids, vec![(child.clone(), Node::List)], "{direction:?}");
+    }
+}
+
+/// Re-check of #697: "changed since" compares separators by the bytes
+/// their page holds, and reads none whole.
+#[test]
+fn changed_since_reads_no_separator_it_need_not() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    let edits: Vec<Edit> = (1..=16u8)
+        .map(|i| {
+            let mut segment = vec![0x42u8; 4200];
+            segment.push(i);
+            Edit::list(vec![segment])
+        })
+        .collect();
+    let root = apply(&store, root, 2, &edits).unwrap();
+    let top = store.read(root.page, &root.hash).unwrap();
+    assert_eq!(top.count(), 2);
+    // The separator's overflow page follows the two children.
+    let refs = top.references();
+    assert_eq!(refs.len(), 3);
+    store.remove(refs[2].0);
+    let tree = Tree::open(&store, root).unwrap();
+    assert!(tree.changed_since(&[vec![1u8]], 1).unwrap());
+    assert!(!tree.changed_since(&[vec![1u8]], 2).unwrap());
+}

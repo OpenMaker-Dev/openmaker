@@ -10,11 +10,18 @@
 //! shape before it and the primitive alone. At the end of the entry every
 //! page the entry changed is written once, bottom-up, stamped with the
 //! entry's index.
+//!
+//! Items and separators copied from a page stay in that page: their keys
+//! are compared with [`Pages`]' comparisons, which read overflow pages only
+//! while the bytes so far are equal, and never read whole except where the
+//! rules need the bytes (the boundary keys of a leaf split, and the first
+//! and last keys a delete removes).
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use super::key;
-use super::read::{Pages, Result};
+use super::read::{partition, KeyAt, Pages, Result};
 use super::{check_edits, fault, Edit, Error, Node, Root};
 use crate::page::{
     self, Builder, EntryPages, Fault, Hash, Page, PageKind, PageNo, PageStore, Release,
@@ -25,8 +32,8 @@ use crate::page::{
 /// A node of a page whose footprint shrank below this is joined with a
 /// sibling.
 const MIN_FILL: usize = USABLE / 4;
-/// A node over capacity is split before the unit a primitive changed when
-/// what comes before that unit fills at least this much of a page.
+/// A node over capacity is split at its hint when what comes before the
+/// hint fills at least this much of a page.
 const SPLIT_HIGH: usize = USABLE * 7 / 8;
 
 /// A tree with no nodes: one empty leaf, written by entry `entry`.
@@ -96,7 +103,7 @@ pub fn apply<S: PageStore + ?Sized>(
         return Ok(root);
     }
     // Every entry that changes the tree rewrites its root.
-    materialize(&mut cx, &mut tree.slot, tree.level)?;
+    materialize(&mut cx, &mut tree.slot, tree.level, true)?;
     let mut out = store.begin()?;
     let new = write_slot(entry, &mut out, tree.slot, tree.level)?;
     for (number, hash, how) in &cx.released {
@@ -159,50 +166,111 @@ struct WIndex {
 }
 
 struct WItem {
-    /// The key, unless it is all in the page the value is kept from: empty
-    /// then (no key is empty), so that copying a leaf does not copy its keys.
-    key: Vec<u8>,
     kind: u8,
-    value: Value,
+    src: Src,
 }
 
-enum Value {
+/// Where an item's key and value are.
+enum Src {
     /// Set by this entry.
-    New(Vec<u8>),
-    /// As item `.1` of page `.0` holds it, overflow pages included.
+    New { key: Vec<u8>, value: Vec<u8> },
+    /// As item `.1` of page `.0` holds them, overflow pages included.
     Kept(Arc<Page>, usize),
 }
 
-struct WSep {
-    key: Vec<u8>,
-    /// The page and child it was read from, to keep its overflow pages.
-    kept: Option<(Arc<Page>, usize)>,
+/// A separator: made by this entry, or as child `.1` of page `.0` holds it,
+/// overflow pages included.
+enum WSep {
+    New(Vec<u8>),
+    Kept(Arc<Page>, usize),
 }
 
 impl WItem {
-    fn key(&self) -> &[u8] {
-        match &self.value {
-            Value::Kept(page, i) if self.key.is_empty() => page.item(*i).key_part().0,
-            _ => &self.key,
+    fn new(key: Vec<u8>, kind: u8, value: Vec<u8>) -> WItem {
+        WItem {
+            kind,
+            src: Src::New { key, value },
+        }
+    }
+
+    fn key_len(&self) -> usize {
+        match &self.src {
+            Src::New { key, .. } => key.len(),
+            Src::Kept(page, i) => page.item(*i).key_len,
         }
     }
 
     fn value_len(&self) -> usize {
-        match &self.value {
-            Value::New(v) => v.len(),
-            Value::Kept(page, i) => page.item(*i).value_len,
+        match &self.src {
+            Src::New { value, .. } => value.len(),
+            Src::Kept(page, i) => page.item(*i).value_len,
         }
     }
 
     fn footprint(&self) -> usize {
-        page::item_footprint(self.key().len(), self.value_len())
+        page::item_footprint(self.key_len(), self.value_len())
+    }
+
+    /// How its key compares with `key`.
+    fn cmp<S: PageStore + ?Sized>(&self, pages: &Pages<'_, S>, key: &[u8]) -> Result<Ordering> {
+        match &self.src {
+            Src::New { key: own, .. } => Ok(own.as_slice().cmp(key)),
+            Src::Kept(page, i) => pages.cmp_item(page, *i, key),
+        }
+    }
+
+    fn at(&self) -> KeyAt {
+        match &self.src {
+            Src::New { key, .. } => KeyAt::Bytes(key.clone()),
+            Src::Kept(page, i) => KeyAt::Item(page.clone(), *i),
+        }
     }
 }
 
 impl WSep {
-    fn footprint(&self) -> usize {
-        page::separator_footprint(self.key.len())
+    fn len(&self) -> usize {
+        match self {
+            WSep::New(key) => key.len(),
+            WSep::Kept(page, i) => page.child(*i).separator.map_or(0, |s| s.len),
+        }
     }
+
+    fn footprint(&self) -> usize {
+        page::separator_footprint(self.len())
+    }
+
+    fn cmp<S: PageStore + ?Sized>(&self, pages: &Pages<'_, S>, key: &[u8]) -> Result<Ordering> {
+        match self {
+            WSep::New(own) => Ok(own.as_slice().cmp(key)),
+            WSep::Kept(page, i) => pages.cmp_separator(page, *i, key),
+        }
+    }
+}
+
+/// How many of `items` have a key below `key` (or equal to it).
+fn items_below<S: PageStore + ?Sized>(
+    pages: &Pages<'_, S>,
+    items: &[WItem],
+    key: &[u8],
+    or_equal: bool,
+) -> Result<usize> {
+    partition(items.len(), |i| {
+        let order = items[i].cmp(pages, key)?;
+        Ok(order == Ordering::Less || (or_equal && order == Ordering::Equal))
+    })
+}
+
+/// The item with key `key`, or where it would go.
+fn find<S: PageStore + ?Sized>(
+    pages: &Pages<'_, S>,
+    items: &[WItem],
+    key: &[u8],
+) -> Result<std::result::Result<usize, usize>> {
+    let i = items_below(pages, items, key, false)?;
+    if i < items.len() && items[i].cmp(pages, key)? == Ordering::Equal {
+        return Ok(Ok(i));
+    }
+    Ok(Err(i))
 }
 
 impl WLeaf {
@@ -247,14 +315,27 @@ impl WIndex {
         self.size
     }
 
-    /// The child whose range holds `key`.
-    fn child_for(&self, key: &[u8]) -> usize {
-        self.seps.partition_point(|s| s.key.as_slice() <= key)
+    /// How many separators are below `key` (or equal to it). With
+    /// `or_equal`, that is the child whose range holds `key`; without, the
+    /// last child whose range starts below `key`.
+    fn seps_below<S: PageStore + ?Sized>(
+        &self,
+        pages: &Pages<'_, S>,
+        key: &[u8],
+        or_equal: bool,
+    ) -> Result<usize> {
+        partition(self.seps.len(), |t| {
+            let order = self.seps[t].cmp(pages, key)?;
+            Ok(order == Ordering::Less || (or_equal && order == Ordering::Equal))
+        })
     }
 
-    /// The last child whose range starts below `key`.
-    fn last_below(&self, key: &[u8]) -> usize {
-        self.seps.partition_point(|s| s.key.as_slice() < key)
+    /// The child whose range holds `key`.
+    fn child_for<S: PageStore + ?Sized>(&self, pages: &Pages<'_, S>, key: &[u8]) -> Result<usize> {
+        if self.children.is_empty() {
+            return Err(internal("an index node without children"));
+        }
+        self.seps_below(pages, key, true)
     }
 }
 
@@ -278,17 +359,28 @@ fn internal(why: &'static str) -> Error {
     fault(0, Hash::default(), Fault::Malformed(why))
 }
 
+/// The page a clean slot names; `root` when the slot is the tree's root.
+fn page_of<S: PageStore + ?Sized>(
+    cx: &Cx<'_, S>,
+    r: ChildRef,
+    level: u8,
+    root: bool,
+) -> Result<Arc<Page>> {
+    cx.pages.at(r.page, r.hash, r.stamp, level, !root)
+}
+
 /// The working node in `slot`, reading and copying its page first if the
 /// entry has not touched it yet.
 fn materialize<'a, S: PageStore + ?Sized>(
     cx: &mut Cx<'_, S>,
     slot: &'a mut Slot,
     level: u8,
+    root: bool,
 ) -> Result<&'a mut WNode> {
     if let Slot::Clean(r) = slot {
         let r = *r;
-        let page = cx.pages.at(r.page, r.hash, r.stamp, level)?;
-        let node = decode(cx, &page)?;
+        let page = page_of(cx, r, level, root)?;
+        let node = decode(&page)?;
         cx.released.push((r.page, r.hash, Release::Copied));
         *slot = Slot::Dirty(Box::new(node));
     }
@@ -298,23 +390,17 @@ fn materialize<'a, S: PageStore + ?Sized>(
     }
 }
 
-fn decode<S: PageStore + ?Sized>(cx: &Cx<'_, S>, page: &Arc<Page>) -> Result<WNode> {
+/// The working copy of a page. Nothing beyond the page is read: items and
+/// separators stay in it.
+fn decode(page: &Arc<Page>) -> Result<WNode> {
     match page.kind() {
         PageKind::Leaf => {
-            let mut items = Vec::with_capacity(page.count());
-            for i in 0..page.count() {
-                let item = page.item(i);
-                let key = if item.key_part().1 {
-                    Vec::new()
-                } else {
-                    cx.pages.item_key(page, i)?
-                };
-                items.push(WItem {
-                    key,
-                    kind: item.kind,
-                    value: Value::Kept(page.clone(), i),
-                });
-            }
+            let items = (0..page.count())
+                .map(|i| WItem {
+                    kind: page.item(i).kind,
+                    src: Src::Kept(page.clone(), i),
+                })
+                .collect();
             Ok(WNode::Leaf(WLeaf::new(items)))
         }
         PageKind::Index => {
@@ -328,10 +414,7 @@ fn decode<S: PageStore + ?Sized>(cx: &Cx<'_, S>, page: &Arc<Page>) -> Result<WNo
                     stamp: c.stamp,
                 }));
                 if i > 0 {
-                    seps.push(WSep {
-                        key: cx.pages.separator(page, i)?,
-                        kept: Some((page.clone(), i)),
-                    });
+                    seps.push(WSep::Kept(page.clone(), i));
                 }
             }
             Ok(WNode::Index(WIndex::new(page.level(), children, seps)))
@@ -345,8 +428,8 @@ fn decode<S: PageStore + ?Sized>(cx: &Cx<'_, S>, page: &Arc<Page>) -> Result<WNo
 }
 
 /// The new version no longer reaches what this held.
-fn drop_value<S: ?Sized>(cx: &mut Cx<'_, S>, value: &Value) {
-    if let Value::Kept(page, i) = value {
+fn drop_item<S: ?Sized>(cx: &mut Cx<'_, S>, item: &WItem) {
+    if let Src::Kept(page, i) = &item.src {
         for (number, hash) in page.item(*i).refs.iter() {
             cx.released.push((number, hash, Release::Dropped));
         }
@@ -354,7 +437,7 @@ fn drop_value<S: ?Sized>(cx: &mut Cx<'_, S>, value: &Value) {
 }
 
 fn drop_separator<S: ?Sized>(cx: &mut Cx<'_, S>, sep: &WSep) {
-    if let Some((page, i)) = &sep.kept {
+    if let WSep::Kept(page, i) = sep {
         if let Some(separator) = page.child(*i).separator {
             for (number, hash) in separator.refs.iter() {
                 cx.released.push((number, hash, Release::Dropped));
@@ -369,7 +452,7 @@ fn drop_slot<S: ?Sized>(cx: &mut Cx<'_, S>, slot: Slot) {
         Slot::Dirty(node) => match *node {
             WNode::Leaf(leaf) => {
                 for item in &leaf.items {
-                    drop_value(cx, &item.value);
+                    drop_item(cx, item);
                 }
             }
             WNode::Index(ix) => {
@@ -390,29 +473,31 @@ fn existing<S: PageStore + ?Sized>(
     cx: &Cx<'_, S>,
     slot: &Slot,
     level: u8,
+    root: bool,
     key: &[u8],
 ) -> Result<Option<Node>> {
     match slot {
-        Slot::Clean(r) => cx
-            .pages
-            .lookup(cx.pages.at(r.page, r.hash, r.stamp, level)?, key),
+        Slot::Clean(r) => cx.pages.lookup(page_of(cx, *r, level, root)?, key),
         Slot::Dirty(node) => match &**node {
-            WNode::Leaf(leaf) => match leaf.items.binary_search_by(|it| it.key().cmp(key)) {
+            WNode::Leaf(leaf) => match find(&cx.pages, &leaf.items, key)? {
                 Ok(i) => Ok(Some(node_of(cx, &leaf.items[i])?)),
                 Err(_) => Ok(None),
             },
-            WNode::Index(ix) => match ix.children.get(ix.child_for(key)) {
-                Some(child) => existing(cx, child, level - 1, key),
-                None => Ok(None),
-            },
+            WNode::Index(ix) => {
+                if ix.children.is_empty() {
+                    return Ok(None);
+                }
+                let c = ix.child_for(&cx.pages, key)?;
+                existing(cx, &ix.children[c], level - 1, false, key)
+            }
         },
     }
 }
 
 fn node_of<S: PageStore + ?Sized>(cx: &Cx<'_, S>, item: &WItem) -> Result<Node> {
-    let value = match &item.value {
-        Value::New(v) => v.clone(),
-        Value::Kept(page, i) => cx.pages.item_node(page, *i)?.value().to_vec(),
+    let value = match &item.src {
+        Src::New { value, .. } => value.clone(),
+        Src::Kept(page, i) => cx.pages.item_node(page, *i)?.value().to_vec(),
     };
     Ok(Node::from_kind(item.kind, value))
 }
@@ -421,20 +506,22 @@ fn first_from<S: PageStore + ?Sized>(
     cx: &Cx<'_, S>,
     slot: &Slot,
     level: u8,
+    root: bool,
     lo: &[u8],
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<KeyAt>> {
     match slot {
-        Slot::Clean(r) => cx
-            .pages
-            .first_from(&*cx.pages.at(r.page, r.hash, r.stamp, level)?, lo),
+        Slot::Clean(r) => cx.pages.first_from(&page_of(cx, *r, level, root)?, lo),
         Slot::Dirty(node) => match &**node {
             WNode::Leaf(leaf) => {
-                let i = leaf.items.partition_point(|it| it.key() < lo);
-                Ok(leaf.items.get(i).map(|it| it.key().to_vec()))
+                let i = items_below(&cx.pages, &leaf.items, lo, false)?;
+                Ok(leaf.items.get(i).map(WItem::at))
             }
             WNode::Index(ix) => {
-                for child in &ix.children[ix.child_for(lo)..] {
-                    if let Some(key) = first_from(cx, child, level - 1, lo)? {
+                if ix.children.is_empty() {
+                    return Ok(None);
+                }
+                for child in &ix.children[ix.child_for(&cx.pages, lo)?..] {
+                    if let Some(key) = first_from(cx, child, level - 1, false, lo)? {
                         return Ok(Some(key));
                     }
                 }
@@ -448,25 +535,29 @@ fn last_before<S: PageStore + ?Sized>(
     cx: &Cx<'_, S>,
     slot: &Slot,
     level: u8,
+    root: bool,
     hi: Option<&[u8]>,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<KeyAt>> {
     match slot {
-        Slot::Clean(r) => cx
-            .pages
-            .last_before(&*cx.pages.at(r.page, r.hash, r.stamp, level)?, hi),
+        Slot::Clean(r) => cx.pages.last_before(&page_of(cx, *r, level, root)?, hi),
         Slot::Dirty(node) => match &**node {
             WNode::Leaf(leaf) => {
-                let items = &leaf.items;
-                let n = hi.map_or(items.len(), |hi| items.partition_point(|it| it.key() < hi));
-                Ok(n.checked_sub(1).map(|i| items[i].key().to_vec()))
+                let n = match hi {
+                    Some(hi) => items_below(&cx.pages, &leaf.items, hi, false)?,
+                    None => leaf.items.len(),
+                };
+                Ok(n.checked_sub(1).map(|i| leaf.items[i].at()))
             }
             WNode::Index(ix) => {
                 if ix.children.is_empty() {
                     return Ok(None);
                 }
-                let last = hi.map_or(ix.children.len() - 1, |hi| ix.last_below(hi));
+                let last = match hi {
+                    Some(hi) => ix.seps_below(&cx.pages, hi, false)?,
+                    None => ix.children.len() - 1,
+                };
                 for child in ix.children[..=last].iter().rev() {
-                    if let Some(key) = last_before(cx, child, level - 1, hi)? {
+                    if let Some(key) = last_before(cx, child, level - 1, false, hi)? {
                         return Ok(Some(key));
                     }
                 }
@@ -476,6 +567,7 @@ fn last_before<S: PageStore + ?Sized>(
     }
 }
 
+/// Whether the subtree of a child holds a key in `[lo, hi)`.
 fn has_keys<S: PageStore + ?Sized>(
     cx: &Cx<'_, S>,
     slot: &Slot,
@@ -483,10 +575,13 @@ fn has_keys<S: PageStore + ?Sized>(
     lo: &[u8],
     hi: Option<&[u8]>,
 ) -> Result<bool> {
-    Ok(match first_from(cx, slot, level, lo)? {
-        Some(key) => hi.is_none_or(|hi| key.as_slice() < hi),
-        None => false,
-    })
+    match first_from(cx, slot, level, false, lo)? {
+        Some(key) => match hi {
+            Some(hi) => Ok(cx.pages.cmp_at(&key, hi)? == Ordering::Less),
+            None => Ok(true),
+        },
+        None => Ok(false),
+    }
 }
 
 // The edits.
@@ -505,15 +600,11 @@ fn put<S: PageStore + ?Sized>(
     let mut key = Vec::new();
     for segment in ancestors {
         key::push_segment(&mut key, segment);
-        match existing(cx, &tree.slot, tree.level, &key)? {
+        match existing(cx, &tree.slot, tree.level, true, &key)? {
             None => set(
                 cx,
                 tree,
-                Op::Set(WItem {
-                    key: key.clone(),
-                    kind: KIND_LIST,
-                    value: Value::New(Vec::new()),
-                }),
+                Op::Set(WItem::new(key.clone(), KIND_LIST, Vec::new())),
             )?,
             Some(Node::Value(_)) => set(cx, tree, Op::Both(key.clone()))?,
             Some(_) => {}
@@ -526,24 +617,16 @@ fn put<S: PageStore + ?Sized>(
     below.push(0);
     let end = key::subtree_end(&key);
     delete(cx, tree, &below, end.as_deref())?;
-    if existing(cx, &tree.slot, tree.level, &key)?.as_ref() != Some(node) {
+    if existing(cx, &tree.slot, tree.level, true, &key)?.as_ref() != Some(node) {
         let value = node.value().to_vec();
-        set(
-            cx,
-            tree,
-            Op::Set(WItem {
-                key,
-                kind: node.kind(),
-                value: Value::New(value),
-            }),
-        )?;
+        set(cx, tree, Op::Set(WItem::new(key, node.kind(), value)))?;
     }
     Ok(())
 }
 
 /// A change to one item.
 enum Op {
-    /// Insert or replace an item.
+    /// Insert or replace an item (always a new one).
     Set(WItem),
     /// The item with this key holds a value; make it hold both.
     Both(Vec<u8>),
@@ -552,16 +635,18 @@ enum Op {
 impl Op {
     fn key(&self) -> &[u8] {
         match self {
-            Op::Set(item) => item.key(),
-            Op::Both(key) => key,
+            Op::Set(WItem {
+                src: Src::New { key, .. },
+                ..
+            })
+            | Op::Both(key) => key,
+            Op::Set(_) => &[],
         }
     }
 }
 
 /// What a primitive did to a node, for its parent: the hint for a split
-/// (format section 2.7: in a leaf, the item a set changed; in an index node,
-/// the first child a split of its changed child added; none otherwise), and
-/// whether the node's footprint shrank.
+/// (format section 2.7), and whether the node's footprint shrank.
 #[derive(Clone, Copy)]
 struct Change {
     hint: Option<usize>,
@@ -570,7 +655,7 @@ struct Change {
 
 fn set<S: PageStore + ?Sized>(cx: &mut Cx<'_, S>, tree: &mut Work, op: Op) -> Result<()> {
     cx.changed = true;
-    let change = set_in(cx, &mut tree.slot, tree.level, op)?;
+    let change = set_in(cx, &mut tree.slot, tree.level, true, op)?;
     fix_root(cx, tree, change.hint)
 }
 
@@ -578,19 +663,20 @@ fn set_in<S: PageStore + ?Sized>(
     cx: &mut Cx<'_, S>,
     slot: &mut Slot,
     level: u8,
+    root: bool,
     op: Op,
 ) -> Result<Change> {
-    let node = materialize(cx, slot, level)?;
+    let node = materialize(cx, slot, level, root)?;
     match node {
         WNode::Leaf(leaf) => {
-            let found = leaf.items.binary_search_by(|it| it.key().cmp(op.key()));
+            let found = find(&cx.pages, &leaf.items, op.key())?;
             let (hint, shrank) = match (op, found) {
                 (Op::Set(item), Ok(i)) => {
                     let size = item.footprint();
                     let old = std::mem::replace(&mut leaf.items[i], item);
                     let was = old.footprint();
                     leaf.size = leaf.size - was + size;
-                    drop_value(cx, &old.value);
+                    drop_item(cx, &old);
                     (i, size < was)
                 }
                 (Op::Set(item), Err(i)) => {
@@ -611,11 +697,8 @@ fn set_in<S: PageStore + ?Sized>(
         }
         WNode::Index(ix) => {
             let before = ix.footprint();
-            let c = ix.child_for(op.key());
-            if c >= ix.children.len() {
-                return Err(internal("an index node without children"));
-            }
-            let change = set_in(cx, &mut ix.children[c], level - 1, op)?;
+            let c = ix.child_for(&cx.pages, op.key())?;
+            let change = set_in(cx, &mut ix.children[c], level - 1, false, op)?;
             let fixed = fix_child(cx, ix, c, change)?;
             Ok(Change {
                 hint: fixed.split_hint(),
@@ -633,22 +716,28 @@ fn delete<S: PageStore + ?Sized>(
     lo: &[u8],
     hi: Option<&[u8]>,
 ) -> Result<bool> {
-    let Some(first) = first_from(cx, &tree.slot, tree.level, lo)? else {
+    let Some(first) = first_from(cx, &tree.slot, tree.level, true, lo)? else {
         return Ok(false);
     };
-    if hi.is_some_and(|hi| first.as_slice() >= hi) {
-        return Ok(false);
+    if let Some(hi) = hi {
+        if cx.pages.cmp_at(&first, hi)? != Ordering::Less {
+            return Ok(false);
+        }
     }
-    let last = last_before(cx, &tree.slot, tree.level, hi)?.unwrap_or_else(|| first.clone());
+    let last = last_before(cx, &tree.slot, tree.level, true, hi)?.unwrap_or_else(|| first.clone());
+    // The last step finds the leaves for these by their keys: the first and
+    // last keys removed, read whole.
+    let first = cx.pages.key_at(&first)?;
+    let last = cx.pages.key_at(&last)?;
     cx.changed = true;
-    delete_in(cx, &mut tree.slot, tree.level, lo, hi)?;
+    delete_in(cx, &mut tree.slot, tree.level, true, lo, hi)?;
     fix_root(cx, tree, None)?;
     // The deleted keys' places now belong to the leaves around them, which
     // may be pages this primitive did not otherwise touch: they are
     // rewritten so that their stamps cover the deletion (format section
     // 2.8).
-    touch(cx, &mut tree.slot, tree.level, &first)?;
-    touch(cx, &mut tree.slot, tree.level, &last)?;
+    touch(cx, &mut tree.slot, tree.level, true, &first)?;
+    touch(cx, &mut tree.slot, tree.level, true, &last)?;
     Ok(true)
 }
 
@@ -657,18 +746,21 @@ fn delete_in<S: PageStore + ?Sized>(
     cx: &mut Cx<'_, S>,
     slot: &mut Slot,
     level: u8,
+    root: bool,
     lo: &[u8],
     hi: Option<&[u8]>,
 ) -> Result<Change> {
-    let node = materialize(cx, slot, level)?;
+    let node = materialize(cx, slot, level, root)?;
     match node {
         WNode::Leaf(leaf) => {
-            let items = &mut leaf.items;
-            let start = items.partition_point(|it| it.key() < lo);
-            let end = hi.map_or(items.len(), |hi| items.partition_point(|it| it.key() < hi));
-            for item in items.drain(start..end.max(start)) {
+            let start = items_below(&cx.pages, &leaf.items, lo, false)?;
+            let end = match hi {
+                Some(hi) => items_below(&cx.pages, &leaf.items, hi, false)?,
+                None => leaf.items.len(),
+            };
+            for item in leaf.items.drain(start..end.max(start)) {
                 leaf.size -= item.footprint();
-                drop_value(cx, &item.value);
+                drop_item(cx, &item);
             }
             Ok(Change {
                 hint: None,
@@ -676,12 +768,12 @@ fn delete_in<S: PageStore + ?Sized>(
             })
         }
         WNode::Index(ix) => {
-            if ix.children.is_empty() {
-                return Err(internal("an index node without children"));
-            }
             let before = ix.footprint();
-            let i = ix.child_for(lo);
-            let j = hi.map_or(ix.children.len() - 1, |hi| ix.last_below(hi));
+            let i = ix.child_for(&cx.pages, lo)?;
+            let j = match hi {
+                Some(hi) => ix.seps_below(&cx.pages, hi, false)?,
+                None => ix.children.len() - 1,
+            };
             // The children between the two ends go whole, unread; the left
             // end's range grows over theirs.
             if j > i + 1 {
@@ -696,11 +788,13 @@ fn delete_in<S: PageStore + ?Sized>(
             let right = (j > i).then_some(i + 1);
             let mut changed = Vec::new();
             if has_keys(cx, &ix.children[i], level - 1, lo, hi)? {
-                changed.push((i, delete_in(cx, &mut ix.children[i], level - 1, lo, hi)?));
+                let change = delete_in(cx, &mut ix.children[i], level - 1, false, lo, hi)?;
+                changed.push((i, change));
             }
             if let Some(r) = right {
                 if has_keys(cx, &ix.children[r], level - 1, lo, hi)? {
-                    changed.push((r, delete_in(cx, &mut ix.children[r], level - 1, lo, hi)?));
+                    let change = delete_in(cx, &mut ix.children[r], level - 1, false, lo, hi)?;
+                    changed.push((r, change));
                 }
             }
             // Fix the changed children left to right. Fixing the left one
@@ -727,16 +821,18 @@ fn touch<S: PageStore + ?Sized>(
     cx: &mut Cx<'_, S>,
     slot: &mut Slot,
     level: u8,
+    root: bool,
     key: &[u8],
 ) -> Result<()> {
-    match materialize(cx, slot, level)? {
+    let node = materialize(cx, slot, level, root)?;
+    match node {
         WNode::Leaf(_) => Ok(()),
         WNode::Index(ix) => {
             if ix.children.is_empty() {
                 return Ok(());
             }
-            let c = ix.child_for(key);
-            touch(cx, &mut ix.children[c], level - 1, key)
+            let c = ix.child_for(&cx.pages, key)?;
+            touch(cx, &mut ix.children[c], level - 1, false, key)
         }
     }
 }
@@ -752,7 +848,9 @@ struct Fixed {
 }
 
 impl Fixed {
-    /// The first new child, when the fix split the changed child.
+    /// The hint for the parent (format section 2.7): when the fix split the
+    /// changed child into parts, the place of the second part, which is the
+    /// child's own place plus one; otherwise none.
     fn split_hint(&self) -> Option<usize> {
         (self.old == 1 && self.new > 1).then_some(self.start + 1)
     }
@@ -778,7 +876,7 @@ fn fix_child<S: PageStore + ?Sized>(
     let footprint = child.footprint();
     if footprint > USABLE {
         let node = std::mem::replace(child, WNode::Leaf(WLeaf::new(Vec::new())));
-        let parts = split(node, change.hint)?;
+        let parts = split(&cx.pages, node, change.hint)?;
         let new = parts.len();
         replace(ix, c, 1, parts);
         return Ok(Fixed {
@@ -854,8 +952,8 @@ fn join<S: PageStore + ?Sized>(cx: &mut Cx<'_, S>, ix: &mut WIndex, c: usize) ->
         (c - 1, c)
     };
     let level = ix.level - 1;
-    materialize(cx, &mut ix.children[l], level)?;
-    materialize(cx, &mut ix.children[r], level)?;
+    materialize(cx, &mut ix.children[l], level, false)?;
+    materialize(cx, &mut ix.children[r], level, false)?;
     let sep = ix.seps.remove(r - 1);
     let Slot::Dirty(right) = ix.children.remove(r) else {
         return Err(internal("joining an unread child"));
@@ -886,7 +984,7 @@ fn join<S: PageStore + ?Sized>(cx: &mut Cx<'_, S>, ix: &mut WIndex, c: usize) ->
     let joined = dirty(&mut ix.children[l])?;
     if joined.footprint() > USABLE {
         let node = std::mem::replace(joined, WNode::Leaf(WLeaf::new(Vec::new())));
-        let parts = split(node, None)?;
+        let parts = split(&cx.pages, node, None)?;
         let new = parts.len();
         replace(ix, l, 1, parts);
         return Ok(Fixed {
@@ -904,13 +1002,18 @@ fn join<S: PageStore + ?Sized>(cx: &mut Cx<'_, S>, ix: &mut WIndex, c: usize) ->
 
 /// Splits a node over capacity into parts that fit, each but the first with
 /// the separator below it.
-fn split(node: WNode, hint: Option<usize>) -> Result<Vec<(Option<WSep>, WNode)>> {
+fn split<S: PageStore + ?Sized>(
+    pages: &Pages<'_, S>,
+    node: WNode,
+    hint: Option<usize>,
+) -> Result<Vec<(Option<WSep>, WNode)>> {
     let mut parts = Vec::new();
-    split_into(node, hint, None, &mut parts)?;
+    split_into(pages, node, hint, None, &mut parts)?;
     Ok(parts)
 }
 
-fn split_into(
+fn split_into<S: PageStore + ?Sized>(
+    pages: &Pages<'_, S>,
     node: WNode,
     hint: Option<usize>,
     sep: Option<WSep>,
@@ -930,12 +1033,12 @@ fn split_into(
             let total = prefix[sizes.len()];
             let s = choose(sizes.len(), hint, |s| prefix[s], |s| total - prefix[s])?;
             let right = items.split_off(s);
-            let up = WSep {
-                key: shortest_separator(items[s - 1].key(), right[0].key()),
-                kept: None,
-            };
-            split_into(WNode::Leaf(WLeaf::new(items)), None, sep, parts)?;
-            split_into(WNode::Leaf(WLeaf::new(right)), None, Some(up), parts)
+            // The separator needs the two keys at the boundary.
+            let left_last = pages.key_at(&items[s - 1].at())?;
+            let right_first = pages.key_at(&right[0].at())?;
+            let up = WSep::New(shortest_separator(&left_last, &right_first));
+            split_into(pages, WNode::Leaf(WLeaf::new(items)), None, sep, parts)?;
+            split_into(pages, WNode::Leaf(WLeaf::new(right)), None, Some(up), parts)
         }
         WNode::Index(mut ix) => {
             let n = ix.children.len();
@@ -960,8 +1063,9 @@ fn split_into(
             let up = right_seps.remove(0);
             let level = ix.level;
             ix.recount();
-            split_into(WNode::Index(ix), None, sep, parts)?;
+            split_into(pages, WNode::Index(ix), None, sep, parts)?;
             split_into(
+                pages,
                 WNode::Index(WIndex::new(level, right_children, right_seps)),
                 None,
                 Some(up),
@@ -972,10 +1076,9 @@ fn split_into(
 }
 
 /// Where to split `n` units, given the footprints of the two sides of a
-/// split before unit `s`. Before the changed unit `hint` when what precedes
-/// it fills at least [`SPLIT_HIGH`] and both sides fit (an append fills its
-/// page); otherwise where the two sides are nearest equal, the first such
-/// place on a tie.
+/// split before unit `s`. At the hint when what precedes it fills at least
+/// [`SPLIT_HIGH`] and both sides fit (an append fills its page); otherwise
+/// where the two sides are nearest equal, the first such place on a tie.
 fn choose(
     n: usize,
     hint: Option<usize>,
@@ -1003,7 +1106,8 @@ fn choose(
 }
 
 /// The shortest key above `left` and at or below `right` (`left < right`):
-/// `right` cut just after the first byte where they differ.
+/// `right` cut just after the first byte where they differ, or just after
+/// the byte that follows `left` when `left` is a proper prefix of `right`.
 fn shortest_separator(left: &[u8], right: &[u8]) -> Vec<u8> {
     let common = left.iter().zip(right).take_while(|(a, b)| a == b).count();
     right[..(common + 1).min(right.len())].to_vec()
@@ -1027,7 +1131,7 @@ fn fix_root<S: PageStore + ?Sized>(
                     return Ok(());
                 }
                 let r = *r;
-                let page = cx.pages.at(r.page, r.hash, r.stamp, tree.level)?;
+                let page = page_of(cx, r, tree.level, true)?;
                 if page.count() != 1 {
                     return Ok(());
                 }
@@ -1047,7 +1151,7 @@ fn fix_root<S: PageStore + ?Sized>(
                 return Err(Error::TooTall);
             }
             let node = std::mem::replace(&mut **node, WNode::Leaf(WLeaf::new(Vec::new())));
-            let parts = split(node, hint)?;
+            let parts = split(&cx.pages, node, hint)?;
             let mut ix = WIndex::new(tree.level + 1, Vec::new(), Vec::new());
             replace(&mut ix, 0, 0, parts);
             tree.slot = Slot::Dirty(Box::new(WNode::Index(ix)));
@@ -1114,28 +1218,26 @@ fn write_slot<E: EntryPages>(entry: u64, out: &mut E, slot: Slot, level: u8) -> 
         WNode::Leaf(leaf) => {
             let mut builder = Builder::new(PageKind::Leaf, 0, entry);
             for item in &leaf.items {
-                match &item.value {
-                    Value::New(value) => {
-                        let mut stream = Vec::with_capacity(item.key.len() + value.len());
-                        stream.extend_from_slice(&item.key);
+                match &item.src {
+                    Src::New { key, value } => {
+                        let mut stream = Vec::with_capacity(key.len() + value.len());
+                        stream.extend_from_slice(key);
                         stream.extend_from_slice(value);
-                        match page::item_inline(item.key.len(), value.len()) {
+                        match page::item_inline(key.len(), value.len()) {
                             Some(inline) => {
                                 let refs = write_overflow(entry, out, &stream)?;
                                 builder.item(
                                     item.kind,
-                                    item.key.len(),
+                                    key.len(),
                                     value.len(),
                                     &stream[..inline],
                                     &refs,
                                 );
                             }
-                            None => {
-                                builder.item(item.kind, item.key.len(), value.len(), &stream, &[])
-                            }
+                            None => builder.item(item.kind, key.len(), value.len(), &stream, &[]),
                         }
                     }
-                    Value::Kept(page, i) => {
+                    Src::Kept(page, i) => {
                         let kept = page.item(*i);
                         let refs: Vec<_> = kept.refs.iter().collect();
                         builder.item(item.kind, kept.key_len, kept.value_len, kept.inline, &refs);
@@ -1155,14 +1257,11 @@ fn write_slot<E: EntryPages>(entry: u64, out: &mut E, slot: Slot, level: u8) -> 
                     builder.child(child.page, &child.hash, child.stamp, None);
                     continue;
                 }
-                let sep = &ix.seps[t - 1];
-                let kept = sep
-                    .kept
-                    .as_ref()
-                    .and_then(|(page, i)| page.child(*i).separator)
-                    .filter(|s| s.refs.len() > 0);
-                match (kept, page::separator_inline(sep.key.len())) {
-                    (Some(kept), _) => {
+                match &ix.seps[t - 1] {
+                    WSep::Kept(page, i) => {
+                        let Some(kept) = page.child(*i).separator else {
+                            return Err(internal("a kept separator that is not there"));
+                        };
                         let refs: Vec<_> = kept.refs.iter().collect();
                         builder.child(
                             child.page,
@@ -1171,23 +1270,23 @@ fn write_slot<E: EntryPages>(entry: u64, out: &mut E, slot: Slot, level: u8) -> 
                             Some((kept.len, kept.inline, &refs)),
                         );
                     }
-                    (None, Some(inline)) => {
-                        let refs = write_overflow(entry, out, &sep.key)?;
-                        builder.child(
+                    WSep::New(key) => match page::separator_inline(key.len()) {
+                        Some(inline) => {
+                            let refs = write_overflow(entry, out, key)?;
+                            builder.child(
+                                child.page,
+                                &child.hash,
+                                child.stamp,
+                                Some((key.len(), &key[..inline], &refs)),
+                            );
+                        }
+                        None => builder.child(
                             child.page,
                             &child.hash,
                             child.stamp,
-                            Some((sep.key.len(), &sep.key[..inline], &refs)),
-                        );
-                    }
-                    (None, None) => {
-                        builder.child(
-                            child.page,
-                            &child.hash,
-                            child.stamp,
-                            Some((sep.key.len(), &sep.key, &[])),
-                        );
-                    }
+                            Some((key.len(), key, &[])),
+                        ),
+                    },
                 }
             }
             write_page(out, builder)

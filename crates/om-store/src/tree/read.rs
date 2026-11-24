@@ -25,6 +25,43 @@ fn malformed(page: &Page, why: &'static str) -> Error {
     fault(page.number(), page.hash(), Fault::Malformed(why))
 }
 
+/// A key or separator as its page holds it: the bytes the page holds, its
+/// whole length, and the overflow pages that hold the rest of its stream.
+#[derive(Clone, Copy)]
+struct Stored<'p> {
+    part: &'p [u8],
+    len: usize,
+    refs: Refs<'p>,
+    /// The bytes of the stream (key and value, or separator) in the
+    /// overflow pages.
+    rest: usize,
+    page: &'p Page,
+}
+
+/// A key found in a tree: its bytes, or the item that holds it, read only
+/// as far as a comparison needs.
+#[derive(Clone)]
+pub(crate) enum KeyAt {
+    Bytes(Vec<u8>),
+    Item(Arc<Page>, usize),
+}
+
+/// Compares the next `chunk` of a stored key, from byte `pos` of `len`, with
+/// `key`. `None` while they are equal as far as both go.
+fn cmp_chunk(chunk: &[u8], key: &[u8], pos: &mut usize, len: usize) -> Option<Ordering> {
+    let m = chunk.len().min(key.len().saturating_sub(*pos));
+    match chunk[..m].cmp(&key[*pos..*pos + m]) {
+        Ordering::Equal => {}
+        order => return Some(order),
+    }
+    if m < chunk.len() {
+        // `key` ended inside the stored key, which is longer.
+        return Some(Ordering::Greater);
+    }
+    *pos += chunk.len();
+    (*pos >= len).then(|| len.cmp(&key.len()))
+}
+
 impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
     fn read(&self, number: PageNo, hash: Hash) -> Result<Arc<Page>> {
         let page = self
@@ -53,17 +90,25 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
     /// Child `i` of the index page `parent`.
     pub(crate) fn child(&self, parent: &Page, i: usize) -> Result<Arc<Page>> {
         let entry = parent.child(i);
-        self.at(entry.number, entry.hash, entry.stamp, parent.level() - 1)
+        self.at(
+            entry.number,
+            entry.hash,
+            entry.stamp,
+            parent.level() - 1,
+            true,
+        )
     }
 
-    /// The page a parent names with `number`, `hash` and `stamp`, at
-    /// `level`.
+    /// The page a parent (or, `below_root` false, a version) names with
+    /// `number`, `hash` and `stamp`, at `level`. A leaf below the root is
+    /// never empty (format section 2.7).
     pub(crate) fn at(
         &self,
         number: PageNo,
         hash: Hash,
         stamp: u64,
         level: u8,
+        below_root: bool,
     ) -> Result<Arc<Page>> {
         let page = self.read(number, hash)?;
         let kind = if level == 0 {
@@ -79,6 +124,9 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
                 &page,
                 "not written by the entry its parent names",
             ));
+        }
+        if below_root && page.count() == 0 {
+            return Err(malformed(&page, "an empty leaf below the root"));
         }
         Ok(page)
     }
@@ -97,17 +145,13 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
     }
 
     /// The first key at or above `lo` in the subtree of `page`.
-    pub(crate) fn first_from(&self, page: &Page, lo: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn first_from(&self, page: &Arc<Page>, lo: &[u8]) -> Result<Option<KeyAt>> {
         if page.kind() == PageKind::Leaf {
             let i = self.items_below(page, lo, false)?;
-            return if i < page.count() {
-                Ok(Some(self.item_key(page, i)?))
-            } else {
-                Ok(None)
-            };
+            return Ok((i < page.count()).then(|| KeyAt::Item(page.clone(), i)));
         }
         for c in self.separators_below(page, lo, true)?..page.count() {
-            if let Some(key) = self.first_from(&*self.child(page, c)?, lo)? {
+            if let Some(key) = self.first_from(&self.child(page, c)?, lo)? {
                 return Ok(Some(key));
             }
         }
@@ -116,60 +160,145 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
 
     /// The last key below `hi` (`None`: the last key) in the subtree of
     /// `page`.
-    pub(crate) fn last_before(&self, page: &Page, hi: Option<&[u8]>) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn last_before(&self, page: &Arc<Page>, hi: Option<&[u8]>) -> Result<Option<KeyAt>> {
         if page.kind() == PageKind::Leaf {
             let n = match hi {
                 Some(hi) => self.items_below(page, hi, false)?,
                 None => page.count(),
             };
-            return if n > 0 {
-                Ok(Some(self.item_key(page, n - 1)?))
-            } else {
-                Ok(None)
-            };
+            return Ok(n.checked_sub(1).map(|i| KeyAt::Item(page.clone(), i)));
         }
         let last = match hi {
             Some(hi) => self.separators_below(page, hi, false)?,
             None => page.count() - 1,
         };
         for c in (0..=last).rev() {
-            if let Some(key) = self.last_before(&*self.child(page, c)?, hi)? {
+            if let Some(key) = self.last_before(&self.child(page, c)?, hi)? {
                 return Ok(Some(key));
             }
         }
         Ok(None)
     }
 
+    /// How a found key compares with `key`.
+    pub(crate) fn cmp_at(&self, at: &KeyAt, key: &[u8]) -> Result<Ordering> {
+        match at {
+            KeyAt::Bytes(bytes) => Ok(bytes.as_slice().cmp(key)),
+            KeyAt::Item(page, i) => self.cmp_item(page, *i, key),
+        }
+    }
+
+    /// A found key, whole.
+    pub(crate) fn key_at(&self, at: &KeyAt) -> Result<Vec<u8>> {
+        match at {
+            KeyAt::Bytes(bytes) => Ok(bytes.clone()),
+            KeyAt::Item(page, i) => self.item_key(page, *i),
+        }
+    }
+
+    /// Overflow page `i` of a stored stream of `rest` bytes in `refs`,
+    /// checked against what its owner `page` expects.
+    fn overflow(&self, refs: Refs<'_>, i: usize, rest: usize, page: &Page) -> Result<Arc<Page>> {
+        let (number, hash) = refs.get(i);
+        let over = self.read(number, hash)?;
+        let expected = (rest - i * OVERFLOW_DATA).min(OVERFLOW_DATA);
+        if over.kind() != PageKind::Overflow
+            || over.data().len() != expected
+            || over.written() > page.written()
+        {
+            return Err(malformed(
+                &over,
+                "an overflow page that does not fit its item",
+            ));
+        }
+        Ok(over)
+    }
+
     /// The first `want` bytes of the part of a spilled stream that is not in
-    /// its page: `rest` bytes in the overflow pages `refs`, written no later
-    /// than `written`. Reads only the pages it needs.
-    pub(crate) fn spill(
-        &self,
-        refs: Refs<'_>,
-        rest: usize,
-        want: usize,
-        written: u64,
-    ) -> Result<Vec<u8>> {
+    /// its page: `rest` bytes in the overflow pages `refs` of `page`. Reads
+    /// only the pages it needs.
+    fn spill(&self, refs: Refs<'_>, rest: usize, want: usize, page: &Page) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(want.min(rest));
-        for (i, (number, hash)) in refs.iter().enumerate() {
+        for i in 0..refs.len() {
             if out.len() >= want {
                 break;
             }
-            let page = self.read(number, hash)?;
-            let expected = (rest - i * OVERFLOW_DATA).min(OVERFLOW_DATA);
-            if page.kind() != PageKind::Overflow
-                || page.data().len() != expected
-                || page.written() > written
-            {
-                return Err(malformed(
-                    &page,
-                    "an overflow page that does not fit its item",
-                ));
-            }
-            out.extend_from_slice(page.data());
+            out.extend_from_slice(self.overflow(refs, i, rest, page)?.data());
         }
         out.truncate(want);
         Ok(out)
+    }
+
+    fn stored_item<'p>(&self, page: &'p Page, i: usize) -> Stored<'p> {
+        let item = page.item(i);
+        Stored {
+            part: item.key_part().0,
+            len: item.key_len,
+            refs: item.refs,
+            rest: (item.key_len + item.value_len).saturating_sub(SPILL_INLINE),
+            page,
+        }
+    }
+
+    fn stored_separator<'p>(&self, page: &'p Page, i: usize) -> Result<Stored<'p>> {
+        let Some(separator) = page.child(i).separator else {
+            return Err(malformed(page, "a first child with a separator"));
+        };
+        Ok(Stored {
+            part: separator.part().0,
+            len: separator.len,
+            refs: separator.refs,
+            rest: separator.len.saturating_sub(SPILL_INLINE),
+            page,
+        })
+    }
+
+    /// How a stored key or separator compares with `key`: the bytes its page
+    /// holds first, then its overflow pages one at a time, only while it is
+    /// equal to `key` as far as both go.
+    fn cmp_stored(&self, s: Stored<'_>, key: &[u8]) -> Result<Ordering> {
+        let mut pos = 0;
+        if let Some(order) = cmp_chunk(s.part, key, &mut pos, s.len) {
+            return Ok(order);
+        }
+        for i in 0..s.refs.len() {
+            let over = self.overflow(s.refs, i, s.rest, s.page)?;
+            let take = over.data().len().min(s.len - pos);
+            if let Some(order) = cmp_chunk(&over.data()[..take], key, &mut pos, s.len) {
+                return Ok(order);
+            }
+        }
+        Err(malformed(s.page, "a key longer than its overflow pages"))
+    }
+
+    /// The start of item `i`'s key through the end of the segment that
+    /// starts at byte `from`, reading overflow pages only until that end;
+    /// `None` if the key has no segment there.
+    pub(crate) fn key_through_segment(
+        &self,
+        page: &Page,
+        i: usize,
+        from: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let s = self.stored_item(page, i);
+        let mut bytes = s.part.to_vec();
+        let mut next = 0;
+        loop {
+            if let Some(end) = key::segment_end(&bytes, from) {
+                bytes.truncate(end);
+                if !key::well_formed(&bytes, true) {
+                    return Err(malformed(page, "a key that is not an encoded path"));
+                }
+                return Ok(Some(bytes));
+            }
+            if bytes.len() >= s.len || next >= s.refs.len() {
+                return Ok(None);
+            }
+            let over = self.overflow(s.refs, next, s.rest, page)?;
+            let take = over.data().len().min(s.len - bytes.len());
+            bytes.extend_from_slice(&over.data()[..take]);
+            next += 1;
+        }
     }
 
     /// The whole key of item `i` of a leaf.
@@ -180,7 +309,7 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
             return Ok(part.to_vec());
         }
         let rest = item.key_len + item.value_len - SPILL_INLINE;
-        let tail = self.spill(item.refs, rest, item.key_len - SPILL_INLINE, page.written())?;
+        let tail = self.spill(item.refs, rest, item.key_len - SPILL_INLINE, page)?;
         let mut key = part.to_vec();
         key.extend_from_slice(&tail);
         if !key::well_formed(&key, true) {
@@ -196,7 +325,7 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
             Some(value) => value.to_vec(),
             None => {
                 let rest = item.key_len + item.value_len - SPILL_INLINE;
-                let tail = self.spill(item.refs, rest, rest, page.written())?;
+                let tail = self.spill(item.refs, rest, rest, page)?;
                 let mut stream = Vec::with_capacity(item.inline.len() + tail.len());
                 stream.extend_from_slice(item.inline);
                 stream.extend_from_slice(&tail);
@@ -208,37 +337,25 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
 
     /// The whole separator of child `i` (at least 1) of an index page.
     pub(crate) fn separator(&self, page: &Page, i: usize) -> Result<Vec<u8>> {
-        let Some(separator) = page.child(i).separator else {
-            return Err(malformed(page, "a first child with a separator"));
-        };
-        let (part, complete) = separator.part();
-        let mut out = part.to_vec();
-        if !complete {
-            let rest = separator.len - SPILL_INLINE;
-            out.extend(self.spill(separator.refs, rest, rest, page.written())?);
+        let s = self.stored_separator(page, i)?;
+        let mut out = s.part.to_vec();
+        if out.len() < s.len {
+            out.extend(self.spill(s.refs, s.rest, s.rest, page)?);
+            if !key::separator_ok(&out) {
+                return Err(malformed(page, "a separator that begins no path"));
+            }
         }
         Ok(out)
     }
 
     /// How item `i`'s key compares with `key`.
     pub(crate) fn cmp_item(&self, page: &Page, i: usize, key: &[u8]) -> Result<Ordering> {
-        let (part, complete) = page.item(i).key_part();
-        match quick_cmp(part, complete, key) {
-            Some(order) => Ok(order),
-            None => Ok(self.item_key(page, i)?.as_slice().cmp(key)),
-        }
+        self.cmp_stored(self.stored_item(page, i), key)
     }
 
     /// How the separator of child `i` compares with `key`.
     pub(crate) fn cmp_separator(&self, page: &Page, i: usize, key: &[u8]) -> Result<Ordering> {
-        let Some(separator) = page.child(i).separator else {
-            return Err(malformed(page, "a first child with a separator"));
-        };
-        let (part, complete) = separator.part();
-        match quick_cmp(part, complete, key) {
-            Some(order) => Ok(order),
-            None => Ok(self.separator(page, i)?.as_slice().cmp(key)),
-        }
+        self.cmp_stored(self.stored_separator(page, i)?, key)
     }
 
     /// How many items of a leaf have a key below `key` (or equal to it).
@@ -261,20 +378,6 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
             let order = self.cmp_separator(page, t + 1, key)?;
             Ok(order == Ordering::Less || (or_equal && order == Ordering::Equal))
         })
-    }
-}
-
-/// Compares a key known as far as `part` with `key`, when that is enough.
-fn quick_cmp(part: &[u8], complete: bool, key: &[u8]) -> Option<Ordering> {
-    if complete {
-        return Some(part.cmp(key));
-    }
-    let n = part.len().min(key.len());
-    match part[..n].cmp(&key[..n]) {
-        // `key` is a prefix of the known part, and the whole key is longer.
-        Ordering::Equal if key.len() <= part.len() => Some(Ordering::Greater),
-        Ordering::Equal => None,
-        order => Some(order),
     }
 }
 
@@ -389,7 +492,14 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
     /// The children of the node at `path`, from the child with segment
     /// `from` (or the first or last child when unbounded) in `direction`.
     /// Each child is found by a seek, so a child's own subtree is skipped
-    /// without being read.
+    /// without being read, and the only value read is the child's own.
+    ///
+    /// Backward, a child is found from the last key under it. When the
+    /// child's own key is longer than the 1,024 bytes a spilled key keeps in
+    /// its page, that last key's overflow pages are read as far as the
+    /// child's key goes: the one case in which a listing reads a page of a
+    /// key it does not return (`docs/server-storage-format.md` section
+    /// 2.6).
     pub fn children<P: AsRef<[u8]>>(
         &self,
         path: &[P],
@@ -446,15 +556,16 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
     }
 
     /// Whether a child of `page` that overlaps `[lo, hi)` was written after
-    /// `entry`, where `page`'s own range is `[start, end)` (`None`:
-    /// unbounded) and `page` was written after `entry`.
-    fn changed_in(
+    /// `entry`, where `page` was written after `entry` and its own range is
+    /// `[start, end)`, each the separator of child `.1` of page `.0`, or
+    /// unbounded. Separators are compared, never read whole.
+    fn changed_in<'p>(
         &self,
-        page: &Page,
+        page: &'p Page,
         lo: &[u8],
         hi: &[u8],
-        start: Option<&[u8]>,
-        end: Option<&[u8]>,
+        start: Option<(&'p Page, usize)>,
+        end: Option<(&'p Page, usize)>,
         entry: u64,
     ) -> Result<bool> {
         if page.kind() == PageKind::Leaf {
@@ -466,39 +577,32 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             if page.child(c).stamp <= entry {
                 continue;
             }
-            if c > first && c < last {
-                // Its range lies between two separators inside `[lo, hi)`.
+            if (c > first && c < last) || page.level() == 1 {
+                // A child between two separators inside `[lo, hi)`, or a
+                // leaf at one of its ends, written after `entry`: counted
+                // as a change, unread (format section 2.8).
                 return Ok(true);
             }
-            let child_start = if c == 0 {
-                start.map(<[u8]>::to_vec)
-            } else {
-                Some(self.pages.separator(page, c)?)
-            };
+            let child_start = if c == 0 { start } else { Some((page, c)) };
             let child_end = if c + 1 < page.count() {
-                Some(self.pages.separator(page, c + 1)?)
+                Some((page, c + 1))
             } else {
-                end.map(<[u8]>::to_vec)
+                end
             };
-            let inside = child_start.as_deref().is_some_and(|s| s >= lo)
-                && child_end.as_deref().is_some_and(|e| e <= hi);
+            let starts_inside = match child_start {
+                Some((p, s)) => self.pages.cmp_separator(p, s, lo)? != Ordering::Less,
+                None => false,
+            };
+            let inside = starts_inside
+                && match child_end {
+                    Some((p, s)) => self.pages.cmp_separator(p, s, hi)? != Ordering::Greater,
+                    None => false,
+                };
             if inside {
                 return Ok(true);
             }
-            if page.level() == 1 {
-                // A leaf that holds part of the range and was written after
-                // `entry`: counted as a change, unread (format section 2.8).
-                return Ok(true);
-            }
             let child = self.pages.child(page, c)?;
-            if self.changed_in(
-                &child,
-                lo,
-                hi,
-                child_start.as_deref(),
-                child_end.as_deref(),
-                entry,
-            )? {
+            if self.changed_in(&child, lo, hi, child_start, child_end, entry)? {
                 return Ok(true);
             }
         }
@@ -733,20 +837,16 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
         };
         let pages = &self.tree.pages;
         let item = leaf.item(i);
-        let (part, _) = item.key_part();
-        // Where the child's segment ends. The page holds it unless the
-        // child's own key is longer than the part of a spilled key a page
-        // holds; only then is the found key read in full.
-        let full;
-        let (k, child_end) = match key::segment_end(part, self.prefix.len()) {
-            Some(end) => (part, end),
-            None => {
-                full = pages.item_key(&leaf, i)?;
-                let end = key::segment_end(&full, self.prefix.len()).ok_or_else(orphan)?;
-                (full.as_slice(), end)
-            }
-        };
-        let child_key = &k[..child_end];
+        // The child's key: the found key through the end of its first
+        // segment after the parent's. The page holds that unless the
+        // child's own key is longer than the 1,024 bytes a spilled key keeps
+        // in its page; then the found key's overflow pages are read as far
+        // as the child's key goes, and no further.
+        let child_key = pages
+            .key_through_segment(&leaf, i, self.prefix.len())?
+            .ok_or_else(orphan)?;
+        let child_key = child_key.as_slice();
+        let child_end = child_key.len();
         let node = if child_end == item.key_len {
             pages.item_node(&leaf, i)?
         } else if forward {
@@ -779,5 +879,52 @@ impl<'t, 's, S: PageStore + ?Sized> Iterator for Children<'t, 's, S> {
             self.done = true;
         }
         step
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::page::{Builder, EntryPages, MemStore, Numbering};
+    use crate::tree::{apply, check, Edit};
+
+    /// Re-check of #697: an empty leaf below the root, which these rules
+    /// never make, is refused by every read that reaches it. An edit that
+    /// does not reach it keeps it; `check` finds it.
+    #[test]
+    fn an_empty_leaf_below_the_root_is_refused_when_reached() {
+        let store = MemStore::new(Numbering::Sequential);
+        let mut out = store.begin().unwrap();
+        let mut write = |builder: Builder| {
+            let number = out.allocate().unwrap();
+            let page = builder.finish(number).unwrap();
+            let r = (number, page.hash());
+            out.write(Arc::new(page)).unwrap();
+            r
+        };
+        let empty = write(Builder::new(PageKind::Leaf, 0, 1));
+        let mut leaf = Builder::new(PageKind::Leaf, 0, 1);
+        leaf.item(crate::page::KIND_LIST, 3, 0, b"b\x00\x01", &[]);
+        let full = write(leaf);
+        let mut index = Builder::new(PageKind::Index, 1, 1);
+        index.child(empty.0, &empty.1, 1, None);
+        index.child(full.0, &full.1, 1, Some((1, b"b", &[])));
+        let top = write(index);
+        out.commit().unwrap();
+        let root = Root {
+            page: top.0,
+            hash: top.1,
+        };
+        let named = |e: Error| matches!(e, Error::Page(f) if f.page == empty.0);
+        let tree = Tree::open(&store, root).unwrap();
+        assert!(named(
+            tree.walk::<Vec<u8>>(&[]).find_map(|i| i.err()).unwrap()
+        ));
+        assert_eq!(tree.get(&[b"b".to_vec()]).unwrap(), Some(Node::List));
+        assert!(named(
+            apply(&store, root, 2, &[Edit::list(vec![b"a".to_vec()])]).unwrap_err()
+        ));
+        let kept = apply(&store, root, 2, &[Edit::list(vec![b"c".to_vec()])]).unwrap();
+        assert!(named(check(&store, kept).unwrap_err()));
     }
 }

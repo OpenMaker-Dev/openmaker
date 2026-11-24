@@ -502,6 +502,15 @@ impl Page {
                         }
                         let part = len.min(inline);
                         let complete = part == len;
+                        let sep = &bytes[sep_at..sep_at + part];
+                        let ok = if complete {
+                            crate::tree::key::separator_ok(sep)
+                        } else {
+                            crate::tree::key::well_formed(sep, false)
+                        };
+                        if !ok {
+                            return Err(malformed("a separator that begins no path"));
+                        }
                         if let Some((p_at, p_len)) = previous {
                             if !in_order(
                                 &bytes[p_at..p_at + p_len],
@@ -900,6 +909,33 @@ mod tests {
             leaf(&deep, 10).unwrap_err(),
             Fault::Malformed("a key that is not an encoded path")
         );
+    }
+
+    /// Re-check of #697: a separator must be able to begin a path within the
+    /// bounds, whether its page holds it whole or only its start.
+    #[test]
+    fn a_separator_beyond_the_depth_bound_is_malformed() {
+        let index = |sep: &[u8], refs: &[(PageNo, Hash)]| {
+            let mut builder = Builder::new(PageKind::Index, 1, 1);
+            builder.child(10, &Hash([1; 32]), 1, None);
+            let inline = separator_inline(sep.len()).unwrap_or(sep.len());
+            builder.child(
+                11,
+                &Hash([2; 32]),
+                1,
+                Some((sep.len(), &sep[..inline], refs)),
+            );
+            builder.finish(1)
+        };
+        let ends = |n: usize| b"\x00\x01".repeat(n);
+        assert!(index(&ends(64), &[]).is_ok());
+        assert!(index(b"a\x00\x01\x00", &[]).is_ok());
+        let malformed = Fault::Malformed("a separator that begins no path");
+        assert_eq!(index(&ends(65), &[]).unwrap_err(), malformed);
+        // Spilled: its page holds 64 segment ends and more follows.
+        let mut long = ends(64);
+        long.resize(5000, b'x');
+        assert_eq!(index(&long, &[(12, Hash([3; 32]))]).unwrap_err(), malformed);
     }
 
     #[test]

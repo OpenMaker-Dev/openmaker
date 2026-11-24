@@ -205,11 +205,10 @@ fn mix(mut z: u64) -> u64 {
 /// The changes of one entry to a [`MemStore`].
 pub struct MemEntry<'a> {
     store: &'a MemStore,
-    /// The store's counter when the entry began, and after its last
-    /// allocation, so that a dropped entry can give its numbers back to the
-    /// counter when nothing else allocated since.
+    /// The store's counter when the entry began. A dropped entry gives its
+    /// numbers back to the counter only when it made every allocation since
+    /// then, so that two entries open at once never get the same number.
     counter_at_begin: u64,
-    counter_after: u64,
     allocated: Vec<PageNo>,
     pages: Vec<Arc<Page>>,
     released: Vec<(PageNo, Hash, Release)>,
@@ -243,7 +242,6 @@ impl PageStore for MemStore {
         Ok(MemEntry {
             store: self,
             counter_at_begin: inner.counter,
-            counter_after: inner.counter,
             allocated: Vec::new(),
             pages: Vec::new(),
             released: Vec::new(),
@@ -266,7 +264,6 @@ impl EntryPages for MemEntry<'_> {
         if !inner.taken.insert(number) {
             return Err(StoreError::Failed(format!("page {number} allocated twice")));
         }
-        self.counter_after = inner.counter;
         self.allocated.push(number);
         Ok(number)
     }
@@ -327,8 +324,52 @@ impl Drop for MemEntry<'_> {
         for number in &self.allocated {
             inner.taken.remove(number);
         }
-        if inner.counter == self.counter_after {
+        if inner.counter == self.counter_at_begin + self.allocated.len() as u64 {
             inner.counter = self.counter_at_begin;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::page::{Builder, PageKind};
+
+    fn page(number: PageNo) -> Arc<Page> {
+        Arc::new(Builder::new(PageKind::Leaf, 0, 1).finish(number).unwrap())
+    }
+
+    /// Review of #697: an entry dropped while another committed in between
+    /// does not hand out a number the other one took.
+    #[test]
+    fn entries_open_at_once_never_share_a_number() {
+        let store = MemStore::new(Numbering::Sequential);
+        let mut a = store.begin().unwrap();
+        let mut b = store.begin().unwrap();
+        let n = b.allocate().unwrap();
+        b.write(page(n)).unwrap();
+        b.commit().unwrap();
+        let m = a.allocate().unwrap();
+        assert_ne!(m, n);
+        drop(a);
+        let mut c = store.begin().unwrap();
+        let k = c.allocate().unwrap();
+        assert_ne!(k, n);
+        c.write(page(k)).unwrap();
+        c.commit().unwrap();
+        assert_eq!(store.numbers(), vec![n, k]);
+        assert_eq!(store.taken(), vec![n, k]);
+    }
+
+    /// A dropped entry that was alone gives its numbers back, so a retry
+    /// numbers pages as an undisturbed store would.
+    #[test]
+    fn a_dropped_entry_alone_gives_its_numbers_back() {
+        let store = MemStore::new(Numbering::Sequential);
+        let mut a = store.begin().unwrap();
+        assert_eq!(a.allocate().unwrap(), 1);
+        drop(a);
+        let mut b = store.begin().unwrap();
+        assert_eq!(b.allocate().unwrap(), 1);
     }
 }
