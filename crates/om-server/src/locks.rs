@@ -273,6 +273,20 @@ impl LockTable {
         })
     }
 
+    /// Every lock held, by path in key order: its user, type, count and
+    /// holder (tests compare two tables with it).
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> Vec<(KeyPath, LockUser, u16, u32, String)> {
+        self.held
+            .iter()
+            .flat_map(|(path, locks)| {
+                locks
+                    .iter()
+                    .map(|h| (path.clone(), h.user, h.lock_type, h.count, h.holder.clone()))
+            })
+            .collect()
+    }
+
     /// Count `n` locks of `connection` released.
     fn released(&mut self, connection: u32, n: usize) {
         if let Some(count) = self.counts.get_mut(&connection) {

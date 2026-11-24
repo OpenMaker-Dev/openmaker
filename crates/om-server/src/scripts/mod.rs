@@ -1471,4 +1471,50 @@ mod tests {
         assert_eq!(codes, [attention::DELETE | attention::RECORD]);
         host.close();
     }
+
+    /// A script's account step tells each client registered on the file
+    /// that the account catalog changed, once, when its edit wrote: the
+    /// catalog `[23, 1]` and its index `[23, 1, 1]`, after its lock on the
+    /// catalog is released (the release carries them,
+    /// `engine::ReleaseScriptLock`), as before the engine interface. An
+    /// edit that was refused, or changed nothing, tells no one, and the
+    /// catalog's lock is released either way.
+    #[test]
+    fn a_scripts_account_edit_tells_of_the_catalog_once_and_only_when_it_wrote() {
+        use om_scripts::runtime::Accounts as _;
+        let mut root = fixture::tree(&[], true);
+        // The account catalog's index, which a stamped edit stamps.
+        root.put(
+            &[&[23], &[1], &[1], &[4]],
+            om_hbam::OwnedNode::leaf(Vec::new(), 2u32.to_be_bytes().to_vec()),
+        );
+        let file = TempFile::from_tree("script-account-notices", &root);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let told = |shared: &Shared| -> Vec<u32> {
+            let taken = shared.mailboxes.take(CLIENT, usize::MAX);
+            taken.iter().map(|n| n.code).collect()
+        };
+        host.reset_account_password(fixture::CLERK, "fresh", false)
+            .unwrap();
+        assert_eq!(told(&shared), [2, 2], "the catalog and its index");
+        assert!(host
+            .reset_account_password("Nobody", "fresh", false)
+            .is_err());
+        assert!(told(&shared).is_empty(), "a refused edit tells no one");
+        host.enable_account(fixture::CLERK, true).unwrap();
+        assert!(told(&shared).is_empty(), "an edit that changed nothing");
+        host.enable_account(fixture::CLERK, false).unwrap();
+        assert_eq!(told(&shared), [2, 2]);
+        let catalog = [vec![23], vec![1]];
+        assert_eq!(hosted(&shared).lock_table().held_by(0x55), 0);
+        assert!(!hosted(&shared).lock_table().held_by_other(
+            &catalog,
+            LockUser {
+                connection: CLIENT,
+                txn: 1
+            }
+        ));
+        host.close();
+    }
 }

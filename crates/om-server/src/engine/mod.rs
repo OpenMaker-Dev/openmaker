@@ -1,5 +1,6 @@
 //! The engine interface (`docs/server-storage.md` 5) for record writes,
-//! locks and schema changes: every change of this kind a request makes is
+//! locks, schema changes, container data, authoring edits and server
+//! scripts' writes and locks: every change of this kind a request makes is
 //! an [`Operation`], a value that owns its data, [`run`] against what the
 //! engine holds of the file, and answered with an [`Outcome`]: the reply
 //! and the notices for other clients. Effects are what the run did to the
@@ -14,12 +15,15 @@
 //! DeleteTable), store the indexes a find built on demand, update a table
 //! (op73), store container data and adjust a library member's reference
 //! count (op88, op87), an authoring edit and the authoring extension's
-//! save (op240), the account edits (Change Password, Reset Account
-//! Password, Enable Account, Delete Account), finishing the deferred field
-//! work a file is opened with, and keeping a window's found set in a local
-//! file. A server script's commit and its record and account locks, and
-//! the release of a closed session's locks, still change the file from
-//! their handlers (#673).
+//! save (op240); a server script's commit, its Set Next Serial Value, its
+//! locks on a record and on the accounts catalog and their releases, and
+//! the save at its end (op240's save again); the release of a session's
+//! locks when it ends, logs out of a file or closes it; the account edits
+//! (Change Password, Reset Account Password, Enable Account, Delete
+//! Account); finishing the deferred field work a file is opened with, and
+//! its save (op240's save again); and keeping a window's found set in a
+//! local file. Every change the server makes to a hosted file or its lock
+//! table is one of these.
 //!
 //! # Credentials
 //!
@@ -42,39 +46,51 @@
 //! [`FileEngine::submit`] takes, in this order and only what the operation
 //! needs: the file's store (`Hosted::read_store` for op60,
 //! `Hosted::write_store` for op70, op71, op72, the schema operations,
-//! op87, op88 and op240), then its lock table (`Hosted::locks`, when the
-//! operation first uses it, [`Locks`]; the schema operations, op87, op88
-//! and op240's save never do). op70 and a client's op71, which take the
-//! lock table, hold it with the store while they save and let go of it
-//! first; dropping the store's write guard takes the file's accounts while
-//! it still holds the store (`hosting::StoreWriteGuard`), which is when a
-//! changed password counts for the next login. op61, op62 and op65 take
-//! only the lock table, as before. The account edits, finishing deferred
-//! field work and keeping a found set take the store for writing and never
-//! the lock table; a server script takes its lock on the account catalog
-//! before it submits an account edit and releases it after
-//! (`scripts::host`), as it always has: lock table, then store, each let
-//! go before the next is taken. A found set is kept only when no one holds
-//! the store ([`FileEngine::try_submit`]): a window closing never waits on
-//! a request. Deferred field work is finished as a file is loaded, before
-//! anyone else can reach it. [`FileEngine::submit_draft`] completes its draft
-//! right after it takes the store, from state the write guard gives it
-//! alone (see "Drafts"). An authoring edit (op240) takes the lock table
-//! only while it takes its locks, and again while it releases them when
-//! it is refused after taking them; it saves under the store alone, and
-//! its locks are released after the engine lets go of the store, the lock
-//! table taken on its own for that ([`Locks::lock_while_stored`]), as
-//! op240 always held them. The one other lock taken inside `submit` is the
-//! file's thumbnail cache (`Hosted::thumbnails`), under the store, when
-//! op86's DeleteTable took a table's container library: store, then
-//! thumbnails, as a server script's commit and op96 take them. Nothing
+//! op87, op88, op240, a server script's commit and its Set Next Serial
+//! Value, the account edits, finishing deferred field work and keeping a
+//! found set), then its lock table (`Hosted::locks`, when the operation
+//! first uses it, [`Locks`]; the schema operations, op87, op88, op240's
+//! save, Set Next Serial Value, the account edits, deferred work and a
+//! found set never do; a server script's commit takes it first thing,
+//! [`Locks::hold`], as it always held both from its start). op70, a
+//! client's op71 and a server script's commit, which take the lock table,
+//! hold it with the store while they save and let go of it first, then
+//! write the log lines that say what was stored
+//! ([`Transaction::once_stored`]) under the store alone, where they wrote
+//! them under both; dropping the store's write guard takes the file's
+//! accounts while it still holds the store (`hosting::StoreWriteGuard`),
+//! which is when a changed password counts for the next login. op61, op62
+//! and op65 take only the lock table, as before, and so do a server
+//! script's lock and its release and the release of a session's locks, as
+//! the script host and a connection's end took it: a connection's end
+//! releases its locks one file at a time, each under that file's lock
+//! table alone, before it removes the file's registration. A server
+//! script's account step takes its lock on the account catalog, then
+//! submits the edit, then releases the lock, which tells the other
+//! clients of the change: lock table, store, lock table, each let go
+//! before the next is taken, as it always has. A found set is kept only
+//! when no one holds the store ([`FileEngine::try_submit`]): a window
+//! closing never waits on a request. Deferred field work is finished as a
+//! file is loaded, before anyone else can reach it.
+//! [`FileEngine::submit_draft`] completes its draft right after it takes
+//! the store, from state the write guard gives it alone (see "Drafts"). An
+//! authoring edit (op240) takes the lock table only while it takes its
+//! locks, and again while it releases them when it is refused after taking
+//! them; it saves under the store alone, and its locks are released after
+//! the engine lets go of the store, the lock table taken on its own for
+//! that ([`Locks::lock_while_stored`]), as op240 always held them. The one
+//! other lock taken inside `submit` is the file's thumbnail cache
+//! (`Hosted::thumbnails`): under the store when op86's DeleteTable took a
+//! table's container library, and under the store and the lock table once
+//! a server script's commit that left a table without records is stored;
+//! store, then thumbnails, as op96 takes them. Nothing
 //! else: the caller delivers notices after it returns, taking the file's
-//! registrations and then the mailboxes (`writes::notify`), and a
-//! session's own state (its temporary area, the records it was served
-//! withheld, the memory its uploads are charged) is read before and
-//! settled after. This is the order the write path has always used
-//! (store, lock table, registrations, mailboxes), with the last two no
-//! longer inside the first two.
+//! registrations and then the mailboxes (`writes::notify`), and a session's
+//! own state (its temporary area, the records it was served withheld, the
+//! memory its uploads are charged, a server script's waiting container
+//! data) is read before and settled after. This is the order the write path
+//! has always used (store, lock table, registrations, mailboxes), with the
+//! last two no longer inside the first two.
 //!
 //! # Drafts
 //!
@@ -113,7 +129,7 @@ use om_protocol::container::{AdjustReferenceCount, UploadBinaryReply, COUNT_FAIL
 use om_protocol::schema::Upgrade;
 use om_protocol::write::{
     Conflict, CreateRecord, CreateRecordReply, GetSerial, GetSerialReply, KeyPath, KillAllLocks,
-    Lock, LockReply, Unlock,
+    Lock, LockReply, Unlock, LOCK_WRITE,
 };
 
 use crate::hosting::{AccountEditError, AccountRef, Hosted, PasswordChangeError};
@@ -121,7 +137,7 @@ use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::store::{IndexId, MemberKey};
 use crate::views::Withheld;
-use crate::writes::{self, Change, CommitError, Mailboxes};
+use crate::writes::{self, Change, CommitError, Mailboxes, RecordWrite};
 
 pub(crate) use file::FileEngine;
 pub(crate) use transaction::{Hold, Locks, Transaction};
@@ -168,9 +184,23 @@ pub enum Operation {
     EditDesign(Box<EditDesign>),
     /// op240's Save: write the file now if it holds changes the disk lacks,
     /// such as a client's op13 uploads, and answer whether the disk holds
-    /// them all. Also the save that makes the deferred field work finished
-    /// on opening durable (`Hosted::commit_recovery`).
+    /// them all. A server script's end submits it too, for what its
+    /// reservations left unsaved (`scripts::host`, `ServerHost::close`), and
+    /// so does the save of the deferred field work finished on opening
+    /// (`Hosted::commit_recovery`).
     SaveFile,
+    /// A server script's commit of its records.
+    CommitScriptRecords(CommitScriptRecords),
+    /// A server script's Set Next Serial Value.
+    SetNextSerial(SetNextSerial),
+    /// A server script's lock on a record or on the accounts catalog.
+    TakeScriptLock(TakeScriptLock),
+    /// The release of a server script's locks on one path.
+    ReleaseScriptLock(ReleaseScriptLock),
+    /// The release of a session's locks when it ends: a client's
+    /// connection that ended, logged out of the file or closed it, or a
+    /// server script's session.
+    ReleaseSessionLocks(ReleaseSessionLocks),
     /// Change Password (83), a server script's or the desktop's own.
     ChangePassword(ChangePassword),
     /// Reset Account Password (136).
@@ -240,13 +270,12 @@ impl std::fmt::Debug for Credentials {
 }
 
 /// Who makes an account edit that stamps the account catalog as a
-/// catalog commit does (schema-path.md 8.1): the connection whose
-/// session it is, which is not told of the change, and the user and
-/// account names the modification stamps carry. The other clients are
-/// told the account catalog changed (schema-path.md 9).
+/// catalog commit does (schema-path.md 8.1): the user and account names
+/// the modification stamps carry. The edit raises no notices: a server
+/// script tells the other clients of the change when it releases its lock
+/// on the catalog ([`ReleaseScriptLock`], schema-path.md 9).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountStamp {
-    pub connection: u32,
     pub user: String,
     pub account: String,
 }
@@ -262,7 +291,7 @@ pub struct ChangePassword {
     /// The caller may manage the account (a script with full access): the
     /// privilege set's rules on changing, length and reuse are skipped.
     pub manager: bool,
-    /// None: no stamps and no notices (the desktop's own Change Password).
+    /// None: no stamps (the desktop's own Change Password).
     pub stamp: Option<AccountStamp>,
 }
 
@@ -438,6 +467,73 @@ pub struct StoreIndexes {
     pub indexes: Vec<IndexId>,
 }
 
+/// A server script's commit (write-path.md 3.4, 5;
+/// [`writes::commit_records`]): its records as they will be stored, each
+/// with the container data its steps set, checked and written all or none.
+/// The script host applied the records' rules (auto-enter, stored
+/// calculations, validation) and checked the session's privileges before:
+/// the run reads no account and no privilege set. The container data and
+/// reference counts are part of the commit, saved and taken back with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitScriptRecords {
+    /// The script session's lock user: the records' locks are its own, and
+    /// its connection, which no client has, sends the notices, so every
+    /// client registered on the file is told, the one that asked for the
+    /// script included.
+    pub user: LockUser,
+    pub records: Vec<RecordWrite>,
+    /// Delete All Records or Truncate Table: a table they leave without
+    /// records loses its library.
+    pub bulk_delete: bool,
+}
+
+/// A server script's Set Next Serial Value (script-runtime.md, "Steps";
+/// [`writes::set_next_serial`]): a field's next serial value replaced in
+/// a commit, saved before it counts as a record commit is. The script host
+/// checked the session's [Full Access].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetNextSerial {
+    /// The table key `[T]`.
+    pub table: Vec<u8>,
+    /// The field key `[F]`.
+    pub field: Vec<u8>,
+    pub value: String,
+}
+
+/// A server script's write lock on a record it changes, or on the accounts
+/// catalog `[23, 1]` while an account step changes it (script-runtime.md
+/// 2.3, local-files.md 2.4). Its rules are not op60's: it reads nothing of
+/// the store (no modification count), no cap applies, and the script host
+/// answers a conflict with the step's error (301 for a record, 310 for the
+/// accounts).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TakeScriptLock {
+    pub user: LockUser,
+    /// "server name (script engine, account)": what a conflict names.
+    pub holder: String,
+    pub path: KeyPath,
+}
+
+/// The release of every lock a server script's lock user holds on a path
+/// (`LockTable::release_path`): a record it left unchanged, or the accounts
+/// catalog after an account step, whose release tells the other clients of
+/// the `changes` the step made (schema-path.md 9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseScriptLock {
+    pub user: LockUser,
+    pub path: KeyPath,
+    pub changes: Vec<Change>,
+}
+
+/// The release of every lock a session's connection holds in the file
+/// (`LockTable::release_connection`): a client's connection that ended,
+/// logged out of the file or closed it, or a server script's session that
+/// ended or was aborted (docs/server-storage.md 7.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseSessionLocks {
+    pub connection: u32,
+}
+
 /// An operation still to be completed with what reads left waiting in the
 /// running server (the module doc's "Drafts"; [`FileEngine::submit_draft`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -569,6 +665,14 @@ pub enum Reply {
     EditDesign(Edited),
     /// Whether the disk holds every change the file holds.
     SaveFile(Result<(), FileNotSaved>),
+    /// Whether the commit was written, or FileMaker's error and why.
+    CommitScriptRecords(Result<(), (u32, String)>),
+    /// Whether the value was set, or FileMaker's error.
+    SetNextSerial(Result<(), u32>),
+    /// Whether the lock was taken, or the holders that keep it.
+    TakeScriptLock(Result<(), Conflict>),
+    ReleaseScriptLock,
+    ReleaseSessionLocks,
     /// Why the password was not changed, with `SetPassword`'s codes.
     ChangePassword(Result<(), PasswordChangeError>),
     ResetPassword(Result<(), AccountEditError>),
@@ -658,10 +762,12 @@ impl Outcome {
     /// The outcome when what the operation did could not be stored: the
     /// storage error in place of its reply, and no notices
     /// (docs/server-storage.md 5). op70 fails with the save's message
-    /// (`writes::CommitError::NotSaved`), op71 and an authoring edit with
-    /// the save's FileMaker error ([`crate::hosting::save_error`]), the
-    /// edit's message saying what the file keeps, an account edit as
-    /// unwritten with the save's message, and a found set as not kept.
+    /// (`writes::CommitError::NotSaved`), op71, an authoring edit and a
+    /// server script's commit and Set Next Serial Value with the save's
+    /// FileMaker error ([`crate::hosting::save_error`]), the edit's message
+    /// saying what the file keeps, the script commit's that the file could
+    /// not be saved, an account edit as unwritten with the save's message,
+    /// and a found set as not kept.
     fn not_stored(self, error: &std::io::Error) -> Outcome {
         let reply = match self.reply {
             Reply::EditDesign(Edited {
@@ -688,6 +794,13 @@ impl Outcome {
                 ))),
                 unused: reply.unused,
             }),
+            Reply::CommitScriptRecords(_) => Reply::CommitScriptRecords(Err((
+                u32::from(crate::hosting::save_error(error)),
+                format!("the file could not be saved: {error}"),
+            ))),
+            Reply::SetNextSerial(_) => {
+                Reply::SetNextSerial(Err(u32::from(crate::hosting::save_error(error))))
+            }
             Reply::ChangePassword(Ok(())) => {
                 Reply::ChangePassword(Err(PasswordChangeError::Unwritten(error.to_string())))
             }
@@ -875,32 +988,59 @@ pub fn run(
                 Ok(())
             }))
         }
+        (Operation::CommitScriptRecords(op), Hold::Transaction(tx)) => {
+            let from = op.user.connection;
+            let (result, changes) = writes::commit_records(op, file, tx, locks, environment);
+            Outcome {
+                reply: Reply::CommitScriptRecords(result),
+                notices: Notices { from, changes },
+            }
+        }
+        (Operation::SetNextSerial(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::SetNextSerial(writes::set_next_serial(op, tx)))
+        }
+        (Operation::TakeScriptLock(op), _) => Outcome::new(Reply::TakeScriptLock(
+            locks.lock(&op.path, op.user, LOCK_WRITE, &op.holder),
+        )),
+        (Operation::ReleaseScriptLock(op), _) => {
+            let ReleaseScriptLock {
+                user,
+                path,
+                changes,
+            } = op;
+            locks.release_path(&path, user);
+            Outcome {
+                reply: Reply::ReleaseScriptLock,
+                notices: Notices {
+                    from: user.connection,
+                    changes,
+                },
+            }
+        }
+        (Operation::ReleaseSessionLocks(op), _) => {
+            locks.release_connection(op.connection);
+            Outcome::new(Reply::ReleaseSessionLocks)
+        }
         (Operation::ChangePassword(op), Hold::Transaction(tx)) => {
             let Credentials::Change { old, new } = credentials else {
                 return unfit(Operation::ChangePassword(op), file);
             };
-            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
             let reply = crate::hosting::change_password(op, old, new, tx, environment);
-            account_edited(from, reply.is_ok(), Reply::ChangePassword(reply))
+            Outcome::new(Reply::ChangePassword(reply))
         }
         (Operation::ResetPassword(op), Hold::Transaction(tx)) => {
             let Credentials::Reset { new } = credentials else {
                 return unfit(Operation::ResetPassword(op), file);
             };
-            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
             let reply = crate::hosting::reset_account_password(op, new, tx, environment);
-            account_edited(from, reply.is_ok(), Reply::ResetPassword(reply))
+            Outcome::new(Reply::ResetPassword(reply))
         }
-        (Operation::EnableAccount(op), Hold::Transaction(tx)) => {
-            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
-            let reply = crate::hosting::enable_account(op, tx, environment);
-            account_edited(from, reply == Ok(true), Reply::EnableAccount(reply))
-        }
-        (Operation::DeleteAccount(op), Hold::Transaction(tx)) => {
-            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
-            let reply = crate::hosting::delete_account(op, tx, environment);
-            account_edited(from, reply.is_ok(), Reply::DeleteAccount(reply))
-        }
+        (Operation::EnableAccount(op), Hold::Transaction(tx)) => Outcome::new(
+            Reply::EnableAccount(crate::hosting::enable_account(op, tx, environment)),
+        ),
+        (Operation::DeleteAccount(op), Hold::Transaction(tx)) => Outcome::new(
+            Reply::DeleteAccount(crate::hosting::delete_account(op, tx, environment)),
+        ),
         (Operation::FinishDeferredWork, Hold::Transaction(tx)) => Outcome::new(
             Reply::FinishDeferredWork(schema::finish_deferred_work(tx, environment)),
         ),
@@ -908,31 +1048,6 @@ pub fn run(
             Outcome::new(Reply::SaveFoundSet(save_found_set(op, file, tx)))
         }
         (operation, _) => not_held(operation, file),
-    }
-}
-
-/// An account edit's outcome: `reply`, and when the edit `changed` the
-/// account catalog stamped by the connection `from`, the notices of a
-/// catalog change for the other clients, as a client's commit of the
-/// catalog raises them (schema-path.md 9): the account catalog and its
-/// index.
-fn account_edited(from: Option<u32>, changed: bool, reply: Reply) -> Outcome {
-    let changes = match from {
-        Some(_) if changed => [vec![vec![23], vec![1]], vec![vec![23], vec![1], vec![1]]]
-            .into_iter()
-            .map(|path| Change {
-                path,
-                code: crate::authoring::ATTENTION_CATALOG,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    Outcome {
-        reply,
-        notices: Notices {
-            from: from.unwrap_or_default(),
-            changes,
-        },
     }
 }
 
@@ -1041,6 +1156,16 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
             not_stored: None,
         }),
         Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed)),
+        Operation::CommitScriptRecords(_) => {
+            Reply::CommitScriptRecords(Err((writes::UNAVAILABLE, why.into())))
+        }
+        Operation::SetNextSerial(_) => Reply::SetNextSerial(Err(writes::UNAVAILABLE)),
+        Operation::TakeScriptLock(_) => Reply::TakeScriptLock(Err(Conflict {
+            self_conflict: false,
+            users: String::new(),
+        })),
+        Operation::ReleaseScriptLock(_) => Reply::ReleaseScriptLock,
+        Operation::ReleaseSessionLocks(_) => Reply::ReleaseSessionLocks,
         Operation::ChangePassword(_) => {
             Reply::ChangePassword(Err(PasswordChangeError::Unwritten(why.into())))
         }

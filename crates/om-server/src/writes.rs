@@ -4,11 +4,12 @@
 //! `docs/re/schema-path.md` 4) and the change notifications other clients
 //! receive.
 //!
-//! op70, op71, op72 and the lock requests are operations of the engine
-//! interface ([`crate::engine`]): the functions here are their work, which
-//! [`crate::engine::run`] calls against a transaction and the lock table,
-//! and the engine saves. A server script's commit ([`commit_records`]) and
-//! staging still work on the file directly.
+//! op70, op71, op72, the lock requests, a server script's commit
+//! ([`commit_records`]) and its Set Next Serial Value are operations of the
+//! engine interface ([`crate::engine`]): the functions here are their work,
+//! which [`crate::engine::run`] calls against a transaction and the lock
+//! table, and the engine saves. Staging (op14) works on the session's
+//! temporary area, not on the file.
 //!
 //! Locks on shared state are always taken in one order: the file's store,
 //! then its lock table, then its registrations, then the mailboxes.
@@ -28,14 +29,14 @@ use om_protocol::write::{
 
 use crate::connection::ACCESS_DENIED;
 use crate::engine::{
-    self, CommitRecords, CommitReply, Environment, Locks, ReleaseLock, ReleaseLocks,
-    ReserveRecordIds, Staged, TakeLock, Transaction, UpgradeLock,
+    self, CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReleaseLock,
+    ReleaseLocks, ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
 };
 use crate::hosting::Hosted;
 use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::modcount;
-use crate::store::{Journal, Store};
+use crate::store::Store;
 use crate::uploads::Charge;
 
 /// Key of a table's records, `[T, 05]`.
@@ -304,8 +305,9 @@ pub(crate) fn refused_ids(status: u32) -> CreateRecordReply {
 /// and refused with the save's error ([`crate::hosting::save_error`]): no
 /// id is issued that a restart could hand out again. The server's own
 /// scripts and imports reserve without it: they end with the server, so no
-/// id of theirs outlives a restart, and their commit saves the file
-/// ([`Hosted::save`]) once rather than once per record.
+/// id of theirs outlives a restart, and their commit saves the file once
+/// rather than once per record; the script's end saves the ids of records
+/// it did not commit (`engine::Operation::SaveFile`).
 pub(crate) fn create_record(
     op: ReserveRecordIds,
     file: &str,
@@ -395,6 +397,22 @@ pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerial
             value: String::new(),
         },
     }
+}
+
+/// A server script's Set Next Serial Value
+/// ([`crate::engine::SetNextSerial`]): replace a field's next serial value
+/// within a commit, which the engine saves before it counts and takes back
+/// when it cannot, as a record commit. 102 for a table without the field,
+/// which changes nothing.
+pub(crate) fn set_next_serial(op: SetNextSerial, tx: &mut Transaction<'_>) -> Result<(), u32> {
+    let SetNextSerial {
+        table,
+        field,
+        value,
+    } = op;
+    tx.set_serial(&table, &field, &value)
+        .map(|_| ())
+        .ok_or(FIELD_MISSING)
 }
 
 /// One file's temporary area on a connection (write-path.md 3.3): the
@@ -844,13 +862,8 @@ fn change_line(file: &str, by: &str, change: &Change) -> String {
     format!("{file:?}: {by}{done} record {id} of table {table:02x?}")
 }
 
-/// Log a committed change of a record (`by` names a script's).
-fn log_change(hosted: &Hosted, by: &str, change: &Change) {
-    info!("{}", change_line(&hosted.name, by, change));
-}
-
 /// One record of a server script's commit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordWrite {
     pub table: u64,
     pub id: u64,
@@ -864,24 +877,32 @@ pub struct RecordWrite {
     pub uploads: Vec<(u64, BinaryData)>,
 }
 
-/// Write a server script's records as one commit (write-path.md 3.4, 5),
-/// under one hold of the store: every record is checked first (its table
-/// exists, no other lock user holds it, a new record's id was issued and
-/// is free, a changed or deleted record still exists, its modification
-/// count is a count, [`modcount::counted`]) and nothing is
-/// written unless all pass, then the file is saved. When it cannot be
-/// saved the records are put back and the commit fails with the save's
+/// A server script's commit ([`crate::engine::CommitScriptRecords`]), as
+/// one commit (write-path.md 3.4, 5) under one hold of the store and of the
+/// lock table, taken from its start: every record is checked first (its
+/// table exists, no other lock user holds it, a new record's id was issued
+/// and is free, a changed or deleted record still exists, its modification
+/// count is a count, [`modcount::counted`]) and nothing is written unless
+/// all pass. The engine saves the commit (`Hosted::save_commit`); when it
+/// cannot, the records are put back and the commit fails with the save's
 /// FileMaker error ([`crate::hosting::save_error`]), the records still
-/// locked. Otherwise their locks are released, as op70 releases them.
-/// Returns the changes, or a FileMaker error and why.
-pub fn commit_records(
-    hosted: &Hosted,
-    user: LockUser,
-    records: Vec<RecordWrite>,
-    bulk_delete: bool,
-) -> Result<Vec<Change>, (u32, String)> {
-    let mut store = hosted.write_store();
-    let mut locks = hosted.lock_table();
+/// locked. Otherwise their locks are released, as op70 releases them. A
+/// new container member's unique id comes from `environment`. Returns the
+/// result, a FileMaker error and why, and the changes to tell the other
+/// clients of.
+pub(crate) fn commit_records(
+    op: CommitScriptRecords,
+    file: &str,
+    tx: &mut Transaction<'_>,
+    locks: &mut Locks<'_>,
+    environment: &dyn Environment,
+) -> (Result<(), (u32, String)>, Vec<Change>) {
+    let CommitScriptRecords {
+        user,
+        records,
+        bulk_delete,
+    } = op;
+    locks.hold();
     let path = |r: &RecordWrite| {
         vec![
             uint_segment(r.table),
@@ -889,79 +910,67 @@ pub fn commit_records(
             serial::encode(r.id),
         ]
     };
+    let refused = |code: u32, reason: String| (Err((code, reason)), Vec::new());
     for record in &records {
         let path = path(record);
         let table = &path[0];
-        if !store.has_table(table) {
-            return Err((TABLE_MISSING, format!("no table {table:02x?}")));
+        if !tx.has_table(table) {
+            return refused(TABLE_MISSING, format!("no table {table:02x?}"));
         }
         if locks.held_by_other(&path, user) {
-            return Err((
+            return refused(
                 u32::from(RECORD_IN_USE),
                 format!("another session holds record {}", record.id),
-            ));
+            );
         }
-        let exists = store.has_record(table, record.id);
-        if record.new && (exists || record.id > store.last_record_id(table)) {
-            return Err((
+        let exists = tx.has_record(table, record.id);
+        if record.new && (exists || record.id > tx.last_record_id(table)) {
+            return refused(
                 UNAVAILABLE,
                 format!("record {} was not reserved", record.id),
-            ));
+            );
         }
         if !record.new && !exists {
-            return Err((RECORD_MISSING, format!("record {} is gone", record.id)));
+            return refused(RECORD_MISSING, format!("record {} is gone", record.id));
         }
         if record
             .record
             .as_ref()
             .is_some_and(|r| !modcount::counted(r))
         {
-            return Err((
+            return refused(
                 UNAVAILABLE,
                 format!("record {}'s modification count is not one", record.id),
-            ));
+            );
         }
     }
     let tables: std::collections::BTreeSet<u64> = records.iter().map(|r| r.table).collect();
-    let mut journal = store.begin_commit();
-    let (changes, emptied) = store.guarded(&mut journal, |store, journal| {
-        let changes = write_records(store, journal, records);
-        store.release_deleted_record_containers(journal);
+    // The commit is saved even when it writes nothing, as it always was.
+    tx.begin_commit();
+    let changes = tx.guarded(|tx| {
+        let changes = write_records(tx, records, environment);
+        tx.release_deleted_record_containers();
         // Delete All Records and Truncate Table that leave a table empty
         // take its library with them (`Store::drop_emptied_library_in`).
-        let emptied: Vec<u64> = tables
-            .iter()
-            .copied()
-            .filter(|t| bulk_delete && store.drop_emptied_library_in(journal, &uint_segment(*t)))
-            .collect();
-        (changes, emptied)
-    });
-    if let Err(e) = hosted.save_commit(&mut store, journal) {
-        return Err((
-            u32::from(crate::hosting::save_error(&e)),
-            format!("the file could not be saved: {e}"),
-        ));
-    }
-    if !emptied.is_empty() {
-        // Member ids start again in a new library: no cached thumbnail of
-        // the old one may answer for them.
-        let mut thumbnails = hosted.thumbnails.lock().expect("thumbnail lock");
-        for table in emptied {
-            thumbnails.forget_library(&[uint_segment(table), vec![crate::library::LIBRARY]]);
+        if bulk_delete {
+            for table in &tables {
+                tx.drop_emptied_library(&uint_segment(*table));
+            }
         }
-    }
+        changes
+    });
     for change in &changes {
-        locks.release_path(&change.path, user);
-        log_change(hosted, "script ", change);
+        locks.release_once_stored(change.path.clone(), user);
+        tx.once_stored(change_line(file, "script ", change));
     }
-    Ok(changes)
+    (Ok(()), changes)
 }
 
 /// The writes of [`commit_records`], checked.
 fn write_records(
-    store: &mut Store,
-    journal: &mut Journal,
+    tx: &mut Transaction<'_>,
     records: Vec<RecordWrite>,
+    environment: &dyn Environment,
 ) -> Vec<Change> {
     let path = |r: &RecordWrite| {
         vec![
@@ -969,6 +978,11 @@ fn write_records(
             RECORDS.to_vec(),
             serial::encode(r.id),
         ]
+    };
+    let mut unique_id = || {
+        let mut id = [0u8; 16];
+        environment.fill_random(&mut id);
+        id
     };
     let mut changes = Vec::with_capacity(records.len());
     for mut record in records {
@@ -984,7 +998,7 @@ fn write_records(
         let mut counted = Vec::new();
         if let Some(node) = record.record.as_mut() {
             for (cell, data) in std::mem::take(&mut record.uploads) {
-                let member = store.store_container_in(journal, &path[0], data);
+                let member = tx.store_container(&path[0], data, &mut unique_id);
                 let reference = om_data::containers::reference_text(&member);
                 node.set_child(om_scripts::text_node(&uint_segment(cell), &reference));
                 counted.push(member);
@@ -993,18 +1007,12 @@ fn write_records(
         // The record's container references, counted as FileMaker Pro's
         // op87 counts a client's: a deleted record releases its values, a
         // new one takes a reference to those it copied.
-        let old = store
+        let old = tx
             .node(&[&path[0], RECORDS, &path[2]])
             .cloned()
             .filter(|_| !record.new);
-        store.count_containers_in(
-            journal,
-            &path[0],
-            old.as_ref(),
-            record.record.as_ref(),
-            &counted,
-        );
-        store.write_record_in(journal, &path[0], record.id, record.record);
+        tx.count_containers(&path[0], old.as_ref(), record.record.as_ref(), &counted);
+        tx.write_record(&path[0], record.id, record.record);
         changes.push(Change {
             path,
             code: code | attention::RECORD,

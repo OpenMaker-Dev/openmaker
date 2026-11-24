@@ -477,32 +477,22 @@ impl Hosted {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Write the file back to disk if its contents changed. A failure of
-    /// the disk is logged and the changes stay in memory for the next
-    /// attempt; this is for changes that may wait (reserved record ids and
-    /// serial numbers, indexes built on demand, schema and container
-    /// uploads). Every such change is checked against the tree before it is
-    /// made, so it cannot leave what the file cannot hold. If a field index
-    /// the file cannot hold is in the tree anyway, it is taken out
-    /// ([`Store::drop_unwritable_indexes`]; the next find that reads it
-    /// builds it again), logged, and the save tried again. Anything else the
-    /// file cannot hold is kept as it is and logged, and saves fail rather
-    /// than delete data. Record commits are saved with
-    /// [`Store::save_commit`], which takes them back when the file cannot be
-    /// written.
-    pub(crate) fn save(&self) {
-        let mut store = self.write_store();
-        if store.is_read_only() {
-            // Indexes built on demand and the like stay in memory.
-            return;
-        }
-        let _ = self.save_held(&mut store);
-    }
-
-    /// [`Self::save`] of `store`, this file's, which the caller holds:
-    /// whether the disk now holds every change, or the last error. A change
-    /// that must be on disk before it is answered (an issued record id,
-    /// #927) is taken back when this fails.
+    /// Write `store`, this file's, which the caller holds, back to disk if
+    /// its contents changed: whether the disk now holds every change, or
+    /// the last error. A failure of the disk is logged and the changes stay
+    /// in memory for the next attempt; this is for changes that may wait
+    /// (reserved record ids and serial numbers, indexes built on demand,
+    /// schema and container uploads). Every such change is checked against
+    /// the tree before it is made, so it cannot leave what the file cannot
+    /// hold. If a field index the file cannot hold is in the tree anyway,
+    /// it is taken out ([`Store::drop_unwritable_indexes`]; the next find
+    /// that reads it builds it again), logged, and the save tried again.
+    /// Anything else the file cannot hold is kept as it is and logged, and
+    /// saves fail rather than delete data. Record commits are saved with
+    /// [`Self::save_commit`], which takes them back when the file cannot be
+    /// written. A change that must be on disk before it is answered (an
+    /// issued record id, #927) is taken back by the engine when this
+    /// fails.
     pub(crate) fn save_held(&self, store: &mut Store) -> std::io::Result<()> {
         if store.is_read_only() {
             return Err(std::io::Error::new(
