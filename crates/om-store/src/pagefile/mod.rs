@@ -62,7 +62,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use map::Version;
-pub use meta::{MetaFault, MAX_RESTORE_NAME, MAX_TREES};
+pub use meta::{MetaFault, MAX_RESTORE_NAME, MAX_RESTORE_POINTS, MAX_TREES};
 pub use space::entry_bound;
 pub use superblock::{pair_slots, Invalid, Superblock, COPY, SLOT, SLOTS};
 
@@ -71,11 +71,11 @@ use map::{Child, Kept, Map, Released};
 use meta::Meta;
 
 use crate::page::{
-    self, EntryPages, Fault, Hash, Page, PageFault, PageKind, PageNo, PageStore, Release,
+    self, Builder, EntryPages, Fault, Hash, Page, PageFault, PageKind, PageNo, PageStore, Release,
     StoreError, PAGE_SIZE,
 };
 use crate::sys::{self, ErrorKind, File, FileOptions, FolderLock, Fs};
-use crate::tree::{self, Root};
+use crate::tree::Root;
 
 /// The file's name in the store folder.
 pub const FILE: &str = "pages";
@@ -166,6 +166,23 @@ pub struct Config {
     /// The least the file grows by, in pages; it grows by an eighth of its
     /// size when that is more, up to 65,536 pages (1 GiB) a step.
     pub growth: u64,
+}
+
+impl Config {
+    /// Refuses a configuration the page file cannot honour: a growth step
+    /// of 1 to 65,536 pages, a budget of at least one page, and a reserve
+    /// of at most 2^32 pages (64 TiB), so that no sum the page file makes
+    /// with them can overflow.
+    pub fn check(&self) -> Result<(), OpenError> {
+        if !(1..=1 << 16).contains(&self.growth) || self.dirty_budget == 0 || self.reserve > 1 << 32
+        {
+            return Err(OpenError::Refused(
+                "a configuration the page file cannot honour (growth of 1 to 65,536 pages, a \
+                 budget of at least one page, a reserve of at most 2^32 pages)",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Config {
@@ -577,6 +594,9 @@ struct Inner {
     names: usize,
     /// A write or flush failed: nothing more is written (section 6.12).
     failed: bool,
+    /// The reservations alive, by entry: a checkpoint is not planned while
+    /// one for an entry it would cover is open.
+    reservations: BTreeMap<u64, usize>,
     cursor: PageNo,
 }
 
@@ -699,6 +719,14 @@ impl Inner {
         self.dirty.get(&n).filter(|p| p.hash() == *hash).cloned()
     }
 
+    /// The last entry a checkpoint covers, on disk or being written: no
+    /// reservation and no unit at or before it is taken from the moment a
+    /// checkpoint fixes its entry (format section 4.6).
+    fn cutoff(&self) -> u64 {
+        let planned = self.in_progress.map_or(0, |v| v.entry);
+        self.newest.sb.entry.index.max(planned)
+    }
+
     /// Pages in memory waiting for a checkpoint that the newest version
     /// reaches (pages that left it, kept for a pin, are not written by a
     /// checkpoint and do not count).
@@ -778,13 +806,23 @@ impl Inner {
             version: Version::default(),
             meta: (0, Hash::default()),
         };
-        let mut listed = self.listed.clone();
-        listed.push(spare);
+        // The next checkpoint lists `listed` and one it may keep, and
+        // retires the newest checkpoint's points it does not list: at most
+        // the union of the two, which a drop does not shrink (the dropped
+        // point is still on disk) and a reopen does not grow (it rebuilds
+        // `listed` from the newest checkpoint's list).
+        let mut points = self.newest.restore_points.clone();
+        for rp in &self.listed {
+            if !points.iter().any(|p| p.version == rp.version) {
+                points.push(rp.clone());
+            }
+        }
+        points.push(spare);
         let len = meta::stream_len(
             trees,
             names,
-            &listed,
-            &self.newest.restore_points,
+            &points,
+            &[],
             self.map.end(),
             self.map.end() as usize,
             0,
@@ -801,7 +839,7 @@ impl Inner {
     fn floor(&self, purpose: Purpose, config: &Config) -> u64 {
         let meta = 2 * self.meta_room(self.trees.len(), self.names);
         match purpose {
-            Purpose::Entry => meta + config.reserve,
+            Purpose::Entry => meta.saturating_add(config.reserve),
             Purpose::Recovery | Purpose::Discard => meta,
         }
     }
@@ -846,6 +884,7 @@ impl PageFile {
     /// `crate::state::State`) for as long as the page file is used.
     pub fn create(fs: &dyn Fs, lock: &FolderLock, config: Config) -> Result<PageFile, OpenError> {
         check_lock(fs, lock)?;
+        config.check()?;
         match fs.open(FILE, FileOptions::PLAIN) {
             Ok(_) => return Err(OpenError::Exists),
             Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -955,6 +994,7 @@ impl PageFile {
                 trees,
                 names,
                 failed: false,
+                reservations: BTreeMap::new(),
                 cursor: 0,
             }),
             pins: Arc::default(),
@@ -989,6 +1029,7 @@ impl PageFile {
         config: Config,
     ) -> Result<(PageFile, Opened), OpenError> {
         check_lock(fs, lock)?;
+        config.check()?;
         let file = match fs.open(FILE, FileOptions::PLAIN) {
             Ok(file) => file,
             Err(e) if e.kind() == ErrorKind::NotFound => return Err(OpenError::Missing),
@@ -1363,6 +1404,22 @@ impl PageFile {
         Ok(page)
     }
 
+    /// A dying page's bytes for a reclaim: from memory when no checkpoint
+    /// wrote it, otherwise read from the file and checked, never from the
+    /// cache, so that what a reclaim decides (including whether a read
+    /// fails) does not depend on what readers cached.
+    fn read_dying(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
+        let end = {
+            let inner = self.lock();
+            if let Some(page) = inner.in_memory(number, hash) {
+                return Ok(page);
+            }
+            inner.map.end()
+        };
+        let bytes = raw(&*self.file, number, end).map_err(RawRead::fault)?;
+        Ok(Arc::new(Page::verify(number, hash, bytes)?))
+    }
+
     /// Set aside `pages` pages for entry `entry` (section 6.5): the caller's
     /// upper bound for applying it ([`entry_bound`]). An entry is refused
     /// with nothing reserved when its pages, the room for a checkpoint's
@@ -1375,6 +1432,7 @@ impl PageFile {
         purpose: Purpose,
     ) -> Result<Reservation<'_>, SpaceError> {
         self.set_aside(entry, pages, purpose)?;
+        *self.lock().reservations.entry(entry).or_default() += 1;
         Ok(Reservation {
             file: self,
             entry,
@@ -1402,9 +1460,9 @@ impl PageFile {
                 if inner.failed {
                     return Err(SpaceError::Failed);
                 }
-                if entry <= inner.newest.sb.entry.index {
+                if entry <= inner.cutoff() {
                     return Err(SpaceError::Refused(
-                        "an entry at or before the newest checkpoint's",
+                        "an entry at or before a checkpoint's (on disk or being written)",
                     ));
                 }
                 if entry < inner.last_unit {
@@ -1433,6 +1491,7 @@ impl PageFile {
             };
             if !reclaimed {
                 reclaimed = true;
+                let _io = lock(&self.io);
                 self.reclaim_for(deficit);
                 continue;
             }
@@ -1443,14 +1502,14 @@ impl PageFile {
     }
 
     /// Reclaims, in one pass over the dying pages at most, until `pages`
-    /// more are free.
+    /// more are free. The caller holds `io`.
     fn reclaim_for(&self, pages: u64) {
         let (start, mut left) = {
             let inner = self.lock();
             (inner.map.free_count(), inner.map.pending().len())
         };
         while left > 0 {
-            let done = self.reclaim(left.min(4096));
+            let done = self.reclaim_held(left.min(4096));
             left = left.saturating_sub(done.examined.max(1) as usize);
             if self.lock().map.free_count().saturating_sub(start) >= pages {
                 return;
@@ -1473,7 +1532,7 @@ impl PageFile {
         let step = at_least.max(self.config.growth).max((end / 8).min(1 << 16));
         for want in [step, at_least] {
             let Some(size) = end.checked_add(want).and_then(|e| e.checked_mul(PAGE)) else {
-                return Err(SpaceError::Refused("a file larger than offsets reach"));
+                continue;
             };
             match self.file.allocate(size) {
                 Ok(()) => {
@@ -1527,7 +1586,23 @@ impl PageFile {
     /// decides depends on the pages it examines and their bytes, never on
     /// whether those were cached: the pages it discovers are settled only
     /// from pages not written yet, or when a later call examines them.
+    ///
+    /// A reclaim waits for a checkpoint being written, so that whether it
+    /// settles a page before or after a checkpoint is decided by the order
+    /// of the two calls, not by where the checkpoint's writes stand (a
+    /// page settled while a checkpoint is planned gets the hold of the one
+    /// after it). Dying pages are read from the file, never from the cache:
+    /// a read error leaves the page dying, unsettled, with what it refers
+    /// to untouched, is reported, and is met again by the next pass; the
+    /// call goes on with the other pages, so that one damaged page cannot
+    /// stop all reclaiming.
     pub fn reclaim(&self, budget: usize) -> Reclaimed {
+        let _io = lock(&self.io);
+        self.reclaim_held(budget)
+    }
+
+    /// [`PageFile::reclaim`], for a caller that holds `io`.
+    fn reclaim_held(&self, budget: usize) -> Reclaimed {
         let mut out = Reclaimed::default();
         let (batch, whole) = {
             let mut inner = self.lock();
@@ -1559,8 +1634,7 @@ impl PageFile {
                 continue;
             }
             out.read += 1;
-            // The same bytes whether the cache holds them or not.
-            match self.read_page(n, &hash) {
+            match self.read_dying(n, &hash) {
                 Ok(page) => {
                     let mut inner = self.lock();
                     if inner.map.pending().get(&n).is_some_and(|r| r.hash == hash) {
@@ -1770,6 +1844,14 @@ impl PageFile {
         if keep_as.is_some_and(|name| inner.listed.iter().any(|rp| rp.name == name)) {
             return refuse("a restore point of that name is listed");
         }
+        if inner.listed.len() + usize::from(keep_as.is_some()) > MAX_RESTORE_POINTS {
+            return refuse("more restore points than a checkpoint lists");
+        }
+        // A checkpoint is of one exact version: every unit of an entry it
+        // covers is committed before it fixes its entry, and none after.
+        if inner.reservations.range(..=entry.index).next().is_some() {
+            return refuse("a reservation for an entry the checkpoint covers is open");
+        }
         if trees.len() != inner.trees.len() || trees.iter().any(|(n, _)| !inner.trees.contains(n)) {
             return refuse(
                 "the trees given are not the trees that exist (made and dropped through a \
@@ -1888,7 +1970,7 @@ impl PageFile {
                 let mut grown = None;
                 for g in [short.max(self.config.growth), short] {
                     let Some(size) = end.checked_add(g).and_then(|e| e.checked_mul(PAGE)) else {
-                        break;
+                        continue;
                     };
                     match self.file.allocate(size) {
                         Ok(()) => {
@@ -1946,6 +2028,13 @@ impl PageFile {
             map: image,
         };
         let stream = meta.encode();
+        // What is written must be what an open accepts: the stream goes
+        // through the reader's own checks before any byte of it is written.
+        if let Err(why) = Meta::decode(&stream).and_then(|m| Map::from_image(&m.map).map(|_| ())) {
+            // The plan has changed the map: the page file stops here.
+            inner.failed = true;
+            return Err(CheckpointError::Refused(why));
+        }
         let (meta_pages, root) = meta::build(&stream, &taken, number);
         inner.in_progress = Some(version);
         inner.next_number = after;
@@ -2169,123 +2258,48 @@ impl Reservation<'_> {
         self.file
     }
 
-    /// Makes tree `name`, empty, at this entry ([`tree::create`]), and adds
-    /// it to the trees that exist, which the next checkpoint must name.
-    /// Making a tree takes its root page and [`TABLE_ROOM`] pages of room
-    /// for its record in the tables of the two checkpoints the floor keeps
-    /// room for, both from this reservation and both counted in
-    /// [`Reservation::taken`]: reserve 5 pages for each. Refused, with
+    /// Makes tree `name`, empty, at this entry: a unit that writes the
+    /// empty tree of format version 1 (one empty leaf, as
+    /// [`crate::tree::create`] writes) and adds `name` to the trees that exist,
+    /// committed together with the entry's order checks. Making a tree
+    /// takes its root page and [`TABLE_ROOM`] pages of room for its record
+    /// in the tables of trees, both from this reservation and both counted
+    /// in [`Reservation::taken`]: reserve 5 pages for each. Refused, with
     /// nothing done, when a tree of that name exists or the reservation is
     /// short.
-    pub fn create_tree(&self, name: &TreeName) -> Result<Root, tree::Error> {
-        let room = self.table_room(None, Some(name))?;
-        match tree::create(self, self.entry) {
-            Ok(root) => Ok(root),
-            Err(e) => {
-                self.give_table_room(None, Some(name), room);
-                Err(e)
-            }
-        }
+    pub fn create_tree(&self, name: &TreeName) -> Result<Root, StoreError> {
+        let mut unit = self.begin()?;
+        let number = unit.allocate()?;
+        let page = Builder::new(PageKind::Leaf, 0, self.entry)
+            .finish(number)
+            .map_err(|f| store_failed(f.to_string()))?;
+        let root = Root {
+            page: number,
+            hash: page.hash(),
+        };
+        unit.write(Arc::new(page))?;
+        unit.add_tree(name);
+        unit.commit()?;
+        Ok(root)
     }
 
-    /// Drops tree `name`, whose root at this entry is `root`: the root is
-    /// released with all it reaches (taken down later, a page at a time),
-    /// and the name leaves the trees that exist.
+    /// Drops tree `name`, whose root at this entry is `root`: a unit that
+    /// releases the root with all it reaches (taken down later, a page at
+    /// a time) and removes the name from the trees that exist.
     pub fn drop_tree(&self, name: &TreeName, root: Root) -> Result<(), StoreError> {
-        if !self.file.lock().trees.contains(name) {
-            return Err(store_failed(format!("no tree {name} exists")));
-        }
         let mut unit = self.begin()?;
         unit.release(root.page, &root.hash, Release::Dropped)?;
-        unit.commit()?;
-        let mut inner = self.file.lock();
-        if inner.trees.remove(name) {
-            inner.names -= name.as_bytes().len();
-        }
-        Ok(())
+        unit.remove_tree(name);
+        unit.commit()
     }
 
-    /// Gives tree `from` the name `to` at this entry; its pages stay as they
-    /// are. Takes [`TABLE_ROOM`] pages of this reservation, as making a
-    /// tree does.
+    /// Gives tree `from` the name `to` at this entry: a unit with only that
+    /// change, committed with the entry's order checks. Takes
+    /// [`TABLE_ROOM`] pages of this reservation, as making a tree does.
     pub fn rename_tree(&self, from: &TreeName, to: &TreeName) -> Result<(), StoreError> {
-        if !self.file.lock().trees.contains(from) {
-            return Err(store_failed(format!("no tree {from} exists")));
-        }
-        self.table_room(Some(from), Some(to)).map_err(|e| match e {
-            tree::Error::Store(e) => e,
-            e => store_failed(e.to_string()),
-        })?;
-        Ok(())
-    }
-
-    /// Moves tree names in the table (`from` out, `to` in), taking from
-    /// this reservation the pages by which that raises the room a
-    /// checkpoint's meta stream needs. Returns them.
-    fn table_room(
-        &self,
-        from: Option<&TreeName>,
-        to: Option<&TreeName>,
-    ) -> Result<u64, tree::Error> {
-        let mut inner = self.file.lock();
-        if inner.failed {
-            return Err(tree::Error::Store(store_failed(FAILED)));
-        }
-        if to.is_some_and(|t| inner.trees.contains(t) && Some(t) != from) {
-            return Err(tree::Error::Store(store_failed(
-                "a tree of that name exists".to_string(),
-            )));
-        }
-        let len = |n: Option<&TreeName>| n.map_or(0, |n| n.as_bytes().len());
-        let count = inner.trees.len() - usize::from(from.is_some()) + usize::from(to.is_some());
-        if count > MAX_TREES {
-            return Err(tree::Error::Store(store_failed(format!(
-                "more than {MAX_TREES} trees"
-            ))));
-        }
-        let names = inner.names - len(from) + len(to);
-        // A fixed charge, the same in every run, so that an entry takes the
-        // same pages when it is applied again (`Reservation::taken`). One
-        // more record in the table can add at most a data page and a
-        // directory page to each of the two meta streams the floor keeps
-        // room for.
-        let room = TABLE_ROOM;
-        debug_assert!(
-            2 * inner.meta_room(count, names)
-                <= 2 * inner.meta_room(inner.trees.len(), inner.names) + room
-        );
-        // A tree made needs its root page from the reservation as well.
-        let needed = room + u64::from(to.is_some() && from.is_none());
-        if self.remaining.load(Ordering::Relaxed) < needed {
-            return Err(tree::Error::Store(StoreError::Full));
-        }
-        self.remaining.fetch_sub(room, Ordering::Relaxed);
-        self.taken.fetch_add(room, Ordering::Relaxed);
-        inner.promised -= room;
-        if let Some(f) = from {
-            inner.trees.remove(f);
-        }
-        if let Some(t) = to {
-            inner.trees.insert(t.clone());
-        }
-        inner.names = names;
-        Ok(room)
-    }
-
-    /// Undoes [`Reservation::table_room`].
-    fn give_table_room(&self, from: Option<&TreeName>, to: Option<&TreeName>, room: u64) {
-        let mut inner = self.file.lock();
-        let len = |n: Option<&TreeName>| n.map_or(0, |n| n.as_bytes().len());
-        if let Some(t) = to {
-            inner.trees.remove(t);
-        }
-        if let Some(f) = from {
-            inner.trees.insert(f.clone());
-        }
-        inner.names = inner.names - len(to) + len(from);
-        self.remaining.fetch_add(room, Ordering::Relaxed);
-        self.taken.fetch_sub(room, Ordering::Relaxed);
-        inner.promised += room;
+        let mut unit = self.begin()?;
+        unit.rename_tree(from, to);
+        unit.commit()
     }
 }
 
@@ -2293,6 +2307,12 @@ impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         let mut inner = self.file.lock();
         inner.promised -= self.remaining.load(Ordering::Relaxed);
+        if let Some(n) = inner.reservations.get_mut(&self.entry) {
+            *n -= 1;
+            if *n == 0 {
+                inner.reservations.remove(&self.entry);
+            }
+        }
     }
 }
 
@@ -2334,6 +2354,7 @@ impl<'f> PageStore for Reservation<'f> {
             pages: BTreeMap::new(),
             released: Vec::new(),
             ahead: BTreeMap::new(),
+            names: Vec::new(),
             committed: false,
         })
     }
@@ -2352,7 +2373,38 @@ pub struct Unit<'a> {
     /// page copied shares its references with the copy, and the tree
     /// releases a page before the pages it refers to.
     ahead: BTreeMap<PageNo, u32>,
+    /// Changes to the set of trees, applied with the unit's pages.
+    names: Vec<NameChange>,
     committed: bool,
+}
+
+/// A change to the set of trees that exist.
+#[derive(Clone, Debug)]
+enum NameChange {
+    Add(TreeName),
+    Remove(TreeName),
+    Rename(TreeName, TreeName),
+}
+
+impl Unit<'_> {
+    /// Adds `name` to the trees that exist when the unit commits (its root
+    /// is a page the unit writes). Takes [`TABLE_ROOM`] pages of the
+    /// reservation at commit.
+    pub fn add_tree(&mut self, name: &TreeName) {
+        self.names.push(NameChange::Add(name.clone()));
+    }
+
+    /// Removes `name` from the trees that exist when the unit commits.
+    pub fn remove_tree(&mut self, name: &TreeName) {
+        self.names.push(NameChange::Remove(name.clone()));
+    }
+
+    /// Renames tree `from` to `to` when the unit commits. Takes
+    /// [`TABLE_ROOM`] pages of the reservation at commit.
+    pub fn rename_tree(&mut self, from: &TreeName, to: &TreeName) {
+        self.names
+            .push(NameChange::Rename(from.clone(), to.clone()));
+    }
 }
 
 struct Releasing {
@@ -2433,9 +2485,9 @@ impl EntryPages for Unit<'_> {
         if inner.failed {
             return Err(store_failed(FAILED));
         }
-        if self.entry <= inner.newest.sb.entry.index {
+        if self.entry <= inner.cutoff() {
             return Err(store_failed(
-                "an entry at or before the newest checkpoint's",
+                "an entry at or before a checkpoint's (on disk or being written)",
             ));
         }
         if self.entry < inner.last_unit {
@@ -2473,6 +2525,53 @@ impl EntryPages for Unit<'_> {
                 }
             }
         }
+        // Changes to the set of trees, checked in order against the set as
+        // it stands, and the room they take.
+        let mut overlay: BTreeMap<TreeName, bool> = BTreeMap::new();
+        let mut count = inner.trees.len();
+        let mut room = 0u64;
+        for change in &self.names {
+            let present = |overlay: &BTreeMap<TreeName, bool>, n: &TreeName| {
+                overlay
+                    .get(n)
+                    .copied()
+                    .unwrap_or_else(|| inner.trees.contains(n))
+            };
+            let refused = match change {
+                NameChange::Add(n) => {
+                    let refused = present(&overlay, n);
+                    overlay.insert(n.clone(), true);
+                    count += 1;
+                    room += TABLE_ROOM;
+                    refused
+                }
+                NameChange::Remove(n) => {
+                    let refused = !present(&overlay, n);
+                    overlay.insert(n.clone(), false);
+                    count = count.saturating_sub(1);
+                    refused
+                }
+                NameChange::Rename(f, t) => {
+                    let refused = !present(&overlay, f) || present(&overlay, t);
+                    overlay.insert(f.clone(), false);
+                    overlay.insert(t.clone(), true);
+                    room += TABLE_ROOM;
+                    refused
+                }
+            };
+            if refused {
+                return Err(store_failed(format!(
+                    "a change to the trees refused: {change:?}"
+                )));
+            }
+            if count > MAX_TREES {
+                return Err(store_failed(format!("more than {MAX_TREES} trees")));
+            }
+        }
+        let unwritten = (self.allocated.len() - self.pages.len()) as u64;
+        if self.remaining.load(Ordering::Relaxed) + unwritten < room {
+            return Err(StoreError::Full);
+        }
         // Everything is checked: from here on, nothing fails.
         self.taken
             .fetch_add(self.pages.len() as u64, Ordering::Relaxed);
@@ -2506,6 +2605,31 @@ impl EntryPages for Unit<'_> {
                 died.push(r.number);
             }
         }
+        for change in std::mem::take(&mut self.names) {
+            match change {
+                NameChange::Add(n) => {
+                    inner.names += n.as_bytes().len();
+                    inner.trees.insert(n);
+                }
+                NameChange::Remove(n) => {
+                    if inner.trees.remove(&n) {
+                        inner.names -= n.as_bytes().len();
+                    }
+                }
+                NameChange::Rename(f, t) => {
+                    if inner.trees.remove(&f) {
+                        inner.names -= f.as_bytes().len();
+                    }
+                    inner.names += t.as_bytes().len();
+                    inner.trees.insert(t);
+                }
+            }
+        }
+        // The fixed room the trees' records take, from the reservation to
+        // the floor (format section 4.8).
+        self.remaining.fetch_sub(room, Ordering::Relaxed);
+        self.taken.fetch_add(room, Ordering::Relaxed);
+        inner.promised -= room;
         self.committed = true;
         let kept = file.kept(&inner);
         let mut twice = Vec::new();

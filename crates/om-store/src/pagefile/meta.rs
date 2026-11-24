@@ -26,13 +26,17 @@ const REF: usize = 40;
 /// next one.
 pub(crate) const DIR_ENTRIES: usize = (OVERFLOW_DATA - REF) / REF;
 
-/// The most trees a checkpoint names. Opening reads and checks every
-/// root, a page at a time: at the limit, 65,536 reads of 16 KiB, and a
-/// table of at most 19 MiB in memory.
-pub const MAX_TREES: usize = 1 << 16;
+/// The most trees a checkpoint names, enforced when a tree is made and
+/// when a checkpoint is planned, and by the open. Opening reads and checks
+/// every root, a page at a time: at the limit, 65,536 reads of 16 KiB, and
+/// a table of at most 19 MiB in memory. The crate's own tests are built
+/// with 4,096, so that both sides of the limit are reached.
+pub const MAX_TREES: usize = if cfg!(test) { 4_096 } else { 1 << 16 };
 
-/// The most restore points a checkpoint lists (and as many retiring).
-pub const MAX_RESTORE_POINTS: usize = 1 << 16;
+/// The most restore points a checkpoint lists (and as many retiring),
+/// enforced when a checkpoint is planned and by the open. The crate's own
+/// tests are built with 64.
+pub const MAX_RESTORE_POINTS: usize = if cfg!(test) { 64 } else { 1 << 16 };
 
 /// The longest restore point name, in bytes.
 pub const MAX_RESTORE_NAME: usize = 64;

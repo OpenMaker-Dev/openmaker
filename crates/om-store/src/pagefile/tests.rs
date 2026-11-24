@@ -2026,15 +2026,26 @@ fn a_unit_dropped_or_refused_changes_nothing() {
         (pf.map_image(), pf.space()) == before,
         "a unit that did not commit changed the map"
     );
-    // Refused at commit: a checkpoint at the entry came in between.
+    // Review of #719 (second round, P0): a checkpoint is of one exact
+    // version. It is refused while a reservation for an entry it covers is
+    // open; once it has fixed its entry, a reservation at or before it is
+    // refused, so no unit of a covered entry commits after it.
     let res = pf.reserve(index, 4, Purpose::Entry).unwrap();
     let mut unit = res.begin().unwrap();
     unit.release(child, &child_hash, Release::Dropped).unwrap();
     let late = entry_id(index);
     let trees = run.newest.roots();
-    let done = pf.checkpoint(late, &trees, None).unwrap();
-    assert!(unit.commit().is_err());
+    assert!(matches!(
+        pf.checkpoint(late, &trees, None),
+        Err(CheckpointError::Refused(_))
+    ));
+    drop(unit);
     drop(res);
+    let done = pf.checkpoint(late, &trees, None).unwrap();
+    assert!(matches!(
+        pf.reserve(index, 4, Purpose::Entry),
+        Err(SpaceError::Refused(_))
+    ));
     let dying = pf.dying_pages();
     assert!(!dying.contains(&root.page) && !dying.contains(&child));
     run.newest.entry = late;
@@ -2262,7 +2273,7 @@ fn trees_made_until_reservations_are_refused_still_leave_room_to_checkpoint() {
         let name = TreeName::new(format!("{index:0255}")).unwrap();
         match res.create_tree(&name) {
             Ok(root) => trees.push((name, root)),
-            Err(tree::Error::Store(StoreError::Full)) => break,
+            Err(StoreError::Full) => break,
             Err(e) => panic!("{e}"),
         }
         index += 1;
