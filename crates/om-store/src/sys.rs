@@ -11,7 +11,14 @@
 //!
 //! **Paths** are relative to the store folder, with `/` between names:
 //! `state`, `log/00000001`. A name is not empty, not `.` or `..`, and
-//! holds no `/`, `\` or NUL. `""` is the store folder itself.
+//! holds no `/`, `\`, `:` (a drive or stream on Windows) or NUL. `""` is
+//! the store folder itself. [`LOCK_NAME`] is reserved: no operation takes
+//! it.
+//!
+//! **No links.** A store folder holds no symbolic links: an operation
+//! whose path runs through one fails with [`ErrorKind::Link`] rather than
+//! reach outside the folder. A log on another disk is a mount, not a link.
+//! The store folder itself may be reached through links.
 //!
 //! **Durability.** A write is durable once a [`File::flush`] of its file
 //! has returned `Ok`, or once it has returned on a file opened with
@@ -37,6 +44,10 @@ pub const MAX_PATH: usize = 1024;
 /// The most names in a path.
 pub const MAX_DEPTH: usize = 16;
 
+/// The name in the store folder kept for its lock (the real file system
+/// keeps the lock in a file of this name). No path may be it.
+pub const LOCK_NAME: &str = "lock";
+
 /// The files and folders of one store folder.
 pub trait Fs: Send + Sync {
     /// Take the store folder's lock for this process (section 6.1). It is
@@ -44,6 +55,11 @@ pub trait Fs: Send + Sync {
     /// lock another process holds, or this process holds already, fails
     /// with [`ErrorKind::Locked`] without waiting.
     fn lock(&self) -> Result<FolderLock>;
+
+    /// Whether `lock` is this store folder's lock and still held: what
+    /// writes the store's files takes the lock by value and checks it
+    /// here, so that one lock makes one writer.
+    fn owns(&self, lock: &FolderLock) -> bool;
 
     /// Create the file `path`, empty. A name that exists fails with
     /// [`ErrorKind::AlreadyExists`]. The new name is durable after a flush
@@ -93,7 +109,10 @@ pub trait File: Send + Sync {
     /// Make the file at least `size` bytes long, taking the space now, so
     /// that writes below `size` never fail for lack of space on a file
     /// system that writes in place. The new bytes read as zeros. Durable
-    /// after a flush, like a write.
+    /// after a flush, like a write. On Unix a part below the old size that
+    /// the file system holds as a hole is filled too, by writing back the
+    /// bytes there, so no other write to the file may run meanwhile;
+    /// elsewhere only the part past the old size is taken.
     fn allocate(&self, size: u64) -> Result<()>;
 
     /// The file's size in bytes.
@@ -118,21 +137,32 @@ impl FileOptions {
 
 /// The store folder's lock (section 6.1), released when dropped.
 pub struct FolderLock {
+    owner: (u64, u64),
     _held: Box<dyn Send + Sync>,
 }
 
 impl FolderLock {
-    /// A lock that `held` keeps until it is dropped (for implementations).
-    pub fn new(held: impl Send + Sync + 'static) -> Self {
+    /// A lock of the folder `owner` names, which `held` keeps until it is
+    /// dropped (for implementations; [`Fs::owns`] compares `owner`).
+    pub fn new(owner: (u64, u64), held: impl Send + Sync + 'static) -> Self {
         Self {
+            owner,
             _held: Box::new(held),
         }
+    }
+
+    /// Which folder, and which holding of it, this is (for
+    /// implementations).
+    pub fn owner(&self) -> (u64, u64) {
+        self.owner
     }
 }
 
 impl fmt::Debug for FolderLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("FolderLock")
+        f.debug_struct("FolderLock")
+            .field("owner", &self.owner)
+            .finish()
     }
 }
 
@@ -183,8 +213,11 @@ pub enum ErrorKind {
     /// The process has stopped: in the simulator, it crashed or was
     /// stopped and nothing it does reaches the disk any more.
     Halted,
-    /// Not a path inside the store folder, or a rename between folders.
+    /// Not a path inside the store folder, the reserved lock name, or a
+    /// rename between folders.
     InvalidPath,
+    /// A name along the path is a symbolic link (module docs).
+    Link,
     /// The system cannot do it.
     Unsupported,
     /// Another error the system reported.
@@ -289,6 +322,9 @@ impl fmt::Display for Error {
             ErrorKind::Locked => "another process holds the store folder's lock",
             ErrorKind::Halted => "the process has stopped",
             ErrorKind::InvalidPath => "not a path inside the store folder",
+            ErrorKind::Link => {
+                "a name on its path is a symbolic link, which a store folder may not hold"
+            }
             ErrorKind::Unsupported => "this system cannot do it",
             ErrorKind::Other => "it failed",
         };
@@ -328,9 +364,12 @@ pub fn names(path: &str, op: Op) -> Result<Vec<&str>> {
         return Err(invalid());
     }
     for name in &names {
-        if name.is_empty() || *name == "." || *name == ".." || name.contains(['\\', '\0']) {
+        if name.is_empty() || *name == "." || *name == ".." || name.contains(['\\', ':', '\0']) {
             return Err(invalid());
         }
+    }
+    if path == LOCK_NAME {
+        return Err(invalid());
     }
     Ok(names)
 }

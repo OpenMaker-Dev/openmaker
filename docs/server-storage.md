@@ -247,16 +247,23 @@ One store folder per server, used by one process at a time:
                    and whether it is in repair (section 7.5)
 ```
 
-The start count is raised and flushed each time the server starts, before
-it writes or sends anything else. `state` holds two copies in fixed
-slots, each with a number and a hash. An update writes the next number in
-place over the slot that does not hold the current copy, and flushes; the
-valid copy with the highest number counts. An open first writes the copy
-it read back into its slot and flushes it, because an earlier process's
-failed write or flush can leave the system's cache showing a copy the
-device does not hold. A server without a valid copy does not know what it
-confirmed, and does not start (section 7.5). The format, its costs and
-what the copies protect against are in
+The start count is raised by one and flushed each time the server starts,
+before it writes or sends anything else; an open cut short can skip a
+value, and no value is issued twice. `state` holds two copies in fixed
+slots, each with a number and a hash, and the valid copy with the highest
+number counts. A marker advance writes the next number in place over the
+slot that does not hold the current copy and flushes: one write and one
+flush per commit batch. Every other change - the start count, the term
+and vote, the segment run, the repair record, a marker that goes back -
+is written to both slots, one after the other, each flushed, before it
+counts. Losing either slot therefore costs at most one marker advance,
+which step 3 of section 6.7 re-establishes from the log when the log's
+tail is whole; losing a slot and the log's tail together loses that
+batch. An open first writes the copy it read back into its slot and
+flushes it, because an earlier process's failed write or flush can leave
+the system's cache showing a copy the device does not hold. A server
+without a valid copy does not know what it confirmed, and does not start
+(section 7.5). The format and what the copies protect against are in
 [server-storage-format.md](server-storage-format.md) section 1
 (`om_store::state`).
 

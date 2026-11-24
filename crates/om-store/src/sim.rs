@@ -24,7 +24,10 @@
 //!   part: a prefix cut at any byte, or any subset of its 512-byte sectors.
 //!   A size change is kept or lost. The cache is then gone, and a file or
 //!   folder no durable entry reaches is gone with it. A crash keeps
-//!   everything durable as it was; it never invents bytes no write held.
+//!   everything durable as it was; every byte it leaves is one a write
+//!   held, or a zero where a size change was kept without the write that
+//!   filled it. [`Sim::set_crash_fates`] can make a crash in a call keep
+//!   or lose everything instead.
 //! - **A flush that fails** settles what it covered at once in the same
 //!   way, and the cache keeps what was written or drops it (drawn). The
 //!   pending list is then empty, so no later flush gives the device what
@@ -32,20 +35,40 @@
 //!   (PostgreSQL's 2018 finding; section 6.12).
 //! - **A folder flush that fails** gives the device the folder's pending
 //!   changes up to a point drawn from the seed, in order, and leaves the
-//!   rest pending; the cached entries stay. Folder changes are file system
-//!   metadata, which journaling file systems (ext4, XFS, btrfs) commit in
-//!   order and, after an error, stop committing rather than drop: what a
-//!   failed folder flush did not write is written by a later one or
-//!   settled by a crash, never silently lost.
+//!   rest pending; the cached entries stay. A later folder flush that
+//!   succeeds writes the rest. This assumes a file system that commits
+//!   folder changes in order and never reports a later flush as done
+//!   without writing what an earlier one failed to: ext4, XFS and btrfs
+//!   commit them in order through a journal, and after a failed commit
+//!   they stop (read-only or shut down), so that every later flush fails
+//!   until the file system is mounted again. For the store, a later flush
+//!   that writes the rest and one that fails come to the same: neither
+//!   reports a change done that is not. The model does not hold for a file
+//!   system that drops unwritten folder changes and then reports a later
+//!   flush as done.
+//! - **Writeback** ([`Fault::Writeback`]): the system writes some pending
+//!   bytes of a file (the cache's, by whole sectors) to the device before
+//!   any flush, or commits some of a folder's pending changes in order; a
+//!   file with nothing pending may have its cache dropped, so that reads
+//!   see the device.
+//! - **Damage** changes what the device holds. Reads see it once the cache
+//!   no longer holds those bytes: after the file's cache is dropped
+//!   (writeback) or a crash. A flush does not rewrite bytes that are not
+//!   pending, so damage after writeback survives the next flush.
 //! - **A stop** ([`Sim::restart`] without a crash) ends the process and
 //!   keeps the cache and the pending writes, as the system does.
+//! - **Space** is what the files take: for each, the larger of what the
+//!   cache and the device hold. A file's space is given back once no name
+//!   on the device or in the cache reaches it, no pending folder change
+//!   names it and no handle has it open.
 //!
 //! # Faults
 //!
 //! A step is one call of a [`Fs`] or [`File`] method. [`Sim::place`] puts
 //! a [`Fault`] at an exact step: it fires at the first call at or after
 //! that step that it applies to. [`Rates`] draw faults at every step. What
-//! each fault did is recorded as an [`Event`].
+//! each fault did is recorded as an [`Event`], and [`Sim::fired`] counts
+//! the faults that had an effect, so that a test can show it reached them.
 //!
 //! After a crash every call fails with [`ErrorKind::Halted`] until
 //! [`Sim::restart`]. Handles and the lock belong to the process that made
@@ -55,8 +78,10 @@
 //!
 //! A run is a function of its seed, the faults placed and the calls made:
 //! every choice comes from streams derived from the seed, maps are ordered
-//! by key, and nothing reads a clock, an address or another thread. The
-//! same seed and calls give the same events and the same bytes.
+//! by key, and nothing reads a clock, an address or another thread. (A
+//! machine's number, which [`Fs::owns`] compares, comes from a counter of
+//! the process, and decides nothing else.) The same seed and calls give
+//! the same events and the same bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -83,6 +108,9 @@ const WALL_START: Duration = Duration::from_secs(1_767_225_600);
 
 /// The store folder's node.
 const ROOT: u64 = 0;
+
+/// Tells one simulated machine from another, for [`Fs::owns`].
+static NEXT_MACHINE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// A seeded generator (SplitMix64): the simulator's source of choices, and
 /// a source of deterministic plans for tests.
@@ -148,10 +176,12 @@ pub enum Fault {
     FailRead,
     /// Bytes the device holds change: up to 16 bytes of a file drawn from
     /// those on the device. It happens before the call, which then runs.
-    /// Reads see the damage once the cache does not hold that file's
-    /// bytes: at once for a file with nothing unflushed, otherwise after a
-    /// crash.
+    /// Reads see the damage once the cache no longer holds those bytes
+    /// (module docs).
     Damage,
+    /// The system writes back part of what is pending, before the call,
+    /// which then runs (module docs).
+    Writeback,
     /// A write reaches the device at another place in its file, a whole
     /// number of sectors away; the cache has it in the right place.
     Misplace,
@@ -163,7 +193,7 @@ impl Fault {
     /// Whether the fault can fire in operation `op`.
     pub fn applies(self, op: Op) -> bool {
         match self {
-            Fault::Crash | Fault::Damage => true,
+            Fault::Crash | Fault::Damage | Fault::Writeback => true,
             Fault::FailFlush => matches!(op, Op::Flush | Op::FlushFolder),
             Fault::FailWrite => matches!(op, Op::Write | Op::Allocate),
             Fault::NoSpace => {
@@ -187,6 +217,7 @@ pub struct Rates {
     pub damage: u32,
     pub misplace: u32,
     pub lose_write: u32,
+    pub writeback: u32,
 }
 
 impl Rates {
@@ -200,6 +231,7 @@ impl Rates {
             Fault::Damage => self.damage,
             Fault::Misplace => self.misplace,
             Fault::LoseWrite => self.lose_write,
+            Fault::Writeback => self.writeback,
         }
     }
 }
@@ -226,7 +258,9 @@ pub struct Settled {
     pub pending: u32,
 }
 
-/// What the simulator did that a process cannot see directly.
+/// What the simulator did that a process cannot see directly. A path names
+/// a file as the process sees it, else as the device holds it, else as `#`
+/// and the simulator's number for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// The power failed, in a call (`op`) or between calls.
@@ -283,6 +317,24 @@ pub enum Event {
         offset: u64,
         len: u64,
     },
+    /// The system wrote a file's cached bytes to the device.
+    WrittenBack {
+        step: u64,
+        path: String,
+        offset: u64,
+        len: u64,
+    },
+    /// The system committed a folder's first `changes` pending changes.
+    FolderWrittenBack {
+        step: u64,
+        path: String,
+        changes: u32,
+    },
+    /// The cache dropped a file's bytes: reads see the device.
+    Evicted {
+        step: u64,
+        path: String,
+    },
 }
 
 /// The simulated machine. Clones share it.
@@ -302,7 +354,11 @@ impl Sim {
         let mut nodes = BTreeMap::new();
         nodes.insert(ROOT, Node::Folder(FolderNode::default()));
         let world = World {
+            id: NEXT_MACHINE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             rates,
+            crash_fates: Fates::Drawn,
+            fired: BTreeMap::new(),
+            handles: BTreeMap::new(),
             faults: Rng::stream(seed, 1),
             app: Rng::stream(seed, 2),
             placed: Vec::new(),
@@ -323,7 +379,7 @@ impl Sim {
     }
 
     fn world(&self) -> MutexGuard<'_, World> {
-        lock(&self.world)
+        lock_world(&self.world)
     }
 
     /// The store folder, as the running process sees it.
@@ -356,6 +412,17 @@ impl Sim {
         self.world().rates = rates;
     }
 
+    /// How a crash in a call, placed or drawn, settles what was not
+    /// flushed (by default [`Fates::Drawn`]).
+    pub fn set_crash_fates(&self, fates: Fates) {
+        self.world().crash_fates = fates;
+    }
+
+    /// How many times each fault had an effect so far.
+    pub fn fired(&self) -> BTreeMap<Fault, u64> {
+        self.world().fired.clone()
+    }
+
     /// The steps taken so far.
     pub fn steps(&self) -> u64 {
         self.world().step
@@ -386,6 +453,8 @@ impl Sim {
         world.epoch += 1;
         world.halted = false;
         world.lock = None;
+        world.handles.clear();
+        world.collect();
     }
 
     /// What happened so far.
@@ -394,8 +463,9 @@ impl Sim {
     }
 
     /// Change `len` bytes from `offset` of what the device holds of the
-    /// file `path` (as [`Fault::Damage`] does, at a chosen place). Bytes
-    /// past the end are not changed.
+    /// file `path` (as [`Fault::Damage`] does, at a chosen place), and drop
+    /// the file's cache when nothing of it is pending, so that reads see
+    /// the damage. Bytes past the end are not changed.
     pub fn damage(&self, path: &str, offset: u64, len: u64) -> Result<()> {
         let mut world = self.world();
         let names = sys::names(path, Op::Read)?;
@@ -404,6 +474,11 @@ impl Sim {
             .filter(|&id| matches!(world.nodes.get(&id), Some(Node::File(_))))
             .ok_or_else(|| Error::new(ErrorKind::NotFound, Op::Read, path))?;
         world.damage_at(node, path, offset, len);
+        if let Some(Node::File(file)) = world.nodes.get_mut(&node) {
+            if file.pending.is_empty() {
+                file.cache = file.durable.clone();
+            }
+        }
         Ok(())
     }
 
@@ -463,28 +538,28 @@ pub struct SimRandom {
 
 impl Clock for SimClock {
     fn wall(&self) -> Duration {
-        lock(&self.world).wall
+        lock_world(&self.world).wall
     }
 
     fn monotonic(&self) -> Duration {
-        lock(&self.world).monotonic
+        lock_world(&self.world).monotonic
     }
 }
 
 impl Random for SimRandom {
     fn fill(&self, buf: &mut [u8]) -> Result<()> {
-        lock(&self.world).app.fill(buf);
+        lock_world(&self.world).app.fill(buf);
         Ok(())
     }
 }
 
-fn lock(world: &Mutex<World>) -> MutexGuard<'_, World> {
+fn lock_world(world: &Mutex<World>) -> MutexGuard<'_, World> {
     world.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Fs for SimFs {
     fn lock(&self) -> Result<FolderLock> {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         let epoch = world.epoch;
         let fault = world.begin(Op::Lock, epoch, "")?;
         if fault == Some(Fault::Crash) {
@@ -494,46 +569,58 @@ impl Fs for SimFs {
             return Err(Error::new(ErrorKind::Locked, Op::Lock, ""));
         }
         world.lock = Some(epoch);
-        Ok(FolderLock::new(SimLock {
-            world: self.world.clone(),
-            epoch,
-        }))
+        Ok(FolderLock::new(
+            (world.id, epoch),
+            SimLock {
+                world: self.world.clone(),
+                epoch,
+            },
+        ))
+    }
+
+    fn owns(&self, lock: &FolderLock) -> bool {
+        let world = lock_world(&self.world);
+        !world.halted && world.lock == Some(world.epoch) && lock.owner() == (world.id, world.epoch)
     }
 
     fn create(&self, path: &str, options: FileOptions) -> Result<Box<dyn File>> {
-        let node = lock(&self.world).create(path, Op::Create)?;
+        let node = lock_world(&self.world).create(path, Op::Create)?;
         Ok(self.file(node, path, options))
     }
 
     fn open(&self, path: &str, options: FileOptions) -> Result<Box<dyn File>> {
-        let node = lock(&self.world).open(path)?;
+        let node = lock_world(&self.world).open(path)?;
         Ok(self.file(node, path, options))
     }
 
     fn create_folder(&self, path: &str) -> Result<()> {
-        lock(&self.world).create(path, Op::CreateFolder).map(|_| ())
+        lock_world(&self.world)
+            .create(path, Op::CreateFolder)
+            .map(|_| ())
     }
 
     fn flush_folder(&self, path: &str) -> Result<()> {
-        lock(&self.world).flush_folder(path)
+        lock_world(&self.world).flush_folder(path)
     }
 
     fn rename(&self, from: &str, to: &str) -> Result<()> {
-        lock(&self.world).rename(from, to)
+        lock_world(&self.world).rename(from, to)
     }
 
     fn remove(&self, path: &str) -> Result<()> {
-        lock(&self.world).remove(path)
+        lock_world(&self.world).remove(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<String>> {
-        lock(&self.world).list(path)
+        lock_world(&self.world).list(path)
     }
 }
 
 impl SimFs {
     fn file(&self, node: u64, path: &str, options: FileOptions) -> Box<dyn File> {
-        let epoch = lock(&self.world).epoch;
+        let mut world = lock_world(&self.world);
+        *world.handles.entry(node).or_default() += 1;
+        let epoch = world.epoch;
         Box::new(SimFile {
             world: self.world.clone(),
             node,
@@ -552,7 +639,7 @@ struct SimLock {
 
 impl Drop for SimLock {
     fn drop(&mut self) {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         if world.epoch == self.epoch && world.lock == Some(self.epoch) {
             world.lock = None;
         }
@@ -568,9 +655,25 @@ struct SimFile {
     path: String,
 }
 
+impl Drop for SimFile {
+    fn drop(&mut self) {
+        let mut world = lock_world(&self.world);
+        if world.epoch != self.epoch {
+            return;
+        }
+        if let Some(count) = world.handles.get_mut(&self.node) {
+            *count -= 1;
+            if *count == 0 {
+                world.handles.remove(&self.node);
+                world.collect();
+            }
+        }
+    }
+}
+
 impl File for SimFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         let fault = world.begin(Op::Read, self.epoch, &self.path)?;
         match fault {
             Some(Fault::Crash) => Err(world.crashed(Op::Read, &self.path)),
@@ -597,7 +700,7 @@ impl File for SimFile {
     }
 
     fn write_at(&self, offset: u64, data: &[u8]) -> Result<()> {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         let fault = world.begin(Op::Write, self.epoch, &self.path)?;
         let result = world.write(self.node, &self.path, self.sync, offset, data, fault);
         if fault == Some(Fault::Crash) {
@@ -607,7 +710,7 @@ impl File for SimFile {
     }
 
     fn flush(&self) -> Result<()> {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         let fault = world.begin(Op::Flush, self.epoch, &self.path)?;
         match fault {
             Some(Fault::Crash) => Err(world.crashed(Op::Flush, &self.path)),
@@ -641,7 +744,7 @@ impl File for SimFile {
     }
 
     fn allocate(&self, size: u64) -> Result<()> {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         let fault = world.begin(Op::Allocate, self.epoch, &self.path)?;
         let result = world.allocate(self.node, &self.path, self.sync, size, fault);
         if fault == Some(Fault::Crash) {
@@ -651,7 +754,7 @@ impl File for SimFile {
     }
 
     fn size(&self) -> Result<u64> {
-        let mut world = lock(&self.world);
+        let mut world = lock_world(&self.world);
         let fault = world.begin(Op::Size, self.epoch, &self.path)?;
         if fault == Some(Fault::Crash) {
             return Err(world.crashed(Op::Size, &self.path));
@@ -662,7 +765,15 @@ impl File for SimFile {
 
 /// The machine's state.
 struct World {
+    /// This machine, among others in the process (for [`Fs::owns`]).
+    id: u64,
     rates: Rates,
+    /// How a crash in a call settles what was not flushed.
+    crash_fates: Fates,
+    /// How many times each fault had an effect.
+    fired: BTreeMap<Fault, u64>,
+    /// The running process's open handles, by node.
+    handles: BTreeMap<u64, u32>,
     /// Faults and how they settle.
     faults: Rng,
     /// What [`SimRandom`] gives the process.
@@ -729,6 +840,9 @@ impl World {
             return Err(Error::new(ErrorKind::Halted, op, path));
         }
         self.step += 1;
+        if self.take(Fault::Writeback) {
+            self.writeback_drawn();
+        }
         if self.take(Fault::Damage) {
             self.damage_drawn();
         }
@@ -742,6 +856,7 @@ impl World {
             Fault::LoseWrite,
         ] {
             if fault.applies(op) && self.take(fault) {
+                *self.fired.entry(fault).or_default() += 1;
                 return Ok(Some(fault));
             }
         }
@@ -763,7 +878,8 @@ impl World {
 
     /// A crash during `op`: the power fails.
     fn crashed(&mut self, op: Op, path: &str) -> Error {
-        self.power_loss(Some(op), path, Fates::Drawn);
+        let fates = self.crash_fates;
+        self.power_loss(Some(op), path, fates);
         Error::new(ErrorKind::Halted, op, path)
     }
 
@@ -788,13 +904,8 @@ impl World {
             settled.partial += s.partial;
         }
         // What no durable entry reaches is gone.
-        let reachable: BTreeSet<u64> = self
-            .durable_paths()
-            .into_iter()
-            .map(|(_, id)| id)
-            .chain([ROOT])
-            .collect();
-        self.nodes.retain(|id, _| reachable.contains(id));
+        self.handles.clear();
+        self.collect();
         self.halted = true;
         self.lock = None;
         let step = self.step;
@@ -889,10 +1000,34 @@ impl World {
         self.nodes
             .values()
             .map(|node| match node {
-                Node::File(file) => file.cache.len().max(intended_len(file) as usize) as u64,
+                Node::File(file) => footprint(file),
                 Node::Folder(_) => 0,
             })
             .sum()
+    }
+
+    /// Drop every node that nothing can reach again: no cached or durable
+    /// entry, no pending folder change and no open handle (module docs).
+    fn collect(&mut self) {
+        let mut keep = BTreeSet::new();
+        let mut stack: Vec<u64> = [ROOT]
+            .into_iter()
+            .chain(self.handles.keys().copied())
+            .collect();
+        while let Some(id) = stack.pop() {
+            if !keep.insert(id) {
+                continue;
+            }
+            if let Some(Node::Folder(folder)) = self.nodes.get(&id) {
+                stack.extend(folder.cache.values());
+                stack.extend(folder.durable.values());
+                stack.extend(folder.pending.iter().map(|op| match op {
+                    FolderOp::Link(_, node) | FolderOp::Unlink(_, node) => *node,
+                    FolderOp::Rename { node, .. } => *node,
+                }));
+            }
+        }
+        self.nodes.retain(|id, _| keep.contains(id));
     }
 
     fn create(&mut self, path: &str, op: Op) -> Result<u64> {
@@ -974,9 +1109,11 @@ impl World {
                 settled,
                 cache_dropped: false,
             });
+            self.collect();
             return Err(Error::new(ErrorKind::Flush, Op::FlushFolder, path));
         }
         settle_folder(folder, faults, Fates::KeepAll);
+        self.collect();
         Ok(())
     }
 
@@ -1050,6 +1187,7 @@ impl World {
         if fault == Some(Fault::Crash) {
             return Err(self.crashed(Op::Remove, path));
         }
+        self.collect();
         removed
     }
 
@@ -1079,8 +1217,11 @@ impl World {
         let end = offset
             .checked_add(len)
             .ok_or_else(|| Error::new(ErrorKind::Write, Op::Write, path))?;
-        let growth = end.saturating_sub(self.file(node).cache.len() as u64);
-        if growth > 0 && self.used().saturating_add(growth) > self.capacity {
+        // Where a misplaced write lands takes space too.
+        let landed = (fault == Some(Fault::Misplace)).then(|| self.landing(node, offset, len));
+        let before = footprint(self.file(node));
+        let after = before.max(end).max(landed.map_or(0, |at| at + len));
+        if after > before && self.used().saturating_add(after - before) > self.capacity {
             let step = self.step;
             self.events.push(Event::NoSpace {
                 step,
@@ -1115,7 +1256,7 @@ impl World {
                 Err(Error::new(ErrorKind::NoSpace, Op::Write, path))
             }
             Some(Fault::Misplace) => {
-                let landed = self.landing(node, offset, len);
+                let landed = landed.expect("drawn above for a misplaced write");
                 self.put(node, offset, data, sync, Some(landed));
                 self.events.push(Event::Misplaced {
                     step,
@@ -1204,7 +1345,8 @@ impl World {
         }
         let growth = size - len;
         let step = self.step;
-        if self.used().saturating_add(growth) > self.capacity {
+        let before = footprint(self.file(node));
+        if size > before && self.used().saturating_add(size - before) > self.capacity {
             self.events.push(Event::NoSpace {
                 step,
                 op: Op::Allocate,
@@ -1262,19 +1404,121 @@ impl World {
         }
     }
 
+    /// A drawn [`Fault::Writeback`] (module docs), on a node drawn from
+    /// those it can change.
+    fn writeback_drawn(&mut self) {
+        let candidates: Vec<u64> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| match node {
+                Node::File(file) => !file.pending.is_empty() || file.cache != file.durable,
+                Node::Folder(folder) => !folder.pending.is_empty(),
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let id = candidates[self.faults.below(candidates.len() as u64) as usize];
+        let path = self.path_of(id);
+        let step = self.step;
+        let World { nodes, faults, .. } = &mut *self;
+        let event = match nodes.get_mut(&id) {
+            Some(Node::Folder(folder)) => {
+                let changes = 1 + faults.below(folder.pending.len() as u64) as usize;
+                let rest = folder.pending.split_off(changes);
+                settle_folder(folder, faults, Fates::KeepAll);
+                folder.pending = rest;
+                Event::FolderWrittenBack {
+                    step,
+                    path,
+                    changes: changes as u32,
+                }
+            }
+            Some(Node::File(file)) => {
+                let writes: Vec<(u64, u64)> = file
+                    .pending
+                    .iter()
+                    .filter_map(|op| match op {
+                        FileOp::Write(offset, data) => Some((*offset, data.len() as u64)),
+                        FileOp::Extend(_) => None,
+                    })
+                    .collect();
+                if writes.is_empty() {
+                    // Clean: the cache may drop what it holds.
+                    file.cache = file.durable.clone();
+                    Event::Evicted { step, path }
+                } else {
+                    // The sectors of one pending write, as the cache holds
+                    // them now.
+                    let (offset, len) = writes[faults.below(writes.len() as u64) as usize];
+                    let start = offset / SECTOR * SECTOR;
+                    let end =
+                        ((offset + len).div_ceil(SECTOR) * SECTOR).min(file.cache.len() as u64);
+                    if start < end {
+                        if (file.durable.len() as u64) < end {
+                            file.durable.resize(end as usize, 0);
+                        }
+                        file.durable[start as usize..end as usize]
+                            .copy_from_slice(&file.cache[start as usize..end as usize]);
+                        trim(&mut file.pending, start, end - start);
+                        let size = file.durable.len() as u64;
+                        file.pending
+                            .retain(|op| !matches!(op, FileOp::Extend(to) if *to <= size));
+                    }
+                    Event::WrittenBack {
+                        step,
+                        path,
+                        offset: start,
+                        len: end.saturating_sub(start),
+                    }
+                }
+            }
+            None => return,
+        };
+        *self.fired.entry(Fault::Writeback).or_default() += 1;
+        self.events.push(event);
+    }
+
+    /// A name for node `id` in events: its path as the process sees it,
+    /// else on the device, else `#` and its number.
+    fn path_of(&self, id: u64) -> String {
+        let mut stack = vec![(String::new(), ROOT)];
+        while let Some((path, at)) = stack.pop() {
+            if at == id {
+                return path;
+            }
+            if let Some(Node::Folder(folder)) = self.nodes.get(&at) {
+                for (name, &child) in folder.cache.iter().rev() {
+                    let child_path = if path.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{path}/{name}")
+                    };
+                    stack.push((child_path, child));
+                }
+            }
+        }
+        self.durable_paths()
+            .into_iter()
+            .find(|&(_, at)| at == id)
+            .map_or_else(|| format!("#{id}"), |(path, _)| path)
+    }
+
     /// A drawn [`Fault::Damage`]: some bytes of a file on the device.
     fn damage_drawn(&mut self) {
-        let files: Vec<(String, u64)> = self
-            .durable_paths()
-            .into_iter()
-            .filter(|(_, id)| {
-                matches!(self.nodes.get(id), Some(Node::File(file)) if !file.durable.is_empty())
-            })
+        let files: Vec<u64> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node, Node::File(file) if !file.durable.is_empty()))
+            .map(|(&id, _)| id)
             .collect();
         if files.is_empty() {
             return;
         }
-        let (path, id) = files[self.faults.below(files.len() as u64) as usize].clone();
+        let id = files[self.faults.below(files.len() as u64) as usize];
+        // Named as the process sees the file.
+        let path = self.path_of(id);
         let size = self.file(id).durable.len() as u64;
         let offset = self.faults.below(size);
         let len = 1 + self.faults.below(MAX_DAMAGE.min(size - offset));
@@ -1288,17 +1532,11 @@ impl World {
         };
         let size = file.durable.len() as u64;
         let end = offset.saturating_add(len).min(size);
-        // The cache holds nothing of its own for this file: as if it had
-        // been evicted, reads see the device.
-        let evicted = file.pending.is_empty() && file.cache == file.durable;
         for i in offset..end {
-            let mask = 1 + faults.below(255) as u8;
-            file.durable[i as usize] ^= mask;
-            if evicted {
-                file.cache[i as usize] ^= mask;
-            }
+            file.durable[i as usize] ^= 1 + faults.below(255) as u8;
         }
         if offset < end {
+            *self.fired.entry(Fault::Damage).or_default() += 1;
             let step = self.step;
             self.events.push(Event::Damaged {
                 step,
@@ -1308,6 +1546,12 @@ impl World {
             });
         }
     }
+}
+
+/// The space `file` takes: what its cache or the device holds, whichever
+/// is more.
+fn footprint(file: &FileNode) -> u64 {
+    (file.cache.len() as u64).max(intended_len(file))
 }
 
 /// The size `file` has on the device once its pending writes land.
@@ -1613,5 +1857,63 @@ mod tests {
             }
         }
         assert!(lost > 0, "a failed flush always kept its data");
+    }
+
+    /// Damage that lands after writeback and before the flush survives the
+    /// flush, which has nothing pending to write there.
+    #[test]
+    fn damage_after_writeback_survives_the_next_flush() {
+        let sim = Sim::new(3);
+        let fs = sim.fs();
+        let a = fs.create("a", FileOptions::PLAIN).unwrap();
+        fs.flush_folder("").unwrap();
+        a.write_at(0, &[7; 512]).unwrap();
+        sim.place(sim.steps() + 1, Fault::Writeback);
+        assert_eq!(a.size().unwrap(), 512);
+        sim.damage("a", 10, 1).unwrap();
+        a.flush().unwrap();
+        drop(a);
+        sim.crash(Fates::LoseAll);
+        sim.restart();
+        let mut bytes = [0; 512];
+        let a = fs.open("a", FileOptions::PLAIN).unwrap();
+        assert_eq!(a.read_at(0, &mut bytes).unwrap(), 512);
+        assert_ne!(bytes[10], 7, "the flush rewrote the damaged byte");
+        assert_eq!(bytes[11], 7);
+    }
+
+    #[test]
+    fn the_disk_fills_and_frees_as_files_come_and_go() {
+        let sim = Sim::new(4);
+        sim.set_capacity(100);
+        let fs = sim.fs();
+        let a = fs.create("a", FileOptions::PLAIN).unwrap();
+        a.write_at(0, &[1; 100]).unwrap();
+        a.flush().unwrap();
+        fs.flush_folder("").unwrap();
+        let b = fs.create("b", FileOptions::PLAIN).unwrap();
+        assert_eq!(b.write_at(0, &[1]).unwrap_err().kind(), ErrorKind::NoSpace);
+        // Removed but not yet durably, or still open: the space stays taken.
+        fs.remove("a").unwrap();
+        assert_eq!(b.write_at(0, &[1]).unwrap_err().kind(), ErrorKind::NoSpace);
+        fs.flush_folder("").unwrap();
+        assert_eq!(b.write_at(0, &[1]).unwrap_err().kind(), ErrorKind::NoSpace);
+        // The last handle gone: given back, without a power loss.
+        drop(a);
+        b.write_at(0, &[1; 100]).unwrap();
+
+        // A misplaced write takes space where it lands.
+        let sim = Sim::new(4);
+        sim.set_capacity(512);
+        let fs = sim.fs();
+        let c = fs.create("c", FileOptions::SYNC).unwrap();
+        fs.flush_folder("").unwrap();
+        sim.place(sim.steps() + 1, Fault::Misplace);
+        assert_eq!(
+            c.write_at(0, &[1; 512]).unwrap_err().kind(),
+            ErrorKind::NoSpace
+        );
+        c.write_at(0, &[1; 512]).unwrap();
+        assert_eq!(sim.image(), vec![("c".to_owned(), Some(vec![1; 512]))]);
     }
 }

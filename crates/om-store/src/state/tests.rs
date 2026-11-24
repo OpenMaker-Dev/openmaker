@@ -2,9 +2,22 @@
 //! (`docs/server-storage.md` section 12), and the same scenario on the real
 //! file system.
 //!
+//! Two oracles check every open. The **slot oracle** follows, from the
+//! writes, flushes and reads the state code makes and the faults the
+//! simulator records, which copies each slot can hold, and checks that the
+//! copy read is one of them, with the highest number. The **record
+//! oracle** checks what the design promises of a confirmed update: no start
+//! count is issued twice, a term never goes back, a vote is never forgotten
+//! or changed within its term, a repair record, its required end and the
+//! segment run are never lost, and the marker goes back by at most one
+//! advance.
+//!
 //! `OM_STORE_SCALE=<n>` runs `n` times as many seeds of each schedule, for
 //! long runs; `OM_STORE_SEED=<s>` runs seed `s` alone, to replay a failure
 //! (a failing run prints its seed, the simulator's events and its steps).
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::os::{OsFs, OsRandom, TempFolder};
@@ -20,6 +33,411 @@ fn seeds(default: u64) -> Vec<u64> {
     (0..default.saturating_mul(read("OM_STORE_SCALE").unwrap_or(1))).collect()
 }
 
+/// A copy as written.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Written {
+    number: u64,
+    values: Values,
+}
+
+/// A call the state code made on `state` or `state.new`, as recorded.
+#[derive(Clone, Debug)]
+enum Call {
+    /// A write at the start of one slot or more, with the copy each held.
+    Write {
+        path: String,
+        slots: Vec<(usize, Option<Written>)>,
+        ok: bool,
+    },
+    Flush {
+        path: String,
+        ok: bool,
+    },
+    Read {
+        path: String,
+        slot: usize,
+        ok: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+        ok: bool,
+    },
+    Remove {
+        path: String,
+        ok: bool,
+    },
+}
+
+/// The calls, each with the step it took.
+type Log = Arc<Mutex<Vec<(u64, Call)>>>;
+
+fn watched(path: &str) -> bool {
+    path == FILE || path == NEW_FILE
+}
+
+/// The simulated store folder, recording what the state code does to its
+/// files. A call that took no step (its process had stopped) did nothing
+/// and is not recorded.
+struct Recorder {
+    inner: SimFs,
+    sim: Sim,
+    log: Log,
+}
+
+impl Recorder {
+    fn record(sim: &Sim, log: &Log, before: u64, call: Call) {
+        let after = sim.steps();
+        if after > before {
+            log.lock().unwrap().push((after, call));
+        }
+    }
+
+    fn file(&self, path: &str, inner: Box<dyn File>) -> Box<dyn File> {
+        if !watched(path) {
+            return inner;
+        }
+        Box::new(RecordedFile {
+            inner,
+            path: path.to_owned(),
+            sim: self.sim.clone(),
+            log: self.log.clone(),
+        })
+    }
+}
+
+impl Fs for Recorder {
+    fn lock(&self) -> sys::Result<FolderLock> {
+        self.inner.lock()
+    }
+
+    fn owns(&self, lock: &FolderLock) -> bool {
+        self.inner.owns(lock)
+    }
+
+    fn create(&self, path: &str, options: FileOptions) -> sys::Result<Box<dyn File>> {
+        let file = self.inner.create(path, options)?;
+        Ok(self.file(path, file))
+    }
+
+    fn open(&self, path: &str, options: FileOptions) -> sys::Result<Box<dyn File>> {
+        let file = self.inner.open(path, options)?;
+        Ok(self.file(path, file))
+    }
+
+    fn create_folder(&self, path: &str) -> sys::Result<()> {
+        self.inner.create_folder(path)
+    }
+
+    fn flush_folder(&self, path: &str) -> sys::Result<()> {
+        self.inner.flush_folder(path)
+    }
+
+    fn rename(&self, from: &str, to: &str) -> sys::Result<()> {
+        let before = self.sim.steps();
+        let renamed = self.inner.rename(from, to);
+        let call = Call::Rename {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            ok: renamed.is_ok(),
+        };
+        Self::record(&self.sim, &self.log, before, call);
+        renamed
+    }
+
+    fn remove(&self, path: &str) -> sys::Result<()> {
+        let before = self.sim.steps();
+        let removed = self.inner.remove(path);
+        if watched(path) {
+            let call = Call::Remove {
+                path: path.to_owned(),
+                ok: removed.is_ok(),
+            };
+            Self::record(&self.sim, &self.log, before, call);
+        }
+        removed
+    }
+
+    fn list(&self, path: &str) -> sys::Result<Vec<String>> {
+        self.inner.list(path)
+    }
+}
+
+struct RecordedFile {
+    inner: Box<dyn File>,
+    path: String,
+    sim: Sim,
+    log: Log,
+}
+
+impl File for RecordedFile {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+        let before = self.sim.steps();
+        let read = self.inner.read_at(offset, buf);
+        let call = Call::Read {
+            path: self.path.clone(),
+            slot: offset as usize / SLOT,
+            ok: read.is_ok(),
+        };
+        Recorder::record(&self.sim, &self.log, before, call);
+        read
+    }
+
+    fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
+        assert!(
+            offset as usize % SLOT == 0 && (data.len() == COPY_V1 || data.len() % SLOT == 0),
+            "state writes copies at the start of slots"
+        );
+        let slots = data
+            .chunks(SLOT)
+            .enumerate()
+            .map(|(i, bytes)| {
+                let copy = match decode(bytes) {
+                    Ok(Decoded::Valid(number, values)) => Some(Written { number, values }),
+                    _ => None,
+                };
+                (offset as usize / SLOT + i, copy)
+            })
+            .collect();
+        let before = self.sim.steps();
+        let written = self.inner.write_at(offset, data);
+        let call = Call::Write {
+            path: self.path.clone(),
+            slots,
+            ok: written.is_ok(),
+        };
+        Recorder::record(&self.sim, &self.log, before, call);
+        written
+    }
+
+    fn flush(&self) -> sys::Result<()> {
+        let before = self.sim.steps();
+        let flushed = self.inner.flush();
+        let call = Call::Flush {
+            path: self.path.clone(),
+            ok: flushed.is_ok(),
+        };
+        Recorder::record(&self.sim, &self.log, before, call);
+        flushed
+    }
+
+    fn allocate(&self, size: u64) -> sys::Result<()> {
+        self.inner.allocate(size)
+    }
+
+    fn size(&self) -> sys::Result<u64> {
+        self.inner.size()
+    }
+}
+
+/// What one slot of a file can hold, by the slot oracle (module docs).
+#[derive(Clone, Debug, Default)]
+struct Slot {
+    /// What the device may hold (`None`: no valid copy).
+    device: Vec<Option<Written>>,
+    /// Writes not given to the device yet, in order, each marked when it
+    /// failed part way.
+    pending: Vec<(Option<Written>, bool)>,
+    /// Damage reached the slot while writes were pending: writeback may
+    /// have put them on the device before it, and a flush does not rewrite
+    /// them.
+    damaged_pending: bool,
+}
+
+impl Slot {
+    fn add(&mut self, copy: Option<Written>) {
+        if !self.device.contains(&copy) {
+            self.device.push(copy);
+        }
+    }
+
+    fn write(&mut self, copy: Option<Written>, torn: bool) {
+        self.pending.push((copy, torn));
+        self.damaged_pending = false;
+    }
+
+    fn flushed(&mut self) {
+        match self.pending.last().copied() {
+            None => {}
+            Some((copy, false)) => {
+                self.device = vec![copy];
+                if self.damaged_pending {
+                    self.add(None);
+                }
+            }
+            Some((_, true)) => self.unsettled(),
+        }
+        self.pending.clear();
+        self.damaged_pending = false;
+    }
+
+    /// A crash or a failed flush: each pending write may have landed,
+    /// whole or in part, or not.
+    fn unsettled(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        for (copy, _) in std::mem::take(&mut self.pending) {
+            self.add(copy);
+        }
+        self.add(None);
+        self.damaged_pending = false;
+    }
+
+    fn written_back(&mut self) {
+        for (copy, _) in self.pending.clone() {
+            self.add(copy);
+        }
+        if !self.pending.is_empty() {
+            self.add(None);
+        }
+    }
+
+    fn damaged(&mut self) {
+        self.add(None);
+        if !self.pending.is_empty() {
+            self.damaged_pending = true;
+        }
+    }
+
+    /// What a read of the slot can return.
+    fn candidates(&self) -> Vec<Option<Written>> {
+        let mut out = self.device.clone();
+        for &(copy, torn) in &self.pending {
+            for c in [Some(copy), torn.then_some(None)].into_iter().flatten() {
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The slot oracle's files, by path.
+#[derive(Default)]
+struct Slots {
+    files: BTreeMap<String, [Slot; 2]>,
+    /// What each read of `state` in the current open could return
+    /// (`None`: the read failed).
+    reads: [Option<Option<Vec<Option<Written>>>>; 2],
+    calls: usize,
+    events: usize,
+}
+
+/// A call or an event, in the order the slot oracle takes them in.
+enum Item<'a> {
+    Call(&'a Call),
+    Event(&'a Event),
+}
+
+impl Slots {
+    fn file(&mut self, path: &str) -> &mut [Slot; 2] {
+        self.files.entry(path.to_owned()).or_default()
+    }
+
+    /// Take in the calls and events since the last time, in the order they
+    /// happened: what the simulator did before a step's call, the call,
+    /// then what happened in it or after it.
+    fn follow(&mut self, log: &Log, events: &[Event]) {
+        let calls: Vec<(u64, Call)> = log.lock().unwrap()[self.calls..].to_vec();
+        self.calls += calls.len();
+        let new_events = &events[self.events..];
+        self.events = events.len();
+        let mut items: Vec<((u64, u8), Item)> = Vec::new();
+        for (step, call) in &calls {
+            items.push(((*step, 1), Item::Call(call)));
+        }
+        for event in new_events {
+            let key = match event {
+                Event::Damaged { step, .. }
+                | Event::WrittenBack { step, .. }
+                | Event::FolderWrittenBack { step, .. }
+                | Event::Evicted { step, .. } => (*step, 0),
+                Event::Crash { step, .. }
+                | Event::Stopped { step }
+                | Event::FlushFailed { step, .. }
+                | Event::WriteFailed { step, .. }
+                | Event::NoSpace { step, .. }
+                | Event::ReadFailed { step, .. }
+                | Event::Misplaced { step, .. }
+                | Event::Lost { step, .. } => (*step, 2),
+            };
+            items.push((key, Item::Event(event)));
+        }
+        items.sort_by_key(|(key, _)| *key);
+        for (_, item) in items {
+            match item {
+                Item::Call(call) => self.call(call),
+                Item::Event(event) => self.event(event),
+            }
+        }
+    }
+
+    fn call(&mut self, call: &Call) {
+        match call {
+            Call::Write { path, slots, ok } => {
+                for &(slot, copy) in slots {
+                    self.file(path)[slot].write(copy, !ok);
+                }
+            }
+            Call::Flush { path, ok: true } => self.file(path).iter_mut().for_each(Slot::flushed),
+            Call::Flush { path, ok: false } => self.file(path).iter_mut().for_each(Slot::unsettled),
+            Call::Read { path, slot, ok } if path == FILE => {
+                let candidates = ok.then(|| self.file(FILE)[*slot].candidates());
+                self.reads[*slot] = Some(candidates);
+            }
+            Call::Read { .. } => {}
+            Call::Rename { from, to, ok } => {
+                // Done, or cut short by a crash that may keep it: the name
+                // leads to the same slots.
+                if from == NEW_FILE && to == FILE {
+                    let slots = self.files.get(NEW_FILE).cloned().unwrap_or_default();
+                    if *ok {
+                        self.files.remove(NEW_FILE);
+                    }
+                    self.files.insert(FILE.to_owned(), slots);
+                }
+            }
+            Call::Remove { path, ok: true } => {
+                self.files.remove(path);
+            }
+            Call::Remove { .. } => {}
+        }
+    }
+
+    fn event(&mut self, event: &Event) {
+        match event {
+            Event::Crash { .. } => {
+                for slots in self.files.values_mut() {
+                    slots.iter_mut().for_each(Slot::unsettled);
+                }
+            }
+            Event::Damaged {
+                path, offset, len, ..
+            } if watched(path) => {
+                for (i, slot) in self.file(path).iter_mut().enumerate() {
+                    let hashed = (i * SLOT) as u64..(i * SLOT + COPY_V1) as u64;
+                    if *offset < hashed.end && offset + len > hashed.start {
+                        slot.damaged();
+                    }
+                }
+            }
+            Event::WrittenBack {
+                path, offset, len, ..
+            } if watched(path) => {
+                for (i, slot) in self.file(path).iter_mut().enumerate() {
+                    let range = (i * SLOT) as u64..((i + 1) * SLOT) as u64;
+                    if *offset < range.end && offset + len > range.start {
+                        slot.written_back();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A machine the scenario runs on.
 trait Machine {
     fn fs(&self) -> &dyn Fs;
@@ -27,15 +445,13 @@ trait Machine {
     /// The process ends. With `power_loss`, the power fails first where
     /// the machine can do that.
     fn restart(&mut self, power_loss: bool);
-    /// What the machine did that the process cannot see.
-    fn events(&self) -> Vec<Event>;
-    /// No more drawn faults.
-    fn calm(&mut self);
+    /// The simulator and the recorded calls, on a simulated machine.
+    fn sim(&self) -> Option<(&Sim, &Log)>;
 }
 
 struct Simulated {
     sim: Sim,
-    fs: SimFs,
+    fs: Recorder,
     random: SimRandom,
 }
 
@@ -43,7 +459,11 @@ impl Simulated {
     fn new(seed: u64, rates: Rates) -> Self {
         let sim = Sim::with_rates(seed, rates);
         Self {
-            fs: sim.fs(),
+            fs: Recorder {
+                inner: sim.fs(),
+                sim: sim.clone(),
+                log: Log::default(),
+            },
             random: sim.random(),
             sim,
         }
@@ -66,12 +486,8 @@ impl Machine for Simulated {
         self.sim.restart();
     }
 
-    fn events(&self) -> Vec<Event> {
-        self.sim.events()
-    }
-
-    fn calm(&mut self) {
-        self.sim.set_rates(Rates::default());
+    fn sim(&self) -> Option<(&Sim, &Log)> {
+        Some((&self.sim, &self.fs.log))
     }
 }
 
@@ -90,15 +506,13 @@ impl Machine for Real {
         &self.random
     }
 
-    /// The process "ends" by dropping its state and lock; a real power
-    /// failure is not available.
+    /// The process "ends" by dropping its state; a real power failure is
+    /// not available.
     fn restart(&mut self, _power_loss: bool) {}
 
-    fn events(&self) -> Vec<Event> {
-        Vec::new()
+    fn sim(&self) -> Option<(&Sim, &Log)> {
+        None
     }
-
-    fn calm(&mut self) {}
 }
 
 /// How a run ended.
@@ -106,81 +520,93 @@ impl Machine for Real {
 enum End {
     /// Its last open succeeded.
     Open,
-    /// An open found no valid copy, where the faults allowed that.
-    NoValidCopy,
+    /// An open found no copy it could use, where the slot oracle allowed
+    /// that.
+    NoCopy,
 }
 
-/// What the oracle expects of the next open.
+/// Which promises a schedule's device keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Expect {
-    /// Only crashes and failures the store reports: the last confirmed
-    /// copy or a later one that was being written.
-    Exact,
-    /// The device damaged `state` since the call that confirmed the copy
-    /// began: an older copy may be read, or none.
-    DamagedConfirmed,
-    /// The device misplaced or dropped a write of `state`: a copy that
-    /// was once written, never a mixture, or none.
-    AnyWritten,
+enum Device {
+    /// It may crash, fail and damage, but never lies about a write: both
+    /// oracles hold.
+    Honest,
+    /// It may also misplace or drop a write it reported done: the copy read
+    /// is one that was written, never a mixture.
+    Lying,
 }
 
-/// The copy the last open, create or update that returned `Ok` made.
+/// The record oracle's view of the last confirmed copy.
 #[derive(Clone, Copy, Debug)]
 struct Confirmed {
-    core: Values,
-    number: u64,
-    /// How much the open that made it raised the start count (0 for an
-    /// update or a creation).
-    raised: u64,
-    /// The machine's events when the call that confirmed it began.
-    events: usize,
-}
-
-/// The oracle's record of a run.
-#[derive(Default)]
-struct Model {
-    confirmed: Option<Confirmed>,
-    /// The values (start count cleared) of updates attempted since.
-    attempts: Vec<Values>,
-    /// Copies attempted since: each takes one number.
-    writes: u64,
-    /// The values (start count cleared) of every copy attempted.
-    history: Vec<Values>,
-    /// The highest start count an open or a creation returned.
-    max_start: u64,
-}
-
-/// What the oracle compares: everything but the start count.
-fn core(values: &Values) -> Values {
-    Values {
-        start_count: 0,
-        ..*values
-    }
-}
-
-fn touches_state(path: &str) -> bool {
-    path == FILE || path == NEW_FILE
+    values: Values,
+    /// Written to one slot only (a marker advance).
+    once: bool,
+    /// The copy confirmed before it.
+    previous: Values,
 }
 
 /// Counts over many runs, to show the schedules reach what they test.
 #[derive(Debug, Default)]
 struct Reached {
     opens: u64,
-    fallbacks: u64,
-    no_valid_copy: u64,
+    other_slot_lost: u64,
+    no_copy: u64,
     refused: u64,
     failed_updates: u64,
+    fired: BTreeMap<Fault, u64>,
+}
+
+impl Reached {
+    fn add_fired(&mut self, sim: &Sim) {
+        for (fault, n) in sim.fired() {
+            *self.fired.entry(fault).or_default() += n;
+        }
+    }
+
+    /// Every fault `rates` draws had an effect somewhere.
+    fn assert_fired(&self, rates: &Rates) {
+        let drawn = [
+            (Fault::Crash, rates.crash),
+            (Fault::FailFlush, rates.fail_flush),
+            (Fault::FailWrite, rates.fail_write),
+            (Fault::NoSpace, rates.no_space),
+            (Fault::FailRead, rates.fail_read),
+            (Fault::Damage, rates.damage),
+            (Fault::Misplace, rates.misplace),
+            (Fault::LoseWrite, rates.lose_write),
+            (Fault::Writeback, rates.writeback),
+        ];
+        for (fault, rate) in drawn {
+            if rate != 0 {
+                assert!(
+                    self.fired.get(&fault).copied().unwrap_or(0) > 0,
+                    "{fault:?} never fired: {self:?}"
+                );
+            }
+        }
+    }
 }
 
 /// One run of the scenario: `actions` steps of updates, stops and power
 /// failures drawn from `plan`, then a last open with no faults.
 struct Run<'a> {
     machine: &'a mut dyn Machine,
+    device: Device,
     seed: u64,
     plan: Rng,
-    model: Model,
+    slots: Slots,
+    confirmed: Option<Confirmed>,
+    /// Updates attempted since the last confirmation.
+    attempts: Vec<Values>,
+    /// The highest start count an open or a creation returned.
+    issued: u64,
+    /// The simulator's events when the last open or creation that
+    /// succeeded began.
+    trusted_from: usize,
+    /// Every copy the state code wrote.
+    written: Vec<Written>,
     state: Option<State>,
-    lock: Option<FolderLock>,
     reached: &'a mut Reached,
     /// What the run did, for a failure's report.
     log: Vec<String>,
@@ -190,9 +616,11 @@ struct Run<'a> {
 impl Drop for Run<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            eprintln!("seed {}: the machine's events:", self.seed);
-            for event in self.machine.events() {
-                eprintln!("  {event:?}");
+            if let Some((sim, _)) = self.machine.sim() {
+                eprintln!("seed {}: the machine's events:", self.seed);
+                for event in sim.events() {
+                    eprintln!("  {event:?}");
+                }
             }
             eprintln!("the run's steps:");
             for line in &self.log {
@@ -203,14 +631,24 @@ impl Drop for Run<'_> {
 }
 
 impl<'a> Run<'a> {
-    fn new(machine: &'a mut dyn Machine, seed: u64, reached: &'a mut Reached) -> Self {
+    fn new(
+        machine: &'a mut dyn Machine,
+        device: Device,
+        seed: u64,
+        reached: &'a mut Reached,
+    ) -> Self {
         Self {
             machine,
+            device,
             seed,
             plan: Rng::stream(seed, 7),
-            model: Model::default(),
+            slots: Slots::default(),
+            confirmed: None,
+            attempts: Vec::new(),
+            issued: 0,
+            trusted_from: 0,
+            written: Vec::new(),
             state: None,
-            lock: None,
             reached,
             log: Vec::new(),
         }
@@ -220,7 +658,7 @@ impl<'a> Run<'a> {
         for _ in 0..actions {
             if self.state.is_none() {
                 if let Some(end) = self.start() {
-                    return end;
+                    return self.end(end);
                 }
                 continue;
             }
@@ -230,27 +668,37 @@ impl<'a> Run<'a> {
                 _ => self.stop(true),
             }
         }
-        // Recovery without faults: the store opens, or the faults
-        // destroyed both copies where the oracle allowed that.
-        self.machine.calm();
+        // Recovery without drawn faults: the store opens, or the faults
+        // destroyed both slots where the slot oracle allowed that.
+        if let Some((sim, _)) = self.machine.sim() {
+            sim.set_rates(Rates::default());
+        }
         self.stop(true);
         for _ in 0..3 {
             if let Some(end) = self.start() {
-                return end;
+                return self.end(end);
             }
             if self.state.is_some() {
-                return End::Open;
+                return self.end(End::Open);
             }
         }
         panic!("seed {}: the store did not open without faults", self.seed);
+    }
+
+    fn end(self, end: End) -> End {
+        if let Some((sim, _)) = self.machine.sim() {
+            let sim = sim.clone();
+            self.reached.add_fired(&sim);
+        }
+        end
     }
 
     /// The process ends, the power failing with it when `power_loss`.
     fn stop(&mut self, power_loss: bool) {
         self.log.push(format!("stop (power loss: {power_loss})"));
         self.state = None;
-        self.lock = None;
         self.machine.restart(power_loss);
+        self.follow();
     }
 
     /// After a failure: the store stops at once (section 6.12), and the
@@ -258,6 +706,20 @@ impl<'a> Run<'a> {
     fn fail(&mut self) {
         let power_loss = self.plan.below(2) == 0;
         self.stop(power_loss);
+    }
+
+    /// Bring the slot oracle up to date.
+    fn follow(&mut self) {
+        if let Some((sim, log)) = self.machine.sim() {
+            let events = sim.events();
+            for (_, call) in &log.lock().unwrap()[self.slots.calls..] {
+                if let Call::Write { slots, .. } = call {
+                    self.written
+                        .extend(slots.iter().filter_map(|(_, copy)| *copy));
+                }
+            }
+            self.slots.follow(log, &events);
+        }
     }
 
     /// Take the lock and open `state`, or create it where there is none.
@@ -280,9 +742,11 @@ impl<'a> Run<'a> {
             }
             Ok(_) => panic!("seed {seed}: a second lock of the store folder was granted"),
         }
-        self.model.writes += 1;
-        let mark = self.machine.events().len();
-        let opened = State::open(self.machine.fs(), &lock);
+        self.follow();
+        self.slots.reads = [None, None];
+        let began = self.machine.sim().map_or(0, |(sim, _)| sim.events().len());
+        let opened = State::open(self.machine.fs(), lock);
+        self.follow();
         self.log.push(match &opened {
             Ok(state) => format!("open: {:?} -> {:?}", state.opened(), state.copy()),
             Err(e) => format!("open: {e}"),
@@ -292,22 +756,25 @@ impl<'a> Run<'a> {
                 self.check_open(&state);
                 self.reached.opens += 1;
                 if state.opened().is_some_and(|o| o.other.is_err()) {
-                    self.reached.fallbacks += 1;
+                    self.reached.other_slot_lost += 1;
                 }
-                let raised = match state.opened() {
-                    Some(o) if o.other.is_err() => 2,
-                    _ => 1,
-                };
-                self.confirm(&state, raised, mark);
+                self.confirm(&state, false);
+                self.issued = state.values().start_count;
+                self.trusted_from = began;
                 self.state = Some(state);
-                self.lock = Some(lock);
             }
             Err(StateError::Missing) => {
                 assert!(
-                    self.model.confirmed.is_none(),
+                    self.confirmed.is_none(),
                     "seed {seed}: state is missing after it was confirmed"
                 );
-                let created = State::create(self.machine.fs(), self.machine.random(), &lock);
+                let created = self
+                    .machine
+                    .fs()
+                    .lock()
+                    .map_err(StateError::Disk)
+                    .and_then(|lock| State::create(self.machine.fs(), self.machine.random(), lock));
+                self.follow();
                 self.log.push(match &created {
                     Ok(state) => format!("create -> {:?}", state.copy()),
                     Err(e) => format!("create: {e}"),
@@ -315,158 +782,210 @@ impl<'a> Run<'a> {
                 match created {
                     Ok(state) => {
                         assert_eq!(state.values().start_count, 1, "seed {seed}");
-                        self.confirm(&state, 0, mark);
+                        assert_eq!(self.issued, 0, "seed {seed}: created twice");
+                        self.confirm(&state, false);
+                        self.issued = 1;
+                        self.trusted_from = began;
                         self.state = Some(state);
-                        self.lock = Some(lock);
                     }
-                    Err(StateError::Disk(_)) => {
-                        drop(lock);
-                        self.fail();
-                    }
+                    Err(StateError::Disk(_)) => self.fail(),
                     Err(e) => panic!("seed {seed}: create: {e}"),
                 }
             }
-            Err(StateError::NoValidCopy { .. }) => {
-                let expect = self.expect();
-                assert_ne!(
-                    expect,
-                    Expect::Exact,
-                    "seed {seed}: no valid copy, though the device kept the confirmed one; {:?}",
-                    self.model.confirmed
-                );
-                self.reached.no_valid_copy += 1;
-                return Some(End::NoValidCopy);
+            Err(e @ (StateError::NoValidCopy { .. } | StateError::Unreadable { .. })) => {
+                self.check_no_copy(&e);
+                self.reached.no_copy += 1;
+                return Some(End::NoCopy);
             }
-            Err(StateError::Disk(_)) => {
-                drop(lock);
-                self.fail();
-            }
+            Err(StateError::Disk(_)) => self.fail(),
             Err(e) => panic!("seed {seed}: open: {e}"),
         }
         None
     }
 
-    /// What the next open may find, from the device's faults since the
-    /// confirmed copy.
-    fn expect(&self) -> Expect {
-        if self.lied() {
-            return Expect::AnyWritten;
+    /// The slot oracle allows an open to find no copy.
+    fn check_no_copy(&self, error: &StateError) {
+        let seed = self.seed;
+        if self.machine.sim().is_none() {
+            panic!("seed {seed}: {error} on a file system without faults");
         }
-        let Some(confirmed) = self.model.confirmed else {
-            return Expect::Exact;
-        };
-        // Damage to either slot counts: an open that wrote the copy it
-        // read back and flushed it may then overwrite the confirmed copy's
-        // slot, and the copy it read is the one that holds.
-        let damaged = self.machine.events()[confirmed.events..]
-            .iter()
-            .any(|event| matches!(event, Event::Damaged { path, .. } if path == FILE));
-        if damaged {
-            Expect::DamagedConfirmed
-        } else {
-            Expect::Exact
+        if self.device == Device::Lying {
+            return;
         }
-    }
-
-    /// Whether the device has misplaced or dropped a write of `state`.
-    fn lied(&self) -> bool {
-        self.machine.events().iter().any(|e| match e {
-            Event::Misplaced { path, .. } | Event::Lost { path, .. } => touches_state(path),
-            _ => false,
-        })
+        for (slot, read) in self.slots.reads.iter().enumerate() {
+            match read {
+                Some(Some(candidates)) => assert!(
+                    candidates.contains(&None),
+                    "seed {seed}: {error}, though slot {slot} could only hold {candidates:?}"
+                ),
+                Some(None) => assert!(
+                    matches!(error, StateError::Unreadable { .. }),
+                    "seed {seed}: slot {slot} was unreadable, yet {error}"
+                ),
+                None => panic!("seed {seed}: slot {slot} was not read"),
+            }
+        }
+        // Crashes, failed writes and failed flushes put at most one slot at
+        // risk at a time: the state code writes a slot only while the other
+        // holds a copy it flushed itself. So no slot is left only when the
+        // device damaged one since both were last made whole by an open.
+        if matches!(error, StateError::NoValidCopy { .. }) {
+            let (sim, _) = self.machine.sim().expect("simulated");
+            let damaged = sim.events()[self.trusted_from..].iter().any(|event| {
+                matches!(event, Event::Damaged { path, offset, len, .. }
+                if watched(path) && (0..2).any(|i| {
+                    *offset < (i * SLOT + COPY_V1) as u64 && offset + len > (i * SLOT) as u64
+                }))
+            });
+            assert!(
+                damaged,
+                "seed {seed}: {error}, though only crashes and failures the store reports \
+                 happened since its last open"
+            );
+        }
     }
 
     fn check_open(&mut self, state: &State) {
         let seed = self.seed;
         let opened = *state.opened().expect("an open");
         let values = *state.values();
-        let Some(confirmed) = self.model.confirmed else {
-            // Only a creation that did not return can have made it.
-            assert_eq!(values.term, 0, "seed {seed}");
-            assert_eq!(values.vote, None, "seed {seed}");
-            assert_eq!(values.marker.index, 0, "seed {seed}");
-            assert_eq!(values.repair, None, "seed {seed}");
-            assert!(values.start_count >= 2, "seed {seed}: {values:?}");
+        // The copy as read: the open raised the start count by one.
+        let read = Written {
+            number: opened.number,
+            values: Values {
+                start_count: values.start_count - 1,
+                ..values
+            },
+        };
+        match (self.machine.sim().is_some(), self.device) {
+            (true, Device::Lying) => {
+                assert!(
+                    self.written.contains(&read),
+                    "seed {seed}: read {read:?}, which was never written"
+                );
+                return;
+            }
+            (true, Device::Honest) => self.check_slots(&opened, &read),
+            (false, _) => {}
+        }
+        let Some(confirmed) = self.confirmed else {
+            // Only a creation, and opens, that did not return can have
+            // made it.
+            let initial = Values {
+                start_count: read.values.start_count,
+                vote: None,
+                term: 0,
+                segments: Segments { first: 1, count: 0 },
+                marker: Marker {
+                    index: 0,
+                    hash: [0; 32],
+                    committed: 0,
+                },
+                repair: None,
+                ..read.values
+            };
+            assert_eq!(read.values, initial, "seed {seed}");
             return;
         };
-        assert_eq!(values.server_id, confirmed.core.server_id, "seed {seed}");
-        let read = core(&values);
-        let expect = self.expect();
-        let newest = confirmed.number + self.model.writes;
-        match expect {
-            Expect::Exact => {
-                assert!(
-                    (confirmed.number..=newest).contains(&opened.number),
-                    "seed {seed}: copy {} read; confirmed {}, {} written since",
-                    opened.number,
-                    confirmed.number,
-                    self.model.writes
-                );
-                assert!(
-                    read == confirmed.core || self.model.attempts.contains(&read),
-                    "seed {seed}: read {read:?}, confirmed {:?}, attempted since {:?}",
-                    confirmed.core,
-                    self.model.attempts
-                );
-            }
-            Expect::DamagedConfirmed => {
-                assert!(
-                    (confirmed.number - 1..=newest).contains(&opened.number),
-                    "seed {seed}: copy {} read after damage; confirmed {}",
-                    opened.number,
-                    confirmed.number
-                );
-                assert!(
-                    self.model.history.contains(&read),
-                    "seed {seed}: read {read:?}"
-                );
-            }
-            Expect::AnyWritten => {
-                assert!(
-                    self.model.history.contains(&read),
-                    "seed {seed}: read {read:?}"
-                );
-            }
+        assert_eq!(values.server_id, confirmed.values.server_id, "seed {seed}");
+        if self.machine.sim().is_none() {
+            // No faults: exactly what was confirmed.
+            assert_eq!(read.values, confirmed.values, "seed {seed}");
         }
-        // The start count never goes back. With the confirmed copy damaged
-        // it holds unless that copy was itself written by an open that
-        // found the other copy invalid (the documented limit).
-        let start_checked = match expect {
-            Expect::Exact => true,
-            Expect::DamagedConfirmed => confirmed.raised != 2,
-            Expect::AnyWritten => false,
+        self.check_record(&read.values, &confirmed);
+    }
+
+    /// The slot oracle (module docs).
+    fn check_slots(&self, opened: &Opened, read: &Written) {
+        let seed = self.seed;
+        let candidates = |slot: usize| match &self.slots.reads[slot] {
+            Some(Some(candidates)) => Some(candidates.clone()),
+            Some(None) => None,
+            None => panic!("seed {seed}: slot {slot} was not read"),
         };
-        if start_checked {
-            assert!(
-                values.start_count > self.model.max_start,
-                "seed {seed}: start count {} after {}",
-                values.start_count,
-                self.model.max_start
-            );
+        let mine = candidates(opened.slot)
+            .unwrap_or_else(|| panic!("seed {seed}: slot {} read, yet unreadable", opened.slot));
+        assert!(
+            mine.contains(&Some(*read)),
+            "seed {seed}: read {read:?} from slot {}, which could hold only {mine:?}",
+            opened.slot
+        );
+        let other = 1 - opened.slot;
+        match (opened.other, candidates(other)) {
+            (Ok(number), Some(theirs)) => {
+                assert!(
+                    theirs.iter().flatten().any(|w| w.number == number),
+                    "seed {seed}: slot {other} read as copy {number}, \
+                     which could hold only {theirs:?}"
+                );
+                assert!(
+                    opened.number > number || (opened.number == number && opened.slot == 0),
+                    "seed {seed}: copy {} taken over copy {number}",
+                    opened.number
+                );
+            }
+            (Err(SlotFault::Invalid(_)), Some(theirs)) => assert!(
+                theirs.contains(&None),
+                "seed {seed}: slot {other} invalid, though it could hold only {theirs:?}"
+            ),
+            (Err(SlotFault::Unreadable(_)), None) => {}
+            (other_read, theirs) => {
+                panic!("seed {seed}: the other slot read as {other_read:?}; oracle {theirs:?}")
+            }
         }
     }
 
-    /// `state` returned `Ok`: what it holds is confirmed.
-    fn confirm(&mut self, state: &State, raised: u64, mark: usize) {
-        let (number, _) = state.copy();
-        let start = state.values().start_count;
-        self.model.max_start = if self.lied() {
-            start
-        } else {
-            self.model.max_start.max(start)
-        };
-        let core = core(state.values());
-        if !self.model.history.contains(&core) {
-            self.model.history.push(core);
+    /// The record oracle (module docs): `read` against what was confirmed
+    /// and attempted since.
+    fn check_record(&self, read: &Values, confirmed: &Confirmed) {
+        let seed = self.seed;
+        let c = &confirmed.values;
+        let attempted = |f: &dyn Fn(&Values) -> bool| self.attempts.iter().any(f);
+        assert!(
+            read.start_count + 1 > self.issued,
+            "seed {seed}: start count {} issued again (issued up to {})",
+            read.start_count + 1,
+            self.issued
+        );
+        assert!(
+            read.term >= c.term,
+            "seed {seed}: term went back: {read:?} after {c:?}"
+        );
+        if read.term == c.term && c.vote.is_some() {
+            assert_eq!(read.vote, c.vote, "seed {seed}: a vote was lost or changed");
         }
-        self.model.confirmed = Some(Confirmed {
-            core,
-            number,
-            raised,
-            events: mark,
+        assert!(
+            read.repair == c.repair || attempted(&|a| a.repair == read.repair),
+            "seed {seed}: repair record {:?} after {:?}",
+            read.repair,
+            c.repair
+        );
+        assert!(
+            read.segments == c.segments || attempted(&|a| a.segments == read.segments),
+            "seed {seed}: segments {:?} after {:?}",
+            read.segments,
+            c.segments
+        );
+        let one_back = confirmed.once && read.marker == confirmed.previous.marker;
+        assert!(
+            read.marker == c.marker || one_back || attempted(&|a| a.marker == read.marker),
+            "seed {seed}: marker {:?} after {:?} (confirmed once: {})",
+            read.marker,
+            c.marker,
+            confirmed.once
+        );
+    }
+
+    /// `state` returned `Ok`: what it holds is confirmed.
+    fn confirm(&mut self, state: &State, once: bool) {
+        let values = *state.values();
+        let previous = self.confirmed.map_or(values, |c| c.values);
+        self.confirmed = Some(Confirmed {
+            values,
+            once,
+            previous,
         });
-        self.model.attempts.clear();
-        self.model.writes = 0;
+        self.attempts.clear();
     }
 
     fn update(&mut self) {
@@ -484,26 +1003,25 @@ impl<'a> Run<'a> {
             self.reached.refused += 1;
         }
         let next = self.change(&before);
-        self.model.attempts.push(core(&next));
-        self.model.history.push(core(&next));
-        self.model.writes += 1;
+        self.attempts.push(next);
         let state = self.state.as_mut().expect("open");
-        let mark = self.machine.events().len();
         let updated = state.update(|v| *v = next);
         self.log.push(match &updated {
             Ok(()) => format!("update -> {:?}", state.copy()),
             Err(e) => format!("update: {e}"),
         });
+        self.follow();
         match updated {
             Ok(()) => {
-                assert_eq!(*state.values(), next, "seed {seed}");
                 let state = self.state.take().expect("open");
-                self.confirm(&state, 0, mark);
+                assert_eq!(*state.values(), next, "seed {seed}");
+                self.confirm(&state, before.advances_marker_to(&next));
                 self.state = Some(state);
             }
             Err(StateError::Disk(_)) => {
                 // What reached the device is unknown: nothing more is
                 // written through this state.
+                let state = self.state.as_mut().expect("open");
                 assert!(
                     matches!(state.update(|_| {}), Err(StateError::Failed)),
                     "seed {seed}"
@@ -515,7 +1033,7 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// A change a running server could make.
+    /// A change a running server could make: mostly the marker moving on.
     fn change(&mut self, before: &Values) -> Values {
         let mut v = *before;
         let id = |plan: &mut Rng| {
@@ -523,29 +1041,29 @@ impl<'a> Run<'a> {
             plan.fill(&mut id);
             ServerId(id)
         };
-        match self.plan.below(6) {
-            0 => {
+        match self.plan.below(10) {
+            0..=3 => {
                 // A batch was flushed.
                 v.marker.index += 1 + self.plan.below(50);
                 self.plan.fill(&mut v.marker.hash);
                 v.marker.committed = v.marker.committed.max(v.marker.index - 1);
             }
-            1 => {
+            4 => {
                 v.term += 1;
                 v.vote = None;
                 if self.plan.below(2) == 0 {
                     v.vote = Some(id(&mut self.plan));
                 }
             }
-            2 if v.vote.is_none() => v.vote = Some(id(&mut self.plan)),
-            2 => v.marker.committed += 1,
-            3 if v.segments.count > 0 && self.plan.below(2) == 0 => {
+            5 if v.vote.is_none() => v.vote = Some(id(&mut self.plan)),
+            5 => v.marker.committed += 1,
+            6 if v.segments.count > 0 && self.plan.below(2) == 0 => {
                 // The oldest segment is retired.
                 v.segments.first += 1;
                 v.segments.count -= 1;
             }
-            3 => v.segments.count += 1,
-            4 => {
+            6 => v.segments.count += 1,
+            7 => {
                 v.repair = match v.repair {
                     None => Some(Repair {
                         required_end: v.marker.index,
@@ -553,9 +1071,15 @@ impl<'a> Run<'a> {
                     Some(_) => None,
                 }
             }
-            _ => {
+            8 => {
                 // A follower cuts entries: the marker goes back.
                 v.marker.index = v.marker.index.saturating_sub(1 + self.plan.below(5));
+                self.plan.fill(&mut v.marker.hash);
+            }
+            _ => {
+                // A new segment listed with the batch that needed it.
+                v.segments.count += 1;
+                v.marker.index += 1;
                 self.plan.fill(&mut v.marker.hash);
             }
         }
@@ -564,7 +1088,7 @@ impl<'a> Run<'a> {
 }
 
 /// The faults the store answers for: crashes, failed flushes and writes,
-/// a full disk, failed reads and damage.
+/// a full disk, failed reads, damage and writeback.
 const FAULTS: Rates = Rates {
     crash: 25,
     fail_flush: 12,
@@ -574,6 +1098,7 @@ const FAULTS: Rates = Rates {
     damage: 60,
     misplace: 0,
     lose_write: 0,
+    writeback: 8,
 };
 
 #[test]
@@ -582,12 +1107,13 @@ fn state_survives_drawn_crashes_and_faults() {
     let mut ends = [0u32; 2];
     for seed in seeds(300) {
         let mut machine = Simulated::new(seed, FAULTS);
-        let end = Run::new(&mut machine, seed, &mut reached).go(60);
-        ends[usize::from(end == End::NoValidCopy)] += 1;
+        let end = Run::new(&mut machine, Device::Honest, seed, &mut reached).go(60);
+        ends[usize::from(end == End::NoCopy)] += 1;
     }
     // The schedules reach what they are meant to test.
     if seeds(300).len() >= 100 {
-        assert!(reached.fallbacks > 0, "{reached:?}");
+        reached.assert_fired(&FAULTS);
+        assert!(reached.other_slot_lost > 0, "{reached:?}");
         assert!(reached.failed_updates > 0, "{reached:?}");
         assert!(reached.refused > 0, "{reached:?}");
         assert!(ends[0] > ends[1], "{ends:?}");
@@ -600,17 +1126,25 @@ fn state_survives_a_crash_at_every_step() {
     for seed in seeds(4) {
         let steps = {
             let mut machine = Simulated::new(seed, Rates::default());
-            Run::new(&mut machine, seed, &mut reached).go(14);
+            Run::new(&mut machine, Device::Honest, seed, &mut reached).go(14);
             machine.sim.steps()
         };
         for step in 1..=steps {
-            // How the crash settles what was not flushed, three ways.
-            for fates in 0..3 {
-                let mut machine =
-                    Simulated::new(seed ^ (step << 20) ^ (fates << 40), Rates::default());
+            for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+                let mut machine = Simulated::new(seed ^ (step << 20), Rates::default());
+                machine.sim.set_crash_fates(fates);
                 machine.sim.place(step, Fault::Crash);
-                let end = Run::new(&mut machine, seed, &mut reached).go(14);
-                assert_eq!(end, End::Open, "seed {seed}, crash at step {step}");
+                let end = Run::new(&mut machine, Device::Honest, seed, &mut reached).go(14);
+                assert_eq!(
+                    end,
+                    End::Open,
+                    "seed {seed}, crash at step {step}, {fates:?}"
+                );
+                assert_eq!(
+                    machine.sim.fired().get(&Fault::Crash),
+                    Some(&1),
+                    "seed {seed}: the crash placed at step {step} did not fire"
+                );
             }
         }
     }
@@ -626,7 +1160,10 @@ fn state_reads_a_written_copy_after_misplaced_and_lost_writes() {
     let mut reached = Reached::default();
     for seed in seeds(150) {
         let mut machine = Simulated::new(seed, rates);
-        Run::new(&mut machine, seed, &mut reached).go(60);
+        Run::new(&mut machine, Device::Lying, seed, &mut reached).go(60);
+    }
+    if seeds(150).len() >= 100 {
+        reached.assert_fired(&rates);
     }
 }
 
@@ -640,7 +1177,7 @@ fn state_scenario_runs_on_the_real_file_system() {
             _folder: folder,
             random: OsRandom::new(),
         };
-        let end = Run::new(&mut machine, seed, &mut reached).go(30);
+        let end = Run::new(&mut machine, Device::Honest, seed, &mut reached).go(30);
         assert_eq!(end, End::Open);
     }
     assert!(reached.opens > 0);
@@ -650,7 +1187,7 @@ fn state_scenario_runs_on_the_real_file_system() {
 fn a_seed_replays_exactly() {
     let run = |seed: u64| {
         let mut machine = Simulated::new(seed, FAULTS);
-        Run::new(&mut machine, seed, &mut Reached::default()).go(60);
+        Run::new(&mut machine, Device::Honest, seed, &mut Reached::default()).go(60);
         (machine.sim.events(), machine.sim.image())
     };
     let (events, image) = run(11);
@@ -659,63 +1196,54 @@ fn a_seed_replays_exactly() {
     assert_ne!(run(12).0, events);
 }
 
+/// Open `state` on `sim`, taking the lock.
+fn open(sim: &Sim) -> Result<State, StateError> {
+    let fs = sim.fs();
+    State::open(&fs, fs.lock()?)
+}
+
+/// Damage the hashed bytes of `slot` on the device.
+fn damage(sim: &Sim, slot: usize) {
+    sim.damage(FILE, (slot * SLOT + 40) as u64, 2).unwrap();
+}
+
 #[test]
 fn open_refuses_what_it_cannot_trust() {
     let sim = Sim::new(5);
+    assert!(matches!(open(&sim), Err(StateError::Missing)));
     let fs = sim.fs();
-    let lock = fs.lock().unwrap();
-    assert!(matches!(State::open(&fs, &lock), Err(StateError::Missing)));
-
-    let mut state = State::create(&fs, &sim.random(), &lock).unwrap();
-    for index in 1..=3 {
-        state.update(|v| v.marker.index = index).unwrap();
-    }
-    let (newest, slot) = state.copy();
-    let start = state.values().start_count;
-    drop(state);
-    let at = |slot: usize| (slot * SLOT + 40) as u64;
-
-    // Damage to the older copy: the newest is read.
-    sim.damage(FILE, at(1 - slot), 4).unwrap();
-    let state = State::open(&fs, &lock).unwrap();
-    let opened = *state.opened().unwrap();
-    assert_eq!((opened.number, opened.slot), (newest, slot));
-    assert_eq!(opened.other, Err(Invalid::Hash));
-    assert_eq!(state.values().marker.index, 3);
-    assert_eq!(state.values().start_count, start + 2);
-    let mut state = state;
-    state.update(|v| v.marker.index = 4).unwrap();
-    let (newest, slot) = state.copy();
-    let start = state.values().start_count;
-    drop(state);
-
-    // Damage to the newest: the one before it is read, and the start count
-    // still rises past the lost copy's.
-    sim.damage(FILE, at(slot), 4).unwrap();
-    let state = State::open(&fs, &lock).unwrap();
-    assert_eq!(state.opened().unwrap().number, newest - 1);
-    assert!(state.values().start_count > start);
-    let (_, slot) = state.copy();
-    drop(state);
+    drop(State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap());
 
     // Both damaged: the open fails and says so.
-    sim.damage(FILE, at(slot), 1).unwrap();
-    sim.damage(FILE, at(1 - slot), 1).unwrap();
-    match State::open(&fs, &lock) {
-        Err(e @ StateError::NoValidCopy { .. }) => {
-            assert!(matches!(
-                e,
-                StateError::NoValidCopy {
-                    first: Invalid::Hash,
-                    second: Invalid::Hash
-                }
-            ));
-            assert!(e
-                .to_string()
-                .contains("neither copy of the state file is valid"));
-        }
+    damage(&sim, 0);
+    damage(&sim, 1);
+    match open(&sim) {
+        Err(
+            e @ StateError::NoValidCopy {
+                first: Invalid::Hash,
+                second: Invalid::Hash,
+            },
+        ) => assert!(e
+            .to_string()
+            .contains("neither copy of the state file is valid")),
         other => panic!("{other:?}"),
     }
+
+    // Neither slot readable: a different error, so that the caller can tell
+    // a failing disk from lost copies.
+    let sim = Sim::new(6);
+    let fs = sim.fs();
+    drop(State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap());
+    let at = sim.steps() + 1;
+    sim.place(at, Fault::FailRead);
+    sim.place(at, Fault::FailRead);
+    assert!(matches!(
+        open(&sim),
+        Err(StateError::Unreadable {
+            first: SlotFault::Unreadable(ErrorKind::Read),
+            second: SlotFault::Unreadable(ErrorKind::Read),
+        })
+    ));
 
     // A copy of a newer format, whole: refused rather than passed over.
     let mut copy = encode(99, state_values());
@@ -725,10 +1253,200 @@ fn open_refuses_what_it_cannot_trust() {
     copy[end..end + HASH].copy_from_slice(hash.as_ref());
     let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
     file.write_at(0, &copy).unwrap();
+    drop(file);
     assert!(matches!(
-        State::open(&fs, &lock),
+        open(&sim),
         Err(StateError::NewerFormat { version: 2 })
     ));
+}
+
+#[test]
+fn one_lost_slot_costs_at_most_one_marker_advance() {
+    let sim = Sim::new(7);
+    let fs = sim.fs();
+    let mut state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    let voter = ServerId([9; 16]);
+    state
+        .update(|v| {
+            v.term = 3;
+            v.vote = Some(voter);
+        })
+        .unwrap();
+    state.update(|v| v.marker.index = 10).unwrap();
+    drop(state);
+
+    // The slot with the newest marker advance damaged: one advance back,
+    // the term and vote kept (written to both slots), a fresh start count.
+    let mut state = open(&sim).unwrap();
+    assert_eq!(state.values().marker.index, 10);
+    assert_eq!(state.values().start_count, 2);
+    state.update(|v| v.marker.index = 11).unwrap();
+    let (newest, slot) = state.copy();
+    drop(state);
+    damage(&sim, slot);
+    let state = open(&sim).unwrap();
+    assert_eq!(state.opened().unwrap().number, newest - 1);
+    assert_eq!(
+        state.opened().unwrap().other,
+        Err(SlotFault::Invalid(Invalid::Hash))
+    );
+    let values = *state.values();
+    assert_eq!((values.term, values.vote), (3, Some(voter)));
+    assert_eq!(values.marker.index, 10);
+    assert_eq!(values.start_count, 3);
+    let (_, slot) = state.copy();
+    drop(state);
+
+    // Damage to either slot after an open loses nothing: the start count
+    // was written to both.
+    damage(&sim, slot);
+    let state = open(&sim).unwrap();
+    assert_eq!(state.values().start_count, 4);
+    assert_eq!(state.values().marker.index, 10);
+    drop(state);
+
+    // One slot unreadable: the other is used.
+    sim.place(sim.steps() + 1, Fault::FailRead);
+    let state = open(&sim).unwrap();
+    assert!(matches!(
+        state.opened().unwrap().other,
+        Err(SlotFault::Unreadable(ErrorKind::Read))
+    ));
+    assert_eq!(state.values().start_count, 5);
+}
+
+/// The sequence the first review found (seed 5): an update cut short by a
+/// failed write and a crash, an open, then damage to a slot that open
+/// wrote. No start count may be issued twice.
+#[test]
+fn a_start_count_is_never_issued_twice_after_a_torn_write_and_damage() {
+    for damaged in 0..2 {
+        let sim = Sim::new(5);
+        let fs = sim.fs();
+        let mut issued = vec![];
+        let mut state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        issued.push(state.values().start_count);
+        sim.place(sim.steps() + 1, Fault::FailWrite);
+        assert!(state.update(|v| v.term = 1).is_err());
+        drop(state);
+        sim.crash(Fates::KeepAll);
+        sim.restart();
+        let state = open(&sim).unwrap();
+        issued.push(state.values().start_count);
+        let (_, last) = state.copy();
+        drop(state);
+        damage(&sim, if damaged == 0 { last } else { 1 - last });
+        let state = open(&sim).unwrap();
+        issued.push(state.values().start_count);
+        assert!(issued.windows(2).all(|w| w[0] < w[1]), "{issued:?}");
+    }
+}
+
+/// A flush that fails can leave the cache showing a copy the device does
+/// not hold. An open after it, cut by a crash at any step, must not lose
+/// both slots: it writes the copy it read back before it writes over the
+/// other slot.
+#[test]
+fn an_open_after_a_failed_flush_survives_a_crash_at_every_step() {
+    let voter = ServerId([4; 16]);
+    for seed in seeds(40) {
+        for step in 1..=12 {
+            let sim = Sim::new(seed);
+            let fs = sim.fs();
+            let mut state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+            state
+                .update(|v| {
+                    v.term = 1;
+                    v.vote = Some(voter);
+                })
+                .unwrap();
+            // The flush of a marker advance fails; the process stops and
+            // the cache stays.
+            sim.place(sim.steps() + 2, Fault::FailFlush);
+            assert!(state.update(|v| v.marker.index = 5).is_err());
+            drop(state);
+            sim.restart();
+            sim.place(sim.steps() + step, Fault::Crash);
+            let mut opened = Err(StateError::Failed);
+            for _ in 0..3 {
+                opened = open(&sim);
+                match &opened {
+                    Ok(_) => break,
+                    Err(StateError::Disk(_)) => sim.restart(),
+                    Err(e) => panic!("seed {seed}, crash at step {step} of the open: {e}"),
+                }
+            }
+            let state = opened.unwrap();
+            assert_eq!((state.values().term, state.values().vote), (1, Some(voter)));
+        }
+    }
+}
+
+/// A creation whose folder flush fails can leave `state`'s name only in
+/// the cache. The next open makes it durable before it returns.
+#[test]
+fn an_open_makes_the_name_of_state_durable() {
+    let mut pending = 0;
+    for seed in seeds(30) {
+        let sim = Sim::new(seed);
+        let fs = sim.fs();
+        let lock = fs.lock().unwrap();
+        // create: open, remove, create, write, flush, rename, folder flush.
+        sim.place(sim.steps() + 7, Fault::FailFlush);
+        assert!(State::create(&fs, &sim.random(), lock).is_err());
+        pending += u32::from(folder_flush_left_pending(&sim) > 0);
+        sim.restart();
+        let state = open(&sim).unwrap();
+        assert_eq!(state.values().start_count, 2);
+        drop(state);
+        sim.crash(Fates::LoseAll);
+        sim.restart();
+        let state = open(&sim).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        assert_eq!(state.values().start_count, 3);
+    }
+    assert!(
+        pending > 0,
+        "no failed folder flush left the rename pending"
+    );
+}
+
+/// How many changes the last failed folder flush left pending.
+fn folder_flush_left_pending(sim: &Sim) -> u32 {
+    sim.events()
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::FlushFailed { path, settled, .. } if path.is_empty() => Some(settled.pending),
+            _ => None,
+        })
+        .expect("a failed folder flush")
+}
+
+#[test]
+fn one_lock_makes_one_writer() {
+    let sim = Sim::new(8);
+    let fs = sim.fs();
+    let state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    // While a state lives, its lock is held: no second one is granted.
+    assert_eq!(fs.lock().unwrap_err().kind(), ErrorKind::Locked);
+    drop(state);
+
+    // Another store folder's lock is refused.
+    let other = Sim::new(9);
+    let foreign = other.fs().lock().unwrap();
+    assert!(matches!(
+        State::open(&fs, foreign),
+        Err(StateError::Refused(_))
+    ));
+
+    // A lock of an earlier process is refused.
+    let stale = fs.lock().unwrap();
+    sim.restart();
+    assert!(matches!(
+        State::open(&fs, stale),
+        Err(StateError::Refused(_))
+    ));
+    assert!(open(&sim).is_ok());
 }
 
 fn state_values() -> &'static Values {

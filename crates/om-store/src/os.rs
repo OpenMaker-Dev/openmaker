@@ -15,12 +15,24 @@
 //!   drive's cache.
 //! - **Allocation writes zeros** and leaves the flush to the caller: the
 //!   standard library has no `fallocate` and the crate has no `unsafe`. On
+//!   Unix, when the file's blocks do not cover the part below its old size
+//!   (a sparse file), that part is written back, which fills its holes. On
 //!   a file system that compresses zeros or copies on every write (ZFS,
-//!   btrfs), that does not keep later writes from running out of space.
+//!   btrfs), none of this keeps later writes from running out of space.
+//! - **No links** (`crate::sys`). Every name along a path is checked with
+//!   `symlink_metadata` before the operation, and a file is opened with
+//!   `O_NOFOLLOW` where its value is known (Linux, macOS) and then checked
+//!   to be the entry at its path (Unix) or not a link (Windows, opened
+//!   with `FILE_FLAG_OPEN_REPARSE_POINT`). What remains is a race: a
+//!   process with the server's own rights that swaps a folder for a link
+//!   between the check and the use. Closing it needs operations relative
+//!   to an open folder, which the standard library does not offer.
 //! - **The lock** is `File::try_lock` (`flock` on Unix, `LockFileEx` on
-//!   Windows) on the file `lock` in the store folder, which is created when
-//!   missing and never removed; the store's own files never take that
-//!   name. The system releases it when the process ends.
+//!   Windows) on the file [`sys::LOCK_NAME`] in the store folder, created
+//!   when missing and never removed: no operation takes that name. The
+//!   system releases it when the process ends.
+//! - **A new store folder** ([`OsFs::create_root`]): each folder it makes
+//!   is made durable in the folder above it, outermost first.
 //! - **Permissions.** On Unix, new files are readable by the server's
 //!   account only (0600) and new folders 0700 (`docs/server-storage.md`
 //!   section 11).
@@ -31,6 +43,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::sys::{
@@ -38,9 +51,9 @@ use crate::sys::{
 };
 
 /// The name of the lock file in the store folder.
-pub const LOCK_FILE: &str = "lock";
+pub const LOCK_FILE: &str = sys::LOCK_NAME;
 
-/// How many zeros [`File::allocate`] writes at a time.
+/// How many bytes [`File::allocate`] writes at a time.
 const ZERO_CHUNK: u64 = 1 << 20;
 
 /// `O_DSYNC` on Linux where it has the generic value (asm-generic/fcntl.h).
@@ -78,16 +91,80 @@ const O_DSYNC: Option<i32> = Some(0o10000);
 )))]
 const O_DSYNC: Option<i32> = None;
 
+/// `O_NOFOLLOW`: the generic Linux value (asm-generic/fcntl.h), the value
+/// of Linux on ARM and POWER (their asm/fcntl.h), and macOS's.
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+        target_arch = "s390x",
+        target_arch = "loongarch64"
+    )
+))]
+const O_NOFOLLOW: Option<i32> = Some(0o400000);
+
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "arm",
+        target_arch = "aarch64",
+        target_arch = "powerpc",
+        target_arch = "powerpc64"
+    )
+))]
+const O_NOFOLLOW: Option<i32> = Some(0o100000);
+
+#[cfg(target_vendor = "apple")]
+const O_NOFOLLOW: Option<i32> = Some(0x100);
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_vendor = "apple",
+        all(
+            target_os = "linux",
+            any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "riscv32",
+                target_arch = "riscv64",
+                target_arch = "s390x",
+                target_arch = "loongarch64",
+                target_arch = "arm",
+                target_arch = "aarch64",
+                target_arch = "powerpc",
+                target_arch = "powerpc64"
+            )
+        )
+    ))
+))]
+const O_NOFOLLOW: Option<i32> = None;
+
+/// Opens a link itself rather than what it leads to (Windows).
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// Tells one [`OsFs`] (and its clones) from another, for [`Fs::owns`].
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
 /// A store folder on the operating system's file system.
 #[derive(Clone, Debug)]
 pub struct OsFs {
     root: PathBuf,
+    id: u64,
 }
 
 impl OsFs {
-    /// The store folder at `root`. Nothing is read or created yet.
+    /// The store folder at `root`. Nothing is read or created yet. Links
+    /// on the way to `root` are followed; none below it are.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     /// The store folder.
@@ -96,19 +173,59 @@ impl OsFs {
     }
 
     /// Create the store folder and the folders above it that are missing
-    /// (0700 on Unix). A folder that exists is left as it is.
+    /// (0700 on Unix), outermost first, flushing the folder above each one
+    /// it makes, so that a store created in it cannot lose its folder in a
+    /// crash. A folder that exists is left as it is.
     pub fn create_root(&self) -> Result<()> {
-        let mut builder = folder_builder();
-        builder
-            .recursive(true)
-            .create(&self.root)
-            .map_err(|e| Error::from_io(e, ErrorKind::Other, Op::CreateFolder, ""))
+        let error = |e| Error::from_io(e, ErrorKind::Other, Op::CreateFolder, "");
+        let mut missing = Vec::new();
+        let mut at = self.root.as_path();
+        loop {
+            match fs::metadata(at) {
+                Ok(_) => break,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => missing.push(at),
+                Err(e) => return Err(error(e)),
+            }
+            match at.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => at = parent,
+                _ => break,
+            }
+        }
+        for folder in missing.into_iter().rev() {
+            match folder_builder().create(folder) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(error(e)),
+            }
+            let parent = match folder.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent,
+                _ => Path::new("."),
+            };
+            sync_folder(parent)
+                .map_err(|e| Error::from_io(e, ErrorKind::Flush, Op::FlushFolder, ""))?;
+        }
+        Ok(())
     }
 
+    /// The full path of `path`, after checking that no name along it that
+    /// exists is a symbolic link.
     fn path(&self, path: &str, op: Op) -> Result<PathBuf> {
         let mut full = self.root.clone();
+        let mut checking = true;
         for name in sys::names(path, op)? {
             full.push(name);
+            if !checking {
+                continue;
+            }
+            match fs::symlink_metadata(&full) {
+                Ok(m) if m.file_type().is_symlink() => {
+                    return Err(Error::new(ErrorKind::Link, op, path))
+                }
+                Ok(_) => {}
+                // Nothing below a missing name exists either.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => checking = false,
+                Err(e) => return Err(Error::from_io(e, ErrorKind::Other, op, path)),
+            }
         }
         Ok(full)
     }
@@ -124,19 +241,11 @@ impl OsFs {
         if create {
             open.create_new(true);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            open.mode(0o600);
-            if options.sync_writes {
-                if let Some(flag) = O_DSYNC {
-                    open.custom_flags(flag);
-                }
-            }
-        }
+        no_follow(&mut open, options.sync_writes);
         let file = open
             .open(&full)
             .map_err(|e| Error::from_io(e, ErrorKind::Other, op, path))?;
+        check_opened(&file, &full).map_err(|kind| Error::new(kind, op, path))?;
         Ok(Box::new(OsFile {
             file,
             path: path.to_owned(),
@@ -145,17 +254,67 @@ impl OsFs {
     }
 }
 
+/// Set what every open of a store file asks for: no link followed at the
+/// leaf, owner-only permissions for a new file, and `O_DSYNC` for
+/// synchronous writes where it is known.
+fn no_follow(open: &mut fs::OpenOptions, sync_writes: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+        let mut flags = O_NOFOLLOW.unwrap_or(0);
+        if sync_writes {
+            flags |= O_DSYNC.unwrap_or(0);
+        }
+        open.custom_flags(flags);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let _ = sync_writes;
+        open.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (open, sync_writes);
+}
+
+/// Whether the opened `file` is the entry at `full` itself, not what a
+/// link there leads to.
+fn check_opened(file: &fs::File, full: &Path) -> std::result::Result<(), ErrorKind> {
+    let opened = file.metadata().map_err(|_| ErrorKind::Other)?;
+    if opened.file_type().is_symlink() {
+        return Err(ErrorKind::Link);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let named = fs::symlink_metadata(full).map_err(|_| ErrorKind::Link)?;
+        if named.file_type().is_symlink()
+            || (named.dev(), named.ino()) != (opened.dev(), opened.ino())
+        {
+            return Err(ErrorKind::Link);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = full;
+    Ok(())
+}
+
 impl Fs for OsFs {
     fn lock(&self) -> Result<FolderLock> {
+        let full = self.root.join(LOCK_FILE);
+        if fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(Error::new(ErrorKind::Link, Op::Lock, LOCK_FILE));
+        }
         let mut open = fs::OpenOptions::new();
         open.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+        no_follow(&mut open, false);
         let file = open
-            .open(self.root.join(LOCK_FILE))
+            .open(&full)
             .map_err(|e| Error::from_io(e, ErrorKind::Other, Op::Lock, LOCK_FILE))?;
+        check_opened(&file, &full).map_err(|kind| Error::new(kind, Op::Lock, LOCK_FILE))?;
         match file.try_lock() {
-            Ok(()) => Ok(FolderLock::new(file)),
+            Ok(()) => Ok(FolderLock::new((self.id, 0), file)),
             Err(fs::TryLockError::WouldBlock) => {
                 Err(Error::new(ErrorKind::Locked, Op::Lock, LOCK_FILE))
             }
@@ -163,6 +322,10 @@ impl Fs for OsFs {
                 Err(Error::from_io(e, ErrorKind::Other, Op::Lock, LOCK_FILE))
             }
         }
+    }
+
+    fn owns(&self, lock: &FolderLock) -> bool {
+        lock.owner() == (self.id, 0)
     }
 
     fn create(&self, path: &str, options: FileOptions) -> Result<Box<dyn File>> {
@@ -242,6 +405,35 @@ struct OsFile {
     sync_after_write: bool,
 }
 
+impl OsFile {
+    /// Write `len` bytes from `at`: zeros, or with `rewrite` the bytes
+    /// already there (which fills holes and changes nothing else).
+    fn fill(&self, mut at: u64, end: u64, rewrite: bool) -> Result<()> {
+        let mut chunk = vec![0u8; ZERO_CHUNK.min(end.saturating_sub(at)) as usize];
+        while at < end {
+            let n = (end - at).min(ZERO_CHUNK) as usize;
+            if rewrite {
+                let read = self.read_at(at, &mut chunk[..n])?;
+                if read < n {
+                    // The file is shorter than its size said: the rest
+                    // reads as zeros anyway.
+                    chunk[read..n].fill(0);
+                }
+            }
+            self.write_at(at, &chunk[..n]).map_err(|e| {
+                let kind = if e.kind() == ErrorKind::NoSpace {
+                    ErrorKind::NoSpace
+                } else {
+                    ErrorKind::Write
+                };
+                Error::new(kind, Op::Allocate, &self.path)
+            })?;
+            at += n as u64;
+        }
+        Ok(())
+    }
+}
+
 impl File for OsFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let mut done = 0;
@@ -294,21 +486,22 @@ impl File for OsFile {
     }
 
     fn allocate(&self, size: u64) -> Result<()> {
-        let mut at = self.size()?;
-        let zeros = vec![0u8; ZERO_CHUNK.min(size.saturating_sub(at)) as usize];
-        while at < size {
-            let n = (size - at).min(ZERO_CHUNK) as usize;
-            self.write_at(at, &zeros[..n]).map_err(|e| {
-                let kind = if e.kind() == ErrorKind::NoSpace {
-                    ErrorKind::NoSpace
-                } else {
-                    ErrorKind::Write
-                };
-                Error::new(kind, Op::Allocate, &self.path)
-            })?;
-            at += n as u64;
+        let old = self.size()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let blocks = self
+                .file
+                .metadata()
+                .map_err(|e| Error::from_io(e, ErrorKind::Other, Op::Allocate, &self.path))?
+                .blocks();
+            let below = old.min(size);
+            // Fewer 512-byte blocks than bytes: the file has holes.
+            if blocks.saturating_mul(512) < below {
+                self.fill(0, below, true)?;
+            }
         }
-        Ok(())
+        self.fill(old, size, false)
     }
 
     fn size(&self) -> Result<u64> {
@@ -461,5 +654,86 @@ impl TempFolder {
 impl Drop for TempFolder {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn kind<T>(result: Result<T>) -> Option<ErrorKind> {
+        result.err().map(|e| e.kind())
+    }
+
+    #[test]
+    fn the_store_folder_keeps_to_itself() {
+        use std::os::unix::fs::symlink;
+        let base = TempFolder::new("confined");
+        let outside = TempFolder::new("outside");
+        // A new store folder, with folders above it to make.
+        let fs = OsFs::new(base.path.join("a/b/store"));
+        fs.create_root().unwrap();
+        fs.create_root().unwrap();
+        let root = fs.root().to_owned();
+
+        // A link inside the store leads nowhere: every operation through
+        // it is refused, and nothing appears outside.
+        symlink(&outside.path, root.join("log")).unwrap();
+        std::fs::write(outside.path.join("target"), b"x").unwrap();
+        symlink(outside.path.join("target"), root.join("leaf")).unwrap();
+        let plain = FileOptions::PLAIN;
+        assert_eq!(kind(fs.create("log/escaped", plain)), Some(ErrorKind::Link));
+        assert_eq!(kind(fs.open("log/target", plain)), Some(ErrorKind::Link));
+        assert_eq!(kind(fs.open("leaf", plain)), Some(ErrorKind::Link));
+        assert_eq!(kind(fs.create_folder("log/x")), Some(ErrorKind::Link));
+        assert_eq!(kind(fs.list("log")), Some(ErrorKind::Link));
+        assert_eq!(kind(fs.flush_folder("log")), Some(ErrorKind::Link));
+        assert_eq!(kind(fs.remove("log/target")), Some(ErrorKind::Link));
+        assert_eq!(
+            kind(fs.rename("log/target", "log/moved")),
+            Some(ErrorKind::Link)
+        );
+        assert!(!outside.path.join("escaped").exists());
+        assert!(outside.path.join("target").exists());
+
+        // The lock's name is the lock's alone.
+        let lock = fs.lock().unwrap();
+        drop(fs.create("x", plain).unwrap());
+        for refused in [
+            kind(fs.remove(LOCK_FILE)),
+            kind(fs.rename(LOCK_FILE, "y")),
+            kind(fs.rename("x", LOCK_FILE)),
+            kind(fs.create(LOCK_FILE, plain)),
+            kind(fs.open(LOCK_FILE, plain)),
+            kind(fs.create("a:b", plain)),
+        ] {
+            assert_eq!(refused, Some(ErrorKind::InvalidPath));
+        }
+        assert_eq!(kind(fs.lock()), Some(ErrorKind::Locked));
+        assert!(fs.owns(&lock));
+        assert!(!OsFs::new(&root).owns(&lock));
+    }
+
+    #[test]
+    fn allocate_fills_the_holes_of_a_sparse_file() {
+        use std::os::unix::fs::MetadataExt;
+        let folder = TempFolder::new("sparse");
+        let fs = folder.fs();
+        drop(fs.create("s", FileOptions::PLAIN).unwrap());
+        let path = folder.path.join("s");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(65536)
+            .unwrap();
+        let file = fs.open("s", FileOptions::PLAIN).unwrap();
+        file.write_at(100, b"kept").unwrap();
+        file.allocate(65536).unwrap();
+        file.flush().unwrap();
+        assert!(fs::metadata(&path).unwrap().blocks() * 512 >= 65536);
+        let mut bytes = [0; 4];
+        file.read_at(100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"kept");
     }
 }
