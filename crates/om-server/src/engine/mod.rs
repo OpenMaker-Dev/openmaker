@@ -57,12 +57,15 @@
 //! So the request that stores them submits a [`Draft`], which names no
 //! indexes or keys, and [`FileEngine::submit_draft`] completes it under the
 //! store's write lock, taking what waits into the [`Operation`] it then
-//! runs and gives back with the outcome. [`run`] only sees completed
-//! operations, and a completed one is submitted with
-//! [`FileEngine::submit`], which never completes it again: that is what a
-//! recording holds and a replay submits. The store engine will have to
-//! make issuing a member key and building an index operations of their
-//! own.
+//! runs. [`run`] only sees completed operations, and a completed one is
+//! submitted with [`FileEngine::submit`], which never completes it again.
+//! A recording gets each operation by reference, completed, before it
+//! runs (`FileEngine::recording`); that is what it holds and a replay
+//! submits. The running server records nothing, so no operation's data is
+//! copied. Member keys a draft took go back to waiting if its run is left
+//! by a panic before it writes them, as they stayed waiting before when
+//! storing the indexes panicked. The store engine will have to make
+//! issuing a member key and building an index operations of their own.
 
 mod file;
 mod schema;
@@ -278,14 +281,6 @@ pub enum Draft {
     /// indexes waiting, as [`Operation::StoreIndexes`]. Member keys wait on,
     /// as they did.
     StoreIndexes,
-}
-
-/// A submitted [`Draft`]: the operation the engine completed it to, which
-/// replays with [`FileEngine::submit`], and its outcome.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Submitted {
-    pub operation: Operation,
-    pub outcome: Outcome,
 }
 
 /// op73: do the field work the client listed for a table, recomputing the

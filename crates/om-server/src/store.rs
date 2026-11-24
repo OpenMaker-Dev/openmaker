@@ -1841,6 +1841,20 @@ impl Store {
         keys
     }
 
+    /// Put `keys`, taken by [`Store::take_issued_member_keys`] and not
+    /// written, back among those waiting: a write that took them was left
+    /// by a panic before it wrote them.
+    pub fn put_back_member_keys(&mut self, keys: Vec<MemberKey>) {
+        let issued = self
+            .issued
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (catalog, (id, count)) in keys {
+            let waiting = issued.entry(catalog).or_default();
+            *waiting = (waiting.0.max(id), waiting.1.max(count));
+        }
+    }
+
     /// Write member ids and modification counts GenerateMemberKey issued
     /// ([`Store::take_issued_member_keys`]) into their catalogs' indexes, as
     /// FileMaker Server does (schema-path.md 3.4). A value the index

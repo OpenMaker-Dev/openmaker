@@ -1,5 +1,6 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode, RidList};
@@ -36,6 +37,28 @@ fn engine() -> FileEngine {
     FileEngine::new(Box::new(Seeded(AtomicU64::new(0))))
 }
 
+/// The operations an engine ran, as it offered them ([`FileEngine::recording`]).
+type Log = Arc<Mutex<Vec<Operation>>>;
+
+/// [`engine`], recording each operation it runs.
+fn recording() -> (FileEngine, Log) {
+    let log = Log::default();
+    let into = Arc::clone(&log);
+    let engine = engine().recording(move |operation| {
+        into.lock().unwrap().push(operation.clone());
+    });
+    (engine, log)
+}
+
+/// The last operation `log` recorded.
+fn last(log: &Log) -> Operation {
+    log.lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("an operation ran")
+}
+
 /// `tree` hosted from a file of its own, tagged `tag`.
 fn host(tag: &str, tree: &OwnedNode) -> (fixture::TempFile, Arc<Hosted>) {
     let file = fixture::TempFile::from_tree(tag, tree);
@@ -59,14 +82,19 @@ fn node_at(file: &Hosted, path: &[Vec<u8>]) -> Option<OwnedNode> {
     file.read_store().node(&path).cloned()
 }
 
-/// Each key's records in index `index` (`[T, 01, F, k]`), and its counts
-/// leaf (`[T, 01, F, k | 10]`) as (entries, distinct keys).
-fn postings(file: &Hosted, index: &[Vec<u8>]) -> (Vec<Vec<u64>>, (u64, u64)) {
+/// The keys of index `index` (`[T, 01, F, k]`), each with its records,
+/// and its counts leaf (`[T, 01, F, k | 10]`) as (entries, distinct keys).
+type Postings = (BTreeMap<Vec<u8>, Vec<u64>>, (u64, u64));
+
+fn postings(file: &Hosted, index: &[Vec<u8>]) -> Postings {
     let keys = node_at(file, index).expect("the index");
     let records = keys
         .children
         .iter()
-        .map(|key| RidList::from_owned(key).unwrap().iter().collect())
+        .map(|key| {
+            let ids = RidList::from_owned(key).unwrap().iter().collect();
+            (key.segment.clone(), ids)
+        })
         .collect();
     let mut counts = index.to_vec();
     let kind = counts.pop().unwrap()[0];
@@ -375,45 +403,54 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
     renamed.set_child(text_node(&[0x10], "Jobs"));
     let layouts_index = |key: u8| vec![vec![4], vec![1], vec![key]];
     assert!(node_at(&file, &notes_member).is_some());
+    // The keys Name's value and word indexes hold for "Task 1" to "Task 3"
+    // (`om_collate`, the one definition of an index key).
+    let mut values = BTreeMap::new();
+    let mut words: BTreeMap<Vec<u8>, Vec<u64>> = BTreeMap::new();
+    for id in 1..=3u64 {
+        let text = format!("Task {id}");
+        values.insert(om_collate::text_index_key(&text), vec![id]);
+        for word in om_collate::words(&text) {
+            words
+                .entry(om_collate::text_index_key(word))
+                .or_default()
+                .push(id);
+        }
+    }
     let mut recorded: Vec<(Operation, Outcome, OwnedNode)> = Vec::new();
-    let recording = engine();
+    let (recording, log) = recording();
+    // The operation the engine ran, completed, and its outcome.
     let mut submit = |step: Step| {
-        let submitted = match step {
-            Step::Operation(operation) => Submitted {
-                outcome: recording.submit(&file, operation.clone()),
-                operation,
-            },
+        let outcome = match step {
+            Step::Operation(operation) => {
+                let outcome = recording.submit(&file, operation.clone());
+                assert_eq!(last(&log), operation);
+                outcome
+            }
             Step::Draft(draft) => recording.submit_draft(&file, draft),
         };
+        let operation = last(&log);
         let after = file.read_store().node(&[]).unwrap().clone();
-        recorded.push((
-            submitted.operation.clone(),
-            submitted.outcome.clone(),
-            after,
-        ));
-        submitted
+        recorded.push((operation.clone(), outcome.clone(), after));
+        (operation, outcome)
     };
 
     find(0);
-    let stored = submit(Step::Draft(Draft::StoreIndexes));
+    let (operation, outcome) = submit(Step::Draft(Draft::StoreIndexes));
     assert_eq!(
-        stored.operation,
+        operation,
         Operation::StoreIndexes(StoreIndexes {
             indexes: vec![(table.clone(), name.clone(), 0)],
         })
     );
-    assert_eq!(stored.outcome.reply, Reply::StoreIndexes);
-    // "Task 1" to "Task 3": one key each.
-    assert_eq!(
-        postings(&file, &index(0)),
-        (vec![vec![1], vec![2], vec![3]], (3, 3))
-    );
+    assert_eq!(outcome.reply, Reply::StoreIndexes);
+    assert_eq!(postings(&file, &index(0)), (values, (3, 3)));
 
     let upload = UploadToCatalog {
         path: deferred.clone(),
         node: work,
     };
-    let outcome = submit(Step::Operation(Operation::UploadToCatalog(upload))).outcome;
+    let (_, outcome) = submit(Step::Operation(Operation::UploadToCatalog(upload)));
     assert_eq!(outcome.reply, Reply::UploadToCatalog(true));
     assert!(node_at(&file, &deferred).is_some());
 
@@ -421,7 +458,7 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
         table: table.clone(),
         account: fixture::ACCOUNT.into(),
     };
-    let outcome = submit(Step::Operation(Operation::UpdateTable(update))).outcome;
+    let (_, outcome) = submit(Step::Operation(Operation::UpdateTable(update)));
     assert_eq!(outcome.reply, Reply::UpdateTable(Ok(true)));
     assert!(node_at(&file, &deferred).is_none(), "the work list is done");
     assert!(
@@ -448,12 +485,12 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
             path: vec![notes.clone()],
         },
     ];
-    let changed = submit(Step::Draft(Draft::ChangeSchema {
+    let (operation, outcome) = submit(Step::Draft(Draft::ChangeSchema {
         writes: writes.clone(),
     }));
-    assert_eq!(changed.outcome.reply, Reply::ChangeSchema(Ok(())));
-    let Operation::ChangeSchema(completed) = &changed.operation else {
-        panic!("{:?}", changed.operation);
+    assert_eq!(outcome.reply, Reply::ChangeSchema(Ok(())));
+    let Operation::ChangeSchema(completed) = &operation else {
+        panic!("{operation:?}");
     };
     assert_eq!(completed.writes, writes);
     assert_eq!(completed.indexes, [(table.clone(), name.clone(), 1)]);
@@ -468,10 +505,8 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
     assert_eq!(value(layouts_index(0x00)), Some(issued.0), "the layout id");
     assert_eq!(value(layouts_index(0xfc)), Some(issued.1), "its mod count");
     // "task" in every record, and each number in one.
-    assert_eq!(
-        postings(&file, &index(1)),
-        (vec![vec![1], vec![2], vec![3], vec![1, 2, 3]], (6, 4))
-    );
+    assert_eq!(words.len(), 4);
+    assert_eq!(postings(&file, &index(1)), (words, (6, 4)));
     assert!(recorded
         .iter()
         .all(|(_, outcome, _)| outcome.notices.changes.is_empty()));
@@ -974,10 +1009,11 @@ fn drafts_take_what_reads_left_waiting_when_they_hold_the_store() {
     fixture::index_layouts(&mut tree);
     let table = uint_segment(fixture::TABLE);
     let name = uint_segment(fixture::NAME);
-    let engine = engine();
+    let (engine, log) = recording();
     let nothing = Operation::StoreIndexes(StoreIndexes {
         indexes: Vec::new(),
     });
+    let changes_nothing = || Draft::ChangeSchema { writes: Vec::new() };
 
     // A ran a DeleteTable program for Tasks; B then had a key issued for
     // Tasks' field catalog, and A's write holds the store first.
@@ -993,9 +1029,9 @@ fn drafts_take_what_reads_left_waiting_when_they_hold_the_store() {
             }],
         },
     );
-    assert_eq!(a.outcome.reply, Reply::ChangeSchema(Ok(())));
-    let b = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
-    assert_eq!(b.operation, nothing, "A wrote B's key before the delete");
+    assert_eq!(a.reply, Reply::ChangeSchema(Ok(())));
+    engine.submit_draft(&file, changes_nothing());
+    assert_eq!(last(&log), nothing, "A wrote B's key before the delete");
     // What NodeExists reads (`om_query::exec`, NodeExists).
     let store = file.read_store();
     assert!(store.node(&[&table]).is_none());
@@ -1015,8 +1051,8 @@ fn drafts_take_what_reads_left_waiting_when_they_hold_the_store() {
     assert!(file.read_store().has_indexes_on_demand());
     file.read_store()
         .forget_indexes_on_demand(std::slice::from_ref(&built));
-    let a = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
-    assert_eq!(a.operation, nothing);
+    engine.submit_draft(&file, changes_nothing());
+    assert_eq!(last(&log), nothing);
     // The next check for the index finds none.
     let counts = vec![table.clone(), vec![0x01], name.clone(), vec![0x10]];
     assert!(node_at(&file, &counts).is_none());
@@ -1025,17 +1061,53 @@ fn drafts_take_what_reads_left_waiting_when_they_hold_the_store() {
     let (saved, file) = host("drafts-one-save", &tree);
     file.read_store().generate_member_key(&[vec![4]]).unwrap();
     let saves = file.read_store().saves();
-    let first = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
-    assert!(matches!(&first.operation, Operation::ChangeSchema(op) if op.member_keys.len() == 1));
+    engine.submit_draft(&file, changes_nothing());
+    assert!(matches!(last(&log), Operation::ChangeSchema(op) if op.member_keys.len() == 1));
     let bytes = std::fs::read(&saved.0).unwrap();
-    let second = engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
-    assert_eq!(second.operation, nothing);
+    engine.submit_draft(&file, changes_nothing());
+    assert_eq!(last(&log), nothing);
     assert_eq!(file.read_store().saves(), saves + 1);
     assert_eq!(
         std::fs::read(&saved.0).unwrap(),
         bytes,
         "the file, and its change number, as the first save left them"
     );
+}
+
+/// Member keys a draft took go back to waiting when its run is left by a
+/// panic before it writes them, as they stayed waiting before the engine
+/// interface when storing the indexes panicked; the indexes it took do not
+/// (they had been taken then too). The next write writes the keys.
+#[test]
+fn member_keys_a_draft_took_wait_again_when_its_run_panics_before_writing_them() {
+    use om_query::Source as _;
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    fixture::index_layouts(&mut tree);
+    let (_file, file) = host("drafts-unwind", &tree);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let issued = file.read_store().generate_member_key(&[vec![4]]).unwrap();
+    file.read_store()
+        .index_on_demand(&table, &name, 0)
+        .unwrap()
+        .unwrap();
+    let engine = engine();
+    super::transaction::PANIC_STORING_INDEXES.with(|panics| panics.set(true));
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() })
+    }));
+    super::transaction::PANIC_STORING_INDEXES.with(|panics| panics.set(false));
+    assert!(ran.is_err());
+    {
+        let store = file.read_store();
+        assert!(store.has_issued_member_keys());
+        assert!(!store.has_indexes_on_demand());
+    }
+    engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
+    let id = node_at(&file, &[vec![4], vec![1], vec![0]]).and_then(|n| n.value);
+    assert_eq!(id, Some(issued.0));
+    assert!(!file.read_store().has_issued_member_keys());
 }
 
 /// op73 finds the stored calculations to recompute by comparing the field
