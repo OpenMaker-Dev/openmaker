@@ -1944,7 +1944,19 @@ impl OpenMakerApp {
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
                 if std::mem::take(&mut self.script.quit) {
-                    self.apply(ctx, Action::Quit);
+                    // A close Exit Application took over goes on; otherwise
+                    // Quit begins.
+                    let next = self
+                        .closing
+                        .as_ref()
+                        .filter(|closing| closing.quiet)
+                        .and_then(|_| self.next_to_close());
+                    match next {
+                        Some(next) => {
+                            self.with_window(next, |app| app.close_window(ctx));
+                        }
+                        None => self.apply(ctx, Action::Quit),
+                    }
                 }
                 self.start_queued(ctx);
             }
@@ -1999,31 +2011,21 @@ impl OpenMakerApp {
             ScriptEvent::CloseWindow(_) => {}
             ScriptEvent::Beep => eprint!("\x07"),
             // The worker committed its window and halts: the rest closes
-            // once its job has ended (Finished).
-            ScriptEvent::Quit => self.script.quit = true,
+            // once its job has ended (Finished). A close trigger's own
+            // Exit Application takes over its close, closing its file
+            // first.
+            ScriptEvent::Quit => {
+                self.take_over_close(None, true);
+                self.script.quit = true;
+            }
             ScriptEvent::SchemaChanged => self.request(ctx, Request::CalcSchema),
             ScriptEvent::CloseFile => {
                 self.script.running = false;
-                // A close trigger's own Close File takes over the close it
-                // holds: the file closes from this window without its
-                // close triggers again, which would run the script again
-                // without end. Its halt's veto of the held close then
-                // finds nothing to stop.
-                let file = self.w.file_id;
-                let held = self.script.held.iter().find_map(|(token, (origin, held))| {
-                    let closes = matches!(held, Held::Action(Action::CloseWindow, _));
-                    let ours = self
-                        .docs()
-                        .any(|doc| doc.id == *origin && doc.file_id == file);
-                    (closes && ours).then_some(*token)
-                });
-                if let Some(token) = held {
-                    self.script.held.remove(&token);
-                    let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
-                    self.closing = Some(self.closing_front(quit));
-                    self.script.bypass = true;
-                    self.apply(ctx, Action::CloseWindow);
-                    self.script.bypass = false;
+                // A close trigger's own Close File takes over its close.
+                if self.take_over_close(Some(self.w.file_id), false) {
+                    if let Some(next) = self.next_to_close() {
+                        self.with_window(next, |app| app.close_window(ctx));
+                    }
                 } else {
                     self.apply(ctx, Action::CloseFile);
                 }
@@ -2042,6 +2044,30 @@ impl OpenMakerApp {
                 self.start_queued(ctx);
             }
         }
+    }
+
+    /// A close trigger ran Close File (of its own file, `file`) or Exit
+    /// Application (`file` is `None`): it takes over the close it holds.
+    /// The halt's veto then finds nothing to stop, and the trigger's file's
+    /// windows close without their close triggers, each committing
+    /// (`Closing::quiet`); with `quit`, or in a Quit, the other files close
+    /// after as Quit closes them. `false` when no such trigger is running.
+    pub(super) fn take_over_close(&mut self, file: Option<u64>, quit: bool) -> bool {
+        let held = self.script.held.iter().find_map(|(token, (origin, held))| {
+            let closes = matches!(held, Held::Action(Action::CloseWindow, _));
+            let origin_file = self.docs().find(|doc| doc.id == *origin)?.file_id;
+            (closes && file.is_none_or(|file| file == origin_file)).then_some((*token, *origin))
+        });
+        let Some((token, origin)) = held else {
+            return false;
+        };
+        self.script.held.remove(&token);
+        let quit = quit || self.closing.as_ref().is_some_and(|closing| closing.quit);
+        self.closing = self.with_window(origin, |app| super::Closing {
+            quiet: true,
+            ..app.closing_front(quit)
+        });
+        true
     }
 
     /// The job that ran the user's triggers ended: their held actions go on

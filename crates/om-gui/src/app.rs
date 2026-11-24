@@ -899,6 +899,11 @@ struct Closing {
     windows: Vec<u32>,
     /// Quit once the files are closed.
     quit: bool,
+    /// The windows close without their close triggers, each still
+    /// committing: a close trigger's own Close File or Exit Application
+    /// took the close over (`take_over_close`, app/scripts.rs), and its
+    /// triggers running again would run it again without end.
+    quiet: bool,
 }
 
 /// The OpenMaker application.
@@ -3095,6 +3100,7 @@ impl OpenMakerApp {
                 .map(|doc| doc.id)
                 .collect(),
             quit,
+            quiet: false,
         }
     }
 
@@ -3121,10 +3127,24 @@ impl OpenMakerApp {
             .and_then(|_| self.next_to_close());
         match next {
             Some(next) => {
-                self.with_window(next, |app| app.apply(ctx, Action::CloseWindow));
+                self.with_window(next, |app| app.close_window(ctx));
             }
             None => self.closing = None,
         }
+    }
+
+    /// Close the window as the close under way closes it: with its close
+    /// triggers, or without them in a close a trigger took over
+    /// (`Closing::quiet`).
+    fn close_window(&mut self, ctx: &egui::Context) {
+        let file = self.w.file_id;
+        let quiet = self
+            .closing
+            .as_ref()
+            .is_some_and(|closing| closing.file == file && closing.quiet);
+        self.script.bypass = quiet;
+        self.apply(ctx, Action::CloseWindow);
+        self.script.bypass = false;
     }
 
     /// Quit closes the next open file as File > Close does, a hidden one
@@ -4198,15 +4218,20 @@ impl OpenMakerApp {
         // goes on to the parent once the card has closed.
         if action == Action::CloseWindow && self.w.session.is_some() {
             if let Some(card) = self.card_of(self.w.id) {
+                let closing = self
+                    .closing
+                    .as_ref()
+                    .filter(|closing| closing.file == self.w.file_id);
                 // The parent's close triggers let the parent go, not the
-                // card: the card's own run, and may stop its close.
-                self.script.bypass = false;
+                // card: the card's own run, and may stop its close, unless
+                // the close runs none (`Closing::quiet`).
+                if !closing.is_some_and(|closing| closing.quiet) {
+                    self.script.bypass = false;
+                }
                 // A card a close trigger opened stops File > Close and
                 // Quit, as any window opened since they began does
                 // (`Closing`).
-                let opened_since = self.closing.as_ref().is_some_and(|closing| {
-                    closing.file == self.w.file_id && !closing.windows.contains(&card)
-                });
+                let opened_since = closing.is_some_and(|closing| !closing.windows.contains(&card));
                 if opened_since {
                     self.closing = None;
                 } else {
@@ -8199,6 +8224,7 @@ mod tests {
             file: 1,
             windows: vec![1, 2],
             quit: false,
+            quiet: false,
         });
         let front = app.windows.len() - 1;
         std::mem::swap(&mut app.w, &mut app.windows[front]);
@@ -8217,6 +8243,7 @@ mod tests {
                 file: 1,
                 windows: vec![1],
                 quit: false,
+                quiet: false,
             });
             app.with_window(closed, |app| app.apply(&ctx, Action::CloseWindow));
             assert_eq!(app.window_ids(), [3 - closed], "closed {closed}");
@@ -8268,6 +8295,7 @@ mod tests {
             file: 1,
             windows: vec![2],
             quit: false,
+            quiet: false,
         };
         app.closing = Some(closing.clone());
         app.apply(&ctx, Action::CloseDisconnectedFile(2));
