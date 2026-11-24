@@ -2519,3 +2519,66 @@ fn a_failed_growth_latches_the_failure() {
         Err(CheckpointError::Failed)
     ));
 }
+
+/// Review of #719 (P2): a dropped page that the maps on disk record
+/// unsettled passes its hold to what it refers to. A tree of one leaf with
+/// a spilled value is dropped; two checkpoints record the drop unsettled;
+/// reclaim takes the leaf apart and then settles its overflow page, which
+/// must stay held: a checkpoint cut off after writing reused pages, and an
+/// open of the last checkpoint, still find the overflow page whole when
+/// they take the drop apart again.
+#[test]
+fn a_held_page_passes_its_hold_to_what_it_refers_to() {
+    let mut reached = Reached::default();
+    let scenario = |run: &mut Run<'_>| {
+        let index = run.next_index();
+        run.append(Logged {
+            entry: entry_id(index),
+            ops: vec![(
+                tree_name(0),
+                Op::Edits(vec![Edit::leaf(vec![b"big".to_vec()], vec![7; 6_000])]),
+            )],
+            taken: None,
+        });
+        run.checkpoint(false);
+        let index = run.next_index();
+        run.append(Logged {
+            entry: entry_id(index),
+            ops: vec![(tree_name(0), Op::Recreate)],
+            taken: None,
+        });
+        run.checkpoint(false);
+        run.checkpoint(false);
+        // The leaf, then its overflow page.
+        for _ in 0..2 {
+            let done = run.pf().reclaim(100_000);
+            assert!(done.faults.is_empty() && done.twice.is_empty());
+        }
+        // New pages take the lowest free numbers.
+        for _ in 0..4 {
+            run.entry_all();
+        }
+    };
+    let (before, end) = {
+        let (sim, mut run) = quiet_run(45, &mut reached);
+        scenario(&mut run);
+        let before = sim.steps();
+        run.checkpoint(false);
+        assert!(run.proc.is_some());
+        (before, sim.steps())
+    };
+    let (sim, mut run) = quiet_run(45, &mut reached);
+    scenario(&mut run);
+    assert_eq!(sim.steps(), before);
+    sim.set_crash_fates(Fates::LoseAll);
+    sim.place(end - 3, SimFault::Crash);
+    run.checkpoint(false);
+    assert_eq!(crashes(&sim), 1);
+    if run.proc.is_some() {
+        run.stop(false);
+    }
+    run.reopen();
+    // Draining takes the drop apart again from the map on disk: every page
+    // it reads must still be whole (an honest disk allows no other fault).
+    run.check(true);
+}

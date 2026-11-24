@@ -5,7 +5,9 @@
 //! under a steady workload of puts and deletes. Run with
 //! `cargo run --release -p om-store --example pagefile_timing [folder]
 //! [items]`; the folder (default `target/pagefile-timing`) is removed
-//! first and at the end.
+//! first and at the end. `... pagefile_timing trees [folder]` then
+//! `... pagefile_timing trees-open [folder]` time the open of a store at
+//! the most trees a checkpoint names, in a process of its own.
 
 use std::time::Instant;
 
@@ -60,8 +62,86 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1 << 20) as f64
 }
 
+/// The peak resident memory of this process, from Linux's
+/// `/proc/self/status` (0 elsewhere).
+fn peak_mib() -> f64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
+        .map_or(0.0, |kb| kb / 1024.0)
+}
+
+/// `trees <folder>`: a store of `MAX_TREES` empty trees, checkpointed.
+/// `trees-open <folder>`: opens it, in a process of its own, with the
+/// default cache, and reports the time and the process's peak memory;
+/// then removes the folder.
+fn trees(mode: &str, folder: &str) {
+    let fs = OsFs::new(folder);
+    let config = Config::default();
+    if mode == "trees" {
+        let _ = std::fs::remove_dir_all(folder);
+        std::fs::create_dir_all(folder).unwrap();
+        fs.create_root().unwrap();
+        let lock = fs.lock().unwrap();
+        let pf = PageFile::create(&fs, &lock, config).unwrap();
+        let n = om_store::pagefile::MAX_TREES;
+        let mut trees = Vec::with_capacity(n);
+        let start = Instant::now();
+        let mut index = 0;
+        for chunk in (0..n).collect::<Vec<_>>().chunks(4_096) {
+            index += 1;
+            let res = pf
+                .reserve(index, 3 * chunk.len() as u64, Purpose::Entry)
+                .unwrap();
+            for &i in chunk {
+                let name = TreeName::new(format!("file/{i:08}")).unwrap();
+                let root = res.create_tree(&name).unwrap();
+                trees.push((name, root));
+            }
+            drop(res);
+            pf.checkpoint(entry(index), &trees, None).unwrap();
+        }
+        let space = pf.space();
+        println!(
+            "{n} trees made and checkpointed in {:.1} s; file {} pages ({:.0} MiB)",
+            start.elapsed().as_secs_f64(),
+            space.end,
+            mib(space.end * 16_384)
+        );
+        return;
+    }
+    let lock = fs.lock().unwrap();
+    let before = peak_mib();
+    let start = Instant::now();
+    let (pf, opened) = PageFile::open(&fs, &lock, config).unwrap();
+    let took = start.elapsed();
+    println!(
+        "open of {} trees with the default cache: {:.2} s; checkpoint {}, {} meta pages; \
+         peak memory {:.0} MiB (before the open {:.0} MiB)",
+        pf.tree_names().len(),
+        took.as_secs_f64(),
+        opened.checkpoint,
+        pf.meta_pages_of(pf.kept_checkpoints()[0].meta)
+            .unwrap()
+            .len(),
+        peak_mib(),
+        before
+    );
+    drop(pf);
+    drop(lock);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
+    if let Some(mode) = std::env::args().nth(1).filter(|m| m.starts_with("trees")) {
+        let folder = std::env::args()
+            .nth(2)
+            .unwrap_or_else(|| "target/pagefile-trees".into());
+        return trees(&mode, &folder);
+    }
     let folder = args
         .next()
         .unwrap_or_else(|| "target/pagefile-timing".into());
