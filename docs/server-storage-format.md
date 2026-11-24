@@ -769,7 +769,14 @@ rebuilt for them when those entries are applied again (4.7).
   for a page not written yet; otherwise they are read, a page at a time,
   by `PageFile::reclaim`, which takes at most a given number of dying
   pages per call, and by a reservation or a checkpoint short of free
-  pages.
+  pages. A reclaim reads a dying page from the file, never from the
+  cache, so whether its read fails does not depend on what readers
+  cached; a read that fails leaves the page dying and unsettled, and
+  what it refers to untouched, is reported, and is met again by the next
+  pass, which goes on past it to the other pages. (A read the trees make
+  while applying an entry may still be served from the cache, and so
+  miss a read error a cold read would meet; that makes the apply fail or
+  not, never the map different.)
 - **Holds.** A map on disk can record a page unsettled, or in use below a
   dropped page it records unsettled. Opening that checkpoint will need
   the page's bytes again, so when the running process settles such a page
@@ -811,9 +818,19 @@ rebuilt for them when those entries are applied again (4.7).
 - **A checkpoint** of the newest version, at entry `E` (every unit
   committed so far is of `E` or earlier), given every tree's root: the
   trees given must be exactly the trees that exist, those of the newest
-  checkpoint and those made, dropped and renamed since through a
-  reservation. Short of free pages for its meta stream, it reclaims
-  first.
+  checkpoint and those made, dropped and renamed since by units (a
+  change to the set of trees is part of a unit of its entry, checked and
+  committed with it). A checkpoint is of one exact version: it is
+  refused while a reservation for an entry it covers is open, and from
+  the moment it fixes its entry until it is on disk or fails, a
+  reservation or unit at or before that entry is refused. A refusal, not
+  a wait: the caller that applies entries and the caller that
+  checkpoints may be one thread, and a covered unit arriving late is a
+  defect of the caller to be reported, not a race to be hidden. The
+  writer keeps every limit the reader enforces (trees, restore points,
+  names, numbers), and the meta stream goes through the reader's own
+  decoding before any byte of it is written. Short of free pages for its
+  meta stream, it reclaims first.
   1. the pages the roots reach that are only in memory are found (a page
      on disk never refers to one in memory); a page in memory of the
      newest version that no root reaches, a root that left the newest
@@ -915,10 +932,16 @@ rebuilt for them when those entries are applied again (4.7).
   cover it and the **floor**; short of them, it first reclaims (one pass
   over the dying pages at most), then grows the file. The floor is room
   for two checkpoints' meta streams of the largest size the next
-  checkpoints can need: the trees that exist now, the restore points
-  listed and one more, and a map in which every page of the file is
-  dying (81 bytes a page, more than a shared page's record or a free
-  bit). Two, because the next checkpoint retires nothing when the other
+  checkpoints can need: the trees that exist now, the restore points of
+  the newest checkpoint together with those listed for the next (a
+  dropped point is still on disk, so a drop does not lower the floor,
+  and a reopen, which lists them again, does not raise it) and one more,
+  and a map in which every page of the file is dying (81 bytes a page,
+  more than a shared page's record or a free bit). The floor is the same
+  before and after a reopen at the same point: what the running page
+  file knows and a reopened one does not (pins, restore point drops not
+  yet checkpointed, the reclaim cursor, a larger file) never raises it
+  above what the reopened one computes. Two, because the next checkpoint retires nothing when the other
   pair is empty, and the one after frees the first's meta stream only
   once it is on disk. Commits, the taking down of dropped subtrees and
   reclaims never make a map larger than that, so the room stays enough
@@ -944,6 +967,10 @@ rebuilt for them when those entries are applied again (4.7).
   recovery, reserving exactly the pages each entry took
   (`Reservation::taken`), never needs more free pages than the first run
   had.
+- **The configuration** is checked when the page file is created or
+  opened: a growth step of 1 to 65,536 pages, a budget of at least one
+  page, a reserve of at most 2^32 pages, so that no sum the page file
+  makes with them can overflow.
 - **Failures latch.** After a failed write or flush, and after an
   allocation that failed other than for a full disk (an allocation can
   write), every later write, growth and checkpoint is refused until the
@@ -983,6 +1010,20 @@ rebuilt for them when those entries are applied again (4.7).
   checkpoint rewrites about 50 bytes and the name per tree, and an open
   reads every root.
 - The floor (4.8) keeps about 1% of the file free for checkpoints.
+- What an open and a checkpoint hold in memory grows with the trees and
+  restore points: at an open, the meta stream and its decoded tables, the
+  set of tree names, and two copies of the restore points (the newest
+  checkpoint's lists and the next one's); at a checkpoint, a copy of the
+  tree table, the set of root numbers, the restore point lists, the
+  encoded stream, its decoding for the reader's checks and its pages. A
+  tree's record takes 41 bytes and its name (at most 255), a restore
+  point's 113 and its name (at most 64): at the limits, with the
+  longest names, about 19 MiB of tree table and 11 MiB of restore points
+  per list in a stream, somewhat more decoded. Estimated, not measured:
+  an open then holds some 120 MiB at its peak and 80 MiB after, and a
+  checkpoint some 250 MiB while it plans, beyond the map. With short
+  names it is a few MiB: 65,536 trees named in 13 bytes opened in 23 MiB
+  of process memory (measured).
 - The page file holds no lock: `create` and `open` check that the caller
   holds the store folder's, and the caller keeps it while the page file
   is open.

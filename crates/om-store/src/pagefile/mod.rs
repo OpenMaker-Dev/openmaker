@@ -39,13 +39,32 @@
 //!
 //! **Reuse.** A page leaves the newest version when a unit releases it (or
 //! the subtree it was in, lazily). It is reused only when no kept version
-//! reaches it ([`map`] module docs); dying pages become free when
+//! reaches it (the `map` module's docs); dying pages become free when
 //! [`PageFile::reclaim`] finds them so (bounded work per call), or at once
 //! on commit when the page never reached the disk and no kept version
 //! reaches it. Pins live in memory; after a restart, what the superblocks
 //! on disk name is what is kept. Recovery frees the same way, so applying
 //! the entries after a checkpoint again needs no more space than they
 //! needed the first time (format section 4.8).
+
+//! **Calls at the same time.** The page file is shared between threads;
+//! three locks order its calls: `inner`, held for short steps and never
+//! across a read or write of the file; `io`, held by a checkpoint for all
+//! of it, by growth of the file, by a reclaim and by a restore point's
+//! drop; and the pin table. Which calls may run alongside which:
+//!
+//! | Calls | Alongside? | What orders them |
+//! |---|---|---|
+//! | a read and anything | yes | a read sees committed pages only; its lookups take `inner`, its file read none |
+//! | reserve and reserve, commit or a unit's drop | yes | `inner`; a reservation short of space reclaims and grows under `io`, one at a time |
+//! | commit and commit | units of one entry in any order (each is one tree's); a unit of an earlier entry than one committed is refused | `inner` |
+//! | reserve or commit and a checkpoint, at an entry after the checkpoint's | yes, a short reservation waiting for the checkpoint | `inner`, `io` |
+//! | reserve or commit and a checkpoint, at or before the checkpoint's entry | no: the checkpoint is refused while a reservation for an entry it covers is open, and from the moment it fixes its entry every reservation and unit at or before it is refused | `inner`: the reservations alive, by entry, and the cutoff |
+//! | making, dropping or renaming a tree | as a commit: each is a unit of its entry | `inner` |
+//! | a checkpoint and a checkpoint, a reclaim or a restore point's drop | no: the second waits | `io`; so whether a reclaim settles a page before or after a checkpoint, and so the hold it gives, is the order of the two calls |
+//! | a reclaim and a reserve, commit, read or pin | yes | `inner` for each page's step; pages a reclaim frees are those no kept version reaches when it decides, under `inner` |
+//! | a pin or unpin and anything | yes | the pin table; a pin counts from when it is taken, and a checkpoint being written keeps its own version itself |
+//! | open | nothing runs on a page file before its open returns | two opens of one store folder are kept apart by the store folder's lock, which the caller holds |
 
 mod cache;
 mod map;
