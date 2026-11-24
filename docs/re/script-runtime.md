@@ -4091,11 +4091,13 @@ Steps
   windows the file had when the close began, even when a close trigger
   brings another file's window to the front. A window of the file that a
   close trigger opened (a card too) stops the close and stays open with
-  its edits, and Quit goes on to a file a close trigger opened hidden
-  (OpenMaker's choices). FileMaker's order of these events for several
-  windows, and what it does with windows a close trigger opens, are not
-  measured. The next
-  file starts from a fresh window (title, toolbars, zoom, view, `Get (
+  its edits; a close trigger that closes its own window lets the close go
+  on with the next. Quit goes on to a file a close trigger opened hidden,
+  from Home or the root close box too, and stays a Quit through a close
+  trigger's Close File (OpenMaker's choices). FileMaker's order of these
+  events for several windows, and what it does with windows a close
+  trigger opens or closes, are not measured. The next file starts from a
+  fresh window (title, toolbars, zoom, view, `Get (
   WindowUUID )`). Exit Application commits its own window, and once its
   script has ended every other window closes as Quit closes them; while a
   script runs the root close box does nothing (Esc or Cmd-period stops

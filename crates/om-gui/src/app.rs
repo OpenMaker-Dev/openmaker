@@ -799,7 +799,6 @@ impl Action {
     }
 }
 
-/// The OpenMaker application.
 /// How long the host administrator's message stays up, in seconds:
 /// FileMaker Pro's closed itself about 30 s after it came
 /// (network-protocol.md 6.5, Medium: polled every 20 s).
@@ -807,6 +806,9 @@ const HOST_MESSAGE_SECONDS: f64 = 30.0;
 
 /// FileMaker Pro's alert when the host disconnects a file
 /// (network-protocol.md 6.5); the administrator's text follows it.
+const HOST_DISCONNECTED: &str =
+    "File has been forcefully disconnected by the host. All affected windows will be closed.";
+
 /// The alert for a command that would drop a layout's unsaved changes:
 /// the user saves or reverts them first (OpenMaker's choice; FileMaker Pro
 /// asks whether to save the layout).
@@ -817,9 +819,6 @@ const LAYOUT_UNSAVED: &str =
 /// are open: OpenMaker shows Home and opens files in a window no file
 /// holds, and closes only the front file to free it.
 const OTHER_FILES_OPEN: &str = "Other files are open. Close them first.";
-
-const HOST_DISCONNECTED: &str =
-    "File has been forcefully disconnected by the host. All affected windows will be closed.";
 
 /// What the window shows while no file is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -902,6 +901,7 @@ struct Closing {
     quit: bool,
 }
 
+/// The OpenMaker application.
 pub struct OpenMakerApp {
     worker: Worker,
     /// Bumped whenever a session is abandoned; replies from older epochs are
@@ -1355,14 +1355,15 @@ impl OpenMakerApp {
         self.abort_keys(&ctx);
         if self.closing.is_none() {
             if let Some((launch, closed)) = self.launch_after_close.take() {
-                let open: Vec<u64> = std::iter::once(&self.w)
-                    .chain(&self.windows)
+                let open: Vec<u64> = self
+                    .docs()
                     .filter(|doc| doc.session.is_some())
                     .map(|doc| doc.file_id)
                     .collect();
                 if open.contains(&closed) {
-                    // Its close was vetoed or its save refused, which said
-                    // why: the command is dropped.
+                    // Its close was vetoed, its save refused (which said
+                    // why) or it stopped at a window a close trigger
+                    // opened: the command is dropped.
                 } else if !open.is_empty() {
                     // A close trigger opened another file.
                     self.error = Some(OTHER_FILES_OPEN.into());
@@ -1386,14 +1387,14 @@ impl OpenMakerApp {
             })
             .collect();
         self.quit_after_closes_done(&ctx);
-        // The root window's close box quits: every window of the file
-        // closes first, as Quit does, and a veto or a refused save keeps
-        // the app open.
+        // The root window's close box quits: every open file's windows,
+        // a hidden file's too, close first, as Quit closes them, and a
+        // veto or a refused save keeps the app open.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ready {
             if self.quit_waiting.is_some() {
                 // Quit already waits for the files to close.
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            } else if self.w.session.is_some() {
+            } else if self.docs().any(|doc| doc.session.is_some()) {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 if !self.script.busy() && self.closing.is_none() {
                     self.apply(&ctx, Action::Quit);
@@ -3109,6 +3110,44 @@ impl OpenMakerApp {
         })
     }
 
+    /// Window `closed` of the file File > Close or Quit is closing has
+    /// gone, not the file's last: the close goes on with the next of the
+    /// windows it began with, not whichever is in front now (a close
+    /// trigger may have brought another file forward). Past those, or
+    /// after a window it did not begin with, it stops (`Closing`).
+    fn close_next(&mut self, ctx: &egui::Context, closed: u32) {
+        let next = self
+            .closing
+            .as_ref()
+            .filter(|closing| closing.windows.contains(&closed))
+            .and_then(|_| self.next_to_close());
+        match next {
+            Some(next) => {
+                self.with_window(next, |app| app.apply(ctx, Action::CloseWindow));
+            }
+            None => self.closing = None,
+        }
+    }
+
+    /// Quit closes the next open file as File > Close does, a hidden one
+    /// (a close trigger may have opened it) too, and quits once none is
+    /// left.
+    fn quit_next(&mut self, ctx: &egui::Context) {
+        let next = self
+            .docs()
+            .find(|doc| doc.session.is_some())
+            .map(|doc| doc.id);
+        match next {
+            Some(next) => {
+                self.with_window(next, |app| {
+                    app.closing = Some(app.closing_front(true));
+                    app.apply(ctx, Action::CloseWindow);
+                });
+            }
+            None => self.quit_after_closes(ctx),
+        }
+    }
+
     fn history_path(&self) -> Option<&std::path::Path> {
         self.settings_path
             .as_deref()
@@ -3141,11 +3180,7 @@ impl OpenMakerApp {
             return;
         }
         let front = self.w.session.is_some().then_some(self.w.file_id);
-        let open = || {
-            std::iter::once(&self.w)
-                .chain(&self.windows)
-                .filter(|doc| doc.session.is_some())
-        };
+        let open = || self.docs().filter(|doc| doc.session.is_some());
         // A file left open behind Home, such as a hidden one a close
         // trigger opened, refuses every command that would open a file:
         // the provider would close it under its windows. Switching Home's
@@ -4165,7 +4200,20 @@ impl OpenMakerApp {
         // goes on to the parent once the card has closed.
         if action == Action::CloseWindow && self.w.session.is_some() {
             if let Some(card) = self.card_of(self.w.id) {
-                self.with_window(card, |app| app.apply(ctx, Action::CloseWindow));
+                // The parent's close triggers let the parent go, not the
+                // card: the card's own run, and may stop its close.
+                self.script.bypass = false;
+                // A card a close trigger opened stops File > Close and
+                // Quit, as any window opened since they began does
+                // (`Closing`).
+                let opened_since = self.closing.as_ref().is_some_and(|closing| {
+                    closing.file == self.w.file_id && !closing.windows.contains(&card)
+                });
+                if opened_since {
+                    self.closing = None;
+                } else {
+                    self.with_window(card, |app| app.apply(ctx, Action::CloseWindow));
+                }
                 return;
             }
         }
@@ -4531,7 +4579,10 @@ impl OpenMakerApp {
                 }
             }
             Action::CloseFile if self.w.session.is_some() => {
-                self.closing = Some(self.closing_front(false));
+                // A Quit under way (a close trigger's Close File, say)
+                // stays one.
+                let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
+                self.closing = Some(self.closing_front(quit));
                 self.apply(ctx, Action::CloseWindow);
             }
             // Stops the listing; nothing goes to the provider.
@@ -4585,25 +4636,17 @@ impl OpenMakerApp {
                 if self.w.session.is_none() {
                     self.closing = None;
                 } else if !self.windows.iter().any(|d| d.file_id == self.w.file_id) {
-                    // The file's last window: the file closes.
-                    let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
+                    // The file's last window: the file closes. Another
+                    // file's close under way goes on.
+                    let file = self.w.file_id;
+                    let closing = self.closing.take();
+                    let quit = closing
+                        .as_ref()
+                        .is_some_and(|closing| closing.file == file && closing.quit);
                     self.close_file(ctx);
+                    self.closing = closing.filter(|closing| closing.file != file);
                     if quit {
-                        // Quit goes on with the next open file, a hidden
-                        // one (a close trigger may have opened it) too.
-                        let next = self
-                            .docs()
-                            .find(|doc| doc.session.is_some())
-                            .map(|doc| doc.id);
-                        match next {
-                            Some(next) => {
-                                self.with_window(next, |app| {
-                                    app.closing = Some(app.closing_front(true));
-                                    app.apply(ctx, Action::CloseWindow);
-                                });
-                            }
-                            None => self.quit_after_closes(ctx),
-                        }
+                        self.quit_next(ctx);
                     }
                 } else {
                     let (id, file) = (self.w.id, self.w.file_id);
@@ -4619,27 +4662,12 @@ impl OpenMakerApp {
                         let viewport = self.viewport_of(self.w.id);
                         ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
                     }
-                    // File > Close and Quit go on with the next of the
-                    // windows they began with, not whichever is in front
-                    // now: a close trigger may have brought another file
-                    // forward. Past those, or at a window (a card too) a
-                    // close trigger opened, they stop (`Closing`).
                     if self
                         .closing
                         .as_ref()
                         .is_some_and(|closing| closing.file == file)
                     {
-                        let next = self
-                            .closing
-                            .as_ref()
-                            .filter(|closing| closing.windows.contains(&id))
-                            .and_then(|_| self.next_to_close());
-                        match next {
-                            Some(next) => {
-                                self.with_window(next, |app| app.apply(ctx, Action::CloseWindow));
-                            }
-                            None => self.closing = None,
-                        }
+                        self.close_next(ctx, id);
                     }
                 }
             }
@@ -4971,14 +4999,16 @@ impl OpenMakerApp {
                     .find(|doc| doc.file_id == file)
                     .map(|doc| doc.id);
                 if let Some(window) = window {
-                    // `close_file` resets what the front file's close or
-                    // open had under way: another file's stays.
+                    // `close_file` resets the close and the open under
+                    // way: another file's close stays, wherever its file
+                    // is, and so does an open while this file was not in
+                    // front.
                     let front = self.front_doc().file_id;
-                    let kept = (self.closing.clone(), self.opening.clone(), self.status);
+                    let (closing, opening, status) =
+                        (self.closing.clone(), self.opening.clone(), self.status);
                     self.with_window(window, |app| app.close_file(ctx));
+                    self.closing = closing.filter(|closing| closing.file != file);
                     if front != file {
-                        let (closing, opening, status) = kept;
-                        self.closing = closing.filter(|closing| closing.file != file);
                         (self.opening, self.status) = (opening, status);
                     }
                 }
@@ -5009,14 +5039,9 @@ impl OpenMakerApp {
                 ctx.send_viewport_cmd_to(self.viewport_of(id), ViewportCommand::Focus);
             }
             Action::Minimize => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
-            Action::Quit if self.w.session.is_some() => {
-                self.launch_after_close = None;
-                self.closing = Some(self.closing_front(true));
-                self.apply(ctx, Action::CloseWindow);
-            }
             Action::Quit => {
                 self.launch_after_close = None;
-                self.quit_after_closes(ctx);
+                self.quit_next(ctx);
             }
         }
     }
@@ -8147,12 +8172,15 @@ mod tests {
         assert_eq!(app.launcher, Launcher::Home { hosts: true });
     }
 
-    /// File > Close closes its file's own windows in turn, whichever
-    /// window a close trigger brings to the front, and the last of them
-    /// closes the file with any window a close trigger opened.
+    /// File > Close closes the windows its file had when it began, one at
+    /// a time, whichever window a close trigger brings to the front, and
+    /// stops at a window of the file a close trigger opened since, a card
+    /// too, which stays open with its edits: when the close goes on
+    /// directly and when a trigger's held close goes on (`resume_held`).
     #[test]
-    fn file_close_closes_its_own_windows_whatever_a_close_trigger_does() {
+    fn file_close_goes_through_the_windows_it_began_with_and_stops_at_new_ones() {
         let ctx = egui::Context::default();
+        let close = || scripts::Held::Action(Action::CloseWindow, 1);
         let mut app = two_record_windows();
         app.w.file_id = 1;
         app.windows[0].file_id = 1;
@@ -8192,13 +8220,94 @@ mod tests {
             );
         }
 
-        // Quit goes on to a file left open hidden.
+        // Window 1's OnWindowClose opened a card on it and let the close
+        // go on: the card is not one the close began with, so the close
+        // stops there rather than close the card without its own triggers.
         let mut app = two_record_windows();
-        app.w.file_id = 1;
-        app.windows[0].file_id = 2;
-        app.windows[0].hidden = true;
-        app.apply(&ctx, Action::Quit);
-        assert!(app.docs().all(|doc| doc.session.is_none()));
+        app.windows[0].file_id = app.w.file_id;
+        app.closing = Some(app.closing_front(false));
+        app.add_window(4);
+        app.windows[1].style = crate::scripting::WindowStyle::Card(crate::scripting::Card {
+            parent: 1,
+            dim: true,
+            close: true,
+            left: None,
+            top: None,
+            width: None,
+            height: None,
+        });
+        app.resume_held(&ctx, 1, close(), true, None);
+        assert_eq!(app.window_ids(), [1, 4, 2]);
+        assert!(app.closing.is_none());
+
+        // Window 1's OnWindowClose closed window 1 itself (Close Window):
+        // a close it let go on goes on with window 2 and closes the file,
+        // and one it stopped ends there.
+        for proceed in [true, false] {
+            let mut app = two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.closing = Some(app.closing_front(false));
+            app.remove_window(1);
+            app.resume_held(&ctx, 1, close(), proceed, None);
+            assert_eq!(app.w.session.is_none(), proceed, "proceed {proceed}");
+            assert!(app.closing.is_none(), "proceed {proceed}");
+        }
+
+        // File 1's close waits on its trigger while file 2's window is in
+        // front: acknowledging file 2's forced disconnect leaves it.
+        let mut app = two_record_windows();
+        app.w.file_id = 2;
+        app.windows[0].file_id = 1;
+        let closing = Closing {
+            file: 1,
+            windows: vec![2],
+            quit: false,
+        };
+        app.closing = Some(closing.clone());
+        app.apply(&ctx, Action::CloseDisconnectedFile(2));
+        assert_eq!(app.window_ids(), [2]);
+        assert_eq!(app.closing, Some(closing));
+    }
+
+    /// Quit closes every open file as File > Close does, a hidden one too,
+    /// whether it starts from the menu, behind a blank Home or from the
+    /// root window's close box; a close trigger's Close File keeps it a
+    /// Quit.
+    #[test]
+    fn quit_closes_every_open_file_hidden_ones_too() {
+        for (how, blank, close_box) in [
+            ("Quit", false, false),
+            ("Quit behind Home", true, false),
+            ("the close box behind Home", true, true),
+            ("Close File during Quit", false, false),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.w.file_id = 1;
+            app.windows[0].file_id = 2;
+            app.windows[0].hidden = true;
+            if blank {
+                app.w = windows::Doc::new(windows::FIRST);
+            }
+            if close_box {
+                let mut input = egui::RawInput::default();
+                input
+                    .viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+                ctx.run_ui(input, |ui| app.show(ui))
+                    .drop_without_applying_deltas();
+            } else if how == "Close File during Quit" {
+                app.closing = Some(app.closing_front(true));
+                app.apply(&ctx, Action::CloseFile);
+            } else {
+                app.apply(&ctx, Action::Quit);
+            }
+            assert!(app.docs().all(|doc| doc.session.is_none()), "{how}");
+            assert!(app.quit_ready || app.quit_waiting.is_some(), "{how}");
+        }
     }
 
     #[test]

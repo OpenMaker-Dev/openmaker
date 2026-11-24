@@ -2054,6 +2054,7 @@ impl OpenMakerApp {
                 return;
             }
         }
+        let closes = proceed && matches!(held, Held::Action(Action::CloseWindow, _));
         let resumed =
             self.with_window(origin, |app| match (held, proceed) {
                 (Held::Action(action, stage), true) => {
@@ -2106,8 +2107,18 @@ impl OpenMakerApp {
                 (Held::Key(key), proceed) => app.resume_keystroke(ctx, *key, proceed),
             });
         if resumed.is_none() {
-            // Its window closed meanwhile: closing the file stops.
-            self.closing = None;
+            // Its window closed meanwhile. A close of it its triggers let
+            // go on (their script's Close Window closed it) goes on with
+            // the file's next window; otherwise closing the file stops.
+            let began_with = self
+                .closing
+                .as_ref()
+                .is_some_and(|closing| closing.windows.contains(&origin));
+            if closes && began_with {
+                self.close_next(ctx, origin);
+            } else {
+                self.closing = None;
+            }
         }
     }
 
