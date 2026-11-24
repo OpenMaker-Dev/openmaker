@@ -264,6 +264,17 @@ struct LaunchCenter: View {
   /// temporary name and then linked in under its own, so the list never
   /// shows half a file, and a file already there of that name is kept.
   private func importFile(_ url: URL) {
+    // A file of My Apps itself (Files shows the app's documents) opens as a
+    // tap on it does: it is not imported over itself.
+    let folder = FileEntry.directory.standardizedFileURL.resolvingSymlinksInPath().path
+    if url.isFileURL,
+      url.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent().path == folder
+    {
+      reload()
+      tab = .local
+      choose(FileEntry(name: url.lastPathComponent))
+      return
+    }
     busy = true
     Task {
       defer { busy = false }

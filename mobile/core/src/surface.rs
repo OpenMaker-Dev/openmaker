@@ -289,7 +289,19 @@ impl Surface {
         }
         let mut took = false;
         let mut tapped = false;
-        while let Some(input) = inputs.front() {
+        // A pan found to drag a handle presses it where it began, in a pass
+        // of its own: egui finds the handle at the pointer's last position
+        // in a pass, so the finger's first move must not come with it.
+        let mut press_only = false;
+        if let Some(pan) = &mut self.pan {
+            if pan.drags == Some(true) && !pan.pressed {
+                pan.pressed = true;
+                events.push(pointer_button(pan.at, true));
+                took = true;
+                press_only = true;
+            }
+        }
+        while let Some(input) = inputs.front().filter(|_| !press_only) {
             // A tap or an element's action can move the focus to another
             // field: it gets a pass of its own, so that the field reads what
             // was typed or committed before it, and what comes after reaches
@@ -539,12 +551,8 @@ impl Surface {
             Input::PanMoved { dx, dy } => {
                 if let Some(pan) = &mut self.pan {
                     if pan.drags == Some(true) {
-                        // A handle: pressed where the pan began, then
+                        // A handle, pressed where the pan began (`step`),
                         // dragged with the finger.
-                        if !pan.pressed {
-                            pan.pressed = true;
-                            events.push(pointer_button(pan.at, true));
-                        }
                         pan.at += egui::vec2(dx, dy);
                         events.push(Event::PointerMoved(pan.at));
                     } else {

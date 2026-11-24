@@ -56,7 +56,7 @@ fun DocumentScreen(session: DocumentSession, onClosed: (failure: String?) -> Uni
 
     // Closed by Close File, a script or the host, or stopped by a failure.
     LaunchedEffect(state?.closed) { state?.takeIf { it.closed }?.let { onClosed(it.failure) } }
-    Effects(session)
+    Effects(session) { canvas?.copied() }
     ScreenReader(session)
     CanvasLifecycle(canvas)
     // A tap that leaves a field taking typing shows the keyboard again, if
@@ -92,17 +92,22 @@ fun DocumentScreen(session: DocumentSession, onClosed: (failure: String?) -> Uni
     }
 }
 
-/** What the file asked for: its copied text goes to the clipboard, its URLs open. */
+/**
+ * What the file asked for: its copied text goes to the clipboard (then
+ * [onCopied], for a paste that waits for it), its URLs open.
+ */
 @Composable
-private fun Effects(session: DocumentSession) {
+private fun Effects(session: DocumentSession, onCopied: () -> Unit) {
     val context = LocalContext.current
     LaunchedEffect(session) {
         session.effects.collect { effect ->
             when (effect) {
-                is Effect.Copy ->
+                is Effect.Copy -> {
                     context
                         .getSystemService(ClipboardManager::class.java)
                         .setPrimaryClip(ClipData.newPlainText("FileMaker", effect.text))
+                    onCopied()
+                }
                 is Effect.OpenUrl -> {
                     val uri = Uri.parse(effect.url)
                     // Android refuses to hand another app a file: URL
