@@ -68,11 +68,17 @@ fn host(tag: &str, tree: &OwnedNode) -> (fixture::TempFile, Arc<Hosted>) {
 
 /// The file at `file` hosted as it is on disk.
 fn load(file: &fixture::TempFile) -> Arc<Hosted> {
+    load_with(file, &engine())
+}
+
+/// [`load`], with `engine` finishing and saving what the file records as
+/// pending.
+fn load_with(file: &fixture::TempFile, engine: &FileEngine) -> Arc<Hosted> {
     let hosted = HostedFile {
         name: fixture::FILE.into(),
         path: file.0.clone(),
     };
-    let hosting = Hosting::load(&[hosted], false, &EventLog::default()).unwrap();
+    let hosting = Hosting::load(&[hosted], false, &EventLog::default(), engine).unwrap();
     hosting.by_name(fixture::FILE).unwrap()
 }
 
@@ -1199,4 +1205,335 @@ fn a_new_stored_calculation_is_computed_when_the_file_is_loaded_between_op13_and
         node_at(&file, &path).and_then(|n| n.value),
         text_node(&[], "3").value
     );
+}
+
+/// docs/server-storage.md 5 and 9: the account edits, the deferred field
+/// work a file is opened with and a window's saved found set replay the
+/// same way, and a recording of them shows no password. The sequence: the
+/// desktop's Change Password of Admin (no stamp); a script's Change
+/// Password of Clerk, whose set does not let it (206); a script's Reset
+/// Account Password of Clerk, Enable Account of Former twice (the second
+/// changes nothing) and Delete Account of Clerk; a reset of an account the
+/// file lacks (213); the deferred work an op13 upload left (Count's
+/// dependents recomputed), finished; and Tasks' found set kept for a
+/// window. Each effect is checked against the fixture, and each step that
+/// is not refused must change the tree. A file opened with deferred work
+/// pending has it finished and saved by the engine that loads it.
+#[test]
+fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays() {
+    use om_protocol::authoring::{MOD_COUNT as STAMP_COUNT, MOD_USER as STAMP_USER};
+
+    use crate::accounts::AccountStatus;
+    const ADMIN_NEW: &str = "a new horse";
+    const CLERK_NEW: &str = "clerk's new secret";
+    const SCRIPT: u32 = 4;
+    let table = uint_segment(fixture::TABLE);
+    let occurrence = uint_segment(fixture::OCCURRENCE);
+    let doubled = vec![
+        table.clone(),
+        vec![0x05],
+        serial::encode(1),
+        uint_segment(fixture::DOUBLED),
+    ];
+    let leaf = |value: Vec<u8>| OwnedNode::leaf(Vec::new(), value);
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    fixture::add_local_accounts(&mut tree);
+    // The account catalog's index as FileMaker keeps it (local-files.md
+    // 3), which Delete Account rewrites and every stamped edit stamps.
+    let accounts = [
+        (2u8, fixture::ACCOUNT),
+        (3, fixture::CLERK),
+        (4, fixture::FORMER),
+        (5, fixture::NEWCOMER),
+    ];
+    for (place, (key, name)) in (1u32..).zip(accounts) {
+        let listed = om_data::field_catalog::listed_key(name).unwrap();
+        tree.put(&[&[23], &[1], &[1], &[1], &listed], leaf(vec![1, key]));
+        let place = place.to_be_bytes();
+        tree.put(&[&[23], &[1], &[1], &[3], &place], leaf(vec![1, key]));
+        tree.put(&[&[23], &[1], &[1], &[7], &[key]], leaf(Vec::new()));
+    }
+    tree.put(
+        &[&[23], &[1], &[1], &[4]],
+        leaf(4u32.to_be_bytes().to_vec()),
+    );
+    // Tasks' data version (schema-path.md 5.8), which a kept found set
+    // names, and Doubled stored stale on record 1.
+    tree.put(
+        &[&[3], &[0x10], &[5], &table, &[0xfb]],
+        leaf(7u32.to_be_bytes().to_vec()),
+    );
+    let path: Vec<&[u8]> = doubled.iter().map(Vec::as_slice).collect();
+    tree.put(&path, text_node(&[], "99"));
+    // `[T, 03, 01, fd]`: Count's type changed (schema-path.md 7.2).
+    let deferred = vec![table.clone(), vec![0x03], vec![0x01], vec![0xfd]];
+    let work = OwnedNode::list(
+        vec![0xfd],
+        vec![OwnedNode::leaf(
+            uint_segment(fixture::COUNT),
+            0x40u32.to_be_bytes().to_vec(),
+        )],
+    );
+
+    let (_first, file) = host("engine-accounts-recorded", &tree);
+    let (recorder, log) = recording();
+    let tree_of = |file: &Hosted| file.read_store().node(&[]).unwrap().clone();
+    let mut recorded: Vec<(Operation, Outcome, OwnedNode, bool)> = Vec::new();
+    // Submit `operation`, which must change the tree when `changes`.
+    let mut submit = |operation: Operation, changes: bool| {
+        let before = tree_of(&file);
+        let outcome = recorder.submit(&file, operation);
+        let operation = last(&log);
+        let after = tree_of(&file);
+        assert_eq!(after != before, changes, "{operation:?}");
+        recorded.push((operation, outcome.clone(), after, changes));
+        outcome
+    };
+    let account = |key: u8| node_at(&file, &[vec![23], vec![1], vec![5], vec![key]]);
+    let status = |key: u8| {
+        let account = account(key).expect("the account");
+        AccountStatus::decode(account.child(&[0x0a]).and_then(|n| n.value.as_deref()))
+            .expect("a status")
+    };
+    let stored_password = |key: u8| {
+        let account = account(key).expect("the account");
+        account.child(&[6]).and_then(|n| n.value.clone()).unwrap()
+    };
+    let stamp = AccountStamp {
+        connection: SCRIPT,
+        user: fixture::ACCOUNT.into(),
+        account: fixture::ACCOUNT.into(),
+    };
+    let catalog_changed = Notices {
+        from: SCRIPT,
+        changes: [vec![vec![23], vec![1]], vec![vec![23], vec![1], vec![1]]]
+            .into_iter()
+            .map(|path| Change { path, code: 2 })
+            .collect(),
+    };
+    let nothing_told = Notices {
+        from: SCRIPT,
+        changes: Vec::new(),
+    };
+    let stamp_count = |node: Option<OwnedNode>| {
+        node.and_then(|n| n.child(STAMP_COUNT).and_then(|c| c.value.clone()))
+    };
+    let index = vec![vec![23], vec![1], vec![1]];
+
+    // The desktop's own Change Password: the next login needs the new
+    // password; the status is set at the environment's time (12:00:00,
+    // 43,200 s) with no change due, and nothing is stamped.
+    let outcome = submit(
+        Operation::ChangePassword(ChangePassword {
+            account: AccountRef::Name(fixture::ACCOUNT.into()),
+            old: Password::new(fixture::PASSWORD),
+            new: Password::new(ADMIN_NEW),
+            manager: false,
+            stamp: None,
+        }),
+        true,
+    );
+    assert_eq!(outcome.reply, Reply::ChangePassword(Ok(())));
+    assert!(outcome.notices.changes.is_empty());
+    assert!(file.verify_password(fixture::ACCOUNT, ADMIN_NEW).is_some());
+    assert!(file
+        .verify_password(fixture::ACCOUNT, fixture::PASSWORD)
+        .is_none());
+    let admin = status(2);
+    assert_eq!(
+        (admin.date, admin.seconds),
+        (jiff::civil::date(2026, 11, 24), 43_200)
+    );
+    assert!(admin.is_active() && !admin.must_change_password());
+    assert_eq!(stamp_count(account(2)), None);
+    assert_eq!(stamp_count(node_at(&file, &index)), None);
+    let admin_hash = stored_password(2);
+
+    // Clerk's set does not let it change its own password.
+    let outcome = submit(
+        Operation::ChangePassword(ChangePassword {
+            account: AccountRef::Key(vec![3]),
+            old: Password::new(fixture::CLERK_PASSWORD),
+            new: Password::new(CLERK_NEW),
+            manager: false,
+            stamp: Some(stamp.clone()),
+        }),
+        false,
+    );
+    assert_eq!(
+        outcome.reply,
+        Reply::ChangePassword(Err(PasswordChangeError::NotAllowed))
+    );
+    assert_eq!(outcome.notices, nothing_told);
+
+    // A script resets Clerk's password: stamped by its account, the index
+    // too, and the other clients told the catalog changed.
+    let outcome = submit(
+        Operation::ResetPassword(ResetPassword {
+            account: fixture::CLERK.into(),
+            new: Password::new(CLERK_NEW),
+            expire: false,
+            stamp: Some(stamp.clone()),
+        }),
+        true,
+    );
+    assert_eq!(outcome.reply, Reply::ResetPassword(Ok(())));
+    assert_eq!(outcome.notices, catalog_changed);
+    assert!(file.verify_password(fixture::CLERK, CLERK_NEW).is_some());
+    assert!(file
+        .verify_password(fixture::CLERK, fixture::CLERK_PASSWORD)
+        .is_none());
+    let clerk = account(3).unwrap();
+    let user = clerk.child(STAMP_USER).and_then(|n| n.value.clone());
+    assert_eq!(user, text_node(&[], fixture::ACCOUNT).value);
+    assert!(stamp_count(Some(clerk)).is_some());
+    let index_stamp = stamp_count(node_at(&file, &index));
+    assert!(
+        index_stamp.is_some(),
+        "the account catalog's index is stamped"
+    );
+    assert!(!status(3).must_change_password());
+    let clerk_hash = stored_password(3);
+
+    // Former made active, then again, which changes nothing.
+    assert!(!status(4).is_active());
+    let enable = Operation::EnableAccount(EnableAccount {
+        account: fixture::FORMER.into(),
+        active: true,
+        stamp: Some(stamp.clone()),
+    });
+    let outcome = submit(enable.clone(), true);
+    assert_eq!(outcome.reply, Reply::EnableAccount(Ok(true)));
+    assert_eq!(outcome.notices, catalog_changed);
+    assert!(status(4).is_active());
+    assert_ne!(stamp_count(node_at(&file, &index)), index_stamp);
+    let outcome = submit(enable, false);
+    assert_eq!(outcome.reply, Reply::EnableAccount(Ok(false)));
+    assert_eq!(outcome.notices, nothing_told);
+
+    // Clerk deleted: its member, its index entries and one from the count.
+    let outcome = submit(
+        Operation::DeleteAccount(DeleteAccount {
+            account: fixture::CLERK.into(),
+            stamp: Some(stamp.clone()),
+        }),
+        true,
+    );
+    assert_eq!(outcome.reply, Reply::DeleteAccount(Ok(())));
+    assert_eq!(outcome.notices, catalog_changed);
+    assert!(account(3).is_none());
+    assert!(file.verify_password(fixture::CLERK, CLERK_NEW).is_none());
+    let count = node_at(&file, &[vec![23], vec![1], vec![1], vec![4]]);
+    assert_eq!(
+        count.and_then(|n| n.value),
+        Some(3u32.to_be_bytes().to_vec())
+    );
+
+    // An account the file lacks.
+    let outcome = submit(
+        Operation::ResetPassword(ResetPassword {
+            account: "Nobody".into(),
+            new: Password::new(CLERK_NEW),
+            expire: false,
+            stamp: Some(stamp.clone()),
+        }),
+        false,
+    );
+    assert_eq!(
+        outcome.reply,
+        Reply::ResetPassword(Err(AccountEditError::Missing))
+    );
+
+    // Deferred work an op13 upload left, finished: the list is gone and
+    // Doubled, which reads Count, is recomputed.
+    let upload = UploadToCatalog {
+        path: deferred.clone(),
+        node: work.clone(),
+    };
+    let outcome = submit(Operation::UploadToCatalog(upload), true);
+    assert_eq!(outcome.reply, Reply::UploadToCatalog(true));
+    let outcome = submit(Operation::FinishDeferredWork, true);
+    assert_eq!(outcome.reply, Reply::FinishDeferredWork(true));
+    assert!(node_at(&file, &deferred).is_none(), "the work list is done");
+    assert_eq!(
+        node_at(&file, &doubled).and_then(|n| n.value),
+        text_node(&[], "2").value,
+        "Doubled is recomputed"
+    );
+
+    // A window's found set, records 1 and 3 with 3 current, kept at
+    // `[TO, 07]` with the table's data version.
+    let found = RidList::from_iter([1, 3]);
+    let outcome = submit(
+        Operation::SaveFoundSet(SaveFoundSet {
+            occurrence: occurrence.clone(),
+            table: table.clone(),
+            records: Some(found.clone()),
+            current: Some(3),
+        }),
+        true,
+    );
+    assert_eq!(outcome.reply, Reply::SaveFoundSet(true));
+    let state = |key: Vec<u8>| node_at(&file, &[occurrence.clone(), vec![7], vec![1], key]);
+    let kept = state(vec![5]).expect("the found records");
+    assert_eq!(RidList::from_owned(&kept).unwrap(), found);
+    let version = state(vec![0xfe]).and_then(|n| n.child(&table).and_then(|v| v.value.clone()));
+    assert_eq!(version, Some(7u32.to_be_bytes().to_vec()));
+    assert!(state(vec![3]).is_some(), "the current record");
+
+    // No password, old or new, and no stored verifier in what was
+    // recorded and answered.
+    let shown = format!(
+        "{:?}",
+        recorded
+            .iter()
+            .map(|(operation, outcome, _, _)| (operation, outcome))
+            .collect::<Vec<_>>()
+    );
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    for secret in [
+        fixture::PASSWORD,
+        ADMIN_NEW,
+        fixture::CLERK_PASSWORD,
+        CLERK_NEW,
+    ] {
+        assert!(!shown.contains(secret), "a password is shown");
+        let password = format!("{:?}", Password::new(secret));
+        assert!(!password.contains(secret), "a password is shown");
+    }
+    for hash in [&admin_hash, &clerk_hash] {
+        assert!(!shown.contains(&format!("{hash:?}")), "a verifier is shown");
+        assert!(!shown.contains(&hex(hash)), "a verifier is shown");
+    }
+
+    let (_second, again) = host("engine-accounts-replayed", &tree);
+    let replaying = engine();
+    for (operation, outcome, after, changes) in &recorded {
+        let before = tree_of(&again);
+        assert_eq!(
+            &replaying.submit(&again, operation.clone()),
+            outcome,
+            "{operation:?}"
+        );
+        let now = tree_of(&again);
+        assert_eq!(&now, after, "the tree after {operation:?}");
+        assert_eq!(now != before, *changes, "{operation:?}");
+    }
+
+    // A file opened with that work pending has it finished, and saved, by
+    // the engine that loads it.
+    let mut pending = tree.clone();
+    let path: Vec<&[u8]> = deferred.iter().map(Vec::as_slice).collect();
+    pending.put(&path, work);
+    let saved = fixture::TempFile::from_tree("engine-deferred-at-load", &pending);
+    let (loading, log) = recording();
+    let file = load_with(&saved, &loading);
+    assert_eq!(
+        *log.lock().unwrap(),
+        [Operation::FinishDeferredWork, Operation::SaveFile]
+    );
+    assert!(node_at(&file, &deferred).is_none());
+    let on_disk = om_hbam::HbamFile::open(&saved.0).unwrap();
+    assert!(on_disk.subtree(&path).unwrap().is_none(), "saved");
 }

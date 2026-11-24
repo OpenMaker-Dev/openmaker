@@ -2040,7 +2040,7 @@ fn login(
             if shared.local {
                 // Deferred work the local file's opening finished is saved
                 // now that an account it admits has logged in.
-                file.hosted.commit_recovery();
+                file.hosted.commit_recovery(&shared.engine);
             }
             LoginReply {
                 error_code: 0,

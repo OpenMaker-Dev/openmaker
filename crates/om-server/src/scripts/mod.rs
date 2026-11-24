@@ -749,6 +749,7 @@ mod tests {
     const CLIENT: u32 = 0x77;
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
+        let engine = crate::engine::FileEngine::default();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),
@@ -756,6 +757,7 @@ mod tests {
             }],
             false,
             &Default::default(),
+            &engine,
         )
         .unwrap();
         let shared = Arc::new(Shared {
@@ -773,7 +775,7 @@ mod tests {
             connection_ids: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
-            engine: Default::default(),
+            engine,
             scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
             refused_downloads: Default::default(),
             omitted_list_paths: Default::default(),

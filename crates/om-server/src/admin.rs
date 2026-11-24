@@ -792,7 +792,11 @@ impl ServerHandle {
     /// closed file is opened. One that fails to load stays closed, with
     /// the reason in [`FileInfo::error`] and in the error returned.
     pub fn open_file(&self, id: u32) -> Result<(), FileError> {
-        match self.shared.hosting.reopen(id, &self.shared.events) {
+        match self
+            .shared
+            .hosting
+            .reopen(id, &self.shared.events, &self.shared.engine)
+        {
             Ok(()) => {
                 info!("file {id}: opened for the administrator");
                 Ok(())

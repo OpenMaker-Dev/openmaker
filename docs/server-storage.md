@@ -149,19 +149,19 @@ The rest of the server reaches a file's contents only through this
 interface. It has three parts.
 
 **Status.** Write operations are built for record writes, locks, schema
-changes, container data and authoring edits, with the file engine behind
-them (`crates/om-server/src/engine/`): op70, op71, op72, op60, op61, op62,
-op65, op13, op73, op86's schema instructions and stored indexes, op87,
-op88, and op240's edits and its Save, from clients, and the same
-operations of server scripts (reserving a record id, advancing a serial,
-releasing a transaction's or a session's locks, storing the indexes a
-find or a related-record lookup built). Everything else still changes a
-file from its request handler: account edits, a server script's commit
-(with the container data it stores and counts) and its record and account
-locks, the release of a closed session's locks, the desktop's saved found
-sets, and the deferred field work a file is opened with
-(`Store::recover`) with its save. Views, `export`, `import` and
-`capabilities` are not built.
+changes, container data, authoring edits and account edits, with the file
+engine behind them (`crates/om-server/src/engine/`): op70, op71, op72,
+op60, op61, op62, op65, op13, op73, op86's schema instructions and stored
+indexes, op87, op88, and op240's edits and its Save, from clients; the
+same operations of server scripts (reserving a record id, advancing a
+serial, releasing a transaction's or a session's locks, storing the
+indexes a find or a related-record lookup built) and their account steps;
+the desktop's own Change Password and its saved found sets; and the
+deferred field work a file is opened with, with its save. Everything else
+still changes a file from its request handler: a server script's commit
+(with the container data it stores and counts), its Set Next Serial Value
+and its record and account locks, and the release of a closed session's
+locks. Views, `export`, `import` and `capabilities` are not built.
 
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
@@ -185,14 +185,27 @@ update a table (op73, `UpdateTable`), store an index built for a find
 adjust a container's reference count, which releases it at 0 (op87,
 `AdjustContainerCount`), an authoring edit (op240, `EditDesign`, one
 variant carrying the decoded edit), the authoring extension's Save
-(op240, `SaveFile`), a deploy (section 9), and taking, upgrading and
-releasing locks (op60, op61, op62, op65: `TakeLock`, `UpgradeLock`,
-`ReleaseLock`, `ReleaseLocks`). An operation owns its data and names who
-asks: the lock user (connection and transaction), the name other users see
-for it, for op70 the account, its privilege set at login and those of
-the listed records the session was served without their values, for
-op73 the account its calculations see, and for an authoring edit the
-connection, session name and account its locks and stamps name. op70's
+(op240, `SaveFile`), the account edits (Change Password, Reset Account
+Password, Enable Account, Delete Account: `ChangePassword`,
+`ResetPassword`, `EnableAccount`, `DeleteAccount`), finishing the deferred
+field work a file records as pending (`FinishDeferredWork`), keeping the
+found set a window of a local file closes on (`SaveFoundSet`), a deploy
+(section 9), and taking, upgrading and releasing locks (op60, op61, op62,
+op65: `TakeLock`, `UpgradeLock`, `ReleaseLock`, `ReleaseLocks`). An
+operation owns its data and names who asks: the lock user (connection and
+transaction), the name other users see for it, for op70 the account, its
+privilege set at login and those of the listed records the session was
+served without their values, for op73 the account its calculations see,
+for an authoring edit the connection, session name and account its locks
+and stamps name, and for an account edit whether it may manage the
+account and the connection and names its stamps carry. An account edit
+carries the passwords it was given, in memory only: the old one is
+checked and the new one hashed in `run`, with a salt from the
+environment, and its `Debug` output and log lines leave them out. An
+operation is never written down, so a log will keep an account edit's
+effects (the account member as rewritten, with its salted verifier, as
+the file holds it) and its history only the fact of the change
+(section 9). op70's
 staged records travel in it: the session's temporary area lends them
 (`writes::TempArea::lend`) and takes back those the commit did not take.
 A commit that was not stored has still taken the records it reached, as
@@ -226,8 +239,9 @@ One function, `engine::run`, runs an operation against a transaction (a
 view plus put, delete and replace-subtree), the file's lock table
 (`engine::Locks`) and an environment (`engine::Environment`), from which
 it takes the clock and randomness: an authoring edit's modification
-stamps and the UUIDs of what it adds, and the unique ids of the container
-data op88 stores. Formulas an operation evaluates are not
+stamps and the UUIDs of what it adds, an account edit's stamps, status
+time and password salt, and the unique ids of the container data op88
+stores. Formulas an operation evaluates are not
 covered yet: a privilege set's record limit and the stored calculations
 op73 recomputes take today's date, `Random` and their time budget from the
 process ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)). It returns the
@@ -316,11 +330,16 @@ computes it
 
 **The file engine behind it.** `FileEngine::submit` takes what each request
 took before the interface: the store's write lock for op70, op71, op72,
-op13, op73, op86's schema instructions and stored indexes, op87, op88 and
-op240, its read lock for op60, and for op61, op62 and op65 only the lock
-table. It takes the store first and the lock table when the operation
-first uses it (op13, op73, op86's operations, op87, op88 and op240's Save
-never do), completes a draft right after taking the store, holds both
+op13, op73, op86's schema instructions and stored indexes, op87, op88,
+op240, the account edits and finishing deferred work, its read lock for
+op60, and for op61, op62 and op65 only the lock table. A saved found set
+takes the store's write lock only when no one holds it
+(`FileEngine::try_submit`), so that a window closing never waits on a
+request; otherwise it is not kept, as before. It takes the store first
+and the lock table when the operation first uses it (op13, op73, op86's
+operations, op87, op88, op240's Save, the account edits, deferred work and
+a found set never do), completes a draft right after taking the store,
+holds both
 while it saves, and lets go of the lock table first; the caller then
 delivers the notices, taking the file's registrations and then the
 mailboxes (the order is in the module doc of `engine`). An authoring edit
@@ -331,7 +350,13 @@ of what it changes, and its locks are released after the store is let
 go. op13, op73, op86, op87 and op88 raise no notices: the other clients
 learn of a schema change when the client releases its lock
 (schema-path.md 9). An authoring edit raises the notices the releases of
-its locks would raise.
+its locks would raise. A server script's account step takes its lock on
+the account catalog in the lock table before it submits the edit and
+releases it after `submit` returns, as it always did, and then delivers
+the edit's notices: those of a catalog change, when the edit changed it.
+The desktop's own Change Password is not stamped and raises none. When
+the store's write guard is let go, the file's accounts are decoded again
+from the store, so a changed password counts from the next login on.
 
 Operations that change the tree therefore run one at a time. op61, op62
 and op65 run under the lock table alone: they wait for an op70 or op71
@@ -372,6 +397,20 @@ FileMaker Server's behaviour here is unmeasured.
   and its locks are released all the same;
 - op240's Save: as op72, its reply then saying whether the file holds
   changes the disk lacks (status 800), or that it is hosted read-only;
+- an account edit that changed the file: its journal
+  (`Hosted::save_commit`). A failed save takes the edit back and the
+  reply is the edit's "not written" error with the save's message (3 for
+  a script step);
+- a saved found set: its journal, saved by the store alone
+  (`Store::save_commit`), as the desktop saved it. A failed save takes it
+  back and is logged as a warning, with no alert;
+- finishing deferred work saves nothing. Its save waits: a server saves
+  the file as soon as it is loaded, a local file once an account it
+  admits logs in (`SaveFile`, `Hosted::commit_recovery`), and a local
+  file closed before that is left as it was. In between, every reader
+  sees the finished work in memory, as before: the operation runs when
+  the file is loaded, before it is served, with the engine that then
+  serves it;
 - the lock requests save nothing.
 
 op86's schema instructions and stored indexes, and a server script's
@@ -398,7 +437,14 @@ made in memory and refused at its save, with status 800 ("could not be
 saved: the file is open read-only") and a save-failure alert; now it is
 refused with status 810 ("open read-only") and no alert, as when the file
 was read-only before the request. op240 is OpenMaker's own; what
-FileMaker Server does with overlapping op87 and op88 is unmeasured. The
+FileMaker Server does with overlapping op87 and op88 is unmeasured.
+
+An account edit read the clock before it took the store, once for its
+stamps and once for its status time, and refused a new password of more
+than 100 characters before it took the store. It now reads the clock
+once, under the store's write lock, and refuses an overlong password
+there too. The replies and what the file holds are the same; a stamp or
+status time can be later by as long as the edit waited for the store. The
 memory an op88 upload is charged (`--upload-memory-mib`) was given back
 once its data was stored, before the save; it is now given back once
 the save is done, so another upload during that save finds that much less

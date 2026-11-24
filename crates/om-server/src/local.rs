@@ -51,6 +51,7 @@ use rustls::pki_types::CertificateDer;
 
 use crate::config::{ConnectionLimits, HostedFile, ServerConfig, ServerIdentity};
 use crate::connection::Shared;
+use crate::engine::{ChangePassword, FileEngine, Operation, Password, Reply, SaveFoundSet};
 use crate::filelock::{link_count, same_file, FileLock, LockKind};
 use crate::hosting::Hosting;
 use crate::server::{Server, ServerHandle};
@@ -246,7 +247,8 @@ impl LocalHost {
             Locked::Lock(lock) => Some(lock),
             Locked::Unlocked(_) => None,
         };
-        let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some())
+        let engine = FileEngine::default();
+        let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some(), &engine)
             .map_err(|e| LocalHostError::Undecodable(e.to_string()))?;
         drop(hbam);
 
@@ -278,6 +280,7 @@ impl LocalHost {
             tls,
             true,
             Default::default(),
+            engine,
         )
         .map_err(|e| LocalHostError::Start(e.to_string()))?
         .with_connection_limits(ConnectionLimits {
@@ -411,21 +414,17 @@ impl LocalHost {
     }
 
     /// Set account `name`'s password from `old` to `new`, as FileMaker
-    /// sets the signed-in account's own ([`crate::Hosted::change_password`]),
-    /// stamped with this computer's local time [I: whether FileMaker stamps
-    /// local time or UTC is unmeasured, local-files.md 2.4]. A read-only
-    /// file changes nothing.
+    /// sets the signed-in account's own ([`Operation::ChangePassword`]),
+    /// its status stamped with this computer's local time [I: whether
+    /// FileMaker stamps local time or UTC is unmeasured, local-files.md
+    /// 2.4]. A read-only file changes nothing.
     pub fn change_password(
         &self,
         name: &str,
         old: &str,
         new: &str,
     ) -> Result<(), crate::hosting::PasswordChangeError> {
-        let Some(file) = self
-            .handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-        else {
+        let Some((shared, file)) = self.served() else {
             return Err(crate::hosting::PasswordChangeError::Refused);
         };
         if file.is_read_only() {
@@ -433,15 +432,30 @@ impl LocalHost {
                 "the file is read-only".into(),
             ));
         }
-        let now = jiff::Zoned::now().datetime();
-        file.change_password(
-            crate::hosting::AccountRef::Name(name),
-            old,
-            new,
-            false,
-            None,
-            now,
-        )
+        let change = ChangePassword {
+            account: crate::hosting::AccountRef::Name(name.to_owned()),
+            old: Password::new(old),
+            new: Password::new(new),
+            manager: false,
+            stamp: None,
+        };
+        match shared
+            .engine
+            .submit(&file, Operation::ChangePassword(change))
+            .reply
+        {
+            Reply::ChangePassword(changed) => changed,
+            other => Err(crate::hosting::PasswordChangeError::Unwritten(format!(
+                "not a password change's reply: {other:?}"
+            ))),
+        }
+    }
+
+    /// The host's shared state and its one file, while it serves it.
+    fn served(&self) -> Option<(&Shared, Arc<crate::hosting::Hosted>)> {
+        let shared = &self.handle.as_ref()?.shared;
+        let file = shared.hosting.files().into_iter().next()?;
+        Some((shared, file))
     }
 
     /// Keep, at table occurrence `occurrence`'s `[TO, 07]`, the found set
@@ -459,70 +473,31 @@ impl LocalHost {
         records: Option<om_hbam::RidList>,
         current: Option<u64>,
     ) -> bool {
-        let Some(file) = self
-            .handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-        else {
+        let Some((shared, file)) = self.served() else {
             return false;
         };
         let key = |value: u64| {
             let bytes = value.to_be_bytes();
             bytes[bytes.iter().position(|b| *b != 0).unwrap_or(7)..].to_vec()
         };
-        let (occurrence, table) = (key(occurrence), key(table));
+        let save = SaveFoundSet {
+            occurrence: key(occurrence),
+            table: key(table),
+            records,
+            current,
+        };
         // A close never waits on another request's hold of the store.
-        let Some(mut store) = file.try_write_store() else {
+        let Some(outcome) = shared
+            .engine
+            .try_submit(&file, Operation::SaveFoundSet(save))
+        else {
             info!(
                 "{}: the file is busy; the window's found set is not kept",
                 self.name
             );
             return false;
         };
-        if store.is_read_only() {
-            return false;
-        }
-        let version = store
-            .node(&[&[3], &[0x10], &[5], &table, &[0xfb]])
-            .and_then(|n| n.value.as_deref())
-            .and_then(|v| <[u8; 4]>::try_from(v).ok())
-            .map(u32::from_be_bytes);
-        let Some(data_version) = version else {
-            info!(
-                "{}: no data version for table {table:02x?}; found set not kept",
-                self.name
-            );
-            return false;
-        };
-        let write = om_data::meta::FoundSetWrite {
-            records,
-            current,
-            data_version,
-        };
-        let existing = store.node(&[&occurrence, &[7]]);
-        let Some(node) = om_data::meta::saved_found_set_written(existing, &table, &write) else {
-            info!(
-                "{}: occurrence {occurrence:02x?} holds a found set FileMaker Pro never wrote \
-                 that way; not kept",
-                self.name
-            );
-            return false;
-        };
-        if existing == Some(&node) {
-            return true;
-        }
-        let mut journal = store.begin_commit();
-        store.replace_node_in(&mut journal, vec![occurrence, vec![7]], node);
-        match store.save_commit(&file.at, journal) {
-            Ok(()) => true,
-            Err(e) => {
-                warn!(
-                    "{}: keeping the window's found set failed, taken back: {e}",
-                    self.name
-                );
-                false
-            }
-        }
+        outcome.reply == Reply::SaveFoundSet(true)
     }
 
     /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file

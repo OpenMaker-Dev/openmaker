@@ -81,7 +81,10 @@ use super::find::{self, FindError, Request};
 use super::{values, Control};
 use crate::config::{Privileges, SCRIPT_CALC_LIMITS};
 use crate::connection::Shared;
-use crate::engine::{AdvanceSerial, Draft, Operation, ReleaseLocks, Reply, ReserveRecordIds};
+use crate::engine::{
+    AccountStamp, AdvanceSerial, ChangePassword, DeleteAccount, Draft, EnableAccount, Operation,
+    Password, ReleaseLocks, Reply, ReserveRecordIds, ResetPassword,
+};
 use crate::hosting::Hosted;
 use crate::locks::LockUser;
 use crate::modcount;
@@ -5502,10 +5505,6 @@ impl Network for ServerHost {
 /// is locked (script-runtime.md 2.3, its 8003).
 const ACCOUNTS_IN_USE: i32 = 310;
 
-/// The attention code of a catalog change (`kDBAttnCatalog`,
-/// schema-path.md 9).
-const ATTENTION_CATALOG: u32 = 2;
-
 /// `text` cut to at most `units` UTF-16 code units, as Change Password cuts
 /// its passwords (local-files.md 2.4); a character that would be split
 /// goes whole.
@@ -5521,21 +5520,21 @@ fn utf16_prefix(text: &str, units: usize) -> &str {
 }
 
 impl ServerHost {
-    /// Run `edit` while the session holds the write lock FileMaker Pro's
-    /// Manage Security takes on the account catalog `[23, 1]`
-    /// (local-files.md 2.4), so that a client saving accounts and a script
-    /// do not change them at once: 310 while another user holds it
-    /// (FileMaker's code for Reset Account Password, inferred for the
-    /// other account steps). `edit` gets the modification stamp to write
-    /// and says whether it wrote; once it has, the other clients are told
-    /// the catalog changed, as a
-    /// client's commit tells them. A file the server hosts read-only
+    /// Submit the account edit `edit` makes for the session's stamp while
+    /// the session holds the write lock FileMaker Pro's Manage Security
+    /// takes on the account catalog `[23, 1]` (local-files.md 2.4), so
+    /// that a client saving accounts and a script do not change them at
+    /// once: 310 while another user holds it (FileMaker's code for Reset
+    /// Account Password, inferred for the other account steps). The edit's
+    /// reply, once the lock is released and the other clients are told
+    /// the catalog changed when it did, as a client's commit tells them
+    /// (the operation's notices). A file the server hosts read-only
     /// changes nothing: 3 (OpenMaker's choice).
     fn edit_accounts(
         &self,
         step: &str,
-        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
-    ) -> HostResult {
+        edit: impl FnOnce(AccountStamp) -> Operation,
+    ) -> HostResult<Reply> {
         if self.hosted.is_read_only() {
             info!(
                 "{:?}: {step} changed nothing: the file is hosted read-only",
@@ -5554,33 +5553,18 @@ impl ServerHost {
                 );
                 HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
             })?;
-        let time = crate::connection::host_time_key();
         // `Get ( UserName )` of a server script is its account's name.
-        let stamp = crate::hosting::ModStamp {
-            user: &self.account,
-            account: &self.account,
-            time: &time,
+        let stamp = AccountStamp {
+            connection: self.user.connection,
+            user: self.account.clone(),
+            account: self.account.clone(),
         };
-        let result = edit(&stamp);
+        let outcome = self.shared.engine.submit(&self.hosted, edit(stamp));
         self.hosted.lock_table().release_path(&catalog, self.user);
-        if result == Ok(true) {
-            writes::notify(
-                &self.hosted,
-                &self.shared.mailboxes,
-                self.user.connection,
-                &[
-                    writes::Change {
-                        path: catalog.clone(),
-                        code: ATTENTION_CATALOG,
-                    },
-                    writes::Change {
-                        path: vec![vec![23], vec![1], vec![1]],
-                        code: ATTENTION_CATALOG,
-                    },
-                ],
-            );
-        }
-        result.map(|_| ())
+        outcome
+            .notices
+            .deliver(&self.hosted, &self.shared.mailboxes);
+        Ok(outcome.reply)
     }
 }
 
@@ -5590,13 +5574,13 @@ impl Accounts for ServerHost {
     /// logged in with, found by its record key so that a rename since
     /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
     /// and 3 for [Guest] or an account of another kind. Then
-    /// [`crate::hosting::Hosted::change_password`] sets it with
-    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
-    /// does not allow it, 208 shorter than the set's minimum, 209 the same
-    /// password, 210 an inactive account), skipping the set's checks for a
-    /// step with full access, and saves it before the step ends. With its
-    /// dialog the step is refused with 3: FileMaker Server's handling of
-    /// that dialog is not measured.
+    /// [`Operation::ChangePassword`] sets it with `SetPassword`'s errors
+    /// (212 a wrong old password, 206 a set that does not allow it, 208
+    /// shorter than the set's minimum, 209 the same password, 210 an
+    /// inactive account), skipping the set's checks for a step with full
+    /// access, and saves it before the step ends. With its dialog the step
+    /// is refused with 3: FileMaker Server's handling of that dialog is not
+    /// measured.
     fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
         if with_dialog {
             return Err(HostError::Unsupported);
@@ -5613,36 +5597,36 @@ impl Accounts for ServerHost {
         }
         let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
         let manager = self.privileged();
-        self.edit_accounts("Change Password", |stamp| {
-            let now = jiff::Zoned::now().datetime();
-            self.hosted
-                .change_password(
-                    crate::hosting::AccountRef::Key(&key),
-                    old,
-                    new,
-                    manager,
-                    Some(stamp),
-                    now,
-                )
-                .map(|()| true)
-                .map_err(|e| {
-                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
-                        warn!(
-                            "{:?}: Change Password changed nothing: {reason}",
-                            self.hosted.name
-                        );
-                    }
-                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
-                })
-        })
+        let reply = self.edit_accounts("Change Password", |stamp| {
+            Operation::ChangePassword(ChangePassword {
+                account: crate::hosting::AccountRef::Key(key),
+                old: Password::new(old),
+                new: Password::new(new),
+                manager,
+                stamp: Some(stamp),
+            })
+        })?;
+        match reply {
+            Reply::ChangePassword(Ok(())) => Ok(()),
+            Reply::ChangePassword(Err(e)) => {
+                if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                    warn!(
+                        "{:?}: Change Password changed nothing: {reason}",
+                        self.hosted.name
+                    );
+                }
+                Err(ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into())
+            }
+            other => Err(self.unexpected_reply("Change Password", &other)),
+        }
     }
 
     /// Reset Account Password (136): only a session with full access
     /// privileges (9), as FileMaker's `DoResetAccount`;
-    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
-    /// "Expire password" it is refused (3) before anything changes: the
-    /// account could then sign in to a hosted file only with a new
-    /// password, which this server does not take at login yet
+    /// [`Operation::ResetPassword`] writes it. With "Expire password" it is
+    /// refused (3) before anything changes: the account could then sign in
+    /// to a hosted file only with a new password, which this server does
+    /// not take at login yet
     /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
     fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
         self.require_full_access()?;
@@ -5653,38 +5637,59 @@ impl Accounts for ServerHost {
             );
             return Err(HostError::Unsupported);
         }
-        self.edit_accounts("Reset Account Password", |stamp| {
-            let now = jiff::Zoned::now().datetime();
-            self.hosted
-                .reset_account_password(name, password, false, Some(stamp), now)
-                .map(|()| true)
-                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
-        })
+        let reply = self.edit_accounts("Reset Account Password", |stamp| {
+            Operation::ResetPassword(ResetPassword {
+                account: name.to_owned(),
+                new: Password::new(password),
+                expire: false,
+                stamp: Some(stamp),
+            })
+        })?;
+        match reply {
+            Reply::ResetPassword(result) => {
+                result.map_err(|e| self.account_edit_error("Reset Account Password", &e))
+            }
+            other => Err(self.unexpected_reply("Reset Account Password", &other)),
+        }
     }
 
     /// Delete Account (135): only a session with full access privileges
-    /// (9), as FileMaker's `DoDeleteAccount`;
-    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    /// (9), as FileMaker's `DoDeleteAccount`; [`Operation::DeleteAccount`]
+    /// removes it.
     fn delete_account(&mut self, name: &str) -> HostResult {
         self.require_full_access()?;
-        self.edit_accounts("Delete Account", |stamp| {
-            self.hosted
-                .delete_account(name, Some(stamp))
-                .map(|()| true)
-                .map_err(|e| self.account_edit_error("Delete Account", &e))
-        })
+        let reply = self.edit_accounts("Delete Account", |stamp| {
+            Operation::DeleteAccount(DeleteAccount {
+                account: name.to_owned(),
+                stamp: Some(stamp),
+            })
+        })?;
+        match reply {
+            Reply::DeleteAccount(result) => {
+                result.map_err(|e| self.account_edit_error("Delete Account", &e))
+            }
+            other => Err(self.unexpected_reply("Delete Account", &other)),
+        }
     }
 
     /// Enable Account (137): only a session with full access privileges
-    /// (9), as FileMaker's `DoEnableAccount`;
-    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    /// (9), as FileMaker's `DoEnableAccount`; [`Operation::EnableAccount`]
+    /// writes it.
     fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
         self.require_full_access()?;
-        self.edit_accounts("Enable Account", |stamp| {
-            self.hosted
-                .enable_account(name, active, Some(stamp))
-                .map_err(|e| self.account_edit_error("Enable Account", &e))
-        })
+        let reply = self.edit_accounts("Enable Account", |stamp| {
+            Operation::EnableAccount(EnableAccount {
+                account: name.to_owned(),
+                active,
+                stamp: Some(stamp),
+            })
+        })?;
+        match reply {
+            Reply::EnableAccount(result) => result
+                .map(|_| ())
+                .map_err(|e| self.account_edit_error("Enable Account", &e)),
+            other => Err(self.unexpected_reply("Enable Account", &other)),
+        }
     }
 }
 
@@ -5697,6 +5702,16 @@ impl ServerHost {
             warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
         }
         ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+    }
+
+    /// The step error for an engine's reply of another operation's shape:
+    /// a mistake, 3 and logged.
+    fn unexpected_reply(&self, step: &str, reply: &Reply) -> HostError {
+        warn!(
+            "{:?}: {step} changed nothing: the engine answered {reply:?}",
+            self.hosted.name
+        );
+        ErrorCode::UNAVAILABLE.into()
     }
 }
 impl Platform for ServerHost {}

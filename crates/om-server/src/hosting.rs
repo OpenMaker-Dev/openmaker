@@ -15,6 +15,11 @@ use crate::accounts::{AccountKind, AccountStatus};
 use crate::admin::FileStatus;
 use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
+use crate::connection::host_time_key_at;
+use crate::engine::{
+    AccountStamp, ChangePassword, DeleteAccount, EnableAccount, Environment, FileEngine, Operation,
+    Reply, ResetPassword, Transaction,
+};
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
 use crate::locks::LockTable;
@@ -309,10 +314,10 @@ impl std::fmt::Debug for Hosted {
 
 impl Hosted {
     /// The hosted file `hosted`, whose contents `file` holds, with server
-    /// id `id`. Deferred field work a stop interrupted is finished (and left
-    /// unsaved) before the file is served (schema-path.md "Implementation
-    /// notes (recalculation)"). A local file comes with its lock and whether
-    /// it is read-only. A file FileMaker Server calls insecure is refused
+    /// id `id`, as the file holds it: deferred field work a stop
+    /// interrupted is finished by [`Hosted::finish_deferred_work`] before
+    /// the file is served. A local file comes with its lock and whether it
+    /// is read-only. A file FileMaker Server calls insecure is refused
     /// unless `insecure_files` (a local file never is). A failed save is
     /// recorded in `events`.
     fn load(
@@ -351,9 +356,6 @@ impl Hosted {
                 store.set_read_only();
             }
         }
-        let mut environment =
-            || crate::recalc::record_environment("", crate::recalc::random_uuid());
-        let recovered = store.recover(&mut environment, &mut crate::store::system_unique_id);
         let accounts = RwLock::new(Accounts::of(&store));
         Ok(Hosted {
             id,
@@ -366,21 +368,36 @@ impl Hosted {
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
             accounts,
-            pending_recovery: std::sync::atomic::AtomicBool::new(recovered),
+            pending_recovery: std::sync::atomic::AtomicBool::new(false),
             events: events.clone(),
         })
     }
 
-    /// Save what [`Store::recover`] finished when the file was loaded, if
-    /// it is still unsaved: an eligible account logged in to a local file.
-    pub fn commit_recovery(&self) {
+    /// Finish the deferred field work the file records as pending, with
+    /// `engine`, before the file is served (schema-path.md "Implementation
+    /// notes (recalculation)"; [`Operation::FinishDeferredWork`]): in
+    /// memory, where every reader sees it from then on, and unsaved until
+    /// [`Self::commit_recovery`].
+    pub(crate) fn finish_deferred_work(&self, engine: &FileEngine) {
+        use std::sync::atomic::Ordering;
+        let finished = engine.submit(self, Operation::FinishDeferredWork);
+        let changed = finished.reply == Reply::FinishDeferredWork(true);
+        self.pending_recovery.store(changed, Ordering::Release);
+    }
+
+    /// Save, with `engine`, what [`Self::finish_deferred_work`] finished
+    /// when the file was loaded, if it is still unsaved: a server's file at
+    /// once, a local file once an eligible account logged in
+    /// ([`Operation::SaveFile`]). A failed save is logged and alerted, and
+    /// the work waits in memory for the next save.
+    pub(crate) fn commit_recovery(&self, engine: &FileEngine) {
         use std::sync::atomic::Ordering;
         if self.pending_recovery.swap(false, Ordering::AcqRel) {
             info!(
                 "{:?}: saving the deferred field work finished on opening",
                 self.name
             );
-            self.save();
+            engine.submit(self, Operation::SaveFile);
         }
     }
 
@@ -398,7 +415,7 @@ impl Hosted {
 
     /// [`Hosted::write_store`] when no one holds the store, `None`
     /// otherwise: for work that must not wait on a request.
-    pub fn try_write_store(&self) -> Option<StoreWriteGuard<'_>> {
+    pub(crate) fn try_write_store(&self) -> Option<StoreWriteGuard<'_>> {
         let store = match self.store.try_write() {
             Ok(store) => store,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -411,7 +428,7 @@ impl Hosted {
     }
 
     /// The file's contents for writing ([`Hosted::read_store`]).
-    pub fn write_store(&self) -> StoreWriteGuard<'_> {
+    pub(crate) fn write_store(&self) -> StoreWriteGuard<'_> {
         let store = self.store.write().unwrap_or_else(|poisoned| {
             warn!("{:?}: a request panicked holding the store", self.name);
             poisoned.into_inner()
@@ -473,7 +490,7 @@ impl Hosted {
     /// than delete data. Record commits are saved with
     /// [`Store::save_commit`], which takes them back when the file cannot be
     /// written.
-    pub fn save(&self) {
+    pub(crate) fn save(&self) {
         let mut store = self.write_store();
         if store.is_read_only() {
             // Indexes built on demand and the like stay in memory.
@@ -486,7 +503,7 @@ impl Hosted {
     /// whether the disk now holds every change, or the last error. A change
     /// that must be on disk before it is answered (an issued record id,
     /// #927) is taken back when this fails.
-    pub fn save_held(&self, store: &mut Store) -> std::io::Result<()> {
+    pub(crate) fn save_held(&self, store: &mut Store) -> std::io::Result<()> {
         if store.is_read_only() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::ReadOnlyFilesystem,
@@ -552,352 +569,8 @@ impl Hosted {
         Ok(())
     }
 
-    /// Set the password of account `name` from `old` to `new`, as
-    /// FileMaker's `SetPassword` sets the signed-in account's own
-    /// (local-files.md 2.4): the stored password `06` with a new random
-    /// salt, the status `0a` stamped `now` to the second with its other
-    /// flags kept and no change due, and the checksum `04` again; the
-    /// member's other keys are kept. The new one must have at most 100
-    /// characters; an account that may not manage itself (not full access,
-    /// nor a set managing accounts outside [Full Access]) is checked as
-    /// `SetPassword` checks it: its set must let it change its own
-    /// password, and the new one must have at least the set's minimum
-    /// length (`0d`) and differ from the old one. A `manager` caller (a
-    /// script running with full access) skips those checks as one that
-    /// may manage the account does. One commit, saved before this returns;
-    /// a failed save takes it back. With `stamp` the account and the
-    /// catalog's index get FileMaker's modification stamps
-    /// ([`Self::rewrite_account`]).
-    pub fn change_password(
-        &self,
-        account: AccountRef<'_>,
-        old: &str,
-        new: &str,
-        manager: bool,
-        stamp: Option<&ModStamp<'_>>,
-        now: jiff::civil::DateTime,
-    ) -> Result<(), PasswordChangeError> {
-        use om_data::host::privilege_set::Options;
-        if new.chars().count() > 100 {
-            return Err(PasswordChangeError::TooLong);
-        }
-        let mut store = self.write_store();
-        let Some(record) = find_account(&store, account) else {
-            return Err(PasswordChangeError::Refused);
-        };
-        let view = crate::store::view(&record);
-        let kind = AccountKind::decode(member(&view, ACCOUNT_KIND));
-        if kind != Some(AccountKind::FileMakerFile) {
-            return Err(PasswordChangeError::Refused);
-        }
-        // FileMaker's check of the old password gives 210 for an inactive
-        // account before it tests the password (local-files.md 2.2), and
-        // Change Password accepts only 0 or 211.
-        let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
-            .ok_or(PasswordChangeError::Refused)?;
-        if !current.is_active() {
-            return Err(PasswordChangeError::Inactive);
-        }
-        let stored = view.child(ACCOUNT_PASSWORD).and_then(|n| n.assembled());
-        let Some(stored) = stored
-            .as_deref()
-            .and_then(|bytes| StoredPassword::parse(bytes).ok())
-            .filter(|password| password.verify(old))
-        else {
-            return Err(PasswordChangeError::Refused);
-        };
-        let set_ref = member_owned(&view, ACCOUNT_PRIVILEGES);
-        let set = set_ref
-            .as_deref()
-            .and_then(|r| r.split_first())
-            .filter(|(length, key)| usize::from(**length) == key.len())
-            .and_then(|(_, key)| {
-                store.node(&[
-                    PRIVILEGE_SETS_PATH[0],
-                    PRIVILEGE_SETS_PATH[1],
-                    PRIVILEGE_SETS_PATH[2],
-                    key,
-                ])
-            })
-            .map(crate::store::view);
-        let Some(set) = set else {
-            return Err(PasswordChangeError::NotAllowed);
-        };
-        // An account that may manage itself (full access, or a set that
-        // manages accounts outside [Full Access]) skips the checks.
-        let full = manager || set.segment.0 == FULL_ACCESS_SET;
-        let decoded = om_data::host::privilege_set::decode(&set);
-        let manages = full
-            || decoded
-                .as_ref()
-                .is_some_and(|d| d.options.has(Options::MANAGE_ACCOUNTS));
-        if !manages {
-            if !decoded.is_some_and(|d| d.options.has(Options::CHANGE_PASSWORD)) {
-                return Err(PasswordChangeError::NotAllowed);
-            }
-            let minimum = match member(&set, SET_PASSWORD_MINIMUM) {
-                Some(&[high, low]) => u16::from_be_bytes([high, low]),
-                _ => 0,
-            };
-            if new.chars().count() < usize::from(minimum) {
-                return Err(PasswordChangeError::TooShort(minimum));
-            }
-            // Unchanged when it hashes as the current one: a text that only
-            // decomposes alike (`é`, `e` U+0301) is the same password.
-            if stored.verify(new) {
-                return Err(PasswordChangeError::Unchanged);
-            }
-        }
-        let status = current.password_set(now.date(), seconds(now)).encode();
-        let salt = random_salt().map_err(PasswordChangeError::Unwritten)?;
-        let password = StoredPassword::encode(new, salt);
-        self.rewrite_account(&mut store, &record, Some(password), status, stamp)
-            .map_err(PasswordChangeError::Unwritten)
-    }
-
-    /// Reset Account Password (136) for the account named `name`, as
-    /// FileMaker's `DoResetAccount` writes it (local-files.md 2.4): the
-    /// stored password `06` with a new random salt, the status `0a`
-    /// stamped `now` to the second with its other flags kept and a change
-    /// due at the next login when `expire`, and the checksum `04`
-    /// ([`Self::rewrite_account`], with `stamp`). Only a FileMaker-file
-    /// account has a password to reset (206, as `SetPassword` refuses
-    /// another kind); more than 100 characters is 11. The caller has
-    /// checked that the session may manage accounts.
-    pub fn reset_account_password(
-        &self,
-        name: &str,
-        new: &str,
-        expire: bool,
-        stamp: Option<&ModStamp<'_>>,
-        now: jiff::civil::DateTime,
-    ) -> Result<(), AccountEditError> {
-        if new.chars().count() > 100 {
-            return Err(AccountEditError::TooLong);
-        }
-        let mut store = self.write_store();
-        let record =
-            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
-        let view = crate::store::view(&record);
-        if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
-            return Err(AccountEditError::NotFileAccount);
-        }
-        let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
-            .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
-        let status = encoded(current.password_reset(now.date(), seconds(now), expire))
-            .map_err(AccountEditError::Unwritten)?;
-        let salt = random_salt().map_err(AccountEditError::Unwritten)?;
-        let password = StoredPassword::encode(new, salt);
-        self.rewrite_account(&mut store, &record, Some(password), status, stamp)
-            .map_err(AccountEditError::Unwritten)
-    }
-
-    /// Enable Account (137): the account named `name` made active or
-    /// inactive, as FileMaker's `SetEnabled` sets it (local-files.md 2.4):
-    /// only the status's inactive bit changes (an account without a status
-    /// gets 1/1/1024's), and the checksum `04` with it
-    /// ([`Self::rewrite_account`], with `stamp`). Whether it changed: an
-    /// account already in that state is left as it is. Refused (3) for an
-    /// account an OAuth identity provider or Claris ID signs in, and for
-    /// making a [Full Access] account inactive, which Claris documents the
-    /// step does not do. The caller has checked that the session may
-    /// manage accounts.
-    pub fn enable_account(
-        &self,
-        name: &str,
-        active: bool,
-        stamp: Option<&ModStamp<'_>>,
-    ) -> Result<bool, AccountEditError> {
-        let mut store = self.write_store();
-        let record =
-            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
-        let view = crate::store::view(&record);
-        // The file's own accounts and external server groups (kind 1);
-        // OAuth identities are `provider << 3 | 2` (local-files.md 2.2).
-        match AccountKind::decode(member(&view, ACCOUNT_KIND)) {
-            Some(AccountKind::FileMakerFile | AccountKind::External(1)) => {}
-            _ => return Err(AccountEditError::Unsupported),
-        }
-        if !active && account_set(&view) == Some(FULL_ACCESS_SET) {
-            return Err(AccountEditError::FullAccess);
-        }
-        let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
-            .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
-        let wanted = current.enabled(active);
-        if wanted == current {
-            return Ok(false);
-        }
-        let status = encoded(wanted).map_err(AccountEditError::Unwritten)?;
-        self.rewrite_account(&mut store, &record, None, status, stamp)
-            .map(|()| true)
-            .map_err(AccountEditError::Unwritten)
-    }
-
-    /// Delete Account (135): the account named `name` removed, as
-    /// FileMaker's `DoDeleteAccount` removes it (local-files.md 2.4 and 3):
-    /// its member, and from the catalog's index its name list entry, its
-    /// place in the display order (written again from 1) and its `07`
-    /// entry, and one from the count; the last key issued stays. One
-    /// commit, saved before this returns, with the index stamped when
-    /// `stamp` is given. As Claris documents, a [Full Access] account is
-    /// not deleted, nor an OAuth or Claris ID one; [Guest] is not either
-    /// (all 3, inferred). An index that does not hold the accounts as
-    /// [`index_without`] reads it is not rewritten. The caller has checked
-    /// that the session may manage accounts.
-    pub fn delete_account(
-        &self,
-        name: &str,
-        stamp: Option<&ModStamp<'_>>,
-    ) -> Result<(), AccountEditError> {
-        let mut store = self.write_store();
-        let record =
-            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
-        let view = crate::store::view(&record);
-        // [Guest] (key 1) is the file's own; OAuth and Claris ID
-        // identities are not the step's (Claris, "Delete Account").
-        let deletable = matches!(
-            AccountKind::decode(member(&view, ACCOUNT_KIND)),
-            Some(AccountKind::FileMakerFile | AccountKind::External(1))
-        );
-        if record.segment == [1] || !deletable {
-            return Err(AccountEditError::Unsupported);
-        }
-        if account_set(&view) == Some(FULL_ACCESS_SET) {
-            return Err(AccountEditError::FullAccess);
-        }
-        let mut accounts = store
-            .node(&ACCOUNTS_PATH)
-            .cloned()
-            .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
-        let index = store.node(&ACCOUNT_INDEX_PATH).cloned().ok_or_else(|| {
-            AccountEditError::Unwritten("the account catalog has no index".into())
-        })?;
-        let members: Vec<Vec<u8>> = accounts
-            .children
-            .iter()
-            .map(|a| a.segment.clone())
-            .collect();
-        let mut index =
-            index_without(index, &record.segment, &members).map_err(AccountEditError::Unwritten)?;
-        if let Some(stamp) = stamp {
-            index = crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time);
-        }
-        accounts.children.retain(|a| a.segment != record.segment);
-        let path = |segments: &[&[u8]]| segments.iter().map(|s| s.to_vec()).collect();
-        let mut journal = store.begin_commit();
-        store.replace_members_in(
-            &mut journal,
-            vec![
-                (path(&ACCOUNTS_PATH), accounts),
-                (path(&ACCOUNT_INDEX_PATH), index),
-            ],
-        );
-        self.save_commit(&mut store, journal)
-            .map_err(|e| AccountEditError::Unwritten(e.to_string()))
-    }
-
-    /// Write account `record` again with `password` (its own when `None`)
-    /// and `status`, and the checksum `04` they give, in one commit saved
-    /// before this returns; its other members are kept. With `stamp`, the
-    /// account and the account catalog's index `[23, 1, 1]` get the
-    /// modification stamps FileMaker writes on every catalog commit
-    /// (`IncrementModCount`, schema-path.md 8.1), so a client holding a
-    /// copy of the catalog sees that it is stale.
-    ///
-    /// Refused, changing nothing, when the account stores a checksum other
-    /// than the one its current members give: FileMaker Pro refuses a file
-    /// whose account checksum is wrong (808), so an account this server
-    /// does not read as FileMaker does is not rewritten. One without a
-    /// checksum, which FileMaker always writes, gets one.
-    fn rewrite_account(
-        &self,
-        store: &mut Store,
-        record: &om_hbam::OwnedNode,
-        password: Option<Vec<u8>>,
-        status: Vec<u8>,
-        stamp: Option<&ModStamp<'_>>,
-    ) -> Result<(), String> {
-        let view = crate::store::view(record);
-        let current = view
-            .child(ACCOUNT_PASSWORD)
-            .and_then(|n| n.assembled())
-            .ok_or("it stores no password")?;
-        let name = view
-            .child(ACCOUNT_NAME)
-            .and_then(|n| n.text()?.ok())
-            .ok_or("its name is not text")?;
-        let description = view.child(ACCOUNT_DESCRIPTION).and_then(|n| n.text()?.ok());
-        let kind = member(&view, ACCOUNT_KIND).and_then(|v| v.first().copied());
-        let set = member_owned(&view, ACCOUNT_PRIVILEGES);
-        let version = store
-            .node(&[&[2], &[5]])
-            .and_then(|n| n.value.as_deref())
-            .and_then(|v| <[u8; 2]>::try_from(v).ok())
-            .map(u16::from_be_bytes);
-        let access_uuid = store
-            .node(&[&[23], &[4], &[1], &[0x10]])
-            .and_then(|n| n.value.as_deref());
-        let creation = store.node(&[&[2], &[254]]).and_then(|n| n.value.as_deref());
-        let checksum = |password: &[u8], status: Option<&[u8]>| {
-            crate::accounts::checksum(&crate::accounts::ChecksumInput {
-                version,
-                access_uuid,
-                creation,
-                key: &record.segment,
-                kind,
-                name: &name,
-                password,
-                description: description.as_deref(),
-                status,
-                set: set.as_deref(),
-            })
-        };
-        if let Some(stored) = member(&view, ACCOUNT_CHECKSUM) {
-            if stored != checksum(&current, member(&view, ACCOUNT_STATUS)) {
-                return Err("its checksum is not the one its members give".into());
-            }
-        }
-        let sum = checksum(password.as_deref().unwrap_or(&current), Some(&status));
-        let mut changed = record.clone();
-        if let Some(password) = password {
-            changed.put(
-                &[ACCOUNT_PASSWORD],
-                om_hbam::OwnedNode::leaf(Vec::new(), password),
-            );
-        }
-        changed.put(
-            &[ACCOUNT_STATUS],
-            om_hbam::OwnedNode::leaf(Vec::new(), status),
-        );
-        changed.put(
-            &[ACCOUNT_CHECKSUM],
-            om_hbam::OwnedNode::leaf(Vec::new(), sum.to_vec()),
-        );
-        let path: Vec<Vec<u8>> = ACCOUNTS_PATH
-            .iter()
-            .map(|s| s.to_vec())
-            .chain([record.segment.clone()])
-            .collect();
-        let mut members = Vec::new();
-        if let Some(stamp) = stamp {
-            let index = store
-                .node(&ACCOUNT_INDEX_PATH)
-                .cloned()
-                .ok_or("the account catalog has no index")?;
-            changed = crate::authoring::stamped(changed, stamp.user, stamp.account, stamp.time);
-            members.push((
-                ACCOUNT_INDEX_PATH.iter().map(|s| s.to_vec()).collect(),
-                crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time),
-            ));
-        }
-        members.insert(0, (path, changed));
-        let mut journal = store.begin_commit();
-        store.replace_members_in(&mut journal, members);
-        self.save_commit(store, journal).map_err(|e| e.to_string())
-    }
-
     /// [`Store::save_commit`] for this file, logged.
-    pub fn save_commit(&self, store: &mut Store, journal: Journal) -> std::io::Result<()> {
+    pub(crate) fn save_commit(&self, store: &mut Store, journal: Journal) -> std::io::Result<()> {
         let started = Instant::now();
         let saved = store.save_commit(&self.at, journal);
         match &saved {
@@ -968,6 +641,370 @@ pub fn save_error(error: &std::io::Error) -> u16 {
     }
 }
 
+/// Change Password: set the password of `op.account` from `op.old` to
+/// `op.new`, as FileMaker's `SetPassword` sets the signed-in account's own
+/// (local-files.md 2.4): the stored password `06` with a new salt from
+/// `environment`, the status `0a` stamped with the environment's time to
+/// the second with its other flags kept and no change due, and the
+/// checksum `04` again; the member's other keys are kept. The new one must
+/// have at most 100 characters; an account that may not manage itself
+/// (not full access, nor a set managing accounts outside [Full Access]) is
+/// checked as `SetPassword` checks it: its set must let it change its own
+/// password, and the new one must have at least the set's minimum length
+/// (`0d`) and differ from the old one. A `manager` caller (a script
+/// running with full access) skips those checks as one that may manage
+/// the account does. One commit in `tx`, which the engine saves or takes
+/// back. With a stamp the account and the catalog's index get FileMaker's
+/// modification stamps ([`rewrite_account`]).
+pub(crate) fn change_password(
+    op: ChangePassword,
+    tx: &mut Transaction<'_>,
+    environment: &dyn Environment,
+) -> Result<(), PasswordChangeError> {
+    use om_data::host::privilege_set::Options;
+    let ChangePassword {
+        account,
+        old,
+        new,
+        manager,
+        stamp,
+    } = op;
+    let (old, new) = (old.text(), new.text());
+    if new.chars().count() > 100 {
+        return Err(PasswordChangeError::TooLong);
+    }
+    let now = environment.now();
+    let Some(record) = find_account(tx.view(), &account) else {
+        return Err(PasswordChangeError::Refused);
+    };
+    let view = crate::store::view(&record);
+    let kind = AccountKind::decode(member(&view, ACCOUNT_KIND));
+    if kind != Some(AccountKind::FileMakerFile) {
+        return Err(PasswordChangeError::Refused);
+    }
+    // FileMaker's check of the old password gives 210 for an inactive
+    // account before it tests the password (local-files.md 2.2), and
+    // Change Password accepts only 0 or 211.
+    let current =
+        AccountStatus::decode(member(&view, ACCOUNT_STATUS)).ok_or(PasswordChangeError::Refused)?;
+    if !current.is_active() {
+        return Err(PasswordChangeError::Inactive);
+    }
+    let stored = view.child(ACCOUNT_PASSWORD).and_then(|n| n.assembled());
+    let Some(stored) = stored
+        .as_deref()
+        .and_then(|bytes| StoredPassword::parse(bytes).ok())
+        .filter(|password| password.verify(old))
+    else {
+        return Err(PasswordChangeError::Refused);
+    };
+    let set_ref = member_owned(&view, ACCOUNT_PRIVILEGES);
+    let set = set_ref
+        .as_deref()
+        .and_then(|r| r.split_first())
+        .filter(|(length, key)| usize::from(**length) == key.len())
+        .and_then(|(_, key)| {
+            tx.node(&[
+                PRIVILEGE_SETS_PATH[0],
+                PRIVILEGE_SETS_PATH[1],
+                PRIVILEGE_SETS_PATH[2],
+                key,
+            ])
+        })
+        .map(crate::store::view);
+    let Some(set) = set else {
+        return Err(PasswordChangeError::NotAllowed);
+    };
+    // An account that may manage itself (full access, or a set that
+    // manages accounts outside [Full Access]) skips the checks.
+    let full = manager || set.segment.0 == FULL_ACCESS_SET;
+    let decoded = om_data::host::privilege_set::decode(&set);
+    let manages = full
+        || decoded
+            .as_ref()
+            .is_some_and(|d| d.options.has(Options::MANAGE_ACCOUNTS));
+    if !manages {
+        if !decoded.is_some_and(|d| d.options.has(Options::CHANGE_PASSWORD)) {
+            return Err(PasswordChangeError::NotAllowed);
+        }
+        let minimum = match member(&set, SET_PASSWORD_MINIMUM) {
+            Some(&[high, low]) => u16::from_be_bytes([high, low]),
+            _ => 0,
+        };
+        if new.chars().count() < usize::from(minimum) {
+            return Err(PasswordChangeError::TooShort(minimum));
+        }
+        // Unchanged when it hashes as the current one: a text that only
+        // decomposes alike (`é`, `e` U+0301) is the same password.
+        if stored.verify(new) {
+            return Err(PasswordChangeError::Unchanged);
+        }
+    }
+    let civil = now.datetime();
+    let status = current.password_set(civil.date(), seconds(civil)).encode();
+    let password = StoredPassword::encode(new, salt(environment));
+    let time = stamp.as_ref().map(|_| host_time_key_at(&now));
+    let stamp = mod_stamp(stamp.as_ref(), time.as_deref());
+    rewrite_account(tx, &record, Some(password), status, stamp.as_ref())
+        .map_err(PasswordChangeError::Unwritten)
+}
+
+/// Reset Account Password (136) for the account named `op.account`, as
+/// FileMaker's `DoResetAccount` writes it (local-files.md 2.4): the stored
+/// password `06` with a new salt from `environment`, the status `0a`
+/// stamped with the environment's time to the second with its other flags
+/// kept and a change due at the next login when `op.expire`, and the
+/// checksum `04` ([`rewrite_account`], with the stamp). Only a
+/// FileMaker-file account has a password to reset (206, as `SetPassword`
+/// refuses another kind); more than 100 characters is 11. The caller has
+/// checked that the session may manage accounts.
+pub(crate) fn reset_account_password(
+    op: ResetPassword,
+    tx: &mut Transaction<'_>,
+    environment: &dyn Environment,
+) -> Result<(), AccountEditError> {
+    let ResetPassword {
+        account,
+        new,
+        expire,
+        stamp,
+    } = op;
+    let new = new.text();
+    if new.chars().count() > 100 {
+        return Err(AccountEditError::TooLong);
+    }
+    let now = environment.now();
+    let record =
+        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let view = crate::store::view(&record);
+    if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
+        return Err(AccountEditError::NotFileAccount);
+    }
+    let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
+        .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
+    let civil = now.datetime();
+    let status = encoded(current.password_reset(civil.date(), seconds(civil), expire))
+        .map_err(AccountEditError::Unwritten)?;
+    let password = StoredPassword::encode(new, salt(environment));
+    let time = stamp.as_ref().map(|_| host_time_key_at(&now));
+    let stamp = mod_stamp(stamp.as_ref(), time.as_deref());
+    rewrite_account(tx, &record, Some(password), status, stamp.as_ref())
+        .map_err(AccountEditError::Unwritten)
+}
+
+/// Enable Account (137): the account named `op.account` made active or
+/// inactive, as FileMaker's `SetEnabled` sets it (local-files.md 2.4):
+/// only the status's inactive bit changes (an account without a status
+/// gets 1/1/1024's), and the checksum `04` with it ([`rewrite_account`],
+/// with the stamp). Whether it changed: an account already in that state
+/// is left as it is. Refused (3) for an account an OAuth identity provider
+/// or Claris ID signs in, and for making a [Full Access] account inactive,
+/// which Claris documents the step does not do. The caller has checked
+/// that the session may manage accounts.
+pub(crate) fn enable_account(
+    op: EnableAccount,
+    tx: &mut Transaction<'_>,
+    environment: &dyn Environment,
+) -> Result<bool, AccountEditError> {
+    let EnableAccount {
+        account,
+        active,
+        stamp,
+    } = op;
+    let record =
+        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let view = crate::store::view(&record);
+    // The file's own accounts and external server groups (kind 1);
+    // OAuth identities are `provider << 3 | 2` (local-files.md 2.2).
+    match AccountKind::decode(member(&view, ACCOUNT_KIND)) {
+        Some(AccountKind::FileMakerFile | AccountKind::External(1)) => {}
+        _ => return Err(AccountEditError::Unsupported),
+    }
+    if !active && account_set(&view) == Some(FULL_ACCESS_SET) {
+        return Err(AccountEditError::FullAccess);
+    }
+    let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
+        .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
+    let wanted = current.enabled(active);
+    if wanted == current {
+        return Ok(false);
+    }
+    let status = encoded(wanted).map_err(AccountEditError::Unwritten)?;
+    let time = stamp.as_ref().map(|_| host_time_key_at(&environment.now()));
+    let stamp = mod_stamp(stamp.as_ref(), time.as_deref());
+    rewrite_account(tx, &record, None, status, stamp.as_ref())
+        .map(|()| true)
+        .map_err(AccountEditError::Unwritten)
+}
+
+/// Delete Account (135): the account named `op.account` removed, as
+/// FileMaker's `DoDeleteAccount` removes it (local-files.md 2.4 and 3):
+/// its member, and from the catalog's index its name list entry, its
+/// place in the display order (written again from 1) and its `07` entry,
+/// and one from the count; the last key issued stays. One commit in `tx`,
+/// which the engine saves or takes back, with the index stamped when a
+/// stamp is given. As Claris documents, a [Full Access] account is not
+/// deleted, nor an OAuth or Claris ID one; [Guest] is not either (all 3,
+/// inferred). An index that does not hold the accounts as
+/// [`index_without`] reads it is not rewritten. The caller has checked
+/// that the session may manage accounts.
+pub(crate) fn delete_account(
+    op: DeleteAccount,
+    tx: &mut Transaction<'_>,
+    environment: &dyn Environment,
+) -> Result<(), AccountEditError> {
+    let DeleteAccount { account, stamp } = op;
+    let record =
+        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let view = crate::store::view(&record);
+    // [Guest] (key 1) is the file's own; OAuth and Claris ID
+    // identities are not the step's (Claris, "Delete Account").
+    let deletable = matches!(
+        AccountKind::decode(member(&view, ACCOUNT_KIND)),
+        Some(AccountKind::FileMakerFile | AccountKind::External(1))
+    );
+    if record.segment == [1] || !deletable {
+        return Err(AccountEditError::Unsupported);
+    }
+    if account_set(&view) == Some(FULL_ACCESS_SET) {
+        return Err(AccountEditError::FullAccess);
+    }
+    let mut accounts = tx
+        .node(&ACCOUNTS_PATH)
+        .cloned()
+        .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
+    let index = tx
+        .node(&ACCOUNT_INDEX_PATH)
+        .cloned()
+        .ok_or_else(|| AccountEditError::Unwritten("the account catalog has no index".into()))?;
+    let members: Vec<Vec<u8>> = accounts
+        .children
+        .iter()
+        .map(|a| a.segment.clone())
+        .collect();
+    let mut index =
+        index_without(index, &record.segment, &members).map_err(AccountEditError::Unwritten)?;
+    if let Some(stamp) = &stamp {
+        let time = host_time_key_at(&environment.now());
+        index = crate::authoring::stamped(index, &stamp.user, &stamp.account, &time);
+    }
+    accounts.children.retain(|a| a.segment != record.segment);
+    let path = |segments: &[&[u8]]| segments.iter().map(|s| s.to_vec()).collect();
+    tx.replace_members(vec![
+        (path(&ACCOUNTS_PATH), accounts),
+        (path(&ACCOUNT_INDEX_PATH), index),
+    ]);
+    Ok(())
+}
+
+/// Write account `record` again with `password` (its own when `None`) and
+/// `status`, and the checksum `04` they give, in the commit of `tx`; its
+/// other members are kept. With `stamp`, the account and the account
+/// catalog's index `[23, 1, 1]` get the modification stamps FileMaker
+/// writes on every catalog commit (`IncrementModCount`, schema-path.md
+/// 8.1), so a client holding a copy of the catalog sees that it is stale.
+///
+/// Refused, changing nothing, when the account stores a checksum other
+/// than the one its current members give: FileMaker Pro refuses a file
+/// whose account checksum is wrong (808), so an account this server does
+/// not read as FileMaker does is not rewritten. One without a checksum,
+/// which FileMaker always writes, gets one.
+fn rewrite_account(
+    tx: &mut Transaction<'_>,
+    record: &om_hbam::OwnedNode,
+    password: Option<Vec<u8>>,
+    status: Vec<u8>,
+    stamp: Option<&ModStamp<'_>>,
+) -> Result<(), String> {
+    let view = crate::store::view(record);
+    let current = view
+        .child(ACCOUNT_PASSWORD)
+        .and_then(|n| n.assembled())
+        .ok_or("it stores no password")?;
+    let name = view
+        .child(ACCOUNT_NAME)
+        .and_then(|n| n.text()?.ok())
+        .ok_or("its name is not text")?;
+    let description = view.child(ACCOUNT_DESCRIPTION).and_then(|n| n.text()?.ok());
+    let kind = member(&view, ACCOUNT_KIND).and_then(|v| v.first().copied());
+    let set = member_owned(&view, ACCOUNT_PRIVILEGES);
+    let store = tx.view();
+    let version = store
+        .node(&[&[2], &[5]])
+        .and_then(|n| n.value.as_deref())
+        .and_then(|v| <[u8; 2]>::try_from(v).ok())
+        .map(u16::from_be_bytes);
+    let access_uuid = store
+        .node(&[&[23], &[4], &[1], &[0x10]])
+        .and_then(|n| n.value.as_deref());
+    let creation = store.node(&[&[2], &[254]]).and_then(|n| n.value.as_deref());
+    let checksum = |password: &[u8], status: Option<&[u8]>| {
+        crate::accounts::checksum(&crate::accounts::ChecksumInput {
+            version,
+            access_uuid,
+            creation,
+            key: &record.segment,
+            kind,
+            name: &name,
+            password,
+            description: description.as_deref(),
+            status,
+            set: set.as_deref(),
+        })
+    };
+    if let Some(stored) = member(&view, ACCOUNT_CHECKSUM) {
+        if stored != checksum(&current, member(&view, ACCOUNT_STATUS)) {
+            return Err("its checksum is not the one its members give".into());
+        }
+    }
+    let sum = checksum(password.as_deref().unwrap_or(&current), Some(&status));
+    let mut changed = record.clone();
+    if let Some(password) = password {
+        changed.put(
+            &[ACCOUNT_PASSWORD],
+            om_hbam::OwnedNode::leaf(Vec::new(), password),
+        );
+    }
+    changed.put(
+        &[ACCOUNT_STATUS],
+        om_hbam::OwnedNode::leaf(Vec::new(), status),
+    );
+    changed.put(
+        &[ACCOUNT_CHECKSUM],
+        om_hbam::OwnedNode::leaf(Vec::new(), sum.to_vec()),
+    );
+    let path: Vec<Vec<u8>> = ACCOUNTS_PATH
+        .iter()
+        .map(|s| s.to_vec())
+        .chain([record.segment.clone()])
+        .collect();
+    let mut members = Vec::new();
+    if let Some(stamp) = stamp {
+        let index = store
+            .node(&ACCOUNT_INDEX_PATH)
+            .cloned()
+            .ok_or("the account catalog has no index")?;
+        changed = crate::authoring::stamped(changed, stamp.user, stamp.account, stamp.time);
+        members.push((
+            ACCOUNT_INDEX_PATH.iter().map(|s| s.to_vec()).collect(),
+            crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time),
+        ));
+    }
+    members.insert(0, (path, changed));
+    tx.replace_members(members);
+    Ok(())
+}
+
+/// The modification stamp `stamp` names, at host time key `time`
+/// ([`ModStamp`]).
+fn mod_stamp<'a>(stamp: Option<&'a AccountStamp>, time: Option<&'a [u8]>) -> Option<ModStamp<'a>> {
+    Some(ModStamp {
+        user: &stamp?.user,
+        account: &stamp?.account,
+        time: time?,
+    })
+}
+
 /// Key of the account records in the security catalog: `[23, 1, 5]`.
 const ACCOUNTS_PATH: [&[u8]; 3] = [&[23], &[1], &[5]];
 
@@ -1032,7 +1069,7 @@ pub enum PasswordChangeError {
 }
 
 /// Why Reset Account Password or Enable Account changed nothing.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccountEditError {
     /// No account has that name (213, inferred: FileMaker's code for an
     /// account it does not find there is not observed).
@@ -1085,16 +1122,16 @@ impl PasswordChangeError {
 
 /// An account named by its record key under `[23, 1, 5]`, which a rename
 /// does not change, or by its name.
-#[derive(Clone, Copy, Debug)]
-pub enum AccountRef<'a> {
-    Key(&'a [u8]),
-    Name(&'a str),
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountRef {
+    Key(Vec<u8>),
+    Name(String),
 }
 
 /// Who changed a catalog, and when: the modification stamp FileMaker
 /// writes (schema-path.md 8.1), `time` being the host time key of 3.1.
 #[derive(Clone, Copy, Debug)]
-pub struct ModStamp<'a> {
+pub(crate) struct ModStamp<'a> {
     pub user: &'a str,
     pub account: &'a str,
     pub time: &'a [u8],
@@ -1103,10 +1140,10 @@ pub struct ModStamp<'a> {
 /// The record of `account` as `store` holds it: by key, or by name as
 /// FileMaker matches names, ignoring case. [Guest], whose name is not
 /// text, is found only by its key.
-fn find_account(store: &Store, account: AccountRef<'_>) -> Option<om_hbam::OwnedNode> {
+fn find_account(store: &Store, account: &AccountRef) -> Option<om_hbam::OwnedNode> {
     let accounts = store.node(&ACCOUNTS_PATH)?;
     match account {
-        AccountRef::Key(key) => accounts.children.iter().find(|a| a.segment == key),
+        AccountRef::Key(key) => accounts.children.iter().find(|a| a.segment == *key),
         AccountRef::Name(name) => {
             let wanted = name.to_lowercase();
             accounts.children.iter().find(|a| {
@@ -1226,12 +1263,11 @@ fn seconds(now: jiff::civil::DateTime) -> u32 {
     time.hour() as u32 * 3600 + time.minute() as u32 * 60 + time.second() as u32
 }
 
-/// A new random salt for a stored password.
-fn random_salt() -> Result<[u8; om_crypto::account::SALT_LEN], String> {
+/// A new salt for a stored password, from `environment`'s random source.
+fn salt(environment: &dyn Environment) -> [u8; om_crypto::account::SALT_LEN] {
     let mut salt = [0u8; om_crypto::account::SALT_LEN];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt)
-        .map_err(|_| "no random salt".to_string())?;
-    Ok(salt)
+    environment.fill_random(&mut salt);
+    salt
 }
 
 /// The value of `record`'s member `key`: `None` when it has none, and an
@@ -1650,7 +1686,8 @@ pub struct Hosting {
 }
 
 impl Hosting {
-    /// Open every file, recording each in `events`. Ids are assigned in
+    /// Open every file, recording each in `events`, its deferred field
+    /// work finished and saved with `engine`. Ids are assigned in
     /// order, starting at 1. A file that cannot be opened is left out (it
     /// gets no [`Slot`]), its id unused, and raises an alert, as FileMaker
     /// Server goes on with the files it can open; when none opens, the
@@ -1661,6 +1698,7 @@ impl Hosting {
         files: &[HostedFile],
         insecure_files: bool,
         events: &EventLog,
+        engine: &FileEngine,
     ) -> Result<Self, HostingError> {
         let mut hosting = Hosting {
             slots: Vec::new(),
@@ -1685,7 +1723,7 @@ impl Hosting {
                 })
                 .and_then(|at| {
                     let taken = |file: FileId| hosted_as(&hosting.slots, file, id);
-                    load_hosted(id, hosted, &at, insecure_files, events, &taken)
+                    load_hosted(id, hosted, &at, insecure_files, events, &taken, engine)
                 });
             match loaded {
                 Ok(loaded) => {
@@ -1709,8 +1747,14 @@ impl Hosting {
     /// startup, and serve it: the administrator may have replaced it while
     /// it was closed. Only a closed file is opened; while it loads it is
     /// opening. A file that fails to load stays closed with the reason. As
-    /// at startup, the file records its failed saves in `events`.
-    pub(crate) fn reopen(&self, id: u32, events: &EventLog) -> Result<(), ReopenError> {
+    /// at startup, the file records its failed saves in `events`, and its
+    /// deferred field work is finished and saved with `engine`.
+    pub(crate) fn reopen(
+        &self,
+        id: u32,
+        events: &EventLog,
+        engine: &FileEngine,
+    ) -> Result<(), ReopenError> {
         let slot = self.slot(id).ok_or(ReopenError::UnknownFile)?;
         slot.change(FileStatus::Closed, FileStatus::Opening)
             .map_err(ReopenError::NotAllowed)?;
@@ -1733,6 +1777,7 @@ impl Hosting {
             self.insecure_files,
             events,
             &|file| hosted_as(&self.slots, file, id),
+            engine,
         );
         let mut state = slot.state();
         match loaded {
@@ -1755,13 +1800,15 @@ impl Hosting {
     /// Host one file a local client opened, already read from its locked
     /// descriptor: `lock` (none where the file cannot be locked, and then
     /// `read_only`) stays with the file's store, and a `read_only` file is
-    /// never written. Deferred work recovered on loading stays unsaved until
-    /// an eligible account logs in ([`Hosted::commit_recovery`]).
+    /// never written. Deferred work finished with `engine` on loading stays
+    /// unsaved until an eligible account logs in
+    /// ([`Hosted::commit_recovery`]).
     pub(crate) fn local(
         hosted: &HostedFile,
         file: &HbamFile,
         lock: Option<FileLock>,
         read_only: bool,
+        engine: &FileEngine,
     ) -> Result<Self, HostingError> {
         let configured = vec![hosted.clone()];
         // The path the desktop opened and locked, as it named it.
@@ -1778,6 +1825,7 @@ impl Hosting {
             false,
             &EventLog::default(),
         )?;
+        hosted.finish_deferred_work(engine);
         Ok(Hosting {
             slots: vec![Slot::serving(Arc::new(hosted))],
             configured,
@@ -1828,11 +1876,11 @@ impl Hosting {
     }
 }
 
-/// Load the file `hosted` describes with server id `id`, saving first what
-/// [`Store::recover`] finished: a server's files are recovered as they are
-/// loaded. An insecure file is refused, before anything is written, unless
-/// `insecure_files`. A failed save, that one included, is recorded in
-/// `events`.
+/// Load the file `hosted` describes with server id `id`, finishing and
+/// saving first, with `engine`, the deferred field work it records as
+/// pending: a server's files are recovered as they are loaded. An insecure
+/// file is refused, before anything is written, unless `insecure_files`. A
+/// failed save, that one included, is recorded in `events`.
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,
@@ -1840,6 +1888,7 @@ fn load_hosted(
     insecure_files: bool,
     events: &EventLog,
     taken: &dyn Fn(FileId) -> Option<String>,
+    engine: &FileEngine,
 ) -> Result<Arc<Hosted>, HostingError> {
     let (bytes, on_disk) = read_regular_file(at).map_err(|e| HostingError::Open {
         name: hosted.name.clone(),
@@ -1869,7 +1918,8 @@ fn load_hosted(
     // this file (#468).
     loaded.write_store().set_file(on_disk);
     drop(file);
-    loaded.commit_recovery();
+    loaded.finish_deferred_work(engine);
+    loaded.commit_recovery(engine);
     Ok(loaded)
 }
 
@@ -1955,7 +2005,8 @@ mod tests {
         ];
         let (done, wait) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let hosting = Hosting::load(&files, false, &EventLog::default());
+            let hosting =
+                Hosting::load(&files, false, &EventLog::default(), &FileEngine::default());
             let _ = done.send(hosting.map(|h| h.by_name(fixture::FILE).is_some()));
         });
         let loaded = wait.recv_timeout(std::time::Duration::from_secs(30));
@@ -1974,7 +2025,13 @@ mod tests {
             name: fixture::FILE.into(),
             path: file.0.clone(),
         };
-        let hosting = Hosting::load(&[hosted_file], false, &EventLog::default()).unwrap();
+        let hosting = Hosting::load(
+            &[hosted_file],
+            false,
+            &EventLog::default(),
+            &FileEngine::default(),
+        )
+        .unwrap();
         let hosted = hosting.by_name(fixture::FILE).unwrap();
         let clerk = |password| hosted.verify_password(fixture::CLERK, password).is_some();
         assert!(clerk(fixture::CLERK_PASSWORD));

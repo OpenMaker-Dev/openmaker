@@ -30,6 +30,7 @@ use crate::admission::{Admissions, Slot};
 use crate::backups::{BackupError, BackupInfo, BackupProgress};
 use crate::config::{ConnectionLimits, ScriptLimits, ServerConfig};
 use crate::connection::{Connection, Shared};
+use crate::engine::FileEngine;
 use crate::eventlog::{Event, EventLog};
 use crate::hosting::{Hosting, HostingError};
 use crate::record::Recordings;
@@ -131,15 +132,17 @@ impl Server {
         identity: Identity,
     ) -> Result<Self, StartError> {
         let events = EventLog::new(crate::eventlog::host_name(&config.identity.name));
-        let hosting = Hosting::load(&config.files, config.insecure_files, &events)
+        let engine = FileEngine::default();
+        let hosting = Hosting::load(&config.files, config.insecure_files, &events, &engine)
             .map_err(StartError::Hosting)?;
         let tls = server_config(identity).map_err(StartError::Identity)?;
-        Self::start(addr, config, hosting, tls, false, events)
+        Self::start(addr, config, hosting, tls, false, events, engine)
     }
 
-    /// Bind `addr` for `hosting`, with TLS `tls`, recording in `events`;
-    /// `local`: the private host of a file a client opened from its own
-    /// computer ([`crate::LocalHost`]).
+    /// Bind `addr` for `hosting`, with TLS `tls`, recording in `events`
+    /// and running every change to the files with `engine`, the one that
+    /// loaded them; `local`: the private host of a file a client opened
+    /// from its own computer ([`crate::LocalHost`]).
     pub(crate) fn start(
         addr: impl ToSocketAddrs,
         config: ServerConfig,
@@ -147,6 +150,7 @@ impl Server {
         tls: Arc<rustls::ServerConfig>,
         local: bool,
         events: EventLog,
+        engine: FileEngine,
     ) -> Result<Self, StartError> {
         // A server asked to record refuses to start without its folder
         // rather than serve unrecorded.
@@ -178,7 +182,7 @@ impl Server {
                 connection_ids: Mutex::new(Default::default()),
                 recordings,
                 mailboxes: Default::default(),
-                engine: Default::default(),
+                engine,
                 scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
                 refused_downloads: RwLock::new(Vec::new()),
                 omitted_list_paths: Default::default(),

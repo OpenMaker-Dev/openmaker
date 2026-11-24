@@ -445,8 +445,8 @@ and reopening the hosted file instead sent a fresh Open and a normal
 login type 0 [O: same relay capture].
 
 **OpenMaker.** A local file's host sets an account's own password the way
-the sign-in change above does (`Hosted::change_password`, reached through
-`LocalHost::change_password`): `06` with a new random salt and its check
+the sign-in change above does (the engine's `ChangePassword` operation,
+`hosting::change_password`, reached through `LocalHost::change_password`): `06` with a new random salt and its check
 bytes, `0a` stamped to the second in this computer's local time [I] with
 bit 18 cleared and the other flags kept, and `04` again
 (`om_server::accounts::checksum`, which reproduces the vector above and the
@@ -482,8 +482,9 @@ catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
 copy of the catalog shows as stale, and other clients are told the
 catalog changed.
 
-Reset Account Password and Enable Account run through
-`Hosted::reset_account_password` and `Hosted::enable_account`, under the
+Reset Account Password and Enable Account run through the engine's
+`ResetPassword` and `EnableAccount` operations
+(`hosting::reset_account_password`, `hosting::enable_account`), under the
 same lock, stamps, notification and checksum check, writing the members
 the table above lists. A session without full access gets 9. Reset
 Account Password takes only a FileMaker-file account (206) and a password
@@ -504,7 +505,8 @@ text, is never found. A new status that would not read back as written
 (flags added to a fraction of a second already held, past the six digits
 the value keeps) is not written (3).
 
-Delete Account runs through `Hosted::delete_account`, under the same
+Delete Account runs through the `DeleteAccount` operation
+(`hosting::delete_account`), under the same
 lock and notification, for a session with full access (else 9). It
 removes the account's member and, from the catalog's index (3), its name
 list entry, its place in the display order (the order numbered again

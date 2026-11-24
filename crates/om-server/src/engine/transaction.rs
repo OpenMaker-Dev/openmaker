@@ -21,7 +21,8 @@ pub enum Hold<'h, 'a> {
     /// The tree, for reading (op60).
     View(&'h Store),
     /// A transaction on the tree (op70, op71, op72, op13, op73, op86's
-    /// writes and a find's indexes, op87, op88 and op240).
+    /// writes and a find's indexes, op87, op88, op240, the account edits,
+    /// deferred field work and a saved found set).
     Transaction(&'h mut Transaction<'a>),
 }
 
@@ -32,11 +33,13 @@ pub enum Hold<'h, 'a> {
 /// It exposes the `Store` methods the operations use, and `view` for the
 /// state derived from the tree (a privilege set's hidden fields and record
 /// limits, the decoded catalog an authoring edit checks). The changes are
-/// a commit's record writes and an authoring edit's catalog members
-/// (`Journal`), op71's reservation and op72's serial value, and the schema
-/// changes of op13, op73 and op86 with a find's stored indexes and op87's
-/// and op88's container data, which are made in place and not taken back
-/// (their saves are not checked yet).
+/// a commit's record writes, an authoring edit's and an account edit's
+/// catalog members and a window's saved found set (`Journal`), op71's
+/// reservation and op72's serial value, and the schema changes of op13,
+/// op73 and op86 with a find's stored indexes, op87's and op88's container
+/// data and the deferred field work finished at opening, which are made in
+/// place and not taken back (their saves are not checked yet, or, for the
+/// deferred work, wait).
 pub struct Transaction<'a> {
     pub(super) store: &'a mut Store,
     /// The commit the record writes go into ([`Self::begin_commit`]).
@@ -227,6 +230,15 @@ impl<'a> Transaction<'a> {
         self.store.remove_schema_in(journal, path);
     }
 
+    /// Replace the node at `path` within the commit
+    /// (`Store::replace_node_in`): a window's saved found set.
+    pub fn replace_node(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store.replace_node_in(journal, path, node);
+    }
+
     /// Count field `field` of `table`, which the commit adds, as computed
     /// once the commit is stored (`Store::add_field_basis`), and not if it
     /// is not.
@@ -266,6 +278,17 @@ impl<'a> Transaction<'a> {
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Result<bool, &'static str> {
         self.store.update_table(table, environment, unique_id)
+    }
+
+    /// The deferred field work the file records as pending, as op73 does
+    /// it for each table (`Store::recover`): whether it changed the file.
+    /// Work that cannot be done is kept, and the file hosted read-only.
+    pub fn recover(
+        &mut self,
+        environment: &mut dyn FnMut() -> RecordEnvironment,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
+    ) -> bool {
+        self.store.recover(environment, unique_id)
     }
 }
 

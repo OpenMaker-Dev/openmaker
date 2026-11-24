@@ -134,7 +134,7 @@ const LOCK_EXCLUSIVE: u16 = 10;
 
 /// The attention code of a released catalog (`kDBAttnCatalog`,
 /// schema-path.md 9).
-const ATTENTION_CATALOG: u32 = 2;
+pub(crate) const ATTENTION_CATALOG: u32 = 2;
 
 /// The transaction the host's locks for an edit are taken under, apart
 /// from any of the client's own (OpenMaker's choice).

@@ -1,7 +1,7 @@
 //! The schema operations of [`super::run`]: op13's catalog uploads, what
-//! an op86 program with schema instructions stores, a find's indexes and
-//! op73's table updates (schema-path.md 3.3, 3.4, 3.6, 7.2;
-//! query-program.md 7.1). They change the file's tree in place: their
+//! an op86 program with schema instructions stores, a find's indexes,
+//! op73's table updates and the deferred field work a file is opened with
+//! (schema-path.md 3.3, 3.4, 3.6, 7.2; query-program.md 7.1). They change the file's tree in place: their
 //! saves are not checked yet, so nothing of them is taken back
 //! (`FileEngine::submit`).
 
@@ -51,12 +51,39 @@ pub(super) fn update_table(
     let UpdateTable { table, account } = op;
     // Calculations that read `Get ( AccountName )` see the account that
     // saved the change.
-    let mut record_environment =
-        || crate::recalc::record_environment_at(&account, uuid(environment), &environment.now());
-    let mut unique_id = || {
+    let (mut record_environment, mut unique_id) = recalculation(&account, environment);
+    tx.update_table(&table, &mut record_environment, &mut unique_id)
+}
+
+/// The deferred field work the file records as pending, finished as op73
+/// would have done it (`Store::recover`): whether it changed the file.
+/// Its calculations see no account, as no one saved the change in this
+/// session; the rest is [`update_table`]'s.
+pub(super) fn finish_deferred_work(
+    tx: &mut Transaction<'_>,
+    environment: &dyn Environment,
+) -> bool {
+    let (mut record_environment, mut unique_id) = recalculation("", environment);
+    tx.recover(&mut record_environment, &mut unique_id)
+}
+
+/// What a recalculation of stored values takes from `environment`: each
+/// record's environment, whose calculations see `account`, and the unique
+/// ids of the container data it stores.
+fn recalculation<'a>(
+    account: &'a str,
+    environment: &'a dyn Environment,
+) -> (
+    impl FnMut() -> om_data::rules::RecordEnvironment + 'a,
+    impl FnMut() -> [u8; 16] + 'a,
+) {
+    let record_environment = move || {
+        crate::recalc::record_environment_at(account, uuid(environment), &environment.now())
+    };
+    let unique_id = move || {
         let mut id = [0u8; 16];
         environment.fill_random(&mut id);
         id
     };
-    tx.update_table(&table, &mut record_environment, &mut unique_id)
+    (record_environment, unique_id)
 }

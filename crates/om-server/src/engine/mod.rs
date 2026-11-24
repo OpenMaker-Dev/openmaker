@@ -14,8 +14,27 @@
 //! DeleteTable), store the indexes a find built on demand, update a table
 //! (op73), store container data and adjust a library member's reference
 //! count (op88, op87), an authoring edit and the authoring extension's
-//! save (op240). The other writes (accounts, a server script's commit)
-//! still change the file from their handlers (#673).
+//! save (op240), the account edits (Change Password, Reset Account
+//! Password, Enable Account, Delete Account), finishing the deferred field
+//! work a file is opened with, and keeping a window's found set in a local
+//! file. A server script's commit and its record and account locks, and
+//! the release of a closed session's locks, still change the file from
+//! their handlers (#673).
+//!
+//! # Credentials
+//!
+//! An account operation carries the passwords it was given as typed
+//! ([`Password`]), in memory only: the old one is checked against the
+//! stored verifier and the new one against the privilege set's rules under
+//! the store, and the new one is hashed in [`run`] with a salt from the
+//! [`Environment`]. Neither is ever shown: [`Password`] and the operations
+//! that hold one have a `Debug` that leaves it out, no log line names it,
+//! and a recording holds the operation as the engine offered it, which
+//! prints no password either. An operation is never written down: a
+//! durable log keeps an account edit's effects (the account member as
+//! rewritten, with its salted verifier, as the file holds it), and its
+//! history only the fact that Access paths changed
+//! (docs/server-storage.md 9).
 //!
 //! # Lock order
 //!
@@ -27,8 +46,17 @@
 //! and op240's save never do). It holds both while it saves, and lets go
 //! of the lock table first; dropping the store's write guard takes the
 //! file's accounts while it still holds the store
-//! (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
-//! table, as before. [`FileEngine::submit_draft`] completes its draft
+//! (`hosting::StoreWriteGuard`), which is when a changed password counts
+//! for the next login. op61, op62 and op65 take only the lock table, as
+//! before. The account edits, finishing deferred field work and keeping a
+//! found set take the store for writing and never the lock table; a server
+//! script takes its lock on the account catalog before it submits an
+//! account edit and releases it after (`scripts::host`), as it always has:
+//! lock table, then store, each let go before the next is taken. A found
+//! set is kept only when no one holds the store
+//! ([`FileEngine::try_submit`]): a window closing never waits on a
+//! request. Deferred field work is finished as a file is loaded, before
+//! anyone else can reach it. [`FileEngine::submit_draft`] completes its draft
 //! right after it takes the store, from state the write guard gives it
 //! alone (see "Drafts"). An authoring edit (op240) takes the lock table
 //! only while it takes its locks, and again while it releases them when
@@ -78,7 +106,7 @@ use std::collections::BTreeMap;
 
 use log::error;
 use om_data::host::security::SetAccess;
-use om_hbam::OwnedNode;
+use om_hbam::{OwnedNode, RidList};
 use om_protocol::authoring as design;
 use om_protocol::container::{AdjustReferenceCount, UploadBinaryReply, COUNT_FAILED};
 use om_protocol::schema::Upgrade;
@@ -87,7 +115,7 @@ use om_protocol::write::{
     Lock, LockReply, Unlock,
 };
 
-use crate::hosting::Hosted;
+use crate::hosting::{AccountEditError, AccountRef, Hosted, PasswordChangeError};
 use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::store::{IndexId, MemberKey};
@@ -101,9 +129,10 @@ pub(crate) use transaction::{Hold, Locks, Transaction};
 /// value. Who asks is part of it (the lock user, the name other users see
 /// for it, the account and privilege set a commit is checked against, the
 /// account op73's calculations see, the session and account an authoring
-/// edit's locks and stamps name), so that it can be run by another engine,
+/// edit's locks and stamps name, whether an account edit may manage the
+/// account and who stamps it), so that it can be run by another engine,
 /// recorded with its outcome and replayed (docs/server-storage.md 5, 7.2,
-/// 7.3, 12).
+/// 7.3, 12). Its `Debug` shows no password ([`Password`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     /// op71 HostCreateRecord.
@@ -138,8 +167,145 @@ pub enum Operation {
     EditDesign(Box<EditDesign>),
     /// op240's Save: write the file now if it holds changes the disk lacks,
     /// such as a client's op13 uploads, and answer whether the disk holds
-    /// them all.
+    /// them all. Also the save that makes the deferred field work finished
+    /// on opening durable (`Hosted::commit_recovery`).
     SaveFile,
+    /// Change Password (83), a server script's or the desktop's own.
+    ChangePassword(ChangePassword),
+    /// Reset Account Password (136).
+    ResetPassword(ResetPassword),
+    /// Enable Account (137).
+    EnableAccount(EnableAccount),
+    /// Delete Account (135).
+    DeleteAccount(DeleteAccount),
+    /// Finish the deferred field work the file records as pending
+    /// (schema-path.md 7.2; `Store::recover`), as a file is opened for
+    /// hosting, before it is served. It saves nothing: a server saves it
+    /// at once, a local file once an account it admits logs in
+    /// ([`Operation::SaveFile`], `Hosted::commit_recovery`), and closing a
+    /// local file before that leaves the file as it was.
+    FinishDeferredWork,
+    /// Keep the found set and record a window of a local file closes on
+    /// (file-metadata.md 11; `LocalHost::save_found_set`).
+    SaveFoundSet(SaveFoundSet),
+}
+
+/// A password an account operation carries, as it was typed: held in
+/// memory only, wiped when dropped, and never shown: its `Debug` is a
+/// placeholder (the module doc's "Credentials").
+#[derive(Clone, PartialEq, Eq)]
+pub struct Password(zeroize::Zeroizing<String>);
+
+impl Password {
+    pub fn new(text: &str) -> Self {
+        Password(zeroize::Zeroizing::new(text.to_owned()))
+    }
+
+    /// The password, for the run that checks or hashes it.
+    pub(crate) fn text(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(..)")
+    }
+}
+
+/// Who makes an account edit that stamps the account catalog as a
+/// catalog commit does (schema-path.md 8.1): the connection whose
+/// session it is, which is not told of the change, and the user and
+/// account names the modification stamps carry. The other clients are
+/// told the account catalog changed (schema-path.md 9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountStamp {
+    pub connection: u32,
+    pub user: String,
+    pub account: String,
+}
+
+/// Change Password: set an account's password from `old` to `new`, as
+/// FileMaker's `SetPassword` sets the signed-in account's own
+/// (local-files.md 2.4; `hosting::change_password`). The caller cut the
+/// passwords as the step cuts them and checked who may ask.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ChangePassword {
+    pub account: AccountRef,
+    pub old: Password,
+    pub new: Password,
+    /// The caller may manage the account (a script with full access): the
+    /// privilege set's rules on changing, length and reuse are skipped.
+    pub manager: bool,
+    /// None: no stamps and no notices (the desktop's own Change Password).
+    pub stamp: Option<AccountStamp>,
+}
+
+impl std::fmt::Debug for ChangePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChangePassword")
+            .field("account", &self.account)
+            .field("manager", &self.manager)
+            .field("stamp", &self.stamp)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Reset Account Password (136): the account named `account` given the
+/// password `new` (local-files.md 2.4; `hosting::reset_account_password`).
+/// The caller checked that the session may manage accounts.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ResetPassword {
+    pub account: String,
+    pub new: Password,
+    /// A change is due at the account's next login.
+    pub expire: bool,
+    pub stamp: Option<AccountStamp>,
+}
+
+impl std::fmt::Debug for ResetPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResetPassword")
+            .field("account", &self.account)
+            .field("expire", &self.expire)
+            .field("stamp", &self.stamp)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Enable Account (137): the account named `account` made active or
+/// inactive (local-files.md 2.4; `hosting::enable_account`). The caller
+/// checked that the session may manage accounts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnableAccount {
+    pub account: String,
+    pub active: bool,
+    pub stamp: Option<AccountStamp>,
+}
+
+/// Delete Account (135): the account named `account` removed
+/// (local-files.md 2.4 and 3; `hosting::delete_account`). The caller
+/// checked that the session may manage accounts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteAccount {
+    pub account: String,
+    pub stamp: Option<AccountStamp>,
+}
+
+/// Keep, at table occurrence `occurrence`'s `[TO, 07]`, the found set and
+/// record a window of a local file closes on with table `table`
+/// (file-metadata.md 11; `om_data::meta::saved_found_set_written`), at the
+/// table's data version, which the run reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFoundSet {
+    /// The occurrence's key `TO`.
+    pub occurrence: Vec<u8>,
+    /// The table's key `T`.
+    pub table: Vec<u8>,
+    /// The found records; `None` for every record of the table.
+    pub records: Option<RidList>,
+    /// The current record's id; `None` for none.
+    pub current: Option<u64>,
 }
 
 /// op71: reserve record ids and lock them for a transaction
@@ -398,6 +564,21 @@ pub enum Reply {
     EditDesign(Edited),
     /// Whether the disk holds every change the file holds.
     SaveFile(Result<(), FileNotSaved>),
+    /// Why the password was not changed, with `SetPassword`'s codes.
+    ChangePassword(Result<(), PasswordChangeError>),
+    ResetPassword(Result<(), AccountEditError>),
+    /// Whether the account changed: one already in that state is left as
+    /// it is.
+    EnableAccount(Result<bool, AccountEditError>),
+    DeleteAccount(Result<(), AccountEditError>),
+    /// Whether the work changed the file. Work that cannot be done is
+    /// kept, and the file is hosted read-only (`Store::recover`).
+    FinishDeferredWork(bool),
+    /// Whether the file holds the window's found set: not on a read-only
+    /// file, for a table without a data version, where the occurrence
+    /// holds one FileMaker Pro never wrote that way, nor when the save
+    /// failed.
+    SaveFoundSet(bool),
 }
 
 /// op240's reply: the edit's answer, and for an edit that changed the file,
@@ -474,7 +655,8 @@ impl Outcome {
     /// (docs/server-storage.md 5). op70 fails with the save's message
     /// (`writes::CommitError::NotSaved`), op71 and an authoring edit with
     /// the save's FileMaker error ([`crate::hosting::save_error`]), the
-    /// edit's message saying what the file keeps.
+    /// edit's message saying what the file keeps, an account edit as
+    /// unwritten with the save's message, and a found set as not kept.
     fn not_stored(self, error: &std::io::Error) -> Outcome {
         let reply = match self.reply {
             Reply::EditDesign(Edited {
@@ -501,6 +683,19 @@ impl Outcome {
                 ))),
                 unused: reply.unused,
             }),
+            Reply::ChangePassword(Ok(())) => {
+                Reply::ChangePassword(Err(PasswordChangeError::Unwritten(error.to_string())))
+            }
+            Reply::ResetPassword(Ok(())) => {
+                Reply::ResetPassword(Err(AccountEditError::Unwritten(error.to_string())))
+            }
+            Reply::EnableAccount(Ok(_)) => {
+                Reply::EnableAccount(Err(AccountEditError::Unwritten(error.to_string())))
+            }
+            Reply::DeleteAccount(Ok(())) => {
+                Reply::DeleteAccount(Err(AccountEditError::Unwritten(error.to_string())))
+            }
+            Reply::SaveFoundSet(_) => Reply::SaveFoundSet(false),
             other => other,
         };
         Outcome {
@@ -517,8 +712,10 @@ impl Outcome {
 /// a random source, so that two engines can be given the same seeded source
 /// (docs/server-storage.md 12). [`run`] itself reads them only through
 /// this: the time and the UUID of a write's record environment, an
-/// authoring edit's stamps and the UUIDs of what it adds, and the unique
-/// ids of container data op73's recalculation and op88 store. The
+/// authoring edit's stamps and the UUIDs of what it adds, an account
+/// edit's stamps, status time and password salt, and the unique ids of
+/// container data op73's recalculation (and the deferred work finished at
+/// opening) and op88 store. The
 /// calculation engine below it does not yet: a formula an operation
 /// evaluates (a privilege set's record limit, `writes::refused_action`;
 /// the stored calculations op73 recomputes, `Store::update_table`) takes
@@ -647,8 +844,103 @@ pub fn run(
                 Ok(())
             }))
         }
+        (Operation::ChangePassword(op), Hold::Transaction(tx)) => {
+            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
+            let reply = crate::hosting::change_password(op, tx, environment);
+            account_edited(from, reply.is_ok(), Reply::ChangePassword(reply))
+        }
+        (Operation::ResetPassword(op), Hold::Transaction(tx)) => {
+            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
+            let reply = crate::hosting::reset_account_password(op, tx, environment);
+            account_edited(from, reply.is_ok(), Reply::ResetPassword(reply))
+        }
+        (Operation::EnableAccount(op), Hold::Transaction(tx)) => {
+            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
+            let reply = crate::hosting::enable_account(op, tx, environment);
+            account_edited(from, reply == Ok(true), Reply::EnableAccount(reply))
+        }
+        (Operation::DeleteAccount(op), Hold::Transaction(tx)) => {
+            let from = op.stamp.as_ref().map(|stamp| stamp.connection);
+            let reply = crate::hosting::delete_account(op, tx, environment);
+            account_edited(from, reply.is_ok(), Reply::DeleteAccount(reply))
+        }
+        (Operation::FinishDeferredWork, Hold::Transaction(tx)) => Outcome::new(
+            Reply::FinishDeferredWork(schema::finish_deferred_work(tx, environment)),
+        ),
+        (Operation::SaveFoundSet(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::SaveFoundSet(save_found_set(op, file, tx)))
+        }
         (operation, _) => not_held(operation, file),
     }
+}
+
+/// An account edit's outcome: `reply`, and when the edit `changed` the
+/// account catalog stamped by the connection `from`, the notices of a
+/// catalog change for the other clients, as a client's commit of the
+/// catalog raises them (schema-path.md 9): the account catalog and its
+/// index.
+fn account_edited(from: Option<u32>, changed: bool, reply: Reply) -> Outcome {
+    let changes = match from {
+        Some(_) if changed => [vec![vec![23], vec![1]], vec![vec![23], vec![1], vec![1]]]
+            .into_iter()
+            .map(|path| Change {
+                path,
+                code: crate::authoring::ATTENTION_CATALOG,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Outcome {
+        reply,
+        notices: Notices {
+            from: from.unwrap_or_default(),
+            changes,
+        },
+    }
+}
+
+/// Keep the window's found set `op` in the file named `file` (for log
+/// lines), within the transaction's commit: whether the file holds it. A
+/// read-only file, a table without a data version and a node FileMaker
+/// Pro never wrote that way write nothing; a node that already holds it
+/// is left as it is.
+fn save_found_set(op: SaveFoundSet, file: &str, tx: &mut Transaction<'_>) -> bool {
+    let SaveFoundSet {
+        occurrence,
+        table,
+        records,
+        current,
+    } = op;
+    if tx.is_read_only() {
+        return false;
+    }
+    let version = tx
+        .node(&[&[3], &[0x10], &[5], &table, &[0xfb]])
+        .and_then(|n| n.value.as_deref())
+        .and_then(|v| <[u8; 4]>::try_from(v).ok())
+        .map(u32::from_be_bytes);
+    let Some(data_version) = version else {
+        log::info!("{file}: no data version for table {table:02x?}; found set not kept");
+        return false;
+    };
+    let write = om_data::meta::FoundSetWrite {
+        records,
+        current,
+        data_version,
+    };
+    let existing = tx.node(&[&occurrence, &[7]]);
+    let Some(node) = om_data::meta::saved_found_set_written(existing, &table, &write) else {
+        log::info!(
+            "{file}: occurrence {occurrence:02x?} holds a found set FileMaker Pro never wrote \
+             that way; not kept"
+        );
+        return false;
+    };
+    if existing == Some(&node) {
+        return true;
+    }
+    tx.replace_node(vec![occurrence, vec![7]], node);
+    true
 }
 
 /// The refusal of an operation run without the hold of the file it needs:
@@ -702,6 +994,20 @@ fn not_held(operation: Operation, file: &str) -> Outcome {
             not_stored: None,
         }),
         Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed)),
+        Operation::ChangePassword(_) => {
+            Reply::ChangePassword(Err(PasswordChangeError::Unwritten(NOT_HELD.into())))
+        }
+        Operation::ResetPassword(_) => {
+            Reply::ResetPassword(Err(AccountEditError::Unwritten(NOT_HELD.into())))
+        }
+        Operation::EnableAccount(_) => {
+            Reply::EnableAccount(Err(AccountEditError::Unwritten(NOT_HELD.into())))
+        }
+        Operation::DeleteAccount(_) => {
+            Reply::DeleteAccount(Err(AccountEditError::Unwritten(NOT_HELD.into())))
+        }
+        Operation::FinishDeferredWork => Reply::FinishDeferredWork(false),
+        Operation::SaveFoundSet(_) => Reply::SaveFoundSet(false),
     })
 }
 
