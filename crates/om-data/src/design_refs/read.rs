@@ -20,7 +20,7 @@ use super::formula::{self, FormulaRef};
 use super::{catalogs, layouts, steps};
 use super::{
     ByName, Coverage, DesignGraph, Kind, NameUse, Object, ObjectId, Omitted, OmittedEntry, Place,
-    Target, Unavailable, Unread, UnreadReason, Use, MAX_ENTRIES, MAX_WORK,
+    ScriptRole, Target, Unavailable, Unread, UnreadReason, Use, MAX_ENTRIES, MAX_WORK,
 };
 
 /// The catalogs [`build`] reads, by their paths in the file's key tree, and
@@ -57,8 +57,8 @@ pub(super) fn data_source_id(key: u64) -> Option<u64> {
 
 /// Build the reference graph of the file whose catalogs `tree` holds
 /// ([`DESIGN_CATALOGS`]). `unavailable` lists the catalogs the source
-/// could not give: references into them are left unresolved, and every
-/// "nothing refers to it" becomes "nothing decoded refers to it".
+/// could not give: references into them are left unresolved, and the
+/// file is not read cleanly.
 pub fn build(tree: &KeyTree<'_>, unavailable: Vec<Unavailable>) -> DesignGraph {
     build_within(tree, unavailable, MAX_ENTRIES, MAX_WORK)
 }
@@ -98,6 +98,7 @@ pub(super) fn build_traced(
             ..DesignGraph::default()
         },
         pending: Vec::new(),
+        step: None,
         entries: 0,
         work: 0,
         max_entries,
@@ -132,13 +133,14 @@ pub(super) fn build_traced(
         visited,
         ..
     } = b;
-    // Resolved once the read is known clean or not: a missing target is
-    // `broken` only then.
+    // Resolved once the read is known clean or not: a target is
+    // `target_not_found` only then.
     let uses: Vec<Use> = pending
         .into_iter()
-        .map(|(holder, place, target)| Use {
+        .map(|(holder, place, target, script_role)| Use {
             holder,
             resolution: graph.resolve(target),
+            script_role,
             place,
             target,
         })
@@ -374,7 +376,10 @@ fn bounded(detail: String) -> String {
 /// The graph as it is being read.
 pub(super) struct Builder {
     pub(super) graph: DesignGraph,
-    pending: Vec<(ObjectId, Place, Target)>,
+    pending: Vec<(ObjectId, Place, Target, Option<ScriptRole>)>,
+    /// The id of the script step being read (a script's, or a button's),
+    /// for what it does with a script it names ([`Self::reference`]).
+    pub(super) step: Option<u16>,
     /// References, unread places and names recorded, against
     /// [`MAX_ENTRIES`].
     entries: usize,
@@ -543,9 +548,23 @@ impl Builder {
         false
     }
 
+    /// Record a reference. One to a script gets what its holder does
+    /// with it: in a step being read (a script's, or a button's), what
+    /// that step does with the script ([`steps::script_role`]); outside
+    /// a step, a script trigger (a layout's, a layout object's or the
+    /// file's), the only other place a script is stored, which installs
+    /// it.
     pub(super) fn reference(&mut self, holder: ObjectId, place: Place, target: Target) {
+        let script_role = matches!(
+            target,
+            Target::Object(ObjectId::Script(_)) | Target::ExternalScript { .. }
+        )
+        .then(|| match self.step {
+            Some(step) => steps::script_role(step, &place.part),
+            None => ScriptRole::Installs,
+        });
         if self.admit(holder, &place) {
-            self.pending.push((holder, place, target));
+            self.pending.push((holder, place, target, script_role));
         }
     }
 

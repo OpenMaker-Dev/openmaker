@@ -29,6 +29,7 @@ fn scripts(performs: &[(u64, u64)]) -> DesignGraph {
             },
             target: Target::Object(ObjectId::Script(*to)),
             resolution: Resolution::Resolved(ObjectId::Script(*to)),
+            script_role: Some(ScriptRole::Performs),
         });
     }
     graph
@@ -69,7 +70,7 @@ fn call_chains_walk_each_script_once_and_report_cycles() {
 mod completeness {
     //! Every kind of place the builder reads, fed one case it cannot read,
     //! leaves the kinds that place could refer to incomplete, so nothing
-    //! of those kinds is reported unreferenced.
+    //! of those kinds is found without a reference.
 
     use om_formula::{Key, NameTable};
     use om_hbam::slot::uint_segment;
@@ -270,8 +271,8 @@ mod completeness {
         root
     }
 
-    /// `mutate` the base file in one place: the kinds `kinds` lose
-    /// complete coverage, nothing of them is unreferenced, and a new
+    /// `mutate` the base file in one place: the kinds `kinds` are no longer
+    /// `nothing_known_unread`, and a new
     /// unread or by-name entry names that place: `at`'s holder and a part
     /// containing `at`'s text.
     fn check(
@@ -1017,7 +1018,8 @@ mod completeness {
     /// One change to one stored node.
     #[derive(Clone, Copy, Debug)]
     enum Mutation {
-        /// A list replaced by a leaf.
+        /// A list replaced by a leaf; a value stored in pieces, by a leaf of
+        /// the value assembled, the other form FileMaker stores it in.
         Leaf,
         /// A leaf replaced by a list.
         List,
@@ -1037,7 +1039,12 @@ mod completeness {
         let list = !node.children.is_empty();
         let mut out = root.clone();
         let changed = match mutation {
-            Mutation::Leaf if list => OwnedNode::leaf(node.segment.clone(), vec![0x55]),
+            Mutation::Leaf if list => match node.assembled().filter(|_| node.value.is_none()) {
+                Some(whole) if node.children.len() > 1 => {
+                    OwnedNode::leaf(node.segment.clone(), whole.into_owned())
+                }
+                _ => OwnedNode::leaf(node.segment.clone(), vec![0x55]),
+            },
             Mutation::List if !list => OwnedNode::list(
                 node.segment.clone(),
                 vec![OwnedNode::leaf(vec![0x7e], vec![1])],
@@ -1070,6 +1077,16 @@ mod completeness {
         };
         out.put(&at, changed);
         Some(out)
+    }
+
+    /// Each use, by its holder, place and target, with how many there are.
+    fn use_counts(g: &DesignGraph) -> BTreeMap<String, (usize, ObjectId)> {
+        let mut counts: BTreeMap<String, (usize, ObjectId)> = BTreeMap::new();
+        for u in g.uses() {
+            let key = format!("{:?} {:?} {:?}", u.holder, u.place, u.target);
+            counts.entry(key).or_insert((0, u.holder)).0 += 1;
+        }
+        counts
     }
 
     fn signature(g: &DesignGraph) -> String {
@@ -1305,14 +1322,19 @@ mod completeness {
     /// inside a subtree declared by spec (a catalog index, file status,
     /// access settings, a layout's own object indexes) or reported as a
     /// known structure not decoded (a custom menu), which by design is not
-    /// read; and a value in pieces stored whole instead, which is the same
-    /// value. A read still clean must then give the same result, byte
-    /// for byte. Removing a node can only take information away: the same
-    /// assertions hold for a read not clean; in a clean read no use
-    /// appears on an object that was there, none is lost but those its
-    /// holder stored under the node removed, and no target goes missing
-    /// but what was removed. The walk covers whatever the file holds, with
-    /// no list of structures.
+    /// read; and a value in pieces stored whole instead (the value
+    /// assembled, as one leaf), the same value in FileMaker's other form.
+    /// A read still clean must then give the same result, byte for byte.
+    /// Removing a node can only take information away: the same assertions
+    /// hold for a read not clean. In a clean read, uses are compared as a
+    /// multiset of holder, place and target: none appears but on a holder
+    /// the removal made, stored where the node was (a folder whose flags
+    /// are removed reads as a layout); none is lost but from a holder
+    /// whose member holds the node removed; and no target goes missing but
+    /// what was removed. A use carries no stored path, so the last is
+    /// excused for any node of the holder's member (an option beside a
+    /// value can turn it off), not only the one storing it. The walk covers
+    /// whatever the file holds, with no list of structures.
     #[test]
     fn every_stored_node_is_read_or_reported() {
         let root = full();
@@ -1333,6 +1355,7 @@ mod completeness {
             before.targets_not_found()
         );
         let base = signature(&before);
+        let before_uses = use_counts(&before);
         let by_spec: Vec<Vec<Vec<u8>>> = trace
             .declared_paths
             .iter()
@@ -1399,15 +1422,27 @@ mod completeness {
                             .iter()
                             .any(|p| p.starts_with(path) || path.starts_with(p))
                     };
-                    for u in after.uses() {
-                        let known = before.object(u.holder).is_none()
-                            || before
-                                .uses()
-                                .iter()
-                                .any(|v| v.holder == u.holder && v.target == u.target);
-                        if !known {
-                            failures.push(format!("{at}: a new use {u:?}"));
+                    // Uses compared as a multiset, each with its place: a
+                    // second reference from the same holder to the same
+                    // target hides no loss.
+                    let after_uses = use_counts(&after);
+                    for (key, (n, holder)) in &after_uses {
+                        let had = before_uses.get(key).map_or(0, |(n, _)| *n);
+                        // Only a holder the removal made (a folder whose
+                        // flags were removed reads as a layout) may hold a
+                        // use that was not there.
+                        let made = before.object(*holder).is_none() && stored_under(*holder);
+                        if *n > had && !made {
+                            failures.push(format!("{at}: a new use {key}"));
                         }
+                    }
+                    for (key, (n, holder)) in &before_uses {
+                        let kept = after_uses.get(key).map_or(0, |(n, _)| *n);
+                        if kept < *n && !stored_under(*holder) {
+                            failures.push(format!("{at}: a use lost {key}"));
+                        }
+                    }
+                    for u in after.uses() {
                         if let Resolution::TargetNotFound { missing } = u.resolution {
                             let removed = member_paths(missing)
                                 .iter()
@@ -1415,15 +1450,6 @@ mod completeness {
                             if !removed {
                                 failures.push(format!("{at}: target newly not found {u:?}"));
                             }
-                        }
-                    }
-                    for v in before.uses() {
-                        let kept = after
-                            .uses()
-                            .iter()
-                            .any(|u| u.holder == v.holder && u.target == v.target);
-                        if !kept && !stored_under(v.holder) {
-                            failures.push(format!("{at}: a use lost {v:?}"));
                         }
                     }
                     continue;
@@ -1480,7 +1506,8 @@ mod completeness {
     }
 
     /// Instance 2: a step list missing a piece is not a script without
-    /// steps: the layout only its steps go to is not unreferenced.
+    /// steps: nothing is said to be known unread of the layout only its
+    /// steps go to.
     #[test]
     fn a_step_list_missing_a_piece_is_not_an_empty_script() {
         let mut root = base();
@@ -1715,25 +1742,102 @@ mod completeness {
         }));
     }
 
-    /// Round 5: a layout the layout index lists without its member is an
-    /// anomaly, listed from its index entry, and the occurrence the entry
-    /// names is still a use.
+    /// Rounds 5 and 6: a layout the layout index lists that was not read
+    /// as one is an anomaly, said for what happened to its member. Not
+    /// given, or given and not readable: listed from the index, its
+    /// occurrence a use. Given emptied, or read as a folder or separator:
+    /// no layout, and nothing the entry names counted.
     #[test]
-    fn a_layout_only_in_the_index_is_an_anomaly_and_its_occurrence_a_use() {
-        let mut root = base();
+    fn a_layout_the_index_lists_is_reported_for_what_its_member_is() {
         let alias = serial::decode(&uint_segment(OCCURRENCE)).unwrap();
         let l = uint_segment(9);
-        text(&mut root, &[&[4], &[1], &[7], &l, &[0x10]], "Hidden");
-        put(
-            &mut root,
-            &[&[4], &[1], &[7], &l, &[2]],
-            encode::layout_entry(alias, 0),
-        );
-        let graph = graph(&root);
-        assert!(!graph.coverage().read_cleanly());
-        assert!(graph.object(ObjectId::Layout(9)).is_some());
-        assert!(graph.uses().iter().any(|u| u.holder == ObjectId::Layout(9)
-            && u.target == Target::Object(ObjectId::Occurrence(OCCURRENCE))));
+        let member =
+            |key: &[u8]| -> Vec<Vec<u8>> { vec![vec![4], vec![5], l.clone(), key.to_vec()] };
+        let not_given = |_: &mut OwnedNode| {};
+        let list_unreadable = |root: &mut OwnedNode| {
+            root.put(&[&[4], &[5]], OwnedNode::leaf(vec![5], vec![0x55]));
+        };
+        let flags_unreadable = |root: &mut OwnedNode| {
+            let at = member(&[0xf0]);
+            let at: Vec<&[u8]> = at.iter().map(Vec::as_slice).collect();
+            root.put(
+                &at,
+                OwnedNode::list(vec![0xf0], vec![OwnedNode::leaf(vec![0x7e], vec![1])]),
+            );
+        };
+        let emptied = |root: &mut OwnedNode| {
+            root.put(&[&[4], &[5], &l], OwnedNode::list(l.clone(), Vec::new()));
+        };
+        let separator = |root: &mut OwnedNode| {
+            text(root, &[&[4], &[5], &l, &[0x10]], "Separator");
+            put(
+                root,
+                &[&[4], &[5], &l, &[0xf0]],
+                vec![0, 0, 0, 0, 0, 0, 0, 0x10],
+            );
+        };
+        type Change<'c> = &'c dyn Fn(&mut OwnedNode);
+        let cases: [(Change<'_>, &str, bool); 5] = [
+            (
+                &not_given,
+                "the layout index lists a layout for which the source gave no member",
+                true,
+            ),
+            (
+                &list_unreadable,
+                "the layout index lists a layout, and the layout member list does not read",
+                true,
+            ),
+            (
+                &flags_unreadable,
+                "the layout index lists a layout whose member was given, but whose flags do \
+                 not read",
+                true,
+            ),
+            (
+                &emptied,
+                "the layout index lists a layout whose member was given emptied, as a \
+                 deleted layout's is",
+                false,
+            ),
+            (
+                &separator,
+                "the layout index lists a layout whose member, given and read, is a layout \
+                 folder, folder end or separator",
+                false,
+            ),
+        ];
+        for (change, text, listed) in cases {
+            let mut root = base();
+            self::text(&mut root, &[&[4], &[1], &[7], &l, &[0x10]], "Hidden");
+            put(
+                &mut root,
+                &[&[4], &[1], &[7], &l, &[2]],
+                encode::layout_entry(alias, 0),
+            );
+            change(&mut root);
+            let graph = graph(&root);
+            let coverage = graph.coverage();
+            assert!(!coverage.read_cleanly(), "{text}");
+            assert!(
+                coverage
+                    .anomalies
+                    .iter()
+                    .any(|a| a.holder == ObjectId::Layout(9) && a.detail == text),
+                "{text}: {:#?}",
+                coverage.anomalies
+            );
+            assert_eq!(
+                graph.object(ObjectId::Layout(9)).is_some(),
+                listed,
+                "{text}"
+            );
+            let used = graph.uses().iter().any(|u| {
+                u.holder == ObjectId::Layout(9)
+                    && u.target == Target::Object(ObjectId::Occurrence(OCCURRENCE))
+            });
+            assert_eq!(used, listed, "{text}");
+        }
     }
 
     /// Round 5: a field-index branch names its occurrence whether or not
@@ -1827,24 +1931,197 @@ mod completeness {
         );
         for script in [SCRIPT, 3] {
             assert!(
-                graph
-                    .uses()
-                    .iter()
-                    .any(|u| u.holder == OTHER
-                        && u.target == Target::Object(ObjectId::Script(script))),
+                graph.uses().iter().any(|u| u.holder == OTHER
+                    && u.target == Target::Object(ObjectId::Script(script))
+                    && u.script_role == Some(ScriptRole::Names)),
                 "{:#?}",
                 graph.uses()
             );
         }
+        // Round 6: Validate Scripts names its scripts for an AI model and
+        // performs none, so they are not calls: the chain lists them apart.
+        let ObjectId::Script(other) = OTHER else {
+            unreachable!()
+        };
+        let chain = graph.call_chain(other, Direction::Calls);
+        assert!(chain.scripts.is_empty(), "{:#?}", chain.scripts);
+        assert!(chain.calls.is_empty(), "{:#?}", chain.calls);
+        let others: Vec<(u64, ScriptRole)> = chain.others.iter().map(|c| (c.to, c.role)).collect();
+        assert_eq!(
+            others,
+            [(SCRIPT, ScriptRole::Names), (3, ScriptRole::Names)]
+        );
+        let callers = graph.call_chain(SCRIPT, Direction::Callers);
+        assert!(callers.scripts.is_empty() && callers.calls.is_empty());
+        assert_eq!(callers.others.len(), 1);
         for (list, count) in [
             (keys(&[SCRIPT, 3]), Some(3)),
             (Vec::new(), None),
             (vec![9, 1, 0, 0, 0, 0], None),
+            // Round 6: several keys without their count.
+            (keys(&[SCRIPT, 3]), None),
         ] {
             let mut root = base();
             with_step(&mut root, step(list.clone(), count));
             let graph = self::graph(&root);
             assert!(!graph.coverage().read_cleanly(), "{list:02x?} {count:?}");
+        }
+        // Round 6: a count stored without the keys it counts.
+        let mut lone = step(keys(&[SCRIPT, 3]), Some(2));
+        lone.set_slot_child(3, 0x11, None);
+        let mut root = base();
+        with_step(&mut root, lone);
+        assert!(!self::graph(&root).coverage().read_cleanly());
+    }
+
+    /// Round 6: each reason a result gives says what happened. An
+    /// occurrence's table not known, for what is stored (the anomaly, and
+    /// the reason of a field reference through it); and why a read is not
+    /// clean: a catalog not given, one anomaly, several, a stop.
+    #[test]
+    fn each_reason_says_what_happened() {
+        let o = uint_segment(OCCURRENCE);
+        let at: [&[u8]; 5] = [&[3], &[17], &[5], &o, &[2]];
+        let t = uint_segment(TABLE);
+        let mut external = vec![2, 1, 0xff, t.len() as u8 + 1, t.len() as u8];
+        external.extend(&t);
+        let mut beside = OwnedNode::leaf(vec![2], vec![1]);
+        beside.children.push(OwnedNode::leaf(vec![0x7e], vec![1]));
+        for (definition, why) in [
+            (None, "it is stored without its definition"),
+            (Some(beside), "its definition does not read"),
+            (
+                Some(OwnedNode::leaf(vec![2], vec![0x55])),
+                "its definition does not decode",
+            ),
+            (
+                Some(OwnedNode::leaf(vec![2], external)),
+                "its definition's data source key does not read",
+            ),
+        ] {
+            let mut root = base();
+            match definition {
+                None => {
+                    root.remove(&at);
+                }
+                Some(node) => root.put(&at, node),
+            }
+            let graph = graph(&root);
+            let detail = format!("a table occurrence whose table is not known: {why}");
+            assert!(
+                graph
+                    .coverage()
+                    .anomalies
+                    .iter()
+                    .any(|a| a.detail == detail),
+                "{why}: {:#?}",
+                graph.coverage().anomalies
+            );
+            let reason = format!("the table of table occurrence {OCCURRENCE} is not known: {why}");
+            assert!(
+                graph.uses().iter().any(|u| matches!(
+                    u.target,
+                    Target::Field {
+                        occurrence: OCCURRENCE,
+                        ..
+                    }
+                ) && u.resolution
+                    == Resolution::Unresolved {
+                        reason: reason.clone()
+                    }),
+                "{why}: {:#?}",
+                graph.uses()
+            );
+        }
+        // Why a read is not clean.
+        let mut root = base();
+        root.remove(&[&[4]]);
+        let refused = build(
+            &KeyTree { root: view(&root) },
+            vec![Unavailable {
+                path: vec![4],
+                what: "layouts".into(),
+                reason: "the host refused it".into(),
+            }],
+        );
+        assert_eq!(
+            refused.coverage().not_clean_reason().as_deref(),
+            Some("layouts: not read (the host refused it)")
+        );
+        let mut root = base();
+        root.put(&[&[33], &[5]], OwnedNode::leaf(vec![5], vec![0x55]));
+        // B's formula names A, whose member is gone: not an anomaly.
+        root.remove(&[&t, &[3], &[5], &uint_segment(A)]);
+        let one = graph(&root);
+        let anomaly = "1 anomaly, at stored 33/5: a value stored where keys were expected";
+        assert_eq!(one.coverage().not_clean_reason().as_deref(), Some(anomaly));
+        // A target not among the objects read, in a file not read cleanly.
+        let reason = format!("the file was not read cleanly: {anomaly}");
+        assert!(
+            one.uses().iter().any(|u| {
+                matches!(u.target, Target::Field { field: A, .. })
+                    && u.resolution
+                        == Resolution::Unresolved {
+                            reason: reason.clone(),
+                        }
+            }),
+            "{:#?}",
+            one.uses()
+        );
+        root.put(&[&[16], &[5]], OwnedNode::leaf(vec![5], vec![0x55]));
+        let two = graph(&root).coverage().not_clean_reason().unwrap();
+        assert!(
+            two.starts_with("2 anomalies, the first at stored "),
+            "{two}"
+        );
+        let stopped = build_within(
+            &KeyTree {
+                root: view(&base()),
+            },
+            Vec::new(),
+            MAX_ENTRIES,
+            5,
+        );
+        let reason = stopped.coverage().not_clean_reason().unwrap();
+        assert!(
+            reason.starts_with("the analysis stopped at its budget: "),
+            "{reason}"
+        );
+    }
+
+    /// Round 6: every step whose schema stores a script has a role, from
+    /// its specification, and only Perform Script and Perform Script on
+    /// Server perform it.
+    #[test]
+    fn every_step_storing_a_script_has_its_role() {
+        use om_scripts::{Location, ParamKind, RefKind};
+        let stores_a_script: Vec<u16> = om_scripts::step_schemas()
+            .filter(|s| {
+                s.params.iter().any(|p| {
+                    p.kind == ParamKind::Script
+                        || p.storage.contains(&Location::Reserved(RefKind::Script))
+                })
+            })
+            .map(|s| s.id)
+            .collect();
+        let mut listed = super::super::steps::STEPS_NAMING_A_SCRIPT.to_vec();
+        listed.sort_unstable();
+        assert_eq!(stores_a_script, listed);
+        let role = super::super::steps::script_role;
+        for (step, part, expected) in [
+            (1, "Script", ScriptRole::Performs),
+            (1, "button: Script", ScriptRole::Performs),
+            (148, "Script", ScriptRole::Installs),
+            (164, "Script", ScriptRole::PerformsOnServer),
+            (185, "Region monitor", ScriptRole::Installs),
+            (187, "Local notification", ScriptRole::Installs),
+            (201, "NFC options", ScriptRole::Installs),
+            (210, "Script", ScriptRole::PerformsOnServer),
+            (210, "Callback script", ScriptRole::Installs),
+            (224, "Callback script", ScriptRole::Installs),
+            (239, "Scripts", ScriptRole::Names),
+        ] {
+            assert_eq!(role(step, part), expected, "{step} {part}");
         }
     }
 

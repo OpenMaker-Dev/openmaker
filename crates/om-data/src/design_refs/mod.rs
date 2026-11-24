@@ -27,10 +27,12 @@
 //! through one access layer (`access`), whose accessors mark every stored
 //! node they give, and a sweep at the end reports each node nothing
 //! accounted for, each that was present but not readable, and each
-//! holding a value beside keys. Every strong claim (a reference `broken`,
-//! an object known not to exist, anything complete or unreferenced) depends
-//! on one condition: the file was read cleanly
-//! ([`Coverage::read_cleanly`]). One anomaly anywhere withdraws them all.
+//! holding a value beside keys. The results are findings about what was
+//! read, never facts about the whole file. Those that depend on having
+//! read everything (a target not found among the objects read, an object
+//! not among them, nothing known unread for a kind) are made only when
+//! the file was read cleanly ([`Coverage::read_cleanly`]); one anomaly
+//! anywhere withdraws them all.
 //!
 //! Bounds: every decode is charged by the bytes it reads before it runs;
 //! each script is read up to the text form's step limit
@@ -270,6 +272,44 @@ pub enum Resolution {
     Unresolved { reason: String },
 }
 
+/// What a holder does with a script it names. Only a perform is a call:
+/// [`DesignGraph::call_chain`] follows [`ScriptRole::Performs`] and
+/// [`ScriptRole::PerformsOnServer`]; the other references are uses all the
+/// same. Each step that stores a script has its role from its
+/// specification (`steps::script_role`; docs/authoring.md, "Call chains").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScriptRole {
+    /// Performs it, in the session that runs the holder: Perform Script,
+    /// a button's Perform Script.
+    Performs,
+    /// Has the host perform it: Perform Script on Server, with or without
+    /// a callback.
+    PerformsOnServer,
+    /// Has it performed later, on an event: a script trigger, Install
+    /// OnTimer Script, the callback of Perform Script on Server with
+    /// Callback or of Execute URL.
+    Installs,
+    /// Names it and performs it in no way: Validate Scripts, which sends
+    /// the scripts to an AI model to check.
+    Names,
+}
+
+impl ScriptRole {
+    pub fn code(self) -> &'static str {
+        match self {
+            ScriptRole::Performs => "performs",
+            ScriptRole::PerformsOnServer => "performs_on_server",
+            ScriptRole::Installs => "installs",
+            ScriptRole::Names => "names",
+        }
+    }
+
+    /// Whether the holder performs the script: a call.
+    pub fn performs(self) -> bool {
+        matches!(self, ScriptRole::Performs | ScriptRole::PerformsOnServer)
+    }
+}
+
 /// One reference: the object that holds it, where, and what it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Use {
@@ -277,6 +317,9 @@ pub struct Use {
     pub place: Place,
     pub target: Target,
     pub resolution: Resolution,
+    /// For a reference to a script (of this file or another), what the
+    /// holder does with it; `None` for every other target.
+    pub script_role: Option<ScriptRole>,
 }
 
 impl Use {
@@ -550,10 +593,11 @@ impl Coverage {
     /// asked for and reported no failure of its own ([`Self::unavailable`]
     /// empty), no stored node was failed or left unread, none held a value
     /// beside keys, no value was rejected, and no budget stopped anything.
-    /// Only then is any strong claim made: an inventory sealed, a reference
-    /// `broken`, an object known not to exist, anything complete or
-    /// unreferenced. A place OpenMaker knows and does not decode (a custom
-    /// menu, a reference by name) is coverage, not an anomaly.
+    /// Only then is a finding made that depends on having read everything:
+    /// a target not found among the objects read, an object not among
+    /// them, nothing known unread for a kind. A place OpenMaker knows and
+    /// does not decode (a custom menu, a reference by name) is coverage,
+    /// not an anomaly.
     pub fn read_cleanly(&self) -> bool {
         self.anomaly_count == 0 && self.stopped.is_none() && self.unavailable.is_empty()
     }
@@ -573,13 +617,15 @@ impl Coverage {
             ));
         }
         if let Some(u) = self.unavailable.first() {
-            return Some(format!("{} was not read: {}", u.what, u.reason));
+            return Some(format!("{}: not read ({})", u.what, u.reason));
         }
-        self.anomalies.first().map(|a| {
-            format!(
-                "{} anomalies, the first at {}: {}",
-                self.anomaly_count, a.place.part, a.detail
-            )
+        if self.anomaly_count == 0 {
+            return None;
+        }
+        Some(match (self.anomaly_count, self.anomalies.first()) {
+            (1, Some(a)) => format!("1 anomaly, at {}: {}", a.place.part, a.detail),
+            (n, Some(a)) => format!("{n} anomalies, the first at {}: {}", a.place.part, a.detail),
+            (n, None) => format!("{n} anomalies"),
         })
     }
 
@@ -625,12 +671,14 @@ pub struct Reached {
     pub depth: usize,
 }
 
-/// One perform between two scripts of a chain.
+/// One reference from a script to a script: a perform in
+/// [`CallChain::calls`], any other role in [`CallChain::others`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call<'g> {
-    /// The script whose step performs `to`.
+    /// The script whose step names `to`.
     pub from: u64,
     pub to: u64,
+    pub role: ScriptRole,
     pub place: &'g Place,
 }
 
@@ -644,6 +692,12 @@ pub struct CallChain<'g> {
     /// Every perform between the scripts walked, in the file's script
     /// order.
     pub calls: Vec<Call<'g>>,
+    /// The references between a script walked and another script that are
+    /// not performs (a trigger, timer or callback installed, a script only
+    /// named): uses, not calls, so not walked further. For
+    /// [`Direction::Calls`] those a walked script holds; for
+    /// [`Direction::Callers`] those naming a walked script.
+    pub others: Vec<Call<'g>>,
     /// Each cycle found, as the scripts on it in walk order: the first
     /// performs (or is performed by) the second, ..., the last the first.
     pub cycles: Vec<Vec<u64>>,
@@ -659,8 +713,9 @@ pub const MAX_CYCLES: usize = 100;
 pub(crate) enum Base {
     Table(u64),
     External(u64),
-    /// Its definition does not read.
-    Unknown,
+    /// Not known, and why: its definition is not stored, does not read or
+    /// does not decode, or its data source key does not read.
+    Unknown(&'static str),
 }
 
 /// The reference graph of one file's design.
@@ -691,14 +746,17 @@ impl DesignGraph {
         &self.coverage
     }
 
-    /// Whether every object of `kind` was listed: only when the file was
-    /// read cleanly ([`Coverage::read_cleanly`]), whatever the kind. Only
-    /// then is an object the graph does not have known not to exist.
+    /// Whether an object of `kind` the graph does not have may be said to
+    /// be not among the objects read: only when the file was read cleanly
+    /// ([`Coverage::read_cleanly`]), whatever the kind. A finding about
+    /// what was read, not proof that the file lacks it.
     pub fn listed_whole(&self, _kind: Kind) -> bool {
         self.coverage.read_cleanly()
     }
 
-    /// Why the objects of `kind` were not all listed, when they were not.
+    /// Why not, when not: what made the read not clean
+    /// ([`Coverage::not_clean_reason`]), whatever the kind; it says nothing
+    /// of the objects of `kind` in particular.
     pub fn unlisted_reason(&self, _kind: Kind) -> Option<String> {
         self.coverage.not_clean_reason()
     }
@@ -762,21 +820,33 @@ impl DesignGraph {
             .collect()
     }
 
+    /// The references between scripts of this file: holder, target, role
+    /// and the reference.
+    fn script_references(&self) -> impl Iterator<Item = (u64, u64, ScriptRole, &Use)> {
+        self.uses
+            .iter()
+            .filter_map(|u| match (u.holder, &u.resolution) {
+                (ObjectId::Script(from), Resolution::Resolved(ObjectId::Script(to))) => {
+                    Some((from, *to, u.script_role?, u))
+                }
+                _ => None,
+            })
+    }
+
     /// The scripts `script` performs ([`Direction::Calls`]) or that
-    /// perform it ([`Direction::Callers`]), transitively: any step
-    /// parameter that names a script (Perform Script, Perform Script on
-    /// Server, a callback, Install OnTimer Script). Each script is walked
-    /// once, so the walk ends whatever cycles there are; cycles are
-    /// reported.
+    /// perform it ([`Direction::Callers`]), transitively: Perform Script
+    /// and Perform Script on Server ([`ScriptRole::performs`]). A trigger,
+    /// timer or callback installed and a script only named are listed in
+    /// [`CallChain::others`] and not followed. Each script is walked once,
+    /// so the walk ends whatever cycles there are; cycles are reported.
     pub fn call_chain(&self, script: u64, direction: Direction) -> CallChain<'_> {
         // The performs between scripts, in both directions.
         let mut next: BTreeMap<u64, Vec<(u64, &Use)>> = BTreeMap::new();
-        for u in &self.uses {
-            let (ObjectId::Script(from), Resolution::Resolved(ObjectId::Script(to))) =
-                (u.holder, &u.resolution)
-            else {
+        for (from, to, role, u) in self.script_references() {
+            if !role.performs() {
                 continue;
-            };
+            }
+            let to = &to;
             let (a, b) = match direction {
                 Direction::Calls => (from, *to),
                 Direction::Callers => (*to, from),
@@ -820,26 +890,28 @@ impl DesignGraph {
                 depth: back,
             });
         }
-        let calls = self
-            .uses
-            .iter()
-            .filter_map(|u| {
-                let (ObjectId::Script(from), Resolution::Resolved(ObjectId::Script(to))) =
-                    (u.holder, &u.resolution)
-                else {
-                    return None;
-                };
-                let walked = match direction {
-                    Direction::Calls => depth.contains_key(&from),
-                    Direction::Callers => depth.contains_key(to),
-                };
-                walked.then_some(Call {
-                    from,
-                    to: *to,
-                    place: &u.place,
-                })
-            })
-            .collect();
+        let mut calls = Vec::new();
+        let mut others = Vec::new();
+        for (from, to, role, u) in self.script_references() {
+            let walked = match direction {
+                Direction::Calls => depth.contains_key(&from),
+                Direction::Callers => depth.contains_key(&to),
+            };
+            if !walked {
+                continue;
+            }
+            let call = Call {
+                from,
+                to,
+                role,
+                place: &u.place,
+            };
+            if role.performs() {
+                calls.push(call);
+            } else {
+                others.push(call);
+            }
+        }
         // Cycles: each edge to a script on the depth-first path closes one.
         // Each script is expanded once, so each closing edge is met once
         // (twice only for two performs between the same scripts); a path
@@ -880,6 +952,7 @@ impl DesignGraph {
             direction,
             scripts: order,
             calls,
+            others,
             cycles,
             cycles_truncated: truncated,
         }
@@ -893,7 +966,7 @@ impl DesignGraph {
                 .iter()
                 .find(|u| u.holds(id))
                 .map(|u| Resolution::Unresolved {
-                    reason: format!("{} was not read: {}", u.what, u.reason),
+                    reason: format!("{}: not read ({})", u.what, u.reason),
                 })
         };
         // Missing only when the file was read cleanly; otherwise not known.
@@ -928,9 +1001,9 @@ impl DesignGraph {
                     },
                     other => other,
                 },
-                Some(Base::Unknown) => Resolution::Unresolved {
+                Some(Base::Unknown(why)) => Resolution::Unresolved {
                     reason: format!(
-                        "the definition of table occurrence {occurrence} does not read"
+                        "the table of table occurrence {occurrence} is not known: {why}"
                     ),
                 },
                 Some(Base::Table(table)) => self.resolve(Target::Object(ObjectId::Field {

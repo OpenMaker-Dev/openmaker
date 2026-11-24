@@ -499,22 +499,28 @@ pub(super) fn occurrences(b: &mut Builder, t: &Layer<'_, '_>) {
         stamps(entry);
         relation_index(b, holder, entry.get(DATA_VERSION));
         b.count("occurrences");
-        let definition = match entry.bytes_at(OCCURRENCE_DEFINITION) {
-            Read::Ok(bytes) => Some(bytes.into_owned()),
-            Read::Absent | Read::Unreadable => None,
-        };
-        let occurrence = om_hbam::TableOccurrence {
-            id,
-            name: name.clone(),
-            definition: definition.unwrap_or_default(),
-        };
-        let base = match occurrence.reference() {
-            Some((0, table)) => Some(Base::Table(table)),
-            Some((source, _)) => data_source_id(source).map(Base::External),
-            None => None,
+        // Its table, or why it is not known, said for what is stored.
+        let base = match entry.bytes_at(OCCURRENCE_DEFINITION) {
+            Read::Absent => Base::Unknown("it is stored without its definition"),
+            Read::Unreadable => Base::Unknown("its definition does not read"),
+            Read::Ok(bytes) => {
+                let occurrence = om_hbam::TableOccurrence {
+                    id,
+                    name: name.clone(),
+                    definition: bytes.into_owned(),
+                };
+                match occurrence.reference() {
+                    Some((0, table)) => Base::Table(table),
+                    Some((source, _)) => data_source_id(source).map_or(
+                        Base::Unknown("its definition's data source key does not read"),
+                        Base::External,
+                    ),
+                    None => Base::Unknown("its definition does not decode"),
+                }
+            }
         };
         match base {
-            Some(Base::Table(table)) => {
+            Base::Table(table) => {
                 let detail = b
                     .graph
                     .object(ObjectId::Table(table))
@@ -527,7 +533,7 @@ pub(super) fn occurrences(b: &mut Builder, t: &Layer<'_, '_>) {
                     Target::Object(ObjectId::Table(table)),
                 );
             }
-            Some(Base::External(source)) => {
+            Base::External(source) => {
                 b.object(holder, &name, "another file's table");
                 b.reference(
                     holder,
@@ -535,18 +541,18 @@ pub(super) fn occurrences(b: &mut Builder, t: &Layer<'_, '_>) {
                     Target::Object(ObjectId::DataSource(source)),
                 );
             }
-            Some(Base::Unknown) | None => {
+            Base::Unknown(why) => {
                 b.object(holder, &name, "");
                 b.unread(
                     holder,
                     Place::new("table"),
                     UnreadReason::Malformed,
-                    "a table occurrence definition that does not read",
+                    format!("a table occurrence whose table is not known: {why}"),
                     &[Kind::Table, Kind::DataSource],
                 );
             }
         }
-        b.graph.bases.insert(id, base.unwrap_or(Base::Unknown));
+        b.graph.bases.insert(id, base);
     }
 }
 

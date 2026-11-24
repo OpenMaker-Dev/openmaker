@@ -92,11 +92,13 @@ pub enum Command {
     CreateFile(CreateFileParams),
     /// Every decoded reference to a design object (`om_data::design_refs`).
     FindUses(ObjectParams),
-    /// Every decoded reference whose target is not in the file.
+    /// Every decoded reference whose target was not found among the
+    /// objects read.
     BrokenReferences(AnalysisParams),
-    /// The objects nothing decoded refers to.
+    /// The objects no reference from another object was found for, in
+    /// what was read.
     UnusedObjects(UnusedParams),
-    /// A script's calls and callers, transitively.
+    /// A script's performs and the scripts that perform it, transitively.
     ScriptCalls(ScriptCallsParams),
 }
 
@@ -223,8 +225,11 @@ pub struct CreateFileParams {
 /// (`custom_function:1@Tasks.fmp12`), or exactly one name: a script's,
 /// table's, occurrence's, layout's, value list's, custom function's or
 /// data source's, or `field_name` with the field's table (`table` or
-/// `table_name`). A reference may name an object the file no longer has:
-/// the references still naming it are returned.
+/// `table_name`). A reference may name an object not found among the
+/// objects read: the references naming it are returned. A name not found
+/// is the error `not_found` (not among the objects read, in a file read
+/// cleanly) or `not_known` (the file was not read cleanly), each with its
+/// `coverage` in `details`.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectParams {
@@ -266,7 +271,7 @@ pub struct AnalysisParams {
     pub limit: Option<usize>,
 }
 
-/// The kinds of design object nothing can refer to.
+/// A kind of design object `unused_objects` looks for references to.
 #[derive(
     Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
 )]
@@ -285,7 +290,8 @@ pub enum ObjectKind {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct UnusedParams {
-    /// The kinds to list; every one when absent.
+    /// The kinds to look for objects of that no other object was found
+    /// to refer to; every one when absent.
     #[serde(default)]
     pub kinds: Option<Vec<ObjectKind>>,
     /// The most objects and coverage places listed (default 500, at most
@@ -294,14 +300,16 @@ pub struct UnusedParams {
     pub limit: Option<usize>,
 }
 
-/// Which way a call chain goes.
+/// Which way a call chain goes: through performs (Perform Script,
+/// Perform Script on Server) only.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CallDirection {
-    /// The scripts it performs.
+    /// The scripts it performs, transitively.
     Calls,
-    /// The scripts that perform it.
+    /// The scripts that perform it, transitively.
     Callers,
+    /// Both.
     Both,
 }
 
@@ -316,8 +324,9 @@ pub struct ScriptCallsParams {
     /// `calls`, `callers` or `both` (the default).
     #[serde(default)]
     pub direction: Option<CallDirection>,
-    /// The most performs and coverage places listed (default 500, at most
-    /// 100,000); totals are always given.
+    /// The most performs, other references between scripts and coverage
+    /// places listed (default 500, at most 100,000); totals are always
+    /// given.
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -1019,10 +1028,14 @@ pub enum ErrorKind {
     InvalidRequest,
     /// The host could not be reached, or refused the login.
     Connection,
-    /// No such object in the file.
+    /// The object was not found. For the design analysis commands: not
+    /// among the objects read, in a file read cleanly, which is a finding,
+    /// not proof that the file lacks it (`details.coverage` says how far
+    /// to trust it).
     NotFound,
-    /// Whether the object exists is not known: the file's catalogs were
-    /// not read whole (`details.reason` says why). Never "does not exist".
+    /// Whether the object is there is not known: the file was not read
+    /// cleanly (`details.reason` says what made it not clean,
+    /// `details.coverage` gives the rest). Never "does not exist".
     NotKnown,
     /// The reference names another file than the one connected to.
     WrongFile,

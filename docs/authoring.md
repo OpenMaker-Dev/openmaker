@@ -8,8 +8,10 @@ conflict protection, reading the result back over a new connection; plan
 and add a field to a table, add a layout, and place a field on a layout,
 the same way;
 run a script on the host to see what an edit does; and find where a design
-object is used, which references are broken, what nothing refers to and a
-script's call chain ([Design analysis](#design-analysis)). The same service
+object is used, which references name a target not found among the
+objects read, which objects no reference was found for, and a script's
+call chain, as findings about what was read
+([Design analysis](#design-analysis)). The same service
 (`om_author::Service`) answers a command-line tool and an MCP server; both
 print the same versioned JSON.
 
@@ -176,10 +178,10 @@ and every response is one JSON object:
 | `get_value_lists` | none | the file's value lists in display order (`om_data::value_lists`, the catalog File > Manage > Value Lists shows): each list's `ref`, `id`, `filemaker_id` (the id FileMaker shows), `name` and `source`: `custom` with its `values`; `field` with the `field`, `second_field`, `related_from` occurrence, `sort_by_second_field` and `show_second_field_only`; `external` with the stored `file_reference` and `list_key`, unresolved; `calculation`; or `unreadable` with the reason. Decoded lists add `sort_language` and `unknown_options`. `editable` is `false` and `read_only` gives the reason. Never reads records |
 | `complete_calculation` | `text` (formula text), optional `cursor` (characters; default the end), `occurrence` or `occurrence_name` (the context; default the first occurrence), `limit` (default 50, at most 1000) | the `prefix` typed at the cursor, the characters it `replace`s, the `candidates` best first (`kind`, `name`, `label`, the text to `insert`, `selection_after`, a function's `category`, a field's `field` and `occurrence` refs), `total`, `truncated`, `refused` when nothing is completed, and each name source's availability. Reads metadata only. [Calculation name completion](#calculation-name-completion) |
 | `create_file` | `path` (on this computer; `.fmp12` added when missing) | the new file's `path`, its `name` (the file name without the extension, also its table's and layout's), and the `account` (`Admin`) and `password` (empty) that open it. Makes a blank file as File > Create New... does ([docs/new-files.md](new-files.md)); never replaces a file (`duplicate_name`); a name the table or layout cannot have is `invalid_name`, a failed write `save_failed`, with nothing left. Needs no connection |
-| `find_uses` | `object` (a reference of any kind below) or one of `script_name`, `table_name`, `occurrence_name`, `layout_name`, `value_list_name`, `custom_function_name`, `data_source_name`, or `field_name` with `table` or `table_name`; optional `limit` (default 500, at most 100,000) | the `object` (`exists` false for one the file no longer has), each decoded reference to it in `uses` (holder, place, target, `via`, `resolution`), `total`, `truncated`, `complete` and `coverage`. Reads metadata only. [Design analysis](#design-analysis) |
-| `broken_references` | optional `limit` | each decoded reference whose target is not in the file, in `broken`, with what is `missing`; `total`, `truncated`, `complete` and `coverage`. [Design analysis](#design-analysis) |
-| `unused_objects` | optional `kinds` (`table`, `field`, `occurrence`, `layout`, `script`, `value_list`, `custom_function`, `data_source`; all when absent) and `limit` | the `objects` no decoded reference names, each with its `finding` (`unreferenced` or `no_decoded_reference`), the `findings` per kind, their `meaning`, `total`, `truncated` and `coverage`. [Design analysis](#design-analysis) |
-| `script_calls` | `script` or `script_name`, optional `direction` (`calls`, `callers`, `both`, the default) and `limit` | the `script`, and in `calls` and `callers` the `scripts` reached with their `depth`, the `performs` among them with each step, and the `cycles`; `complete` and `coverage`. [Design analysis](#design-analysis) |
+| `find_uses` | `object` (a reference of any kind below) or one of `script_name`, `table_name`, `occurrence_name`, `layout_name`, `value_list_name`, `custom_function_name`, `data_source_name`, or `field_name` with `table` or `table_name`; optional `limit` (default 500, at most 100,000) | the `object` (`found`: true, false when not among the objects read, or null when the file was not read cleanly, with `not_known_because`), each decoded reference to it from another object in `uses` (holder, place, target, `via`, `resolution`, and for a script its `script_role`), `total`, `truncated`, `nothing_known_unread` and `coverage`. A name not found is the error `not_found` or `not_known`. Reads metadata only. [Design analysis](#design-analysis) |
+| `broken_references` | optional `limit` | each decoded reference whose target was not found among the objects read, in `references`, with what was not found in `missing` (resolution `target_not_found`; only for a file read cleanly), `total`, `truncated`, their `meaning` and `coverage`. [Design analysis](#design-analysis) |
+| `unused_objects` | optional `kinds` (`table`, `field`, `occurrence`, `layout`, `script`, `value_list`, `custom_function`, `data_source`; all when absent) and `limit` | the `objects` for which no reference from another object was found in what was read, each with the finding `no_reference_found`: candidates to check, not objects known to be unused; `nothing_known_unread` per kind, their `meaning`, `total`, `truncated` and `coverage`. [Design analysis](#design-analysis) |
+| `script_calls` | `script` or `script_name`, optional `direction` (`calls`, `callers`, `both`, the default) and `limit` | the `script`, and in `calls` and `callers` the `scripts` reached through performs with their `depth`, the `performs` among them with each step and `script_role`, the `other_references` between the scripts walked and other scripts that are not performs, and the `cycles`; `nothing_known_unread` and `coverage`. A name not found is the error `not_found` or `not_known`. [Design analysis](#design-analysis) |
 
 **References** are `kind:id@file` with the file's own ids:
 `script:5@Tasks.fmp12`, `table:32769@Tasks.fmp12`,
@@ -212,9 +214,12 @@ is not a transaction covering all metadata in the inspection. A layout's
 `[4, 5, L]` (definition, parts, objects, object attributes and the
 layout's indexes), leaving out every stamp in it.
 
-**Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
-`not_known` (whether the object exists is not known: the design analysis
-read its kind's catalog only in part, `details.reason` says why),
+**Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`
+(for the design analysis: not among the objects read, in a file read
+cleanly, a finding with its `details.coverage`), `not_known` (the design
+analysis read the file but not cleanly, so whether the object is there is
+not known; `details.reason` says what made the read not clean and
+`details.coverage` gives the rest),
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
 `outcome_unknown`, `save_failed`, `verification_failed`. An
@@ -1180,9 +1185,12 @@ all). The file was read cleanly when:
   beside keys;
 - no value a reader took was rejected (a formula that does not decode, a
   field binding whose keys do not read, a stored step parameter or key
-  list that does not read, a layout the layout index lists without its
-  member), and nothing unknown was met (an object type, a field kind or a
-  step id without a schema, data a step's schema does not explain);
+  list that does not read, several keys without their count or a count
+  without its keys, a layout the layout index lists whose member was not
+  read as a layout: not given, not readable, emptied, or a folder or
+  separator, each said as it is), and nothing unknown was met (an object
+  type, a field kind or a step id without a schema, data a step's schema
+  does not explain);
 - no budget stopped anything (the work and entry budgets, or the
   20,000-step limit of a script).
 
@@ -1218,11 +1226,16 @@ in a script, the `step` with its `index`, the `line` it starts on in
 `target`, the occurrence or data source it goes `via`, and its
 `resolution`: `resolved`; `target_not_found` with what was not found (a
 field, or the occurrence or table it is named through); `external` with
-the data source; or `unresolved` with the reason (the file was not read
-cleanly, or the occurrence's definition does not read). A disabled step's
-references are listed with `enabled` false. `find_uses` given the
+the data source; or `unresolved` with the reason (a catalog that would
+hold the target was not read, with the host's reason; the file was not
+read cleanly, with what made it not clean; or the occurrence's table is
+not known, because its definition is not stored, does not read or does
+not decode, or names a data source key that does not read). A reference
+to a script also has its `script_role` (below, "Call chains"). A disabled
+step's references are listed with `enabled` false. `find_uses` given the
 reference of an object not found among those read returns the references
-still naming it.
+naming it. A lookup by name that finds nothing is an error, `not_found`
+or `not_known`, whose `details.coverage` is the same as a result's.
 
 **Coverage.** Every result has `coverage` for the kinds of object it is
 about: `read_cleanly` and `anomalies`; `consistent` and
@@ -1301,10 +1314,18 @@ an error the read must notice (it is then not clean, with no target not
 found, nothing listed whole and nothing known unread), unless it lies
 inside a subtree declared by spec or reported as not decoded, or stores a
 value in pieces whole; a read still clean must give the same result byte
-for byte. Removing a node must leave the same assertions true for a read
-not clean; in a clean one it must not add a use to an object that was
-there, lose a use its holder did not store under that node, or leave a
-target not found but what was removed (`design_refs::tests::completeness`).
+for byte; a value in pieces is stored whole as its assembled value, which
+must give the same result. Removing a node must leave the same assertions
+true for a read not clean. In a clean one, uses are compared as a
+multiset of holder, place and target: a use must not appear except on a
+holder the removal made where the node was (a folder whose flags are
+removed reads as a layout), none may be lost except from a holder whose
+member held the node, and no target may be left not found but what was
+removed (`design_refs::tests::completeness`). A use carries no stored
+path, so a lost use is excused for any node of its holder's member (an
+option beside a value can turn it off), not only for the node storing it:
+a reader that loses a use when an unrelated key of the same member is
+removed would pass.
 
 **References by name.** Never resolved; each is listed with the kinds the
 name can be:
@@ -1379,9 +1400,12 @@ stored catalogs, which the tree already holds, plus the kept entries.
 
 **No reference found.** `unused_objects` lists the tables, fields,
 occurrences, layouts, scripts, value lists, custom functions and data
-sources for which no reference was found in what was read, each with the
-finding `no_reference_found`, and per kind `nothing_known_unread`. A file
-with custom menus, as every shipped template has, has
+sources for which no reference from another object was found in what was
+read, each with the finding `no_reference_found`, and per kind
+`nothing_known_unread`. A reference an object holds to itself (a script
+that performs itself) is not counted. Every reference counts, whatever
+its `script_role`: a script that only Validate Scripts names is not
+listed. A file with custom menus, as every shipped template has, has
 `nothing_known_unread` false for every kind. A layout reached only from
 the layout menu has no reference.
 
@@ -1403,14 +1427,31 @@ read with nothing known unread:
 - whatever names an object from outside the file: another file's scripts
   and layouts, a client of the Data API or OData, a plug-in.
 
-**Call chains.** `script_calls` follows every step parameter naming a
-script of this file (Perform Script, Perform Script on Server, a callback,
-Install OnTimer Script), in either direction, transitively: each script
+**Call chains.** A reference to a script carries what its holder does
+with it, `script_role`, from the step's specification. Every step whose
+parameter schema stores a script has one (a test checks the list against
+the schemas):
+
+| Step | `script_role` | Source |
+|---|---|---|
+| Perform Script (1), and a button's | `performs` | script-steps.md 4.1 |
+| Perform Script on Server (164); Perform Script on Server with Callback (210), its script | `performs_on_server` | script-runtime.md 3.6; script-steps.md 12.1 |
+| 210, its callback; Execute URL (224), its callback | `installs` | script-steps.md 5, 12.1, 12.2 |
+| Install OnTimer Script (148) | `installs` | script-step-params.csv |
+| Configure Region Monitor Script (185), Configure Local Notification (187), Configure NFC Reading (201) | `installs`; the key is not decoded and is reported unread | script-step-params.csv, script-steps.csv |
+| Validate Scripts (239) | `names`: the scripts go to an AI model to be checked, none is performed | script-steps.md 12.2 |
+| A script trigger: a layout's, a layout object's or the file's | `installs` | layout-model.md; file-metadata.md 3 |
+
+`script_calls` follows only `performs` and `performs_on_server` between
+scripts of this file, in either direction, transitively: each script
 reached once with its least `depth`, every perform among them with its
 step, and each cycle as the scripts on it (at most 100, then
 `cycles_truncated`). Each script is walked once, so a cycle ends the walk.
-Buttons, triggers and menus that perform a script are in its `find_uses`,
-not its callers.
+The references between a script walked and another script that are not
+performs (`installs`, `names`) are listed in `other_references` and not
+followed: they are uses, which `find_uses` shows, not calls. Buttons,
+triggers and menus that perform a script are in its `find_uses`, not its
+callers.
 
 **Measured.** Over the 66 FileMaker Pro 26 templates (6 starter solutions
 in 11 languages): 9,350 objects (209 tables, 2,354 fields, 209
@@ -1470,7 +1511,7 @@ echo '{"version":"openmaker.authoring/v1","command":"capabilities"}' | om-author
 om-author run-script --script-name Greeting --parameter agent   # run it on the host, wait for the result
 om-author complete-calculation --text 'Left ( Tasks::Ti' # names completing the one typed at the end
 om-author find-uses --field-name Title --table-name Tasks   # every decoded use, with coverage
-om-author broken-references                 # references to objects the file does not have
+om-author broken-references                 # references whose target was not found among the objects read
 om-author unused-objects --kinds script,layout
 om-author script-calls --script-name Greeting --direction callers
 om-author commands                          # every command and its parameters; no connection

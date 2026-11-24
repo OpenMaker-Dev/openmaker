@@ -1161,17 +1161,19 @@ impl NativeProvider {
                             }
                             None => unavailable.push(om_data::design_refs::Unavailable {
                                 path: vec![3, 16, 5],
-                                what: format!("base table {}", member.segment),
-                                reason: "its key does not read, so its fields were not asked for"
-                                    .into(),
+                                what: format!("the fields of base table {}", member.segment),
+                                reason: "the table's key does not read, so they were not asked \
+                                         for"
+                                .into(),
                             }),
                         }
                     }
                 }
                 Some(_) => unavailable.push(om_data::design_refs::Unavailable {
                     path: vec![3, 16, 5],
-                    what: "the base tables".into(),
-                    reason: "their member list does not read, so no table's fields were asked for"
+                    what: "the fields of every base table".into(),
+                    reason: "the base tables' member list does not read, so no table's fields \
+                             were asked for"
                         .into(),
                 }),
                 None => {}

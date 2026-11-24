@@ -126,15 +126,18 @@ commands (each prints one JSON response):
                                      at the cursor in formula text
   find-uses OBJECT [--limit N]       every decoded reference to the object,
                                      with where it is and the coverage
-  broken-references [--limit N]      every decoded reference to an object the
-                                     file does not have
+  broken-references [--limit N]      every decoded reference whose target
+                                     was not found among the objects read
   unused-objects [--kinds KINDS] [--limit N]
-                                     objects nothing decoded refers to (KINDS:
-                                     table,field,occurrence,layout,script,
-                                     value_list,custom_function,data_source)
+                                     objects no reference from another object
+                                     was found for: candidates to check
+                                     (KINDS: table,field,occurrence,layout,
+                                     script,value_list,custom_function,
+                                     data_source)
   script-calls SCRIPT [--direction calls|callers|both] [--limit N]
                                      the scripts it performs and that perform
-                                     it, transitively, with cycles
+                                     it, transitively, with cycles; other
+                                     references between scripts apart
   create-file --path PATH            make a new, blank file at PATH (.fmp12
                                      added), as File > Create New... does;
                                      never replaces a file (no connection)

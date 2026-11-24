@@ -27,7 +27,7 @@ use om_transfer::spec::{ExportOptions, FieldFlags, FieldSpec, ImportOptions, Map
 
 use super::access::{At, Declared, Layer, Read};
 use super::read::{owned_size, polish_found, stamps, Builder, Found, GraphNames, Structure};
-use super::{Kind, NameUse, ObjectId, Place, StepPlace, Target, UnreadReason};
+use super::{Kind, NameUse, ObjectId, Place, ScriptRole, StepPlace, Target, UnreadReason};
 
 const PERFORM_SCRIPT: u16 = 1;
 const GO_TO_LAYOUT: u16 = 6;
@@ -39,6 +39,28 @@ const SET_FIELD_BY_NAME: u16 = 147;
 const SERVER_SCRIPT: u16 = 164;
 const EXECUTE_DATA_API: u16 = 203;
 const SERVER_SCRIPT_WITH_CALLBACK: u16 = 210;
+const INSTALL_ON_TIMER: u16 = 148;
+const REGION_MONITOR: u16 = 185;
+const LOCAL_NOTIFICATION: u16 = 187;
+const NFC_READING: u16 = 201;
+const EXECUTE_URL: u16 = 224;
+const VALIDATE_SCRIPTS: u16 = 239;
+/// Every step whose schema stores a script, each with its role in
+/// [`script_role`] (checked against the schemas by a test).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const STEPS_NAMING_A_SCRIPT: [u16; 9] = [
+    PERFORM_SCRIPT,
+    INSTALL_ON_TIMER,
+    SERVER_SCRIPT,
+    REGION_MONITOR,
+    LOCAL_NOTIFICATION,
+    NFC_READING,
+    SERVER_SCRIPT_WITH_CALLBACK,
+    EXECUTE_URL,
+    VALIDATE_SCRIPTS,
+];
+/// The parameter of step 210 that names its callback.
+const CALLBACK_SCRIPT: &str = "Callback script";
 const SQL_BY_NATURAL_LANGUAGE: u16 = 214;
 const GENERATE_RESPONSE: u16 = 220;
 const FIND_BY_NATURAL_LANGUAGE: u16 = 221;
@@ -416,8 +438,58 @@ fn field_spec(b: &mut Builder, holder: ObjectId, at: Place, spec: StepFieldSpec)
 /// button), into `b`. Each place is `prefix` and the parameter's name.
 /// True when the step read all its stored data: every stored place of
 /// every parameter read, nothing stored that the schema does not explain,
-/// and no anomaly met. Only then may its data be taken whole.
+/// and no anomaly met. Only then may its data be taken whole. While it is
+/// read, `b.step` is its id, so that each script it names gets the role
+/// [`script_role`] gives.
 pub(super) fn read(
+    b: &mut Builder,
+    holder: ObjectId,
+    at: Option<&StepPlace>,
+    prefix: &str,
+    step: &ScriptStep,
+    in_button: bool,
+    cache: Option<&mut StepCache>,
+) -> bool {
+    let outer = b.step.replace(step.id());
+    let all = read_step(b, holder, at, prefix, step, in_button, cache);
+    b.step = outer;
+    all
+}
+
+/// What a step does with a script it names, by the step's id and, for
+/// the one step that names two, the parameter (`part` ends with its
+/// name). Every step whose schema stores a script is listed
+/// ([`STEPS_NAMING_A_SCRIPT`]; docs/authoring.md, "Call chains"):
+///
+/// - Perform Script (1) performs it (script-steps.md 4.1);
+/// - Perform Script on Server (164), and the script of Perform Script on
+///   Server with Callback (210), have the host perform it
+///   (script-runtime.md 3.6);
+/// - Install OnTimer Script (148), the callback of 210 and of Execute URL
+///   (224), Configure Region Monitor Script (185), Configure Local
+///   Notification (187) and Configure NFC Reading (201) install it, to be
+///   performed on an event (script-steps.md 5, 12.1, 12.2;
+///   script-step-params.csv, script-steps.csv). The keys of 185, 187 and
+///   201 are not decoded: each is reported unread;
+/// - Validate Scripts (239) names its scripts for an AI model to check, and
+///   performs none (script-steps.md 12.2).
+///
+/// Any other step stores no script; were one met, it would only name it,
+/// never be taken for a perform.
+pub(super) fn script_role(step: u16, part: &str) -> ScriptRole {
+    match step {
+        PERFORM_SCRIPT => ScriptRole::Performs,
+        SERVER_SCRIPT_WITH_CALLBACK if part.ends_with(CALLBACK_SCRIPT) => ScriptRole::Installs,
+        SERVER_SCRIPT | SERVER_SCRIPT_WITH_CALLBACK => ScriptRole::PerformsOnServer,
+        INSTALL_ON_TIMER | EXECUTE_URL | REGION_MONITOR | LOCAL_NOTIFICATION | NFC_READING => {
+            ScriptRole::Installs
+        }
+        VALIDATE_SCRIPTS => ScriptRole::Names,
+        _ => ScriptRole::Names,
+    }
+}
+
+fn read_step(
     b: &mut Builder,
     holder: ObjectId,
     at: Option<&StepPlace>,
@@ -607,7 +679,7 @@ pub(super) fn read(
         );
     }
     if id == SERVER_SCRIPT_WITH_CALLBACK {
-        let at = place("Callback script");
+        let at = place(CALLBACK_SCRIPT);
         let in_file = step.has_flag(CALLBACK_IN_FILE);
         let cost = || {
             [3, 5, 6, 7]
@@ -699,14 +771,24 @@ pub(super) fn read(
                     },
                     _,
                 ) => {
-                    let Some(node) = slot_child(step, slot, SLOT_ALIASES) else {
-                        continue;
-                    };
                     let count = slot_child(step, slot, SLOT_COUNT);
                     let list_of = if kind == ParamKind::Script {
                         Kind::Script
                     } else {
                         Kind::Occurrence
+                    };
+                    let Some(node) = slot_child(step, slot, SLOT_ALIASES) else {
+                        // A count stored without the keys it counts.
+                        if count.is_some() {
+                            b.unread(
+                                holder,
+                                at,
+                                UnreadReason::Malformed,
+                                "a count of keys stored without the keys",
+                                &[list_of],
+                            );
+                        }
+                        continue;
                     };
                     let found = shared(
                         b,
@@ -1213,17 +1295,22 @@ fn aliases_found(node: &OwnedNode, count: Option<&OwnedNode>, list_of: Kind) -> 
         }
         _ => return malformed(what),
     };
-    if let Some(count) = count {
-        let stated = count
-            .children
-            .is_empty()
-            .then(|| om_scripts::node_bytes(count))
-            .flatten()
-            .and_then(|b| <[u8; 4]>::try_from(b.as_ref()).ok())
-            .map(u32::from_le_bytes);
-        if stated != u32::try_from(entries.len()).ok() {
-            return malformed(what);
+    // Several keys are stored with their count (script-steps.md 12.1).
+    match count {
+        Some(count) => {
+            let stated = count
+                .children
+                .is_empty()
+                .then(|| om_scripts::node_bytes(count))
+                .flatten()
+                .and_then(|b| <[u8; 4]>::try_from(b.as_ref()).ok())
+                .map(u32::from_le_bytes);
+            if stated != u32::try_from(entries.len()).ok() {
+                return malformed(what);
+            }
         }
+        None if entries.len() > 1 => return malformed(what),
+        None => {}
     }
     let mut found = Vec::new();
     for segment in entries {

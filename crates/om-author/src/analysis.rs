@@ -1,16 +1,19 @@
 //! The design analysis commands (docs/authoring.md, "Design analysis"):
-//! where an object is used, broken references, objects nothing refers to,
-//! and a script's call chain. Each builds the reference graph of the
+//! where an object is used, references whose target was not found among
+//! the objects read, objects no reference was found for, and a script's
+//! call chain. Each builds the reference graph of the
 //! file's current design (`om_data::design_refs`) from the design catalogs
 //! downloaded over a new connection (`NativeProvider::design_catalogs`),
 //! and reads no record.
 //!
-//! Every result carries its coverage, for the kinds of object it is about:
-//! what was read, the places whose references could not be read, the
-//! references made by a name looked up when the file runs, and the
-//! catalogs the host did not give. An object nothing decoded refers to is
-//! `unreferenced` only when nothing of that coverage could refer to its
-//! kind; otherwise it is `no_decoded_reference`.
+//! The results are findings about what was read, never facts about the
+//! whole file: a reference whose target was not found among the objects
+//! read, an object for which no reference was found. Every result, and the
+//! `not_found` and `not_known` errors of a lookup, carries how far to trust
+//! it, for the kinds of object it is about: whether the file was read
+//! cleanly and consistently, its anomalies, the places whose references
+//! could not be read, the references made by a name looked up when the
+//! file runs, and the catalogs the host did not give.
 
 use om_data::design_refs::{
     self, CallChain, DesignGraph, Direction, Kind, ObjectId, OmittedEntry, Place, Resolution,
@@ -30,6 +33,9 @@ use crate::service::Service;
 /// and at most.
 const DEFAULT_LIMIT: usize = 500;
 const MAX_LIMIT: usize = 100_000;
+/// How many places of each list the coverage of a lookup error lists;
+/// totals are always given.
+const ERROR_LIMIT: usize = 20;
 
 fn limit(limit: Option<usize>) -> Result<usize, AuthorError> {
     match limit {
@@ -147,23 +153,29 @@ impl Analysis {
 
     /// The error for an object that cannot be found: `not_found` (not
     /// among the objects read) when the file was read cleanly, else
-    /// `not_known` with the reason.
+    /// `not_known`: the file was not read cleanly, so whether the object is
+    /// there is not known, with what made the read not clean. Either
+    /// carries the result's confidence data, `coverage` (whether the read
+    /// was clean and consistent, its anomalies, ...), as a result does.
     fn missing(&self, kind: Kind, message: String) -> AuthorError {
-        match self.graph.unlisted_reason(kind) {
-            None => AuthorError::new(ErrorKind::NotFound, message),
+        let coverage = self.coverage(&[kind], ERROR_LIMIT);
+        match self.graph.coverage().not_clean_reason() {
+            None => AuthorError::new(ErrorKind::NotFound, message).with_details(json!({
+                "kind": kind.name(),
+                "coverage": coverage,
+            })),
             Some(reason) => AuthorError::new(
                 ErrorKind::NotKnown,
                 format!(
-                    "{message} Whether it is there is not known: {} was not read cleanly, \
-                     so not every {} was listed.",
+                    "{message} {} was not read cleanly, so whether it is there is not known: \
+                     {reason}.",
                     self.file,
-                    kind.name().replace('_', " "),
                 ),
             )
             .with_details(json!({
                 "kind": kind.name(),
                 "reason": reason,
-                "stopped": self.graph.coverage().stopped.is_some(),
+                "coverage": coverage,
             })),
         }
     }
@@ -220,6 +232,9 @@ impl Analysis {
         });
         if let Some(via) = u.via() {
             out["via"] = self.short(via);
+        }
+        if let Some(role) = u.script_role {
+            out["script_role"] = json!(role.code());
         }
         match &u.resolution {
             Resolution::Resolved(_) => out["resolution"] = json!("resolved"),
@@ -690,13 +705,16 @@ impl Service {
                     out
                 })
                 .collect();
-            let (performs, total, truncated) = listed(&chain.calls, limit, |c| {
+            let call = |c: &design_refs::Call<'_>| {
                 json!({
                     "from": analysis.short(ObjectId::Script(c.from)),
                     "to": analysis.short(ObjectId::Script(c.to)),
+                    "script_role": c.role.code(),
                     "place": analysis.place(c.place),
                 })
-            });
+            };
+            let (performs, total, truncated) = listed(&chain.calls, limit, call);
+            let (others, others_total, others_truncated) = listed(&chain.others, limit, call);
             let cycles: Vec<Vec<Value>> = chain
                 .cycles
                 .iter()
@@ -712,6 +730,11 @@ impl Service {
                 "performs": performs,
                 "total_performs": total,
                 "truncated": truncated,
+                "other_references": {
+                    "references": others,
+                    "total": others_total,
+                    "truncated": others_truncated,
+                },
                 "cycles": cycles,
                 "cycles_truncated": chain.cycles_truncated,
             })
@@ -756,18 +779,21 @@ mod tests {
         }
     }
 
-    /// A file not read cleanly (here a script member list stored as a
-    /// value): whether any object exists is not known, so a lookup that
-    /// finds nothing is `not_known` with the reason, never `not_found`, for
-    /// every kind, and an object the graph does not have has `exists:
-    /// null`. A file read cleanly answers plainly.
+    /// A file not read cleanly (here the value lists' member list stored
+    /// as a value, which names no script or layout): whether any object is
+    /// there is not known, so a lookup that finds nothing is `not_known`,
+    /// never `not_found`, for every kind. Its message and details say that
+    /// the file was not read cleanly and what made it so, and claim nothing
+    /// about the kind looked up; an object the graph does not have has
+    /// `found: null`. A file read cleanly answers `not_found`. Either error
+    /// carries the result's confidence data.
     #[test]
     fn an_object_of_a_file_not_read_cleanly_is_not_known() {
         // The privilege set catalog, given and empty: nothing else is read.
         let mut clean = OwnedNode::default();
         clean.put(&[&[23], &[2], &[5]], OwnedNode::list(vec![5], Vec::new()));
         let mut not_clean = clean.clone();
-        not_clean.put(&[&[17], &[5]], OwnedNode::leaf(Vec::new(), vec![0x55]));
+        not_clean.put(&[&[33], &[5]], OwnedNode::leaf(Vec::new(), vec![0x55]));
         let not_clean = analysis(&not_clean);
         assert!(!not_clean.graph.coverage().read_cleanly());
         for params in [
@@ -782,7 +808,32 @@ mod tests {
         ] {
             let error = not_clean.resolve(&params).unwrap_err();
             assert_eq!(error.kind, ErrorKind::NotKnown, "{error:?}");
-            assert!(error.details["reason"].is_string());
+            assert_eq!(
+                error.message,
+                format!(
+                    "No {} named “{}” was found among the objects read from Tasks.fmp12. \
+                     Tasks.fmp12 was not read cleanly, so whether it is there is not known: \
+                     1 anomaly, at stored 33/5: a value stored where keys were expected.",
+                    if params.script_name.is_some() {
+                        "script"
+                    } else {
+                        "layout"
+                    },
+                    params
+                        .script_name
+                        .as_deref()
+                        .or(params.layout_name.as_deref())
+                        .unwrap(),
+                )
+            );
+            assert_eq!(
+                error.details["reason"],
+                "1 anomaly, at stored 33/5: a value stored where keys were expected"
+            );
+            let coverage = &error.details["coverage"];
+            assert_eq!(coverage["read_cleanly"], json!(false));
+            assert_eq!(coverage["consistent"], json!(true));
+            assert_eq!(coverage["anomalies"]["total"], json!(1));
         }
         let object = not_clean.object(ObjectId::Layout(7));
         assert_eq!(object["found"], Value::Null);
@@ -797,10 +848,11 @@ mod tests {
             layout_name: Some("Main".into()),
             ..ObjectParams::default()
         };
-        assert_eq!(
-            clean.resolve(&params).unwrap_err().kind,
-            ErrorKind::NotFound
-        );
+        let error = clean.resolve(&params).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotFound);
+        assert_eq!(error.details["coverage"]["read_cleanly"], json!(true));
+        assert_eq!(error.details["coverage"]["consistent"], json!(true));
+        assert_eq!(error.details["coverage"]["anomalies"]["total"], json!(0));
         assert_eq!(clean.object(ObjectId::Layout(7))["found"], json!(false));
     }
 }

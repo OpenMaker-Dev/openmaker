@@ -4,7 +4,7 @@
 //! ([`super::access`]): what a reader does not take is reported by the
 //! sweep.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use om_hbam::serial;
 use om_hbam::slot::be_uint;
@@ -108,6 +108,8 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
     stamps(catalog);
     let list = catalog.get(5);
     let mut layouts = Vec::new();
+    // What each member given was read as, for the index's entries.
+    let mut given = BTreeMap::new();
     for (id, entry) in b.members(list) {
         let holder = ObjectId::Layout(id);
         if !b.spend(1, holder, &Place::new("layouts")) {
@@ -118,21 +120,26 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
         let flags = match entry.uint_at(MEMBER_FLAGS) {
             Read::Ok(flags) => flags,
             // Failed on its node: an anomaly, and not known to be a layout.
-            Read::Unreadable => continue,
+            Read::Unreadable => {
+                given.insert(id, Member::Unreadable);
+                continue;
+            }
             Read::Absent => match t.at(&[4, 1, 7, id, MEMBER_FLAGS]).map(At::uint) {
                 Some(Read::Ok(flags)) => flags,
                 _ => 0,
             },
         };
         if flags & NOT_A_LAYOUT != 0 {
+            given.insert(id, Member::NotALayout);
             folder(b, holder, entry);
             continue;
         }
+        given.insert(id, Member::Layout);
         b.object(holder, &name, "");
         b.count("layouts");
         layouts.push((id, entry));
     }
-    index_only(b, t, &layouts);
+    index_only(b, t, list, &given);
     for (id, node) in layouts {
         if b.stopped() {
             return;
@@ -248,30 +255,58 @@ fn index_entry(b: &mut Builder, holder: ObjectId, entry: Option<At<'_, '_>>) {
     }
 }
 
-/// Layouts the layout catalog's index `[4, 1, 07, L]` lists without a
-/// member `[4, 5, L]`. A client reads the index first and the members it
-/// shows (`om_hbam::catalog::layout_index`), so such a layout exists but
-/// was not delivered whole: an anomaly. It is listed from its index entry
-/// (its name), and the occurrence the entry names is still a use.
-fn index_only(b: &mut Builder, t: &Layer<'_, '_>, members: &[(u64, At<'_, '_>)]) {
+/// What a member of the layout catalog `[4, 5, L]` was read as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Member {
+    /// A layout.
+    Layout,
+    /// A layout folder, folder end or separator, by its flags.
+    NotALayout,
+    /// Given, but its flags do not read (failed on their node).
+    Unreadable,
+}
+
+/// The layout catalog's index `[4, 1, 07, L]` lists each layout, folder
+/// and separator with its flags. An entry the index lists as a layout
+/// whose member was not read as one is an anomaly, said for what
+/// happened to the member (`given` holds what each member given was read
+/// as):
+///
+/// - not given by the source, or given but its member list or its flags
+///   do not read: a client reads the index first and the members it
+///   shows (`om_hbam::catalog::layout_index`), so the layout is listed
+///   from its index entry (its name), and the occurrence the entry names
+///   is still a use;
+/// - given and emptied, as a deleted layout's member is, or given, read,
+///   and a folder, folder end or separator: the member says it is no
+///   layout, so none is listed and what the entry names is not counted
+///   (a folder's own keys are not, [`folder`]).
+fn index_only(
+    b: &mut Builder,
+    t: &Layer<'_, '_>,
+    list: Option<At<'_, '_>>,
+    given: &BTreeMap<u64, Member>,
+) {
     let Some(entries) = t.at(&[4, 1, 7]) else {
         return;
     };
     let Read::Ok(entries) = entries.children() else {
         return;
     };
-    let listed: BTreeSet<u64> = members.iter().map(|(id, _)| *id).collect();
     for entry in entries {
-        let Some(id) = entry.id().filter(|id| *id != 0 && !listed.contains(id)) else {
+        let Some(id) = entry.id().filter(|id| *id != 0) else {
             continue;
         };
-        if entry.is_empty() {
+        let member = given.get(&id).copied();
+        if member == Some(Member::Layout) || entry.is_empty() {
             continue;
         }
         let holder = ObjectId::Layout(id);
         if !b.spend(1, holder, &Place::new("layout index")) {
             return;
         }
+        // The index's own flags: an entry for a folder or separator says
+        // nothing of a layout.
         let flags = match entry.uint_at(MEMBER_FLAGS) {
             Read::Ok(flags) => flags,
             Read::Absent | Read::Unreadable => 0,
@@ -279,16 +314,52 @@ fn index_only(b: &mut Builder, t: &Layer<'_, '_>, members: &[(u64, At<'_, '_>)])
         if flags & NOT_A_LAYOUT != 0 {
             continue;
         }
-        let name = b.name(entry, holder);
-        b.object(holder, name, "listed only by the layout index");
+        // Looking a key up marks no member: a member given is read by
+        // `layouts` or reported by the walk.
+        let (listed, what) = match member {
+            Some(Member::Layout) => continue,
+            Some(Member::NotALayout) => (
+                false,
+                "the layout index lists a layout whose member, given and read, is a layout \
+                 folder, folder end or separator",
+            ),
+            Some(Member::Unreadable) => (
+                true,
+                "the layout index lists a layout whose member was given, but whose flags do \
+                 not read",
+            ),
+            None => match list.map(|list| list.lookup(id)) {
+                None | Some(Read::Absent) => (
+                    true,
+                    "the layout index lists a layout for which the source gave no member",
+                ),
+                Some(Read::Unreadable) => (
+                    true,
+                    "the layout index lists a layout, and the layout member list does not read",
+                ),
+                Some(Read::Ok(member)) if member.is_empty() => (
+                    false,
+                    "the layout index lists a layout whose member was given emptied, as a \
+                     deleted layout's is",
+                ),
+                Some(Read::Ok(_)) => (
+                    true,
+                    "the layout index lists a layout whose member was given but not read",
+                ),
+            },
+        };
         b.unread(
             holder,
-            Place::new("layout"),
+            Place::new("layout index"),
             UnreadReason::Malformed,
-            "a layout the layout index lists whose member was not given",
+            what,
             &Kind::ANY,
         );
-        index_entry(b, holder, entry.get(DEFINITION));
+        if listed {
+            let name = b.name(entry, holder);
+            b.object(holder, name, "listed from the layout index");
+            index_entry(b, holder, entry.get(DEFINITION));
+        }
     }
 }
 

@@ -848,8 +848,9 @@ macro_rules! analysis {
              to change while it was read), the places not decoded and the references made \
              by a name looked up when the file runs (Evaluate, ExecuteSQL, a script \
              performed by name), catalogs the host did not give, `omitted` and `stopped`. \
-             An object not found is `not_found` (not among the objects read) only for a \
-             file read cleanly, else `not_known`. Reads metadata only, never records."
+             An object asked for and not found is the error `not_found` (not among the \
+             objects read) only for a file read cleanly, else `not_known`; either carries \
+             the same `coverage` in its details. Reads metadata only, never records."
         )
     };
 }
@@ -862,10 +863,12 @@ pub static FIND_USES: CommandSpec = CommandSpec {
     description: analysis!(
         "Every reference OpenMaker decodes to a design object (a script, table, \
                   field, table occurrence, layout, value list, custom function or data \
-                  source): each with the object that holds it and the place in it (a \
-                  script's step and line, a layout object, a field's formula), and whether \
-                  it resolves. Coverage lists the places that could refer to the object \
-                  but were not read."
+                  source) from another object: each with the object that holds it and the \
+                  place in it (a script's step and line, a layout object, a field's \
+                  formula), whether it resolves, and for a script what the holder does \
+                  with it (`script_role`: `performs`, `performs_on_server`, `installs` or \
+                  `names`). Coverage lists the places that could refer to the object but \
+                  were not read."
     ),
     effect: Effect::Reads,
     needs: Needs::File,
@@ -900,10 +903,12 @@ pub static UNUSED_OBJECTS: CommandSpec = CommandSpec {
     title: "Find objects no reference was found for",
     description: analysis!(
         "The tables, fields, occurrences, layouts, scripts, value lists, custom \
-                  functions and data sources for which no reference was found in what was \
-                  read (`no_reference_found`): candidates to check, never objects known to \
-                  be unused. `nothing_known_unread` says, per kind, whether any place not \
-                  read or name looked up at run time could refer to one."
+                  functions and data sources for which no reference from another object was \
+                  found in what was read (`no_reference_found`; a reference an object holds \
+                  to itself, such as a script performing itself, does not count): \
+                  candidates to check, never objects known to be unused. \
+                  `nothing_known_unread` says, per kind, whether any place not read or name \
+                  looked up at run time could refer to one."
     ),
     effect: Effect::Reads,
     needs: Needs::File,
@@ -918,9 +923,14 @@ pub static SCRIPT_CALLS: CommandSpec = CommandSpec {
     tool: "openmaker_script_calls",
     title: "Get a script's call chain",
     description: analysis!(
-        "The scripts a script performs and the scripts that perform it, \
-                  transitively, each with its depth, every perform between them with its \
-                  step, and the cycles found. Each script is walked once."
+        "The scripts a script performs and the scripts that perform it (Perform \
+                  Script, Perform Script on Server), transitively, each with its depth, \
+                  every perform between them with its step and `script_role`, and the \
+                  cycles found. Each script is walked once. References between the scripts \
+                  walked and other scripts that are not performs (a script trigger, timer \
+                  or callback installed, `installs`; a script only named, as Validate \
+                  Scripts names its scripts, `names`) are listed apart, in \
+                  `other_references`, and not followed."
     ),
     effect: Effect::Reads,
     needs: Needs::File,

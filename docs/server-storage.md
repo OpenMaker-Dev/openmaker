@@ -959,8 +959,8 @@ folder for git. The store's history is the master copy, since live edits
 arrive there.
 
 **Analysis.** From the decoded references between objects, for any
-revision: where an object is used, broken references, objects nothing
-refers to, references made by name at run time (scripts run by name,
+revision: where an object is used, references whose target was not found,
+objects no reference was found for, references made by name at run time (scripts run by name,
 ExecuteSQL text, `Evaluate`), script call chains, and a security review
 (accounts without a password, scripts that run with full access). For a
 file's current design, `om-author`'s `find_uses`, `broken_references`,

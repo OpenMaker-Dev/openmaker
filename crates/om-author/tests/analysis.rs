@@ -320,7 +320,12 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     assert_eq!(perform["to"]["ref"], r("script", "2"));
     assert_eq!(perform["place"]["step"]["index"], 2);
     assert_eq!(perform["place"]["step"]["line"], 2);
+    assert_eq!(perform["script_role"], "performs");
     assert_eq!(chain["calls"]["total_performs"], 1);
+    assert_eq!(
+        chain["calls"]["other_references"],
+        json!({"references": [], "total": 0, "truncated": false})
+    );
     assert_eq!(chain["calls"]["cycles"], json!([]));
     assert_eq!(chain["callers"]["scripts"], json!([]));
     assert_eq!(chain["nothing_known_unread"], true);
@@ -345,6 +350,13 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
         ),
     );
     assert_eq!(error["kind"], "not_found");
+    // A lookup error carries the result's confidence data.
+    assert_eq!(error["details"]["coverage"]["read_cleanly"], true);
+    assert_eq!(error["details"]["coverage"]["consistent"], true);
+    assert_eq!(
+        error["details"]["coverage"]["changed_during_read"],
+        json!([])
+    );
     let error = common::error(
         service.handle_json(
             &json!({"version": "openmaker.authoring/v1", "command": "find_uses",
