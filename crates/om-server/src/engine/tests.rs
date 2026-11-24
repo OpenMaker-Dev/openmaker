@@ -588,11 +588,17 @@ fn file_data(bytes: &[u8]) -> crate::library::BinaryData {
 /// Layout Setup; the layout duplicated and the copy deleted; a value list's
 /// values), a server script's reservation that the authoring extension's
 /// Save writes to disk, container data stored and a library member
-/// released. Every step but the Save must change the tree, and the Save
-/// must save the file, so an operation that did nothing fails here; every
-/// edit's locks are released after it.
+/// released. Each step's effect is checked against the fixture, not only
+/// against the replay, so an operation that does part of its work the same
+/// way twice fails too: the members and catalog indexes each edit writes,
+/// with the stamp of a save by the session at the environment's time
+/// (schema-path.md 8.1), and the library and member op88 stored. Every step
+/// but the Save must change the tree, and the Save must save the file;
+/// every edit's locks are released after it.
 #[test]
 fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_replies_and_tree() {
+    use om_data::layout_objects::{self, ObjectFrame};
+    use om_data::layout_placement;
     use om_protocol::authoring::{self as design, catalog_revision, content_revision};
     use om_protocol::container::AdjustReferenceCount as Adjust;
 
@@ -665,9 +671,57 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     let frame =
         |top: f64, left: f64, height: f64, width: f64| [top, left, top + height, left + width];
     let layout_path = |layout: u64| vec![vec![4], vec![5], uint_segment(layout)];
+    let at = |path: &[Vec<u8>], below: &[&[u8]]| {
+        let mut path = path.to_vec();
+        path.extend(below.iter().map(|s| s.to_vec()));
+        path
+    };
+    let text_at = |path: &[Vec<u8>]| node(path).as_ref().and_then(om_scripts::node_text);
+    // A member's stamp `fc`: its count, user, account and time.
+    let time = crate::connection::host_time_key_at(&Seeded(AtomicU64::new(0)).now());
+    type Stamp = (Option<u64>, Option<String>, Option<String>, Option<Vec<u8>>);
+    let stamp = |path: &[Vec<u8>]| -> Stamp {
+        let member = node(path).unwrap_or_else(|| panic!("no member at {path:02x?}"));
+        let value = |key: &[u8]| member.child(key).and_then(|n| n.value.clone());
+        let text = |key: &[u8]| member.child(key).and_then(om_scripts::node_text);
+        (
+            value(design::MOD_COUNT).and_then(|v| serial::decode(v.get(1..)?)),
+            text(design::MOD_USER),
+            text(design::MOD_ACCOUNT),
+            value(design::MOD_TIME).and_then(|v| v.get(1..).map(<[u8]>::to_vec)),
+        )
+    };
+    let count = |path: &[Vec<u8>]| stamp(path).0.unwrap_or(0);
+    // Saved by the designer at the environment's time, with `count`.
+    let stamped = |path: &[Vec<u8>], count: Option<u64>| {
+        let by_edit = (
+            count,
+            Some("Designer".to_owned()),
+            Some(fixture::ACCOUNT.to_owned()),
+            Some(time.clone()),
+        );
+        assert_eq!(stamp(path), by_edit, "the stamp of {path:02x?}");
+    };
+    // An object's attribute record `[L, 05, O]` with both its UUIDs.
+    let has_uuids = |layout: &[Vec<u8>], object: u64| {
+        let record = at(layout, &[&[5], &serial::encode(object)]);
+        for key in [0xd8, 0xd9] {
+            let uuid = node(&at(&record, &[&[key]])).and_then(|n| n.value);
+            assert_eq!(uuid.map(|u| u.len()), Some(16), "{record:02x?} {key:02x}");
+        }
+    };
+    let rect = |frame: [f64; 4]| om_layout::Rect {
+        top: frame[0],
+        left: frame[1],
+        bottom: frame[2],
+        right: frame[3],
+        other: Vec::new(),
+    };
 
-    // The script's steps.
+    // The script's steps, and the script catalog's index stamped with it.
     let definition = vec![vec![17], vec![5], serial::encode(SCRIPT)];
+    let scripts_index = vec![vec![17], vec![1]];
+    let counts = (count(&definition), count(&scripts_index));
     let steps = fixture::script(SCRIPT, "Greeting", vec![fixture::exit_with("2")]).encode();
     let replace = design::ReplaceScriptSteps {
         script: SCRIPT,
@@ -696,16 +750,14 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         content_revision(&node(&definition).unwrap()),
         content_revision(&steps)
     );
-    // Stamped at the environment's time, not the host's.
-    let time = crate::connection::host_time_key_at(&Seeded(AtomicU64::new(0)).now());
-    let stamp = [definition.clone(), vec![design::MOD_TIME.to_vec()]].concat();
-    assert_eq!(
-        node(&stamp).and_then(|n| n.value),
-        Some([&[time.len() as u8][..], &time].concat())
-    );
+    stamped(&definition, Some(counts.0 + 1));
+    stamped(&scripts_index, Some(counts.1 + 1));
 
-    // A new field.
+    // A new field: its member, new and so without a count, and its name in
+    // the catalog's index, counted and stamped.
     let fields = vec![uint_segment(fixture::TABLE), vec![3]];
+    let fields_index = at(&fields, &[&[1]]);
+    let index_count = count(&fields_index);
     let create = design::CreateField {
         table: fixture::TABLE,
         expected: revision(&fields),
@@ -718,9 +770,24 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         panic!("no field created");
     };
     assert!(created.changed);
+    let new_field = at(&fields, &[&[5], &serial::encode(created.field)]);
+    assert_eq!(
+        node(&new_field).and_then(|m| om_data::field_catalog::member_name(&m)),
+        Some("Priority".to_owned())
+    );
+    stamped(&new_field, None);
+    stamped(&fields_index, Some(index_count + 1));
+    let listed = om_data::field_catalog::check_name("Priority").unwrap();
+    let id = serial::encode(created.field);
+    assert_eq!(
+        node(&at(&fields_index, &[&[1], &listed])).and_then(|n| n.value),
+        Some([&[id.len() as u8][..], &id].concat()),
+        "the new field in the index's name list"
+    );
 
     // A new layout, and edits of it.
     let layouts_index = vec![vec![4], vec![1]];
+    let index_count = count(&layouts_index);
     let create = design::CreateLayout {
         expected: revision(&layouts_index),
         occurrence: fixture::OCCURRENCE,
@@ -733,6 +800,24 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         panic!("no layout created: {reply:?}");
     };
     let member = layout_path(layout);
+    assert_eq!(text_at(&at(&member, &[&[0x10]])), Some("Entry".to_owned()));
+    assert_eq!(
+        node(&at(&member, &[&[0xd8]])).and_then(|n| n.value),
+        Some(vec![9; 16])
+    );
+    stamped(&member, None);
+    stamped(&layouts_index, Some(index_count + 1));
+    let entry = |layout: u64| at(&layouts_index, &[&[7], &uint_segment(layout)]);
+    assert!(
+        node(&entry(layout)).is_some(),
+        "the new layout's index entry"
+    );
+    // Each edit of the layout stamps its member, counted up.
+    let mut edits = count(&member);
+    let mut edited = |path: &[Vec<u8>]| {
+        edits += 1;
+        stamped(path, Some(edits));
+    };
     let place = design::PlaceField {
         layout,
         expected: revision(&member),
@@ -746,6 +831,9 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     let design::Reply::Placed(field) = reply else {
         panic!("no field placed: {reply:?}");
     };
+    edited(&member);
+    has_uuids(&member, field.field_object);
+    has_uuids(&member, field.label_object);
     let text = design::PlaceText {
         layout,
         expected: revision(&member),
@@ -756,6 +844,8 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     let design::Reply::Placed(text) = reply else {
         panic!("no text placed: {reply:?}");
     };
+    edited(&member);
+    has_uuids(&member, text.field_object);
     let portal = design::PlacePortal {
         layout,
         expected: revision(&member),
@@ -765,9 +855,12 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         rows: 3,
         fields: vec![fixture::BODY],
     };
-    assert!(changed(&answer(submit(edit(DesignEdit::PlacePortal(
-        portal
-    ))))));
+    let reply = answer(submit(edit(DesignEdit::PlacePortal(portal))));
+    let design::Reply::Placed(portal) = reply else {
+        panic!("no portal placed: {reply:?}");
+    };
+    edited(&member);
+    has_uuids(&member, portal.field_object);
     let button = design::PlaceButton {
         layout,
         expected: revision(&member),
@@ -776,9 +869,12 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         label: "Greet".into(),
         parameter: None,
     };
-    assert!(changed(&answer(submit(edit(DesignEdit::PlaceButton(
-        button
-    ))))));
+    let reply = answer(submit(edit(DesignEdit::PlaceButton(button))));
+    let design::Reply::Placed(button) = reply else {
+        panic!("no button placed: {reply:?}");
+    };
+    edited(&member);
+    has_uuids(&member, button.field_object);
     let step = fixture::go_to_record(1);
     let button = design::PlaceButtonStep {
         layout,
@@ -796,14 +892,28 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
             .map(|data| data.encode(&[om_data::layout_placement::STEP_DATA])),
     };
     let reply = answer(submit(edit(DesignEdit::PlaceButtonStep(button))));
-    assert!(changed(&reply), "{reply:?}");
+    let design::Reply::Placed(button) = reply else {
+        panic!("no button step placed: {reply:?}");
+    };
+    edited(&member);
+    has_uuids(&member, button.field_object);
+    let to = frame(10.0, 40.0, 20.0, 120.0);
     let moved = design::SetObjectFrames {
         layout,
         expected: revision(&member),
-        frames: vec![(text.field_object, frame(10.0, 40.0, 20.0, 120.0))],
+        frames: vec![(text.field_object, to)],
     };
     let reply = answer(submit(edit(DesignEdit::SetObjectFrames(moved))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    let framed = ObjectFrame {
+        object: text.field_object,
+        frame: rect(to),
+    };
+    assert!(layout_objects::already_framed(
+        &node(&member).unwrap(),
+        &[framed]
+    ));
     let words = design::SetText {
         expected: revision(&member),
         layout,
@@ -812,6 +922,12 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::SetText(words))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    assert!(layout_placement::already_words(
+        &node(&member).unwrap(),
+        field.label_object,
+        "Task"
+    ));
     let control = design::FieldControl {
         expected: revision(&member),
         layout,
@@ -822,6 +938,13 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::FieldControl(control))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    assert!(layout_objects::already_control(
+        &node(&member).unwrap(),
+        field.field_object,
+        2,
+        Some(1)
+    ));
     let deleted = design::DeleteObjects {
         layout,
         expected: revision(&member),
@@ -829,6 +952,11 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::DeleteObjects(deleted))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    assert!(layout_objects::already_deleted(
+        &node(&member).unwrap(),
+        &[text.field_object]
+    ));
     let parts = |path: &[Vec<u8>]| -> Vec<u64> {
         let mut parts = path.to_vec();
         parts.push(vec![3]);
@@ -855,6 +983,7 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::ChangeParts(header))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
     assert_eq!(parts(&member).len(), body.len() + 1);
     let options = design::PartOptions {
         expected: revision(&member),
@@ -866,6 +995,12 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::PartOptions(options))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    assert!(layout_placement::already_part_options(
+        &node(&member).unwrap(),
+        body[0],
+        (0, 3, None)
+    ));
     let width = design::LayoutWidth {
         expected: revision(&member),
         layout,
@@ -873,6 +1008,11 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::LayoutWidth(width))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    assert!(layout_placement::already_width(
+        &node(&member).unwrap(),
+        640.0
+    ));
     let views = {
         let mut flags = member.clone();
         flags.push(vec![0xf1]);
@@ -888,8 +1028,16 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         flags: views,
         hidden: false,
     };
+    let index_count = count(&layouts_index);
     let reply = answer(submit(edit(DesignEdit::LayoutSetup(setup))));
     assert!(changed(&reply), "{reply:?}");
+    edited(&member);
+    stamped(&layouts_index, Some(index_count + 1));
+    let renamed = Some("Task entry".to_owned());
+    assert_eq!(text_at(&at(&member, &[&[0x10]])), renamed);
+    assert_eq!(text_at(&at(&entry(layout), &[&[0x10]])), renamed);
+    // The copy keeps its source's count, with who copied it when.
+    let (index_count, source_count) = (count(&layouts_index), count(&member));
     let copy = design::DuplicateLayout {
         expected: revision(&layouts_index),
         layout,
@@ -899,17 +1047,35 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     let design::Reply::LayoutCreated(copy) = reply else {
         panic!("no copy: {reply:?}");
     };
-    assert!(node(&layout_path(copy.layout)).is_some());
+    let copied = layout_path(copy.layout);
+    assert_eq!(
+        node(&at(&copied, &[&[0xd8]])).and_then(|n| n.value),
+        Some(vec![10; 16])
+    );
+    stamped(&copied, Some(source_count));
+    stamped(&layouts_index, Some(index_count + 1));
+    assert!(
+        node(&entry(copy.layout)).is_some(),
+        "the copy's index entry"
+    );
+    let index_count = count(&layouts_index);
     let delete = design::DeleteLayout {
         expected: revision(&layouts_index),
         layout: copy.layout,
     };
     let reply = answer(submit(edit(DesignEdit::DeleteLayout(delete))));
     assert!(changed(&reply), "{reply:?}");
-    assert!(node(&layout_path(copy.layout)).is_none());
+    assert!(node(&copied).is_none());
+    assert!(
+        node(&entry(copy.layout)).is_none(),
+        "the copy's index entry"
+    );
+    stamped(&layouts_index, Some(index_count + 1));
 
-    // A value list's values.
+    // A value list's values, the list and the catalog's index stamped.
     let list = vec![vec![0x21], vec![5], vec![1]];
+    let lists_index = vec![vec![0x21], vec![1]];
+    let counts = (count(&list), count(&lists_index));
     let values = design::ValueListValues {
         expected: revision(&list),
         list: 1,
@@ -917,6 +1083,12 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     };
     let reply = answer(submit(edit(DesignEdit::ValueListValues(values))));
     assert!(changed(&reply), "{reply:?}");
+    assert_eq!(
+        text_at(&at(&list, &[&[3]])),
+        Some("Open\rDone\rLater".to_owned())
+    );
+    stamped(&list, Some(counts.0 + 1));
+    stamped(&lists_index, Some(counts.1 + 1));
 
     // A server script's reservation waits for its commit to be saved; the
     // extension's Save writes it.
@@ -943,9 +1115,11 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
 
     // Container data stored in Tasks' library, and Photo's member released.
     let tasks = uint_segment(fixture::TABLE);
+    let data = file_data(b"a stored file");
+    let md5 = data.md5;
     let store = StoreContainerData {
         table: vec![tasks.clone()],
-        data: Ok(file_data(b"a stored file")),
+        data: Ok(data),
         bytes: 64,
     };
     let outcome = submit(Operation::StoreContainerData(store));
@@ -953,6 +1127,21 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         panic!("not op88's reply: {:?}", outcome.reply);
     };
     assert_eq!(stored.status, 0);
+    // A new member of Tasks' library `[T, 1f]`, the next after Photo's,
+    // holding the data and listed under its MD5; the file's own library
+    // `[1f]` does not list it.
+    let [member] = stored.member.as_slice() else {
+        panic!("no member: {stored:?}");
+    };
+    assert_eq!(*member, serial::encode(fixture::PHOTO_MEMBER + 1));
+    let library = vec![tasks.clone(), vec![LIBRARY]];
+    let new_member = at(&library, &[&[5], member]);
+    assert_eq!(
+        node(&at(&new_member, &[&[4]])).and_then(|n| n.value),
+        Some(md5.to_vec())
+    );
+    assert!(node(&at(&library, &[&[1], &[8], &md5, member])).is_some());
+    assert!(node(&[vec![LIBRARY], vec![1], vec![8], md5.to_vec()]).is_none());
     let photo = vec![
         tasks.clone(),
         vec![LIBRARY],
