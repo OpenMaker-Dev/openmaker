@@ -2047,7 +2047,8 @@ impl DocumentState {
         Some((selection.editor, buffer))
     }
 
-    #[cfg(target_os = "macos")]
+    /// The editor of the field entered on this record, for menus shown
+    /// outside egui (the macOS system menu bar, OpenMaker Go's).
     pub(crate) fn entered_editor(&self, layout: u64, record: i64) -> Option<egui::Id> {
         self.entered_buffer(layout, record).map(|(id, _)| id)
     }
@@ -6953,9 +6954,38 @@ fn field_galley(
 /// color and insets, and its placeholder as the read-only field shows it,
 /// beside the drop-down arrow the field has. Conditional formatting is
 /// ignored while a field is in focus. With `lines`, Return types a line
-/// break, the text wraps as at rest and scrolls in the field.
+/// break, the text wraps as at rest and scrolls in the field. A focused
+/// editor's text is kept for [`focused_field_text`], in Browse, Find mode
+/// and portal rows alike.
 #[allow(clippy::too_many_arguments)]
 fn field_editor(
+    ui: &mut Ui,
+    cache: &layout_cache::LayoutCache,
+    geometry: (&Layout, &LayoutObject, Rect),
+    id: egui::Id,
+    buffer: &mut String,
+    placeholder_text: Option<&str>,
+    keys: egui::EventFilter,
+    interactive: bool,
+    lines: bool,
+) -> egui::Response {
+    let response = show_field_editor(
+        ui,
+        cache,
+        geometry,
+        id,
+        buffer,
+        placeholder_text,
+        keys,
+        interactive,
+        lines,
+    );
+    note_focused_text(ui, id, buffer);
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_field_editor(
     ui: &mut Ui,
     cache: &layout_cache::LayoutCache,
     (layout, object, rect): (&Layout, &LayoutObject, Rect),
@@ -7498,6 +7528,7 @@ fn guarded_editor(
     let Some(refusal) = refusal else {
         let response = show(ui, buffer);
         let changed = response.changed();
+        note_focused_text(ui, id, buffer);
         return (response, changed);
     };
     let before = (buffer.clone(), egui::TextEdit::load_state(ui.ctx(), id));
@@ -7511,7 +7542,61 @@ fn guarded_editor(
         response.flags.remove(egui::response::Flags::CHANGED);
         actions.push(Action::RefuseTyping(refusal));
     }
+    note_focused_text(ui, id, buffer);
     (response, false)
+}
+
+/// Where [`note_focused_text`] keeps the focused field's text.
+fn focused_text_id() -> egui::Id {
+    egui::Id::unique("openmaker-focused-field-text")
+}
+
+/// Keep the focused field editor's text as this pass left it, for
+/// [`focused_field_text`]: an input method counts what it deletes in
+/// UTF-16 units, which OpenMaker Go converts to characters against it.
+pub(crate) fn note_focused_text(ui: &Ui, id: egui::Id, buffer: &str) {
+    if ui.memory(|memory| memory.has_focus(id)) {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(focused_text_id(), (id, buffer.to_owned())));
+    }
+}
+
+/// Where [`note_scroll_area`] keeps the pass's scroll areas.
+fn scroll_areas_id() -> egui::Id {
+    egui::Id::unique("openmaker-scroll-areas")
+}
+
+/// Keep the visible rectangle of a scroll area this pass draws inside the
+/// layout (a portal's rows), for [`scroll_areas`]: a screen reader's page
+/// there is that area's, not the window's.
+pub(crate) fn note_scroll_area(ui: &Ui, rect: Rect) {
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx().data_mut(|data| {
+        let (at, rects) = data.get_temp_mut_or_default::<(u64, Vec<Rect>)>(scroll_areas_id());
+        if *at != pass {
+            *at = pass;
+            rects.clear();
+        }
+        rects.push(rect);
+    });
+}
+
+/// The scroll areas inside the layout the last completed pass drew.
+pub(crate) fn scroll_areas(ctx: &egui::Context) -> Vec<Rect> {
+    let completed = ctx.cumulative_pass_nr();
+    ctx.data(|data| data.get_temp::<(u64, Vec<Rect>)>(scroll_areas_id()))
+        .filter(|(at, _)| *at + 1 == completed)
+        .map(|(_, rects)| rects)
+        .unwrap_or_default()
+}
+
+/// The text of the field editor that has the keyboard focus, as the last
+/// pass left it; `None` when no field editor has it.
+pub(crate) fn focused_field_text(ctx: &egui::Context) -> Option<String> {
+    let focused = ctx.memory(|memory| memory.focused())?;
+    ctx.data(|data| data.get_temp::<(egui::Id, String)>(focused_text_id()))
+        .filter(|(id, _)| *id == focused)
+        .map(|(_, text)| text)
 }
 
 /// Why the user cannot change value-list control `object` (a set or a
