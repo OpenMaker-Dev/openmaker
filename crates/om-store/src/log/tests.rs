@@ -87,6 +87,10 @@ struct Watched {
     /// and fails: a write the device did not take, whose bytes a process
     /// that goes on without a power loss still reads.
     cache_only: Arc<std::sync::atomic::AtomicBool>,
+    /// The next flush or write of a log file fails, as the simulator fails
+    /// one (simulated machines only).
+    fail_next: Arc<std::sync::atomic::AtomicBool>,
+    sim: Option<Sim>,
 }
 
 struct WatchedFile {
@@ -98,6 +102,19 @@ struct WatchedFile {
     largest_read: Arc<AtomicU64>,
     bad: Arc<Mutex<Vec<(String, u64)>>>,
     cache_only: Arc<std::sync::atomic::AtomicBool>,
+    fail_next: Arc<std::sync::atomic::AtomicBool>,
+    sim: Option<Sim>,
+}
+
+impl WatchedFile {
+    /// The simulator fails this call, if a failure was armed.
+    fn armed(&self, fault: Fault) {
+        if self.counted && self.fail_next.swap(false, Ordering::Relaxed) {
+            if let Some(sim) = &self.sim {
+                sim.place(sim.steps() + 1, fault);
+            }
+        }
+    }
 }
 
 impl Watched {
@@ -108,6 +125,8 @@ impl Watched {
             largest_read: Arc::default(),
             bad: Arc::default(),
             cache_only: Arc::default(),
+            fail_next: Arc::default(),
+            sim: None,
         }
     }
 
@@ -127,6 +146,8 @@ impl Watched {
             largest_read: self.largest_read.clone(),
             bad: self.bad.clone(),
             cache_only: self.cache_only.clone(),
+            fail_next: self.fail_next.clone(),
+            sim: self.sim.clone(),
         })
     }
 }
@@ -212,10 +233,12 @@ impl File for WatchedFile {
                 ));
             }
         }
+        self.armed(Fault::FailWrite);
         self.inner.write_at(offset, data)
     }
 
     fn flush(&self) -> sys::Result<()> {
+        self.armed(Fault::FailFlush);
         self.inner.flush()
     }
 
@@ -239,6 +262,9 @@ trait Machine {
     /// The next write to a log file reaches the cache only, then fails
     /// (simulated machines only).
     fn arm_cache_only_write(&self) -> bool;
+    /// The next flush or write of a log file fails (simulated machines
+    /// only).
+    fn arm_failure(&self);
     fn random(&self) -> &dyn Random;
     /// The process ends; with `power_loss` the power fails first, where the
     /// machine can do that.
@@ -255,8 +281,10 @@ struct Simulated {
 impl Simulated {
     fn new(seed: u64, rates: Rates) -> Self {
         let sim = Sim::with_rates(seed, rates);
+        let mut watched = Watched::new(Arc::new(sim.fs()));
+        watched.sim = Some(sim.clone());
         Self {
-            fs: Arc::new(Watched::new(Arc::new(sim.fs()))),
+            fs: Arc::new(watched),
             random: sim.random(),
             sim,
         }
@@ -277,12 +305,17 @@ impl Machine for Simulated {
         true
     }
 
+    fn arm_failure(&self) {
+        self.fs.fail_next.store(true, Ordering::Relaxed);
+    }
+
     fn random(&self) -> &dyn Random {
         &self.random
     }
 
     fn restart(&mut self, power_loss: bool) {
         self.fs.cache_only.store(false, Ordering::Relaxed);
+        self.fs.fail_next.store(false, Ordering::Relaxed);
         if power_loss {
             self.sim.crash(Fates::Drawn);
         }
@@ -323,6 +356,8 @@ impl Machine for Real {
     fn arm_cache_only_write(&self) -> bool {
         false
     }
+
+    fn arm_failure(&self) {}
 
     fn random(&self) -> &dyn Random {
         &self.random
@@ -736,9 +771,9 @@ impl<'a> Run<'a> {
     }
 
     fn tail_in_cache_only(&mut self) {
-        let Some(sim) = self.machine.sim().cloned() else {
+        if self.machine.sim().is_none() {
             return;
-        };
+        }
         if !self.append(false) || self.log.is_none() {
             return;
         }
@@ -754,15 +789,12 @@ impl<'a> Run<'a> {
             return;
         }
         self.reached.tails_in_cache += 1;
-        // The process stops and the cache stays; the next open meets a
-        // failed flush or write at one of its steps, and is tried again.
+        // The process stops and the cache stays; the next open's first
+        // flush or write of a log file, the one that makes the tail durable,
+        // fails. The open is then tried again with its state, or by a new
+        // process, and power losses follow.
         self.stop(false);
-        let fault = if self.plan.below(2) == 0 {
-            Fault::FailFlush
-        } else {
-            Fault::FailWrite
-        };
-        sim.place(sim.steps() + 1 + self.plan.below(25), fault);
+        self.machine.arm_failure();
     }
 
     fn lose_state_slot(&mut self) {
