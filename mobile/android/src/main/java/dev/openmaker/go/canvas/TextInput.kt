@@ -49,9 +49,16 @@ internal class TextInput(private val canvas: CanvasView, private val session: Do
     }
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        // The editor is empty: what the keyboard deletes is the field's.
+        // This editor holds only the composition, which the deletion leaves
+        // alone (as BaseInputConnection's does): what the keyboard deletes
+        // is the field's text around it. The field shows the composition as
+        // its selection, which Backspace would delete, so it is taken out
+        // for the deletion and shown again after.
+        val composed = composing()
+        if (composed != null) session.send(Input.Compose(""))
         repeat(beforeLength.coerceIn(0, MAX_DELETE)) { session.send(Input.Press(Key.BACKSPACE, false, false)) }
         repeat(afterLength.coerceIn(0, MAX_DELETE)) { session.send(Input.Press(Key.DELETE, false, false)) }
+        if (composed != null) session.send(Input.Compose(composed))
         return true
     }
 
