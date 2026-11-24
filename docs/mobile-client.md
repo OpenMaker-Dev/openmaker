@@ -173,31 +173,41 @@ documented, so reconnecting by itself is OpenMaker Go's own choice.
 ## Limits
 
 - **Not compared with FileMaker Go.** Layout scale, fonts and the chrome's
-  look were not measured against a running FileMaker Go.
+  look were not measured against a running FileMaker Go ([#667](https://github.com/OpenMaker-Dev/openmaker/issues/667)).
 - **SVG pictures and button icons** show egui's error mark. Browse draws
   SVG only in a capped worker process, since a hostile SVG can abort the
-  process that draws it (`svg_loader.rs`), and the apps cannot start one.
-- **Web viewers** show a note: the apps embed none.
+  process that draws it (`svg_loader.rs`), and the apps cannot start one
+  ([#658](https://github.com/OpenMaker-Dev/openmaker/issues/658)).
+- **Web viewers** show a note: the apps embed none ([#659](https://github.com/OpenMaker-Dev/openmaker/issues/659)).
 - **Printing, Save/Send Records As, Export and Import** are not in the
-  menus: they need the platform's share sheet and print dialog.
-- **No Quick Find menu of the layout's fields, Saved Finds or window
-  list**; FileMaker Go has them.
+  menus: they need the platform's share sheet and print dialog ([#660](https://github.com/OpenMaker-Dev/openmaker/issues/660)).
+- **No window list.** FileMaker Go's window title adds, scrolls through
+  and closes a file's windows; OpenMaker Go shows the front window only
+  ([#664](https://github.com/OpenMaker-Dev/openmaker/issues/664)).
+- **The editing bar** has no Insert menu (date, time, user name, barcode)
+  and no Revert Record, which FileMaker Go's has ([#665](https://github.com/OpenMaker-Dev/openmaker/issues/665)).
 - **Unverified certificates.** FileMaker Go offers to connect to a host
   whose certificate it cannot verify ("Always Permit Connection"); OpenMaker
-  Go refuses unless the host's certificate authority is saved for it.
+  Go refuses unless the host's certificate authority is saved for it
+  ([#661](https://github.com/OpenMaker-Dev/openmaker/issues/661)).
 - **Keyboards.** The field's touch keyboard type and FileMaker Go's
   Auto-Correction setting are not applied: the keyboard is plain text with
-  autocorrection off. Copy from a field with a hardware keyboard's Command-C
-  is not passed on.
+  autocorrection off ([#662](https://github.com/OpenMaker-Dev/openmaker/issues/662)). Text can be pasted into a field but not
+  copied or cut from one ([#663](https://github.com/OpenMaker-Dev/openmaker/issues/663)).
 - **The device's own features**: camera, barcode scanning, signature,
-  location and other Get functions answer as on the desktop.
+  location and other Get functions answer as on the desktop ([#666](https://github.com/OpenMaker-Dev/openmaker/issues/666)).
 - **Hosted files in the background** keep no connection on Android, and
   the host may disconnect an idle client: coming back reconnects (above),
-  which takes longer than a connection kept would.
+  which takes longer than a connection kept would: related records came
+  back about 18 seconds later ([#657](https://github.com/OpenMaker-Dev/openmaker/issues/657)).
 - **An app ended while the save is held** (a validation failure shown
   when the app left the foreground, a trigger that kept the record, or a
   lost connection, then iOS or Android ending it) loses the record's
-  changes: nothing keeps a draft outside the window.
+  changes: nothing keeps a draft outside the window ([#656](https://github.com/OpenMaker-Dev/openmaker/issues/656)).
+- **Saves and closes are inferred.** The engine asks the window to save
+  each record and close the file, and reads `om-gui`'s state to learn how
+  each ended; a command in `om-gui` that reports each outcome would
+  replace that ([#655](https://github.com/OpenMaker-Dev/openmaker/issues/655)).
 - **Cards** take the chrome's commands and menus, as a card takes the menu
   bar's on the desktop; their look on a phone was not checked.
 - The apps are built for ARM64 only. iPhone was tried on the iOS
