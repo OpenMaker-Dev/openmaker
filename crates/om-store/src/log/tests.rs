@@ -2486,3 +2486,49 @@ fn an_unreadable_place_after_the_firm_position_ends_the_log() {
     let (_, opened) = open().unwrap();
     assert_eq!(opened.durable, two);
 }
+
+/// A batch header after the end whose index and cut count fit but which
+/// does not name the last entry as the one before it is not a batch:
+/// nothing past it is read, and nothing is cut.
+#[test]
+fn a_batch_header_that_does_not_chain_is_passed_over_unread() {
+    let sim = Sim::new(16);
+    let watched = Arc::new(Watched::new(Arc::new(sim.fs())));
+    let fs: Arc<dyn Fs> = watched.clone();
+    let big = Config {
+        segment_size: 1 << 20,
+        max_payload: 300 << 10,
+    };
+    let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    let (mut log, _) = Log::open(fs.clone(), state, big, Position::START).unwrap();
+    let one = log.append(1, 0, 0, b"one").unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    sim.restart();
+    let payload = 200u64 << 10;
+    let at = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 3;
+    let header = format::BatchHeader {
+        count: 1,
+        first: 2,
+        length: ENTRY_OVERHEAD + payload,
+        cut_count: 0,
+        prev: [9; 32],
+        last: [0; 32],
+    };
+    let mut fixed = [0u8; 32];
+    fixed[0..8].copy_from_slice(&2u64.to_le_bytes());
+    fixed[8..16].copy_from_slice(&1u64.to_le_bytes());
+    fixed[28..32].copy_from_slice(&(payload as u32).to_le_bytes());
+    let file = fs
+        .open(&format::segment_path(1), FileOptions::PLAIN)
+        .unwrap();
+    file.write_at(at, &header.encode()).unwrap();
+    file.write_at(at + BATCH_HEADER, &fixed).unwrap();
+    drop(file);
+    watched.largest_read.store(0, Ordering::Relaxed);
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let (_, opened) = Log::open(fs.clone(), state, big, Position::START).unwrap();
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut, None);
+    assert!(watched.largest_read.load(Ordering::Relaxed) <= 64 * 1024);
+}
