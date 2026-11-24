@@ -132,9 +132,7 @@ choices:
   the file open; Files again runs the trigger again, as each request to
   close a window does in FileMaker, but the app letting go of the document
   after a refused close does not ask again (a save asked for since still
-  runs). A close that stops at a window a close trigger opened (File > Close
-  stops there) leaves the file open with it; letting go goes on to save
-  and close that window too. Files closes the file it was tapped for: when a script has
+  runs). Files closes the file it was tapped for: when a script has
   brought another file forward since the app last drew, the tap does
   nothing. Letting go also closes each file a script opened that is left
   open, shown or hidden, with its triggers.
