@@ -9,9 +9,10 @@ it except the contract in section 2.
 
 **Status: design.** Only the file engine exists
 (`crates/om-server/src/store.rs`), and of the engine interface the write
-operations of record writes and locks (section 5 says which). The rest of
-the interface, the store engine and everything in sections 6 to 12 are
-specified here and not built.
+operations of record writes, locks, schema changes, container data and
+authoring edits (section 5 says which and what still changes a file from
+its request handler). The rest of the interface, the store engine and
+everything in sections 6 to 12 are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -204,10 +205,10 @@ user, whose connection no client has, so that its notices reach every
 client registered on the file. A server script's lock is not op60: it
 reads nothing of the store, no cap applies, and the script host answers
 a conflict with the step's error (301 for a record, as a client's lock is
-refused; 310 for the accounts catalog, script-runtime.md 2.3). Its commit carries its records as the
-script host finished them, with the container data its steps set: the
-host applied the records' rules and checked the session's privileges
-before, so the operation names no account. The release of the accounts
+refused; 310 for the accounts catalog, script-runtime.md 2.3). Its commit
+carries its records as the script host finished them, with the container
+data its steps set: the host applied the records' rules and checked the
+session's privileges before, so the operation names no account. The release of the accounts
 catalog carries the notices of the change the account step made
 (schema-path.md 9), as op62 names the change its release tells of. The
 record ids a server script reserves wait unsaved for its commit, so its
@@ -342,24 +343,29 @@ release and the release of a session's locks only the lock table. It
 takes the store first and the lock table when the operation first uses
 it (op13, op73, op86's operations, op87, op88, op240's Save and Set Next
 Serial Value never do; a server script's commit takes it at its start,
-as it always held both), completes a draft right after taking the store,
-holds both while it saves, and lets go of the lock table first; the
-caller then delivers the notices, taking the file's registrations and
-then the mailboxes (the order is in the module doc of `engine`). An authoring edit
-holds its locks as op240 always did: it takes the lock table only while
-it takes them (and again while it releases them when it is refused after
-that), saves under the store alone while the locks keep other clients out
-of what it changes, and its locks are released after the store is let
-go. op13, op73, op86, op87 and op88 raise no notices: the other clients
+as it always held both), and completes a draft right after taking the
+store. op70, a client's op71 and a server script's commit, which take the
+lock table, hold it with the store while they save and let go of it
+first. The caller then delivers the notices, taking the file's
+registrations and then the mailboxes (the order is in the module doc of
+`engine`). An authoring edit holds its locks as op240 always did: it
+takes the lock table only while it takes them (and again while it
+releases them when it is refused after that), saves under the store alone
+while the locks keep other clients out of what it changes, and its locks
+are released after the store is let go and before the reply goes out.
+op13, op73, op86, op87 and op88 raise no notices: the other clients
 learn of a schema change when the client releases its lock
 (schema-path.md 9). An authoring edit raises the notices the releases of
 its locks would raise.
 
 Operations that change the tree therefore run one at a time. op61, op62
 and op65 run under the lock table alone: they wait for an op70 or op71
-that holds the lock table while it saves, and can run beside an op72,
-which holds only the store. op60 also reads the store, so it waits for
-each of the three while it holds the store for writing. A request that
+that holds the lock table while it saves, and can run beside an op72 or
+any other operation that holds only the store. Beside an authoring edit's
+save they see the edit's locks, so a lock request on what the edit
+changes is refused with the conflict, as it was before. op60 also reads
+the store, so it waits for every operation that holds the store for
+writing. A request that
 takes a lock first counts the locks its connection holds in every file it
 has open, so it can also wait for such a save of another of those files.
 
@@ -419,28 +425,46 @@ the file before them or after the save, as it could before. The
 thumbnails of a library DeleteTable took are forgotten under that hold,
 before the save, where they were forgotten between the two.
 
-op87 and op88 changed the file under one hold of the store and saved it
-under a second one, op240's Save saved under one hold and asked whether
-the file still held unsaved changes under a second, and op240's edits
-asked whether the file is hosted read-only (Field Control also read the
-object's field and value list) under a hold of their own before they took
-the store for writing. `submit` does each under one hold, so a request
-that overlaps sees the file before the operation or after its save, as it
-could before, with two differences in a narrow overlap. A change another
-request left unsaved between the Save's save and its question (a server
-script's reserved record ids, which wait for its commit, or a change
-whose own save failed) made the Save answer 800 though its save had
-succeeded; now it answers for its own save. And an edit of a file that
-op73 left hosted read-only between the edit's question and its hold was
-made in memory and refused at its save, with status 800 ("could not be
-saved: the file is open read-only") and a save-failure alert; now it is
-refused with status 810 ("open read-only") and no alert, as when the file
-was read-only before the request. op240 is OpenMaker's own; what
-FileMaker Server does with overlapping op87 and op88 is unmeasured. The
-memory an op88 upload is charged (`--upload-memory-mib`) was given back
-once its data was stored, before the save; it is now given back once
-the save is done, so another upload during that save finds that much less
-of the budget left.
+op87 and op88 took the store once for their change or refusal and again
+for the save, op240's Save saved under one hold and asked whether the file
+still held unsaved changes under a second, and every authoring edit but
+ReplaceScriptSteps and CreateField asked whether the file is hosted
+read-only under a hold of its own before it took the store for writing
+(Field Control also read the object's field and value list under
+another). `submit` does each under one hold, so a request that overlaps
+sees the file before the operation or after its save, as it could before,
+with these differences in a narrow overlap:
+
+- A change another request left unsaved between the Save's save and its
+  question (a server script's reserved record ids, which wait for its
+  commit, or a change whose own save failed) made the Save answer 800
+  though its save had succeeded; now it answers for its own save.
+- The other way round, a Save whose save failed was answered Saved when
+  another request's save succeeded between its save and its question; now
+  it answers 800 for its own failed save, and a later save may still
+  write the change.
+- An edit that asked first, of a file that op73 left hosted read-only
+  between the edit's question and its hold, was made in memory and
+  refused at its save, with status 800 ("could not be saved: the file is
+  open read-only") and a save-failure alert; now it is refused with
+  status 810 ("open read-only") and no alert, as when the file was
+  read-only before the request. ReplaceScriptSteps and CreateField never
+  asked first: they try the save and are refused with 800 and the alert,
+  as before.
+
+The checks of the request alone that ReplaceScriptSteps, CreateField,
+CreateLayout, PlaceField, PlaceText, PlaceButton, PlaceButtonStep and
+ChangeParts made before taking the store (decoding a script definition, a
+name, a label, a button's step or parameter, a kind of part) are now made
+under the store's write lock, which is held that much longer; their
+replies are the same. op240 is OpenMaker's own; what FileMaker Server does
+with overlapping op87 and op88 is unmeasured. An op88 upload's encoded
+bytes are freed once they are read, before the operation is submitted,
+where they were freed after the data was stored. What the upload is
+charged (`--upload-memory-mib`), the encoded bytes and the tree read from
+them, was given back once the data was stored, before the save; it is now
+given back once the save is done, so another upload during that save
+finds that much less of the budget left.
 
 The follow-up of #673's step 1, once every write goes through `submit`,
 changes what the file engine does when a save fails, on purpose. Today

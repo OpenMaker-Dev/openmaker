@@ -31,34 +31,34 @@
 //! Value), then its lock table (`Hosted::locks`, when the operation first
 //! uses it, [`Locks`]; the schema operations, op87, op88, op240's save and
 //! Set Next Serial Value never do; a server script's commit takes it first
-//! thing, [`Locks::hold`], as it always held both from its start). It
-//! holds both while it saves, and lets go of the lock table first;
-//! dropping the store's write guard takes the file's accounts while it
-//! still holds the store (`hosting::StoreWriteGuard`). op61, op62 and op65
-//! take only the lock table, as before, and so do a server script's lock
-//! and its release and the release of a session's locks, as the script
-//! host and a connection's end took it: a connection's end releases its
-//! locks one file at a time, each under that file's lock table alone,
-//! before it removes the file's registration.
-//! [`FileEngine::submit_draft`] completes its draft right after it takes
-//! the store, from state the write guard gives it alone (see "Drafts"). An
-//! authoring edit (op240) takes the lock table only while it takes its
-//! locks, and again while it releases them when it is refused after taking
-//! them; it saves under the store alone, and its locks are released after
-//! the engine lets go of the store, the lock table taken on its own for
-//! that ([`Locks::lock_while_stored`]), as op240 always held them. The one
-//! other lock taken inside `submit` is the file's thumbnail cache
-//! (`Hosted::thumbnails`): under the store when op86's DeleteTable took a
-//! table's container library, and under the store and the lock table once
-//! a server script's commit that left a table without records is stored;
-//! store, then thumbnails, as op96 takes them. Nothing else: the caller
-//! delivers notices after it returns, taking the file's registrations and
-//! then the mailboxes (`writes::notify`), and a session's own state (its
-//! temporary area, the records it was served withheld, the memory its
-//! uploads are charged, a server script's waiting container data) is read
-//! before and settled after. This is the order the write path has always
-//! used (store, lock table, registrations, mailboxes), with the last two no
-//! longer inside the first two.
+//! thing, [`Locks::hold`], as it always held both from its start). op70, a
+//! client's op71 and a server script's commit, which take the lock table,
+//! hold it with the store while they save and let go of it first; dropping
+//! the store's write guard takes the file's accounts while it still holds
+//! the store (`hosting::StoreWriteGuard`). op61, op62 and op65 take only
+//! the lock table, as before, and so do a server script's lock and its
+//! release and the release of a session's locks, as the script host and a
+//! connection's end took it: a connection's end releases its locks one file
+//! at a time, each under that file's lock table alone, before it removes
+//! the file's registration. [`FileEngine::submit_draft`] completes its
+//! draft right after it takes the store, from state the write guard gives
+//! it alone (see "Drafts"). An authoring edit (op240) takes the lock table
+//! only while it takes its locks, and again while it releases them when it
+//! is refused after taking them; it saves under the store alone, and its
+//! locks are released after the engine lets go of the store, the lock
+//! table taken on its own for that ([`Locks::lock_while_stored`]), as op240
+//! always held them. The one other lock taken inside `submit` is the file's
+//! thumbnail cache (`Hosted::thumbnails`): under the store when op86's
+//! DeleteTable took a table's container library, and under the store and
+//! the lock table once a server script's commit that left a table without
+//! records is stored; store, then thumbnails, as op96 takes them. Nothing
+//! else: the caller delivers notices after it returns, taking the file's
+//! registrations and then the mailboxes (`writes::notify`), and a session's
+//! own state (its temporary area, the records it was served withheld, the
+//! memory its uploads are charged, a server script's waiting container
+//! data) is read before and settled after. This is the order the write path
+//! has always used (store, lock table, registrations, mailboxes), with the
+//! last two no longer inside the first two.
 //!
 //! # Drafts
 //!

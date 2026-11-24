@@ -3437,17 +3437,20 @@ fn upload_binary(
         warn!("{peer}: refusing container data past what the client may hold");
         return Err(Refused.into());
     };
-    // The data travels in the operation; what it and the payload are
-    // charged is given back once the engine has stored and saved it.
+    // The data travels in the operation. The encoded upload is not needed
+    // once it is read, so it is freed before the engine stores and saves
+    // the data; what the two are charged is given back once it has.
+    let bytes = payload.len();
+    drop(payload);
     let store = StoreContainerData {
         table: request.table,
         data,
-        bytes: payload.len(),
+        bytes,
     };
     let outcome = shared
         .engine
         .submit(&hosted, Operation::StoreContainerData(store));
-    drop((reading, payload, held));
+    drop((reading, held));
     match outcome.reply {
         Reply::StoreContainerData(reply) => Ok(reply.to_result()),
         other => Err(mismatched(&other)),
