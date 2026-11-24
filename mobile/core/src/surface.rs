@@ -649,12 +649,22 @@ impl Surface {
             }
             Input::Paste { text } => events.push(Event::Paste(text)),
             Input::PasteCopied { clipboard } => {
-                // A copy of nothing copied nothing: the clipboard's text, as
-                // it was when the paste was asked for, is pasted then.
+                // The document's copy until it is on the clipboard; then, or
+                // after a copy of nothing, the clipboard's text as it was
+                // when the paste was asked for.
                 let text = self.last_copy.clone().unwrap_or(clipboard);
                 if !text.is_empty() {
                     events.push(Event::Paste(text));
                 }
+            }
+            Input::ClipboardSet { text } => {
+                // A later copy's text stays until it, too, is there.
+                if self.last_copy.as_deref() == Some(text.as_str()) {
+                    self.last_copy = None;
+                }
+            }
+            Input::Modifiers { shift, command } => {
+                events.push(Event::ModifiersChanged(input::modifiers(shift, command)));
             }
             Input::DeleteAround {
                 before,

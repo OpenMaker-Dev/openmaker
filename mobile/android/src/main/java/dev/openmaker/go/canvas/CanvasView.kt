@@ -236,32 +236,15 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = key(event) || super.onKeyDown(keyCode, event)
 
-    // A copy or cut asked for reaches the clipboard with a later frame: a
-    // paste asked for meanwhile pastes what the engine copied
-    // (Input.PasteCopied), in its place among the keys typed, not what the
-    // clipboard held before. A copy of nothing copies nothing, so this
-    // lasts only a moment.
-    private var copyAsked = false
-
-    /** The file's copied text reached the clipboard. */
-    fun copied() {
-        copyAsked = false
-    }
-
-    private fun askCopy(key: Key) {
-        copyAsked = true
-        session.send(Input.Press(key, false, true))
-        postDelayed({ copyAsked = false }, COPY_WAIT_MS)
-    }
-
-    /** The clipboard's text into the field being edited. */
+    /**
+     * Paste into the field being edited. A copy or cut reaches the
+     * clipboard with a later frame: the engine pastes its own copy until
+     * the app says it is there (Input.ClipboardSet), so a paste right after
+     * a cut takes the cut text, in its place among the keys typed, and
+     * otherwise the clipboard's text as read now.
+     */
     internal fun paste() {
-        val text = clipboardText()
-        if (copyAsked) {
-            session.send(Input.PasteCopied(text))
-        } else if (text.isNotEmpty()) {
-            session.send(Input.Paste(text))
-        }
+        session.send(Input.PasteCopied(clipboardText()))
     }
 
     private fun clipboardText(): String {
@@ -282,7 +265,7 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
                 }
                 else -> return false
             }
-        if (key == Key.C || key == Key.X) askCopy(key) else session.send(Input.Press(key, false, true))
+        session.send(Input.Press(key, false, true))
         return true
     }
 
@@ -304,7 +287,7 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
                 else -> null
             }
         if (command && edit != null) {
-            if (edit == Key.C || edit == Key.X) askCopy(edit) else session.send(Input.Press(edit, event.isShiftPressed, true))
+            session.send(Input.Press(edit, event.isShiftPressed, true))
             return true
         }
         val key =
@@ -353,7 +336,16 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
         accent = 0
         val typed = accented?.takeIf { it != 0 } ?: char
         if (!Character.isValidCodePoint(typed)) return false
-        session.send(Input.Text(String(Character.toChars(typed))))
+        val text = String(Character.toChars(typed))
+        if (event.isShiftPressed) {
+            // A keystroke trigger reads Shift with the key, as on the
+            // desktop (Get ( TriggerModifierKeys )).
+            session.send(Input.Modifiers(true, false))
+            session.send(Input.Text(text))
+            session.send(Input.Modifiers(false, false))
+        } else {
+            session.send(Input.Text(text))
+        }
         return true
     }
 
@@ -416,8 +408,6 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
     }
 
     private companion object {
-        /** How long after a copy or cut a paste takes what the engine copied. */
-        const val COPY_WAIT_MS = 500L
         // How far two fingers travel sideways to turn to another record.
         const val SWIPE_DP = 80f
     }

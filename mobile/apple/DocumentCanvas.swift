@@ -175,25 +175,42 @@ final class DocumentCanvas: MTKView {
 
   // MARK: Accessibility
 
-  /// VoiceOver's three-finger scroll pages the layout, most of a screen at a
-  /// time, as a pan does: a swipe up brings what is below into view.
+  /// VoiceOver's three-finger scroll pages what is under the focused element
+  /// (a portal, a Table view, the layout), as a pan there does: a swipe up
+  /// brings what is below into view, a swipe left what is to the right.
   override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
-    let page = bounds.height * 0.8
-    let dy: CGFloat
+    let (width, height) = (bounds.width * 0.8, bounds.height * 0.8)
+    let (dx, dy): (CGFloat, CGFloat)
     switch direction {
-    case .up: dy = -page
-    case .down: dy = page
+    case .up: (dx, dy) = (0, -height)
+    case .down: (dx, dy) = (0, height)
+    case .left: (dx, dy) = (-width, 0)
+    case .right: (dx, dy) = (width, 0)
     default: return false
     }
-    document.send(input: .panBegan(x: Float(bounds.midX), y: Float(bounds.midY)))
-    document.send(input: .panMoved(dx: 0, dy: Float(dy)))
+    let focused = UIAccessibility.focusedElement(using: .notificationVoiceOver) as? CanvasElement
+    let at = focused.map {
+      CGPoint(x: $0.accessibilityFrameInContainerSpace.midX, y: $0.accessibilityFrameInContainerSpace.midY)
+    } ?? CGPoint(x: bounds.midX, y: bounds.midY)
+    document.send(input: .panBegan(x: Float(at.x), y: Float(at.y)))
+    document.send(input: .panMoved(dx: Float(dx), dy: Float(dy)))
     document.send(input: .panEnded(vx: 0, vy: 0))
-    UIAccessibility.post(notification: .pageScrolled, argument: nil)
+    // Told once the elements the scroll shows are presented.
+    scrolledByVoiceOver = true
     return true
   }
 
+  /// VoiceOver asked for a scroll whose elements are yet to be presented.
+  private var scrolledByVoiceOver = false
+
   /// VoiceOver's elements: the layout's visible fields, labels and buttons.
   func present(_ elements: [Element]) {
+    defer {
+      if scrolledByVoiceOver {
+        scrolledByVoiceOver = false
+        UIAccessibility.post(notification: .pageScrolled, argument: nil)
+      }
+    }
     guard elements != presented else { return }
     presented = elements
     var next = [UInt64: CanvasElement]()
@@ -303,12 +320,18 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
   // Select All, Copy and Cut act there. Paste puts the text into this field,
   // which sends it on as typing.
   override func selectAll(_ sender: Any?) { send?(.press(key: .a, shift: false, command: true)) }
+  // A paste is the field's paste, not typing (a keystroke trigger does not
+  // see it), of the document's last copy until that is on the pasteboard.
+  override func paste(_ sender: Any?) {
+    settle(then: .pasteCopied(clipboard: UIPasteboard.general.string ?? ""))
+  }
   override func copy(_ sender: Any?) { send?(.press(key: .c, shift: false, command: true)) }
   override func cut(_ sender: Any?) { send?(.press(key: .x, shift: false, command: true)) }
 
   override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
     switch action {
-    case #selector(selectAll(_:)), #selector(copy(_:)), #selector(cut(_:)): return true
+    case #selector(selectAll(_:)), #selector(copy(_:)), #selector(cut(_:)), #selector(paste(_:)):
+      return true
     default: return super.canPerformAction(action, withSender: sender)
     }
   }

@@ -50,7 +50,11 @@ final class DocumentModel: ObservableObject, Identifiable {
       self.menus = Dictionary(
         menus.map { ($0.title, MenuNode.tree($0.rows)) }, uniquingKeysWith: { first, _ in first })
     }
-    if let copied = frame.copied { UIPasteboard.general.string = copied }
+    if let copied = frame.copied {
+      UIPasteboard.general.string = copied
+      // A paste asked for meanwhile took the document's own copy.
+      send(.clipboardSet(text: copied))
+    }
     for url in frame.openUrls.compactMap(URL.init(string:)) { UIApplication.shared.open(url) }
   }
 }

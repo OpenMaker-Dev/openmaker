@@ -31,12 +31,17 @@ pub enum Input {
     },
     /// Text pasted into the field being edited.
     Paste { text: String },
-    /// Paste what this document's last Copy or Cut copied: Android sends it
-    /// while that text has yet to reach the clipboard, so a paste right
-    /// after a cut takes the cut text, in its place among what was typed.
-    /// `clipboard` is the clipboard's text when the paste was asked for,
-    /// pasted if that Copy or Cut copied nothing.
+    /// Paste into the field being edited: what this document's last Copy
+    /// or Cut copied while that text has yet to reach the clipboard
+    /// ([`Input::ClipboardSet`]), otherwise `clipboard`, the clipboard's text
+    /// when the paste was asked for. So a paste right after a cut takes the
+    /// cut text, in its place among the keys typed.
     PasteCopied { clipboard: String },
+    /// The app put `text`, which the document copied, on the clipboard.
+    ClipboardSet { text: String },
+    /// A hardware keyboard's modifier keys are now these: keystroke
+    /// triggers read them with the keys typed (Get ( TriggerModifierKeys )).
+    Modifiers { shift: bool, command: bool },
     /// An input method deletes text before and after the field's
     /// selection (or composition) and keeps it, at most 64 units each way:
     /// counted in UTF-16 code units when `utf16` (Android's

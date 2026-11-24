@@ -37,25 +37,35 @@ internal class CanvasAccessibility(private val view: View, private val send: (In
         invalidateRoot()
     }
 
-    // The layout scrolls under TalkBack's scroll gestures, a page at a time,
-    // as a pan of the canvas does.
+    // What is under the focused element (a portal, a Table view, the layout)
+    // scrolls under TalkBack's scroll gestures, most of a screen at a time,
+    // as a pan there does.
     override fun onPopulateNodeForHost(node: AccessibilityNodeInfoCompat) {
         node.isScrollable = true
-        node.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_FORWARD)
-        node.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_BACKWARD)
+        for (action in SCROLLS) node.addAction(action)
     }
 
     override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
-        val forward = action == AccessibilityNodeInfoCompat.ACTION_SCROLL_FORWARD
-        if (!forward && action != AccessibilityNodeInfoCompat.ACTION_SCROLL_BACKWARD) {
-            return super.performAccessibilityAction(host, action, args)
-        }
         val density = view.resources.displayMetrics.density
-        val (width, height) = view.width / density to view.height / density
-        // The content follows the pan: forward brings what is below up.
-        val page = height * PAGE * if (forward) -1 else 1
-        send(Input.PanBegan(width / 2, height / 2))
-        send(Input.PanMoved(0f, page))
+        val (width, height) = view.width / density * PAGE to view.height / density * PAGE
+        // The content follows the pan: forward and down bring what is below
+        // up, right what is to the right in.
+        val (dx, dy) =
+            when (action) {
+                AccessibilityNodeInfoCompat.ACTION_SCROLL_FORWARD,
+                android.R.id.accessibilityActionScrollDown -> 0f to -height
+                AccessibilityNodeInfoCompat.ACTION_SCROLL_BACKWARD,
+                android.R.id.accessibilityActionScrollUp -> 0f to height
+                android.R.id.accessibilityActionScrollRight -> -width to 0f
+                android.R.id.accessibilityActionScrollLeft -> width to 0f
+                else -> return super.performAccessibilityAction(host, action, args)
+            }
+        val focused = nodes[accessibilityFocusedVirtualViewId]
+        val (x, y) =
+            focused?.let { (it.left + it.width / 2).toFloat() to (it.top + it.height / 2).toFloat() }
+                ?: (view.width / density / 2 to view.height / density / 2)
+        send(Input.PanBegan(x, y))
+        send(Input.PanMoved(dx, dy))
         send(Input.PanEnded(0f, 0f))
         return true
     }
@@ -113,7 +123,17 @@ internal class CanvasAccessibility(private val view: View, private val send: (In
     }
 
     private companion object {
-        /** How much of the canvas's height a screen reader's scroll moves. */
+        /** How much of the canvas a screen reader's scroll moves. */
         const val PAGE = 0.8f
+
+        val SCROLLS =
+            listOf(
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_FORWARD,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_BACKWARD,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_UP,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_DOWN,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_LEFT,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_RIGHT,
+            )
     }
 }
