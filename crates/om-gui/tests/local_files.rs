@@ -272,8 +272,12 @@ fn home_remembers_a_local_file_and_its_favorite_across_app_instances() {
     wait_open(&mut app);
     common::open_menu(&mut app, "File");
     common::click(&mut app, "Close");
-    // Closing returns to Home, where Recent lists the file.
+    // Closing returns to Home, where Recent lists the file. Its open
+    // context menu takes the keys before the list: Return opens nothing.
     common::right_click(&mut app, "Tasks");
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
+    assert!(app.query_by_label("Add to Favorites").is_some());
     common::click(&mut app, "Add to Favorites");
     common::click(&mut app, "Favorites");
     common::wait_for_label(&mut app, "Tasks");

@@ -280,9 +280,11 @@ impl Home {
         tab: Tab,
         actions: &mut Vec<Action>,
     ) {
-        let free = ui.ctx().memory(|memory| {
-            memory.top_modal_layer().is_none() && memory.focused().is_none_or(|id| id == list)
-        });
+        // An open menu (a row's context menu, say) takes the keys first.
+        let free = !egui::Popup::is_any_open(ui.ctx())
+            && ui.ctx().memory(|memory| {
+                memory.top_modal_layer().is_none() && memory.focused().is_none_or(|id| id == list)
+            });
         if !free {
             return;
         }
