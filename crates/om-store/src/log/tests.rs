@@ -2031,6 +2031,19 @@ fn a_cut_holds_when_the_cut_entries_are_appended_again() {
         assert_eq!(log.read(1).unwrap().count(), 2);
         drop(log);
     }
+    // A batch written after the cut, whose marker the power failure lost,
+    // carries the current cut count: it is kept.
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    let three = log.append(2, 0, 0, b"a new entry 3").unwrap();
+    sim.set_crash_fates(Fates::LoseAll);
+    sim.place(sim.steps() + 2, Fault::Crash);
+    assert!(log.flush_batch(None).is_err());
+    assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
+    drop(log);
+    sim.restart();
+    let (_, opened) = open_store(&sim, Position::START).unwrap();
+    assert_eq!(opened.kept, 1);
+    assert_eq!(opened.durable, three);
 }
 
 /// A cut is done once the first slot of its `state` update is flushed: a
