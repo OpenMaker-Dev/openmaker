@@ -1396,9 +1396,7 @@ impl OpenMakerApp {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             } else if self.docs().any(|doc| doc.session.is_some()) {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-                if !self.script.busy() && self.closing.is_none() {
-                    self.apply(&ctx, Action::Quit);
-                }
+                self.apply(&ctx, Action::Quit);
             }
         }
         let root = self.root_window();
@@ -5041,7 +5039,15 @@ impl OpenMakerApp {
             Action::Minimize => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
             Action::Quit => {
                 self.launch_after_close = None;
-                self.quit_next(ctx);
+                if let Some(closing) = &mut self.closing {
+                    // A close waiting on its triggers or a save becomes a
+                    // Quit: a veto or refused save still stops it.
+                    closing.quit = true;
+                } else if !self.script.busy() {
+                    self.quit_next(ctx);
+                }
+                // A running script owns the windows: Quit waits for it,
+                // as the root close box does (Esc or Cmd-period stops it).
             }
         }
     }
@@ -8308,6 +8314,54 @@ mod tests {
             assert!(app.docs().all(|doc| doc.session.is_none()), "{how}");
             assert!(app.quit_ready || app.quit_waiting.is_some(), "{how}");
         }
+    }
+
+    /// Quit while File > Close waits on a close trigger, from the menu or
+    /// the root close box, makes that close a Quit: the trigger's veto
+    /// still keeps the file open, and its approval quits. While a script
+    /// runs with no close under way, Quit waits for it.
+    #[test]
+    fn quit_waits_for_a_pending_close_and_a_running_script() {
+        let close = || scripts::Held::Action(Action::CloseWindow, 1);
+        for (how, close_box, proceed) in [
+            ("menu, veto", false, false),
+            ("close box, veto", true, false),
+            ("menu, approval", false, true),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.closing = Some(app.closing_front(false));
+            app.script.running = true;
+            if close_box {
+                let mut input = egui::RawInput::default();
+                input
+                    .viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+                ctx.run_ui(input, |ui| app.show(ui))
+                    .drop_without_applying_deltas();
+            } else {
+                app.apply(&ctx, Action::Quit);
+            }
+            assert_eq!(app.window_ids(), [1, 2], "{how}");
+            assert!(app.closing.as_ref().is_some_and(|c| c.quit), "{how}");
+            // The trigger ends.
+            app.script.running = false;
+            app.resume_held(&ctx, 1, close(), proceed, None);
+            let quit = app.quit_ready || app.quit_waiting.is_some();
+            assert_eq!(quit, proceed, "{how}");
+            assert_eq!(app.w.session.is_none(), proceed, "{how}");
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.script.running = true;
+        app.apply(&ctx, Action::Quit);
+        assert_eq!(app.window_ids(), [1, 2]);
+        assert!(app.closing.is_none() && app.quit_waiting.is_none() && !app.quit_ready);
     }
 
     #[test]

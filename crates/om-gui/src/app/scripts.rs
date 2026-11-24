@@ -2004,7 +2004,29 @@ impl OpenMakerApp {
             ScriptEvent::SchemaChanged => self.request(ctx, Request::CalcSchema),
             ScriptEvent::CloseFile => {
                 self.script.running = false;
-                self.apply(ctx, Action::CloseFile);
+                // A close trigger's own Close File takes over the close it
+                // holds: the file closes from this window without its
+                // close triggers again, which would run the script again
+                // without end. Its halt's veto of the held close then
+                // finds nothing to stop.
+                let file = self.w.file_id;
+                let held = self.script.held.iter().find_map(|(token, (origin, held))| {
+                    let closes = matches!(held, Held::Action(Action::CloseWindow, _));
+                    let ours = self
+                        .docs()
+                        .any(|doc| doc.id == *origin && doc.file_id == file);
+                    (closes && ours).then_some(*token)
+                });
+                if let Some(token) = held {
+                    self.script.held.remove(&token);
+                    let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
+                    self.closing = Some(self.closing_front(quit));
+                    self.script.bypass = true;
+                    self.apply(ctx, Action::CloseWindow);
+                    self.script.bypass = false;
+                } else {
+                    self.apply(ctx, Action::CloseFile);
+                }
             }
             ScriptEvent::Failed(message) => {
                 self.script.running = false;

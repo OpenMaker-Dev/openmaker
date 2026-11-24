@@ -6049,6 +6049,28 @@ fn each_window_runs_its_close_trigger_and_a_veto_stops_closing_the_file() {
     expect(&mut app, "Show events", "events close;close; tx 1");
 }
 
+/// A close trigger whose script closes its own file (Close File) closes
+/// it once: the close it asks for does not run the trigger again, which
+/// would run the script again without end.
+#[test]
+fn a_close_trigger_that_closes_its_file_closes_it_once() {
+    const CLOSE_ITSELF: u64 = 90;
+    let hosted = host_with("close-file-trigger", |root| {
+        add_layout_trigger_script(root, TriggerEvent::WindowClose, CLOSE_ITSELF, "close");
+        let steps = vec![ScriptStep::new(34)];
+        add_script(root, &fixture::script(CLOSE_ITSELF, "Close itself", steps));
+    });
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    open_root_menu(&mut app, "File");
+    app.get_by_role_and_label(egui::accesskit::Role::Button, "Close")
+        .click();
+    common::wait_until(&mut app, "the file to close", |app| {
+        !app.state().is_open() && !app.state().script_running()
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// Run `script` and wait until it pauses.
 fn run_to_pause(app: &mut common::App, script: &str) {
     app.query_all(
