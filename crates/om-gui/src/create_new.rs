@@ -75,7 +75,7 @@ impl CreateNewDialog {
                     ui.add_space(8.0);
                     // Blank, selected: the only kind of file OpenMaker makes.
                     egui::Frame::new()
-                        .fill(egui::Color32::WHITE)
+                        .fill(theme::CONTROL_BG)
                         .stroke(egui::Stroke::new(1.0, theme::SELECTED))
                         .inner_margin(10.0)
                         .corner_radius(6.0)

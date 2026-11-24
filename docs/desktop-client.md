@@ -3,7 +3,8 @@
 What `om-gui` builds of FileMaker Pro's application chrome and workspaces,
 the choices it makes where FileMaker's behavior is not known, and its limits.
 FileMaker Pro's measured chrome is specified in
-[re/client-ui.md](re/client-ui.md). Related notes:
+[re/client-ui.md](re/client-ui.md); the colors, type and shapes OpenMaker's
+own chrome uses are in [design.md](design.md). Related notes:
 [recovery.md](recovery.md) (lost connections, reconnecting, save conflicts),
 [desktop-files.md](desktop-files.md) (Open File),
 [record-writes.md](record-writes.md) (hosted record writes),
@@ -45,6 +46,56 @@ FileMaker Pro's measured chrome is specified in
 
 ## Opening files
 
+The desktop starts on **Home**, laid out as FileMaker Pro 26.1.1's Home
+([re/client-ui.md](re/client-ui.md#home-window)): **Create** and **Open**
+in a sidebar, and **Favorites** and **Recent** tabs over a Name and
+Location table. **Recent** lists the last 20 distinct files opened, most
+recent first; **Favorites** the files pinned with a recent file's context
+menu (Add to Favorites) or File > Favorites > Add Current File to
+Favorites. A click selects a file, and a double-click or Return opens it.
+Remove in a file's context menu, or Delete, takes it off the list; the file
+itself stays. File > Favorites > Show Favorites and File > Recent > Show
+Recent show the lists, and both submenus list their files. Home opens on
+the list it showed last.
+
+A file on this computer opens at once. A hosted file fills in the Hosts
+dialog's host, port and file, and the user signs in. Home keeps paths, host
+names, ports, file names and the list shown in the OS account's
+`settings.json`, never account names or passwords. When that file cannot be
+read or written, the lists last until OpenMaker quits: Home says so beside
+its tabs, and a pin or Remove that could not be saved shows an alert.
+
+Where OpenMaker differs from FileMaker's Home, or chose where it is
+unmeasured:
+
+- **Hosts** takes the place of FileMaker Cloud and Resources in the
+  sidebar. It shows the Hosts dialog in Home's place; Cancel returns to
+  Home.
+- The header shows OpenMaker's name where FileMaker has the Claris logo, and
+  files show OpenMaker's document glyph, or a server glyph for a hosted
+  file, not the solution's icon.
+- The colors measured in FileMaker's inactive window serve the active one
+  too. A selected row is the accent with white text, as in a macOS table
+  ([design.md](design.md)).
+- The list is one Tab stop, as a macOS table is, and the arrow keys move
+  its selection. Delete also removes from Recent, and an empty list says
+  what fills it.
+- Showing a list or opening a file from Home or the File menu closes the
+  open file first, through its usual commit path and close triggers; a
+  veto or a refused save stops it. With another file open, hidden ones
+  included, a layout with unsaved changes, or a lost connection with
+  unsaved record changes, nothing closes and an alert says why ("Other
+  files are open. Close them first.", the Save Layout or Revert Layout
+  alert, or Reconnect or File > Close). FileMaker shows Home in a window
+  of its own and closes nothing.
+- A local file's location is its path, without FileMaker's `/Volumes/`
+  prefix on macOS. A hosted file's location adds its port when that is not
+  5003.
+- The history keeps 20 files; FileMaker sets its count in its settings,
+  which OpenMaker lacks. Add Current File to Favorites is unavailable for a
+  file a script opened. Open Quickly remains disabled
+  ([#56](https://github.com/OpenMaker-Dev/openmaker/issues/56)).
+
 The GUI defaults to the native provider (`om-provider`). Opening a hosted
 file performs verified TLS, Connect, Open and Login, then authenticated
 downloads of the schema, layouts, themes, fonts and records. Each file's
@@ -54,7 +105,8 @@ reads it (network-protocol.md 5.6.9b). The provider
 never substitutes sample records after a failure: sample data needs
 `OPENMAKER_PROVIDER=mock` and is labeled in the window title and a banner.
 `OPENMAKER_HOST`, `OPENMAKER_PORT`, `OPENMAKER_FILE` and `OPENMAKER_ACCOUNT`
-prefill the Hosts form; the password never is. A local file opens through a
+prefill the Hosts form, and a nonempty `OPENMAKER_HOST` starts the desktop in
+Hosts. The password is always entered separately. A local file opens through a
 private embedded host (local-files.md).
 
 A hosted file's related files open when the window first reads them, not

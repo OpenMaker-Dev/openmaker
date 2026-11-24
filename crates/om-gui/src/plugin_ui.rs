@@ -5,10 +5,10 @@
 
 use std::time::{Duration, Instant};
 
-use egui::{Color32, Event, Pos2, Shape, Stroke, Ui};
+use egui::{Event, Pos2, Shape, Stroke, Ui};
 use om_data::runtime::plugins::{AlertMode, PluginDialog, PluginDialogAnswer};
 
-use crate::widgets;
+use crate::{theme, widgets};
 
 /// An idle script's clock: due once nobody has used the app for `delay`.
 /// The script runs once: it is scheduled again by calling the command again
@@ -106,14 +106,14 @@ pub(crate) fn alert(
     chosen.map(PluginDialogAnswer::Button)
 }
 
-/// A 32-point triangle with an exclamation mark: amber for a warning, red
-/// for a stop. OpenMaker's own drawing; the plug-in shows the system's
-/// alert icon, which is not measured.
+/// A 32-point triangle with an exclamation mark: dark on yellow for a
+/// warning, white on red for a stop. OpenMaker's own drawing; the plug-in
+/// shows the system's alert icon, which is not measured.
 fn caution_icon(ui: &mut Ui, mode: AlertMode) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-    let fill = match mode {
-        AlertMode::Stop => Color32::from_rgb(0xd9, 0x3a, 0x2f),
-        _ => Color32::from_rgb(0xf5, 0xb8, 0x00),
+    let (fill, ink) = match mode {
+        AlertMode::Stop => (theme::RED, theme::ON_ACCENT),
+        _ => (theme::CAUTION, theme::TEXT),
     };
     let top = Pos2::new(rect.center().x, rect.top() + 2.0);
     let left = Pos2::new(rect.left() + 1.0, rect.bottom() - 2.0);
@@ -125,15 +125,14 @@ fn caution_icon(ui: &mut Ui, mode: AlertMode) {
         Stroke::NONE,
     ));
     let x = rect.center().x;
-    let ink = Stroke::new(3.0, Color32::WHITE);
     painter.line_segment(
         [
             Pos2::new(x, rect.top() + 11.0),
             Pos2::new(x, rect.top() + 21.0),
         ],
-        ink,
+        Stroke::new(3.0, ink),
     );
-    painter.circle_filled(Pos2::new(x, rect.top() + 25.5), 1.8, Color32::WHITE);
+    painter.circle_filled(Pos2::new(x, rect.top() + 25.5), 1.8, ink);
 }
 
 #[cfg(test)]

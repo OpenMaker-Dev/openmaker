@@ -5,6 +5,8 @@
 use egui::epaint::PathShape;
 use egui::{Color32, Painter, Pos2, Rect, Stroke, Vec2};
 
+use crate::theme;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Glyph {
     /// New Script (toolbar).
@@ -152,7 +154,7 @@ pub(super) fn paint(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32)
             let mut outline = upper.clone();
             outline.extend(lower.iter().rev().skip(1));
             filled(&outline, color);
-            painter.circle_filled(p(10.0, 10.0), 3.4 * scale, Color32::WHITE);
+            painter.circle_filled(p(10.0, 10.0), 3.4 * scale, theme::ON_ACCENT);
             painter.circle_filled(p(10.0, 10.0), 2.0 * scale, color);
         }
         Glyph::Compatibility => {
@@ -199,10 +201,10 @@ pub(super) fn gear(painter: &Painter, center: Pos2, radius: f32, fill: Color32) 
         let outer = center + dir * radius * 0.72;
         painter.add(PathShape::convex_polygon(
             vec![inner - side, outer - side, outer + side, inner + side],
-            Color32::WHITE,
+            theme::ON_ACCENT,
             Stroke::NONE,
         ));
     }
-    painter.circle_filled(center, body, Color32::WHITE);
+    painter.circle_filled(center, body, theme::ON_ACCENT);
     painter.circle_filled(center, radius * 0.2, fill);
 }

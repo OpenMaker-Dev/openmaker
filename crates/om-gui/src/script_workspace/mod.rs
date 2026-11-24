@@ -33,8 +33,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use egui::{
-    pos2, vec2, Color32, CornerRadius, FontId, Id, Key, KeyboardShortcut, Modifiers, Rect, Role,
-    Sense, Stroke, Ui, WidgetInfo,
+    pos2, vec2, CornerRadius, FontId, Id, Key, KeyboardShortcut, Modifiers, Rect, Role, Sense,
+    Stroke, Ui, WidgetInfo,
 };
 use om_data::host::CalcSchema;
 use om_data::scripts::display::{parse_steps, paste_limits, NoStepNames, Origin, StepNames};
@@ -55,9 +55,6 @@ const TITLE_BAR: f32 = 28.0;
 const TOOLBAR: f32 = 30.0;
 /// The editor's tab bar.
 const TAB_BAR: f32 = 26.0;
-const PANE_BG: Color32 = Color32::from_rgb(0xF0, 0xF0, 0xF0);
-const BAR_BG: Color32 = Color32::from_rgb(0xEC, 0xEC, 0xEC);
-const RULE: Color32 = Color32::from_rgb(0xD3, 0xD3, 0xD3);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ScriptWorkspaceAction {
@@ -153,9 +150,9 @@ pub(super) fn search_field(ui: &mut Ui, text: &mut String, label: &str, gray: bo
     ui.horizontal(|ui| {
         ui.add_space(6.0);
         let (fill, stroke) = if gray {
-            (Color32::from_gray(0xE4), Stroke::NONE)
+            (theme::SEARCH_FILL, Stroke::NONE)
         } else {
-            (Color32::WHITE, Stroke::new(1.0, theme::SEARCH_BORDER))
+            (theme::CONTROL_BG, Stroke::new(1.0, theme::SEARCH_BORDER))
         };
         let frame = egui::Frame::new()
             .fill(fill)
@@ -171,7 +168,7 @@ pub(super) fn search_field(ui: &mut Ui, text: &mut String, label: &str, gray: bo
                     glyph,
                     crate::icons::Icon::Search,
                     theme::WEAK_TEXT,
-                    Color32::WHITE,
+                    fill,
                 );
                 let edit = ui.add(
                     egui::TextEdit::singleline(text)
@@ -715,7 +712,7 @@ impl ScriptWorkspace {
         if ctx.embed_viewports() {
             let area = ctx.content_rect().shrink(12.0);
             let frame = egui::Frame::new()
-                .fill(PANE_BG)
+                .fill(theme::DIALOG_BG)
                 .stroke(Stroke::new(1.0, theme::DIVIDER))
                 .corner_radius(CornerRadius::same(10))
                 .shadow(ctx.global_style().visuals.window_shadow);
@@ -752,7 +749,7 @@ impl ScriptWorkspace {
                         actions.extend(self.request_close());
                     }
                     egui::CentralPanel::default()
-                        .frame(egui::Frame::new().fill(PANE_BG))
+                        .frame(egui::Frame::new().fill(theme::DIALOG_BG))
                         .show(ctx, |ui| self.contents(ui, &mut actions));
                     self.dialogs(ctx, &mut actions);
                 },
@@ -775,13 +772,13 @@ impl ScriptWorkspace {
                 sw: 0,
                 se: 0,
             },
-            BAR_BG,
+            theme::BAR_BG,
         );
         let mut closed = false;
         for (n, color) in [
-            Color32::from_rgb(0xFF, 0x5F, 0x57),
-            Color32::from_rgb(0xFE, 0xBC, 0x2E),
-            Color32::from_rgb(0x28, 0xC8, 0x40),
+            theme::WINDOW_CLOSE,
+            theme::WINDOW_MINIMIZE,
+            theme::WINDOW_ZOOM,
         ]
         .into_iter()
         .enumerate()
@@ -830,12 +827,12 @@ impl ScriptWorkspace {
         );
         if on {
             ui.painter()
-                .rect_filled(rect.expand(2.0), 5.0, Color32::from_gray(0xDC));
+                .rect_filled(rect.expand(2.0), 5.0, theme::HOVER_FILL);
         }
         let color = match (enabled, on) {
             (false, _) => theme::DISABLED,
             (true, true) => theme::SELECTED,
-            (true, false) => Color32::from_gray(0x6A),
+            (true, false) => theme::ICON,
         };
         glyphs::paint(ui.painter(), rect, glyph, color);
         response.widget_info(|| {
@@ -852,7 +849,7 @@ impl ScriptWorkspace {
 
     fn toolbar(&mut self, ui: &mut Ui, actions: &mut Vec<ScriptWorkspaceAction>) {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOOLBAR), Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, BAR_BG);
+        ui.painter().rect_filled(rect, 0.0, theme::BAR_BG);
         let at = |x: f32| Rect::from_center_size(pos2(x, rect.center().y), vec2(18.0, 18.0));
         let idle = !self.busy;
         let catalog = self.catalog.clone();
@@ -906,7 +903,7 @@ impl ScriptWorkspace {
             if self.compatibility.is_some() {
                 theme::SELECTED
             } else {
-                Color32::from_gray(0x6A)
+                theme::ICON
             },
         );
         compat.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Show Compatibility"));
@@ -981,8 +978,11 @@ impl ScriptWorkspace {
             }
         }
         let body = ui.available_rect_before_wrap();
-        ui.painter()
-            .hline(body.x_range(), body.top(), Stroke::new(1.0, RULE));
+        ui.painter().hline(
+            body.x_range(),
+            body.top(),
+            Stroke::new(1.0, theme::HAIRLINE),
+        );
         let scripts_width = if self.show_scripts { SCRIPTS_PANE } else { 0.0 };
         let steps_width = if self.show_steps { STEPS_PANE } else { 0.0 };
         let scripts_rect = Rect::from_min_size(body.min, vec2(scripts_width, body.height()));
@@ -1014,8 +1014,11 @@ impl ScriptWorkspace {
                 )
             });
             self.pane_requests(ui.ctx(), requests.inner, actions);
-            ui.painter()
-                .vline(scripts_rect.right(), body.y_range(), Stroke::new(1.0, RULE));
+            ui.painter().vline(
+                scripts_rect.right(),
+                body.y_range(),
+                Stroke::new(1.0, theme::HAIRLINE),
+            );
         }
         {
             let mut child = ui.new_child(
@@ -1031,8 +1034,11 @@ impl ScriptWorkspace {
             self.editor_area(&mut child, editor_rect, actions);
         }
         if self.show_steps {
-            ui.painter()
-                .vline(steps_rect.left(), body.y_range(), Stroke::new(1.0, RULE));
+            ui.painter().vline(
+                steps_rect.left(),
+                body.y_range(),
+                Stroke::new(1.0, theme::HAIRLINE),
+            );
             let mut child =
                 ui.new_child(egui::UiBuilder::new().max_rect(steps_rect).id_salt("steps"));
             child.set_clip_rect(steps_rect);
@@ -1061,9 +1067,12 @@ impl ScriptWorkspace {
     fn editor_area(&mut self, ui: &mut Ui, rect: Rect, actions: &mut Vec<ScriptWorkspaceAction>) {
         ui.painter().rect_filled(rect, 0.0, theme::CONTENT_BG);
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), TAB_BAR));
-        ui.painter().rect_filled(bar, 0.0, BAR_BG);
-        ui.painter()
-            .hline(bar.x_range(), bar.bottom(), Stroke::new(1.0, RULE));
+        ui.painter().rect_filled(bar, 0.0, theme::BAR_BG);
+        ui.painter().hline(
+            bar.x_range(),
+            bar.bottom(),
+            Stroke::new(1.0, theme::HAIRLINE),
+        );
         let count = self.tabs.len().max(1);
         let width = (bar.width() - 30.0) / count as f32;
         let mut close = None;
@@ -1074,12 +1083,14 @@ impl ScriptWorkspace {
             );
             let active = self.active == Some(i);
             if active && self.tabs.len() > 1 {
-                ui.painter()
-                    .rect_filled(tab_rect, 0.0, Color32::from_gray(0xF7));
+                ui.painter().rect_filled(tab_rect, 0.0, theme::CONTROL_BG);
             }
             if i > 0 {
-                ui.painter()
-                    .vline(tab_rect.left(), tab_rect.y_range(), Stroke::new(1.0, RULE));
+                ui.painter().vline(
+                    tab_rect.left(),
+                    tab_rect.y_range(),
+                    Stroke::new(1.0, theme::HAIRLINE),
+                );
             }
             let mut name = tab.script.name.clone();
             if tab.dirty() {
@@ -1146,7 +1157,7 @@ impl ScriptWorkspace {
                 eye_rect,
                 Glyph::Eye,
                 if preview {
-                    Color32::BLACK
+                    theme::TEXT
                 } else {
                     theme::DISABLED
                 },
@@ -1168,16 +1179,8 @@ impl ScriptWorkspace {
         };
         // A refused edit (red), else what a paste could not read (amber).
         let banner = match (&self.tabs[active].refusal, &self.tabs[active].notice) {
-            (Some(refusal), _) => Some((
-                refusal.clone(),
-                Color32::from_rgb(0xFD, 0xEC, 0xEA),
-                Color32::from_rgb(0xAF, 0x23, 0x23),
-            )),
-            (None, Some(notice)) => Some((
-                notice.clone(),
-                Color32::from_rgb(0xFF, 0xF4, 0xD6),
-                Color32::from_rgb(0x7A, 0x52, 0x00),
-            )),
+            (Some(refusal), _) => Some((refusal.clone(), theme::RED_TINT, theme::RED_INK)),
+            (None, Some(notice)) => Some((notice.clone(), theme::YELLOW_TINT, theme::YELLOW_INK)),
             (None, None) => None,
         };
         let footer = if banner.is_some() { 22.0 } else { 0.0 };
@@ -1557,7 +1560,7 @@ pub(crate) fn alert(ctx: &egui::Context, message: &str, buttons: &[&str]) -> Opt
         .shadow(ctx.global_style().visuals.window_shadow);
     egui::Modal::new(Id::unique(("script_workspace_alert", message)))
         .frame(frame)
-        .backdrop_color(Color32::from_black_alpha(24))
+        .backdrop_color(theme::SCRIM)
         .show(ctx, |ui| {
             ui.set_width(360.0);
             ui.label(

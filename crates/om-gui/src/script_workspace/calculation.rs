@@ -155,20 +155,9 @@ pub(super) const LIST_FONT: f32 = 11.0;
 pub(super) const BODY_TEXT: f32 = 11.0;
 
 /// The rules between the panes (42).
-pub(super) const RULE: Color32 = Color32::from_rgb(0xE6, 0xE6, 0xE6);
-const TOP_RULE: Color32 = Color32::from_rgb(0xD9, 0xD9, 0xD9);
-const TITLE_BG: Color32 = Color32::from_rgb(0xF4, 0xF4, 0xF4);
-const TITLE_RULE: Color32 = Color32::from_rgb(0xCA, 0xCA, 0xCA);
-const STRIP_BG: Color32 = Color32::from_rgb(0xEC, 0xEC, 0xEC);
-const WINDOW_BORDER: Color32 = Color32::from_rgb(0xA9, 0xA9, 0xAC);
-const OPERATOR_TEXT: Color32 = Color32::from_rgb(0x6A, 0x6A, 0x6A);
+pub(super) const RULE: Color32 = theme::SEPARATOR;
 /// The lists' sort and view bars (42).
-pub(super) const BARS: Color32 = Color32::from_rgb(0x78, 0x78, 0x78);
-/// The functions pane toggle's blue (42).
-const PANE_BLUE: Color32 = Color32::from_rgb(0x25, 0x4A, 0xDB);
-/// The blue of default buttons and popup steppers, top to bottom (42).
-const BLUE_TOP: Color32 = Color32::from_rgb(0x3D, 0x4F, 0xD1);
-const BLUE_BOTTOM: Color32 = Color32::from_rgb(0x14, 0x29, 0xC8);
+pub(super) const BARS: Color32 = theme::ICON;
 
 const HELP_URL: &str = "https://help.claris.com/en/pro-help/content/specify-calculation.html";
 
@@ -462,7 +451,7 @@ impl SpecifyCalculation {
         let mut outcome = None;
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(Stroke::new(1.0, WINDOW_BORDER))
+            .stroke(Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(10))
             .shadow(ctx.global_style().visuals.window_shadow);
         let area = egui::Area::new(Id::unique("specify_calculation"))
@@ -481,7 +470,7 @@ impl SpecifyCalculation {
         let modal = egui::Modal::new(Id::unique("specify_calculation"))
             .area(area)
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(24))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| self.window(ui, rect, &mut outcome));
         if let Some(dialog) = &mut self.storage {
             match dialog.show(ctx) {
@@ -529,7 +518,7 @@ impl SpecifyCalculation {
         painter.hline(
             full.x_range(),
             top.bottom() + 0.5,
-            Stroke::new(1.0, TOP_RULE),
+            Stroke::new(1.0, theme::HAIRLINE),
         );
         painter.hline(full.x_range(), bottom.top() - 0.5, Stroke::new(1.0, RULE));
         // The columns, left to right: fields, editor, operators, functions.
@@ -570,7 +559,7 @@ impl SpecifyCalculation {
             self.insert(&insertion);
         }
         self.editor(ui, editor);
-        painter.rect_filled(strip, 0.0, STRIP_BG);
+        painter.rect_filled(strip, 0.0, theme::BAR_BG);
         if let Some(insertion) = self.operator_strip(ui, strip) {
             self.insert(&insertion);
         }
@@ -608,27 +597,27 @@ impl SpecifyCalculation {
                 sw: 0,
                 se: 0,
             },
-            TITLE_BG,
+            theme::TOOLBAR_BG,
         );
         painter.hline(
             rect.x_range(),
             rect.bottom() + 0.5,
-            Stroke::new(1.0, TITLE_RULE),
+            Stroke::new(1.0, theme::HAIRLINE),
         );
         let center = |n: f32| pos2(rect.left() + 14.0 + n * 20.0, rect.center().y);
         for n in 0..2 {
             painter.circle(
                 center(n as f32),
                 6.0,
-                Color32::from_gray(0xD9),
-                Stroke::new(0.5, Color32::from_gray(0xC4)),
+                theme::HOVER_FILL,
+                Stroke::new(0.5, theme::BORDER),
             );
         }
         painter.circle(
             center(2.0),
             6.0,
-            Color32::from_rgb(0x28, 0xC8, 0x40),
-            Stroke::new(0.5, Color32::from_rgb(0x1F, 0xA8, 0x34)),
+            theme::WINDOW_ZOOM,
+            Stroke::new(0.5, theme::WINDOW_ZOOM.lerp_to_gamma(Color32::BLACK, 0.15)),
         );
         let zoom = ui.interact(
             Rect::from_center_size(center(2.0), vec2(14.0, 14.0)),
@@ -793,32 +782,24 @@ impl SpecifyCalculation {
         );
         let response = ui.interact(help, ui.scope_id().with("calc_help"), Sense::click());
         let painter = ui.painter();
-        painter.circle_filled(
-            help.center() + vec2(0.0, 1.0),
-            11.0,
-            Color32::from_gray(0xE6),
-        );
-        painter.circle_filled(
-            help.center() + vec2(0.0, 0.5),
-            11.0,
-            Color32::from_gray(0xBA),
-        );
+        painter.circle_filled(help.center() + vec2(0.0, 1.0), 11.0, theme::SEPARATOR);
+        painter.circle_filled(help.center() + vec2(0.0, 0.5), 11.0, theme::BUTTON_BORDER);
         painter.circle(
             help.center(),
             10.75,
             if response.is_pointer_button_down_on() {
-                Color32::from_gray(0xE4)
+                theme::HOVER_FILL
             } else {
-                Color32::WHITE
+                theme::CONTROL_BG
             },
-            Stroke::new(0.75, Color32::from_gray(0xDD)),
+            Stroke::new(0.75, theme::HAIRLINE),
         );
         painter.text(
             help.center() + vec2(0.0, 0.5),
             Align2::CENTER_CENTER,
             "?",
             FontId::new(14.0, theme::semibold()),
-            Color32::from_gray(0x26),
+            theme::TEXT,
         );
         response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Help"));
         if response.clicked() {
@@ -835,17 +816,17 @@ impl SpecifyCalculation {
             toggle,
             CornerRadius::same(5),
             if response.is_pointer_button_down_on() {
-                Color32::from_gray(0xDC)
+                theme::HOVER_FILL
             } else {
                 theme::DIALOG_BG
             },
-            Stroke::new(1.0, Color32::from_gray(0xE4)),
+            Stroke::new(1.0, theme::SEPARATOR),
             StrokeKind::Inside,
         );
         let color = if self.show_functions {
-            PANE_BLUE
+            theme::SELECTED
         } else {
-            Color32::from_gray(0x6A)
+            theme::ICON
         };
         let o = toggle.min;
         painter.rect_stroke(
@@ -899,7 +880,7 @@ impl SpecifyCalculation {
         if self.alert.is_some() {
             ctx.memory_mut(|m| m.surrender_focus(id));
         }
-        ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
+        ui.painter().rect_filled(rect, 0.0, theme::CONTROL_BG);
         let schema = self.names.clone();
         let names: &dyn Names = match schema.as_deref() {
             Some(s) => s.names(),
@@ -1014,21 +995,14 @@ impl SpecifyCalculation {
         let rect = rect.translate(vec2((window.right() - 6.0 - rect.right()).min(0.0), 0.0));
         let rect = rect.translate(vec2((window.left() + 6.0 - rect.left()).max(0.0), 0.0));
         list.rect = Some(rect);
+        let shadow = ui.style().visuals.popup_shadow;
         let painter = ui.painter();
-        painter.add(
-            egui::Shadow {
-                offset: [0, 3],
-                blur: 10,
-                spread: 0,
-                color: Color32::from_black_alpha(40),
-            }
-            .as_shape(rect, CornerRadius::same(6)),
-        );
+        painter.add(shadow.as_shape(rect, CornerRadius::same(6)));
         painter.rect(
             rect,
             CornerRadius::same(6),
-            Color32::WHITE,
-            Stroke::new(1.0, Color32::from_gray(0xC8)),
+            theme::CONTROL_BG,
+            Stroke::new(1.0, theme::BORDER),
             StrokeKind::Inside,
         );
         let inner = rect.shrink2(vec2(0.0, 4.0));
@@ -1051,9 +1025,9 @@ impl SpecifyCalculation {
                     let (text, hint) = if selected {
                         ui.painter()
                             .rect_filled(row.shrink2(vec2(4.0, 0.0)), 4.0, theme::SELECTED);
-                        (Color32::WHITE, Color32::WHITE)
+                        (theme::ON_ACCENT, theme::ON_ACCENT)
                     } else {
-                        (theme::TEXT, Color32::from_gray(0x8A))
+                        (theme::TEXT, theme::WEAK_TEXT)
                     };
                     let kind = kind_label(candidate);
                     let kind_width = widgets::text_width(ui, kind, font.clone());
@@ -1113,7 +1087,7 @@ impl SpecifyCalculation {
                 } else if response.hovered() {
                     theme::TEXT
                 } else {
-                    OPERATOR_TEXT
+                    theme::CAPTION
                 };
                 ui.painter().text(
                     row.center(),
@@ -1210,7 +1184,7 @@ impl SpecifyCalculation {
                 pos2(rect.left() + 142.0, rect.top() + 35.0),
                 vec2(47.0, 22.0),
             );
-            bezel(ui.painter(), field_rect, 0, Color32::WHITE);
+            bezel(ui.painter(), field_rect, 0, theme::CONTROL_BG);
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(field_rect.shrink2(vec2(6.0, 1.0)))
@@ -1317,7 +1291,7 @@ fn fit(rect: Rect, screen: Rect) -> Rect {
 
 /// A dialog push button of 42's size (`rect` is its 22 pt bezel): white
 /// with a light top edge, a darker bottom edge and a soft shadow, or the
-/// default button's blue gradient.
+/// default button's flat accent fill, as macOS draws it since Big Sur.
 fn push_button(ui: &mut Ui, rect: Rect, label: &str, default: bool, enabled: bool) -> Response {
     let response = ui.interact(
         rect,
@@ -1334,27 +1308,24 @@ fn push_button(ui: &mut Ui, rect: Rect, label: &str, default: bool, enabled: boo
         painter.rect_filled(
             rect.translate(vec2(0.0, 1.0)),
             CornerRadius::same(5),
-            Color32::from_rgb(0xC8, 0xCC, 0xE8),
+            theme::DEFAULT_BUTTON.gamma_multiply(0.25),
         );
-        let (top, bottom) = if pressed {
-            (
-                BLUE_TOP.gamma_multiply(0.85),
-                BLUE_BOTTOM.gamma_multiply(0.85),
-            )
+        let fill = if pressed {
+            theme::DEFAULT_BUTTON.gamma_multiply(0.85)
         } else {
-            (BLUE_TOP, BLUE_BOTTOM)
+            theme::DEFAULT_BUTTON
         };
-        gradient(painter, rect.shrink2(vec2(0.0, 1.0)), 5, top, bottom);
-        Color32::WHITE
+        painter.rect_filled(rect.shrink2(vec2(0.0, 1.0)), CornerRadius::same(5), fill);
+        theme::ON_ACCENT
     } else {
         bezel(
             painter,
             rect,
             5,
             if pressed {
-                Color32::from_gray(0xE2)
+                theme::HOVER_FILL
             } else {
-                Color32::WHITE
+                theme::CONTROL_BG
             },
         );
         if enabled {
@@ -1385,13 +1356,13 @@ fn bezel(painter: &Painter, rect: Rect, radius: u8, fill: Color32) {
     painter.rect_filled(
         rect.translate(vec2(0.0, 1.0)),
         CornerRadius::same(radius),
-        Color32::from_gray(0xE8),
+        theme::SEPARATOR,
     );
-    painter.rect_filled(rect, CornerRadius::same(radius), Color32::from_gray(0xB7));
+    painter.rect_filled(rect, CornerRadius::same(radius), theme::BUTTON_BORDER);
     painter.rect_filled(
         Rect::from_min_max(rect.min, rect.max - vec2(0.0, 1.0)),
         CornerRadius::same(radius),
-        Color32::from_gray(0xDD),
+        theme::HAIRLINE,
     );
     painter.rect_filled(
         Rect::from_min_max(rect.min + vec2(1.0, 1.0), rect.max - vec2(1.0, 1.0)),
@@ -1400,29 +1371,8 @@ fn bezel(painter: &Painter, rect: Rect, radius: u8, fill: Color32) {
     );
 }
 
-/// A rounded rect filled with a vertical gradient.
-fn gradient(painter: &Painter, rect: Rect, radius: u8, top: Color32, bottom: Color32) {
-    let mut mesh = egui::Mesh::default();
-    let mut tessellator = egui::epaint::Tessellator::new(
-        painter.pixels_per_point(),
-        egui::epaint::TessellationOptions::default(),
-        [1, 1],
-        Vec::new(),
-    );
-    tessellator.tessellate_rect(
-        &egui::epaint::RectShape::filled(rect, CornerRadius::same(radius), Color32::WHITE),
-        &mut mesh,
-    );
-    for vertex in &mut mesh.vertices {
-        let t = ((vertex.pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
-        let coverage = f32::from(vertex.color.a()) / 255.0;
-        vertex.color = top.lerp_to_gamma(bottom, t).gamma_multiply(coverage);
-    }
-    painter.add(mesh);
-}
-
 /// A macOS popup button (42): a white bezel with the value at the left and
-/// a blue stepper at the right; pale and gray when it offers no choice.
+/// an accent stepper at the right; pale and gray when it offers no choice.
 pub(super) fn popup_button(
     ui: &mut Ui,
     rect: Rect,
@@ -1447,24 +1397,24 @@ pub(super) fn popup_button(
             rect,
             5,
             if open || response.is_pointer_button_down_on() {
-                Color32::from_gray(0xF0)
+                theme::HOVER_FILL
             } else {
-                Color32::WHITE
+                theme::CONTROL_BG
             },
         );
     } else {
         painter.rect(
             rect,
             CornerRadius::same(5),
-            Color32::from_gray(0xF8),
-            Stroke::new(1.0, Color32::from_gray(0xE5)),
+            theme::DIALOG_BG,
+            Stroke::new(1.0, theme::SEPARATOR),
             StrokeKind::Inside,
         );
     }
     let color = if enabled {
         theme::TEXT
     } else {
-        Color32::from_gray(0xA8)
+        theme::DISABLED
     };
     let stepper = Rect::from_min_size(
         pos2(rect.right() - 15.0, rect.top() + 3.0),
@@ -1489,10 +1439,10 @@ pub(super) fn popup_button(
         color,
     );
     let arrows = if enabled {
-        gradient(painter, stepper, 3, BLUE_TOP, BLUE_BOTTOM);
-        Color32::WHITE
+        painter.rect_filled(stepper, CornerRadius::same(3), theme::SELECTED);
+        theme::ON_ACCENT
     } else {
-        Color32::from_gray(0xB4)
+        theme::DISABLED
     };
     let c = stepper.center();
     let stroke = Stroke::new(1.25, arrows);
@@ -1520,13 +1470,13 @@ pub(super) fn popup_button(
 /// "Search").
 pub(super) fn search_box(ui: &mut Ui, rect: Rect, text: &mut String, label: &str) {
     let painter = ui.painter();
-    bezel(painter, rect, 5, Color32::WHITE);
+    bezel(painter, rect, 5, theme::CONTROL_BG);
     crate::icons::paint(
         painter,
         Rect::from_center_size(pos2(rect.left() + 13.5, rect.center().y), vec2(14.0, 14.0)),
         crate::icons::Icon::Search,
-        Color32::from_gray(0x3C),
-        Color32::WHITE,
+        theme::ICON,
+        theme::CONTROL_BG,
     );
     let field = Rect::from_min_max(
         pos2(rect.left() + 25.0, rect.top()),
@@ -1542,7 +1492,7 @@ pub(super) fn search_box(ui: &mut Ui, rect: Rect, text: &mut String, label: &str
             .hint_text(
                 egui::RichText::new("Search")
                     .size(BODY_TEXT)
-                    .color(Color32::from_gray(0xBE)),
+                    .color(theme::WEAK_TEXT),
             )
             .font(FontId::proportional(BODY_TEXT))
             .frame(egui::Frame::new())
@@ -1571,10 +1521,10 @@ pub(super) fn help_glyph(painter: &Painter, rect: Rect, color: Color32) {
     glyphs::paint(painter, rect, Glyph::Help, color);
 }
 
-/// A checked or unchecked box (42: blue with a white check).
+/// A checked or unchecked box (42: the accent with a white check).
 fn checkbox(painter: &Painter, rect: Rect, checked: bool) {
     if checked {
-        gradient(painter, rect, 3, BLUE_TOP, BLUE_BOTTOM);
+        painter.rect_filled(rect, CornerRadius::same(3), theme::SELECTED);
         let c = rect.center();
         painter.line(
             vec![
@@ -1582,14 +1532,14 @@ fn checkbox(painter: &Painter, rect: Rect, checked: bool) {
                 c + vec2(-1.0, 2.8),
                 c + vec2(3.5, -2.8),
             ],
-            Stroke::new(1.6, Color32::WHITE),
+            Stroke::new(1.6, theme::ON_ACCENT),
         );
     } else {
         painter.rect(
             rect,
             CornerRadius::same(3),
-            Color32::WHITE,
-            Stroke::new(1.0, Color32::from_gray(0xB4)),
+            theme::CONTROL_BG,
+            Stroke::new(1.0, theme::BUTTON_BORDER),
             StrokeKind::Inside,
         );
     }

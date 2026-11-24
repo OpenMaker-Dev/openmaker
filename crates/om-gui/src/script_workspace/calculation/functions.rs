@@ -9,7 +9,7 @@
 //! 130-156), `get-selectors.csv` (resource 131) and the category names of
 //! resource 135 in `enumerations.csv`.
 
-use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Role, Sense, Stroke, Ui, WidgetInfo};
+use egui::{pos2, vec2, Align2, FontId, Rect, Role, Sense, Stroke, Ui, WidgetInfo};
 use om_data::formula_editor::functions::CUSTOM;
 #[cfg(test)]
 pub(super) use om_data::formula_editor::functions::{catalog, custom_functions};
@@ -192,7 +192,7 @@ impl FunctionsPane {
             &entry.signature,
             FontId::proportional(LIST_FONT),
             if selected {
-                Color32::WHITE
+                theme::ON_ACCENT
             } else {
                 theme::TEXT
             },

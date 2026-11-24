@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use egui::{
-    pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Key, Layout, Rect, RichText, Sense,
-    Stroke, StrokeKind, Ui, UiBuilder, Vec2,
+    pos2, vec2, Align, Align2, CornerRadius, FontId, Key, Layout, Rect, RichText, Sense, Stroke,
+    StrokeKind, Ui, UiBuilder, Vec2,
 };
 use om_data::{Connection, HostListing, HostedFile, ListingError, ListingFailure};
 
@@ -212,7 +212,9 @@ const TITLE_HEIGHT: f32 = 28.0;
 
 /// The Hosts dialog (capture 28), centered over a plain backdrop: hosts at
 /// the left, the selected host's files at the right, and the account,
-/// password and file to open along the bottom.
+/// password and file to open along the bottom. With `closable`, Cancel also
+/// closes the dialog when nothing is under way (it was opened from Home).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hosts_dialog(
     ui: &mut Ui,
     form: &mut ConnectForm,
@@ -220,6 +222,7 @@ pub(crate) fn hosts_dialog(
     status: ConnectStatus,
     client_license: bool,
     listing: &Listing,
+    closable: bool,
     actions: &mut Vec<Action>,
 ) {
     let area = ui.max_rect();
@@ -240,7 +243,7 @@ pub(crate) fn hosts_dialog(
         dialog,
         CornerRadius::same(10),
         theme::DIALOG_BG,
-        Stroke::new(1.0, Color32::from_gray(0xC4)),
+        Stroke::new(1.0, theme::BORDER),
         StrokeKind::Outside,
     );
     let title = Rect::from_min_size(dialog.min, vec2(dialog.width(), TITLE_HEIGHT));
@@ -273,7 +276,7 @@ pub(crate) fn hosts_dialog(
     ui.painter().vline(
         sidebar.right(),
         sidebar.y_range(),
-        Stroke::new(1.0, Color32::from_gray(0xC8)),
+        Stroke::new(1.0, theme::BORDER),
     );
     let mut sidebar_ui = ui.new_child(
         UiBuilder::new()
@@ -291,7 +294,7 @@ pub(crate) fn hosts_dialog(
             .max_rect(pane)
             .layout(Layout::top_down(Align::Min)),
     );
-    files_pane(&mut pane_ui, form, view, status, listing, actions);
+    files_pane(&mut pane_ui, form, view, status, listing, closable, actions);
     ui.allocate_rect(area, Sense::hover());
 }
 
@@ -354,7 +357,7 @@ fn ui_sidebar(
                 Align2::LEFT_CENTER,
                 host,
                 theme::body(),
-                Color32::WHITE,
+                theme::ON_ACCENT,
             );
         }
     }
@@ -392,6 +395,7 @@ fn files_pane(
     view: &mut HostsView,
     status: ConnectStatus,
     listing: &Listing,
+    closable: bool,
     actions: &mut Vec<Action>,
 ) {
     let idle = status == ConnectStatus::Idle;
@@ -443,7 +447,7 @@ fn files_pane(
             let (rect, response) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::click());
             if selected {
                 ui.painter()
-                    .rect_filled(rect, CornerRadius::same(4), Color32::from_gray(0xDA));
+                    .rect_filled(rect, CornerRadius::same(4), theme::HOVER_FILL);
             }
             icons::paint(
                 ui.painter(),
@@ -477,7 +481,7 @@ fn files_pane(
         pos2(pane.right(), pane.bottom() - bottom_height),
     );
     ui.painter()
-        .rect_filled(files_rect, CornerRadius::ZERO, Color32::WHITE);
+        .rect_filled(files_rect, CornerRadius::ZERO, theme::CONTROL_BG);
     ui.painter().hline(
         files_rect.x_range(),
         files_rect.top(),
@@ -504,7 +508,7 @@ fn files_pane(
             .max_rect(bottom)
             .layout(Layout::top_down(Align::Min)),
     );
-    credentials(&mut bottom_ui, form, status, actions);
+    credentials(&mut bottom_ui, form, status, closable, actions);
 }
 
 /// The host's name and version as it gave them, for the heading.
@@ -631,20 +635,22 @@ fn file_entry(ui: &mut Ui, name: &str, selected: bool, tile: bool, size: Vec2) -
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter();
     let text = if selected {
-        Color32::WHITE
+        theme::ON_ACCENT
     } else {
         theme::TEXT
     };
     if tile {
         let glyph = Rect::from_center_size(rect.center_top() + vec2(0.0, 32.0), vec2(40.0, 44.0));
         if selected {
-            painter.rect_filled(
-                glyph.expand(4.0),
-                CornerRadius::same(6),
-                Color32::from_gray(0xDC),
-            );
+            painter.rect_filled(glyph.expand(4.0), CornerRadius::same(6), theme::HOVER_FILL);
         }
-        icons::paint(painter, glyph, Icon::NewLayout, theme::ICON, Color32::WHITE);
+        icons::paint(
+            painter,
+            glyph,
+            Icon::NewLayout,
+            theme::ICON,
+            theme::CONTROL_BG,
+        );
         let label = Rect::from_center_size(
             rect.center_bottom() - vec2(0.0, 14.0),
             vec2(size.x - 8.0, 18.0),
@@ -668,11 +674,11 @@ fn file_entry(ui: &mut Ui, name: &str, selected: bool, tile: bool, size: Vec2) -
             Rect::from_center_size(rect.left_center() + vec2(14.0, 0.0), vec2(16.0, 16.0)),
             Icon::NewLayout,
             if selected {
-                Color32::WHITE
+                theme::ON_ACCENT
             } else {
                 theme::ICON
             },
-            Color32::WHITE,
+            theme::CONTROL_BG,
         );
         painter.text(
             rect.left_center() + vec2(30.0, 0.0),
@@ -700,6 +706,7 @@ fn credentials(
     ui: &mut Ui,
     form: &mut ConnectForm,
     status: ConnectStatus,
+    closable: bool,
     actions: &mut Vec<Action>,
 ) {
     let idle = status == ConnectStatus::Idle;
@@ -762,7 +769,7 @@ fn credentials(
                 actions.push(Action::Connect);
             }
             let busy = status != ConnectStatus::Idle;
-            if dialog_button(ui, "Cancel", false, busy).clicked() {
+            if dialog_button(ui, "Cancel", false, busy || closable).clicked() {
                 actions.push(Action::CancelConnect);
             }
         });

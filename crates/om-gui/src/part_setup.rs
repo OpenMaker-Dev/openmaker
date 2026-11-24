@@ -10,7 +10,7 @@
 //! layout-model.md 10.18). A part's type and its row states are shown, not
 //! offered.
 
-use egui::{vec2, Align2, Color32, CornerRadius, Id, Rect, Stroke, UiBuilder};
+use egui::{vec2, Align2, CornerRadius, Id, Rect, Stroke, UiBuilder};
 use om_data::layout_placement::{
     part_options, part_rank, PartChange, PartOptionsChange, PartsChange, Revision, ADDABLE_PARTS,
 };
@@ -259,11 +259,11 @@ impl PartSetup {
                 // (its place is OpenMaker's: the nib gives the table's size).
                 let list = at(16.0, 16.0, 300.0, 210.0);
                 ui.painter()
-                    .rect_filled(list, CornerRadius::ZERO, Color32::WHITE);
+                    .rect_filled(list, CornerRadius::ZERO, theme::CONTROL_BG);
                 ui.painter().rect_stroke(
                     list,
                     CornerRadius::ZERO,
-                    Stroke::new(1.0, Color32::from_gray(0xC8)),
+                    Stroke::new(1.0, theme::BORDER),
                     egui::StrokeKind::Inside,
                 );
                 place(ui, list.shrink(4.0), &mut |ui| {
@@ -518,7 +518,7 @@ impl PartSetup {
                 ui.painter().rect_stroke(
                     list,
                     CornerRadius::ZERO,
-                    Stroke::new(1.0, Color32::from_gray(0xC8)),
+                    Stroke::new(1.0, theme::BORDER),
                     egui::StrokeKind::Inside,
                 );
                 place(ui, list.shrink(2.0), &mut |ui| {
@@ -543,7 +543,7 @@ impl PartSetup {
                 ui.painter().hline(
                     line.x_range(),
                     line.top(),
-                    Stroke::new(1.0, Color32::from_gray(0xD0)),
+                    Stroke::new(1.0, theme::HAIRLINE),
                 );
                 // The options Pro's Part Definition offers for the part's type;
                 // before each occurrence and after every N exclude each other,
@@ -706,12 +706,12 @@ pub(crate) fn dialog(
 ) -> bool {
     let frame = egui::Frame::new()
         .fill(theme::DIALOG_BG)
-        .stroke(Stroke::new(1.0, Color32::from_gray(0xC4)))
+        .stroke(Stroke::new(1.0, theme::BORDER))
         .corner_radius(CornerRadius::same(10))
         .shadow(ctx.global_style().visuals.window_shadow);
     egui::Modal::new(Id::unique(id))
         .frame(frame)
-        .backdrop_color(Color32::from_black_alpha(24))
+        .backdrop_color(theme::SCRIM)
         .show(ctx, |ui| {
             let (bar, _) = ui.allocate_exact_size(vec2(size.x, 28.0), egui::Sense::hover());
             ui.painter().text(

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use egui::{pos2, vec2, Align2, Color32, FontId, Key, Rect, Role, Sense, Ui, WidgetInfo};
+use egui::{pos2, vec2, Align2, FontId, Key, Rect, Role, Sense, Ui, WidgetInfo};
 use om_data::scripts::{self, step_compat, Client};
 
 use super::editor::offered_steps;
@@ -78,7 +78,7 @@ impl StepsPane {
         }
         let supported = compatibility.is_none_or(|c| step_compat(id).is_none_or(|s| s.supports(c)));
         let color = match (selected, supported) {
-            (true, _) => Color32::WHITE,
+            (true, _) => theme::ON_ACCENT,
             (false, true) => theme::TEXT,
             (false, false) => theme::WEAK_TEXT,
         };

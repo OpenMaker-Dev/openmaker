@@ -379,3 +379,76 @@ fn specify_calculation_screenshot() {
     wait_for_label(&mut app, "Specify Calculation");
     save_to(&mut app, &workspace_dir(), "42-specify-calculation");
 }
+
+/// Home with a sample history in a settings file of its own, at FileMaker
+/// Pro 26.1.1's Home window size (1101 by 697 points below the title bar)
+/// plus the in-window menu bar, to compare side by side with FileMaker's.
+#[test]
+fn home_screenshots() {
+    use egui_kittest::Harness;
+
+    let start = |settings: PathBuf| -> App {
+        let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+        let provider = om_provider::NativeProvider::new(om_provider::NativeConfig {
+            client_cert_pem: client.cert.pem().into_bytes(),
+            client_key_pem: client.key_pair.serialize_pem().into_bytes(),
+            additional_ca_pem: Vec::new(),
+            callback_host: "127.0.0.1".into(),
+            machine: om_protocol::MachineInfo::default(),
+        });
+        let mut app = Harness::builder()
+            .with_size(egui::vec2(1101.0, 697.0 + 24.0))
+            .renderer(common::renderer())
+            .build_eframe(move |_| {
+                om_gui::OpenMakerApp::with_license_store(
+                    Box::new(provider),
+                    Box::new(common::NoLicense),
+                )
+                .with_settings_file(settings)
+                .with_home()
+            });
+        app.run_steps(3);
+        app
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut empty = start(dir.path().join("empty.json"));
+    save(&mut empty, "home-empty");
+
+    let settings = dir.path().join("settings.json");
+    let local = |name: &str| {
+        serde_json::json!({
+            "kind": "local",
+            "path": format!("/home/demo/Documents/OpenMaker/{name}.fmp12"),
+        })
+    };
+    let hosted = |host: &str, port: u16, file: &str| serde_json::json!({ "kind": "hosted", "host": host, "port": port, "file": file });
+    let history = serde_json::json!({
+        "file_history": {
+            "tab": "recent",
+            "recent": [
+                local("Inventory"),
+                hosted("studio.example.test", 5003, "Projects.fmp12"),
+                local("Contacts"),
+                hosted("archive.example.test", 5004, "2025 Archive.fmp12"),
+                local("Assets with a name long enough to be cut at the column's end"),
+            ],
+            "favorites": [
+                local("Inventory"),
+                hosted("studio.example.test", 5003, "Projects.fmp12"),
+            ],
+        }
+    });
+    std::fs::write(&settings, history.to_string()).unwrap();
+    let mut app = start(settings);
+    save(&mut app, "home-recent");
+    click(&mut app, "Contacts");
+    save(&mut app, "home-recent-selected");
+    app.get_by_label("Projects").click_secondary();
+    app.run_steps(3);
+    save(&mut app, "home-context-menu");
+    dismiss(&mut app);
+    click(&mut app, "Favorites");
+    save(&mut app, "home-favorites");
+    click(&mut app, "Hosts");
+    save(&mut app, "home-hosts");
+}

@@ -8,7 +8,7 @@
 //! follows Claris's help for the dialog; it was not compared with a FileMaker
 //! Pro 26 capture.
 
-use egui::{Align, Color32, CornerRadius, Id, Layout, RichText, Stroke};
+use egui::{Align, CornerRadius, Id, Layout, RichText, Stroke};
 use om_data::meta::{summary_flag as flag, SummaryDef, SummaryField, SummaryKind};
 use om_data::{SchemaChange, SchemaField, SchemaFieldKind};
 
@@ -171,7 +171,7 @@ impl SummaryDialog {
         chosen: &mut Option<u64>,
     ) {
         egui::Frame::new()
-            .fill(Color32::WHITE)
+            .fill(theme::CONTROL_BG)
             .stroke(Stroke::new(1.0, theme::DIVIDER))
             .show(ui, |ui| {
                 ui.set_width(200.0);
@@ -302,7 +302,7 @@ impl SummaryDialog {
                 });
                 if let Some(error) = &self.error {
                     ui.add_space(6.0);
-                    ui.colored_label(Color32::from_rgb(175, 35, 35), error);
+                    ui.colored_label(theme::RED_INK, error);
                 }
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

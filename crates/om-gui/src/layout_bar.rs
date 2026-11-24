@@ -6,7 +6,7 @@
 //! Records Include/Omit and Insert Operators; Preview swaps Preview for Exit
 //! Preview; Layout mode shows the layout's table and theme and Exit Layout.
 
-use egui::{pos2, vec2, Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, Stroke, Ui};
+use egui::{pos2, vec2, Align, Align2, CornerRadius, Layout, Rect, Sense, Stroke, Ui};
 
 use crate::app::{Action, FindState, Mode, ViewMode};
 use crate::icons::Icon;
@@ -241,7 +241,7 @@ fn formatting_toggle(ui: &mut Ui, on: bool, enabled: bool) -> egui::Response {
     } else if on {
         theme::SELECTED
     } else {
-        Color32::from_gray(0x55)
+        theme::CAPTION
     };
     let painter = ui.painter();
     painter.text(
@@ -325,7 +325,7 @@ pub(crate) fn formatting_bar(ui: &mut Ui) {
                 ui.painter().rect(
                     swatch,
                     CornerRadius::same(2),
-                    Color32::from_gray(0xEA),
+                    theme::BAR_BG,
                     Stroke::new(1.0, theme::DISABLED),
                     egui::StrokeKind::Inside,
                 );

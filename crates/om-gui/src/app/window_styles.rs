@@ -52,6 +52,10 @@ type NativeParent = Result<crate::web_viewer::NativeParent, crate::web_viewer::U
 /// The darkening of a card's parent's layout area (Dim parent window).
 const DIM: Color32 = Color32::from_black_alpha(96);
 
+/// A card's drop shadow and outline over its parent window.
+const CARD_SHADOW: Color32 = Color32::from_black_alpha(70);
+const CARD_OUTLINE: Color32 = Color32::from_black_alpha(60);
+
 /// The card's close box.
 const CLOSE_BOX: f32 = 18.0;
 
@@ -376,7 +380,7 @@ impl OpenMakerApp {
             offset: [0, 4],
             blur: 18,
             spread: 0,
-            color: Color32::from_black_alpha(70),
+            color: CARD_SHADOW,
         };
         ui.painter()
             .add(shadow.as_shape(rect, CornerRadius::same(4)));
@@ -439,7 +443,7 @@ impl OpenMakerApp {
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, Color32::from_black_alpha(60)),
+            Stroke::new(1.0, CARD_OUTLINE),
             egui::StrokeKind::Outside,
         );
         if close {

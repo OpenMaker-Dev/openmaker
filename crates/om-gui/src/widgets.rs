@@ -100,7 +100,7 @@ fn icon_color(enabled: bool, pressed: bool) -> Color32 {
     if !enabled {
         theme::DISABLED
     } else if pressed {
-        Color32::from_gray(0x45)
+        theme::TEXT
     } else {
         theme::ICON
     }
@@ -246,15 +246,15 @@ pub(crate) fn bar_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     let pressed = response.is_pointer_button_down_on();
     let painter = ui.painter();
     let fill = if pressed {
-        Color32::from_gray(0xDA)
+        theme::HOVER_FILL
     } else {
-        Color32::from_gray(0xF7)
+        theme::CONTROL_BG
     };
     painter.rect(
         rect,
         CornerRadius::same(4),
         fill,
-        Stroke::new(1.0, Color32::from_gray(0xA6)),
+        Stroke::new(1.0, theme::BUTTON_BORDER),
         StrokeKind::Inside,
     );
     painter.text(
@@ -314,7 +314,7 @@ pub(crate) fn popup_button(
     let painter = ui.painter();
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
     let fill = if open || response.is_pointer_button_down_on() {
-        Color32::from_gray(0xD0)
+        theme::HOVER_FILL
     } else {
         theme::LAYOUT_BAR_BG
     };
@@ -350,7 +350,7 @@ pub(crate) fn popup_button(
         ),
         Icon::ChevronDown,
         if enabled {
-            Color32::from_gray(0x40)
+            theme::TEXT
         } else {
             theme::DISABLED
         },
@@ -385,7 +385,7 @@ pub(crate) fn glyph_toggle(
     let color = match (enabled, selected) {
         (false, _) => theme::DISABLED,
         (true, true) => theme::SELECTED,
-        (true, false) if response.is_pointer_button_down_on() => Color32::from_gray(0x60),
+        (true, false) if response.is_pointer_button_down_on() => theme::CAPTION,
         (true, false) => theme::VIEW_GLYPH,
     };
     icons::paint(
@@ -412,8 +412,8 @@ pub(crate) fn segmented(ui: &mut Ui, segments: &[&str], selected: usize) -> Opti
     painter.rect(
         rect,
         CornerRadius::same(4),
-        Color32::from_gray(0xF7),
-        Stroke::new(1.0, Color32::from_gray(0xA6)),
+        theme::CONTROL_BG,
+        Stroke::new(1.0, theme::BUTTON_BORDER),
         StrokeKind::Inside,
     );
     let mut clicked = None;
@@ -439,7 +439,7 @@ pub(crate) fn segmented(ui: &mut Ui, segments: &[&str], selected: usize) -> Opti
             *segment,
             theme::small(),
             if is_selected {
-                Color32::WHITE
+                theme::ON_ACCENT
             } else {
                 theme::TEXT
             },
@@ -484,7 +484,7 @@ pub(crate) fn menu_item(
     }
     let (text, weak) = match (enabled, highlighted) {
         (false, _) => (theme::DISABLED, theme::DISABLED),
-        (true, true) => (Color32::WHITE, Color32::WHITE),
+        (true, true) => (theme::ON_ACCENT, theme::ON_ACCENT),
         (true, false) => (theme::TEXT, theme::WEAK_TEXT),
     };
     if checked {
@@ -588,7 +588,7 @@ pub(crate) fn menu_separator(ui: &mut Ui) {
     ui.painter().hline(
         rect.x_range().shrink(8.0),
         rect.center().y,
-        Stroke::new(1.0, Color32::from_gray(0xDA)),
+        Stroke::new(1.0, theme::HAIRLINE),
     );
 }
 
@@ -605,14 +605,14 @@ pub(crate) fn dialog_button(ui: &mut Ui, label: &str, default: bool, enabled: bo
     );
     let pressed = response.is_pointer_button_down_on();
     let (fill, stroke, text) = match (default && enabled, pressed) {
-        (true, false) => (theme::DEFAULT_BUTTON, Stroke::NONE, Color32::WHITE),
+        (true, false) => (theme::DEFAULT_BUTTON, Stroke::NONE, theme::ON_ACCENT),
         (true, true) => (
             theme::DEFAULT_BUTTON.gamma_multiply(0.85),
             Stroke::NONE,
-            Color32::WHITE,
+            theme::ON_ACCENT,
         ),
         (false, false) => (
-            Color32::WHITE,
+            theme::CONTROL_BG,
             Stroke::new(1.0, theme::BUTTON_BORDER),
             if enabled {
                 theme::TEXT
@@ -621,8 +621,8 @@ pub(crate) fn dialog_button(ui: &mut Ui, label: &str, default: bool, enabled: bo
             },
         ),
         (false, true) => (
-            Color32::from_gray(0xE2),
-            Stroke::new(1.0, Color32::from_gray(0xA0)),
+            theme::HOVER_FILL,
+            Stroke::new(1.0, theme::BUTTON_BORDER),
             theme::TEXT,
         ),
     };

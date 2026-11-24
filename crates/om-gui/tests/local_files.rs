@@ -167,9 +167,15 @@ fn replace(app: &mut App, label: &str, text: &str) {
 
 /// Choose `path` in the Open dialog, already showing.
 fn choose(app: &mut App, path: &Path) {
+    use egui_kittest::kittest::NodeT as _;
     common::wait_for_label(app, "Open File");
     replace(app, "Path", &path.display().to_string());
-    common::click(app, "Open");
+    // Started from Home, Home's own Open shows, disabled, behind the dialog.
+    app.query_all_by_label("Open")
+        .find(|node| !node.accesskit_node().is_disabled())
+        .expect("the dialog's Open button")
+        .click();
+    app.run_steps(2);
 }
 
 /// Answer the account dialog with `password` for the suggested account.
@@ -239,6 +245,62 @@ fn a_file_on_this_computer_opens_saves_an_edit_and_reopens_with_it() {
         Some("Edited in the window")
     );
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+#[test]
+fn home_remembers_a_local_file_and_its_favorite_across_app_instances() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let folder = Folder::new("home");
+    let settings = folder.0.join("settings.json");
+    let start = || {
+        let settings = settings.clone();
+        Harness::builder()
+            .with_size(egui::vec2(720.0, 480.0))
+            .renderer(common::renderer())
+            .build_eframe(move |_| {
+                OpenMakerApp::with_license_store(Box::new(clean_provider()), Box::new(Untouchable))
+                    .with_settings_file(settings)
+                    .with_home()
+            })
+    };
+    let mut app = start();
+    common::wait_for_label(&mut app, "No recent files");
+    common::click(&mut app, "Open");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Close");
+    // Closing returns to Home, where Recent lists the file. Its open
+    // context menu takes the keys before the list: Return opens nothing.
+    common::right_click(&mut app, "Tasks");
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
+    assert!(app.query_by_label("Add to Favorites").is_some());
+    common::click(&mut app, "Add to Favorites");
+    common::click(&mut app, "Favorites");
+    common::wait_for_label(&mut app, "Tasks");
+    drop(app);
+
+    // Home opens on the list it showed last. With the keyboard focus in
+    // the list, as Tab leaves it, Down selects the file and Return opens it.
+    let mut app = start();
+    common::wait_for_label(&mut app, "Tasks");
+    let toggled = |app: &App, label: &str| app.get_by_label(label).accesskit_node().toggled();
+    assert_eq!(
+        toggled(&app, "Favorites"),
+        Some(egui::accesskit::Toggled::True)
+    );
+    app.get_by_label("Favorite files").focus();
+    app.run_steps(2);
+    app.key_press(egui::Key::ArrowDown);
+    app.run_steps(2);
+    assert_eq!(toggled(&app, "Tasks"), Some(egui::accesskit::Toggled::True));
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
 }
 
 /// New Script in a file on this computer, through the window: named in

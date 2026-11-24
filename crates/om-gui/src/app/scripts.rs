@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
-use egui::{Color32, CornerRadius, Id, Key, RichText};
+use egui::{CornerRadius, Id, Key, RichText};
 use om_data::found::FindRequest;
 use om_data::runtime::{AlertChoice, DialogResponse, Mode as RunMode, TriggerEvent, TriggerInfo};
 use om_data::ScriptStep;
@@ -202,6 +202,12 @@ pub(super) struct ScriptUi {
     /// Exit Application asked to quit: when its script has ended, every
     /// window of the file closes as Quit closes them.
     quit: bool,
+    /// A close trigger's Close File or Exit Application took its close over
+    /// (`take_over_close`): the close goes on once the script has ended.
+    taken_over: bool,
+    /// The file a script's own Close File closes once the script has ended
+    /// (`close_after_script`).
+    close_file: Option<u64>,
     /// What started each script sent to the worker, oldest first and at
     /// most [`STARTED_KEPT`]: for measures that run a file's scripts and
     /// triggers (`OpenMakerApp::scripts_started`).
@@ -1943,9 +1949,7 @@ impl OpenMakerApp {
                 }
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
-                if std::mem::take(&mut self.script.quit) {
-                    self.apply(ctx, Action::Quit);
-                }
+                self.close_or_quit_after_script(ctx);
                 self.start_queued(ctx);
             }
             ScriptEvent::Action {
@@ -1999,12 +2003,25 @@ impl OpenMakerApp {
             ScriptEvent::CloseWindow(_) => {}
             ScriptEvent::Beep => eprint!("\x07"),
             // The worker committed its window and halts: the rest closes
-            // once its job has ended (Finished).
-            ScriptEvent::Quit => self.script.quit = true,
+            // once its job has ended (Finished). A close trigger's own
+            // Exit Application takes over its close, closing its file
+            // first.
+            ScriptEvent::Quit => {
+                // A command waiting for the close goes, as with Quit.
+                self.launch_after_close = None;
+                self.take_over_close(None, true);
+                self.script.quit = true;
+            }
             ScriptEvent::SchemaChanged => self.request(ctx, Request::CalcSchema),
+            // The script stays busy until it ends (Finished), when the
+            // worker has sent every window's last state.
             ScriptEvent::CloseFile => {
-                self.script.running = false;
-                self.apply(ctx, Action::CloseFile);
+                // A close trigger's own Close File takes over its close;
+                // any other script's closes the file. Either goes on when
+                // the script has ended.
+                if !self.take_over_close(Some(self.w.file_id), false) {
+                    self.script.close_file = Some(self.w.file_id);
+                }
             }
             ScriptEvent::Failed(message) => {
                 self.script.running = false;
@@ -2017,9 +2034,110 @@ impl OpenMakerApp {
                 // waiting behind the script run now.
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
+                self.close_or_quit_after_script(ctx);
                 self.start_queued(ctx);
             }
         }
+    }
+
+    /// A close trigger ran Close File (of its own file, `file`) or Exit
+    /// Application (`file` is `None`): it takes over the close it holds.
+    /// The halt's veto then finds nothing to stop, and once the script has
+    /// ended ([`Self::close_after_script`]) the trigger's file's windows
+    /// close without their close triggers, each committing
+    /// (`Closing::quiet`); with `quit`, or in a Quit, the other files close
+    /// after as Quit closes them. The trigger's own window may have closed
+    /// meanwhile. `false` when no such trigger is running.
+    pub(super) fn take_over_close(&mut self, file: Option<u64>, quit: bool) -> bool {
+        let held = self.script.held.iter().find_map(|(token, (origin, held))| {
+            let closes = matches!(held, Held::Action(Action::CloseWindow, _));
+            // The trigger's window, or the file it had if it closed.
+            let origin_file = self
+                .docs()
+                .find(|doc| doc.id == *origin)
+                .map(|doc| doc.file_id)
+                .or_else(|| self.window_files.get(origin).copied())?;
+            (closes && file.is_none_or(|file| file == origin_file)).then_some((*token, origin_file))
+        });
+        let Some((token, file)) = held else {
+            return false;
+        };
+        self.script.held.remove(&token);
+        let quit = quit || self.closing.as_ref().is_some_and(|closing| closing.quit);
+        self.closing = Some(super::Closing {
+            quiet: true,
+            ..self.closing_of(file, quit)
+        });
+        self.script.taken_over = true;
+        true
+    }
+
+    /// Whether a close under way still waits on something that will carry
+    /// it on or stop it: a script, a trigger's held action, or a save.
+    pub(super) fn close_waits(&self) -> bool {
+        self.script.running
+            || self.script.taken_over
+            || self.script.close_file.is_some()
+            || self.script.saving.is_some()
+            || !self.script.held.is_empty()
+            || !self.script.resumes.is_empty()
+            || self.docs().any(|doc| doc.document.pending)
+    }
+
+    /// A close a script's Close File asked for, or a close its trigger
+    /// took over ([`Self::take_over_close`]), goes on now that the script
+    /// has ended: the worker has sent the windows' last states first, a
+    /// frozen window's edits included, so each window commits what the
+    /// script left. With `quit` (Exit Application, or Quit chosen
+    /// meanwhile), the close is a Quit's. Whether it went on.
+    fn close_after_script(&mut self, ctx: &egui::Context, quit: bool) -> bool {
+        if let Some(file) = self.script.close_file.take() {
+            let window = self
+                .docs()
+                .find(|doc| doc.file_id == file && doc.session.is_some())
+                .map(|doc| doc.id);
+            if let Some(window) = window {
+                self.with_window(window, |app| {
+                    if quit {
+                        // Close File keeps a Quit under way.
+                        app.closing = Some(app.closing_front(true));
+                    }
+                    app.apply(ctx, Action::CloseFile);
+                });
+                return true;
+            }
+        }
+        if !std::mem::take(&mut self.script.taken_over) {
+            return false;
+        }
+        if let Some(closing) = self.closing.as_mut().filter(|_| quit) {
+            closing.quit = true;
+        }
+        let Some(next) = self.next_to_close() else {
+            return false;
+        };
+        self.with_window(next, |app| app.close_window(ctx));
+        true
+    }
+
+    /// A script ended: a close its Close File asked for, or its trigger
+    /// took over, goes on, and Exit Application (or Quit chosen while the
+    /// close waited) quits after it, or at once with none.
+    pub(super) fn close_or_quit_after_script(&mut self, ctx: &egui::Context) {
+        let quit = std::mem::take(&mut self.script.quit);
+        if !self.close_after_script(ctx, quit) && quit {
+            self.apply(ctx, Action::Quit);
+        }
+    }
+
+    /// Quit chosen while a script's Close File waits for its script to end
+    /// quits after that close. Whether one was waiting.
+    pub(super) fn quit_after_script_close(&mut self) -> bool {
+        if self.script.close_file.is_none() {
+            return false;
+        }
+        self.script.quit = true;
+        true
     }
 
     /// The job that ran the user's triggers ended: their held actions go on
@@ -2054,6 +2172,7 @@ impl OpenMakerApp {
                 return;
             }
         }
+        let closes = proceed && matches!(held, Held::Action(Action::CloseWindow, _));
         let resumed =
             self.with_window(origin, |app| match (held, proceed) {
                 (Held::Action(action, stage), true) => {
@@ -2068,7 +2187,11 @@ impl OpenMakerApp {
                 // save must not run it).
                 (Held::Action(..), false) => {
                     app.w.document.cancel_pending_focus();
-                    app.closing = None;
+                    // A close a trigger's Close File or Exit Application
+                    // took over is that script's now, not this action's.
+                    if !app.script.taken_over {
+                        app.closing = None;
+                    }
                     app.w.deferred_action = None;
                 }
                 (Held::Exit(_, _, _, _, owner, _), _) if owner != app.key_owner() => {
@@ -2106,8 +2229,19 @@ impl OpenMakerApp {
                 (Held::Key(key), proceed) => app.resume_keystroke(ctx, *key, proceed),
             });
         if resumed.is_none() {
-            // Its window closed meanwhile: closing the file stops.
-            self.closing = None;
+            // Its window closed meanwhile. A close of it its triggers let
+            // go on (their script's Close Window closed it) goes on with
+            // the file's next window; otherwise closing the file stops.
+            let began_with = self
+                .closing
+                .as_ref()
+                .is_some_and(|closing| closing.windows.contains(&origin));
+            if closes && began_with {
+                self.close_next(ctx, origin);
+            } else if !self.script.taken_over {
+                // A close a trigger took over is that script's now.
+                self.closing = None;
+            }
         }
     }
 
@@ -2122,6 +2256,8 @@ impl OpenMakerApp {
         self.script.queued.clear();
         self.script.held.clear();
         self.script.resumes.clear();
+        self.script.taken_over = false;
+        self.script.close_file = None;
         for id in self.window_ids() {
             self.with_window(id, |app| {
                 app.w.pending_enter = None;
@@ -2582,7 +2718,7 @@ impl OpenMakerApp {
         };
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
-            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(CornerRadius::same(12))
             .shadow(ctx.global_style().visuals.window_shadow)
             .inner_margin(egui::Margin::same(16));
@@ -2622,7 +2758,7 @@ impl OpenMakerApp {
         }
         egui::Modal::new(Id::unique(("script_prompt", view.id)))
             .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(30))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(match view.prompt {
                     Prompt::Export(_)
@@ -3564,6 +3700,85 @@ mod queued_window_tests {
         );
     }
 
+    /// A script's Close File closes the file once the script has ended,
+    /// when the worker has sent every window's last state: the script
+    /// stays busy until then, and a Quit chosen meanwhile, or the script's
+    /// own Exit Application, quits after the close.
+    #[test]
+    fn a_script_close_file_waits_for_the_script_and_quits_after() {
+        for exit_application in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = crate::app::tests::two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.script.running = true;
+            app.on_script_event(&ctx, ScriptEvent::CloseFile);
+            if exit_application {
+                app.on_script_event(&ctx, ScriptEvent::Quit);
+            } else {
+                app.apply(&ctx, Action::Quit);
+            }
+            assert_eq!(app.window_ids(), [FIRST, 2], "{exit_application}");
+            assert!(app.script.busy(), "{exit_application}");
+            let update = WindowUpdate {
+                file: 0,
+                state: app.window_state(),
+                data_changed: false,
+                refreshed: false,
+                objects: Vec::new(),
+                scroll: Vec::new(),
+                fronted: Vec::new(),
+                originals: Default::default(),
+                found_set: None,
+                background: false,
+            };
+            app.on_script_event(
+                &ctx,
+                ScriptEvent::Finished {
+                    window: Box::new(update),
+                    globals: Box::default(),
+                    message: None,
+                },
+            );
+            assert!(
+                app.docs().all(|doc| doc.session.is_none()),
+                "{exit_application}"
+            );
+            assert!(
+                app.quit_ready || app.quit_waiting.is_some(),
+                "{exit_application}"
+            );
+        }
+    }
+
+    /// A close trigger's Close File or Exit Application takes over the close
+    /// it holds even after its script closed the trigger's window, and
+    /// another held action's veto (the halt's, say) leaves it.
+    #[test]
+    fn a_close_takeover_survives_its_window_and_other_vetoes() {
+        let ctx = egui::Context::default();
+        let mut app = a_dirty_window_of_two();
+        app.script
+            .held
+            .insert(7, (FIRST, Held::Action(Action::CloseWindow, 1)));
+        app.remove_window(FIRST);
+        assert!(app.take_over_close(None, true));
+        let closing = app.closing.clone().expect("taken over");
+        assert!(closing.quiet && closing.quit);
+        assert_eq!(closing.windows, [2]);
+        assert!(app.script.held.is_empty() && app.script.taken_over);
+        app.resume_held(&ctx, 2, Held::Action(Action::GoToRecord(1), 1), false, None);
+        assert_eq!(app.closing.as_ref(), Some(&closing));
+        // A veto from a window that has closed since leaves it too.
+        app.resume_held(
+            &ctx,
+            FIRST,
+            Held::Action(Action::GoToRecord(1), 1),
+            false,
+            None,
+        );
+        assert_eq!(app.closing, Some(closing));
+    }
+
     /// An action of the user's held for its trigger script does not go on
     /// once the connection is lost, whether the trigger let it before or
     /// after the loss: closing (a window's close box, File > Close, Quit)
@@ -3571,8 +3786,8 @@ mod queued_window_tests {
     /// the others are refused offline.
     #[test]
     fn a_lost_connection_drops_the_actions_held_for_triggers() {
-        let closing = |closing| (Action::CloseWindow, closing);
-        for (action, closing) in [
+        let closing = |quit| (Action::CloseWindow, quit);
+        for (action, quit) in [
             closing(None),
             closing(Some(false)),
             closing(Some(true)),
@@ -3581,12 +3796,11 @@ mod queued_window_tests {
             (Action::NewRecord, None),
         ] {
             for approved_before_loss in [true, false] {
-                let what =
-                    format!("{action:?}, closing {closing:?}, before {approved_before_loss}");
+                let what = format!("{action:?}, closing {quit:?}, before {approved_before_loss}");
                 let ctx = egui::Context::default();
                 let mut app = a_dirty_window_of_two();
                 app.script.running = true;
-                app.closing = closing;
+                app.closing = quit.map(|quit| app.closing_front(quit));
                 app.script
                     .held
                     .insert(1, (FIRST, Held::Action(action.clone(), 1)));

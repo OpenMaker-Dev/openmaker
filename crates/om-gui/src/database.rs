@@ -11,8 +11,8 @@
 //! order) is shown disabled.
 
 use egui::{
-    pos2, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Role, Sense, Stroke,
-    StrokeKind, WidgetInfo,
+    pos2, vec2, Align, Align2, CornerRadius, Id, Layout, RichText, Role, Sense, Stroke, StrokeKind,
+    WidgetInfo,
 };
 use std::sync::Arc;
 
@@ -542,7 +542,7 @@ impl ManageDatabase {
                     .inner_margin(18)
                     .shadow(ctx.global_style().visuals.window_shadow),
             )
-            .backdrop_color(Color32::from_black_alpha(24))
+            .backdrop_color(theme::SCRIM)
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.label(
@@ -594,7 +594,7 @@ impl ManageDatabase {
                     });
                 }
                 if let Some(error) = &self.error {
-                    ui.colored_label(Color32::from_rgb(175, 35, 35), error);
+                    ui.colored_label(theme::RED_INK, error);
                 }
                 if let Some(reason) = self
                     .schema
@@ -1349,8 +1349,8 @@ fn column_list(
         )
     };
     egui::Frame::new()
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, theme::FIELD_BORDER))
+        .fill(theme::CONTROL_BG)
+        .stroke(Stroke::new(1.0, theme::BORDER))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let (header, _) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
@@ -1389,11 +1389,8 @@ fn column_list(
                             ui.allocate_exact_size(vec2(width, 20.0), Sense::click());
                         let on = selected == Some(*row_id);
                         if on {
-                            ui.painter().rect_filled(
-                                rect,
-                                CornerRadius::ZERO,
-                                Color32::from_gray(0xD8),
-                            );
+                            ui.painter()
+                                .rect_filled(rect, CornerRadius::ZERO, theme::HOVER_FILL);
                         }
                         for (column, value) in cells.iter().enumerate() {
                             let color = if value.weak {
@@ -1437,7 +1434,7 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, tabs: &[&str], selected: usize) -> Opti
         .collect();
     let (track, _) = ui.allocate_exact_size(vec2(widths.iter().sum(), 22.0), Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(track, CornerRadius::same(6), Color32::from_gray(0xE3));
+    painter.rect_filled(track, CornerRadius::same(6), theme::SIDEBAR_BG);
     let mut left = track.left();
     let mut clicked = None;
     for (index, (tab, width)) in tabs.iter().zip(&widths).enumerate() {
@@ -1448,7 +1445,7 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, tabs: &[&str], selected: usize) -> Opti
             painter.rect(
                 rect.shrink(2.0),
                 CornerRadius::same(5),
-                Color32::WHITE,
+                theme::CONTROL_BG,
                 Stroke::new(0.5, theme::BUTTON_BORDER),
                 StrokeKind::Inside,
             );

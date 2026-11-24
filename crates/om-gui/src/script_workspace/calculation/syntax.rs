@@ -24,7 +24,7 @@ pub(super) const TEXT_LITERAL: Color32 = Color32::from_rgb(0xC2, 0x41, 0x0C);
 /// Comments, in italics (42 shows none).
 pub(super) const COMMENT: Color32 = Color32::from_rgb(0x5E, 0x86, 0x4D);
 /// Everything else: fields, variables, operators, separators, keywords.
-pub(super) const PLAIN: Color32 = Color32::BLACK;
+pub(super) const PLAIN: Color32 = crate::theme::TEXT;
 
 /// FileMaker stores a line break as CR; egui breaks lines at LF only (and
 /// draws no CR). The editor shows each CR as an LF, character for

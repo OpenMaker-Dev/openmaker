@@ -3,7 +3,7 @@
 //! FileMaker's LayoutLeftPanel exposes Fields, Objects and Add-ons tabs.
 //! Fields lists the current layout's own table; Add-ons stays disabled.
 
-use egui::{vec2, Align2, Color32, CornerRadius, RichText, Role, Sense, Stroke, Ui, WidgetInfo};
+use egui::{vec2, Align2, CornerRadius, RichText, Role, Sense, Stroke, Ui, WidgetInfo};
 use om_data::ObjectGeom;
 
 use crate::icons::{self, Icon};
@@ -305,7 +305,7 @@ fn object_row(ui: &mut Ui, object: &ObjectGeom, label: &str, selected: bool) -> 
         theme::INSPECTOR_BG
     };
     let color = if selected {
-        Color32::WHITE
+        theme::ON_ACCENT
     } else {
         theme::TEXT
     };

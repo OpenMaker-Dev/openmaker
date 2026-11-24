@@ -440,6 +440,7 @@ impl OpenMakerApp {
         doc.connection_lost = self.w.connection_lost.clone();
         if let Some(session) = &self.w.session {
             let mut new = Session::new(session.target.clone(), session.page_size);
+            new.destination = session.destination.clone();
             new.paper = session.paper.clone();
             new.layouts = session.layouts.clone();
             new.layout_menu = session.layout_menu.clone();
@@ -751,6 +752,8 @@ impl OpenMakerApp {
                     self.script.paused = None;
                     self.script.prompt = None;
                     self.presentation = None;
+                    // A close or Quit the script asked for still goes on.
+                    self.close_or_quit_after_script(ctx);
                     return;
                 }
                 if !self.has_window(id) && self.w.connection_lost.is_none() {

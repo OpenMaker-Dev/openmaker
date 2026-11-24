@@ -177,9 +177,9 @@ impl FieldsPane {
                         );
                     }
                     let (text, icon) = if selected {
-                        (Color32::WHITE, Color32::WHITE)
+                        (theme::ON_ACCENT, theme::ON_ACCENT)
                     } else {
-                        (theme::TEXT, FIELD_ICON)
+                        (theme::TEXT, theme::ICON)
                     };
                     type_icon(
                         ui.painter(),
@@ -234,9 +234,6 @@ impl FieldsPane {
             });
     }
 }
-
-/// The gray of the type icons (42).
-const FIELD_ICON: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
 
 /// A field's type icon (42: `Tt` text, a picture for containers, `fx` for
 /// calculations, a clock over a calendar for timestamps). OpenMaker's own

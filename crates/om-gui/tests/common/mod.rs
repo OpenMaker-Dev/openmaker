@@ -189,6 +189,16 @@ pub fn editing(app: &App) -> bool {
     app.state().record_edit_state().is_some()
 }
 
+/// A right click on the node labelled `label`, and its context menu's
+/// sizing pass.
+pub fn right_click(app: &mut App, label: &str) {
+    if app.query_by_label(label).is_none() {
+        wait_for_label(app, label);
+    }
+    app.get_by_label(label).click_secondary();
+    app.run_steps(3);
+}
+
 pub fn click(app: &mut App, label: &str) {
     // A control that shows once data arrives, as a script in the Scripts
     // menu does: the menu reads the file's catalog when first opened

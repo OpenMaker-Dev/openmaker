@@ -64,6 +64,10 @@ pub(crate) enum Icon {
     File,
     /// A drop-down calendar's icon.
     Calendar,
+    /// Home's own row in its sidebar: a house.
+    Home,
+    /// A host, and a file on one: a server of two stacked units.
+    Server,
 }
 
 /// Maps the 20x20 design grid into a target rect.
@@ -434,6 +438,29 @@ pub(crate) fn paint(
             for y in [5.0, 8.3, 11.6, 14.9] {
                 g.line(painter, &[(2.5, y), (17.5, y)]);
             }
+        }
+        Icon::Home => {
+            g.closed(
+                painter,
+                &[
+                    (2.5, 9.5),
+                    (10.0, 2.5),
+                    (17.5, 9.5),
+                    (15.5, 9.5),
+                    (15.5, 17.5),
+                    (4.5, 17.5),
+                    (4.5, 9.5),
+                ],
+            );
+            g.rect(painter, 8.25, 12.0, 11.75, 17.5, 0.5);
+        }
+        Icon::Server => {
+            g.rect(painter, 2.5, 3.5, 17.5, 9.5, 1.5);
+            g.rect(painter, 2.5, 10.5, 17.5, 16.5, 1.5);
+            g.dot(painter, 5.5, 6.5, 0.9);
+            g.dot(painter, 5.5, 13.5, 0.9);
+            g.line(painter, &[(9.5, 6.5), (14.5, 6.5)]);
+            g.line(painter, &[(9.5, 13.5), (14.5, 13.5)]);
         }
         Icon::Calendar => {
             g.rect(painter, 2.5, 4.0, 17.5, 17.0, 1.5);

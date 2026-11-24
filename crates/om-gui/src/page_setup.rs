@@ -155,7 +155,7 @@ pub(crate) fn dialog(
     ui.label("Scale: 100%. Layout margins are preserved.");
     let valid = paper.validate();
     if let Err(message) = &valid {
-        ui.colored_label(egui::Color32::DARK_RED, message);
+        ui.colored_label(crate::theme::RED_INK, message);
     }
     ui.add_space(12.0);
     let mut answer = None;
