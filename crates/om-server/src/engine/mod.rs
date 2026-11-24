@@ -1,14 +1,12 @@
-//! The engine interface (`docs/server-storage.md` 5) for record writes,
-//! locks, schema changes, container data, authoring edits and server
-//! scripts' writes and locks: every change of this kind a request makes is
-//! an [`Operation`], a value that owns its data, [`run`] against what the
-//! engine holds of the file, and answered with an [`Outcome`]: the reply
-//! and the notices for other clients. Effects are what the run did to the
-//! [`Transaction`] and the [`Locks`]. The file engine ([`FileEngine`])
-//! stores them, and only then does the caller encode the reply and deliver
-//! the notices.
+//! The engine interface (`docs/server-storage.md` 5): every change the
+//! server makes to a hosted file or its lock table is an [`Operation`], a
+//! value that owns its data, [`run`] against what the engine holds of the
+//! file, and answered with an [`Outcome`]: the reply and the notices for
+//! other clients. Effects are what the run did to the [`Transaction`] and
+//! the [`Locks`]. The file engine ([`FileEngine`]) stores them, and only
+//! then does the caller encode the reply and deliver the notices.
 //!
-//! Operations so far: commit records (op70), reserve record ids (op71),
+//! The operations: commit records (op70), reserve record ids (op71),
 //! advance a serial (op72), take, upgrade and release locks (op60, op61,
 //! op62, op65), upload to a catalog (op13), store what an op86 program's
 //! schema instructions changed (UploadMultiple, GenerateMemberKey,
@@ -22,8 +20,44 @@
 //! (Change Password, Reset Account Password, Enable Account, Delete
 //! Account); finishing the deferred field work a file is opened with, and
 //! its save (op240's save again); and keeping a window's found set in a
-//! local file. Every change the server makes to a hosted file or its lock
-//! table is one of these.
+//! local file.
+//!
+//! Only the engine can change a file: the store's write guard and the
+//! lock table for changing take a [`Writer`], which only this module can
+//! make, and `Hosted::lock_table` gives everyone else the table to read.
+//! What else takes the store for writing is the setup of a file no one can
+//! reach yet (`hosting::load_hosted`) and test switches
+//! (`Hosted::fail_commit_saves`, `Writer::for_tests`).
+//!
+//! # The environment
+//!
+//! What an operation reads of the world besides the file comes from the
+//! [`Environment`]: the clock (`now`), the random source (`fill_random`,
+//! `try_fill_random`) and the stopwatch of its formulas' time budgets. A
+//! replay on a seeded environment gives the same outcome only if every
+//! operation draws the same bytes in the same order, so each draws in this
+//! order and only when it gets that far:
+//!
+//! - a record environment ([`crate::recalc::record_environment_in`]): 16
+//!   bytes for its UUID, one clock reading, 8 bytes for the seed of
+//!   `Random`'s generator, then a stopwatch;
+//! - op70: one record environment, when it checks the first listed record
+//!   that exists or that it creates;
+//! - op73, and the deferred field work finished at opening (table by
+//!   table): one record environment for each recalculation, and one more
+//!   for each record when its calculations read `Get ( UUID )`, the record
+//!   keeping the first one's `Random` and stopwatch; 16 bytes for each
+//!   container library member it stores, as it reaches it;
+//! - op88: 16 bytes when the data becomes a new library member;
+//! - a server script's commit: 16 bytes for each new library member its
+//!   records' container data becomes, record by record;
+//! - an authoring edit: one clock reading for its stamps, then 16 bytes for
+//!   each UUID of what it adds, in the order it adds them;
+//! - Change Password and Reset Account Password: one clock reading, then,
+//!   once every check passed, the 10 bytes of the salt (`try_fill_random`,
+//!   whose failure refuses the edit); Enable Account and Delete Account: one
+//!   clock reading for the stamp, when they write a stamped change;
+//! - the other operations draw nothing.
 //!
 //! # Credentials
 //!
@@ -875,6 +909,26 @@ pub trait Environment: Send + Sync {
 /// The random source gave no bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoRandom;
+
+/// What only the engine can make, its field being private to `engine`:
+/// the file's store for writing and its lock table for changing take one
+/// (`Hosted::write_store`, `try_write_store`, `locks`), so that code
+/// outside the engine that would change a hosted file does not compile
+/// (docs/server-storage.md 5). A `Store` can be changed only through the
+/// write guard, and a lock table read through `Hosted::lock_table` only
+/// read.
+pub(crate) struct Writer(());
+
+/// The engine's [`Writer`].
+const WRITER: Writer = Writer(());
+
+impl Writer {
+    /// One for a test that sets a file up, or breaks it, on purpose.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Writer(())
+    }
+}
 
 /// The host's clock and the system's random source.
 #[derive(Debug, Default)]

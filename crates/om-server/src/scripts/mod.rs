@@ -885,7 +885,7 @@ mod tests {
         // Manage Database replaces the layout catalog without layout 2.
         {
             let hosted = hosted(&shared);
-            let mut store = hosted.write_store();
+            let mut store = hosted.write_store(&crate::engine::Writer::for_tests());
             let mut layouts = store.node(&[&[4], &[5]]).unwrap().clone();
             layouts.remove(&[&[2]]);
             store.put_subtree(&[vec![4], vec![5]], layouts);
@@ -911,7 +911,7 @@ mod tests {
             let hosted = hosted.clone();
             let t = t.clone();
             std::thread::spawn(move || {
-                let mut store = hosted.write_store();
+                let mut store = hosted.write_store(&crate::engine::Writer::for_tests());
                 let mut journal = store.begin_commit();
                 store.guarded(&mut journal, |store, journal| {
                     store.write_record_in(journal, &t, 1, None);
@@ -1007,7 +1007,7 @@ mod tests {
             ]
         );
         // Every lock of the session is released, and its id with it.
-        assert!(!hosted(&shared).locks.lock().unwrap().held_by_other(
+        assert!(!hosted(&shared).lock_table().held_by_other(
             &[uint_segment(fixture::TABLE), vec![5], serial::encode(1)],
             LockUser {
                 connection: CLIENT,
@@ -1247,7 +1247,7 @@ mod tests {
             stored(&shared, 1, fixture::NAME).as_deref(),
             Some("Write tests")
         );
-        assert!(!hosted(&shared).locks.lock().unwrap().held_by_other(
+        assert!(!hosted(&shared).lock_table().held_by_other(
             &[uint_segment(fixture::TABLE), vec![5], serial::encode(1)],
             LockUser {
                 connection: CLIENT,
@@ -1443,7 +1443,7 @@ mod tests {
             txn: 5,
         };
         hosted(&shared)
-            .locks
+            .locks(&crate::engine::Writer::for_tests())
             .lock()
             .unwrap()
             .lock(

@@ -14,11 +14,10 @@
 //! (write-path.md 6). The session changes the file and its locks through
 //! the engine's operations (`crate::engine`: a commit, a lock and its
 //! release, Set Next Serial Value, a reserved record id, a serial number,
-//! the indexes a find built, the session's end and the save after it) and
-//! delivers the notices they raise; the account steps' edits are the one
-//! change still made outside the engine (`Hosted::change_password` and the
-//! others, [#712](https://github.com/OpenMaker-Dev/openmaker/issues/712)). Inside Open Transaction the changes wait in an
-//! overlay that reads, finds and found sets see, and Commit Transaction
+//! the indexes a find built, the account steps' edits, the session's end
+//! and the save after it) and delivers the notices they raise. Inside Open
+//! Transaction the changes wait in an overlay that reads, finds and found
+//! sets see, and Commit Transaction
 //! writes them all or none. Calculations read the stored values, decoded
 //! per field type in the file's formats ([`super::values`], every
 //! repetition), related records through the file's relationships

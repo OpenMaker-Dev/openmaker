@@ -6,7 +6,7 @@ use log::{info, warn};
 use super::transaction::{self, Hold, Locks, Transaction};
 use super::{
     run, ChangeSchema, Credentials, Draft, Edited, Environment, FileNotSaved, HostEnvironment,
-    Operation, Outcome, Reply, StoreIndexes,
+    Operation, Outcome, Reply, StoreIndexes, WRITER,
 };
 use crate::hosting::{Hosted, StoreWriteGuard};
 use crate::store::{MemberKey, Store};
@@ -71,7 +71,7 @@ enum Save {
     Reservation,
     /// op72, op13, op86's writes, a find's indexes, op87 and op88: the file
     /// saved if it changed, and a failed save not reported, as
-    /// `Hosted::save` does and as op13 dropped the result of
+    /// `Hosted::save` did and as op13 dropped the result of
     /// `Hosted::save_held`.
     Unchecked,
     /// op73: [`Save::Unchecked`] when its work changed the file, which is
@@ -190,7 +190,7 @@ fn complete(draft: Draft, store: &mut Store) -> (Operation, Vec<MemberKey>) {
     }
 }
 
-/// Save the file if it changed, as `Hosted::save` does: not a read-only
+/// Save the file if it changed, as `Hosted::save` did: not a read-only
 /// one, and a failed save is not reported.
 fn save_unchecked(file: &Hosted, store: &mut Store) {
     // A failed save leaves the change in memory for the next one, and the
@@ -251,7 +251,7 @@ impl FileEngine {
         match needs(&operation) {
             Needs::LockTable => {
                 self.record(&operation);
-                let mut locks = Locks::new(&file.locks);
+                let mut locks = Locks::new(file.locks(&WRITER));
                 let outcome = run(
                     operation,
                     credentials,
@@ -266,7 +266,7 @@ impl FileEngine {
             Needs::View => {
                 let store = file.read_store();
                 self.record(&operation);
-                let mut locks = Locks::new(&file.locks);
+                let mut locks = Locks::new(file.locks(&WRITER));
                 let outcome = run(
                     operation,
                     credentials,
@@ -278,9 +278,11 @@ impl FileEngine {
                 locks.keep();
                 outcome
             }
-            Needs::Transaction => self.submit_write(file, file.write_store(), credentials, |_| {
-                (operation, Vec::new())
-            }),
+            Needs::Transaction => {
+                self.submit_write(file, file.write_store(&WRITER), credentials, |_| {
+                    (operation, Vec::new())
+                })
+            }
         }
     }
 
@@ -293,7 +295,7 @@ impl FileEngine {
     pub fn try_submit(&self, file: &Hosted, operation: Operation) -> Option<Outcome> {
         match needs(&operation) {
             Needs::Transaction => {
-                let store = file.try_write_store()?;
+                let store = file.try_write_store(&WRITER)?;
                 Some(self.submit_write(file, store, Credentials::None, |_| (operation, Vec::new())))
             }
             Needs::LockTable | Needs::View => Some(self.submit(file, operation)),
@@ -306,9 +308,12 @@ impl FileEngine {
     /// completed operation ([`Self::recording`]), which [`Self::submit`]
     /// replays.
     pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Outcome {
-        self.submit_write(file, file.write_store(), Credentials::None, |store| {
-            complete(draft, store)
-        })
+        self.submit_write(
+            file,
+            file.write_store(&WRITER),
+            Credentials::None,
+            |store| complete(draft, store),
+        )
     }
 
     /// Run the operation `operation` gives for `store`, `file`'s, which
@@ -325,7 +330,7 @@ impl FileEngine {
         let (operation, taken) = operation(&mut store);
         self.record(&operation);
         let save = save(&operation);
-        let mut locks = Locks::new(&file.locks);
+        let mut locks = Locks::new(file.locks(&WRITER));
         let mut tx = Transaction::new(&mut store);
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(
@@ -440,7 +445,7 @@ impl FileEngine {
             }
         };
         drop(store);
-        transaction::release(&file.locks, held);
+        transaction::release(file.locks(&WRITER), held);
         outcome
     }
 }

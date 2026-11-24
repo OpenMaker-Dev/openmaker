@@ -18,7 +18,7 @@ use crate::config::{HostedFile, Privileges};
 use crate::connection::host_time_key_at;
 use crate::engine::{
     AccountStamp, ChangePassword, DeleteAccount, EnableAccount, Environment, FileEngine, Operation,
-    Password, Reply, ResetPassword, Transaction,
+    Password, Reply, ResetPassword, Transaction, Writer,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -227,8 +227,9 @@ pub struct Hosted {
     /// Taken through [`Hosted::read_store`] and [`Hosted::write_store`],
     /// which keeps `accounts` following it.
     store: RwLock<Store>,
-    /// The locks clients hold on it.
-    pub locks: Mutex<LockTable>,
+    /// The locks clients hold on it: changed only by the engine
+    /// ([`Hosted::locks`]), read by anyone ([`Hosted::lock_table`]).
+    locks: Mutex<LockTable>,
     /// The connections to tell about changes.
     pub registrations: Mutex<Vec<Registration>>,
     /// Recently rendered container thumbnails (op96).
@@ -299,6 +300,18 @@ impl Drop for StoreWriteGuard<'_> {
         if accounts.generation != self.store.schema_generation() {
             *accounts = Accounts::of(&self.store);
         }
+    }
+}
+
+/// A hosted file's lock table held for reading ([`Hosted::lock_table`]):
+/// it derefs to the table, never mutably, so code outside the engine
+/// cannot change a lock.
+pub(crate) struct LockTableView<'a>(MutexGuard<'a, LockTable>);
+
+impl std::ops::Deref for LockTableView<'_> {
+    type Target = LockTable;
+    fn deref(&self) -> &LockTable {
+        &self.0
     }
 }
 
@@ -414,8 +427,9 @@ impl Hosted {
     }
 
     /// [`Hosted::write_store`] when no one holds the store, `None`
-    /// otherwise: for work that must not wait on a request.
-    pub(crate) fn try_write_store(&self) -> Option<StoreWriteGuard<'_>> {
+    /// otherwise: for work that must not wait on a request. Only the engine
+    /// has a [`Writer`].
+    pub(crate) fn try_write_store(&self, _: &Writer) -> Option<StoreWriteGuard<'_>> {
         let store = match self.store.try_write() {
             Ok(store) => store,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -427,8 +441,16 @@ impl Hosted {
         })
     }
 
-    /// The file's contents for writing ([`Hosted::read_store`]).
-    pub(crate) fn write_store(&self) -> StoreWriteGuard<'_> {
+    /// The file's contents for writing ([`Hosted::read_store`]). Only the
+    /// engine has a [`Writer`]: every change to the file is an operation
+    /// it runs (docs/server-storage.md 5).
+    pub(crate) fn write_store(&self, _: &Writer) -> StoreWriteGuard<'_> {
+        self.store_for_writing()
+    }
+
+    /// The file's contents for writing, for this module's setup of a file
+    /// no one else can reach yet and for its test switch.
+    fn store_for_writing(&self) -> StoreWriteGuard<'_> {
         let store = self.store.write().unwrap_or_else(|poisoned| {
             warn!("{:?}: a request panicked holding the store", self.name);
             poisoned.into_inner()
@@ -437,6 +459,14 @@ impl Hosted {
             hosted: self,
             store,
         }
+    }
+
+    /// Make every commit's save of this file fail, or work again, as
+    /// storage refusing it would (`ServerHandle::failing_commit_saves`, a
+    /// test's switch).
+    #[cfg(debug_assertions)]
+    pub(crate) fn fail_commit_saves(&self, fail: bool) {
+        self.store_for_writing().fail_commit_saves = fail;
     }
 
     /// Whether a request panicked holding the store.
@@ -455,11 +485,19 @@ impl Hosted {
             .clone()
     }
 
-    /// The file's lock table, also after a request panicked holding it.
-    pub fn lock_table(&self) -> MutexGuard<'_, LockTable> {
-        self.locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// The file's lock table, to read, also after a request panicked
+    /// holding it: only the engine changes it ([`Hosted::locks`]).
+    pub(crate) fn lock_table(&self) -> LockTableView<'_> {
+        LockTableView(
+            self.locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// The file's lock table, to change: only the engine has a [`Writer`].
+    pub(crate) fn locks(&self, _: &Writer) -> &Mutex<LockTable> {
+        &self.locks
     }
 
     /// Whether the file is hosted read-only, including after refused deferred work.
@@ -1917,7 +1955,7 @@ fn load_hosted(
     )?);
     // Before any save: saves write only where the path still leads to
     // this file (#468).
-    loaded.write_store().set_file(on_disk);
+    loaded.store_for_writing().set_file(on_disk);
     drop(file);
     loaded.finish_deferred_work(engine);
     loaded.commit_recovery(engine);
@@ -2043,7 +2081,7 @@ mod tests {
             om_hbam::OwnedNode::leaf(Vec::new(), StoredPassword::encode("changed", [9; 10])),
         );
         let path: Vec<Vec<u8>> = path.iter().map(|segment| segment.to_vec()).collect();
-        assert!(hosted.write_store().put_subtree(&path, record));
+        assert!(hosted.store_for_writing().put_subtree(&path, record));
         assert!(!clerk(fixture::CLERK_PASSWORD));
         assert!(clerk("changed"));
     }

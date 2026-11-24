@@ -8,11 +8,12 @@ OpenMaker's own design. FileMaker Server works differently inside
 it except the contract in section 2.
 
 **Status: design.** Only the file engine exists
-(`crates/om-server/src/store.rs`), and of the engine interface the write
-operations of record writes, locks, schema changes, container data and
-authoring edits (section 5 says which and what still changes a file from
-its request handler). The rest of the interface, the store engine and
-everything in sections 6 to 12 are specified here and not built.
+(`crates/om-server/src/store.rs`). Of the engine interface, the write
+operations are built: every change the server makes to a hosted file or
+its lock table goes through them (section 5). Still to come: views and
+`export`, `import` and `capabilities` (section 5), the file engine's
+reporting of failed saves (section 5, last part), the store engine and
+everything in sections 6 to 12, which are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -149,22 +150,23 @@ belongs to the file as a whole: it is exported, and never deployed.
 The rest of the server reaches a file's contents only through this
 interface. It has three parts.
 
-**Status.** Write operations are built for record writes, locks, schema
-changes, container data, authoring edits, server scripts and account
-edits, with the file engine behind them (`crates/om-server/src/engine/`):
-op70, op71, op72, op60, op61, op62, op65, op13, op73, op86's schema
-instructions and stored indexes, op87, op88, and op240's edits and its
-Save, from clients; the same operations of server scripts (reserving a
-record id, advancing a serial, releasing a transaction's locks, storing
-the indexes a find or a related-record lookup built), a server script's
-commit (with the container data it stores and counts), its Set Next
-Serial Value, its locks on a record and on the accounts catalog with
-their releases, its account steps and the save at its end; the release
-of a session's locks when its connection ends, it logs out of a file or
-closes it, or a server script's session ends; the desktop's own Change
-Password and its saved found sets; and the deferred field work a file is
-opened with, with its save. Views, `export`, `import` and
-`capabilities` are not built.
+**Status.** The write operations are built, with the file engine behind
+them (`crates/om-server/src/engine/`), and every change the server makes
+to a hosted file or its lock table is one: a client's op70, op71, op72,
+op60, op61, op62, op65, op13, op73, op86's schema instructions and stored
+indexes, op87, op88, and op240's edits and its Save; a server script's
+reservations, serials, stored indexes, commit (with the container data it
+stores and counts), Set Next Serial Value, locks on a record and on the
+accounts catalog and their releases, account steps and the save at its
+end; the release of a session's locks when its connection ends, it logs
+out of a file or closes it, or a server script's session ends; the
+desktop's own Change Password and its saved found sets; and the deferred
+field work a file is opened with, with its save. Only the engine can take
+a file's store for writing or change its lock table (`engine::Writer`):
+code elsewhere that tries does not compile, except the setup of a file no
+one can reach yet and test switches. Views, `export`, `import` and
+`capabilities` are not built, and nor are the failed-save fixes at the
+end of this section.
 
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
@@ -179,47 +181,56 @@ read lock that waits (schema-path.md 4.5), is how OpenMaker Server works
 today and is not part of this design.
 
 **Write operations.** Every change the server makes is a value of one
-type, a write operation (`engine::Operation`): commit records (op70,
-`CommitRecords`), reserve record ids (op71, `ReserveRecordIds`), advance a
-serial (op72, `AdvanceSerial`), upload to a catalog (op13,
-`UploadToCatalog`; op86's UploadMultiple and DeleteTable, `ChangeSchema`),
-update a table (op73, `UpdateTable`), store an index built for a find
-(`StoreIndexes`), store container data (op88, `StoreContainerData`),
-adjust a container's reference count, which releases it at 0 (op87,
-`AdjustContainerCount`), an authoring edit (op240, `EditDesign`, one
-variant carrying the decoded edit), the authoring extension's Save
-(op240, `SaveFile`), a deploy (section 9), taking, upgrading and
-releasing locks (op60, op61, op62, op65: `TakeLock`, `UpgradeLock`,
-`ReleaseLock`, `ReleaseLocks`), a server script's commit
-(`CommitScriptRecords`) and Set Next Serial Value (`SetNextSerial`), a
-server script's lock on a record or on the accounts catalog and its
-release (`TakeScriptLock`, `ReleaseScriptLock`), and the release of a
-session's locks when it ends (`ReleaseSessionLocks`), the account edits
-(Change Password, Reset Account Password, Enable Account, Delete
-Account: `ChangePassword`, `ResetPassword`, `EnableAccount`,
-`DeleteAccount`), finishing the deferred field work a file records as
-pending (`FinishDeferredWork`), and keeping the found set a window of a
-local file closes on (`SaveFoundSet`). An operation owns
-its data and names who asks: the lock user (connection and transaction),
-the name other users see for it, for op70 the account, its privilege set
-at login and those of the listed records the session was served without
-their values, for op73 the account its calculations see, for an
-authoring edit the connection, session name and account its locks and
-stamps name, and for a server script's operations its session's lock
-user, whose connection no client has, so that its notices reach every
-client registered on the file, and for an account edit whether it may
-manage the account and the names its stamps carry. A server script's
-lock is not op60: it
-reads nothing of the store, no cap applies, and the script host answers
-a conflict with the step's error (301 for a record, as a client's lock is
-refused; 310 for the accounts catalog, script-runtime.md 2.3). Its commit
-carries its records as the script host finished them, with the container
-data its steps set: the host applied the records' rules and checked the
-session's privileges before, so the operation names no account. The release of the accounts
-catalog carries the notices of the change the account step made
-(schema-path.md 9), as op62 names the change its release tells of. The
-record ids a server script reserves wait unsaved for its commit, so its
-end submits op240's Save, which saves those of records it did not commit.
+type, a write operation (`engine::Operation`):
+
+- records: commit records (op70, `CommitRecords`), reserve record ids
+  (op71, `ReserveRecordIds`), advance a serial (op72, `AdvanceSerial`), a
+  server script's commit (`CommitScriptRecords`) and Set Next Serial Value
+  (`SetNextSerial`);
+- locks: take, upgrade and release them (op60, op61, op62, op65:
+  `TakeLock`, `UpgradeLock`, `ReleaseLock`, `ReleaseLocks`), a server
+  script's lock on a record or on the accounts catalog and its release
+  (`TakeScriptLock`, `ReleaseScriptLock`), and the release of a session's
+  locks when it ends (`ReleaseSessionLocks`);
+- schema: upload to a catalog (op13, `UploadToCatalog`; op86's
+  UploadMultiple and DeleteTable, `ChangeSchema`), update a table (op73,
+  `UpdateTable`), store an index built for a find (`StoreIndexes`), and
+  finish the deferred field work a file records as pending
+  (`FinishDeferredWork`);
+- container data: store it (op88, `StoreContainerData`) and adjust a
+  member's reference count, which releases it at 0 (op87,
+  `AdjustContainerCount`);
+- design: an authoring edit (op240, `EditDesign`, one variant carrying the
+  decoded edit), the authoring extension's Save (op240, `SaveFile`, which
+  a server script's end and the save of deferred work at opening submit
+  too) and a deploy (section 9);
+- accounts: Change Password, Reset Account Password, Enable Account and
+  Delete Account (`ChangePassword`, `ResetPassword`, `EnableAccount`,
+  `DeleteAccount`);
+- the desktop's saved found set (`SaveFoundSet`).
+
+An operation owns its data and names who asks: the lock user (connection
+and transaction), the name other users see for it, for op70 the account,
+its privilege set at login and those of the listed records the session
+was served without their values, for op73 the account its calculations
+see, for an authoring edit the connection, session name and account its
+locks and stamps name, for a server script's operations its session's
+lock user, whose connection no client has, so that its notices reach
+every client registered on the file, and for an account edit whether it
+may manage the account and the names its stamps carry. A server script's
+lock is not op60: it reads nothing of the store, no cap applies, and the
+script host answers a conflict with the step's error (301 for a record,
+as a client's lock is refused; 310 for the accounts catalog,
+script-runtime.md 2.3). Its commit carries its records as the script
+host finished them, with the container data its steps set: the host
+applied the records' rules and checked the session's privileges before,
+so the operation names no account. The release of the accounts catalog
+carries the notices of the change the account step made (schema-path.md
+9), as op62 names the change its release tells of; the account edit
+itself raises none. The record ids a server script reserves wait unsaved
+for its commit, so its end submits op240's Save, which saves those of
+records it did not commit.
+
 The passwords an account edit was given are not part of its operation:
 they travel beside it to `run` alone (`engine::Credentials`,
 `FileEngine::submit_with`), are never copied, are wiped once checked or
@@ -229,7 +240,9 @@ replay supplies them again. A log will keep an account edit's effects
 (the account member as rewritten, with its salted verifier, as the file
 holds it) and its history only the fact of the change (section 9). A
 salt the random source cannot give refuses the edit as unwritten, as
-before. op70's staged records travel in it: the session's temporary area lends
+before.
+
+op70's staged records travel in it: the session's temporary area lends
 them (`writes::TempArea::lend`) and takes back those the commit did not
 take. A commit that was not stored has still taken the records it reached,
 as before the interface: the file is put back, the staged edits are gone,
@@ -263,9 +276,11 @@ view plus put, delete and replace-subtree), the file's lock table
 (`engine::Locks`) and an environment (`engine::Environment`), from which
 it takes the clock and randomness: an authoring edit's modification
 stamps and the UUIDs of what it adds, an account edit's stamps, status
-time and password salt, the unique ids of the container data op88 and a
-server script's commit store, and what the formulas it evaluates read
-(below). It returns the
+time and password salt, the unique ids of the container data op73, op88
+and a server script's commit store, and what the formulas it evaluates
+read (below). Each operation draws from it in a fixed order, written down
+in the module doc of `engine` ("The environment"), so that a seeded
+replay draws the same. It returns the
 **reply** and the **notices** for other clients (`engine::Outcome`); the
 **effects** (edits to the tree and to the lock table) are what it did to
 the transaction and the lock table, which keep what the engine needs to
@@ -281,8 +296,9 @@ encodes it for the wire. Operations on one file run one at a time, in one
 order; how far the file engine does that today is under "The file engine
 behind it".
 
-**Formulas.** The formulas an operation evaluates (so far a privilege
-set's record limits, in op70) read the world through their record
+**Formulas.** The formulas an operation evaluates (a privilege set's
+record limits in op70, the stored calculations op73 and the deferred work
+finished at opening recompute) read the world through their record
 environment (`recalc::record_environment_in`). It is drawn from the
 operation's environment in this order:
 
@@ -303,17 +319,18 @@ operation's environment in this order:
 op70 draws them once, when it checks the first listed record that exists
 or that it creates, also for an account whose access is unconditional. An
 empty commit, or one that lists only deletions of records that do not
-exist, draws nothing, and nor do the other operations.
+exist, draws nothing. A recalculation over a table (op73, and the
+deferred work finished at opening, table by table) draws once. When its
+calculations read `Get ( UUID )`, each record gets its own UUID and clock
+reading, but the first record's generator, date for conversions and
+stopwatch serve the whole recalculation.
 
-Writes not behind the interface yet build the same record environment from
-the host's clock and random source (`recalc::record_environment`,
-`engine::HostEnvironment`): a server script's commit, op73's
-recalculation and a file's recovery recalculation. So does a download's
-view filter, a read, which takes its date for conversions once for the
-filter. A recalculation over a table draws once. When its calculations
-read `Get ( UUID )`, each record gets its own UUID and clock reading, but
-the first record's generator, date for conversions and stopwatch serve the
-whole recalculation.
+What runs before an operation, outside it, builds the same record
+environment from the host's clock and random source
+(`recalc::record_environment`, `engine::HostEnvironment`): the script
+host's own calculations and the rules it applies to a server script's
+records before it submits their commit, and a download's view filter, a
+read, which takes its date for conversions once for the filter.
 
 Formulas still read the process in these places
 ([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)):
@@ -450,6 +467,11 @@ writing. A request that
 takes a lock first counts the locks its connection holds in every file it
 has open, so it can also wait for such a save of another of those files.
 
+**Overlapping requests.** Each operation takes what its request took and
+saves as it saved, so a request that overlaps another sees what it could
+see before, except in the cases below, one paragraph per part of the
+work.
+
 op71 now holds the lock table while it saves, as op70 always did, because
 the locks it took must be released again if the save fails. That changes
 what two overlapping requests can get. Before, op71 saved first and locked
@@ -471,7 +493,7 @@ FileMaker Server's behaviour here is unmeasured.
 - op72, op13, op86's schema instructions and the indexes a find built
   (a client's or a server script's): the file is saved if it changed, and
   a failed save leaves the change in memory and is not reported, as
-  `Hosted::save` does and as op13 dropped the result of `save_held`;
+  `Hosted::save` did and as op13 dropped the result of `save_held`;
 - op73: the same, only when its work changed the file;
 - op87 and op88: the same, op88 also when the upload was not valid binary
   data, as `Hosted::save` was called after every op88 that was read;
@@ -576,14 +598,20 @@ stamps and once for its status time, and refused a new password of more
 than 100 characters before it took the store. It now reads the clock
 once, under the store's write lock, and refuses an overlong password
 there too. The replies and what the file holds are the same; a stamp or
-status time can be later by as long as the edit waited for the store.
+status time can be later by as long as the edit waited for the store. A
+server script's account step now builds the edit, with the passwords it
+was given, before it takes its lock on the account catalog, as it builds
+the notices its release carries, so the lock is held for the edit alone.
+The deferred work finished at opening and a saved found set are as
+before: the first runs before anyone can reach the file, the second only
+when no one holds the store.
 
 The follow-up of #673's step 1, once every write goes through `submit`,
 changes what the file engine does when a save fails, on purpose. Today
 `submit` reports nothing for op72, op13, op73, op86's operations, op87 and
-op88, and a server script's end does not read its Save's reply, so a
-client can be told a serial, catalog or container is stored when it is
-not. Behind the interface:
+op88, and a server script's end and the save of the deferred work
+finished at opening do not read their Save's reply, so a client can be
+told a serial, catalog or container is stored when it is not. Behind the interface:
 
 - a save that fails before the rename takes the operation's effects back,
   and the reply is the storage error;

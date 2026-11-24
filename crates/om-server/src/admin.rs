@@ -706,7 +706,7 @@ impl ServerHandle {
         else {
             return false;
         };
-        hosted.write_store().fail_commit_saves = fail;
+        hosted.fail_commit_saves(fail);
         true
     }
 
