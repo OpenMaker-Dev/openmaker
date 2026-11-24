@@ -489,8 +489,6 @@ struct Run<'a> {
     log: Option<Log>,
     model: Model,
     term: u64,
-    /// The simulator's events when the current process's open began.
-    opened_at: usize,
     reached: &'a mut Reached,
     trace: Vec<String>,
 }
@@ -530,7 +528,6 @@ impl<'a> Run<'a> {
             log: None,
             model: Model::new(),
             term: 1,
-            opened_at: 0,
             reached,
             trace: Vec::new(),
         }
@@ -644,10 +641,6 @@ impl<'a> Run<'a> {
             .unwrap_or_default()
     }
 
-    fn events_len(&self) -> usize {
-        self.machine.sim().map_or(0, |sim| sim.events().len())
-    }
-
     /// The paths the device damaged, from event `from` on.
     fn damaged_paths(&self, from: usize) -> BTreeSet<String> {
         self.events_since(from)
@@ -693,7 +686,6 @@ impl<'a> Run<'a> {
     fn start(&mut self) -> Option<End> {
         let seed = self.seed;
         let fs = self.machine.fs();
-        let began = self.events_len();
         let lock = match fs.lock() {
             Ok(lock) => lock,
             Err(e) => {
@@ -748,7 +740,6 @@ impl<'a> Run<'a> {
         ));
         match opened {
             Ok((log, opened)) => {
-                self.opened_at = began;
                 self.log = Some(log);
                 return self.check_open(&opened);
             }
@@ -820,14 +811,18 @@ impl<'a> Run<'a> {
         let lying = self.device == Device::Lying;
         let mut lost = false;
         if durable.index < self.model.durable && !lying {
+            // A copy of `state` lost (damaged, or unreadable at an open,
+            // which `state` passes over like a lost one) together with a
+            // damaged tail: the double fault format section 1.5 leaves
+            // uncovered, which loses at most the last advance.
             let damaged = self.damaged_paths(0);
-            let state_damaged = self
-                .damaged_paths(self.opened_at)
-                .contains(crate::state::FILE)
-                || damaged.contains(crate::state::FILE);
+            let state_lost = damaged.contains(crate::state::FILE)
+                || self.events_since(0).iter().any(|event| {
+                    matches!(event, sim::Event::ReadFailed { path, .. } if path == crate::state::FILE)
+                });
             let log_damaged = damaged.iter().any(|p| p.starts_with("log/"));
             assert!(
-                state_damaged && log_damaged && durable.index >= self.model.before_advance,
+                state_lost && log_damaged && durable.index >= self.model.before_advance,
                 "seed {seed}: the durable position went back from {} to {}",
                 self.model.durable,
                 durable.index
@@ -923,7 +918,9 @@ impl<'a> Run<'a> {
         self.model.acked.split_off(&(durable.index + 1));
         self.model.maybe.clear();
         self.model.durable = durable.index;
-        self.model.before_advance = durable.index;
+        // An open that kept a tail moved the marker over it with one
+        // advance of `state`.
+        self.model.before_advance = durable.index - opened.kept;
         self.model.appended = durable;
         // The recorded committed position is never more than the scenario
         // gave, and is not confirmed until it gives one again; the cut count
