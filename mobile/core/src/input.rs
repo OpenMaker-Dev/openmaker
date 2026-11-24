@@ -61,6 +61,9 @@ pub enum Key {
     Delete,
     /// Return.
     Enter,
+    /// A hardware keyboard's numeric keypad Enter, which FileMaker tells
+    /// apart from Return (it commits the record in Browse).
+    KeypadEnter,
     Tab,
     Escape,
     ArrowLeft,
@@ -78,7 +81,7 @@ impl Key {
         match self {
             Key::Backspace => egui::Key::Backspace,
             Key::Delete => egui::Key::Delete,
-            Key::Enter => egui::Key::Enter,
+            Key::Enter | Key::KeypadEnter => egui::Key::Enter,
             Key::Tab => egui::Key::Tab,
             Key::Escape => egui::Key::Escape,
             Key::ArrowLeft => egui::Key::ArrowLeft,

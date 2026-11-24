@@ -126,7 +126,14 @@ final class DocumentCanvas: MTKView {
 
   @objc private func swiped(_ gesture: UISwipeGestureRecognizer) {
     let command: Command = gesture.direction == .left ? .next : .previous
-    document.send(input: .run(command: command))
+    proxy.settle(then: .run(command: command))
+  }
+
+  /// Send `input`, a command of the chrome or a menu choice, after the
+  /// input method's marked text is committed in its field: the engine and
+  /// the text field then agree that nothing is composing.
+  func settle(then input: Input) {
+    proxy.settle(then: input)
   }
 
   // MARK: Keyboard
@@ -332,8 +339,11 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
     for press in presses {
       // Keys that edit or move go to the engine's field, unless an input
       // method is composing.
+      // Plain Return is the text field's (textFieldShouldReturn, which also
+      // performs a find in Find mode); Command-Return is Commit's shortcut.
       if markedTextRange == nil, let input = press.key.flatMap(Self.input(for:)),
         press.key?.keyCode != .keyboardReturnOrEnter
+          || press.key?.modifierFlags.contains(.command) == true
       {
         send?(input)
       } else {
@@ -358,7 +368,9 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
     case .keyboardPageUp: engine = .pageUp
     case .keyboardPageDown: engine = .pageDown
     case .keyboardDeleteForward: engine = .delete
-    case .keyboardReturnOrEnter, .keypadEnter: engine = .enter
+    case .keyboardReturnOrEnter: engine = .enter
+    // The keypad's Enter is FileMaker's Enter, not Return.
+    case .keypadEnter: engine = .keypadEnter
     default: return nil
     }
     return .press(

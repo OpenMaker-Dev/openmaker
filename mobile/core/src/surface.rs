@@ -109,9 +109,6 @@ pub(crate) struct Surface {
     glide: Option<Glide>,
     /// An input method's composition shows in the field: its text so far.
     preedit: Option<String>,
-    /// The last pass took a tap, an element's action, Tab or Return: the
-    /// focus may move to another field during the next one.
-    focus_settling: bool,
     /// The insertion point of the field that takes typing.
     caret: Option<crate::state::Caret>,
     /// What the app asked to happen to the record or file once the window
@@ -218,7 +215,6 @@ impl Surface {
             pan: None,
             glide: None,
             preedit: None,
-            focus_settling: false,
             caret: None,
             intent: None,
             asked: Vec::new(),
@@ -281,7 +277,6 @@ impl Surface {
             events.push(Event::PointerGone);
         }
         let mut took = false;
-        let mut focus_moved = false;
         while let Some(input) = inputs.front() {
             // A tap or an element's action can move the focus to another
             // field: it gets a pass of its own, so that the field reads what
@@ -290,10 +285,11 @@ impl Surface {
             let moves_focus = matches!(input, Input::Tap { .. } | Input::Activate { .. });
             // A deletion around the selection reads the field's selection
             // and text as the last pass left them: it waits for a pass of
-            // its own, and for a pass after one that moved the focus (Tab
-            // goes on to the next field a pass later, in om-gui).
+            // its own, and while a Tab or Return still moves the focus to
+            // another field (om-gui gives it in a later pass), so that it
+            // counts against the field it will delete in.
             let deletes = matches!(input, Input::DeleteAround { .. });
-            if (took && (moves_focus || deletes)) || (deletes && self.focus_settling) {
+            if (took && (moves_focus || deletes)) || (deletes && self.app.focus_moving()) {
                 break;
             }
             if matches!(input, Input::Run { .. } | Input::Menu { .. }) {
@@ -311,21 +307,12 @@ impl Surface {
                 break;
             }
             let input = inputs.pop_front().expect("peeked");
-            focus_moved |= moves_focus
-                || matches!(
-                    input,
-                    Input::Press {
-                        key: input::Key::Tab | input::Key::Enter,
-                        ..
-                    }
-                );
             self.take(input, &mut events);
             took = true;
             if moves_focus {
                 break;
             }
         }
-        self.focus_settling = focus_moved;
         self.glide(&mut events);
         if !took {
             self.advance_intent();
@@ -541,12 +528,18 @@ impl Surface {
             } => {
                 let modifiers = input::modifiers(shift, command);
                 for pressed in [true, false] {
-                    events.push(Event::Key {
-                        key: key.egui(),
-                        physical_key: None,
-                        pressed,
-                        repeat: false,
-                        modifiers,
+                    events.push(if key == input::Key::KeypadEnter {
+                        // Marked as om-gui's event loop marks it on the
+                        // desktop, so Browse tells it from Return.
+                        om_gui::keypad::enter_event(pressed, modifiers)
+                    } else {
+                        Event::Key {
+                            key: key.egui(),
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                            modifiers,
+                        }
                     });
                 }
             }

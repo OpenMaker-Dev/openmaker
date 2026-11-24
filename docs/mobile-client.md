@@ -67,7 +67,9 @@ and its input methods (marked text included) to the field. The editing
 bar above the keyboard has the previous and next field and Done, which
 saves the record as a tap outside every field does. In Find mode the
 keyboard's Search key performs the find. Hardware keyboards' Tab, arrow,
-Return, Escape, Home, End and Page keys reach the layout.
+Return, Escape, Home, End and Page keys reach the layout, the numeric
+keypad's Enter as FileMaker's Enter (not Return), and Command-Return
+(Ctrl-Return on Android) as itself.
 
 ## How a frame is made
 

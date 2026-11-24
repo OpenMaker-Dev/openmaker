@@ -259,10 +259,17 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
                 KeyEvent.KEYCODE_MOVE_END -> Key.END
                 KeyEvent.KEYCODE_PAGE_UP -> Key.PAGE_UP
                 KeyEvent.KEYCODE_PAGE_DOWN -> Key.PAGE_DOWN
-                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    returnKey()
-                    return true
-                }
+                // The keypad's Enter is FileMaker's Enter, not Return.
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> Key.KEYPAD_ENTER
+                // Ctrl+Return is a shortcut of its own (Commit); plain
+                // Return also performs a find in Find mode.
+                KeyEvent.KEYCODE_ENTER ->
+                    if (command) {
+                        Key.ENTER
+                    } else {
+                        returnKey()
+                        return true
+                    }
                 else -> null
             }
         if (key != null) {

@@ -29,9 +29,18 @@ final class DocumentModel: ObservableObject, Identifiable {
     self.painter = painter
   }
 
+  /// The canvas that shows the document, while SwiftUI shows one.
+  weak var canvas: DocumentCanvas?
+
   func send(_ input: Input) { document.send(input: input) }
-  func run(_ command: Command) { send(.run(command: command)) }
-  func choose(_ row: String) { send(.menu(id: row)) }
+  /// A command of the chrome or a menu choice takes what is typed as
+  /// committed, never marked text the input method still composes.
+  func run(_ command: Command) { settle(.run(command: command)) }
+  func choose(_ row: String) { settle(.menu(id: row)) }
+
+  private func settle(_ input: Input) {
+    if let canvas { canvas.settle(then: input) } else { send(input) }
+  }
 
   /// What a frame tells the chrome.
   func take(_ frame: Frame) {
@@ -318,6 +327,7 @@ private struct CanvasView: UIViewRepresentable {
     let canvas = DocumentCanvas(document: model.document, painter: model.painter)
     canvas.present(model.elements)
     canvas.onFrame = { [weak model] frame in model?.take(frame) }
+    model.canvas = canvas
     model.signal.canvas = canvas
     let voiceOver = { [weak model] in
       model?.send(
