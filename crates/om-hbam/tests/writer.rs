@@ -417,6 +417,93 @@ fn a_file_target_holds_the_same_file() {
     assert!(written == writer::rebuild(&root, &superblock).unwrap());
 }
 
+/// A target that gives back one byte altered whenever byte `offset` is
+/// read, as a faulty device or cache could: what is stored stays right.
+struct Altered {
+    inner: Cursor<Vec<u8>>,
+    offset: u64,
+}
+
+impl Read for Altered {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let start = self.inner.position();
+        let read = self.inner.read(buf)?;
+        if (start..start + read as u64).contains(&self.offset) {
+            let at = (self.offset - start) as usize;
+            buf[at] = buf[at].wrapping_add(1);
+        }
+        Ok(read)
+    }
+}
+
+impl Write for Altered {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for Altered {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(to)
+    }
+}
+
+/// A page whose first key reads back other than it was written fails the
+/// file, at the leaves and at an index level; read back as written, the
+/// same target gives the file `rebuild` writes.
+#[test]
+fn a_page_read_back_altered_fails_the_file() {
+    let superblock = superblock(SCN);
+    let write = |root: &OwnedNode, offset: u64| {
+        let target = Altered {
+            inner: Cursor::new(Vec::new()),
+            offset,
+        };
+        let mut writer = NodeWriter::new(target, &superblock)?;
+        give(root, &mut writer)?;
+        writer.finish().map(|target| target.inner.into_inner())
+    };
+    let refusal = |written: Result<Vec<u8>>| match written {
+        Ok(file) => panic!("{} bytes written", file.len()),
+        Err(e) => e.to_string(),
+    };
+    let body = |page: u64| page * 4096 + 20;
+    // Five values of 1,000 bytes keyed 01 to 05: page 2 holds four, page 3
+    // starts with 05. Read back as 06, the root would send 05 to page 2.
+    let leaves = |count: u16, key: fn(u16) -> Vec<u8>| {
+        let values = (1..=count)
+            .map(|i| OwnedNode::leaf(key(i), vec![7; 1000]))
+            .collect();
+        OwnedNode::list(Vec::new(), values)
+    };
+    let five = leaves(5, |i| vec![i as u8]);
+    let expected = writer::rebuild(&five, &superblock).unwrap();
+    assert_eq!(expected[body(3) as usize + 1], 5);
+    assert!(write(&five, u64::MAX).unwrap() == expected);
+    let refused = refusal(write(&five, body(3) + 1));
+    assert!(refused.ends_with("not the page written"), "{refused}");
+
+    // 2,400 values under two-byte keys: 600 leaf pages, two level-1 pages
+    // under a root of level 2. The second level-1 page's first key is read
+    // back with its last byte altered, which keeps the root's entries in
+    // order.
+    let many = leaves(2400, |i| i.to_be_bytes().to_vec());
+    let expected = writer::rebuild(&many, &superblock).unwrap();
+    let root = &expected[body(1) as usize..];
+    assert_eq!(index_levels(&expected), 2);
+    // Root: terminal BH -> the first level-1 page, then the last terminal,
+    // a two-byte key -> the second.
+    assert_eq!((root[0], root[7]), (0x1b, 0xcb));
+    let second = u32::from_be_bytes(root[10..14].try_into().unwrap());
+    assert!(write(&many, u64::MAX).unwrap() == expected);
+    let refused = refusal(write(&many, body(u64::from(second)) + 2));
+    assert!(refused.ends_with("not the page written"), "{refused}");
+}
+
 /// A path, whether it opens a list, and its value.
 type Given = (Vec<Vec<u8>>, bool, Option<&'static [u8]>);
 
@@ -549,6 +636,23 @@ fn refusals_are_reported_at_their_node() {
             ],
             "a node whose parent was not given as a list",
         ),
+        // A path past the limits is refused before it is compared or shown,
+        // and an error shows a bounded part of a path.
+        (
+            "a segment of a mebibyte out of order",
+            vec![leaf(&[0xff]), (vec![vec![1; 1 << 20]], false, None)],
+            "key segment length or depth out of range",
+        ),
+        (
+            "a path deeper than a file holds",
+            vec![leaf(&[0xff]), (vec![vec![1]; MAX_DEPTH + 1], false, None)],
+            "key segment length or depth out of range",
+        ),
+        (
+            "a longest segment out of order",
+            vec![leaf(&[0xff]), (vec![vec![1; MAX_SEGMENT]], false, None)],
+            "key out of order or duplicated at x01010101010101010101010101010101…",
+        ),
     ];
     for (name, nodes, reason) in cases {
         let mut writer = NodeWriter::new(Cursor::new(Vec::new()), &superblock).unwrap();
@@ -563,6 +667,7 @@ fn refusals_are_reported_at_their_node() {
             .unwrap_err()
             .to_string();
         assert!(refused.ends_with(reason), "{name}: {refused}");
+        assert!(refused.len() < 200, "{name}: {} bytes", refused.len());
         let stopped = "the writer stopped at an earlier error";
         let next = writer.node(&[[0xff]], false, None).unwrap_err();
         assert!(next.to_string().ends_with(stopped), "{name}: {next}");

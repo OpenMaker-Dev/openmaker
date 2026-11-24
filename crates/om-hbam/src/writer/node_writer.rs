@@ -29,11 +29,19 @@
 //! well as writable and seekable: a `File` opened for reading and writing,
 //! or a `Cursor<Vec<u8>>`.
 //!
+//! What is read back is checked against what was written. As it writes a
+//! level's pages the writer folds each page's first key and number into a
+//! checksum, it folds the same again from the bytes it reads back, and
+//! `finish` fails when the two differ. A target that returns bytes other
+//! than it was given, as a faulty device or cache could, so fails the file
+//! instead of getting a wrong index. The checksum is no defence against
+//! a target built to defeat it.
+//!
 //! **Memory.** Page 0, the leaf page being filled, the open key path (at
 //! most 15 lists of up to 219 bytes) and the last node's segment; while
-//! the index is built, one page read back, the index page being filled and
-//! the separator last added to it. A value is borrowed while it is
-//! written, not copied. Nothing grows with the file.
+//! the index is built, one page read back, the index page being filled,
+//! the separator last added to it and three 64-bit checksums. A value is
+//! borrowed while it is written, not copied. Nothing grows with the file.
 //!
 //! **Refusals.** What [`super::rebuild`] refuses, with the same reasons:
 //! a node [`super::unwritable`] reports, refused when it arrives; at the
@@ -41,20 +49,24 @@
 //! that runs out of them, change numbers the file has no room for. Also
 //! refused: a node that does not come after the one before it in key order
 //! ([`Error::KeyOrder`]), and a node whose parent was not given as a list
-//! (missing, or given as a value). After an error every call fails, and the
-//! target holds part of a file, for the caller to discard.
+//! (missing, or given as a value). A path deeper than 16 or with a segment
+//! over 219 bytes is refused before anything else is done with it, and an
+//! error shows at most the first 16 bytes of each segment of a path. After
+//! an error every call fails, and the target holds part of a file, for the
+//! caller to discard.
 
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::{
-    key_len, leaf_len, push_len, refusal_of, BODY, MAX_DEPTH, MAX_INLINE_VALUE, PAGE_SIZE,
+    key_len, leaf_len, push_len, refusal_of, BODY, MAX_DEPTH, MAX_INLINE_VALUE, MAX_SEGMENT,
+    PAGE_SIZE,
 };
 use crate::container::{PageHeader, PAGE_HEADER_LEN};
 use crate::error::{Error, Result};
 use crate::serial;
 use crate::slot::{
-    decode_chunk, encode_chunk_into, minimal_code, path_string, ChunkKind, KeySegment, BEGIN, POP,
+    decode_chunk, encode_chunk_into, minimal_code, ChunkKind, KeySegment, BEGIN, POP,
 };
 
 /// Superblock fields (5.1): the clean-close flag and the file SCN.
@@ -123,6 +135,69 @@ impl Segment {
             }
         }
     }
+}
+
+/// A running checksum (64-bit FNV-1a) of the first keys and numbers of one
+/// level's pages, in page order: all that the level above is built from.
+/// Each segment is folded as its kind and, for a key, its length and bytes,
+/// and each page as a marker and its number, so no two sequences of keys
+/// fold the same bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FirstKeys(u64);
+
+impl Default for FirstKeys {
+    fn default() -> Self {
+        FirstKeys(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl FirstKeys {
+    fn bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn key(&mut self, segment: &[u8]) {
+        self.bytes(&[1]);
+        self.bytes(&(segment.len() as u32).to_be_bytes());
+        self.bytes(segment);
+    }
+
+    fn segment(&mut self, segment: &Segment) {
+        match segment {
+            Segment::Begin => self.bytes(&[0]),
+            Segment::Key(bytes) => self.key(bytes),
+            Segment::End => self.bytes(&[2]),
+        }
+    }
+
+    /// The end of a page's first key, and the page's number.
+    fn page(&mut self, number: u32) {
+        self.bytes(&[3]);
+        self.bytes(&number.to_be_bytes());
+    }
+}
+
+/// `path` as an error shows it: at most [`MAX_DEPTH`] segments, each cut to
+/// its first 16 bytes, so the text has a fixed bound whatever the caller
+/// passed.
+fn shown<S: AsRef<[u8]>>(path: &[S]) -> String {
+    let mut out = String::new();
+    for (i, segment) in path.iter().take(MAX_DEPTH).enumerate() {
+        let bytes = segment.as_ref();
+        if i > 0 {
+            out.push('/');
+        }
+        out.push_str(&KeySegment(&bytes[..bytes.len().min(16)]).to_string());
+        if bytes.len() > 16 {
+            out.push('…');
+        }
+    }
+    if path.len() > MAX_DEPTH {
+        out.push_str("/…");
+    }
+    out
 }
 
 /// A push chunk of `segment`, without its begin.
@@ -308,6 +383,8 @@ pub struct NodeWriter<W> {
     page: Vec<u8>,
     /// Leaf pages written.
     leaves: u32,
+    /// The first keys of the leaf pages, as written.
+    leaf_keys: FirstKeys,
     failed: bool,
 }
 
@@ -334,6 +411,7 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
             last_segment: Vec::new(),
             page: Vec::with_capacity(PAGE_SIZE),
             leaves: 0,
+            leaf_keys: FirstKeys::default(),
             failed: false,
         };
         // The leaf stream opens with the root's list (section 1).
@@ -392,16 +470,18 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
         let Some((segment, parents)) = path.split_last() else {
             return Err(Error::Write("a node without a key path"));
         };
+        // Bound what is read of the path before anything else is done
+        // with it.
+        if path.len() > MAX_DEPTH || path.iter().any(|s| s.as_ref().len() > MAX_SEGMENT) {
+            return Err(Error::Write("key segment length or depth out of range"));
+        }
         let segment = segment.as_ref();
         // After the node before it in a depth-first walk: below it, or
         // after it and its subtree.
         let last = self.last_value.then_some(self.last_segment.as_slice());
         let before = self.open.iter().chain(last);
         if path.iter().map(AsRef::as_ref).cmp(before) != Ordering::Greater {
-            let path: Vec<KeySegment> = path.iter().map(|s| KeySegment(s.as_ref())).collect();
-            return Err(Error::KeyOrder {
-                path: path_string(&path),
-            });
+            return Err(Error::KeyOrder { path: shown(path) });
         }
         // Its parent is open: the lists open are its ancestors, then lists
         // the walk has left.
@@ -451,9 +531,24 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
                 self.leaf(false)?;
             }
             self.page.resize(PAGE_HEADER_LEN, 0);
+            // The page re-pushes the open path, and its first key is that
+            // path and what `unit` makes of it (section 1).
             for segment in self.open.iter() {
                 put_push(segment, &mut self.page);
+                self.leaf_keys.key(segment);
             }
+            match unit {
+                Unit::Begin => self.leaf_keys.segment(&Segment::Begin),
+                Unit::Pop => self.leaf_keys.segment(&Segment::End),
+                Unit::Push(segment) => {
+                    self.leaf_keys.key(segment);
+                    self.leaf_keys.segment(&Segment::Begin);
+                }
+                Unit::Leaf(segment, _) => self.leaf_keys.key(segment),
+            }
+            // A number past the last one is refused when the page is
+            // written.
+            self.leaf_keys.page(FIRST_LEAF.wrapping_add(self.leaves));
             if self.page.len() + len > PAGE_SIZE {
                 return Err(Error::Write("a key path too long to paginate"));
             }
@@ -486,11 +581,13 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
     /// Build the index bottom-up (7.2): each level from the first keys of
     /// the pages of the level below, read back, packed into pages numbered
     /// after every page written so far, until a level is one page: the
-    /// root.
+    /// root. The first keys read back must fold to the checksum of those
+    /// written ([`FirstKeys`]).
     fn index(&mut self) -> Result<()> {
         let too_many = || Error::Write(TOO_MANY_PAGES);
         let end = FIRST_LEAF.checked_add(self.leaves).ok_or_else(too_many)?;
         let mut below = FIRST_LEAF..end;
+        let mut below_keys = self.leaf_keys;
         let mut level: u16 = 1;
         let mut read = vec![0; PAGE_SIZE];
         let mut first = Vec::new();
@@ -499,21 +596,36 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
             // This level's pages, unless it is only the root.
             let start = below.end;
             let mut written = 0;
+            let (mut read_keys, mut level_keys) = (FirstKeys::default(), FirstKeys::default());
             for child in below {
                 self.out.read_page(child, &mut read)?;
                 first_key(&read, level - 1, &mut first)?;
-                if page.add(&first, child)? {
-                    continue;
+                first.iter().for_each(|s| read_keys.segment(s));
+                read_keys.page(child);
+                let opens = if page.is_empty() {
+                    true
+                } else if page.add(&first, child)? {
+                    false
+                } else {
+                    let number = start.checked_add(written).ok_or_else(too_many)?;
+                    let next = number.checked_add(1).ok_or_else(too_many)?;
+                    let prev = if written == 0 { 0 } else { number - 1 };
+                    page.close();
+                    self.out.page(number, level, (prev, next), &mut page.body)?;
+                    page.clear();
+                    written += 1;
+                    true
+                };
+                if opens {
+                    // An empty page takes the entry or refuses it, and the
+                    // entry is the page's first key.
+                    page.add(&first, child)?;
+                    first.iter().for_each(|s| level_keys.segment(s));
+                    level_keys.page(start.wrapping_add(written));
                 }
-                let number = start.checked_add(written).ok_or_else(too_many)?;
-                let next = number.checked_add(1).ok_or_else(too_many)?;
-                let prev = if written == 0 { 0 } else { number - 1 };
-                page.close();
-                self.out.page(number, level, (prev, next), &mut page.body)?;
-                page.clear();
-                written += 1;
-                // An empty page takes the entry or refuses it.
-                page.add(&first, child)?;
+            }
+            if read_keys != below_keys {
+                return Err(Error::Write(NOT_WRITTEN));
             }
             page.close();
             if written == 0 {
@@ -526,6 +638,7 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
                 .page(number, level, (number - 1, 0), &mut page.body)?;
             page.clear();
             below = start..number.checked_add(1).ok_or_else(too_many)?;
+            below_keys = level_keys;
             level += 1;
             if usize::from(level) > MAX_DEPTH {
                 return Err(Error::Write("the index grew past 16 levels"));
@@ -620,6 +733,10 @@ struct IndexPage {
 }
 
 impl IndexPage {
+    fn is_empty(&self) -> bool {
+        self.last.is_empty()
+    }
+
     /// Add `entry` -> `child` if the page has room for it; an empty page
     /// without room refuses it. Entries come in key order, and no
     /// separator is a prefix of another (3.1).
