@@ -594,7 +594,7 @@ impl ManageDatabase {
                     });
                 }
                 if let Some(error) = &self.error {
-                    ui.colored_label(theme::RED, error);
+                    ui.colored_label(theme::RED_INK, error);
                 }
                 if let Some(reason) = self
                     .schema

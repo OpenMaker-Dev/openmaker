@@ -94,10 +94,12 @@ pub(crate) const RING: Color32 = Color32::from_rgb(0x7A, 0xAF, 0xE6);
 
 // Status: Apple's system colors in their increased-contrast variants, so
 // text in them keeps 4.5:1 on white. Tints are 10-16% over white.
-/// Errors, failures and destructive actions.
+/// Errors, failures and destructive actions: fills, bars and glyphs.
 pub(crate) const RED: Color32 = Color32::from_rgb(0xE9, 0x15, 0x2D);
 pub(crate) const RED_TINT: Color32 = Color32::from_rgb(0xFD, 0xE8, 0xEA);
-/// Text on `RED_TINT`: the red darkened to keep 4.5:1 there.
+/// Red text, such as an error message, on any light surface or
+/// `RED_TINT`: the red darkened to keep 4.5:1 on all of them (`RED` has
+/// 4.0:1 on `DIALOG_BG`).
 pub(crate) const RED_INK: Color32 = Color32::from_rgb(0xB8, 0x0E, 0x28);
 /// Warning text.
 pub(crate) const YELLOW: Color32 = Color32::from_rgb(0xA1, 0x6A, 0x00);

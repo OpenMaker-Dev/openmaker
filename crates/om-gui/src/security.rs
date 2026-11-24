@@ -133,7 +133,7 @@ impl ManageSecurity {
                                     ui.spinner();
                                 }
                                 (Some(error), false) => {
-                                    ui.colored_label(theme::RED, error);
+                                    ui.colored_label(theme::RED_INK, error);
                                 }
                                 (None, false) => {
                                     ui.label("The file's security could not be read.");
@@ -144,7 +144,7 @@ impl ManageSecurity {
                 }
                 if let (Some(error), Some(_)) = (&self.error, &self.catalog) {
                     ui.add_space(6.0);
-                    ui.colored_label(theme::RED, error);
+                    ui.colored_label(theme::RED_INK, error);
                 }
                 if self.catalog.is_some() {
                     ui.add_space(6.0);

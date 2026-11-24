@@ -155,7 +155,7 @@ impl LookupDialog {
                 ui.checkbox(&mut self.skip_empty, "Don't copy contents if empty");
                 if let Some(error) = &self.error {
                     ui.add_space(6.0);
-                    ui.colored_label(theme::RED, error);
+                    ui.colored_label(theme::RED_INK, error);
                 }
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
