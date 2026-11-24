@@ -589,6 +589,9 @@ struct Run<'a> {
     plan: Rng,
     rates: Rates,
     log: Option<Log>,
+    /// A tail was held in the cache only, and the opens after it have not
+    /// yet succeeded.
+    cache_tail_pending: bool,
     model: Model,
     term: u64,
     reached: &'a mut Reached,
@@ -628,6 +631,7 @@ impl<'a> Run<'a> {
             plan: Rng::stream(seed, 9),
             rates,
             log: None,
+            cache_tail_pending: false,
             model: Model::new(),
             term: 1,
             reached,
@@ -795,6 +799,7 @@ impl<'a> Run<'a> {
         // process, and power losses follow.
         self.stop(false);
         self.machine.arm_failure();
+        self.cache_tail_pending = true;
     }
 
     fn lose_state_slot(&mut self) {
@@ -831,6 +836,25 @@ impl<'a> Run<'a> {
     /// Take the lock, open `state` (or make it), open the log, and check
     /// what the open found.
     fn start(&mut self) -> Option<End> {
+        // After a tail held in the cache only, the opens that follow run
+        // without drawn faults, so that the failure armed for them is the
+        // one met (the scenario's drawn rates come back after).
+        let quiet = self.cache_tail_pending;
+        if quiet {
+            if let Some(sim) = self.machine.sim() {
+                sim.set_rates(Rates::default());
+            }
+        }
+        let end = self.start_once();
+        if quiet {
+            if let Some(sim) = self.machine.sim() {
+                sim.set_rates(self.rates);
+            }
+        }
+        end
+    }
+
+    fn start_once(&mut self) -> Option<End> {
         let seed = self.seed;
         let fs = self.machine.fs();
         let lock = match fs.lock() {
@@ -894,7 +918,11 @@ impl<'a> Run<'a> {
                 Ok((log, opened)) => {
                     self.log = Some(log);
                     let end = self.check_open(&opened);
-                    if end.is_none() && tries > 0 && self.log.is_some() && self.plan.below(2) == 0 {
+                    let after_cache_tail = std::mem::replace(&mut self.cache_tail_pending, false);
+                    if end.is_none()
+                        && self.log.is_some()
+                        && (after_cache_tail || (tries > 0 && self.plan.below(2) == 0))
+                    {
                         // What a retried open relied on must hold across a
                         // power loss: append, flush, and lose the power.
                         self.perform(Action::Append { n: 2, big: false });
@@ -913,7 +941,17 @@ impl<'a> Run<'a> {
                         LogError::Unreadable { .. } | LogError::Disk(_) | LogError::State(_)
                     );
                     let running = self.machine.sim().is_none_or(|sim| !sim.halted());
-                    if retryable && running && tries < 2 && self.plan.below(2) == 0 {
+                    if retryable && self.cache_tail_pending && running && self.plan.below(2) == 0 {
+                        // A new process, the system's cache kept.
+                        drop(back);
+                        self.stop(false);
+                        return None;
+                    }
+                    if retryable
+                        && running
+                        && tries < 2
+                        && (self.cache_tail_pending || self.plan.below(2) == 0)
+                    {
                         // Tried again with the same state, in the same
                         // process.
                         tries += 1;
