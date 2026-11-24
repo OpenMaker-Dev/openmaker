@@ -206,6 +206,18 @@ impl OpenMakerApp {
         crate::document::scroll_areas(ctx)
     }
 
+    /// The front window, by its id in this app.
+    pub fn front_window(&self) -> u32 {
+        self.front_doc().id
+    }
+
+    /// Whether window `id` is still open with its file, shown or hidden.
+    pub fn window_open(&self, id: u32) -> bool {
+        std::iter::once(&self.w)
+            .chain(&self.windows)
+            .any(|window| window.id == id && window.session.is_some())
+    }
+
     /// The file the front window shows, by its id in this app.
     pub fn front_file(&self) -> u64 {
         self.front_doc().file_id

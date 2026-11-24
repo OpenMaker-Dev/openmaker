@@ -139,6 +139,10 @@ pub(crate) struct Surface {
     /// app: the close is for it, not for whatever file a script brings
     /// forward meanwhile.
     close_target: Option<u64>,
+    /// The window the close under way began from: when it closed and the
+    /// file stays open, a close trigger opened another window, which is
+    /// not a refusal.
+    close_window: Option<u32>,
     /// The intent asked for Close File: once its file is gone the close is
     /// done, whatever file comes to the front after it.
     closing: bool,
@@ -243,6 +247,7 @@ impl Surface {
             intent: None,
             asked: Vec::new(),
             close_target: None,
+            close_window: None,
             closing: false,
             close_result: None,
             settle: 0,
@@ -962,14 +967,25 @@ impl Surface {
             return;
         }
         if self.closing {
-            if self
+            if !self
                 .close_target
                 .is_some_and(|file| self.app.file_open(file))
             {
-                self.refuse_intent(intent);
-            } else {
                 self.close_result = Some(true);
                 self.end_intent();
+            } else if self
+                .close_window
+                .is_some_and(|window| !self.app.window_open(window))
+            {
+                // The window the close began from closed, but one a close
+                // trigger opened keeps the file open: File > Close stops
+                // there. The file did not close, and no trigger refused:
+                // letting go goes on to save that window's record and close
+                // it too.
+                self.close_result = Some(false);
+                self.end_intent();
+            } else {
+                self.refuse_intent(intent);
             }
             return;
         }
@@ -994,6 +1010,7 @@ impl Surface {
                 self.refuse_intent(intent)
             }
             Intent::Close => {
+                self.close_window = Some(self.app.front_window());
                 if self.app.close_front_file(&self.ctx) {
                     self.closing = true;
                     self.settle = 2;
@@ -1033,6 +1050,7 @@ impl Surface {
         self.asked.clear();
         self.closing = false;
         self.close_target = None;
+        self.close_window = None;
         self.settle = 0;
     }
 
