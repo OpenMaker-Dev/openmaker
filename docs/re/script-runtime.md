@@ -4093,11 +4093,13 @@ Steps
   close trigger opened (a card too) stops the close and stays open with
   its edits; a close trigger that closes its own window lets the close go
   on with the next. A close trigger that runs Close File or Exit
-  Application takes the close over: the file's windows close without
-  their close triggers, each committing, as a script's Close File closes
-  another file's (their triggers would run the script again without end),
-  and with Exit Application, or in a Quit, the other files then close as
-  Quit closes them. Quit goes on to a file a close trigger opened hidden,
+  Application takes the close over, even after closing its own window:
+  once its script has ended, so that a window it froze has sent what the
+  script left, the file's windows close without their close triggers,
+  each committing, as a script's Close File closes another file's (their
+  triggers would run the script again without end), and with Exit
+  Application, or in a Quit, the other files then close as Quit closes
+  them. Quit goes on to a file a close trigger opened hidden,
   from Home or the root close box too (OpenMaker's choices). FileMaker's
   order of these events for several windows, and what it does with
   windows a close trigger opens or closes, are not measured. The next

@@ -202,6 +202,9 @@ pub(super) struct ScriptUi {
     /// Exit Application asked to quit: when its script has ended, every
     /// window of the file closes as Quit closes them.
     quit: bool,
+    /// A close trigger's Close File or Exit Application took its close over
+    /// (`take_over_close`): the close goes on once the script has ended.
+    taken_over: bool,
     /// What started each script sent to the worker, oldest first and at
     /// most [`STARTED_KEPT`]: for measures that run a file's scripts and
     /// triggers (`OpenMakerApp::scripts_started`).
@@ -1943,20 +1946,9 @@ impl OpenMakerApp {
                 }
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
-                if std::mem::take(&mut self.script.quit) {
-                    // A close Exit Application took over goes on; otherwise
-                    // Quit begins.
-                    let next = self
-                        .closing
-                        .as_ref()
-                        .filter(|closing| closing.quiet)
-                        .and_then(|_| self.next_to_close());
-                    match next {
-                        Some(next) => {
-                            self.with_window(next, |app| app.close_window(ctx));
-                        }
-                        None => self.apply(ctx, Action::Quit),
-                    }
+                let resumed = self.resume_taken_over(ctx);
+                if std::mem::take(&mut self.script.quit) && !resumed {
+                    self.apply(ctx, Action::Quit);
                 }
                 self.start_queued(ctx);
             }
@@ -2015,18 +2007,17 @@ impl OpenMakerApp {
             // Exit Application takes over its close, closing its file
             // first.
             ScriptEvent::Quit => {
+                // A command waiting for the close goes, as with Quit.
+                self.launch_after_close = None;
                 self.take_over_close(None, true);
                 self.script.quit = true;
             }
             ScriptEvent::SchemaChanged => self.request(ctx, Request::CalcSchema),
             ScriptEvent::CloseFile => {
                 self.script.running = false;
-                // A close trigger's own Close File takes over its close.
-                if self.take_over_close(Some(self.w.file_id), false) {
-                    if let Some(next) = self.next_to_close() {
-                        self.with_window(next, |app| app.close_window(ctx));
-                    }
-                } else {
+                // A close trigger's own Close File takes over its close,
+                // which goes on when the script has ended.
+                if !self.take_over_close(Some(self.w.file_id), false) {
                     self.apply(ctx, Action::CloseFile);
                 }
             }
@@ -2041,6 +2032,7 @@ impl OpenMakerApp {
                 // waiting behind the script run now.
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
+                self.resume_taken_over(ctx);
                 self.start_queued(ctx);
             }
         }
@@ -2048,25 +2040,48 @@ impl OpenMakerApp {
 
     /// A close trigger ran Close File (of its own file, `file`) or Exit
     /// Application (`file` is `None`): it takes over the close it holds.
-    /// The halt's veto then finds nothing to stop, and the trigger's file's
-    /// windows close without their close triggers, each committing
+    /// The halt's veto then finds nothing to stop, and once the script has
+    /// ended ([`Self::resume_taken_over`]) the trigger's file's windows
+    /// close without their close triggers, each committing
     /// (`Closing::quiet`); with `quit`, or in a Quit, the other files close
-    /// after as Quit closes them. `false` when no such trigger is running.
+    /// after as Quit closes them. The trigger's own window may have closed
+    /// meanwhile. `false` when no such trigger is running.
     pub(super) fn take_over_close(&mut self, file: Option<u64>, quit: bool) -> bool {
         let held = self.script.held.iter().find_map(|(token, (origin, held))| {
             let closes = matches!(held, Held::Action(Action::CloseWindow, _));
-            let origin_file = self.docs().find(|doc| doc.id == *origin)?.file_id;
-            (closes && file.is_none_or(|file| file == origin_file)).then_some((*token, *origin))
+            // The trigger's window, or the file it had if it closed.
+            let origin_file = self
+                .docs()
+                .find(|doc| doc.id == *origin)
+                .map(|doc| doc.file_id)
+                .or_else(|| self.window_files.get(origin).copied())?;
+            (closes && file.is_none_or(|file| file == origin_file)).then_some((*token, origin_file))
         });
-        let Some((token, origin)) = held else {
+        let Some((token, file)) = held else {
             return false;
         };
         self.script.held.remove(&token);
         let quit = quit || self.closing.as_ref().is_some_and(|closing| closing.quit);
-        self.closing = self.with_window(origin, |app| super::Closing {
+        self.closing = Some(super::Closing {
             quiet: true,
-            ..app.closing_front(quit)
+            ..self.closing_of(file, quit)
         });
+        self.script.taken_over = true;
+        true
+    }
+
+    /// A close taken over by its trigger ([`Self::take_over_close`]) goes
+    /// on now that the script has ended: the worker has sent the windows'
+    /// last states first, a frozen window's edits included, so each window
+    /// commits what the script left. Whether it went on.
+    fn resume_taken_over(&mut self, ctx: &egui::Context) -> bool {
+        if !std::mem::take(&mut self.script.taken_over) {
+            return false;
+        }
+        let Some(next) = self.next_to_close() else {
+            return false;
+        };
+        self.with_window(next, |app| app.close_window(ctx));
         true
     }
 
@@ -2181,6 +2196,7 @@ impl OpenMakerApp {
         self.script.queued.clear();
         self.script.held.clear();
         self.script.resumes.clear();
+        self.script.taken_over = false;
         for id in self.window_ids() {
             self.with_window(id, |app| {
                 app.w.pending_enter = None;

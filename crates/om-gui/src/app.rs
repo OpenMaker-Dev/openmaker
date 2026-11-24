@@ -3091,7 +3091,12 @@ impl OpenMakerApp {
 
     /// A File > Close (or, with `quit`, a Quit) of the front file.
     fn closing_front(&self, quit: bool) -> Closing {
-        let file = self.w.file_id;
+        self.closing_of(self.w.file_id, quit)
+    }
+
+    /// A File > Close (or, with `quit`, a Quit) of `file`, with the windows
+    /// it has now.
+    fn closing_of(&self, file: u64, quit: bool) -> Closing {
         Closing {
             file,
             windows: self
@@ -8390,6 +8395,12 @@ mod tests {
         app.apply(&ctx, Action::Quit);
         assert_eq!(app.window_ids(), [1, 2]);
         assert!(app.closing.is_none() && app.quit_waiting.is_none() && !app.quit_ready);
+
+        // A script's Exit Application drops a command waiting for the
+        // close, as Quit does.
+        app.launch_after_close = Some((Launch::Hosts, app.w.file_id));
+        app.on_script_event(&ctx, crate::scripting::ScriptEvent::Quit);
+        assert!(app.launch_after_close.is_none());
     }
 
     #[test]

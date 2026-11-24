@@ -6049,28 +6049,66 @@ fn each_window_runs_its_close_trigger_and_a_veto_stops_closing_the_file() {
     expect(&mut app, "Show events", "events close;close; tx 1");
 }
 
+/// The script that opens a second window, "W2" on record 2, and leaves
+/// "Tasks" on record 1 in front, without changing either record.
+const TWO_WINDOWS: u64 = 92;
+
+fn two_windows() -> Script {
+    fixture::script(
+        TWO_WINDOWS,
+        "Two windows",
+        vec![
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            new_window("W2"),
+            fixture::go_to_record(2),
+            select_window("Tasks"),
+        ],
+    )
+}
+
 /// A close trigger whose script closes its own file (Close File), after
-/// opening a window or not, or exits the application, closes the file
-/// once: the close it takes over does not run the trigger again, which
-/// would run the script again without end.
+/// opening a window or not, or exits the application, after closing its
+/// own window or not, closes the file: the close it takes over does not
+/// run the trigger again, which would run the script again without end.
 #[test]
 fn a_close_trigger_that_closes_its_file_closes_it_once() {
     const CLOSE_ITSELF: u64 = 90;
-    for (tag, steps, quit) in [
-        ("close-file-trigger", vec![ScriptStep::new(34)], false),
+    for (tag, steps, quit, two) in [
+        (
+            "close-file-trigger",
+            vec![ScriptStep::new(34)],
+            false,
+            false,
+        ),
         (
             "new-window-close-file-trigger",
             vec![new_window("Extra"), ScriptStep::new(34)],
             false,
+            false,
         ),
-        ("exit-app-trigger", vec![ScriptStep::new(44)], true),
+        ("exit-app-trigger", vec![ScriptStep::new(44)], true, false),
+        (
+            "own-window-exit-app-trigger",
+            vec![
+                ScriptStep::new(121),
+                new_window("Extra"),
+                ScriptStep::new(44),
+            ],
+            true,
+            true,
+        ),
     ] {
         let hosted = host_with(tag, |root| {
             add_layout_trigger_script(root, TriggerEvent::WindowClose, CLOSE_ITSELF, "close");
             add_script(root, &fixture::script(CLOSE_ITSELF, "Close itself", steps));
+            add_script(root, &two_windows());
         });
         let mut app = open(&hosted);
         expect(&mut app, "Show portals", "on Portals");
+        if two {
+            run_without_dialog(&mut app, "Two windows");
+        }
         if quit {
             app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
         } else {
@@ -6087,6 +6125,39 @@ fn a_close_trigger_that_closes_its_file_closes_it_once() {
             app.state().error()
         );
     }
+}
+
+/// A close trigger that freezes its window, sets a field there, selects
+/// another window and runs Close File: its window still commits what the
+/// script left, which the worker sends only as the script ends.
+#[test]
+fn a_close_trigger_s_close_file_keeps_its_frozen_window_s_edit() {
+    const FREEZE_AND_CLOSE: u64 = 91;
+    let hosted = host_with("frozen-close-file", |root| {
+        add_layout_trigger_script(root, TriggerEvent::WindowClose, FREEZE_AND_CLOSE, "close");
+        let steps = vec![
+            ScriptStep::new(79),
+            set_field(OCCURRENCE, CODE, 0, "\"fz\""),
+            select_window("W2"),
+            ScriptStep::new(34),
+        ];
+        add_script(
+            root,
+            &fixture::script(FREEZE_AND_CLOSE, "Freeze and close", steps),
+        );
+        add_script(root, &two_windows());
+    });
+    let mut app = open(&hosted);
+    run_without_dialog(&mut app, "Two windows");
+    open_root_menu(&mut app, "File");
+    app.get_by_role_and_label(egui::accesskit::Role::Button, "Close")
+        .click();
+    common::wait_until(&mut app, "the file to close", |app| {
+        !app.state().is_open() && !app.state().script_running()
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // Code takes at most 3 characters.
+    assert_eq!(codes(&hosted)[0], "fz");
 }
 
 /// Run `script` and wait until it pauses.
