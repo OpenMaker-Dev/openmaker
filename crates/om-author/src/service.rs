@@ -144,14 +144,14 @@ fn fields_revision(catalog: Option<&OwnedNode>) -> Revision {
     }
 }
 
-/// A script's revision, from its member `[17, 5, S]`.
+/// A script's revision, the edit token of its member `[17, 5, S]`.
 fn script_revision(definition: &OwnedNode) -> Revision {
-    design_paths::revision_of(Kind::Script, None, definition)
+    design_paths::edit_token(Some(Kind::Script), definition)
 }
 
-/// A layout's revision, from its member `[4, 5, L]`.
+/// A layout's revision, the edit token of its member `[4, 5, L]`.
 fn layout_revision(member: &OwnedNode) -> Revision {
-    design_paths::revision_of(Kind::Layout, None, member)
+    design_paths::edit_token(Some(Kind::Layout), member)
 }
 
 fn scalar(field_type: FieldType) -> ScalarType {

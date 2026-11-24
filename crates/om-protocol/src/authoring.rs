@@ -174,23 +174,28 @@ pub const MAX_LAYOUT_NAME_CHARS: usize = 100;
 
 /// Revisions and the keys of a modification stamp (schema-path.md 8.1)
 /// are defined once, in `om_hbam::design_paths`, and the host checks and
-/// reports them with the same functions as its clients: a script's
-/// ([`content_revision`]) and a layout's ([`layout_revision`]) are their
-/// object revisions, without Data paths and with stored credentials
-/// hidden; [`catalog_revision`] is the general form over a whole subtree,
-/// a table's field catalog, a catalog index or a value list member.
+/// reports them with the same functions as its clients. A revision here is
+/// an edit token: the whole member (or catalog), stored passwords
+/// included, without modification stamps ([`content_revision`] for a
+/// script, [`layout_revision`] for a layout, [`catalog_revision`] for
+/// anything else). A design revision is never one.
+/// [`legacy_content_revision`] and [`legacy_catalog_revision`] are the
+/// tokens an older client computes, which a host accepts for comparison
+/// only.
 pub use om_hbam::design_paths::{
-    catalog_revision, is_stamp, Revision, MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER,
+    catalog_revision, is_stamp, legacy_catalog_revision,
+    legacy_script_form_revision as legacy_content_revision, Revision, MOD_ACCOUNT, MOD_COUNT,
+    MOD_TIME, MOD_USER,
 };
 
-/// A script member's `[17, 5, S]` revision (`om_hbam::design_paths`).
+/// A script member's `[17, 5, S]` edit token (`om_hbam::design_paths`).
 pub fn content_revision(member: &OwnedNode) -> Revision {
-    om_hbam::design_paths::revision_of(om_hbam::design_paths::Kind::Script, None, member)
+    om_hbam::design_paths::script_form_revision(member)
 }
 
-/// A layout member's `[4, 5, L]` revision (`om_hbam::design_paths`).
+/// A layout member's `[4, 5, L]` edit token (`om_hbam::design_paths`).
 pub fn layout_revision(member: &OwnedNode) -> Revision {
-    om_hbam::design_paths::revision_of(om_hbam::design_paths::Kind::Layout, None, member)
+    om_hbam::design_paths::catalog_revision(member)
 }
 
 /// A request.

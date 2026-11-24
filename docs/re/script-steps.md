@@ -1059,7 +1059,11 @@ extracting pages), slot 6 u8 enable copying, slot 7 u8 screen reader,
 slot 8 u16 initial view (2 pages panel and page), slot 9 u16 page layout
 (1 single page), slot 10 u16 magnification (7 = 100%). Calculations: the
 XML `position` of each calculation is its slot (page from = 4, and the
-document metadata and passwords at the positions the XML gives). So slot 4
+document metadata and passwords at the positions the XML gives). The
+passwords to open and to control are taken to be the calculations of
+slots 7 and 8, beside the numbers of slots 7 and 8, as Create PDF's
+(12.2), whose slots 2-10 are these [I: no stored step with a password was
+compared]. So slot 4
 can hold both the print permission number (`03`) and the page-from
 calculation (`05`). A production step with Restore and All pages stores
 exactly that: the number 2 and the calculation `1`, with slots 8-10 =

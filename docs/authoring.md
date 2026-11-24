@@ -190,50 +190,53 @@ a table the same way, `layout_name` a layout and `field_name` a field of
 the layout's table. Occurrences of another file's tables have no `table`
 and name their `data_source`.
 
-**Revisions** are `sha256:` of an object's content in a canonical form,
-defined once in `om_hbam::design_paths` for every design object and used
-by `om-author`, the host and the desktop client alike
-([server-storage.md](server-storage.md) sections 4 and 9). An object is
-a catalog member: a script `[17, 5, S]`, a layout `[4, 5, L]` (its
-definition, parts, objects, object attributes and the layout's indexes),
-a value list `[21, 5, V]`, a field `[T, 3, 5, F]` and the rest. Its
-revision covers the member without its Data and Access paths (a serial
-field's next value, a field's data version) and without modification
-stamps (`fc`, `fc 01` to `fc 03`), so a save that stores the same
-content, or a new record taking a serial number, keeps it; keys OpenMaker
-does not understand stay in. A credential a step stores (Send Mail's
-SMTP password, Re-Login's account and password, an ODBC profile and the
-others server-storage.md section 4 lists, in a script or on a button)
-counts only as being there: its value is written as a fixed marker, so
-changing it keeps the revision and adding or removing it changes it. A
-revision is shown and logged, and a hash over a short password and
-content anyone can read would let a reader test guesses. A value is
-hashed as the bytes it holds, the same whether the file keeps it whole
-or split into a header and 1,000-byte pieces (a value over 1,000 bytes,
-non-ASCII text; file-format.md 3.6), so a file written and read back
-keeps every revision. A script's revision leaves out the member's own
-stamp only and counts whether each key is stored as a list, the form
-scripts always had; every other object's leaves out every stamp in it
-and does not count list flags. A table's `fields_revision` (`inspect`)
-is the second form over its whole field catalog `[T, 3]`, the catalog's
-index and every field's Data paths included: any field added, renamed,
-changed or deleted, by anyone, changes it, and so does a serial number
-taken by a new record
+**Revisions** are `sha256:` edit tokens over an object's stored content
+in a canonical form, defined once in `om_hbam::design_paths` and used by
+`om-author`, the host and the desktop client alike
+([server-storage.md](server-storage.md) sections 4 and 9). A script's
+`revision` covers its whole member `[17, 5, S]`; a layout's its whole
+member `[4, 5, L]` (definition, parts, objects, object attributes and the
+layout's indexes); a value list's its member `[21, 5, V]`. Each leaves
+out only modification stamps (`fc`, `fc 01` to `fc 03`), so a save that
+stores the same content keeps it, and any other change changes it,
+stored passwords included: an edit that changes only Re-Login's password
+is applied, and a request made from a token older than another client's
+password change is a `conflict`. The token is exchanged only between a
+client that has read the member and the host, so it shows neither side
+anything it does not hold. A script's token leaves out the member's own
+stamp only and counts whether each key is stored as a list; every other
+leaves out every stamp in it and does not count list flags. A table's
+`fields_revision` (`inspect`) is the second form over its whole field
+catalog `[T, 3]`: any field added, renamed, changed or deleted, by anyone,
+changes it, and so does a serial number taken by a new record
 ([#717](https://github.com/OpenMaker-Dev/openmaker/issues/717)). Each
 table's listed fields and revision come from the same downloaded
 catalog. A concurrent edit leaves that observation stale together, so its
 token detects the change. This is not a transaction covering all
 metadata in the inspection. The file's `layouts_revision` is the second
-form over the layout catalog's index `[4, 1]`.
+form over the layout catalog's index `[4, 1]`. A design revision
+(`design-sha256:`), which leaves Data and stored credentials out, is
+something else: no command takes or returns one, and none decides an
+edit.
 
-Two changes to the definition gave some revisions new strings once,
-so a cached `expected_revision` for such an object is refused as a
-`conflict` the first time and is read again: a script or layout that
-stores a credential (none of FileMaker Pro 26's 66 starter files has
-one), and an object or token whose content holds a split value. In the
-starter files the second is 75 of 330 scripts, 245 of 418 layouts, 72 of
+A value is hashed as the bytes it holds, the same whether the file keeps
+it whole or split, so a file written and read back keeps every token. A
+node is a split value by the format's rule (file-format.md 3.6): no value
+of its own, a first child `00` with a header of 4, 8 or 12 bytes whose
+first `u32` is the total length, then children keyed 1 to n as serial
+keys in order, each a leaf, every one but the last 1,000 bytes and the
+last 1 to 1,000, adding up to the total, and nothing else. A list that
+meets the rule is a split value as far as the format can tell, and is
+hashed as one. Before this, a split value was hashed as its header and
+pieces, so tokens of content holding one have new strings: in FileMaker
+Pro 26's 66 starter files 75 of 330 scripts, 245 of 418 layouts, 72 of
 264 value lists and 94 of 341 `fields_revision`, `layouts_revision` and
-script catalog index tokens; every other revision is the string it was.
+script catalog index tokens; every other token is the string it was. The
+host accepts a token in either form for the current content, and answers
+with the new one, so an older client goes on working. A newer client
+against an older host cannot be helped: for such content every edit is a
+`conflict`, reading the object again gives the same token and the next
+edit the same answer, until the host is updated.
 
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,

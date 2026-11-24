@@ -130,11 +130,11 @@ about how a file is stored.
 
 | Group | Holds | Changed by |
 |---|---|---|
-| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus and menu sets, value lists, privilege sets, extended privileges, fonts, the file library, data sources, base directories; each catalog's display order and settings | developers |
+| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus and menu sets, value lists, privilege sets, extended privileges, fonts, the file library, data sources, base directories; each catalog's display order and settings, and the entries its index keeps per member of what a tool shows of it | developers |
 | Data | each table's records, indexes, record list, counters and global values; container data and library reference counts; the data keys inside design members: a serial field's next value, a table's and a field's data version, pending field work; each catalog's last issued id; an occurrence's saved found set | users, and the host for them |
 | Access | accounts, file access authorizations | administrators |
 | Secret | a credential stored inside a design member: a password, a private key, a client secret or an API key a script step or a button's step keeps, and the account name beside it in a step that signs in | developers |
-| Derived | what FileMaker computes from other paths: checksums (a privilege set's also covers the file's creation stamp), digests, name lists, member caches, counts, routes and dependency lists | whoever writes what they come from |
+| Derived | what FileMaker computes from other paths and no tool shows or lets a person set: checksums (a privilege set's also covers the file's creation stamp), digests, name lists, counts, routes and dependency lists | whoever writes what they come from |
 
 The rules are one table in code, `om_hbam::design_paths::rules()`, each
 with what its paths hold and the `docs/re/` section that says so. They
@@ -168,12 +168,12 @@ member's id; a test keeps this table equal to the code's):
 | `[03, 11, 01, 0e]` | the fields' dependencies through relationships (DBDepend) | Derived |  | schema-path.md 5.3 |
 | `[03, fb]` | relationships | Design | relationship | schema-path.md 5.4 |
 | `[04]` | layouts | Design | layout | layout-model.md 10.5, 10.6 |
-| `[04, 01, 07]` | each layout's entry: its occurrence, menu set, name and flags | Derived |  | layout-model.md 10.6 |
+| `[04, 01, 07]` | each layout's entry: its occurrence, menu set, name and flags; each entry is part of its member's object | Design |  | layout-model.md 10.6, 10.11 |
 | `[06]` | themes | Design | theme | layout-model.md 7.5 |
-| `[06, 01, 07]` | an empty entry for each theme | Derived |  | layout-model.md 7.5 |
+| `[06, 01, 07]` | an empty entry for each theme; each entry is part of its member's object | Design |  | layout-model.md 7.5 |
 | `[10]` | custom functions | Design | custom_function | calc-encoding.md 8 |
 | `[11]` | scripts | Design | script | scripts.md; script-steps.md 1 |
-| `[11, 01, 07]` | each member's name and flags | Derived |  | scripts.md, "The catalog index" |
+| `[11, 01, 07]` | each script's name and flags as Script Workspace shows them (its full-access badge); each entry is part of its member's object | Design |  | scripts.md, "The catalog index" |
 | `[11, 01, 08]` | the digest of the member cache | Derived |  | scripts.md, "The catalog index" |
 | `[17, 01]` | accounts | Access |  | session-identity.md 1, 3; local-files.md 3 |
 | `[17, 02]` | privilege sets | Design | privilege_set | session-identity.md 2 |
@@ -184,8 +184,8 @@ member's id; a test keeps this table equal to the code's):
 | `[17, 04]` | file access | Access |  | session-identity.md 4.3 |
 | `[19]` | fonts | Design | font | layout-model.md 8 |
 | `[1f]` | file library | Design | library_item | containers.md 1 |
-| `[1f, 01, 06]` | the glyph index | Derived |  | containers.md 1.2 |
-| `[1f, 01, 07]` | the member list | Derived |  | containers.md 1.2 |
+| `[1f, 01, 06]` | the glyph index: the members that are glyphs; each entry is part of its member's object | Design |  | containers.md 1.2 |
+| `[1f, 01, 07]` | the member list; each entry is part of its member's object | Design |  | containers.md 1.2 |
 | `[1f, 01, 08]` | the MD5 index | Derived |  | containers.md 1.2 |
 | `[1f, 05, *, 04]` | the MD5 of the data | Derived |  | containers.md 1.3, 2.2 |
 | `[1f, 05, *, 12]` | the reference count | Data |  | containers.md 1.3, 5 |
@@ -215,18 +215,25 @@ slot `[00 n]` (script-steps.md 4.2) of a step's data that holds a
 password depends on the step, whose id is in the script's step list
 `[11, 5, S, 04]` or the button's object in the layout's object store
 `[4, 5, L, 07]` (layout-model.md 5.3.3). A step keeps its data at
-`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. These slots,
-with everything below them, are Secret (`om_hbam::design_paths::STEP_SECRETS`;
-a test keeps this table equal to the code's):
+`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. Only the
+credential inside a slot is Secret: its calculation `05` (the specs name
+these credentials as calculations), and its text `01` if it has one; the
+slot's number `03` is another setting (Create PDF's slot 7 also holds
+"allow screen reader"). In an ODBC profile only the user name and password
+strings are Secret; its data source name, flags and query are design.
+When the step cannot be identified, every slot of its data is Secret
+whole: not knowing fails toward keeping a value out of anything shown
+(`om_hbam::design_paths::STEP_SECRETS`; a test keeps this table equal to
+the code's):
 
-| Step | Secret slots | Spec |
+| Step | Slots whose calculation `05` (and text `01`) is Secret | Spec |
 |---|---|---|
 | 63 Send Mail | 10 the SMTP user name; 11 the SMTP password; 16 the Google OAuth service account; 17 the Google OAuth private key; 20 the Microsoft OAuth client id; 21 the Microsoft OAuth client secret | script-steps.md 12.3; catalogs/script-step-params.csv |
 | 83 Change Password | 0 the old password; 1 the new password | catalogs/script-step-params.csv |
 | 134 Add Account | 1 the password | catalogs/script-step-params.csv |
 | 136 Reset Account Password | 1 the new password | catalogs/script-step-params.csv |
 | 138 Re-Login | 0 the account name; 1 the password | catalogs/script-step-params.csv |
-| 144 Save Records as PDF | 7 the password to open; 8 the password to control | script-steps.md 11.7, 12.2 |
+| 144 Save Records as PDF | 7 the password to open [I]; 8 the password to control [I] | script-steps.md 11.7, 12.2 [I] |
 | 211 Trigger Claris Connect Flow | 3 the authentication | catalogs/script-step-params.csv |
 | 212 Configure AI Account | 3 the API key | script-steps.md 12.2; catalogs/script-step-params.csv |
 | 227 Configure RAG Account | 3 the API key | script-steps.md 12.2; catalogs/script-step-params.csv |
@@ -234,7 +241,16 @@ a test keeps this table equal to the code's):
 | 243 Create PDF | 7 the password to open; 8 the password to control | script-steps.md 12.2 |
 | 244 Append PDF | 7 the PDF's password | script-steps.md 12.2 |
 | 246 Open PDF | 7 the PDF's password | script-steps.md 12.2 |
-| any step | its profile `86` when it is an ODBC connection profile, whole | script-steps.md 11.5 |
+| any step | in its profile `86`, when an ODBC connection profile, the user name and password strings; the whole profile when it does not read so | script-steps.md 11.0, 11.5 |
+| a step OpenMaker cannot identify | every slot, whole: no step list, one that does not read, a data key no step names, a step id the step catalog does not have | script-steps.md 2, 4.2; catalogs/script-steps.csv |
+
+There is no grouping by path alone: `om_hbam::design_paths::group_in`
+takes the tree, since a path-only answer of Design for a stored password
+could be taken as final. Where a Secret is marked whole, a design change
+inside it (another formula in a slot of an unidentified step, another
+query in an ODBC profile that does not read as script-steps.md 11.5 gives
+it) shows only as a change of the object, not as another design
+revision (section 9).
 
 What the rules cannot see is not Secret. The rules reach the first-level
 keys of members and catalog indexes and the slots above; below them
@@ -1059,22 +1075,33 @@ file library item, a data source, a value list, a base directory, a
 custom menu set or a custom menu; and each Design catalog as a whole
 (`om_hbam::design_paths::objects`). A member is identified by its kind
 and its key (and a field by its table's key), a catalog by its kind (and
-a field catalog by its table). A member object is its member alone. A
-catalog object is its index `[cat, 1]`: its Design paths are the display
-order, and so the order of scripts and their folders, and the catalog's
-settings; the name lists, member caches, digests, counts and dependency
-lists there are Derived, and the last issued id is Data. So a change
-that only moves a script is a change of the script catalog's object,
-recorded and compared like any other. An emptied member, a deletion, is
-no object. An object's revision is the `sha256:` of its member or index
-without its Data, Access and Derived paths and without modification
-stamps, each Secret path written as a marker without its value, in the
-canonical form `om-author` uses ([authoring.md](authoring.md),
-"Revisions"); paths in no group stay in it. Derived paths are recomputed
-by whoever writes the paths they come from, a deploy too: a privilege
-set's checksum covers the file's creation stamp, so one copied from
-another file would fail FileMaker's check at open (session-identity.md
-4.4).
+a field catalog by its table). A member object is its member and the
+entries its catalog's index keeps for it of what a tool shows (a
+script's cached name and flags, with the full-access badge Script
+Workspace shows, scripts.md). A catalog object is the rest of its index:
+its Design paths are the display order, and so the order of scripts and
+their folders, and the catalog's settings; the name lists, digests,
+counts and dependency lists there are Derived, and the last issued id is
+Data. So a change that only moves a script is a change of the script
+catalog's object. An emptied member, a deletion, is no object.
+
+An object has two hashes. Its **edit token** (`Object::edit_token`, a
+`sha256:` revision) covers the whole member or index, stored passwords
+included, without modification stamps: what authoring exchanges to guard
+an edit ([authoring.md](authoring.md), "Revisions"), and only between a
+client that holds the member and the host. Its **design revision**
+(`Object::design_revision`, a `design-sha256:` text of another type)
+covers its Design content: Data, Access and Derived paths left out, a
+Secret value replaced by a marker, paths in no group kept. History, a
+comparison, the text form and a mirror show and keep design revisions;
+none of them decides an edit. Whether an object changed is decided on its
+full content, the edit token computed then, and reported with the design
+revisions: when the full content differs and the design revisions are
+equal, the change is reported as "a stored secret or derived content
+changed", without the content. Derived paths are recomputed by whoever
+writes the paths they come from, a deploy too: a privilege set's
+checksum covers the file's creation stamp, so one copied from another
+file would fail FileMaker's check at open (session-identity.md 4.4).
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the

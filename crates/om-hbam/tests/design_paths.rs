@@ -117,42 +117,43 @@ const UNCLASSIFIED: &[&str] = &[
 ];
 
 /// Whether `node` holds a value stored as a header and pieces
-/// (file-format.md 3.6), which revisions now hash as the value it
-/// assembles to.
+/// (file-format.md 3.6), which edit tokens now hash as the value it
+/// joins to.
 fn holds_split_value(node: &OwnedNode) -> bool {
-    node.children.iter().any(|c| {
-        (c.value.is_none() && !c.children.is_empty() && c.assembled().is_some())
-            || holds_split_value(c)
-    })
+    node.children
+        .iter()
+        .any(|c| design_paths::split_value(c).is_some() || holds_split_value(c))
 }
 
-/// How an object's revision compares with the old code's.
+/// How an object's edit token compares with the old code's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Old {
     Equal,
-    /// It holds a Secret path, whose value no longer enters it.
-    Secret,
-    /// It holds a split value, now hashed as its assembled value.
+    /// It holds a split value, now hashed as the value it joins to.
     Split,
 }
 
-/// Compare a script's, layout's or value list's revision with the old
-/// code's: equal unless a Secret path or a split value explains the
-/// difference.
+/// Compare a script's, layout's or value list's edit token with the old
+/// code's: equal unless a split value explains the difference; and its
+/// legacy token, which a host still accepts, always equal.
 fn against_oracle(object: &design_paths::Object<'_>) -> Old {
-    let old = match object.kind {
-        Kind::Script => oracle::script(object.node),
-        _ => oracle::catalog(object.node),
+    let (old, legacy) = match object.kind {
+        Kind::Script => (
+            oracle::script(object.node),
+            design_paths::legacy_script_form_revision(object.node),
+        ),
+        _ => (
+            oracle::catalog(object.node),
+            design_paths::legacy_catalog_revision(object.node),
+        ),
     };
-    let revision = object.revision();
-    if !object.secrets().is_empty() {
-        assert_ne!(revision, old);
-        Old::Secret
-    } else if holds_split_value(object.node) {
-        assert_ne!(revision, old);
+    assert_eq!(legacy, old);
+    let token = object.edit_token();
+    if holds_split_value(object.node) {
+        assert_ne!(token, old);
         Old::Split
     } else {
-        assert_eq!(revision, old, "{:?} {:02x?}", object.kind, object.key);
+        assert_eq!(token, old, "{:?} {:02x?}", object.kind, object.key);
         Old::Equal
     }
 }
@@ -234,13 +235,7 @@ fn scripts_layouts_and_value_lists_keep_the_old_revisions_but_for_secrets_and_sp
 
     let compared: Vec<(Kind, Old)> = design_paths::objects(&root)
         .iter()
-        .map(|object| {
-            assert_eq!(
-                design_paths::revision_of(object.kind, None, object.node),
-                object.revision()
-            );
-            (object.kind, against_oracle(object))
-        })
+        .map(|object| (object.kind, against_oracle(object)))
         .collect();
     assert_eq!(
         compared,
@@ -248,7 +243,7 @@ fn scripts_layouts_and_value_lists_keep_the_old_revisions_but_for_secrets_and_sp
             (Kind::Layout, Old::Equal),
             (Kind::Layout, Old::Split),
             (Kind::Script, Old::Equal),
-            (Kind::Script, Old::Secret),
+            (Kind::Script, Old::Equal),
             (Kind::ValueList, Old::Equal),
         ]
     );
@@ -262,13 +257,13 @@ fn tree(path: &Path) -> (HbamFile, OwnedNode) {
 
 type Id = (Kind, bool, Option<Vec<u8>>, Vec<u8>);
 
-fn revisions(root: &OwnedNode) -> BTreeMap<Id, [u8; 32]> {
+fn revisions(root: &OwnedNode) -> BTreeMap<Id, ([u8; 32], design_paths::DesignRevision)> {
     design_paths::objects(root)
         .iter()
         .map(|o| {
             (
                 (o.kind, o.catalog, o.table.clone(), o.key.clone()),
-                o.revision(),
+                (o.edit_token(), o.design_revision()),
             )
         })
         .collect()

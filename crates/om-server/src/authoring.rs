@@ -63,16 +63,17 @@ use om_hbam::slot::uint_segment;
 use om_hbam::tree::memory;
 use om_hbam::{serial, KeySegment, OwnedNode};
 use om_protocol::authoring::{
-    self, catalog_revision, content_revision, layout_revision, status, ChangeParts, CreateField,
-    CreateLayout, Created, DeleteLayout, DeleteObjects, Deleted, Described, DuplicateLayout,
-    FieldControl, Frame, Framed, LayoutCreated, LayoutSetup, LayoutWidth, Operation, PartOptions,
-    PlaceButton, PlaceButtonStep, PlaceField, PlacePortal, PlaceText, Placed, ReplaceScriptSteps,
-    Replaced, Reply, Request, Revision, SetObjectFrames, SetText, ValueListValues,
-    MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS,
-    OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY,
-    OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS,
-    OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT,
-    OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    self, catalog_revision, content_revision, layout_revision, legacy_catalog_revision,
+    legacy_content_revision, status, ChangeParts, CreateField, CreateLayout, Created, DeleteLayout,
+    DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame, Framed, LayoutCreated,
+    LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep, PlaceField,
+    PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request, Revision,
+    SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT,
+    MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT,
+    OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
+    OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP,
+    OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS, OP_SAVE,
+    OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
@@ -548,7 +549,13 @@ fn replace_script_steps(
             revision,
         });
     }
-    if current_revision != request.expected {
+    let expected = expected_now(
+        &request.expected,
+        &current,
+        content_revision,
+        legacy_content_revision,
+    );
+    if current_revision != expected {
         return Reply::Refused {
             status: status::CONFLICT,
             message: format!("Script {id} was changed since the revision the edit was made to."),
@@ -728,10 +735,13 @@ fn create_field(
         );
     }
     let current = store.node(&[&table, &[FIELDS]]).cloned();
-    let current_revision = catalog_revision(
-        current
-            .as_ref()
-            .unwrap_or(&OwnedNode::list(vec![FIELDS], Vec::new())),
+    let empty = OwnedNode::list(vec![FIELDS], Vec::new());
+    let current_revision = catalog_revision(current.as_ref().unwrap_or(&empty));
+    let expected = expected_now(
+        &request.expected,
+        current.as_ref().unwrap_or(&empty),
+        catalog_revision,
+        legacy_catalog_revision,
     );
     let conflict = || Reply::Refused {
         status: status::CONFLICT,
@@ -746,7 +756,7 @@ fn create_field(
         .and_then(|catalog| field_catalog::same_name(catalog, &field.name))
     {
         // Made by an earlier request whose answer was lost: nothing to do.
-        if field_catalog::is_made_by(member, &field) && current_revision != request.expected {
+        if field_catalog::is_made_by(member, &field) && current_revision != expected {
             return Reply::Created(Created {
                 changed: false,
                 field: id,
@@ -754,7 +764,7 @@ fn create_field(
             });
         }
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         return conflict();
     }
     let planned = match field_catalog::plan(current.as_ref(), &field) {
@@ -904,10 +914,14 @@ fn create_layout(
                 );
             }
         }
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let expected = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
         let Some((theme, width)) = layout_catalog::model(layouts, like) else {
             return refused(
@@ -932,7 +946,7 @@ fn create_layout(
                 revision: current_revision,
             });
         }
-        if current_revision != request.expected {
+        if current_revision != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: "The file's layouts were changed since the revision the request was \
@@ -1072,7 +1086,13 @@ fn field_control(
         };
         // At another revision, `edit_objects` answers: already applied, or
         // a conflict (306), even when the object is gone since.
-        if layout_revision(member) == request.expected {
+        let expected = expected_now(
+            &request.expected,
+            member,
+            layout_revision,
+            legacy_catalog_revision,
+        );
+        if layout_revision(member) == expected {
             if let Err((status, why)) = control_facts(&store, member, request) {
                 return refused(status, why);
             }
@@ -1408,7 +1428,13 @@ where
         ));
     };
     let current_revision = layout_revision(&current);
-    if current_revision != edit.expected {
+    let expected = expected_now(
+        &edit.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
         if (edit.already)(&current, &store) {
             return Ok((false, current_revision));
         }
@@ -1504,6 +1530,12 @@ fn layout_setup(
             );
         };
         let current = layout_revision(member);
+        let expected = expected_now(
+            &request.expected,
+            member,
+            layout_revision,
+            legacy_catalog_revision,
+        );
         let planned =
             layout_catalog::plan_setup(layouts, id, &request.name, request.flags, request.hidden);
         // A layout that holds the setup already answers it unchanged: an
@@ -1514,7 +1546,7 @@ fn layout_setup(
                 revision: current,
             });
         }
-        if current != request.expected {
+        if current != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: format!(
@@ -1650,10 +1682,17 @@ fn value_list_values(
                 revision: current,
             });
         }
-        let stored = catalog
-            .at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)])
-            .map(catalog_revision);
-        if stored != Some(request.expected) {
+        let stored_member = catalog.at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)]);
+        let stored = stored_member.map(catalog_revision);
+        let expected = stored_member.map_or(request.expected, |member| {
+            expected_now(
+                &request.expected,
+                member,
+                catalog_revision,
+                legacy_catalog_revision,
+            )
+        });
+        if stored != Some(expected) {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: format!(
@@ -1778,6 +1817,12 @@ fn place_field(
         );
     };
     let current_revision = layout_revision(&current);
+    let expected = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
     // The field: one of the layout's occurrence's table with a value
     // Browse edits as text in an edit box.
     let catalog = store.catalog();
@@ -1816,7 +1861,7 @@ fn place_field(
             ),
         );
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some((field_object, label_object)) =
             layout_placement::already_placed(&current, &placement)
@@ -1951,10 +1996,14 @@ fn duplicate_layout(
                 "The file has no layout catalog [4] to copy a layout in.",
             );
         };
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let expected = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
         // Made by an earlier sending of this request, whose answer was
         // lost: its UUID is on the copy. Nothing to do.
@@ -1976,7 +2025,7 @@ fn duplicate_layout(
                 format!("The file has no layout {}.", request.layout),
             );
         }
-        if current_revision != request.expected {
+        if current_revision != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: "The file's layouts were changed since the revision the request was \
@@ -2169,15 +2218,19 @@ fn delete_layout(
                 "The file has no layout catalog [4] to delete a layout from.",
             );
         };
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let expected = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
         let exists = layouts
             .at(&[&[LAYOUT_MEMBERS], &uint_segment(id)])
             .is_some();
-        if current_revision != request.expected {
+        if current_revision != expected {
             // Deleted by an earlier sending whose answer was lost: layout
             // ids are not issued again, so a missing one stays deleted.
             if !exists {
@@ -2338,7 +2391,13 @@ fn place_text(
         );
     };
     let current_revision = layout_revision(&current);
-    if current_revision != request.expected {
+    let expected = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(text_object) = layout_placement::already_placed_text(&current, &text) {
             return Reply::Placed(Placed {
@@ -2502,6 +2561,12 @@ fn place_portal(
         );
     };
     let current_revision = layout_revision(&current);
+    let expected = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
     // The fields: of the occurrence's table, with values Browse edits as
     // text in an edit box.
     let catalog = store.catalog();
@@ -2542,7 +2607,7 @@ fn place_portal(
             );
         }
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some((portal, _)) = layout_placement::already_placed_portal(&current, &placement) {
             return Reply::Placed(Placed {
@@ -2810,6 +2875,7 @@ fn place_planned_button(
         );
     };
     let current_revision = layout_revision(&current);
+    let expected = expected_now(expected, &current, layout_revision, legacy_catalog_revision);
     // A script the step names: one of the file's, not a folder or
     // separator.
     if let Some(key) = step.script_key() {
@@ -2836,7 +2902,7 @@ fn place_planned_button(
         }
     }
     let action = om_scripts::step_name(step.id()).unwrap_or("a step");
-    if current_revision != *expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(button) = layout_placement::already_placed_button(&current, placement) {
             return Reply::Placed(Placed {
@@ -2916,6 +2982,26 @@ fn place_planned_button(
         label_object: 0,
         revision,
     })
+}
+
+/// The revision a request names, read as the current content's edit
+/// token when it is the token a client one version behind computes for
+/// that content: before split values were hashed as the value they join to
+/// (`om_hbam::design_paths`; docs/authoring.md, "Revisions"). Any other
+/// revision is kept as sent, so a stale one is still a conflict; the host
+/// answers with its own form.
+fn expected_now(
+    expected: &Revision,
+    current: &OwnedNode,
+    token: fn(&OwnedNode) -> Revision,
+    legacy: fn(&OwnedNode) -> Revision,
+) -> Revision {
+    let now = token(current);
+    if *expected != now && *expected == legacy(current) {
+        now
+    } else {
+        *expected
+    }
 }
 
 #[cfg(test)]

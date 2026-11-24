@@ -154,6 +154,10 @@ pub struct Rule {
     pub holds: &'static str,
     /// Where `docs/re/` says so.
     pub spec: &'static str,
+    /// An index key whose children are entries keyed by member, each
+    /// belonging to the member it describes (a script's cached name and
+    /// flags): part of that member's object, not the catalog's.
+    pub entries: bool,
 }
 
 impl Rule {
@@ -183,6 +187,8 @@ pub struct Key {
     pub group: Group,
     pub holds: &'static str,
     pub spec: &'static str,
+    /// See [`Rule::entries`].
+    pub entries: bool,
 }
 
 const fn keyed(group: Group, key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
@@ -191,6 +197,16 @@ const fn keyed(group: Group, key: &'static [u8], holds: &'static str, spec: &'st
         group,
         holds,
         spec,
+        entries: false,
+    }
+}
+
+/// An index key of entries keyed by member, each part of its member's
+/// object ([`Rule::entries`]).
+const fn entries(key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
+    Key {
+        entries: true,
+        ..keyed(Group::Design, key, holds, spec)
     }
 }
 
@@ -357,10 +373,10 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Layout),
         spec: "layout-model.md 10.5, 10.6",
         index: &[
-            derived(
+            entries(
                 &[0x07],
                 "each layout's entry: its occurrence, menu set, name and flags",
-                "layout-model.md 10.6",
+                "layout-model.md 10.6, 10.11",
             ),
             design(
                 &[0x20],
@@ -417,7 +433,7 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Theme),
         spec: "layout-model.md 7.5",
         index: &[
-            derived(
+            entries(
                 &[0x07],
                 "an empty entry for each theme",
                 "layout-model.md 7.5",
@@ -483,9 +499,9 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Script),
         spec: "scripts.md; script-steps.md 1",
         index: &[
-            derived(
+            entries(
                 &[0x07],
-                "each member's name and flags",
+                "each script's name and flags as Script Workspace shows them (its full-access badge)",
                 "scripts.md, \"The catalog index\"",
             ),
             derived(
@@ -598,8 +614,8 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::LibraryItem),
         spec: "containers.md 1",
         index: &[
-            derived(&[0x06], "the glyph index", "containers.md 1.2"),
-            derived(&[0x07], "the member list", "containers.md 1.2"),
+            entries(&[0x06], "the glyph index: the members that are glyphs", "containers.md 1.2"),
+            entries(&[0x07], "the member list", "containers.md 1.2"),
             derived(&[0x08], "the MD5 index", "containers.md 1.2"),
         ],
         member: &[
@@ -616,6 +632,7 @@ pub const CATALOGS: &[Catalog] = &[
                 group: Group::Design,
                 holds: "a stream of the data",
                 spec: "containers.md 1.3, 2.3",
+                entries: false,
             },
         ],
     },
@@ -908,8 +925,11 @@ pub const STEP_SECRETS: &[StepSecret] = &[
     StepSecret {
         step: 144,
         name: "Save Records as PDF",
-        slots: &[(7, "the password to open"), (8, "the password to control")],
-        spec: "script-steps.md 11.7, 12.2",
+        slots: &[
+            (7, "the password to open [I]"),
+            (8, "the password to control [I]"),
+        ],
+        spec: "script-steps.md 11.7, 12.2 [I]",
     },
     StepSecret {
         step: 211,
@@ -976,6 +996,7 @@ impl Catalog {
                 group: self.group,
                 holds: self.name,
                 spec: self.spec,
+                entries: false,
             });
             return;
         }
@@ -988,6 +1009,7 @@ impl Catalog {
                 group: key.group,
                 holds: key.holds,
                 spec: key.spec,
+                entries: key.entries,
             });
         };
         for key in COMMON_INDEX.iter().chain(self.index) {
@@ -1038,6 +1060,7 @@ pub fn rules() -> &'static [Rule] {
                 group: *group,
                 holds,
                 spec,
+                entries: false,
             });
         }
         out
@@ -1084,10 +1107,19 @@ pub fn markdown_table() -> String {
             pattern.push(key.key);
             pattern
         };
-        for key in catalog.index.iter().filter(|k| k.group != Group::Design) {
+        for key in catalog
+            .index
+            .iter()
+            .filter(|k| k.group != Group::Design || k.entries)
+        {
+            let holds = if key.entries {
+                format!("{}; each entry is part of its member's object", key.holds)
+            } else {
+                key.holds.to_string()
+            };
             row(
                 &under(&[Seg::Key(&[0x01])], key),
-                key.holds,
+                &holds,
                 key.group,
                 None,
                 key.spec,
@@ -1107,7 +1139,9 @@ pub fn markdown_table() -> String {
 /// The step rules as a Markdown table, as `docs/server-storage.md`
 /// section 4 shows them (a test keeps the two equal).
 pub fn markdown_secrets() -> String {
-    let mut out = String::from("| Step | Secret slots | Spec |\n|---|---|---|\n");
+    let mut out = String::from(
+        "| Step | Slots whose calculation `05` (and text `01`) is Secret | Spec |\n|---|---|---|\n",
+    );
     for step in STEP_SECRETS {
         let slots: Vec<String> = step
             .slots
@@ -1123,25 +1157,29 @@ pub fn markdown_secrets() -> String {
         ));
     }
     out.push_str(
-        "| any step | its profile `86` when it is an ODBC connection profile, whole | \
-         script-steps.md 11.5 |\n",
+        "| any step | in its profile `86`, when an ODBC connection profile, the user name and \
+         password strings; the whole profile when it does not read so | script-steps.md 11.0, 11.5 |\n",
+    );
+    out.push_str(
+        "| a step OpenMaker cannot identify | every slot, whole: no step list, one that does not \
+         read, a data key no step names, a step id the step catalog does not have | \
+         script-steps.md 2, 4.2; catalogs/script-steps.csv |\n",
     );
     out
 }
 
 /// The path rule for `path`: the longest of those that cover it.
-pub fn rule_for(path: &[&[u8]]) -> Option<&'static Rule> {
+pub(crate) fn rule_for(path: &[&[u8]]) -> Option<&'static Rule> {
     rules()
         .iter()
         .filter(|r| r.covers(path))
         .max_by_key(|r| r.pattern.len())
 }
 
-/// The group of `path` by the path rules alone. It cannot see a Secret
-/// path, which needs the step the path's data belongs to: use
-/// [`super::group_in`] with the tree. A path no rule covers is in no
-/// group, as is the file as a whole; that is never an error.
-pub fn group_of(path: &[&[u8]]) -> Group {
+/// The group of `path` by the path rules alone, for this module only: it
+/// cannot see a Secret path, which needs the step the path's data belongs
+/// to, so callers use [`super::group_in`] with the tree.
+pub(crate) fn group_of(path: &[&[u8]]) -> Group {
     rule_for(path).map_or(Group::None, |r| r.group)
 }
 

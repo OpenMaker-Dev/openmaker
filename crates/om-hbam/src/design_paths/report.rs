@@ -113,7 +113,7 @@ impl Secrets {
         let (kind, depth) = member_of(path).filter(|&(_, depth)| depth == path.len())?;
         let paths = secrets::of(kind, member)
             .into_iter()
-            .map(|(p, _)| p)
+            .map(|s| s.path)
             .collect();
         Some(Secrets { depth, paths })
     }

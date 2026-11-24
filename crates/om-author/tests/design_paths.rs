@@ -1,30 +1,42 @@
-//! The path groups and revisions of `om_hbam::design_paths`, which
-//! `om-author`'s revisions are computed through, on the synthetic Tasks
-//! file the authoring tests host (`common::form_tree`): which changes move
-//! which object's revision, and that a file written and read back keeps
-//! them all.
+//! The path groups, design revisions and edit tokens of
+//! `om_hbam::design_paths` on the synthetic Tasks file the authoring tests
+//! host (`common::form_tree`): which changes move which object's design
+//! revision, and that a file written and read back keeps every design
+//! revision and edit token.
 
 mod common;
 
 use std::collections::BTreeMap;
 
 use common::fixture;
-use om_hbam::design_paths::{self, group_of, Group, Kind, Revision};
+use om_hbam::design_paths::{self, group_in, DesignRevision, Group, Kind, Revision};
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, HbamFile, OwnedNode};
 
 type Id = (Kind, Option<Vec<u8>>, Vec<u8>);
 
-fn revisions(root: &OwnedNode) -> BTreeMap<Id, Revision> {
+fn revisions(root: &OwnedNode) -> BTreeMap<Id, DesignRevision> {
     design_paths::objects(root)
         .iter()
-        .map(|o| ((o.kind, o.table.clone(), o.key.clone()), o.revision()))
+        .map(|o| {
+            (
+                (o.kind, o.table.clone(), o.key.clone()),
+                o.design_revision(),
+            )
+        })
         .collect()
 }
 
-/// The objects whose revision differs between `a` and `b`, or that only
-/// one has.
-fn changed(a: &BTreeMap<Id, Revision>, b: &BTreeMap<Id, Revision>) -> Vec<Id> {
+fn tokens(root: &OwnedNode) -> BTreeMap<Id, Revision> {
+    design_paths::objects(root)
+        .iter()
+        .map(|o| ((o.kind, o.table.clone(), o.key.clone()), o.edit_token()))
+        .collect()
+}
+
+/// The objects whose design revision differs between `a` and `b`, or that
+/// only one has.
+fn changed(a: &BTreeMap<Id, DesignRevision>, b: &BTreeMap<Id, DesignRevision>) -> Vec<Id> {
     let mut out: Vec<Id> = a
         .iter()
         .filter(|(id, revision)| b.get(*id) != Some(revision))
@@ -97,14 +109,14 @@ fn stamps_serial_numbers_and_accounts_change_no_revision() {
     let mut served = root.clone();
     let mut next = field_path(fixture::COUNT).to_vec();
     next.push(vec![0x0c]);
-    assert_eq!(group_of(&at(&next)), Group::Data);
+    assert_eq!(group_in(&served, &at(&next)), Group::Data);
     served.put(&at(&next), om_scripts::text_node(&[], "2"));
     assert_eq!(changed(&before, &revisions(&served)), Vec::<Id>::new());
 
     // Clerk's account renamed, and its password changed.
     let mut accounts = root.clone();
     let clerk: [&[u8]; 4] = [&[0x17], &[1], &[5], &[3]];
-    assert_eq!(group_of(&clerk), Group::Access);
+    assert_eq!(group_in(&accounts, &clerk), Group::Access);
     let account = accounts.at_mut(&clerk).expect("Clerk's account");
     account.set_child(om_scripts::text_node(&[0x10], "Clerk 2"));
     account.set_child(OwnedNode::leaf(vec![0x06], vec![7; 32]));
@@ -169,6 +181,7 @@ fn a_file_written_and_read_back_keeps_every_revision() {
         "split on write"
     );
     assert_eq!(revisions(&reread), before);
+    assert_eq!(tokens(&reread), tokens(&root));
     // The report sees the keys the fixture adds that FileMaker does not
     // define, and nothing else outside the rules.
     let report = design_paths::report(&reread);
