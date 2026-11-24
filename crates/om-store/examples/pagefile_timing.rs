@@ -78,13 +78,12 @@ fn main() {
     };
     let name = TreeName::new(b"file/1".to_vec()).unwrap();
     let pf = PageFile::create(&fs, &lock, config).unwrap();
-    pf.end_recovery();
 
     // The tree: `items` records of 16 bytes, 1,000 puts an entry, in key
     // order.
     let start = Instant::now();
-    let res = pf.reserve(1, 1, Purpose::Entry).unwrap();
-    let mut root = tree::create(&res, 1).unwrap();
+    let res = pf.reserve(1, 2, Purpose::Entry).unwrap();
+    let mut root = res.create_tree(&name).unwrap();
     drop(res);
     let mut index = 1;
     for chunk in (0..items).collect::<Vec<_>>().chunks(1_000) {
@@ -157,7 +156,6 @@ fn main() {
     // the system's is not), then warm.
     drop(pf);
     let (pf, _) = PageFile::open(&fs, &lock, config).unwrap();
-    pf.end_recovery();
     let tree = Tree::open(&pf, root).unwrap();
     for (what, n) in [("cold", 100_000), ("warm", 100_000)] {
         let before = pf.cache_counts();

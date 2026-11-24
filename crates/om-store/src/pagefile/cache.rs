@@ -63,15 +63,6 @@ impl Cache {
         }
     }
 
-    /// Page `number` if the cache holds it with `hash`, without counting a
-    /// use.
-    pub fn peek(&self, number: PageNo, hash: &Hash) -> Option<Arc<Page>> {
-        self.pages
-            .get(&number)
-            .filter(|(page, _)| page.hash() == *hash)
-            .map(|(page, _)| page.clone())
-    }
-
     /// Keeps `page`, in place of any page cached under its number, and
     /// evicts the least recently used past the capacity.
     pub fn insert(&mut self, page: Arc<Page>) {
@@ -129,6 +120,6 @@ mod tests {
         assert!(cache.get(1, &a.hash()).is_none());
         assert!(cache.get(1, &a2.hash()).is_some());
         cache.remove(1);
-        assert!(cache.peek(1, &a2.hash()).is_none());
+        assert!(cache.get(1, &a2.hash()).is_none());
     }
 }

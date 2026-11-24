@@ -26,8 +26,13 @@ const REF: usize = 40;
 /// next one.
 pub(crate) const DIR_ENTRIES: usize = (OVERFLOW_DATA - REF) / REF;
 
-/// The most trees a checkpoint names.
-pub const MAX_TREES: usize = 1 << 20;
+/// The most trees a checkpoint names. Opening reads and checks every
+/// root, a page at a time: at the limit, 65,536 reads of 16 KiB, and a
+/// table of at most 19 MiB in memory.
+pub const MAX_TREES: usize = 1 << 16;
+
+/// The most restore points a checkpoint lists (and as many retiring).
+pub const MAX_RESTORE_POINTS: usize = 1 << 16;
 
 /// The longest restore point name, in bytes.
 pub const MAX_RESTORE_NAME: usize = 64;
@@ -39,8 +44,10 @@ pub(crate) struct Meta {
     pub entry: EntryId,
     pub tree_format: u8,
     /// The checkpoint before it, kept on disk while this one is the newest:
-    /// its number and version.
-    pub predecessor: Option<(u64, Version)>,
+    /// its number and version, and the first page of its meta stream, which
+    /// identifies it (a number whose checkpoint never reached the disk can
+    /// be given again).
+    pub predecessor: Option<(u64, Version, (PageNo, Hash))>,
     /// The state's trees, by name, in name order.
     pub trees: Vec<(TreeName, Root)>,
     /// The restore points this checkpoint lists.
@@ -52,7 +59,7 @@ pub(crate) struct Meta {
 }
 
 const HEADER: usize = 16;
-const FIXED: usize = HEADER + 8 + 48 + 8 + 8 + 16 + 8;
+const FIXED: usize = HEADER + 8 + 48 + 8 + 8 + 16 + REF + 8;
 const PENDING: usize = 8 + 32 + 16 + 1 + 16 + 8;
 const SHARE: usize = 8 + 4 + 16;
 
@@ -135,9 +142,13 @@ impl Meta {
         put_entry(&mut out, &self.entry);
         out.push(self.tree_format);
         out.extend_from_slice(&[0; 7]);
-        let (pn, pv) = self.predecessor.unwrap_or((0, Version::default()));
+        let (pn, pv, pm) =
+            self.predecessor
+                .unwrap_or((0, Version::default(), (0, Hash::default())));
         out.extend_from_slice(&pn.to_le_bytes());
         put_version(&mut out, pv);
+        out.extend_from_slice(&pm.0.to_le_bytes());
+        out.extend_from_slice(&pm.1 .0);
         out.extend_from_slice(&self.map.end.to_le_bytes());
         out.extend_from_slice(&(self.trees.len() as u32).to_le_bytes());
         for (name, root) in &self.trees {
@@ -195,9 +206,13 @@ impl Meta {
         }
         let pn = r.u64()?;
         let pv = r.version()?;
-        let predecessor = (pn != 0).then_some((pn, pv));
-        if pn == 0 && pv != Version::default() {
+        let pm = (r.u64()?, r.hash()?);
+        let predecessor = (pn != 0).then_some((pn, pv, pm));
+        if pn == 0 && (pv != Version::default() || pm != (0, Hash::default())) {
             return Err("a version without a predecessor");
+        }
+        if pn != 0 && pm.0 == 0 {
+            return Err("a predecessor without its meta stream");
         }
         let end = r.u64()?;
         let count = r.count(4, 1 + REF + 1)?;
@@ -221,6 +236,9 @@ impl Meta {
         let mut lists = Vec::new();
         for _ in 0..2 {
             let count = r.count(4, 1 + 1 + 8 + 48 + 16 + REF)?;
+            if count > MAX_RESTORE_POINTS {
+                return Err("too many restore points");
+            }
             let mut list: Vec<RestorePoint> = Vec::with_capacity(count);
             for _ in 0..count {
                 let len = usize::from(r.u8()?);
@@ -457,10 +475,15 @@ pub(crate) fn read_stream(
 ) -> Result<Stream, MetaFault> {
     let mut pages = Vec::new();
     let mut data_refs = Vec::new();
+    // A stream never names a page twice: refusing a repeat keeps a crafted
+    // directory from making a stream larger than the pages it occupies.
+    let mut seen = std::collections::BTreeSet::new();
     let mut next = root;
     while next.0 != 0 {
-        if pages.len() as u64 >= max_pages {
-            return Err(MetaFault::Malformed("a directory longer than the file"));
+        if pages.len() as u64 >= max_pages || !seen.insert(next.0) {
+            return Err(MetaFault::Malformed(
+                "a directory longer than the file, or naming a page twice",
+            ));
         }
         let page = load(next.0, &next.1).map_err(MetaFault::Page)?;
         pages.push(next);
@@ -480,7 +503,11 @@ pub(crate) fn read_stream(
         };
         let following = at(0);
         for i in (REF..data.len()).step_by(REF) {
-            data_refs.push(at(i));
+            let r = at(i);
+            if !seen.insert(r.0) {
+                return Err(MetaFault::Malformed("a stream naming a page twice"));
+            }
+            data_refs.push(r);
         }
         if following.0 == 0 && following.1 != Hash::default() {
             return Err(MetaFault::Malformed("a directory's end"));
@@ -526,7 +553,7 @@ mod tests {
                 hash: Hash([1; 32]),
             },
             tree_format: 1,
-            predecessor: Some((8, Version { entry: 70, step: 8 })),
+            predecessor: Some((8, Version { entry: 70, step: 8 }, (11, Hash([8; 32])))),
             trees: vec![
                 (
                     TreeName::new(b"file/1".to_vec()).unwrap(),

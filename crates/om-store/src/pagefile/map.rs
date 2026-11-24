@@ -338,13 +338,23 @@ impl Map {
     /// dies at the later of `n`'s death and the last release of the child.
     /// Returns the children that died. A child that is not in use is
     /// returned in `twice`: something released it on its own as well.
-    pub fn expand(&mut self, n: PageNo, children: &[Child]) -> (Vec<PageNo>, Vec<PageNo>) {
+    ///
+    /// `carried` is whether a map on disk records `n` unsettled (its own
+    /// flag as it was before it was settled): such a map records the
+    /// children in use and will need their bytes too, so they are carried
+    /// as well, and get a hold when they settle.
+    pub fn expand(
+        &mut self,
+        n: PageNo,
+        children: &[Child],
+        carried: bool,
+    ) -> (Vec<PageNo>, Vec<PageNo>) {
         let Some(record) = self.pending.get_mut(&n).filter(|r| r.expand) else {
             return (Vec::new(), Vec::new());
         };
         record.expand = false;
         let death = record.death;
-        let carried = record.carried;
+        let carried = carried || record.carried;
         let mut died = Vec::new();
         let mut twice = Vec::new();
         for child in children {
@@ -599,14 +609,17 @@ mod tests {
         assert!(map.pending()[&1].expand);
         // Expanding page 1: 2 is still reached by tree A's copy; 3 dies
         // at 6, the later of its two releases.
-        let (died, twice) = map.expand(1, &[child(2, true), child(3, true)]);
+        let (died, twice) = map.expand(1, &[child(2, true), child(3, true)], false);
         assert_eq!((died, twice), (vec![3], vec![]));
         assert_eq!(map.pending()[&3].death, v(6));
         assert_eq!(map.count(2), 1);
         // Expanding page 3 takes its overflow page down with it.
-        let (died, _) = map.expand(3, &[child(4, false)]);
+        let (died, _) = map.expand(3, &[child(4, false)], true);
         assert_eq!(died, vec![4]);
         assert!(!map.pending()[&4].expand);
+        // A page a map on disk recorded unsettled passes that on.
+        assert!(map.pending()[&4].carried);
+        assert!(!map.pending()[&3].carried);
         // Releasing a dying page again is refused, and changes nothing.
         let before = map.image(&BTreeSet::new());
         assert_eq!(
@@ -615,7 +628,7 @@ mod tests {
         );
         assert_eq!(map.image(&BTreeSet::new()), before);
         // An expansion that finds a child already dying reports it.
-        let (_, twice) = map.expand(1, &[child(3, true)]);
+        let (_, twice) = map.expand(1, &[child(3, true)], false);
         assert!(twice.is_empty(), "page 1 was expanded already");
     }
 

@@ -195,7 +195,8 @@ fn bound(store: &impl PageStore, model: &Model, ops: &[(TreeName, Op)]) -> Resul
                     .height();
                 entry_bound(edits, height)
             }
-            Op::Create | Op::Recreate => 1,
+            // A root page, and room for the name in a checkpoint's table.
+            Op::Create | Op::Recreate => 2,
         };
     }
     Ok(total)
@@ -220,16 +221,14 @@ fn apply_logged(res: &Reservation<'_>, model: &mut Model, logged: &Logged) -> Re
                 *root = new;
             }
             Op::Create => {
-                let root = tree::create(res, index).map_err(|e| e.to_string())?;
+                let root = res.create_tree(name).map_err(|e| e.to_string())?;
                 model.trees.insert(name.clone(), (root, Content::new()));
             }
             Op::Recreate => {
                 let (old, _) = model.trees.get(name).ok_or("no such tree")?;
-                let mut unit = res.begin().map_err(|e| e.to_string())?;
-                unit.release(old.page, &old.hash, Release::Dropped)
-                    .map_err(|e| e.to_string())?;
-                unit.commit().map_err(|e| e.to_string())?;
-                let root = tree::create(res, index).map_err(|e| e.to_string())?;
+                res.drop_tree(name, *old).map_err(|e| e.to_string())?;
+                model.trees.remove(name);
+                let root = res.create_tree(name).map_err(|e| e.to_string())?;
                 model.trees.insert(name.clone(), (root, Content::new()));
             }
         }
@@ -454,7 +453,6 @@ impl<'r> Run<'r> {
             reached,
             trace: Vec::new(),
         };
-        run.proc.as_ref().unwrap().pf.end_recovery();
         let first = Logged {
             entry: entry_id(1),
             ops: (0..3).map(|i| (tree_name(i), Op::Create)).collect(),
@@ -958,7 +956,6 @@ impl<'r> Run<'r> {
             }
             self.reached.replayed += 1;
         }
-        self.proc.as_ref().unwrap().pf.end_recovery();
         self.check(false);
     }
 
@@ -1435,8 +1432,8 @@ fn a_crash_at_every_step_of_an_open_that_passes_over_a_damaged_checkpoint() {
 
 /// Applying the same entries twice from the same checkpoint gives the
 /// same map, byte for byte, and the same roots, page numbers included:
-/// during recovery (nothing freed), and with frees, pins and reclaims at
-/// the same points in both runs.
+/// with no pins or reclaims, and with pins and reclaims at the same points
+/// in both runs.
 #[test]
 fn applying_the_same_entries_twice_from_a_checkpoint_gives_the_same_map() {
     for seed in seeds(3) {
@@ -1447,7 +1444,6 @@ fn applying_the_same_entries_twice_from_a_checkpoint_gives_the_same_map() {
             ..config()
         };
         let mut proc = create_proc(&disk, config);
-        proc.pf.end_recovery();
         let mut rng = Rng::stream(seed, 9);
         let mut model = Model::default();
         let logged = |index: u64, rng: &mut Rng| Logged {
@@ -1483,9 +1479,6 @@ fn applying_the_same_entries_twice_from_a_checkpoint_gives_the_same_map() {
                 sim.restart();
                 let (p, opened) = open_proc(&disk, config).unwrap();
                 assert_eq!(opened.checkpoint, checkpoint.number);
-                if running {
-                    p.pf.end_recovery();
-                }
                 let mut m = model.clone();
                 let mut pins = Vec::new();
                 for (i, l) in later.iter().enumerate() {
@@ -1569,7 +1562,15 @@ fn a_full_disk_refuses_reservations_and_the_store_still_reads_and_checkpoints() 
     let space = run.pf().space();
     assert!(space.free > space.floor + 20, "{space:?}");
     let before = run.reached.entries;
-    run.entry();
+    let index = run.next_index();
+    run.append(Logged {
+        entry: entry_id(index),
+        ops: vec![(
+            tree_name(1),
+            Op::Edits(vec![Edit::leaf(vec![b"small".to_vec()], vec![1; 8])]),
+        )],
+        taken: None,
+    });
     assert_eq!(run.reached.entries, before + 1, "an entry is taken again");
     run.check(true);
 }
@@ -1605,7 +1606,7 @@ fn share_counts_keep_a_cloned_tree_whole_until_both_are_dropped() {
     run.checkpoint(false);
     // The clone: tree 3 is tree 0 as it is, sharing every page.
     let (root, content) = run.newest.trees[&tree_name(0)].clone();
-    run.pf().share_for_test(root.page);
+    run.pf().clone_for_test(&tree_name(3), root.page);
     run.newest.trees.insert(tree_name(3), (root, content));
     run.checkpoint(false);
     assert_eq!(run.pf().count_for_test(root.page), 2);
@@ -1859,7 +1860,6 @@ fn a_checkpoint_is_needed_past_the_budget_of_pages_in_memory() {
     };
     let proc = create_proc(&disk, config);
     let pf = &proc.pf;
-    pf.end_recovery();
     let mut model = Model::default();
     let mut rng = Rng::new(21);
     let mut index = 1;
