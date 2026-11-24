@@ -1,6 +1,6 @@
 //! The design reference graph (`om_data::design_refs`) of every shipped
 //! template: it builds; every reference resolves to an object the graph
-//! lists, or is reported broken, external or unresolved; and the uses two
+//! lists, or is reported not found, external or unresolved; and the uses two
 //! decoders read on their own paths appear in where-used: each layout
 //! field object's field, each button's and each Perform Script step's
 //! script. Prints the
@@ -46,7 +46,7 @@ struct Counts {
     references: usize,
     references_by_place: BTreeMap<String, usize>,
     resolved: usize,
-    broken: usize,
+    target_not_found: usize,
     external: usize,
     unresolved: usize,
     read: BTreeMap<&'static str, usize>,
@@ -63,6 +63,7 @@ struct Counts {
     /// Files read cleanly, and why each other one was not.
     read_cleanly: usize,
     not_clean: BTreeMap<String, usize>,
+    consistent: usize,
     by_name: BTreeMap<&'static str, usize>,
     layout_fields_checked: usize,
     button_performs_checked: usize,
@@ -116,8 +117,8 @@ fn check(path: &Path, counts: &mut Counts) {
                     "{at}: {u:?} resolves to no listed object"
                 );
             }
-            Resolution::Broken { missing } => {
-                counts.broken += 1;
+            Resolution::TargetNotFound { missing } => {
+                counts.target_not_found += 1;
                 assert!(
                     graph.object(*missing).is_none(),
                     "{at}: {u:?} is missing a listed object"
@@ -183,6 +184,7 @@ fn check(path: &Path, counts: &mut Counts) {
         }
     }
     counts.omitted += coverage.omitted.iter().map(|o| o.count).sum::<usize>();
+    counts.consistent += usize::from(coverage.consistent());
     match coverage.not_clean_reason() {
         None => counts.read_cleanly += 1,
         Some(reason) => *counts.not_clean.entry(reason).or_default() += 1,
@@ -282,6 +284,6 @@ fn check(path: &Path, counts: &mut Counts) {
     }
     // The kinds every unused check could be uncertain for.
     for kind in Kind::REFERABLE {
-        let _ = graph.unused(kind);
+        let _ = graph.no_reference_found(kind);
     }
 }

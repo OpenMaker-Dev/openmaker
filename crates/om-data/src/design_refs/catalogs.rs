@@ -185,7 +185,12 @@ pub(super) fn tables(b: &mut Builder, t: &Layer<'_, '_>) {
         let fields_list = catalog(t, &[id, 3]);
         let mut fields = Vec::new();
         for (field_id, field) in b.members(fields_list) {
-            if !b.spend(1, holder, &Place::new("fields")) {
+            // The field's member is charged before its definition is read.
+            let field_holder = ObjectId::Field {
+                table: id,
+                field: field_id,
+            };
+            if !charge(b, field_holder, field) {
                 return;
             }
             let options = match field.bytes_at(FIELD_DEFINITION) {
@@ -198,10 +203,6 @@ pub(super) fn tables(b: &mut Builder, t: &Layer<'_, '_>) {
                 Some(3) => FieldKind::Summary,
                 Some(other) => FieldKind::Unknown(other),
                 None => FieldKind::Unknown(0),
-            };
-            let field_holder = ObjectId::Field {
-                table: id,
-                field: field_id,
             };
             let def = FieldDef {
                 id: field_id,
@@ -245,9 +246,7 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
         table,
         field: field.id,
     };
-    if !charge(b, holder, node) {
-        return;
-    }
+    // Charged with the field's listing.
     b.visit(Structure::Field);
     let options = match (field.kind, &field.options) {
         (FieldKind::Unknown(kind), Some(_)) => {

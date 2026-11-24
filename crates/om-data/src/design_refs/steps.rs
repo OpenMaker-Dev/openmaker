@@ -89,6 +89,9 @@ const SCRIPT_ZERO: u64 = 0x13;
 const SLOT_CALCULATION: u8 = 0x05;
 const SLOT_FIELD: u8 = 0x10;
 const SLOT_ALIASES: u8 = 0x11;
+/// The count of a slot's several keys `[00 n, 04]` (`KCount`,
+/// script-steps.md 4.2, 12.1), beside its keys `11`.
+const SLOT_COUNT: u8 = 0x04;
 /// What an AppleScript can name in FileMaker Pro, which has an AppleScript
 /// dictionary (`fmpro.sdef`, docs/re/architecture.md): inferred, not
 /// specified.
@@ -153,6 +156,15 @@ fn data_size(step: &ScriptStep) -> usize {
 /// The child `key` of slot `slot` of the step's data, as stored.
 fn slot_child(step: &ScriptStep, slot: u16, key: u8) -> Option<&OwnedNode> {
     step.data.as_ref()?.slot(slot)?.child(key)
+}
+
+/// Whether the step's schema stores several keys in slot `slot`.
+fn has_aliases(step: &ScriptStep, slot: u16) -> bool {
+    step.schema().is_some_and(|schema| {
+        schema
+            .locations()
+            .any(|l| matches!(l, Location::Slot { slot: n, kind: SlotKind::Aliases } if *n == slot))
+    })
 }
 
 /// Whether slot `slot` stores a calculation, without decoding it.
@@ -690,6 +702,7 @@ pub(super) fn read(
                     let Some(node) = slot_child(step, slot, SLOT_ALIASES) else {
                         continue;
                     };
+                    let count = slot_child(step, slot, SLOT_COUNT);
                     let list_of = if kind == ParamKind::Script {
                         Kind::Script
                     } else {
@@ -702,8 +715,8 @@ pub(super) fn read(
                         Shared::Aliases(slot),
                         holder,
                         &at,
-                        || owned_size(node),
-                        || unparted(aliases_found(node, list_of)),
+                        || owned_size(node) + count.map_or(0, owned_size),
+                        || unparted(aliases_found(node, count, list_of)),
                     );
                     apply(b, holder, &at, &place, &found);
                 }
@@ -823,6 +836,8 @@ fn check_data(
         .into_iter()
         .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
         .filter(|u| !matches!(u, Unclassified::Key(key) if TRANSFER_KEYS.contains(key)))
+        // The count beside a slot's several keys, read with them.
+        .filter(|u| !matches!(u, Unclassified::SlotChild(n, SLOT_COUNT) if has_aliases(step, *n)))
         .take(UNEXPLAINED_SHOWN + 1)
         .map(|u| u.to_string())
         .collect();
@@ -1153,35 +1168,84 @@ fn callback(step: &ScriptStep) -> Parted {
     vec![("", found)]
 }
 
-/// The one key of a `[00 n, 11]` node (`KAliases`, script-steps.md 4.2):
-/// `[len][segment]`, a table occurrence, or a script for Validate
-/// Scripts. Several keys carry a count `04`, which is not decoded here.
-fn aliases_found(node: &OwnedNode, list_of: Kind) -> Vec<Found> {
-    let one = (node.children.is_empty())
+/// The keys of a `[00 n, 11]` node (`KAliases`, script-steps.md 4.2,
+/// 12.1): table occurrences, or scripts for Validate Scripts. One key is
+/// stored as its length and segment (`03 d0 00 02`; `01 00` names none);
+/// several as 6 bytes each, the length, the segment and filler, with their
+/// count in `[00 n, 04]` as a little-endian `u32` (`02 00 00 00` for two).
+/// Any other form is an anomaly, not an empty list.
+fn aliases_found(node: &OwnedNode, count: Option<&OwnedNode>, list_of: Kind) -> Vec<Found> {
+    let malformed = |what: &str| {
+        vec![Found::unread(
+            UnreadReason::Malformed,
+            format!("a list of {what} that does not read"),
+            &[list_of],
+        )]
+    };
+    let what = if list_of == Kind::Script {
+        "scripts"
+    } else {
+        "table occurrences"
+    };
+    let Some(bytes) = node
+        .children
+        .is_empty()
         .then(|| om_scripts::node_bytes(node))
         .flatten()
-        .and_then(|bytes| {
-            let (&len, segment) = bytes.split_first()?;
-            (usize::from(len) == segment.len())
-                .then(|| be_uint(segment))
-                .flatten()
-                .filter(|id| *id != 0)
-        });
-    match (one, list_of) {
-        (Some(occurrence), Kind::Occurrence) => vec![Found::Reference(Target::Object(
-            ObjectId::Occurrence(occurrence),
-        ))],
-        // A list of several: a known structure OpenMaker does not decode
-        // (#705), coverage rather than an anomaly.
-        (_, Kind::Script) => vec![Found::Undecoded {
-            detail: "a list of scripts".into(),
-            kinds: vec![Kind::Script],
-        }],
-        _ => vec![Found::Undecoded {
-            detail: "a list of table occurrences".into(),
-            kinds: vec![Kind::Occurrence],
-        }],
+    else {
+        return malformed(what);
+    };
+    // One `[len][segment]`, or 6-byte entries.
+    let entries: Vec<&[u8]> = match bytes.split_first() {
+        Some((&len, segment)) if usize::from(len) == segment.len() && len > 0 => {
+            vec![segment]
+        }
+        _ if !bytes.is_empty() && bytes.len() % 6 == 0 => {
+            let mut entries = Vec::new();
+            for chunk in bytes.chunks_exact(6) {
+                let len = usize::from(chunk[0]);
+                match chunk.get(1..1 + len).filter(|_| len > 0) {
+                    Some(segment) => entries.push(segment),
+                    None => return malformed(what),
+                }
+            }
+            entries
+        }
+        _ => return malformed(what),
+    };
+    if let Some(count) = count {
+        let stated = count
+            .children
+            .is_empty()
+            .then(|| om_scripts::node_bytes(count))
+            .flatten()
+            .and_then(|b| <[u8; 4]>::try_from(b.as_ref()).ok())
+            .map(u32::from_le_bytes);
+        if stated != u32::try_from(entries.len()).ok() {
+            return malformed(what);
+        }
     }
+    let mut found = Vec::new();
+    for segment in entries {
+        let id = if list_of == Kind::Script {
+            serial::decode(segment)
+        } else {
+            be_uint(segment)
+        };
+        match id {
+            // `01 00`: no occurrence (script-steps.md 11.8).
+            Some(0) => {}
+            Some(id) => found.push(Found::Reference(Target::Object(
+                if list_of == Kind::Script {
+                    ObjectId::Script(id)
+                } else {
+                    ObjectId::Occurrence(id)
+                },
+            ))),
+            None => return malformed(what),
+        }
+    }
+    found
 }
 
 /// A field a stored spec names; one with no occurrence cannot be placed.

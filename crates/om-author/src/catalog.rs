@@ -842,15 +842,14 @@ macro_rules! analysis {
     ($text:literal) => {
         concat!(
             $text,
-            " Every result carries its coverage: what was read, the places whose references \
-             could not be read, references made by a name looked up when the file runs (a \
-             script performed by a calculated name, Evaluate, ExecuteSQL), catalogs the \
-             host did not give, `omitted` (places past the first few of their kind, counted), \
-             `stopped` (where the build stopped at its work budget, or null) and \
-             `read_cleanly` with its `anomalies`. Only a file read cleanly gets strong \
-             answers: when it was not, nothing is broken, unreferenced or complete, and an \
-             object not found is `not_known`, never `not_found`. Reads metadata only, never \
-             records."
+            " Results report what was read, not facts about the whole file: check them \
+             before acting on them. Every result carries how far to trust it: \
+             `read_cleanly` with its `anomalies`, `consistent` (whether the design was seen \
+             to change while it was read), the places not decoded and the references made \
+             by a name looked up when the file runs (Evaluate, ExecuteSQL, a script \
+             performed by name), catalogs the host did not give, `omitted` and `stopped`. \
+             An object not found is `not_found` (not among the objects read) only for a \
+             file read cleanly, else `not_known`. Reads metadata only, never records."
         )
     };
 }
@@ -879,13 +878,13 @@ pub static BROKEN_REFERENCES: CommandSpec = CommandSpec {
     id: "broken_references",
     cli: "broken-references",
     tool: "openmaker_broken_references",
-    title: "Find broken references",
+    title: "Find references whose target was not found",
     description: analysis!(
-        "Every reference OpenMaker decodes whose target is not in the file (a \
-                  deleted field, script, layout, occurrence, value list, custom function or \
-                  data source), with the object that holds it, the place in it and what is \
-                  missing. A target is missing only when the file was read cleanly; \
-                  otherwise the reference is unresolved, not broken."
+        "Every reference OpenMaker decodes whose target was not found among the \
+                  objects read (`target_not_found`): a field, script, layout, occurrence, \
+                  value list, custom function or data source the reference names, with the \
+                  object that holds it, the place in it and what was not found. Only in a \
+                  file read cleanly; otherwise such a reference is `unresolved`."
     ),
     effect: Effect::Reads,
     needs: Needs::File,
@@ -898,13 +897,13 @@ pub static UNUSED_OBJECTS: CommandSpec = CommandSpec {
     id: "unused_objects",
     cli: "unused-objects",
     tool: "openmaker_unused_objects",
-    title: "Find objects nothing refers to",
+    title: "Find objects no reference was found for",
     description: analysis!(
         "The tables, fields, occurrences, layouts, scripts, value lists, custom \
-                  functions and data sources no decoded reference names. Each carries its \
-                  finding: `unreferenced` only when every place that could refer to its \
-                  kind was read, else `no_decoded_reference`, with the unread places in \
-                  coverage."
+                  functions and data sources for which no reference was found in what was \
+                  read (`no_reference_found`): candidates to check, never objects known to \
+                  be unused. `nothing_known_unread` says, per kind, whether any place not \
+                  read or name looked up at run time could refer to one."
     ),
     effect: Effect::Reads,
     needs: Needs::File,

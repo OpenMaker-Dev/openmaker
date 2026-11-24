@@ -4,6 +4,8 @@
 //! ([`super::access`]): what a reader does not take is reported by the
 //! sweep.
 
+use std::collections::BTreeSet;
+
 use om_hbam::serial;
 use om_hbam::slot::be_uint;
 use om_layout::{LayoutObject, ObjectKind};
@@ -130,6 +132,7 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
         b.count("layouts");
         layouts.push((id, entry));
     }
+    index_only(b, t, &layouts);
     for (id, node) in layouts {
         if b.stopped() {
             return;
@@ -205,7 +208,7 @@ fn folder(b: &mut Builder, holder: ObjectId, entry: At<'_, '_>) {
     for (key, form) in OBSERVED_KEYS {
         b.observed(entry.get(key), form);
     }
-    field_index(b, 0, &|_| holder, entry.get(FIELD_INDEX), &[]);
+    field_index(b, None, &|_| holder, entry.get(FIELD_INDEX), &[]);
 }
 
 /// A layout's entry in the layout catalog's index `[4, 1, 07, L, 02]`:
@@ -233,6 +236,7 @@ fn index_entry(b: &mut Builder, holder: ObjectId, entry: Option<At<'_, '_>>) {
                     Target::Object(ObjectId::Occurrence(occurrence)),
                 );
             }
+            unknown_fields(b, holder, "layout index entry", &def.other, &[]);
         }
         Err(e) => b.unread(
             holder,
@@ -241,6 +245,50 @@ fn index_entry(b: &mut Builder, holder: ObjectId, entry: Option<At<'_, '_>>) {
             format!("a layout index entry that does not decode: {e}"),
             &Kind::ANY,
         ),
+    }
+}
+
+/// Layouts the layout catalog's index `[4, 1, 07, L]` lists without a
+/// member `[4, 5, L]`. A client reads the index first and the members it
+/// shows (`om_hbam::catalog::layout_index`), so such a layout exists but
+/// was not delivered whole: an anomaly. It is listed from its index entry
+/// (its name), and the occurrence the entry names is still a use.
+fn index_only(b: &mut Builder, t: &Layer<'_, '_>, members: &[(u64, At<'_, '_>)]) {
+    let Some(entries) = t.at(&[4, 1, 7]) else {
+        return;
+    };
+    let Read::Ok(entries) = entries.children() else {
+        return;
+    };
+    let listed: BTreeSet<u64> = members.iter().map(|(id, _)| *id).collect();
+    for entry in entries {
+        let Some(id) = entry.id().filter(|id| *id != 0 && !listed.contains(id)) else {
+            continue;
+        };
+        if entry.is_empty() {
+            continue;
+        }
+        let holder = ObjectId::Layout(id);
+        if !b.spend(1, holder, &Place::new("layout index")) {
+            return;
+        }
+        let flags = match entry.uint_at(MEMBER_FLAGS) {
+            Read::Ok(flags) => flags,
+            Read::Absent | Read::Unreadable => 0,
+        };
+        if flags & NOT_A_LAYOUT != 0 {
+            continue;
+        }
+        let name = b.name(entry, holder);
+        b.object(holder, name, "listed only by the layout index");
+        b.unread(
+            holder,
+            Place::new("layout"),
+            UnreadReason::Malformed,
+            "a layout the layout index lists whose member was not given",
+            &Kind::ANY,
+        );
+        index_entry(b, holder, entry.get(DEFINITION));
     }
 }
 
@@ -254,17 +302,20 @@ fn counter(node: Option<At<'_, '_>>) {
 
 /// The field reference index `01, <occurrence>, <field>, <object>`
 /// (layout-model.md 10.5): which objects show which fields. Derived from
-/// the objects' bindings, but stored: each entry is read as a use of the
-/// field it names through its occurrence (field `00`, under a portal, of
-/// the occurrence), held by the object it names (`holder`) at the place
-/// `field index`, so an index that disagrees with the bindings cannot make
-/// a field look unused. An entry is taken only for an object that was
+/// the objects' bindings, but stored: what it names is read as uses, so an
+/// index that disagrees with the bindings cannot make anything look
+/// unused. Each branch `01, <occurrence>` is a use of that occurrence, held
+/// by the layout (`branch`), whether or not it has entries; each entry a
+/// use of the field it names through that occurrence (field `00`, under a
+/// portal, of the occurrence), held by the object it names (`holder`), at
+/// the place `field index`. An entry is taken only for an object that was
 /// read, under keys that read, with a value in one of the forms observed;
 /// any other is left to the sweep. A layout without references holds an
-/// empty list at `01, 00`.
+/// empty list at `01, 00`. A folder or separator (`branch` none) holds that,
+/// or its occurrence's empty branch.
 fn field_index(
     b: &mut Builder,
-    _layout: u64,
+    branch: Option<ObjectId>,
     holder: &dyn Fn(u64) -> ObjectId,
     index: Option<At<'_, '_>>,
     read: &[u64],
@@ -276,18 +327,36 @@ fn field_index(
     let Read::Ok(occurrences) = index.children() else {
         return;
     };
+    let read: BTreeSet<u64> = read.iter().copied().collect();
     for occurrence_node in occurrences {
         let Some(occurrence) = be_uint(occurrence_node.segment().0) else {
+            continue;
+        };
+        if occurrence == 0 {
+            // The empty list a layout without references holds: taken only
+            // when it holds nothing.
+            if occurrence_node.is_empty() {
+                let _ = occurrence_node.children();
+            }
+            continue;
+        }
+        // A folder or separator keeps its occurrence's branch, empty: taken,
+        // not a use (what a folder stores is not used). Entries under it
+        // are left to the sweep.
+        let Some(branch) = branch else {
+            if occurrence_node.is_empty() {
+                let _ = occurrence_node.children();
+            }
             continue;
         };
         let Read::Ok(fields) = occurrence_node.children() else {
             continue;
         };
-        if occurrence == 0 {
-            // The empty list a layout without references holds; anything
-            // under it is left to the sweep.
-            continue;
-        }
+        b.reference(
+            branch,
+            Place::new("field index"),
+            Target::Object(ObjectId::Occurrence(occurrence)),
+        );
         for field_node in fields {
             let Some(field) = be_uint(field_node.segment().0) else {
                 continue;
@@ -392,7 +461,13 @@ fn layout(b: &mut Builder, holder: ObjectId, node: At<'_, '_>, layout: &om_layou
     self::objects(b, "", &objects, attributes);
     let read: Vec<u64> = layout.objects.objects.iter().map(|o| o.id).collect();
     let object_holder = |object| ObjectId::LayoutObject { layout: id, object };
-    field_index(b, id, &object_holder, node.get(FIELD_INDEX), &read);
+    field_index(
+        b,
+        Some(holder),
+        &object_holder,
+        node.get(FIELD_INDEX),
+        &read,
+    );
 }
 
 /// Objects and their attributes `05, O`; `05, 00` is the last object key
@@ -521,7 +596,7 @@ fn table_view(b: &mut Builder, holder: ObjectId, node: At<'_, '_>) {
         Read::Unreadable => {}
         Read::Ok(_) | Read::Absent => {}
     }
-    field_index(b, 0, &|_| holder, node.get(FIELD_INDEX), &read);
+    field_index(b, Some(holder), &|_| holder, node.get(FIELD_INDEX), &read);
 }
 
 /// One object: its record's references, then its attributes.

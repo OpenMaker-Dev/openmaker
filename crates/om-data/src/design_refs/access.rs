@@ -127,6 +127,14 @@ pub(super) struct Layer<'t, 'a> {
     /// The declarations this build used, for the test that each is
     /// exercised.
     used: RefCell<BTreeSet<Declared>>,
+    /// Paths from the root whose last node is not a list, met while
+    /// looking a catalog up: reported by the sweep when no walk reaches
+    /// them (a table's catalog `[T]` stored as a value, above `[T, 3]`).
+    failed_paths: RefCell<Vec<Vec<u64>>>,
+    /// The declaration of each declared node, and the paths the sweep met
+    /// them at, for the tests.
+    declared_at: RefCell<HashMap<usize, Declared>>,
+    declared_paths: RefCell<Vec<(Vec<Vec<u8>>, Declared)>>,
 }
 
 /// A stored node, reached through a [`Layer`].
@@ -146,17 +154,29 @@ impl<'t, 'a> Layer<'t, 'a> {
             tree,
             marks: RefCell::new(HashMap::new()),
             used: RefCell::new(BTreeSet::new()),
+            failed_paths: RefCell::new(Vec::new()),
+            declared_at: RefCell::new(HashMap::new()),
+            declared_paths: RefCell::new(Vec::new()),
         }
     }
 
     /// The node at `path` from the root, each node on the way looked at.
+    /// A node on the way that is not a list is failed, and its path kept
+    /// for the sweep.
     pub(super) fn at(&'t self, path: &[u64]) -> Option<At<'t, 'a>> {
         let mut at = At {
             node: &self.tree.root,
             layer: self,
         };
-        for key in path {
-            at = at.get(*key)?;
+        for (depth, key) in path.iter().enumerate() {
+            at = match at.lookup(*key) {
+                Read::Ok(child) => child,
+                Read::Absent => return None,
+                Read::Unreadable => {
+                    self.failed_paths.borrow_mut().push(path[..depth].to_vec());
+                    return None;
+                }
+            };
         }
         Some(at)
     }
@@ -164,6 +184,12 @@ impl<'t, 'a> Layer<'t, 'a> {
     /// The declarations used so far.
     pub(super) fn declared(&self) -> BTreeSet<Declared> {
         self.used.borrow().clone()
+    }
+
+    /// Each declared node the sweep met, by its path, with its
+    /// declaration.
+    pub(super) fn declared_paths(&self) -> Vec<(Vec<Vec<u8>>, Declared)> {
+        self.declared_paths.borrow().clone()
     }
 
     fn mark(&self, node: &Node<'_>, mark: Mark) {
@@ -226,19 +252,37 @@ impl<'t, 'a> Layer<'t, 'a> {
     /// at its path. One walk, charged to the work budget; a budget spent
     /// here stops the build like any other.
     pub(super) fn sweep(&self, b: &mut Builder) {
-        for (path, root) in self.roots() {
+        let roots = self.roots();
+        // A node failed on the way to a catalog, above every walk.
+        let failed = self.failed_paths.borrow().clone();
+        for path in failed {
+            let segments: Vec<Vec<u8>> = path
+                .iter()
+                .map(|k| om_hbam::slot::uint_segment(*k))
+                .collect();
+            let under = roots.iter().any(|(root, _)| segments.starts_with(root));
+            if !under {
+                report(
+                    b,
+                    &segments,
+                    "a value stored where keys were expected",
+                    UnreadReason::Malformed,
+                );
+            }
+        }
+        if !b.spend(
+            roots.len(),
+            ObjectId::File,
+            &Place::new("the check of every stored key"),
+        ) {
+            return;
+        }
+        for (path, root) in roots {
             let mut stack: Vec<(&Node<'a>, usize, bool)> = vec![(root, path.len() - 1, false)];
             let mut at: Vec<Vec<u8>> = path[..path.len() - 1].to_vec();
             while let Some((node, depth, inside_taken)) = stack.pop() {
                 at.truncate(depth);
                 at.push(node.segment.0.to_vec());
-                if !b.spend(
-                    1,
-                    ObjectId::File,
-                    &Place::new("the check of every stored key"),
-                ) {
-                    return;
-                }
                 // Even a key with no value is reported when nothing took
                 // it: a key's segment can itself name an object (a
                 // layout's field index holds only keys).
@@ -251,6 +295,9 @@ impl<'t, 'a> Layer<'t, 'a> {
                         UnreadReason::Malformed,
                     );
                     continue;
+                }
+                if let Some(why) = self.declared_at.borrow().get(&address(node)) {
+                    self.declared_paths.borrow_mut().push((at.clone(), *why));
                 }
                 let mark = self.mark_of(node);
                 let taken = inside_taken || mark == Some(Mark::Taken);
@@ -269,6 +316,14 @@ impl<'t, 'a> Layer<'t, 'a> {
                         continue;
                     }
                     _ => {}
+                }
+                // Each node is charged before it is pushed.
+                if !b.spend(
+                    node.children.len(),
+                    ObjectId::File,
+                    &Place::new("the check of every stored key"),
+                ) {
+                    return;
                 }
                 for child in node.children.iter().rev() {
                     stack.push((child, depth + 1, taken));
@@ -412,6 +467,11 @@ impl<'t, 'a> At<'t, 'a> {
             return Read::Unreadable;
         }
         Read::Ok(self.node.children.iter().map(|n| self.wrap(n)).collect())
+    }
+
+    /// How many children the node has, without reading any.
+    pub(super) fn child_count(self) -> usize {
+        self.node.children.len()
     }
 
     /// Every child by its segment, for lookups in a loop over many keys.
@@ -576,6 +636,10 @@ impl<'t, 'a> At<'t, 'a> {
     pub(super) fn declare(self, why: Declared) {
         debug_assert!(!why.spec().is_empty());
         self.layer.used.borrow_mut().insert(why);
+        self.layer
+            .declared_at
+            .borrow_mut()
+            .insert(address(self.node), why);
         self.layer.mark(self.node, Mark::Taken);
     }
 

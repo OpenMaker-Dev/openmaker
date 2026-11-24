@@ -1138,38 +1138,77 @@ without its flag) is never evaluated and is not read. A privilege set's
 access to layouts, scripts, value lists and fields is a setting on those
 objects, not a use of them.
 
+**What the results are.** Findings about what was read, to check before
+acting on them, never facts about the whole file. A use the analysis
+reports was decoded from the file and is a fact. The rest is stated as
+what was found:
+
+- `broken_references` lists references whose target was **not found among
+  the objects read** (`target_not_found`);
+- `unused_objects` lists objects for which **no reference was found in what
+  was read** (`no_reference_found`): candidates, not objects known to be
+  unused;
+- an object asked for that the graph does not have is `found: false` (not
+  among the objects read), or `not_found` for a lookup by name; never "does
+  not exist".
+
+How far to trust a finding travels beside it, as data: `read_cleanly` and
+its `anomalies`, `consistent`, the places not decoded, the references made
+by name, and `nothing_known_unread`, per kind. A finding is as reliable as
+this code can make it when the read was clean and consistent, nothing
+known to be unread could refer to the kind (`nothing_known_unread`), and no
+name looked up at run time could name it. Even then, what is listed below
+under "What can still make a finding wrong" applies. A stronger guarantee
+("certainly unused") is
+[#722](https://github.com/OpenMaker-Dev/openmaker/issues/722).
+
 **Read cleanly.** Every result says in `coverage.read_cleanly` whether the
 file was read cleanly, and lists its first `anomalies` (`total` counts them
 all). The file was read cleanly when:
 
 - the source gave every catalog asked for and reported no failure of its
-  own (`unavailable` is empty: a refused download, or a base table list or
+  own (`unavailable` is empty: a refused download, a download whose later
+  reply failed after earlier ones gave part of it, or a base table list or
   key the provider could not read, so that it never asked for those
   tables' fields);
 - no stored node was failed: present but not readable in the form asked
   for (a list where a value is expected or the reverse, a value stored in
   pieces that do not assemble, text or a number that does not decode, a
-  child asked of a node that is not a list);
+  child asked of a node that is not a list, anywhere on the way to a
+  catalog);
 - the final walk found no stored node unread and none holding a value
   beside keys;
 - no value a reader took was rejected (a formula that does not decode, a
-  field binding whose keys do not read, a stored step parameter that does
-  not read), and nothing unknown was met (an object type, a field kind or
-  a step id without a schema, data a step's schema does not explain);
+  field binding whose keys do not read, a stored step parameter or key
+  list that does not read, a layout the layout index lists without its
+  member), and nothing unknown was met (an object type, a field kind or a
+  step id without a schema, data a step's schema does not explain);
 - no budget stopped anything (the work and entry budgets, or the
   20,000-step limit of a script).
 
 One anomaly anywhere is enough. When the file was not read cleanly, no
-claim depends on which kinds it could affect: nothing is `broken` (a
-missing target is `unresolved`), no object is said not to exist (`exists:
-null`, `not_known`), nothing is `unreferenced`, and `complete` is false for
-every kind. When it was read cleanly, a missing target is `broken`, an
-object the graph does not have does not exist, and an object is
-`unreferenced` when, besides, no place OpenMaker knows and does not decode
-and no reference by name could refer to its kind. Such places are not
-anomalies but coverage, each with the kinds it could name: a custom menu's
-items, a chart's or plug-in object's setup, a step's list of several table
-occurrences or scripts, and the references by name below.
+finding depends on which kinds the anomaly could affect: no target is
+`target_not_found` (such a reference is `unresolved`), an object the graph
+does not have is `found: null` and a lookup `not_known`, and
+`nothing_known_unread` is false for every kind. Places OpenMaker knows and
+does not decode are not anomalies but coverage, each with the kinds it
+could name: a custom menu's items, a chart's or plug-in object's setup,
+and the references by name below.
+
+**Consistent.** A client reads the design catalogs in several downloads,
+so another user's change between two of them can give a read that is
+clean but mixes two versions. The provider reads each catalog index's
+modification count `[cat, 1, fc]` before the catalogs and again after,
+and `coverage.consistent` is false, with `changed_during_read` naming the
+catalogs, when one moved or could not be read. That FileMaker Pro reads
+the same count to tell whether its copy of a catalog is current is
+specified (schema-path.md 8.2); that any change to a catalog's members
+moves it is inferred from that use. It does not catch a change that moves
+no index's count, a change to a table's field catalog made after the
+schema was read but before that field catalog's count was taken, or a
+change to the file's status `[2]`, which has no index. A file read from
+disk, or a server reading one version, has nothing to compare and is
+`consistent`.
 
 **Results.** Each reference names its `holder` (`ref`, kind, name; a
 layout object's layout), the `place` in it (`part`: the step's parameter,
@@ -1177,32 +1216,27 @@ layout object's layout), the `place` in it (`part`: the step's parameter,
 in a script, the `step` with its `index`, the `line` it starts on in
 `get_script`'s source, its id and name, and whether it is `enabled`), its
 `target`, the occurrence or data source it goes `via`, and its
-`resolution`: `resolved`; `broken` with what is `missing` (a field, or the
-occurrence or table it is named through); `external` with the data source;
-or `unresolved` with the reason (the file was not read cleanly, or the
-occurrence's definition does not read). A disabled step's references are
-listed with `enabled` false. `find_uses` given the reference of an object
-the file no longer has returns the references still naming it.
-
-**Whether an object exists.** An object a result names has `exists`:
-true, false, or null when the graph does not have it and the file was not
-read cleanly, with `existence_unknown` saying why. A command asked about an
-object it cannot find answers `not_found` only for a file read cleanly;
-otherwise `not_known`, with `details.kind`, `details.reason` and
-`details.stopped`.
+`resolution`: `resolved`; `target_not_found` with what was not found (a
+field, or the occurrence or table it is named through); `external` with
+the data source; or `unresolved` with the reason (the file was not read
+cleanly, or the occurrence's definition does not read). A disabled step's
+references are listed with `enabled` false. `find_uses` given the
+reference of an object not found among those read returns the references
+still naming it.
 
 **Coverage.** Every result has `coverage` for the kinds of object it is
-about: `read_cleanly` and `anomalies`; the `read` counts; the `unread`
-places (anomalies and the known places not decoded), each with its
-`reason` (`not_decoded`, `malformed` or `limit`), `detail` and the kinds it
-`could_refer_to`; the references `by_name`; `omitted`, the places past the
-first 20 of their kind (the holder's kind and the place, digits folded),
-each kind of place with its `count`; the catalogs the host did not give
-(`unavailable`); `stopped`, the place where the build stopped at a budget,
-or null; and `complete`. The `total` of `unread` and `by_name` counts the
-omitted ones; lists stop at `limit`. `read_cleanly`, `anomalies` and
-`stopped` are fields of their own, never cut by `limit`. A detail is at
-most 300 characters.
+about: `read_cleanly` and `anomalies`; `consistent` and
+`changed_during_read`; the `read` counts; the `unread` places (anomalies
+and the known places not decoded), each with its `reason` (`not_decoded`,
+`malformed` or `limit`), `detail` and the kinds it `could_refer_to`; the
+references `by_name`; `omitted`, the places past the first 20 of their
+kind (the holder's kind and the place, digits folded), each kind of place
+with its `count`; the catalogs the host did not give (`unavailable`);
+`stopped`, the place where the build stopped at a budget, or null; and
+`nothing_known_unread`. The `total` of `unread` and `by_name` counts the
+omitted ones; lists stop at `limit`. `read_cleanly`, `anomalies`,
+`consistent` and `stopped` are fields of their own, never cut by `limit`.
+A detail is at most 300 characters.
 
 **How the catalogs are read.** Readers reach the catalogs only through one
 access layer (`design_refs::access`). The tree and the node in each handle
@@ -1262,11 +1296,15 @@ A test generates a file holding every structure the readers know, checked
 against the readers' own lists (`read::Structure` and `access::Declared`,
 each generated with its enum). For every node in it, it makes a list a
 leaf, a leaf a list, cuts the last piece from a value stored in pieces,
-adds an unknown key and sets a value beside keys, one at a time: the read
-must be still clean with the result byte for byte the same, or not clean
-with nothing broken, listed whole or complete. Removing a node must not
-add a use to an object that was there, nor break a reference to anything
-but what was removed (`design_refs::tests::completeness`).
+adds an unknown key and sets a value beside keys, one at a time. Each is
+an error the read must notice (it is then not clean, with no target not
+found, nothing listed whole and nothing known unread), unless it lies
+inside a subtree declared by spec or reported as not decoded, or stores a
+value in pieces whole; a read still clean must give the same result byte
+for byte. Removing a node must leave the same assertions true for a read
+not clean; in a clean one it must not add a use to an object that was
+there, lose a use its holder did not store under that node, or leave a
+target not found but what was removed (`design_refs::tests::completeness`).
 
 **References by name.** Never resolved; each is listed with the kinds the
 name can be:
@@ -1327,7 +1365,7 @@ layout's object attributes) go through one map per list, not a scan per
 key. The build stops after 1,000,000 references, unread places and
 references by name together (`MAX_ENTRIES`) or 50,000,000 units of work
 (`MAX_WORK`), and says where in `stopped`: the file was then not read
-cleanly, and nothing strong is claimed.
+cleanly.
 
 The budgets bound work and memory up to a constant factor, not exactly. A
 unit of work is a stored byte or node charged before it is decoded, a
@@ -1339,14 +1377,31 @@ the budget left), the walk's stacks (as deep and wide as the tree), and
 the marks (one per stored node). Memory is bounded by the size of the
 stored catalogs, which the tree already holds, plus the kept entries.
 
-**Nothing refers to it.** `unused_objects` lists the tables, fields,
+**No reference found.** `unused_objects` lists the tables, fields,
 occurrences, layouts, scripts, value lists, custom functions and data
-sources no decoded reference names. Its `finding` is `unreferenced` only
-when the coverage of its kind is complete; otherwise it is
-`no_decoded_reference`: it may still be used from a place in `coverage`.
-A file with custom menus, as every shipped template has, gives
-`no_decoded_reference` for every kind. A layout reached only from the
-layout menu has no reference.
+sources for which no reference was found in what was read, each with the
+finding `no_reference_found`, and per kind `nothing_known_unread`. A file
+with custom menus, as every shipped template has, has
+`nothing_known_unread` false for every kind. A layout reached only from
+the layout menu has no reference.
+
+**What can still make a finding wrong.** Even after a clean, consistent
+read with nothing known unread:
+
+- a reader that reads a well-formed value wrongly: the tests catch stored
+  data that is not read or does not read, not a decoder that misreads it;
+  the decoders follow the specs and have not all been compared with
+  FileMaker;
+- a subtree declared by spec and not read key by key (a catalog index, the
+  file status, privilege set access settings, a layout's own object
+  indexes), or a key accepted in its observed form whose meaning is not
+  known;
+- a design change the modification counts do not show (above);
+- a use OpenMaker chooses not to count: what a layout folder or separator
+  stores, a privilege set's per-object access, a request a step sends over
+  the network to any server, this file's host included;
+- whatever names an object from outside the file: another file's scripts
+  and layouts, a client of the Data API or OData, a plug-in.
 
 **Call chains.** `script_calls` follows every step parameter naming a
 script of this file (Perform Script, Perform Script on Server, a callback,
@@ -1361,14 +1416,14 @@ not its callers.
 in 11 languages): 9,350 objects (209 tables, 2,354 fields, 209
 occurrences, 143 relationships, 231 layouts, 5,544 layout objects, 198
 scripts with 935 steps, 264 value lists, 198 privilege sets) and 264
-custom menus; 9,803 references, every one resolved: 6,261 from 4,950
-formulas and the other places, and 3,542 from the derived indexes (2,739
-field index entries, 231 layout index occurrences, 286 related
-occurrences and 286 relationships of the occurrences' relationship
-indexes); the 264 custom menus' items not decoded; 121 references by
-name, all Go to Object's object names. 60 files read cleanly; the six
-Korean files do not, each for one anomaly: `[2, 0e]`, whose one key `4c`
-is an empty list the specs do not describe
+custom menus; 10,210 references, every one resolved: 6,261 from 4,950
+formulas and the other places, and 3,949 from the derived indexes (2,739
+field index entries and 407 field index branches, 231 layout index
+occurrences, 286 related occurrences and 286 relationships of the
+occurrences' relationship indexes); the 264 custom menus' items not
+decoded; 121 references by name, all Go to Object's object names. 60
+files read cleanly; the six Korean files do not, each for one anomaly:
+`[2, 0e]`, whose one key `4c` is an empty list the specs do not describe
 (`crates/om-data/tests/design_refs_corpus.rs`, ignored by default).
 The results have not been compared with FileMaker's Database Design
 Report or with FMPerception.
@@ -1377,14 +1432,18 @@ Report or with FMPerception.
 needs the store's design history (server-storage.md 9). There is no
 security review. Each command downloads every design catalog and builds
 the graph again. A catalog the host does not give an account is listed as
-`unavailable`, the file is not read cleanly, and nothing strong is
-claimed; whether FileMaker Server gives `[23, 2]` and `[64]` has
+`unavailable` and the file is not read cleanly; whether FileMaker Server gives `[23, 2]` and `[64]` has
 not been measured. Catalogs outside the list above (themes, fonts, the
 image library and image streams, base directories, accounts) are taken to
 name no design object. A Go to Related Record step's layout in another
 file and the objects of other files are not followed. What a layout
 folder or separator stores (a separator keeps a table occurrence) is not
 counted as a use, since it is never shown; that is OpenMaker's choice.
+Whether FileMaker Server answers a single-key download of `[cat, 1, fc]`,
+which the consistency check uses, has not been measured; if it does not,
+results from it are `consistent: false`. The findings say what was read,
+not what the file holds: the stronger guarantee is
+[#722](https://github.com/OpenMaker-Dev/openmaker/issues/722).
 
 ## Command line
 

@@ -5756,6 +5756,31 @@ fn download_node(session: &mut Session, path: Vec<Vec<u8>>) -> Result<Option<Dow
     node_from_reply(path, reply)
 }
 
+/// The value stored at `path` (a leaf), `None` when the host has no such
+/// key, an error when the download fails or the key is a node.
+pub(crate) fn download_value(
+    session: &mut Session,
+    path: Vec<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, DataError> {
+    let refs: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    let reply = session
+        .download(&refs)
+        .map_err(|e| failure(&format!("download server path {path:02x?}"), e))?;
+    if reply.lock_error != 0 {
+        return Err(DataError::new(format!(
+            "Server download {path:02x?} failed (lock error 0x{:04x}).",
+            reply.lock_error
+        )));
+    }
+    match reply.node_state {
+        NodeState::Missing if reply.slots.is_empty() => Ok(None),
+        NodeState::Terminal => Ok(Some(reply.value)),
+        state => Err(DataError::new(format!(
+            "Server path {path:02x?} is not a value ({state:?})."
+        ))),
+    }
+}
+
 /// The node at `path` from `reply`, its op90 download, checked as
 /// [`download_node`] checks one: `None` when the server has no such key.
 fn node_from_reply(
@@ -5769,6 +5794,17 @@ fn node_from_reply(
         )));
     }
     match reply.node_state {
+        // A later reply of a paged download that ends it as missing (a
+        // continuation the host no longer knows) after earlier pages gave
+        // slots: the node arrived in part, which is a failure, not an
+        // absent node.
+        NodeState::Missing if !reply.slots.is_empty() => {
+            return Err(DataError::new(format!(
+                "Server download {path:02x?} failed after its first reply: the last reply \
+                 said the node is missing after {} bytes had arrived.",
+                reply.slots.len()
+            )))
+        }
         NodeState::Missing => return Ok(None),
         NodeState::NonTerminal => {}
         state => {

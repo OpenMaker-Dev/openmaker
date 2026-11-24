@@ -73,14 +73,22 @@ pub(super) fn build_within(
     build_traced(tree, unavailable, max_entries, max_work).0
 }
 
-/// [`build_within`], with the reader structures it met and the
-/// declarations it used, for the test that a fixture exercises them all.
+/// What a build met, for the tests: the reader structures, the
+/// declarations used, and each declared node's path.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) struct Trace {
+    pub(super) visited: BTreeSet<Structure>,
+    pub(super) declared: BTreeSet<Declared>,
+    pub(super) declared_paths: Vec<(Vec<Vec<u8>>, Declared)>,
+}
+
+/// [`build_within`], with what it met ([`Trace`]).
 pub(super) fn build_traced(
     tree: &KeyTree<'_>,
     unavailable: Vec<Unavailable>,
     max_entries: usize,
     max_work: usize,
-) -> (DesignGraph, BTreeSet<Structure>, BTreeSet<Declared>) {
+) -> (DesignGraph, Trace) {
     let mut b = Builder {
         graph: DesignGraph {
             coverage: Coverage {
@@ -117,6 +125,7 @@ pub(super) fn build_traced(
         layer.sweep(&mut b);
     }
     let declared = layer.declared();
+    let declared_paths = layer.declared_paths();
     let Builder {
         mut graph,
         pending,
@@ -135,7 +144,14 @@ pub(super) fn build_traced(
         })
         .collect();
     graph.uses = uses;
-    (graph, visited, declared)
+    (
+        graph,
+        Trace {
+            visited,
+            declared,
+            declared_paths,
+        },
+    )
 }
 
 /// Declares the reader structures and `ALL`, generated from the same list
@@ -212,12 +228,6 @@ pub(super) enum Found {
     },
     Unread {
         reason: UnreadReason,
-        detail: String,
-        kinds: Vec<Kind>,
-    },
-    /// A known structure OpenMaker does not decode: coverage, not an
-    /// anomaly.
-    Undecoded {
         detail: String,
         kinds: Vec<Kind>,
     },
@@ -421,6 +431,10 @@ impl Builder {
         let Some(list) = list else {
             return Vec::new();
         };
+        // Charged before the handles are made.
+        if !self.spend(list.child_count(), ObjectId::File, &Place::new("members")) {
+            return Vec::new();
+        }
         let Read::Ok(children) = list.children() else {
             return Vec::new();
         };
@@ -707,9 +721,6 @@ impl Builder {
                     detail,
                     kinds,
                 } => self.unread(holder, place.clone(), *reason, detail.clone(), kinds),
-                Found::Undecoded { detail, kinds } => {
-                    self.undecoded(holder, place.clone(), detail.clone(), kinds)
-                }
             }
         }
     }

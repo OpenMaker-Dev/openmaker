@@ -198,7 +198,7 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     // Each result is printed for --nocapture runs.
     println!("find_uses {count:#}");
     assert_eq!(count["object"]["ref"], r("field", "32769.2"), "{count:#}");
-    assert_eq!(count["object"]["exists"], true);
+    assert_eq!(count["object"]["found"], true);
     let mut found = holders(&count["uses"]);
     found.sort();
     assert_eq!(
@@ -216,8 +216,12 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     }
     assert_eq!(count["total"], 3);
     // Every place was read, privilege sets included, but Callee's
-    // `GetField` names a field when it runs: the result says so.
-    assert_eq!(count["complete"], false);
+    // `GetField` names a field when it runs: the result says so. The read
+    // was clean, and nothing changed while it ran.
+    assert_eq!(count["nothing_known_unread"], false);
+    assert_eq!(count["coverage"]["read_cleanly"], true, "{count:#}");
+    assert_eq!(count["coverage"]["consistent"], true, "{count:#}");
+    assert_eq!(count["coverage"]["changed_during_read"], json!([]));
     assert_eq!(count["coverage"]["unread"]["total"], 0, "{count:#}");
     assert_eq!(count["coverage"]["by_name"]["total"], 1, "{count:#}");
     let by_name = &count["coverage"]["by_name"]["places"][0];
@@ -228,26 +232,27 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     assert_eq!(count["coverage"]["stopped"], Value::Null);
     assert_eq!(count["coverage"]["read"]["scripts"], 3);
 
-    // One broken reference: Callee's Set Field of the deleted field.
+    // One reference whose target was not found: Callee's Set Field of
+    // the deleted field.
     let broken = run(&mut service, "broken_references", json!({}));
     println!("broken_references {broken:#}");
     assert_eq!(broken["total"], 1, "{broken:#}");
     assert_eq!(
-        holders(&broken["broken"]),
+        holders(&broken["references"]),
         [(r("script", "2"), "Field".into(), Some((1, 1)))]
     );
-    let missing = &broken["broken"][0];
-    assert_eq!(missing["resolution"], "broken");
+    let missing = &broken["references"][0];
+    assert_eq!(missing["resolution"], "target_not_found");
     assert_eq!(missing["missing"]["ref"], r("field", "32769.99"));
-    assert_eq!(missing["missing"]["exists"], false);
+    assert_eq!(missing["missing"]["found"], false);
     // A deleted object's reference finds what still names it.
     let deleted = run(
         &mut service,
         "find_uses",
         json!({"object": r("field", "32769.99")}),
     );
-    assert_eq!(deleted["object"]["exists"], false);
-    assert_eq!(holders(&deleted["uses"]), holders(&broken["broken"]));
+    assert_eq!(deleted["object"]["found"], false);
+    assert_eq!(holders(&deleted["uses"]), holders(&broken["references"]));
 
     // Import and export orders name their fields (script-steps.md 11.3,
     // 11.4).
@@ -275,20 +280,21 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
         "{caller:#}"
     );
 
-    // One unused script; every place that could perform a script was
-    // read, so it is certain. Fields are not: `GetField` names one by name.
+    // One script no reference was found for, with nothing known unread
+    // that could perform one. Not so for fields: `GetField` names one by
+    // name.
     let unused = run(&mut service, "unused_objects", json!({"kinds": ["script"]}));
     println!("unused_objects {unused:#}");
-    assert_eq!(unused["findings"]["script"], "unreferenced", "{unused:#}");
+    assert_eq!(unused["nothing_known_unread"]["script"], true, "{unused:#}");
     let objects: Vec<(&str, &str)> = unused["objects"]
         .as_array()
         .unwrap()
         .iter()
         .map(|o| (text(&o["ref"]), text(&o["finding"])))
         .collect();
-    assert_eq!(objects, [(r("script", "3").as_str(), "unreferenced")]);
+    assert_eq!(objects, [(r("script", "3").as_str(), "no_reference_found")]);
     let fields = run(&mut service, "unused_objects", json!({"kinds": ["field"]}));
-    assert_eq!(fields["findings"]["field"], "no_decoded_reference");
+    assert_eq!(fields["nothing_known_unread"]["field"], false);
     let unused_fields: Vec<&str> = fields["objects"]
         .as_array()
         .unwrap()
@@ -317,7 +323,7 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     assert_eq!(chain["calls"]["total_performs"], 1);
     assert_eq!(chain["calls"]["cycles"], json!([]));
     assert_eq!(chain["callers"]["scripts"], json!([]));
-    assert_eq!(chain["complete"], true);
+    assert_eq!(chain["nothing_known_unread"], true);
     let callers = run(
         &mut service,
         "script_calls",

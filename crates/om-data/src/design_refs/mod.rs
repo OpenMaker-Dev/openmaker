@@ -258,9 +258,11 @@ pub enum Target {
 pub enum Resolution {
     /// An object of the file.
     Resolved(ObjectId),
-    /// Nothing in the file: `missing` is the object that is not there (a
-    /// field, or the occurrence or table the field is named through).
-    Broken { missing: ObjectId },
+    /// Not found among the objects read, in a file read cleanly: `missing`
+    /// is the object not found (a field, or the occurrence or table the
+    /// field is named through). A finding about what was read, not a proof
+    /// that the file lacks it (docs/authoring.md, "Design analysis").
+    TargetNotFound { missing: ObjectId },
     /// An object of another file, through this data source.
     External { data_source: u64 },
     /// The catalog that would hold the target was not read
@@ -477,12 +479,17 @@ pub struct Coverage {
     pub stopped: Option<Unread>,
     /// Unread places and references by name past the first few of their
     /// kind of place, counted rather than kept: each still counts for
-    /// [`Self::complete_for`].
+    /// [`Self::nothing_known_unread_for`].
     pub omitted: Vec<Omitted>,
     /// The first anomalies met ([`Self::read_cleanly`]), each also an
     /// unread place; [`Self::anomaly_count`] counts them all.
     pub anomalies: Vec<Unread>,
     pub anomaly_count: usize,
+    /// Catalogs the source saw change while it read them: their
+    /// modification counts differed at the start and the end of the read
+    /// ([`DesignGraph::note_changed_during_read`]). Empty when nothing was
+    /// seen to change, or the source could not tell.
+    pub changed_during_read: Vec<String>,
 }
 
 /// Entries of one kind of place past the first few, counted.
@@ -523,10 +530,12 @@ impl Coverage {
             .filter(move |b| b.could_refer_to.contains(&kind))
     }
 
-    /// Whether every place that could refer to an object of `kind` was
-    /// read: nothing unread, no name looked up at run time, and no
-    /// catalog missing. A catalog that was not read could hold anything.
-    pub fn complete_for(&self, kind: Kind) -> bool {
+    /// Whether nothing known to be unread could refer to an object of
+    /// `kind`: the file was read cleanly, and no place OpenMaker did not
+    /// decode and no name looked up at run time could name one. Not a
+    /// guarantee that nothing refers to it: a place OpenMaker reads wrongly
+    /// is not known to be unread.
+    pub fn nothing_known_unread_for(&self, kind: Kind) -> bool {
         self.read_cleanly()
             && self.unread_for(kind).next().is_none()
             && self.by_name_for(kind).next().is_none()
@@ -547,6 +556,12 @@ impl Coverage {
     /// menu, a reference by name) is coverage, not an anomaly.
     pub fn read_cleanly(&self) -> bool {
         self.anomaly_count == 0 && self.stopped.is_none() && self.unavailable.is_empty()
+    }
+
+    /// Whether the design was seen not to change while it was read
+    /// ([`Self::changed_during_read`]).
+    pub fn consistent(&self) -> bool {
+        self.changed_during_read.is_empty()
     }
 
     /// Why the file was not read cleanly, when it was not.
@@ -590,26 +605,6 @@ impl Coverage {
                 .filter(|o| matches!(o.entry, OmittedEntry::ByName(_)))
                 .map(|o| o.count)
                 .sum::<usize>()
-    }
-}
-
-/// What "nothing refers to it" means for one object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Finding {
-    /// Nothing in the file refers to it: every place that could was read.
-    Unreferenced,
-    /// Nothing OpenMaker decodes refers to it, but some place that could
-    /// was not read ([`Coverage::unread_for`], [`Coverage::by_name_for`],
-    /// [`Coverage::unavailable`]).
-    NoDecodedReference,
-}
-
-impl Finding {
-    pub fn code(self) -> &'static str {
-        match self {
-            Finding::Unreferenced => "unreferenced",
-            Finding::NoDecodedReference => "no_decoded_reference",
-        }
     }
 }
 
@@ -725,24 +720,26 @@ impl DesignGraph {
             .collect()
     }
 
-    /// Every reference whose target is not in the file.
-    pub fn broken(&self) -> Vec<&Use> {
+    /// Every reference whose target was not found among the objects read,
+    /// in a file read cleanly.
+    pub fn targets_not_found(&self) -> Vec<&Use> {
         self.uses
             .iter()
-            .filter(|u| matches!(u.resolution, Resolution::Broken { .. }))
+            .filter(|u| matches!(u.resolution, Resolution::TargetNotFound { .. }))
             .collect()
     }
 
-    /// The objects of `kind` nothing decoded refers to, but themselves
-    /// ([`Self::uses_of`]), each with what that means
-    /// ([`Coverage::complete_for`]). Script folders and layout folders are
-    /// not objects.
-    pub fn unused(&self, kind: Kind) -> Vec<(&Object, Finding)> {
-        let finding = if self.coverage.complete_for(kind) {
-            Finding::Unreferenced
-        } else {
-            Finding::NoDecodedReference
-        };
+    /// Record the catalogs the source saw change while it read them
+    /// ([`Coverage::changed_during_read`]).
+    pub fn note_changed_during_read(&mut self, changed: Vec<String>) {
+        self.coverage.changed_during_read = changed;
+    }
+
+    /// The objects of `kind` for which no reference was found in what was
+    /// read, but references they hold themselves ([`Self::uses_of`]):
+    /// candidates to check, not objects known to be unused. Script folders
+    /// and layout folders are not objects.
+    pub fn no_reference_found(&self, kind: Kind) -> Vec<&Object> {
         let mut used = BTreeSet::new();
         for u in &self.uses {
             let mut mark = |id: ObjectId| {
@@ -762,7 +759,6 @@ impl DesignGraph {
         self.objects
             .values()
             .filter(|o| o.id.kind() == kind && !used.contains(&o.id))
-            .map(|o| (o, finding))
             .collect()
     }
 
@@ -903,7 +899,7 @@ impl DesignGraph {
         // Missing only when the file was read cleanly; otherwise not known.
         let absent = |id: ObjectId| {
             unavailable(id).unwrap_or_else(|| match self.coverage.not_clean_reason() {
-                None => Resolution::Broken { missing: id },
+                None => Resolution::TargetNotFound { missing: id },
                 Some(reason) => Resolution::Unresolved {
                     reason: format!("the file was not read cleanly: {reason}"),
                 },

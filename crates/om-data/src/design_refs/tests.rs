@@ -59,9 +59,9 @@ fn call_chains_walk_each_script_once_and_report_cycles() {
     // A self-call is not a use by another object.
     assert!(graph.uses_of(ObjectId::Script(4)).is_empty());
     let unused: Vec<ObjectId> = graph
-        .unused(Kind::Script)
+        .no_reference_found(Kind::Script)
         .into_iter()
-        .map(|(o, _)| o.id)
+        .map(|o| o.id)
         .collect();
     assert_eq!(unused, [ObjectId::Script(4), ObjectId::Script(5)]);
 }
@@ -283,7 +283,7 @@ mod completeness {
         let before = graph(&base());
         for kind in kinds {
             assert!(
-                before.coverage().complete_for(*kind),
+                before.coverage().nothing_known_unread_for(*kind),
                 "{case}: the base reads every place"
             );
         }
@@ -292,16 +292,9 @@ mod completeness {
         let after = graph(&root);
         for kind in kinds {
             assert!(
-                !after.coverage().complete_for(*kind),
+                !after.coverage().nothing_known_unread_for(*kind),
                 "{case}: {kind:?} coverage is complete\n{:#?}",
                 after.coverage()
-            );
-            assert!(
-                after
-                    .unused(*kind)
-                    .iter()
-                    .all(|(_, finding)| *finding == Finding::NoDecodedReference),
-                "{case}: a {kind:?} is unreferenced"
             );
         }
         let (holder, part) = at;
@@ -336,18 +329,23 @@ mod completeness {
         let graph = graph(&base());
         for kind in Kind::ANY {
             assert!(
-                graph.coverage().complete_for(kind),
+                graph.coverage().nothing_known_unread_for(kind),
                 "{kind:?}: {:#?}",
                 graph.coverage()
             );
         }
-        assert!(graph.broken().is_empty(), "{:#?}", graph.broken());
-        let unused: Vec<(ObjectId, Finding)> = graph
-            .unused(Kind::Script)
+        assert!(
+            graph.targets_not_found().is_empty(),
+            "{:#?}",
+            graph.targets_not_found()
+        );
+        let unused: Vec<ObjectId> = graph
+            .no_reference_found(Kind::Script)
             .into_iter()
-            .map(|(o, f)| (o.id, f))
+            .map(|o| o.id)
             .collect();
-        assert_eq!(unused, [(ObjectId::Script(SCRIPT), Finding::Unreferenced)]);
+        assert_eq!(unused, [ObjectId::Script(SCRIPT)]);
+        assert!(graph.coverage().nothing_known_unread_for(Kind::Script));
         // A, through the layout, the calculation and the script.
         assert_eq!(
             graph
@@ -756,7 +754,7 @@ mod completeness {
         go.set_member_key(StoredKey::from_id(9));
         with_step(&mut root, go);
         let whole = graph(&root);
-        let broken: Vec<_> = whole.broken().iter().map(|u| u.holder).collect();
+        let broken: Vec<_> = whole.targets_not_found().iter().map(|u| u.holder).collect();
         assert_eq!(broken, [OTHER], "{:#?}", whole.uses());
         text(
             &mut root,
@@ -764,7 +762,11 @@ mod completeness {
             "Lost",
         );
         let lost = graph(&root);
-        assert!(lost.broken().is_empty(), "{:#?}", lost.broken());
+        assert!(
+            lost.targets_not_found().is_empty(),
+            "{:#?}",
+            lost.targets_not_found()
+        );
         assert!(lost
             .uses()
             .iter()
@@ -792,7 +794,11 @@ mod completeness {
         let tree = KeyTree { root: view(&root) };
         let full = build(&tree, Vec::new());
         assert!(full.coverage().stopped.is_none());
-        assert!(full.broken().is_empty(), "{:#?}", full.broken());
+        assert!(
+            full.targets_not_found().is_empty(),
+            "{:#?}",
+            full.targets_not_found()
+        );
         let mut unresolved = 0;
         let mut stops = 0;
         for budget in 1..2_000 {
@@ -805,12 +811,12 @@ mod completeness {
                 assert_eq!(stopped.reason, UnreadReason::Limit);
                 assert!(graph.uses().len() <= entries);
                 assert!(
-                    graph.broken().is_empty(),
+                    graph.targets_not_found().is_empty(),
                     "budget {entries} {work}: {:#?}",
-                    graph.broken()
+                    graph.targets_not_found()
                 );
                 for kind in Kind::ALL {
-                    assert!(!graph.coverage().complete_for(kind), "{kind:?}");
+                    assert!(!graph.coverage().nothing_known_unread_for(kind), "{kind:?}");
                 }
                 unresolved += graph
                     .uses()
@@ -1248,7 +1254,7 @@ mod completeness {
     #[test]
     fn the_fixture_holds_every_structure_the_readers_know() {
         let root = full();
-        let (graph, visited, declared) = build_traced(
+        let (graph, trace) = build_traced(
             &KeyTree { root: view(&root) },
             Vec::new(),
             MAX_ENTRIES,
@@ -1261,43 +1267,101 @@ mod completeness {
         );
         let missing: Vec<&Structure> = Structure::ALL
             .iter()
-            .filter(|s| !visited.contains(s))
+            .filter(|s| !trace.visited.contains(s))
             .collect();
         assert!(missing.is_empty(), "the fixture lacks {missing:?}");
         let unused: Vec<&Declared> = Declared::ALL
             .iter()
-            .filter(|d| !declared.contains(d))
+            .filter(|d| !trace.declared.contains(d))
             .collect();
         assert!(unused.is_empty(), "the fixture uses no {unused:?}");
     }
 
+    /// The paths a holder's references are stored under: its member, and
+    /// for a field its table's member, for a layout its index entry.
+    fn holder_paths(id: ObjectId) -> Vec<Vec<Vec<u8>>> {
+        match id {
+            ObjectId::LayoutObject { layout, .. } => member_paths(ObjectId::Layout(layout)),
+            ObjectId::Layout(l) => {
+                let mut paths = member_paths(id);
+                paths.push(vec![vec![4], vec![1], vec![7], uint_segment(l)]);
+                paths
+            }
+            ObjectId::PrivilegeSet(p) => {
+                vec![vec![vec![0x17], vec![2], vec![5], uint_segment(p)]]
+            }
+            ObjectId::CustomMenu(m) => vec![vec![vec![0x41], vec![5], uint_segment(m)]],
+            ObjectId::File => vec![vec![vec![2], vec![0x18]]],
+            _ => member_paths(id),
+        }
+    }
+
     /// Every node of a file holding every structure the readers know,
-    /// corrupted one at a time (a list made a leaf and a leaf a list, a
+    /// corrupted one at a time: a list made a leaf and a leaf a list, a
     /// value in pieces truncated, an unknown key added, a value set beside
-    /// keys): the read is either still clean and the result byte for byte
-    /// the same, or not clean, and then nothing strong is claimed: no
-    /// reference broken, no kind listed whole, nothing complete. Removing a
-    /// node can only take information away: no use appears that was not
-    /// there, and none is newly broken but those naming what was removed.
-    /// The walk covers whatever the file holds, with no list of
-    /// structures.
+    /// keys. Each corruption is an error the read must notice: the read is
+    /// then not clean, and nothing strong is claimed (no target not found,
+    /// no kind listed whole, nothing known unread). The only exceptions:
+    /// inside a subtree declared by spec (a catalog index, file status,
+    /// access settings, a layout's own object indexes) or reported as a
+    /// known structure not decoded (a custom menu), which by design is not
+    /// read; and a value in pieces stored whole instead, which is the same
+    /// value. A read still clean must then give the same result, byte
+    /// for byte. Removing a node can only take information away: the same
+    /// assertions hold for a read not clean; in a clean read no use
+    /// appears on an object that was there, none is lost but those its
+    /// holder stored under the node removed, and no target goes missing
+    /// but what was removed. The walk covers whatever the file holds, with
+    /// no list of structures.
     #[test]
     fn every_stored_node_is_read_or_reported() {
         let root = full();
-        let before = graph(&root);
+        let (before, trace) = build_traced(
+            &KeyTree { root: view(&root) },
+            Vec::new(),
+            MAX_ENTRIES,
+            MAX_WORK,
+        );
         assert!(
             before.coverage().read_cleanly(),
             "{:#?}",
             before.coverage().anomalies
         );
-        assert!(before.broken().is_empty(), "{:#?}", before.broken());
+        assert!(
+            before.targets_not_found().is_empty(),
+            "{:#?}",
+            before.targets_not_found()
+        );
         let base = signature(&before);
+        let by_spec: Vec<Vec<Vec<u8>>> = trace
+            .declared_paths
+            .iter()
+            .filter(|(_, why)| {
+                // Declared by spec, or reported by its reader: a place
+                // reported is an anomaly (the read is then not clean) or a
+                // known structure not decoded (a custom menu), coverage that
+                // could name anything, whatever it holds.
+                matches!(
+                    why,
+                    Declared::CatalogIndex
+                        | Declared::FileStatus
+                        | Declared::AccessSetting
+                        | Declared::LayoutIndex
+                        | Declared::Reported
+                )
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
         let mut paths = Vec::new();
         nodes(&root, &mut Vec::new(), &mut paths);
         paths.retain(|p| in_catalogs(p));
         let mut failures = Vec::new();
         let mut checked = 0;
         for path in &paths {
+            let at: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+            let in_pieces = root.at(&at).is_some_and(|n| {
+                n.value.is_none() && n.children.len() > 1 && n.assembled().is_some()
+            });
             for mutation in [
                 Mutation::Leaf,
                 Mutation::List,
@@ -1312,11 +1376,30 @@ mod completeness {
                 checked += 1;
                 let after = graph(&mutated);
                 let at = format!("{mutation:?} at {path:02x?}");
+                let clean = after.coverage().read_cleanly();
+                if !clean {
+                    if !after.targets_not_found().is_empty() {
+                        failures.push(format!("{at}: not clean, yet targets not found"));
+                    }
+                    for kind in Kind::ALL {
+                        if after.listed_whole(kind)
+                            || after.coverage().nothing_known_unread_for(kind)
+                        {
+                            failures.push(format!("{at}: not clean, yet {kind:?} is sealed"));
+                        }
+                    }
+                }
                 if let Mutation::Remove = mutation {
+                    if !clean {
+                        continue;
+                    }
+                    // The node removed lies in the holder's member, or holds it.
+                    let stored_under = |holder: ObjectId| {
+                        holder_paths(holder)
+                            .iter()
+                            .any(|p| p.starts_with(path) || path.starts_with(p))
+                    };
                     for u in after.uses() {
-                        // A removed flag can make a new object of what was
-                        // none (a folder without its flags is a layout);
-                        // an object that was there gains no use.
                         let known = before.object(u.holder).is_none()
                             || before
                                 .uses()
@@ -1325,30 +1408,32 @@ mod completeness {
                         if !known {
                             failures.push(format!("{at}: a new use {u:?}"));
                         }
-                        if let Resolution::Broken { missing } = u.resolution {
+                        if let Resolution::TargetNotFound { missing } = u.resolution {
                             let removed = member_paths(missing)
                                 .iter()
                                 .any(|member| member.starts_with(path));
                             if !removed {
-                                failures.push(format!("{at}: newly broken {u:?}"));
+                                failures.push(format!("{at}: target newly not found {u:?}"));
                             }
+                        }
+                    }
+                    for v in before.uses() {
+                        let kept = after
+                            .uses()
+                            .iter()
+                            .any(|u| u.holder == v.holder && u.target == v.target);
+                        if !kept && !stored_under(v.holder) {
+                            failures.push(format!("{at}: a use lost {v:?}"));
                         }
                     }
                     continue;
                 }
-                if after.coverage().read_cleanly() {
-                    if signature(&after) != base {
-                        failures.push(format!("{at}: read cleanly, but the result changed"));
-                    }
-                    continue;
-                }
-                if !after.broken().is_empty() {
-                    failures.push(format!("{at}: not clean, yet references are broken"));
-                }
-                for kind in Kind::ALL {
-                    if after.listed_whole(kind) || after.coverage().complete_for(kind) {
-                        failures.push(format!("{at}: not clean, yet {kind:?} is complete"));
-                    }
+                let excused = by_spec.iter().any(|declared| path.starts_with(declared))
+                    || (in_pieces && matches!(mutation, Mutation::Leaf));
+                if clean && !excused {
+                    failures.push(format!("{at}: an error the read did not notice"));
+                } else if clean && signature(&after) != base {
+                    failures.push(format!("{at}: read cleanly, but the result changed"));
                 }
             }
         }
@@ -1365,7 +1450,11 @@ mod completeness {
         let mut root = forward();
         put(&mut root, &[&[0x10], &[5]], vec![0x55]);
         let graph = graph(&root);
-        assert!(graph.broken().is_empty(), "{:#?}", graph.broken());
+        assert!(
+            graph.targets_not_found().is_empty(),
+            "{:#?}",
+            graph.targets_not_found()
+        );
         assert!(!graph.listed_whole(Kind::CustomFunction));
         assert!(graph.unlisted_reason(Kind::CustomFunction).is_some());
         assert!(graph.uses().iter().any(|u| {
@@ -1386,7 +1475,7 @@ mod completeness {
         assert!(!graph.coverage().read_cleanly());
         for kind in Kind::ALL {
             assert!(!graph.listed_whole(kind), "{kind:?}");
-            assert!(!graph.coverage().complete_for(kind), "{kind:?}");
+            assert!(!graph.coverage().nothing_known_unread_for(kind), "{kind:?}");
         }
     }
 
@@ -1409,15 +1498,13 @@ mod completeness {
             .unread
             .iter()
             .any(|u| u.place.part == "stored 17/5/4/4"));
-        let unused: Vec<(ObjectId, Finding)> = graph
-            .unused(Kind::Layout)
+        let unused: Vec<ObjectId> = graph
+            .no_reference_found(Kind::Layout)
             .into_iter()
-            .map(|(o, f)| (o.id, f))
+            .map(|o| o.id)
             .collect();
-        assert_eq!(
-            unused,
-            [(ObjectId::Layout(LAYOUT), Finding::NoDecodedReference)]
-        );
+        assert_eq!(unused, [ObjectId::Layout(LAYOUT)]);
+        assert!(!graph.coverage().nothing_known_unread_for(Kind::Layout));
     }
 
     /// Instance 3: after a stop before the script catalog, and with a
@@ -1483,7 +1570,7 @@ mod completeness {
             .unread
             .iter()
             .all(|u| u.detail.chars().count() <= 303));
-        assert!(!graph.coverage().complete_for(Kind::Field));
+        assert!(!graph.coverage().nothing_known_unread_for(Kind::Field));
     }
 
     /// Instance 5: Perform SQL Query by Natural Language with its options
@@ -1506,7 +1593,7 @@ mod completeness {
                 .by_name
                 .iter()
                 .any(|b| b.holder == OTHER && b.could_refer_to.contains(&Kind::Occurrence)));
-            assert!(!graph.coverage().complete_for(Kind::Occurrence));
+            assert!(!graph.coverage().nothing_known_unread_for(Kind::Occurrence));
         }
     }
 
@@ -1526,7 +1613,7 @@ mod completeness {
             u.detail.contains("context whose key does not read")
                 && u.could_refer_to == [Kind::Occurrence]
         }));
-        assert!(!graph.coverage().complete_for(Kind::Occurrence));
+        assert!(!graph.coverage().nothing_known_unread_for(Kind::Occurrence));
         let mut root = base();
         let mut script = Script {
             id: 2,
@@ -1583,7 +1670,7 @@ mod completeness {
         let graph = graph(&root);
         for kind in Kind::ANY {
             assert!(
-                graph.coverage().complete_for(kind),
+                graph.coverage().nothing_known_unread_for(kind),
                 "{:#?}",
                 graph.coverage()
             );
@@ -1592,7 +1679,10 @@ mod completeness {
             let mut root = base();
             put(&mut root, &[&[4], &[5], &l, &[key]], value);
             let graph = self::graph(&root);
-            assert!(!graph.coverage().complete_for(Kind::Field), "{key:02x}");
+            assert!(
+                !graph.coverage().nothing_known_unread_for(Kind::Field),
+                "{key:02x}"
+            );
         }
         let mut root = base();
         put(
@@ -1608,7 +1698,9 @@ mod completeness {
             ],
             vec![0x55],
         );
-        assert!(!self::graph(&root).coverage().complete_for(Kind::Field));
+        assert!(!self::graph(&root)
+            .coverage()
+            .nothing_known_unread_for(Kind::Field));
     }
 
     /// Instance 8: Send Event can send an Apple event to FileMaker Pro
@@ -1621,6 +1713,150 @@ mod completeness {
         assert!(graph.coverage().by_name.iter().any(|b| {
             b.how == NameUse::ExternalScriptText && b.could_refer_to.contains(&Kind::Script)
         }));
+    }
+
+    /// Round 5: a layout the layout index lists without its member is an
+    /// anomaly, listed from its index entry, and the occurrence the entry
+    /// names is still a use.
+    #[test]
+    fn a_layout_only_in_the_index_is_an_anomaly_and_its_occurrence_a_use() {
+        let mut root = base();
+        let alias = serial::decode(&uint_segment(OCCURRENCE)).unwrap();
+        let l = uint_segment(9);
+        text(&mut root, &[&[4], &[1], &[7], &l, &[0x10]], "Hidden");
+        put(
+            &mut root,
+            &[&[4], &[1], &[7], &l, &[2]],
+            encode::layout_entry(alias, 0),
+        );
+        let graph = graph(&root);
+        assert!(!graph.coverage().read_cleanly());
+        assert!(graph.object(ObjectId::Layout(9)).is_some());
+        assert!(graph.uses().iter().any(|u| u.holder == ObjectId::Layout(9)
+            && u.target == Target::Object(ObjectId::Occurrence(OCCURRENCE))));
+    }
+
+    /// Round 5: a field-index branch names its occurrence whether or not
+    /// it has entries; that is a use, held by the layout.
+    #[test]
+    fn an_empty_field_index_branch_is_a_use_of_its_occurrence() {
+        let mut root = base();
+        root.put(
+            &[
+                &[4],
+                &[5],
+                &uint_segment(LAYOUT),
+                &[1],
+                &uint_segment(0xd0_0002),
+            ],
+            OwnedNode::list(uint_segment(0xd0_0002), Vec::new()),
+        );
+        let graph = graph(&root);
+        assert!(
+            graph.coverage().read_cleanly(),
+            "{:#?}",
+            graph.coverage().anomalies
+        );
+        assert!(graph
+            .uses()
+            .iter()
+            .any(|u| u.holder == ObjectId::Layout(LAYOUT)
+                && u.place.part == "field index"
+                && u.target == Target::Object(ObjectId::Occurrence(0xd0_0002))));
+    }
+
+    /// Round 5: a table's catalog `[T]` stored as a value, above the field
+    /// catalog no walk reaches, is an anomaly.
+    #[test]
+    fn a_failed_table_catalog_above_its_fields_is_reported() {
+        let mut root = base();
+        let other = uint_segment(0x8002);
+        text(&mut root, &[&[3], &[0x10], &[5], &other, &[0x10]], "Other");
+        put(&mut root, &[&other], vec![0x55]);
+        let graph = graph(&root);
+        assert!(!graph.coverage().read_cleanly());
+        assert!(
+            graph
+                .coverage()
+                .anomalies
+                .iter()
+                .any(|u| u.place.part == "stored 32770"),
+            "{:#?}",
+            graph.coverage().anomalies
+        );
+    }
+
+    /// Round 5: a step's several keys (script-steps.md 12.1, 6 bytes each
+    /// with their count) are read as uses; one that does not read, or whose
+    /// count disagrees, is an anomaly, never an empty list.
+    #[test]
+    fn several_keys_in_a_slot_are_read_or_reported() {
+        let keys = |scripts: &[u64]| -> Vec<u8> {
+            scripts
+                .iter()
+                .flat_map(|s| {
+                    let segment = serial::encode(*s);
+                    let mut key = vec![segment.len() as u8];
+                    key.extend(segment);
+                    key.resize(6, 0);
+                    key
+                })
+                .collect()
+        };
+        let step = |list: Vec<u8>, count: Option<u32>| {
+            let mut step = ScriptStep::new(239);
+            step.set_flag(0x100, true);
+            step.set_slot_child(3, 0x11, Some(OwnedNode::leaf(vec![0x11], list)));
+            if let Some(count) = count {
+                step.set_slot_child(
+                    3,
+                    0x04,
+                    Some(OwnedNode::leaf(vec![4], count.to_le_bytes().to_vec())),
+                );
+            }
+            step
+        };
+        let mut root = base();
+        add_script(&mut root, 3, "Third", Vec::new());
+        with_step(&mut root, step(keys(&[SCRIPT, 3]), Some(2)));
+        let graph = graph(&root);
+        assert!(
+            graph.coverage().read_cleanly(),
+            "{:#?}",
+            graph.coverage().anomalies
+        );
+        for script in [SCRIPT, 3] {
+            assert!(
+                graph
+                    .uses()
+                    .iter()
+                    .any(|u| u.holder == OTHER
+                        && u.target == Target::Object(ObjectId::Script(script))),
+                "{:#?}",
+                graph.uses()
+            );
+        }
+        for (list, count) in [
+            (keys(&[SCRIPT, 3]), Some(3)),
+            (Vec::new(), None),
+            (vec![9, 1, 0, 0, 0, 0], None),
+        ] {
+            let mut root = base();
+            with_step(&mut root, step(list.clone(), count));
+            let graph = self::graph(&root);
+            assert!(!graph.coverage().read_cleanly(), "{list:02x?} {count:?}");
+        }
+    }
+
+    /// Round 5: a source that saw a catalog change while it read says so;
+    /// the read stays clean, and `consistent` is false.
+    #[test]
+    fn a_change_seen_during_the_read_makes_it_inconsistent() {
+        let mut graph = graph(&base());
+        assert!(graph.coverage().consistent());
+        graph.note_changed_during_read(vec!["the layouts: its modification count changed".into()]);
+        assert!(!graph.coverage().consistent());
+        assert!(graph.coverage().read_cleanly());
     }
 
     /// The readers reach the catalogs only through the access layer: none

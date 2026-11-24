@@ -105,10 +105,10 @@ impl Analysis {
                 ObjectId::File => Some(self.file.clone()),
                 _ => found.map(|o| o.name.clone()),
             },
-            "exists": self.exists(id),
+            "found": self.found(id),
         });
-        if let Some(reason) = self.existence_unknown(id) {
-            out["existence_unknown"] = json!(reason);
+        if let Some(reason) = self.not_known(id) {
+            out["not_known_because"] = json!(reason);
         }
         if let Some(detail) = found.map(|o| &o.detail).filter(|d| !d.is_empty()) {
             out["detail"] = json!(detail);
@@ -123,39 +123,41 @@ impl Analysis {
         out
     }
 
-    /// Whether the file has `id`: true, false, or null when its kind was
-    /// not listed whole and the graph does not have it.
-    fn exists(&self, id: ObjectId) -> Value {
+    /// Whether `id` was found among the objects read: true, false, or null
+    /// when the graph does not have it and the file was not read cleanly.
+    /// False says only that it was not found, never that the file lacks it.
+    fn found(&self, id: ObjectId) -> Value {
         if id == ObjectId::File || self.graph.object(id).is_some() {
             return json!(true);
         }
-        if self.existence_unknown(id).is_some() {
+        if self.not_known(id).is_some() {
             return Value::Null;
         }
         json!(false)
     }
 
-    /// Why whether the file has `id` is not known, when it is not: the
-    /// file was not read cleanly.
-    fn existence_unknown(&self, id: ObjectId) -> Option<String> {
+    /// Why whether `id` is among the objects read is not known, when it is
+    /// not: the file was not read cleanly.
+    fn not_known(&self, id: ObjectId) -> Option<String> {
         if id == ObjectId::File || self.graph.object(id).is_some() {
             return None;
         }
         self.graph.unlisted_reason(id.kind())
     }
 
-    /// The error for an object that cannot be found: `not_found` when its
-    /// kind was listed whole, else `not_known` with the reason.
+    /// The error for an object that cannot be found: `not_found` (not
+    /// among the objects read) when the file was read cleanly, else
+    /// `not_known` with the reason.
     fn missing(&self, kind: Kind, message: String) -> AuthorError {
         match self.graph.unlisted_reason(kind) {
             None => AuthorError::new(ErrorKind::NotFound, message),
             Some(reason) => AuthorError::new(
                 ErrorKind::NotKnown,
                 format!(
-                    "{message} Whether it exists is not known: not every {} of {} was \
-                     listed.",
+                    "{message} Whether it is there is not known: {} was not read cleanly, \
+                     so not every {} was listed.",
+                    self.file,
                     kind.name().replace('_', " "),
-                    self.file
                 ),
             )
             .with_details(json!({
@@ -221,8 +223,8 @@ impl Analysis {
         }
         match &u.resolution {
             Resolution::Resolved(_) => out["resolution"] = json!("resolved"),
-            Resolution::Broken { missing } => {
-                out["resolution"] = json!("broken");
+            Resolution::TargetNotFound { missing } => {
+                out["resolution"] = json!("target_not_found");
                 out["missing"] = self.object(*missing);
             }
             Resolution::External { data_source } => {
@@ -337,8 +339,10 @@ impl Analysis {
         });
         json!({
             "kinds": Self::kinds(kinds),
-            "complete": kinds.iter().all(|k| coverage.complete_for(*k)),
+            "nothing_known_unread": kinds.iter().all(|k| coverage.nothing_known_unread_for(*k)),
             "read_cleanly": coverage.read_cleanly(),
+            "consistent": coverage.consistent(),
+            "changed_during_read": coverage.changed_during_read,
             "anomalies": {
                 "total": coverage.anomaly_count,
                 "places": anomalies,
@@ -380,9 +384,13 @@ impl Analysis {
             .collect();
         match Lookup::by_name(ids, name) {
             Lookup::One(i) => Ok(candidates[i as usize].0),
-            Lookup::Missing => {
-                Err(self.missing(kind, format!("{} has no {what} named “{name}”.", self.file)))
-            }
+            Lookup::Missing => Err(self.missing(
+                kind,
+                format!(
+                    "No {what} named “{name}” was found among the objects read from {}.",
+                    self.file
+                ),
+            )),
             Lookup::Ambiguous => {
                 let folded = name.to_lowercase();
                 let refs: Vec<Value> = candidates
@@ -522,7 +530,8 @@ impl Service {
         let mut opened = self.open()?;
         let catalogs = opened.design_catalogs().map_err(Self::read_error)?;
         let tree = catalogs.tree().map_err(Self::read_error)?;
-        let graph = design_refs::build(&tree, catalogs.unavailable.clone());
+        let mut graph = design_refs::build(&tree, catalogs.unavailable.clone());
+        graph.note_changed_during_read(catalogs.changed.clone());
         Ok(Analysis { graph, file })
     }
 
@@ -532,9 +541,13 @@ impl Service {
         let id = analysis.resolve(params)?;
         let graph = &analysis.graph;
         if graph.object(id).is_none() && params.object.is_none() {
-            return Err(
-                analysis.missing(id.kind(), format!("{} has no such object.", analysis.file))
-            );
+            return Err(analysis.missing(
+                id.kind(),
+                format!(
+                    "That object was not found among the objects read from {}.",
+                    analysis.file
+                ),
+            ));
         }
         // An object the file no longer has: the references still naming it.
         let uses: Vec<&Use> = graph
@@ -543,7 +556,7 @@ impl Service {
             .filter(|u| {
                 u.holder != id
                     && (u.uses(id)
-                        || matches!(u.resolution, Resolution::Broken { missing } if missing == id))
+                        || matches!(u.resolution, Resolution::TargetNotFound { missing } if missing == id))
             })
             .collect();
         let (listed, total, truncated) = listed(&uses, limit, |u| analysis.reference_use(u));
@@ -554,7 +567,7 @@ impl Service {
             "uses": listed,
             "total": total,
             "truncated": truncated,
-            "complete": graph.coverage().complete_for(kind),
+            "nothing_known_unread": graph.coverage().nothing_known_unread_for(kind),
             "coverage": analysis.coverage(&[kind], limit),
         }))
     }
@@ -565,15 +578,17 @@ impl Service {
     ) -> Result<Value, AuthorError> {
         let limit = limit(params.limit)?;
         let analysis = self.analysis()?;
-        let broken = analysis.graph.broken();
-        let (listed, total, truncated) = listed(&broken, limit, |u| analysis.reference_use(u));
+        let not_found = analysis.graph.targets_not_found();
+        let (listed, total, truncated) = listed(&not_found, limit, |u| analysis.reference_use(u));
         let kinds = Kind::REFERABLE;
         Ok(json!({
             "file": analysis.file,
-            "broken": listed,
+            "references": listed,
             "total": total,
             "truncated": truncated,
-            "complete": kinds.iter().all(|k| analysis.graph.coverage().complete_for(*k)),
+            "meaning": "References whose target was not found among the objects read, in a \
+                        file read cleanly: findings to check before acting on them. How far \
+                        to trust them is in coverage (read_cleanly, consistent, anomalies).",
             "coverage": analysis.coverage(&kinds, limit),
         }))
     }
@@ -597,24 +612,23 @@ impl Service {
         };
         let analysis = self.analysis()?;
         let mut objects = Vec::new();
-        let mut findings = serde_json::Map::new();
+        let mut nothing_known_unread = serde_json::Map::new();
         for kind in &kinds {
-            let unused = analysis.graph.unused(*kind);
-            let finding = if analysis.graph.coverage().complete_for(*kind) {
-                "unreferenced"
-            } else {
-                "no_decoded_reference"
-            };
-            findings.insert(kind.name().into(), json!(finding));
+            nothing_known_unread.insert(
+                kind.name().into(),
+                json!(analysis.graph.coverage().nothing_known_unread_for(*kind)),
+            );
             objects.extend(
-                unused
+                analysis
+                    .graph
+                    .no_reference_found(*kind)
                     .into_iter()
-                    .map(|(object, finding)| (object.id, finding)),
+                    .map(|object| object.id),
             );
         }
-        let (listed, total, truncated) = listed(&objects, limit, |(id, finding)| {
+        let (listed, total, truncated) = listed(&objects, limit, |id| {
             let mut out = analysis.object(*id);
-            out["finding"] = json!(finding.code());
+            out["finding"] = json!("no_reference_found");
             out
         });
         Ok(json!({
@@ -623,14 +637,11 @@ impl Service {
             "objects": listed,
             "total": total,
             "truncated": truncated,
-            "findings": findings,
-            "meaning": {
-                "unreferenced": "No reference in the file names it: every place that could \
-                                 was read.",
-                "no_decoded_reference": "No reference OpenMaker decodes names it, but some \
-                                         place that could was not read (coverage): it may \
-                                         still be used.",
-            },
+            "nothing_known_unread": nothing_known_unread,
+            "meaning": "Objects for which no reference was found in what was read: \
+                        candidates to check before acting on them, never objects known to be \
+                        unused. How far to trust them is in coverage (read_cleanly, consistent, \
+                        anomalies, unread places, references by name).",
             "coverage": analysis.coverage(&kinds, limit),
         }))
     }
@@ -662,7 +673,10 @@ impl Service {
         if analysis.graph.object(ObjectId::Script(script)).is_none() {
             return Err(analysis.missing(
                 Kind::Script,
-                format!("{} has no script {script}.", analysis.file),
+                format!(
+                    "Script {script} was not found among the objects read from {}.",
+                    analysis.file
+                ),
             ));
         }
         let chain = |direction: Direction| -> Value {
@@ -706,7 +720,7 @@ impl Service {
         let mut out = json!({
             "file": analysis.file,
             "script": analysis.object(ObjectId::Script(script)),
-            "complete": analysis.graph.coverage().complete_for(Kind::Script),
+            "nothing_known_unread": analysis.graph.coverage().nothing_known_unread_for(Kind::Script),
         });
         if matches!(direction, CallDirection::Calls | CallDirection::Both) {
             out["calls"] = chain(Direction::Calls);
@@ -771,8 +785,8 @@ mod tests {
             assert!(error.details["reason"].is_string());
         }
         let object = not_clean.object(ObjectId::Layout(7));
-        assert_eq!(object["exists"], Value::Null);
-        assert!(object["existence_unknown"].is_string());
+        assert_eq!(object["found"], Value::Null);
+        assert!(object["not_known_because"].is_string());
         let clean = analysis(&clean);
         assert!(
             clean.graph.coverage().read_cleanly(),
@@ -787,6 +801,6 @@ mod tests {
             clean.resolve(&params).unwrap_err().kind,
             ErrorKind::NotFound
         );
-        assert_eq!(clean.object(ObjectId::Layout(7))["exists"], json!(false));
+        assert_eq!(clean.object(ObjectId::Layout(7))["found"], json!(false));
     }
 }
