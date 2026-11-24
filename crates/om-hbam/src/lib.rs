@@ -9,7 +9,17 @@
 //! file:  HbamFile -> leaf chain -> SlotReader per page -> KeyTree
 //! wire:  packed slot buffer     -> SlotReader          -> KeyTree
 //!        KeyTree -> Catalog (tables, fields, occurrences, layouts) / records
+//! large: NodeStream (Read + Seek) -> leaf chain, a page at a time
+//!                                 -> the tree's nodes in key order
 //! ```
+//!
+//! [`HbamFile`] holds the whole file and builds the tree it reads. A
+//! [`stream::NodeStream`] reads a file it can seek in one page at a time
+//! and gives the same tree's nodes one by one, in the order of a
+//! depth-first walk, with memory that does not grow with the file: the
+//! reader for files too large to hold (the server store's import,
+//! `docs/server-storage.md` 6.10). Both apply the same page, chain and
+//! slot checks.
 //!
 //! Parsed: superblock magic and page size, page headers, the leaf chain (with
 //! link validation), every chunk (sizes, hierarchy), key order, chunked
@@ -33,6 +43,7 @@ pub mod ridlist;
 pub mod serial;
 pub mod slot;
 pub mod status;
+pub mod stream;
 pub mod tree;
 pub mod writer;
 
@@ -46,6 +57,7 @@ pub use record::{Cell, Record};
 pub use ridlist::RidList;
 pub use slot::{Chunk, ChunkKind, KeySegment, Slot, SlotReader};
 pub use status::{status_tree_from_wire, INTERNAL_CREATION_PATH};
+pub use stream::{NodeKind, NodeStream, StreamNode};
 pub use tree::{KeyTree, Node, OwnedNode};
 
 impl HbamFile {
