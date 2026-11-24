@@ -396,6 +396,7 @@ pub(crate) fn prepare_environment() {
 
 /// How the app's event loop must be built for this build's web viewers, if
 /// differently from eframe's default (`om_gui::native_options`).
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub(crate) fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
     #[cfg(all(feature = "web-viewer", target_os = "linux"))]
     {

@@ -26,11 +26,14 @@ use crate::NativeConfig;
 /// `Debug`: the configuration holds the client's private key.
 pub(crate) struct NativeBrowser {
     config: NativeConfig,
+    /// Where the additional certificate authority is trusted
+    /// ([`crate::NativeProvider::with_ca_scope`]).
+    ca_scope: Option<(String, u16)>,
 }
 
 impl NativeBrowser {
-    pub(crate) fn new(config: NativeConfig) -> Self {
-        Self { config }
+    pub(crate) fn new(config: NativeConfig, ca_scope: Option<(String, u16)>) -> Self {
+        Self { config, ca_scope }
     }
 }
 
@@ -60,7 +63,8 @@ impl HostBrowser for NativeBrowser {
             &self.config.client_key_pem,
             &self.config.callback_host,
             &machine,
-            &self.config.additional_ca_pem,
+            &crate::scoped_config(&self.config, self.ca_scope.as_ref(), host, port)
+                .additional_ca_pem,
         ) {
             Ok(mut session) => {
                 let listed = list(&mut session, host, port, canceled);

@@ -234,6 +234,11 @@ pub(crate) enum Request {
 pub(crate) struct ReconnectJob {
     /// Typed for this attempt only; never kept or shown.
     pub password: zeroize::Zeroizing<String>,
+    /// The host, port and account `password` was typed for, when it was
+    /// not typed for this reconnect (OpenMaker Go keeps the sign-in a file
+    /// was opened with): a file opened elsewhere or with another account
+    /// is not sent it.
+    pub typed_for: Option<(String, u16, String)>,
     pub use_saved_license: bool,
     /// The records to read back once the file is open again, by layout
     /// and id: those the file's windows hold unsaved edits of.
@@ -296,6 +301,7 @@ impl std::fmt::Debug for ReconnectJob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReconnectJob")
             .field("password", &"<redacted>")
+            .field("typed_for", &self.typed_for)
             .field("use_saved_license", &self.use_saved_license)
             .field("records", &self.records)
             .field("current", &self.current)
