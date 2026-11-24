@@ -332,6 +332,7 @@ struct Reached {
     opened_later: u64,
     fell_back: u64,
     no_checkpoint: u64,
+    unrecoverable: u64,
     replayed: u64,
     recreated: u64,
     leak_checks: u64,
@@ -398,6 +399,10 @@ struct Run<'r> {
     mark: (u64, u64),
     /// Every checkpoint confirmed or opened, with its entry.
     seen: BTreeSet<(u64, u64)>,
+    /// A read failed during an open (one that succeeded or not) since the
+    /// last checkpoint confirmed: such an open passes over the checkpoint
+    /// it could not read and clears it (section 6.12).
+    open_read_failed: bool,
     reached: &'r mut Reached,
     trace: Vec<String>,
 }
@@ -445,6 +450,7 @@ impl<'r> Run<'r> {
             last_full: None,
             mark: (0, 0),
             seen: BTreeSet::new(),
+            open_read_failed: false,
             reached,
             trace: Vec::new(),
         };
@@ -503,6 +509,13 @@ impl<'r> Run<'r> {
             if self.proc.is_none() && !self.dead {
                 self.reopen();
             }
+        }
+        if self.proc.is_none() && self.device == Device::Lying {
+            // The device damaged a page that recovery needs: nothing is
+            // served wrong, and the store cannot be brought back without
+            // a repair (section 6.12).
+            self.reached.unrecoverable += 1;
+            self.dead = true;
         }
         if !self.dead {
             assert!(self.proc.is_some(), "the store did not open without faults");
@@ -712,6 +725,7 @@ impl<'r> Run<'r> {
             Ok(done) => {
                 assert_eq!(done.number, number);
                 self.reached.checkpoints += 1;
+                self.open_read_failed = false;
                 self.confirmed = number;
                 self.seen.insert((number, self.newest.entry.index));
                 if let Some(name) = name {
@@ -813,7 +827,9 @@ impl<'r> Run<'r> {
 
     fn reopen(&mut self) {
         let reads_before = self.fired(SimFault::FailRead);
-        let (proc, opened) = match open_proc(&self.disk, self.config) {
+        let result = open_proc(&self.disk, self.config);
+        self.open_read_failed |= self.fired(SimFault::FailRead) > reads_before;
+        let (proc, opened) = match result {
             Ok(opened) => opened,
             Err(OpenError::Disk(e)) => {
                 self.trace.push(format!("open failed: {e}"));
@@ -821,16 +837,32 @@ impl<'r> Run<'r> {
                 let power_loss = self.plan.one_in(2);
                 return self.stop(power_loss);
             }
-            Err(e @ OpenError::NoCheckpoint { .. }) => {
-                self.trace.push(format!("no checkpoint: {e}"));
-                assert_eq!(self.device, Device::Lying, "{e}");
+            Err(OpenError::NoCheckpoint { slots, passed_over }) => {
+                self.trace
+                    .push(format!("no checkpoint: {slots:?} {passed_over:?}"));
                 self.reached.no_checkpoint += 1;
-                self.dead = true;
+                // A read the device failed passes a checkpoint over; on an
+                // honest disk the open is tried again.
+                let unreadable = passed_over.iter().all(|p| {
+                    matches!(
+                        &p.why,
+                        Rejection::Meta(MetaFault::Page(f)) | Rejection::Root { fault: f, .. }
+                            if matches!(f.fault, Fault::Io(_))
+                    )
+                }) && slots.iter().any(|s| matches!(s, SlotSeen::Copy(_)));
+                match self.device {
+                    Device::Lying => self.dead = true,
+                    Device::Honest if unreadable => {
+                        let power_loss = self.plan.one_in(2);
+                        self.stop(power_loss);
+                    }
+                    _ => panic!("no checkpoint: {slots:?} {passed_over:?}"),
+                }
                 return;
             }
             Err(e) => panic!("open: {e}"),
         };
-        let read_failed = self.fired(SimFault::FailRead) > reads_before;
+        let read_failed = self.open_read_failed;
         self.reached.opens += 1;
         self.trace.push(format!("opened {opened:?}"));
         let number = opened.checkpoint;
@@ -1768,4 +1800,82 @@ fn an_open_passes_over_a_newest_checkpoint_it_cannot_check() {
         assert_eq!((run.confirmed, run.newest.entry), made, "case {case}");
         run.check(true);
     }
+}
+
+/// Past the budget of pages waiting in memory, a reservation is refused
+/// with "checkpoint needed" until a checkpoint writes them; pages a pin
+/// keeps after they left the newest version do not count.
+#[test]
+fn a_checkpoint_is_needed_past_the_budget_of_pages_in_memory() {
+    let sim = Sim::new(21);
+    let disk = Disk::Sim(sim.clone());
+    let config = Config {
+        dirty_budget: 12,
+        ..config()
+    };
+    let proc = create_proc(&disk, config);
+    let pf = &proc.pf;
+    pf.end_recovery();
+    let mut model = Model::default();
+    let mut rng = Rng::new(21);
+    let mut index = 1;
+    let apply = |model: &mut Model, ops: Vec<(TreeName, Op)>, index: &mut u64| {
+        let logged = Logged {
+            entry: entry_id(*index),
+            ops,
+            taken: None,
+        };
+        let pages = bound(pf, model, &logged.ops).unwrap();
+        let res = pf.reserve(*index, pages, Purpose::Entry)?;
+        apply_logged(&res, model, &logged).unwrap();
+        *index += 1;
+        Ok::<_, SpaceError>(())
+    };
+    apply(&mut model, vec![(tree_name(0), Op::Create)], &mut index).unwrap();
+    let mut refused = false;
+    for _ in 0..200 {
+        let ops = vec![(tree_name(0), Op::Edits(edits(&mut rng, 6)))];
+        match apply(&mut model, ops, &mut index) {
+            Ok(()) => {}
+            Err(SpaceError::CheckpointNeeded { dirty, budget }) => {
+                assert!(dirty >= budget);
+                refused = true;
+                break;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(refused, "the budget was never reached");
+    pf.checkpoint(model.entry, &model.roots(), None).unwrap();
+    assert_eq!(pf.space().dirty, 0);
+    // A pin keeps a version that is only in memory: when the tree is made
+    // again, its pages leave the newest version and stay in memory for the
+    // pin, and do not count against the budget.
+    while pf.space().dirty < 10 {
+        let ops = vec![(tree_name(0), Op::Edits(edits(&mut rng, 3)))];
+        apply(&mut model, ops, &mut index).unwrap();
+    }
+    let pin = pf.pin(model.entry.index).unwrap();
+    apply(&mut model, vec![(tree_name(0), Op::Recreate)], &mut index).unwrap();
+    pf.checkpoint(model.entry, &model.roots(), None).unwrap();
+    let kept = pf.space().dirty;
+    assert!(kept >= 10, "the pinned pages stay in memory: {kept}");
+    let mut over = false;
+    for _ in 0..40 {
+        let ops = vec![(tree_name(0), Op::Edits(edits(&mut rng, 2)))];
+        match apply(&mut model, ops, &mut index) {
+            Ok(()) => over |= pf.space().dirty >= config.dirty_budget,
+            Err(SpaceError::CheckpointNeeded { dirty, .. }) => {
+                assert!(dirty >= config.dirty_budget);
+                pf.checkpoint(model.entry, &model.roots(), None).unwrap();
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(over, "reservations went on past the budget held by the pin");
+    drop(pin);
+    pf.reclaim(10_000);
+    pf.checkpoint(model.entry, &model.roots(), None).unwrap();
+    pf.reclaim(10_000);
+    assert_eq!(pf.space().dirty, 0);
 }

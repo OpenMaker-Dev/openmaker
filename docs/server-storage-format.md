@@ -589,3 +589,349 @@ the path. For the root path it is exact: yes exactly when an entry after
 - Keys longer than 1,024 bytes are compared and listed with reads of
   their overflow pages, as far as the comparison or the child's key goes
   (2.6).
+
+## 4. The page file
+
+`<store>/pages` (server-storage.md sections 6.4 to 6.8), read and
+written by `om_store::pagefile`. Its first 16 KiB are four superblock
+slots of 4,096 bytes; page `n` (from 1) is the 16,384 bytes at byte
+`n * 16384`. The pages of the trees (section 2), the meta streams of
+checkpoints (4.3) and free pages share the same numbers.
+
+### 4.1 Versions
+
+What the page file holds is a line of **versions**, each a pair (entry,
+step), ordered by entry, then step:
+
+- the changes an entry makes are version `(entry, 0)`: every page a tree
+  writes for the entry is born at it;
+- the pages a checkpoint writes for itself (its meta stream) are born at
+  `(entry, number)`, where `entry` is the last entry it covers and
+  `number` the checkpoint's number. A checkpoint **is** version `(entry,
+  number)`: its trees, and its own meta stream.
+
+A page leaves the newest version when a tree releases it (or the subtree
+it was in) for an entry `E`: it **dies** at `(E, 0)`. Between its birth
+and its death every version reaches it; no version at or after its
+death does. Two checkpoints at the same entry are told apart by their
+steps, and a checkpoint's meta stream is reached by that checkpoint's
+version alone (the next checkpoint's version is at or after the meta
+stream's death).
+
+### 4.2 A superblock copy
+
+Each copy is written at the start of its slot; the rest of the slot is
+not read. Slots 0 and 2 form one pair, slots 1 and 3 the other: a
+checkpoint's two copies are in one pair, 8 KiB apart, so that a run of
+damaged bytes shorter than 4 KiB reaches at most one copy of each
+checkpoint.
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMPAGES` followed by a zero byte |
+| 8 | 2 | superblock format version, 1 |
+| 10 | 2 | zero |
+| 12 | 4 | body length `L`, 96 in version 1 |
+| 16 | 8 | the checkpoint's number |
+| 24 | `L` | body |
+| 24 + `L` | 32 | SHA-256 of bytes 0 to 24 + `L` |
+
+The body, version 1:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | the index of the last entry the checkpoint covers |
+| 8 | 8 | that entry's term |
+| 16 | 32 | that entry's hash |
+| 48 | 1 | the tree format version of its trees (section 2) |
+| 49 | 7 | zero |
+| 56 | 8 | the number of the first page of its meta stream |
+| 64 | 32 | that page's hash (section 2.5) |
+
+A copy is **valid** when the mark, the length and the hash check, the
+zero fields are zero, and neither the number nor the meta page is 0. A
+valid copy of a newer superblock or tree format version makes the open
+fail rather than pass over it. A copy whose first 8 bytes are zero is a
+slot never written, or cleared.
+
+A checkpoint's **number** is one more than the highest number of a valid
+copy on disk when it is written. A number whose copies never reached
+the disk can be used again; an open overwrites every copy that could
+hold it first (4.6).
+
+### 4.3 The meta stream's pages
+
+A checkpoint's meta stream (4.4) is a byte stream kept in pages of the
+overflow kind (section 2.4), each stamped with the checkpoint's number:
+
+- **data pages** hold the stream, 16,344 bytes each except the last;
+- **directory pages** each hold, as their data, a reference to the next
+  directory page (its number and hash, 8 + 32 bytes; all zero for the
+  last) and then 1 to 407 references to data pages, in order.
+
+The superblock names the first directory page. Each page is read with
+the hash that names it (section 2.5), so every byte of the stream is
+checked before it is used; a stream longer than the file's pages, or a
+directory page of another kind or length, is malformed. The stream is
+written whole at every checkpoint: a checkpoint shares no meta page with
+another.
+
+### 4.4 The meta stream, version 1
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMMETA` followed by two zero bytes |
+| 8 | 2 | meta format version, 1 |
+| 10 | 6 | zero |
+| 16 | 8 | the checkpoint's number |
+| 24 | 48 | the entry: index, term (8 each) and hash (32) |
+| 72 | 1 | the tree format version |
+| 73 | 7 | zero |
+| 80 | 8 | the predecessor's number: the newest checkpoint on disk when this one was written; 0 for none |
+| 88 | 16 | the predecessor's version: entry and step (8 each); zero for none |
+| 104 | 8 | `end`: the file's pages, page 0 counted; pages `1..end` exist |
+
+Then, in order:
+
+1. **The trees**: a count (4 bytes), then for each tree in the order of
+   its name's bytes, each name once: the name's length (1 byte, 1 to
+   255), the name, and the root's page number (8) and hash (32). The page
+   file gives names no meaning; the engine names a tree per hosted file
+   and one for the rest of the state (server-storage.md 6.2). At most
+   2^20 trees.
+2. **The restore points listed**: a count (4 bytes), then for each: the
+   name's length (1 byte, 1 to 64), the name (UTF-8), the checkpoint's
+   number (8), its entry (48), its version (16), and its meta stream's
+   first page, number (8) and hash (32). A checkpoint kept as a restore
+   point lists itself with page 0 and a zero hash: its own stream is the
+   one being read.
+3. **The restore points retiring**: the same layout. These are the
+   restore points the predecessor lists and this checkpoint does not;
+   they are kept while the predecessor is on disk.
+4. **The free pages**: a length (8 bytes), which is `ceil(end / 8)`, and
+   a bitmap: bit `n % 8` of byte `n / 8` is set when page `n` is free.
+   Page 0 and bits past `end` are clear.
+5. **The dying pages**: a count (8 bytes), then 81 bytes each, in page
+   order:
+
+   | Offset | Size | Field |
+   |---:|---:|---|
+   | 0 | 8 | the page's number |
+   | 8 | 32 | its hash |
+   | 40 | 16 | its death: entry and step |
+   | 56 | 1 | bit 0: its birth is known; bit 1: it was dropped with what it refers to, which has not been taken down yet; other bits zero |
+   | 57 | 16 | its birth, when known; zero otherwise |
+   | 73 | 8 | its hold: the number of the first checkpoint whose map records it settled, when an older map on disk records it unsettled; 0 for none (4.5) |
+
+6. **The shared pages**: a count (8 bytes), then 28 bytes each, in page
+   order: the page's number (8), how many trees reach it (4, at least 1),
+   and the latest version (16) at which a tree stopped reaching it.
+
+The stream ends there. Every count is checked against the bytes left
+before anything is allocated for it; a dying page born at or after its
+death, a dying or shared page that is free or outside `1..end`, records
+out of order, or a root, meta page or restore point outside `1..end` make
+the stream malformed. Every page the meta stream occupies must be in use
+in its own map, and so must every tree root.
+
+**The map** (items 4 to 6) is the state of the file's pages at the
+checkpoint's version. A page that is neither free nor dying is in use: a
+page of the checkpoint's trees, of its meta stream, of an older
+checkpoint's meta stream that is still dying, or reached by a dying page
+that has not been taken down yet. Pages that units of later entries had
+taken when the checkpoint was written are recorded free; the map is
+rebuilt for them when those entries are applied again (4.7).
+
+### 4.5 The map's rules
+
+- **Reuse.** A dying page becomes free when it is **settled** (its birth
+  is known and, if it was dropped, its references taken down), no **kept
+  version** lies in `[birth, death)`, and its hold is at most the lowest
+  number of a checkpoint on disk. The kept versions are the two
+  checkpoints on disk (and the one being written), every restore point a
+  superblock on disk lists (a checkpoint's own list and, while its
+  predecessor is on disk, the retiring list), and the pins. A pin is of
+  the trees at an entry, `(entry, 0)`: it keeps no meta page (birth step
+  above 0). A birth not known yet counts as the earliest.
+- **Settling** needs the page's bytes: its birth is its stamp (section
+  2.2), and an index page's children carry theirs; a dropped page's
+  references are what `Page::references` lists. The bytes are at hand
+  for a page not written yet; otherwise they are read, a page at a time,
+  by `PageFile::reclaim`, which takes at most a given number of dying
+  pages per call.
+- **Holds.** A map on disk can record a page unsettled, or in use below a
+  dropped page it records unsettled. Opening that checkpoint will need
+  the page's bytes again, so when the running process settles such a page
+  it sets the hold to the next checkpoint's number, and the page is not
+  reused until every checkpoint on disk is at least that one: two
+  checkpoints later.
+- **Shares** (section 6.8, Rodeh's method). A page reached by more than
+  one tree has a count; a page without a record is reached by one. A
+  clone raises its root's count. A unit that copies a page whose count is
+  above 1 (counting what the unit's earlier releases raise) reads the
+  page and raises the count of everything it refers to, since the copy
+  refers to it too, and lowers the page's own. A page whose count reaches
+  0 dies, at the latest version at which a tree stopped reaching it; if
+  it was dropped, what it refers to loses one count each when it is
+  taken down, and dies the same way at 0.
+- **A function of the changes.** The map after a sequence of calls from a
+  checkpoint is a function of the map the checkpoint names and the calls:
+  the units committed (in order), the checkpoints, the pins and the
+  reclaims. It takes nothing from a clock, randomness, the order of a
+  hash map, or the page cache: a commit learns births only from pages not
+  written yet, and pages are taken lowest number first. So applying the
+  same entries twice from the same checkpoint, with the same checkpoints,
+  pins and reclaims between them, gives the same map, byte for byte, and
+  the same page numbers. Recovery applies the entries after the
+  checkpoint with no pins and nothing freed; the first run's pins and
+  reclaims may have differed, and the map recovery rebuilds is then
+  another correct one for the same trees.
+
+### 4.6 Writing and reading
+
+- **Creation.** Checkpoint 1, at entry 0 with no trees, is written to
+  `pages.new` (its superblock copies in slots 0 and 2, its meta stream in
+  pages 1 and 2), which is flushed, renamed to `pages`, and the store
+  folder flushed. So `pages` exists only whole. A `pages.new` left by a
+  creation that did not finish is removed first.
+- **A checkpoint** of the newest version, at entry `E` (every unit
+  committed so far is of `E` or earlier), given every tree's root:
+  1. the pages the roots reach that are only in memory are found (a page
+     on disk never refers to one in memory); a page in memory of the
+     newest version that no root reaches, a root that left the newest
+     version, or a tree of the newest checkpoint that is neither given
+     nor dropped refuses the checkpoint, with nothing written;
+  2. the dying pages in memory that were dropped are taken down (after a
+     restart only the disk is left to read them from), the newest
+     checkpoint's meta pages die at the new version, and the meta stream
+     is laid out in pages taken from the free ones (growing the file if
+     it must, drawing on the reserve; 4.8);
+  3. the tree pages and the meta pages are written in page order, in
+     runs of up to 64 pages, and the file is flushed;
+  4. the superblock copy is written into the first slot of the pair the
+     newest checkpoint does not hold, and flushed;
+  5. then into the second slot of that pair, and flushed. The checkpoint
+     that pair held is retired, and so is every restore point only it
+     listed.
+
+  A crash before step 4 leaves both checkpoints on disk as they were:
+  step 3 wrote only pages that neither reaches nor their maps need
+  (4.5). A crash during step 4 leaves the first slot holding the older
+  checkpoint's copy, a torn copy, or the new one; the second slot holds
+  the older checkpoint's other copy. A crash during step 5 leaves the new
+  checkpoint's first copy whole, with its pages flushed before it. A
+  write or flush that fails makes the page file refuse every later write
+  until it is opened again (section 6.12); a refusal writes nothing.
+- **An open** (section 6.7, step 2) flushes the store folder and reads
+  the four slots one at a time; a slot the device fails to read is passed
+  over. Of the two highest numbers with a valid copy, newest first, it
+  takes the first checkpoint whose meta stream reads back, decodes, and
+  agrees with its superblock (number, entry, tree format), and whose
+  tree roots read back with the hashes it names, are not overflow pages,
+  were written at or before its entry, and are in use in its map. A
+  device read error or bytes that do not check pass the checkpoint over,
+  with the reason; any other failure of a read (the process stopping)
+  fails the open. Then, before it returns:
+  1. the checkpoint's copy is written into both slots of its pair, each
+     flushed: the device may not hold a copy the system's cache showed
+     (an earlier process's failed write or flush), and a crash during a
+     checkpoint's step 5 leaves an older copy in the second slot;
+  2. in the other pair, if a slot holds a valid copy of the predecessor
+     its meta stream names, that copy is written into both slots, each
+     flushed; otherwise both are cleared (zeros over a copy's length),
+     each flushed. Either way a slot that held anything else (a newer
+     checkpoint passed over, whose pages the store will now reuse; a
+     stale copy; bytes that could not be read) is overwritten before any
+     page is: such a checkpoint must never be taken later;
+  3. if the file is shorter than the map's `end`, it is extended to it
+     and flushed.
+
+  The predecessor is kept only when one of its copies was found. Nothing
+  is freed until the caller ends recovery (section 6.7, step 5), after it
+  has applied the entries after the checkpoint again; checkpoints during
+  recovery are allowed, and free nothing either.
+- **Reading a page** returns it from memory when no checkpoint has
+  written it yet, from the cache when the cache holds that number with
+  that hash, and otherwise reads the 16 KiB at its place and checks them
+  with `Page::verify` against the hash its parent names. A number 0 or at
+  or past `end` is missing; a read that fails, or a file that ends inside
+  the page, is reported as unreadable (with the bytes read); bytes that
+  do not check are reported as damaged, misplaced, stale or malformed
+  (section 2.5). Nothing that does not check is ever returned.
+
+### 4.7 What a crash, a fault and a restart leave
+
+- **The two checkpoints on disk are whole**, and so is every restore
+  point a superblock on disk lists: a page is reused only when no kept
+  version reaches it (4.5), and a checkpoint's own meta stream is kept by
+  its version. When the newest checkpoint's superblock or roots cannot be
+  checked, the open takes the one before it, whose pages and whose log
+  (section 6.7, "What is kept") are all there.
+- **Pins are gone after a restart**; what the superblocks on disk name is
+  what is kept. The pages a pin kept are free or dying in the maps on
+  disk, and are reused once no kept version reaches them.
+- **The map is never applied twice.** The map on disk is the one of its
+  checkpoint's version; the changes of later entries are in memory only,
+  and are made again, once, when those entries are applied after the
+  restart. A page those entries had taken is free in the map on disk,
+  and a page they had released is in use there.
+- **A page a failed checkpoint wrote** was free in both checkpoints on
+  disk and needed by neither map (4.5), so a crash or a failed flush at
+  any step costs at most that checkpoint.
+- **A device that drops or misplaces a write it reported done** can leave
+  a checkpoint whose superblock is valid and whose deeper pages are not
+  what it names. Those pages fail their checks when read (section 6.12:
+  page damage, found when a page is read), and the open does not go back
+  to an older checkpoint for them.
+
+### 4.8 Space
+
+- **The file grows** in steps of at least 256 pages (4 MiB, configured),
+  or an eighth of its size when that is more, up to 65,536 pages (1 GiB)
+  a step, through `File::allocate`, so that the space is taken when the
+  file grows and a later write into it cannot fail for lack of space.
+- **Reservations.** Before an entry is appended, the caller reserves the
+  pages applying it can take (section 6.5). A reservation succeeds when
+  the free pages, less those already promised to other reservations,
+  cover it and the **floor**: the pages a checkpoint's meta stream needs
+  (from the current map's size, with a page to spare) and, for an
+  ordinary entry, the **reserve** (256 pages by default). Recovery, a
+  follower's entries and the discard of a group may draw on the reserve;
+  checkpoints draw on everything not promised. When the file cannot grow
+  enough, the reservation is refused with "full" and nothing is reserved:
+  the store keeps reading and can checkpoint.
+- **What an entry may take.** `pagefile::entry_bound(edits, height)` is
+  an upper bound for tree format version 1: a put at depth `d` is at
+  most `d` sets and one range delete, a delete one range delete; at each
+  level a set copies a page and splits off at most one part, and a range
+  delete reaches at most the two pages at its ends, a sibling for each to
+  join with, and a part each join splits off; the levels are the tree's
+  height plus at most `1 + log2(sets)` new ones; leaf splits and joins add
+  the overflow pages of a new separator, and new items theirs. The bound
+  is loose (45 pages for one put into a tree of height 3, which writes 3)
+  and grows with the edits counted per primitive. The exact count is a
+  function of the tree and the edits (section 2.7), so a reservation
+  reports the pages its units took (`Reservation::taken`): an entry can
+  carry it, and recovery and followers reserve exactly that.
+  `Reservation::extend` adds to a reservation whose units ran out (the
+  apply that ran out changed nothing).
+- **Pages waiting for a checkpoint** have a budget (16,384 pages, 256 MiB,
+  by default): once as many pages of the newest version wait in memory,
+  a reservation is refused with "checkpoint needed" until a checkpoint
+  writes them. Pages that left the newest version and stay in memory for
+  a pin do not count.
+
+### 4.9 Limits and unknowns
+
+- Each checkpoint writes its whole meta stream: the free bitmap (one bit
+  per page: 128 KiB for 16 GiB of pages) and every dying and shared page
+  (81 and 28 bytes each). A restore point that keeps many pages keeps
+  their records in every checkpoint's map while it is listed.
+- The trees' roots are a table in the meta stream, not a tree: a
+  checkpoint rewrites about 50 bytes and the name per tree.
+- The superblock carries no store id, so a `pages` file from another
+  store folder is not recognized as foreign.
+- A device that damages a page after it is written is found only when
+  the page is read; the scrubbing job of section 6.12 is not built.
+- Whether a cluster's servers place pages alike does not matter and is
+  not checked: maps are each server's own (section 7.5).
