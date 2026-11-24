@@ -1,0 +1,1771 @@
+//! The page file under seeded schedules of entries, checkpoints, restore
+//! points, pins, reclaims, restarts and storage faults on the simulated
+//! disk (`docs/server-storage.md` section 12), the same scenario on the
+//! real file system, a crash at every step of a checkpoint, a restore
+//! point kept and dropped and an open, and targeted cases.
+//!
+//! **The oracle** shares no code with the page file. It keeps, for every
+//! version it holds live (the newest, each pin, each checkpoint the run
+//! attempted, by number), the content of every tree as a plain map, and
+//! the log of entries appended. After steps and at every restart it
+//! checks:
+//!
+//! - every live version (the newest, the pins, the checkpoints the page
+//!   file keeps on disk and the restore points it lists) reads exactly its
+//!   model, through the trees' own reads, and its pages are checked whole
+//!   by `tree::check`;
+//! - no page such a version reaches is free;
+//! - once dying pages are drained, the free pages plus the pages the live
+//!   versions reach (meta streams included) are every page of the file:
+//!   nothing leaked and nothing was counted twice;
+//! - an open uses a checkpoint the run made, the newest confirmed one or a
+//!   later one that was being written (or, on a dishonest device or a read
+//!   that failed during the open, an older one, with the reason), and every
+//!   restore point confirmed and not dropped is still listed.
+//!
+//! `OM_STORE_SCALE=<n>` runs `n` times as many seeds, `OM_STORE_ENTRIES=<n>`
+//! sets the steps of each run, `OM_STORE_SEED=<s>` runs seed `s` alone; a
+//! failing run prints its seed, its steps and the simulator's last events.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::*;
+use crate::os::TempFolder;
+use crate::page::{MemStore, Numbering};
+use crate::sim::{Fates, Fault as SimFault, Rates, Rng, Sim};
+use crate::tree::{self, key, Edit, Node, Tree};
+
+fn env(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn seeds(default: u64) -> Vec<u64> {
+    if let Ok(seed) = std::env::var("OM_STORE_SEED") {
+        return vec![seed.parse().expect("OM_STORE_SEED is a number")];
+    }
+    (0..default.saturating_mul(env("OM_STORE_SCALE", 1))).collect()
+}
+
+fn steps(default: u64) -> usize {
+    env("OM_STORE_ENTRIES", default) as usize
+}
+
+fn config() -> Config {
+    Config {
+        cache_bytes: 24 * PAGE,
+        dirty_budget: 400,
+        reserve: 8,
+        growth: 16,
+    }
+}
+
+fn tree_name(i: usize) -> TreeName {
+    TreeName::new(format!("t{i}")).unwrap()
+}
+
+fn entry_id(index: u64) -> EntryId {
+    if index == 0 {
+        return EntryId::default();
+    }
+    EntryId {
+        index,
+        term: 1,
+        hash: Hash::of(&index.to_le_bytes()),
+    }
+}
+
+/// A tree's content: encoded key to node, in key order.
+type Content = BTreeMap<Vec<u8>, Node>;
+
+fn remove_under(content: &mut Content, k: &[u8]) {
+    let gone: Vec<Vec<u8>> = match key::subtree_end(k) {
+        Some(end) => content
+            .range(k.to_vec()..end)
+            .map(|(k, _)| k.clone())
+            .collect(),
+        None => content.keys().cloned().collect(),
+    };
+    for g in gone {
+        content.remove(&g);
+    }
+}
+
+/// What an edit does to a key tree (`tree::Edit`'s docs).
+fn model_apply(content: &mut Content, edit: &Edit) {
+    match edit {
+        Edit::Put { path, node } => {
+            for d in 1..path.len() {
+                let a = key::encode(&path[..d]);
+                match content.get(&a) {
+                    None => {
+                        content.insert(a, Node::List);
+                    }
+                    Some(Node::Value(v)) => {
+                        let v = v.clone();
+                        content.insert(a, Node::Both(v));
+                    }
+                    Some(_) => {}
+                }
+            }
+            let k = key::encode(path);
+            remove_under(content, &k);
+            content.insert(k, node.clone());
+        }
+        Edit::Delete { path } => {
+            if path.is_empty() {
+                content.clear();
+            } else {
+                remove_under(content, &key::encode(path));
+            }
+        }
+    }
+}
+
+fn value(rng: &mut Rng) -> Vec<u8> {
+    let len = match rng.below(24) {
+        0 => 4_500 + rng.below(12_000),
+        1..=3 => 600 + rng.below(1_500),
+        _ => rng.below(100),
+    };
+    let mut v = vec![0u8; len as usize];
+    rng.fill(&mut v);
+    v
+}
+
+fn edits(rng: &mut Rng, n: u64) -> Vec<Edit> {
+    (0..n)
+        .map(|_| {
+            let a = vec![b'a' + rng.below(5) as u8];
+            let mut b = vec![0u8; 1 + rng.below(4) as usize];
+            rng.fill(&mut b);
+            match rng.below(30) {
+                0 => Edit::delete(vec![a]),
+                1 => Edit::list(vec![a]),
+                2..=5 => Edit::delete(vec![a, b]),
+                _ => Edit::leaf(vec![a, b], value(rng)),
+            }
+        })
+        .collect()
+}
+
+/// The trees of a version, with their roots and contents.
+#[derive(Clone, Debug, Default)]
+struct Model {
+    entry: EntryId,
+    trees: BTreeMap<TreeName, (Root, Content)>,
+}
+
+impl Model {
+    fn roots(&self) -> Vec<(TreeName, Root)> {
+        self.trees
+            .iter()
+            .map(|(n, (r, _))| (n.clone(), *r))
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Op {
+    Edits(Vec<Edit>),
+    Create,
+    /// The tree is dropped whole and made again, empty.
+    Recreate,
+}
+
+#[derive(Clone, Debug)]
+struct Logged {
+    entry: EntryId,
+    ops: Vec<(TreeName, Op)>,
+    /// The pages its first whole application took.
+    taken: Option<u64>,
+}
+
+/// The pages applying `ops` may take ([`entry_bound`]).
+fn bound(store: &impl PageStore, model: &Model, ops: &[(TreeName, Op)]) -> Result<u64, String> {
+    let mut total = 0;
+    for (name, op) in ops {
+        total += match op {
+            Op::Edits(edits) => {
+                let (root, _) = model.trees.get(name).ok_or("no such tree")?;
+                let height = Tree::open(store, *root)
+                    .map_err(|e| e.to_string())?
+                    .height();
+                entry_bound(edits, height)
+            }
+            Op::Create | Op::Recreate => 1,
+        };
+    }
+    Ok(total)
+}
+
+/// Applies `logged` through `res`, and to `model`.
+fn apply_logged(res: &Reservation<'_>, model: &mut Model, logged: &Logged) -> Result<(), String> {
+    let index = logged.entry.index;
+    for (name, op) in &logged.ops {
+        match op {
+            Op::Edits(edits) => {
+                let (root, content) = model.trees.get_mut(name).ok_or("no such tree")?;
+                let new = tree::apply(res, *root, index, edits).map_err(|e| {
+                    if e == tree::Error::Store(StoreError::Full) {
+                        panic!("entry {index}: the reservation from entry_bound was too small");
+                    }
+                    e.to_string()
+                })?;
+                for e in edits {
+                    model_apply(content, e);
+                }
+                *root = new;
+            }
+            Op::Create => {
+                let root = tree::create(res, index).map_err(|e| e.to_string())?;
+                model.trees.insert(name.clone(), (root, Content::new()));
+            }
+            Op::Recreate => {
+                let (old, _) = model.trees.get(name).ok_or("no such tree")?;
+                let mut unit = res.begin().map_err(|e| e.to_string())?;
+                unit.release(old.page, &old.hash, Release::Dropped)
+                    .map_err(|e| e.to_string())?;
+                unit.commit().map_err(|e| e.to_string())?;
+                let root = tree::create(res, index).map_err(|e| e.to_string())?;
+                model.trees.insert(name.clone(), (root, Content::new()));
+            }
+        }
+    }
+    model.entry = logged.entry;
+    Ok(())
+}
+
+enum Disk {
+    Sim(Sim),
+    Real(TempFolder),
+}
+
+impl Disk {
+    fn fs(&self) -> Box<dyn Fs> {
+        match self {
+            Disk::Sim(sim) => Box::new(sim.fs()),
+            Disk::Real(folder) => Box::new(folder.fs()),
+        }
+    }
+
+    fn sim(&self) -> Option<&Sim> {
+        match self {
+            Disk::Sim(sim) => Some(sim),
+            Disk::Real(_) => None,
+        }
+    }
+
+    /// The process ends; with `power_loss`, the power fails first where
+    /// the disk can do that.
+    fn restart(&self, power_loss: bool) {
+        if let Disk::Sim(sim) = self {
+            if power_loss {
+                sim.crash(Fates::Drawn);
+            }
+            sim.restart();
+        }
+    }
+}
+
+/// A running process: its page file and the store folder's lock.
+struct Process {
+    pf: PageFile,
+    _lock: FolderLock,
+    _fs: Box<dyn Fs>,
+}
+
+fn create_proc(disk: &Disk, config: Config) -> Process {
+    let fs = disk.fs();
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&*fs, &lock, config).unwrap();
+    Process {
+        pf,
+        _lock: lock,
+        _fs: fs,
+    }
+}
+
+fn open_proc(disk: &Disk, config: Config) -> Result<(Process, Opened), OpenError> {
+    let fs = disk.fs();
+    let lock = fs.lock().map_err(OpenError::Disk)?;
+    let (pf, opened) = PageFile::open(&*fs, &lock, config)?;
+    Ok((
+        Process {
+            pf,
+            _lock: lock,
+            _fs: fs,
+        },
+        opened,
+    ))
+}
+
+/// Which promises a schedule's device keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Device {
+    /// No faults (the real file system).
+    Clean,
+    /// Crashes, failed and short writes, failed flushes and reads, a full
+    /// disk, writeback: never a lie about what it holds.
+    Honest,
+    /// Also damage, misplaced and dropped writes: reads may fail, and must
+    /// never return wrong data.
+    Lying,
+}
+
+/// Counts over many runs, to show the schedules reach what they test.
+#[derive(Debug, Default)]
+struct Reached {
+    entries: u64,
+    full: u64,
+    checkpoint_needed: u64,
+    checkpoints: u64,
+    checkpoints_failed: u64,
+    restore_points: u64,
+    restore_dropped: u64,
+    pins: u64,
+    reclaimed: u64,
+    restarts: u64,
+    opens: u64,
+    opened_later: u64,
+    fell_back: u64,
+    no_checkpoint: u64,
+    replayed: u64,
+    recreated: u64,
+    leak_checks: u64,
+    /// Dying pages found held for a map on disk at a leak check.
+    held: u64,
+    read_faults: u64,
+    fired: BTreeMap<SimFault, u64>,
+}
+
+impl Reached {
+    fn assert_fired(&self, rates: &Rates) {
+        let drawn = [
+            (SimFault::Crash, rates.crash),
+            (SimFault::FailFlush, rates.fail_flush),
+            (SimFault::FailWrite, rates.fail_write),
+            (SimFault::NoSpace, rates.no_space),
+            (SimFault::FailRead, rates.fail_read),
+            (SimFault::Damage, rates.damage),
+            (SimFault::Misplace, rates.misplace),
+            (SimFault::LoseWrite, rates.lose_write),
+            (SimFault::Writeback, rates.writeback),
+        ];
+        for (fault, rate) in drawn {
+            if rate != 0 {
+                assert!(
+                    self.fired.get(&fault).copied().unwrap_or(0) > 0,
+                    "{fault:?} never fired: {self:?}"
+                );
+            }
+        }
+    }
+}
+
+/// One run of the scenario (module docs).
+struct Run<'r> {
+    disk: Disk,
+    device: Device,
+    config: Config,
+    seed: u64,
+    plan: Rng,
+    proc: Option<Process>,
+    /// Every entry appended, in order.
+    log: Vec<Logged>,
+    newest: Model,
+    /// Every checkpoint the run attempted, by number, with the version it
+    /// was given.
+    checkpoints: BTreeMap<u64, Model>,
+    /// The newest checkpoint confirmed (or opened).
+    confirmed: u64,
+    pins: Vec<(Pin, Model)>,
+    /// Restore points confirmed and not dropped: name to checkpoint.
+    restore: BTreeMap<String, u64>,
+    names: u64,
+    /// The store could not be opened (a lying device destroyed both
+    /// checkpoints).
+    dead: bool,
+    /// A test damaged the newest checkpoint on purpose: an open may use an
+    /// older one.
+    allow_fallback: bool,
+    /// What the last reservation refused for a full disk wanted.
+    last_full: Option<u64>,
+    /// A checkpoint number and an entry a test operation notes, for its
+    /// checks.
+    mark: (u64, u64),
+    /// Every checkpoint confirmed or opened, with its entry.
+    seen: BTreeSet<(u64, u64)>,
+    reached: &'r mut Reached,
+    trace: Vec<String>,
+}
+
+impl Drop for Run<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("seed {} ({:?}): the run's steps:", self.seed, self.device);
+            for line in &self.trace {
+                eprintln!("  {line}");
+            }
+            if let Some(sim) = self.disk.sim() {
+                let events = sim.events();
+                eprintln!("the machine's last events:");
+                for event in &events[events.len().saturating_sub(40)..] {
+                    eprintln!("  {event:?}");
+                }
+            }
+        }
+    }
+}
+
+impl<'r> Run<'r> {
+    fn new(disk: Disk, device: Device, seed: u64, reached: &'r mut Reached) -> Self {
+        let config = config();
+        let proc = create_proc(&disk, config);
+        let mut checkpoints = BTreeMap::new();
+        checkpoints.insert(1, Model::default());
+        let mut run = Run {
+            disk,
+            device,
+            config,
+            seed,
+            plan: Rng::stream(seed, 11),
+            proc: Some(proc),
+            log: Vec::new(),
+            newest: Model::default(),
+            checkpoints,
+            confirmed: 1,
+            pins: Vec::new(),
+            restore: BTreeMap::new(),
+            names: 0,
+            dead: false,
+            allow_fallback: false,
+            last_full: None,
+            mark: (0, 0),
+            seen: BTreeSet::new(),
+            reached,
+            trace: Vec::new(),
+        };
+        run.proc.as_ref().unwrap().pf.end_recovery();
+        let first = Logged {
+            entry: entry_id(1),
+            ops: (0..3).map(|i| (tree_name(i), Op::Create)).collect(),
+            taken: None,
+        };
+        run.append(first);
+        run
+    }
+
+    fn pf(&self) -> &PageFile {
+        &self.proc.as_ref().expect("a running process").pf
+    }
+
+    fn go(mut self, steps: usize, rates: Rates) {
+        if let Some(sim) = self.disk.sim() {
+            sim.set_rates(rates);
+        }
+        for step in 0..steps {
+            if self.dead {
+                break;
+            }
+            if self.proc.is_none() {
+                self.reopen();
+                continue;
+            }
+            match self.plan.below(100) {
+                0..=51 => self.entry(),
+                52..=61 => {
+                    let keep = self.plan.one_in(5);
+                    self.checkpoint(keep);
+                }
+                62..=66 => self.pin(),
+                67..=70 => self.unpin(),
+                71..=73 => self.drop_restore_point(),
+                74..=81 => self.reclaim(),
+                82..=86 => self.check(step % 3 == 0),
+                87..=92 => self.stop(false),
+                _ => self.stop(true),
+            }
+        }
+        if self.dead {
+            self.end();
+            return;
+        }
+        // Recovery with no faults drawn: the store opens and every check
+        // holds, with dying pages drained.
+        if let Some(sim) = self.disk.sim() {
+            sim.set_rates(Rates::default());
+        }
+        self.stop(self.device != Device::Clean);
+        for _ in 0..3 {
+            if self.proc.is_none() && !self.dead {
+                self.reopen();
+            }
+        }
+        if !self.dead {
+            assert!(self.proc.is_some(), "the store did not open without faults");
+            self.check(true);
+            // Another checkpoint and restart: what the last one freed and
+            // reused is still sound.
+            self.entry();
+            self.checkpoint(false);
+            self.stop(self.device != Device::Clean);
+            self.reopen();
+            if self.proc.is_some() {
+                self.check(true);
+                // Two checkpoints later every map on disk records the
+                // settled pages settled: nothing is held.
+                if self.device != Device::Lying {
+                    self.checkpoint(false);
+                    self.checkpoint(false);
+                    self.check(true);
+                    assert!(self.pf().held_pages().is_empty(), "pages still held");
+                }
+            }
+        }
+        self.end();
+    }
+
+    fn end(&mut self) {
+        if let Some(sim) = self.disk.sim() {
+            for (fault, n) in sim.fired() {
+                *self.reached.fired.entry(fault).or_default() += n;
+            }
+        }
+    }
+
+    fn append(&mut self, logged: Logged) {
+        self.append_for(logged, Purpose::Entry);
+    }
+
+    fn append_for(&mut self, logged: Logged, purpose: Purpose) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pf = &proc.pf;
+        let index = logged.entry.index;
+        let pages = match bound(pf, &self.newest, &logged.ops) {
+            Ok(pages) => pages,
+            Err(e) => {
+                self.trace.push(format!("entry {index}: bound failed: {e}"));
+                self.allow_read_failure(&e);
+                return self.fail();
+            }
+        };
+        let outcome = match pf.reserve(index, pages, purpose) {
+            Ok(res) => {
+                self.trace.push(format!(
+                    "entry {index}: {} trees, {pages} pages reserved",
+                    logged.ops.len()
+                ));
+                self.log.push(logged.clone());
+                self.reached.entries += 1;
+                if logged.ops.iter().any(|(_, op)| matches!(op, Op::Recreate)) {
+                    self.reached.recreated += 1;
+                }
+                match apply_logged(&res, &mut self.newest, &logged) {
+                    Ok(()) => {
+                        if let Some(last) = self.log.last_mut() {
+                            last.taken = Some(res.taken());
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(Err(e)),
+                }
+            }
+            Err(e) => Err(Ok(e)),
+        };
+        match outcome {
+            Ok(()) => {}
+            Err(Ok(refused)) => self.refused(index, refused),
+            Err(Err(e)) => {
+                self.trace.push(format!("entry {index} failed: {e}"));
+                self.allow_read_failure(&e);
+                self.fail();
+            }
+        }
+    }
+
+    fn refused(&mut self, index: u64, error: SpaceError) {
+        match error {
+            SpaceError::Full { wanted, available } => {
+                self.reached.full += 1;
+                self.last_full = Some(wanted);
+                self.trace.push(format!(
+                    "entry {index}: full ({wanted} wanted, {available} available)"
+                ));
+                // Refused with nothing reserved; the store still reads and
+                // can checkpoint.
+                self.check(false);
+                self.checkpoint(false);
+            }
+            SpaceError::CheckpointNeeded { .. } => {
+                self.reached.checkpoint_needed += 1;
+                self.trace.push(format!("entry {index}: checkpoint needed"));
+                self.checkpoint(false);
+            }
+            SpaceError::Failed | SpaceError::Disk(_) => self.fail(),
+            SpaceError::Refused(why) => panic!("reservation refused: {why}"),
+        }
+    }
+
+    fn entry(&mut self) {
+        if self.proc.is_none() {
+            return;
+        }
+        let index = self.log.last().map_or(1, |l| l.entry.index + 1);
+        let n = 1 + self.plan.below(2) as usize;
+        let first = self.plan.below(3) as usize;
+        let ops = (0..n)
+            .map(|i| {
+                let name = tree_name((first + i) % 3);
+                let op = if self.plan.one_in(25) {
+                    Op::Recreate
+                } else {
+                    let count = 1 + self.plan.below(6);
+                    Op::Edits(edits(&mut self.plan, count))
+                };
+                (name, op)
+            })
+            .collect();
+        self.append(Logged {
+            entry: entry_id(index),
+            ops,
+            taken: None,
+        });
+    }
+
+    /// An entry that changes all three trees.
+    fn entry_all(&mut self) {
+        let index = self.log.last().map_or(1, |l| l.entry.index + 1);
+        let ops = (0..3)
+            .map(|i| {
+                let count = 2 + self.plan.below(4);
+                (tree_name(i), Op::Edits(edits(&mut self.plan, count)))
+            })
+            .collect();
+        self.append(Logged {
+            entry: entry_id(index),
+            ops,
+            taken: None,
+        });
+    }
+
+    /// The next entry's index.
+    fn next_index(&self) -> u64 {
+        self.log.last().map_or(1, |l| l.entry.index + 1)
+    }
+
+    /// Reopens until the store is open, then checks everything with dying
+    /// pages drained; then a few entries, a checkpoint and a power loss,
+    /// and the same again: what the first open and its frees left is
+    /// sound.
+    fn settle(&mut self) {
+        for _ in 0..5 {
+            if self.proc.is_none() {
+                self.reopen();
+            }
+        }
+        assert!(self.proc.is_some(), "the store did not open");
+        self.check(true);
+        for _ in 0..4 {
+            self.entry_all();
+        }
+        self.checkpoint(false);
+        self.stop(true);
+        self.reopen();
+        assert!(self.proc.is_some(), "the store did not open again");
+        self.check(true);
+    }
+
+    /// A read the device failed is allowed where the device can fail
+    /// reads; any other failure of an apply is a defect.
+    fn allow_read_failure(&mut self, error: &str) {
+        self.reached.read_faults += 1;
+        let read = error.contains("unreadable");
+        match self.device {
+            Device::Clean => panic!("a failure on a disk without faults: {error}"),
+            Device::Honest => assert!(read, "an honest disk gave: {error}"),
+            Device::Lying => {}
+        }
+    }
+
+    fn checkpoint(&mut self, keep: bool) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pf = &proc.pf;
+        let number = pf.next_checkpoint();
+        let name = keep.then(|| {
+            self.names += 1;
+            format!("rp{}", self.names)
+        });
+        self.checkpoints.insert(number, self.newest.clone());
+        let result = pf.checkpoint(self.newest.entry, &self.newest.roots(), name.as_deref());
+        self.trace.push(format!(
+            "checkpoint {number} at {} (keep {name:?}): {result:?}",
+            self.newest.entry.index
+        ));
+        match result {
+            Ok(done) => {
+                assert_eq!(done.number, number);
+                self.reached.checkpoints += 1;
+                self.confirmed = number;
+                self.seen.insert((number, self.newest.entry.index));
+                if let Some(name) = name {
+                    self.reached.restore_points += 1;
+                    self.restore.insert(name, number);
+                }
+            }
+            Err(CheckpointError::Space(_)) => self.reached.checkpoints_failed += 1,
+            Err(CheckpointError::Root { fault, .. }) => {
+                self.allow_read_failure(&fault.to_string());
+                self.fail();
+            }
+            Err(CheckpointError::Disk(_) | CheckpointError::Failed) => {
+                self.reached.checkpoints_failed += 1;
+                self.fail();
+            }
+            Err(CheckpointError::Refused(why)) => panic!("checkpoint refused: {why}"),
+        }
+    }
+
+    fn pin(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pin = proc.pf.pin(self.newest.entry.index).expect("the newest");
+        self.reached.pins += 1;
+        self.trace.push(format!("pin {}", self.newest.entry.index));
+        self.pins.push((pin, self.newest.clone()));
+    }
+
+    fn unpin(&mut self) {
+        if !self.pins.is_empty() {
+            let i = self.plan.below(self.pins.len() as u64) as usize;
+            let (pin, _) = self.pins.remove(i);
+            self.trace.push(format!("unpin {}", pin.entry()));
+        }
+    }
+
+    fn drop_restore_point(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let listed: Vec<String> = proc
+            .pf
+            .restore_points()
+            .into_iter()
+            .filter(|(_, dropped)| !dropped)
+            .map(|(rp, _)| rp.name)
+            .collect();
+        if listed.is_empty() {
+            return;
+        }
+        let name = &listed[self.plan.below(listed.len() as u64) as usize];
+        proc.pf.drop_restore_point(name).unwrap();
+        self.trace.push(format!("drop restore point {name}"));
+        self.reached.restore_dropped += 1;
+        self.restore.remove(name);
+    }
+
+    fn reclaim(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let budget = 1 + self.plan.below(60) as usize;
+        let done = proc.pf.reclaim(budget);
+        self.reached.reclaimed += done.freed;
+        assert!(
+            done.twice.is_empty(),
+            "pages released twice: {:?}",
+            done.twice
+        );
+        for fault in &done.faults {
+            let fault = fault.to_string();
+            self.allow_read_failure(&fault);
+        }
+    }
+
+    /// The process stops; the power fails with it when `power_loss`.
+    fn stop(&mut self, power_loss: bool) {
+        self.trace.push(format!("stop (power loss: {power_loss})"));
+        self.pins.clear();
+        self.proc = None;
+        self.disk.restart(power_loss);
+        self.reached.restarts += 1;
+    }
+
+    /// After a failure: the store stops at once (section 6.12), and the
+    /// power may fail too.
+    fn fail(&mut self) {
+        let power_loss = self.device != Device::Clean && self.plan.one_in(2);
+        self.stop(power_loss);
+    }
+
+    fn fired(&self, fault: SimFault) -> u64 {
+        self.disk
+            .sim()
+            .map_or(0, |sim| sim.fired().get(&fault).copied().unwrap_or(0))
+    }
+
+    fn reopen(&mut self) {
+        let reads_before = self.fired(SimFault::FailRead);
+        let (proc, opened) = match open_proc(&self.disk, self.config) {
+            Ok(opened) => opened,
+            Err(OpenError::Disk(e)) => {
+                self.trace.push(format!("open failed: {e}"));
+                assert_ne!(self.device, Device::Clean, "{e}");
+                let power_loss = self.plan.one_in(2);
+                return self.stop(power_loss);
+            }
+            Err(e @ OpenError::NoCheckpoint { .. }) => {
+                self.trace.push(format!("no checkpoint: {e}"));
+                assert_eq!(self.device, Device::Lying, "{e}");
+                self.reached.no_checkpoint += 1;
+                self.dead = true;
+                return;
+            }
+            Err(e) => panic!("open: {e}"),
+        };
+        let read_failed = self.fired(SimFault::FailRead) > reads_before;
+        self.reached.opens += 1;
+        self.trace.push(format!("opened {opened:?}"));
+        let number = opened.checkpoint;
+        let model = self
+            .checkpoints
+            .get(&number)
+            .unwrap_or_else(|| panic!("checkpoint {number} was never made"))
+            .clone();
+        assert_eq!(opened.entry, model.entry);
+        match number.cmp(&self.confirmed) {
+            std::cmp::Ordering::Greater => self.reached.opened_later += 1,
+            std::cmp::Ordering::Less => {
+                self.reached.fell_back += 1;
+                assert!(
+                    self.device == Device::Lying || read_failed || self.allow_fallback,
+                    "checkpoint {number} opened, older than {} confirmed: {opened:?}",
+                    self.confirmed
+                );
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        if self.device != Device::Lying && !read_failed && !self.allow_fallback {
+            assert!(
+                opened.passed_over.is_empty(),
+                "an honest disk lost a checkpoint: {opened:?}"
+            );
+        }
+        assert_eq!(proc.pf.checkpoint_trees(), model.roots());
+        self.confirmed = number;
+        self.seen.insert((number, model.entry.index));
+        self.restore.retain(|_, at| *at <= number);
+        self.newest = model;
+        self.proc = Some(proc);
+        // Recovery: every entry after the checkpoint, applied again.
+        let after: Vec<Logged> = self
+            .log
+            .iter()
+            .filter(|l| l.entry.index > self.newest.entry.index)
+            .cloned()
+            .collect();
+        for logged in after {
+            loop {
+                let Some(proc) = self.proc.as_ref() else {
+                    return;
+                };
+                let pf = &proc.pf;
+                let index = logged.entry.index;
+                // The pages the entry took when first applied: exactly what
+                // applying it again takes.
+                let pages = match logged.taken {
+                    Some(taken) => taken,
+                    None => match bound(pf, &self.newest, &logged.ops) {
+                        Ok(pages) => pages,
+                        Err(e) => {
+                            self.allow_read_failure(&e);
+                            return self.fail();
+                        }
+                    },
+                };
+                let outcome = match pf.reserve(index, pages, Purpose::Recovery) {
+                    Ok(res) => match apply_logged(&res, &mut self.newest, &logged) {
+                        Ok(()) => {
+                            if let Some(taken) = logged.taken {
+                                assert_eq!(res.taken(), taken, "entry {index} took other pages");
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(Err(e)),
+                    },
+                    Err(e) => Err(Ok(e)),
+                };
+                match outcome {
+                    Ok(()) => {}
+                    Err(Err(e)) => {
+                        self.trace.push(format!("replay of {index} failed: {e}"));
+                        self.allow_read_failure(&e);
+                        return self.fail();
+                    }
+                    Err(Ok(SpaceError::CheckpointNeeded { .. })) => {
+                        // A checkpoint during recovery frees nothing.
+                        self.checkpoint(false);
+                        continue;
+                    }
+                    Err(Ok(SpaceError::Refused(why))) => panic!("replay refused: {why}"),
+                    Err(Ok(e)) => {
+                        self.trace.push(format!("replay of {index}: {e}"));
+                        assert_ne!(self.device, Device::Clean, "{e}");
+                        return self.fail();
+                    }
+                }
+                break;
+            }
+            self.reached.replayed += 1;
+        }
+        self.proc.as_ref().unwrap().pf.end_recovery();
+        self.check(false);
+    }
+
+    /// Checks one version's trees against the model, adding the pages they
+    /// reach to `reach`. False when a read failed (allowed on a disk with
+    /// faults; reported as read faults).
+    fn check_model(&mut self, model: &Model, reach: &mut BTreeSet<PageNo>, what: &str) -> bool {
+        let pf = &self.proc.as_ref().unwrap().pf;
+        let mut complete = true;
+        let mut failures = Vec::new();
+        for (name, (root, content)) in &model.trees {
+            match tree::check(pf, *root) {
+                Ok(report) => reach.extend(report.pages.iter().map(|(n, _)| *n)),
+                Err(e) => {
+                    failures.push(e.to_string());
+                    complete = false;
+                    continue;
+                }
+            }
+            let tree = match Tree::open(pf, *root) {
+                Ok(tree) => tree,
+                Err(e) => {
+                    failures.push(e.to_string());
+                    complete = false;
+                    continue;
+                }
+            };
+            let mut expected = content.iter();
+            let mut whole = true;
+            for item in tree.walk(&[] as &[&[u8]]) {
+                match item {
+                    Ok(item) => {
+                        let (k, node) = expected.next().unwrap_or_else(|| {
+                            panic!("{what} {name}: an item the model does not have")
+                        });
+                        assert_eq!(item.key.as_bytes(), &k[..], "{what} {name}: a key");
+                        assert_eq!(&item.node, node, "{what} {name}: a node");
+                    }
+                    Err(e) => {
+                        failures.push(e.to_string());
+                        whole = false;
+                        break;
+                    }
+                }
+            }
+            if whole {
+                assert!(expected.next().is_none(), "{what} {name}: items lost");
+            } else {
+                complete = false;
+            }
+        }
+        for failure in failures {
+            self.trace.push(format!("{what}: read failed: {failure}"));
+            self.allow_read_failure(&failure);
+        }
+        complete
+    }
+
+    /// The oracle's checks (module docs); with `drain`, dying pages are
+    /// drained first and nothing may have leaked.
+    fn check(&mut self, drain: bool) {
+        if self.proc.is_none() {
+            return;
+        }
+        let mut reach = BTreeSet::new();
+        let mut complete = true;
+        let newest = self.newest.clone();
+        complete &= self.check_model(&newest, &mut reach, "newest");
+        let pinned: Vec<Model> = self.pins.iter().map(|(_, m)| m.clone()).collect();
+        for model in &pinned {
+            complete &= self.check_model(model, &mut reach, "pinned");
+        }
+        let pf = &self.proc.as_ref().unwrap().pf;
+        let kept = pf.kept_checkpoints();
+        let restore = pf.restore_points();
+        let mut versions = Vec::new();
+        for kc in &kept {
+            versions.push((
+                kc.number,
+                kc.entry,
+                kc.meta,
+                format!("checkpoint {}", kc.number),
+            ));
+        }
+        for (rp, _) in &restore {
+            versions.push((
+                rp.checkpoint,
+                rp.entry,
+                rp.meta,
+                format!("restore point {}", rp.name),
+            ));
+        }
+        for (number, entry, meta, what) in versions {
+            let model = self
+                .checkpoints
+                .get(&number)
+                .unwrap_or_else(|| panic!("{what}: never made"))
+                .clone();
+            assert_eq!(entry, model.entry, "{what}");
+            let pf = &self.proc.as_ref().unwrap().pf;
+            match (pf.trees_of(meta), pf.meta_pages_of(meta)) {
+                (Ok(trees), Ok(pages)) => {
+                    assert_eq!(trees, model.roots(), "{what}: its trees");
+                    reach.extend(pages);
+                }
+                (a, b) => {
+                    let failure = [a.err(), b.err()]
+                        .into_iter()
+                        .flatten()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    let failure = format!("{what}: {failure}");
+                    complete = false;
+                    self.allow_read_failure(&failure);
+                }
+            }
+            complete &= self.check_model(&model, &mut reach, &what);
+        }
+        if self.device != Device::Lying {
+            for (name, number) in &self.restore {
+                assert!(
+                    restore
+                        .iter()
+                        .any(|(rp, _)| rp.name == *name && rp.checkpoint == *number),
+                    "restore point {name} (checkpoint {number}) is lost: {restore:?}"
+                );
+            }
+        }
+        let pf = &self.proc.as_ref().unwrap().pf;
+        let space = pf.space();
+        assert!(space.cached * PAGE <= self.config.cache_bytes, "{space:?}");
+        for n in pf.free_pages() {
+            assert!(
+                !reach.contains(&n),
+                "page {n} is free and a live version reaches it"
+            );
+        }
+        if !drain || !complete || self.device == Device::Lying {
+            return;
+        }
+        let mut drained = false;
+        for _ in 0..50 {
+            let done = pf.reclaim(100_000);
+            self.reached.reclaimed += done.freed;
+            assert!(
+                done.twice.is_empty(),
+                "pages released twice: {:?}",
+                done.twice
+            );
+            if !done.faults.is_empty() {
+                for fault in &done.faults {
+                    self.allow_read_failure(&fault.to_string());
+                }
+                return;
+            }
+            if done.drained {
+                drained = true;
+                break;
+            }
+        }
+        assert!(drained, "dying pages did not drain");
+        for n in pf.free_pages() {
+            assert!(
+                !reach.contains(&n),
+                "page {n} was freed and a live version reaches it"
+            );
+        }
+        let space = pf.space();
+        let held: BTreeSet<PageNo> = pf.held_pages().into_iter().collect();
+        for n in pf.dying_pages() {
+            assert!(
+                reach.contains(&n) || held.contains(&n),
+                "page {n} is dying, no kept version reaches it and nothing holds it"
+            );
+        }
+        let held_only = held.difference(&reach).count() as u64;
+        self.reached.held += held_only;
+        assert_eq!(
+            space.free + reach.len() as u64 + held_only,
+            space.end - 1,
+            "free {} + reached {} + held {held_only} against {} pages: a page leaked or was \
+             counted twice ({space:?})",
+            space.free,
+            reach.len(),
+            space.end - 1
+        );
+        self.reached.leak_checks += 1;
+    }
+}
+
+fn honest() -> Rates {
+    Rates {
+        crash: 900,
+        fail_flush: 500,
+        fail_write: 700,
+        no_space: 700,
+        fail_read: 2_500,
+        writeback: 60,
+        ..Rates::default()
+    }
+}
+
+fn lying() -> Rates {
+    Rates {
+        crash: 900,
+        damage: 500,
+        misplace: 300,
+        lose_write: 300,
+        writeback: 60,
+        ..Rates::default()
+    }
+}
+
+/// The issue's seeded schedules on an honest device: crashes and every
+/// fault that does not lie, at every step.
+#[test]
+fn seeded_schedules_on_an_honest_disk() {
+    let mut reached = Reached::default();
+    for seed in seeds(40) {
+        let run = Run::new(
+            Disk::Sim(Sim::new(seed)),
+            Device::Honest,
+            seed,
+            &mut reached,
+        );
+        run.go(steps(120), honest());
+    }
+    eprintln!("{reached:#?}");
+    reached.assert_fired(&honest());
+    if std::env::var("OM_STORE_SEED").is_err() {
+        assert!(reached.leak_checks > 0 && reached.opened_later + reached.fell_back > 0);
+        assert!(reached.full + reached.checkpoints_failed > 0, "{reached:?}");
+        assert!(
+            reached.restore_dropped > 0 && reached.recreated > 0,
+            "{reached:?}"
+        );
+    }
+}
+
+/// The same schedules on a device that damages, misplaces and drops
+/// writes: an open uses the newest checkpoint it can check, falls back
+/// otherwise, and no read returns wrong data.
+#[test]
+fn seeded_schedules_on_a_lying_disk() {
+    let mut reached = Reached::default();
+    for seed in seeds(30) {
+        let run = Run::new(
+            Disk::Sim(Sim::new(seed ^ 0x5eed)),
+            Device::Lying,
+            seed,
+            &mut reached,
+        );
+        run.go(steps(120), lying());
+    }
+    eprintln!("{reached:#?}");
+    reached.assert_fired(&lying());
+}
+
+/// The same scenario body on the real file system, without faults.
+#[test]
+fn the_scenario_on_the_real_file_system() {
+    let mut reached = Reached::default();
+    for seed in seeds(2) {
+        let folder = TempFolder::new("pagefile");
+        let run = Run::new(Disk::Real(folder), Device::Clean, seed, &mut reached);
+        run.go(steps(120), Rates::default());
+    }
+    assert!(reached.leak_checks > 0, "{reached:?}");
+}
+
+/// A run on a simulated disk with no faults drawn.
+fn quiet_run(seed: u64, reached: &mut Reached) -> (Sim, Run<'_>) {
+    let sim = Sim::new(seed);
+    let run = Run::new(Disk::Sim(sim.clone()), Device::Honest, seed, reached);
+    (sim, run)
+}
+
+fn crashes(sim: &Sim) -> u64 {
+    sim.fired().get(&SimFault::Crash).copied().unwrap_or(0)
+}
+
+/// Runs `prefix`, then `op` with a crash placed at each of its steps in
+/// turn, with every way a crash settles what was not flushed; after each,
+/// the store must open on a checkpoint the run made, recover, pass every
+/// check with dying pages drained, and stay sound through another
+/// checkpoint and power loss. Returns how many crashes were placed.
+fn crash_at_every_step(
+    seed: u64,
+    prefix: impl Fn(&mut Run<'_>),
+    op: impl Fn(&mut Run<'_>),
+    after: impl Fn(&mut Run<'_>),
+) -> u64 {
+    let mut reached = Reached::default();
+    let (before, end) = {
+        let (sim, mut run) = quiet_run(seed, &mut reached);
+        prefix(&mut run);
+        let before = sim.steps();
+        op(&mut run);
+        assert!(run.proc.is_some(), "the operation failed without a fault");
+        (before, sim.steps())
+    };
+    assert!(end > before, "the operation took no step");
+    let mut placed = 0;
+    for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+        for step in before + 1..=end {
+            let (sim, mut run) = quiet_run(seed, &mut reached);
+            prefix(&mut run);
+            assert_eq!(sim.steps(), before, "the prefix replays exactly");
+            sim.set_crash_fates(fates);
+            sim.place(step, SimFault::Crash);
+            run.trace
+                .push(format!("crash placed at step {step}, {fates:?}"));
+            op(&mut run);
+            assert_eq!(crashes(&sim), 1, "the crash at step {step} fired");
+            if run.proc.is_some() {
+                run.stop(false);
+            }
+            run.settle();
+            after(&mut run);
+            placed += 1;
+        }
+    }
+    placed
+}
+
+fn prefix(run: &mut Run<'_>) {
+    for _ in 0..6 {
+        run.entry_all();
+    }
+    run.checkpoint(false);
+    for _ in 0..6 {
+        run.entry();
+    }
+    run.checkpoint(true);
+    for _ in 0..4 {
+        run.entry_all();
+    }
+    run.pin();
+    run.entry_all();
+}
+
+#[test]
+fn a_crash_at_every_step_of_a_checkpoint() {
+    let placed = crash_at_every_step(1, prefix, |run| run.checkpoint(false), |_| {});
+    assert!(placed >= 9, "{placed}");
+}
+
+/// A restore point kept (a checkpoint that lists itself) and dropped (the
+/// next checkpoint omits it; the one after retires it): at every step, the
+/// restore point is listed and reads its version until a confirmed
+/// checkpoint retires it.
+#[test]
+fn a_crash_at_every_step_of_a_restore_point_kept_and_dropped() {
+    let kept = crash_at_every_step(
+        2,
+        prefix,
+        |run| run.checkpoint(true),
+        |run| {
+            let listed = run.pf().restore_points();
+            assert!(listed.iter().any(|(rp, _)| rp.name == "rp1"), "{listed:?}");
+        },
+    );
+    let dropped = crash_at_every_step(
+        3,
+        prefix,
+        |run| {
+            run.mark = (run.pf().next_checkpoint(), run.newest.entry.index);
+            run.drop_restore_point();
+            run.checkpoint(false);
+            run.checkpoint(false);
+        },
+        |run| {
+            // Once a checkpoint made after the drop has been on disk, and
+            // another after it (settle makes one), no superblock lists it.
+            // (A checkpoint that never reached the disk leaves its number
+            // to the next one.)
+            let (number, entry) = run.mark;
+            if run.seen.iter().any(|&(n, e)| n >= number && e == entry) {
+                let listed = run.pf().restore_points();
+                assert!(listed.iter().all(|(rp, _)| rp.name != "rp1"), "{listed:?}");
+            }
+        },
+    );
+    assert!(kept >= 9 && dropped >= 18, "{kept} {dropped}");
+}
+
+#[test]
+fn a_crash_at_every_step_of_an_open() {
+    let placed = crash_at_every_step(
+        4,
+        |run| {
+            prefix(run);
+            run.checkpoint(false);
+            run.entry_all();
+            run.stop(true);
+        },
+        |run| run.reopen(),
+        |_| {},
+    );
+    assert!(placed >= 10, "{placed}");
+}
+
+/// The newest checkpoint's root page damaged on the device: the open
+/// passes over it, says why, and clears its slots before any page is
+/// written; a crash at every step of that open leaves a store that opens
+/// the same way.
+#[test]
+fn a_crash_at_every_step_of_an_open_that_passes_over_a_damaged_checkpoint() {
+    let damaged = |run: &mut Run<'_>| {
+        prefix(run);
+        run.entry_all();
+        run.checkpoint(false);
+        let (number, _) = run.pf().checkpoint_entry();
+        let root = run.pf().checkpoint_trees()[0].1;
+        run.stop(false);
+        let sim = run.disk.sim().unwrap().clone();
+        sim.damage(FILE, root.page * PAGE + 300, 4).unwrap();
+        run.allow_fallback = true;
+        run.trace
+            .push(format!("damaged the root of checkpoint {number}"));
+    };
+    let placed = crash_at_every_step(
+        5,
+        damaged,
+        |run| run.reopen(),
+        |run| assert!(run.reached.fell_back > 0),
+    );
+    assert!(placed >= 10, "{placed}");
+}
+
+/// Applying the same entries twice from the same checkpoint gives the
+/// same map, byte for byte, and the same roots, page numbers included:
+/// during recovery (nothing freed), and with frees, pins and reclaims at
+/// the same points in both runs.
+#[test]
+fn applying_the_same_entries_twice_from_a_checkpoint_gives_the_same_map() {
+    for seed in seeds(3) {
+        let sim = Sim::new(seed);
+        let disk = Disk::Sim(sim.clone());
+        let config = Config {
+            dirty_budget: 100_000,
+            ..config()
+        };
+        let mut proc = create_proc(&disk, config);
+        proc.pf.end_recovery();
+        let mut rng = Rng::stream(seed, 9);
+        let mut model = Model::default();
+        let logged = |index: u64, rng: &mut Rng| Logged {
+            entry: entry_id(index),
+            ops: if index == 1 {
+                (0..3).map(|i| (tree_name(i), Op::Create)).collect()
+            } else {
+                let t = rng.below(3) as usize;
+                let count = 1 + rng.below(8);
+                vec![(tree_name(t), Op::Edits(edits(rng, count)))]
+            },
+            taken: None,
+        };
+        let apply = |pf: &PageFile, model: &mut Model, l: &Logged, purpose| {
+            let pages = bound(pf, model, &l.ops).unwrap();
+            let res = pf.reserve(l.entry.index, pages, purpose).unwrap();
+            apply_logged(&res, model, l).unwrap();
+        };
+        for index in 1..=20 {
+            let l = logged(index, &mut rng);
+            apply(&proc.pf, &mut model, &l, Purpose::Entry);
+        }
+        let checkpoint = proc
+            .pf
+            .checkpoint(model.entry, &model.roots(), None)
+            .unwrap();
+        let later: Vec<Logged> = (21..=70).map(|i| logged(i, &mut rng)).collect();
+        for running in [false, true] {
+            let mut results = Vec::new();
+            for _ in 0..2 {
+                drop(proc);
+                sim.crash(Fates::LoseAll);
+                sim.restart();
+                let (p, opened) = open_proc(&disk, config).unwrap();
+                assert_eq!(opened.checkpoint, checkpoint.number);
+                if running {
+                    p.pf.end_recovery();
+                }
+                let mut m = model.clone();
+                let mut pins = Vec::new();
+                for (i, l) in later.iter().enumerate() {
+                    apply(&p.pf, &mut m, l, Purpose::Recovery);
+                    if running && i % 9 == 4 {
+                        pins.push(p.pf.pin(l.entry.index).unwrap());
+                    }
+                    if running && i % 7 == 6 {
+                        p.pf.reclaim(5);
+                        pins.truncate(1);
+                    }
+                }
+                results.push((p.pf.map_image(), m.roots(), p.pf.space()));
+                proc = p;
+            }
+            assert!(
+                results[0] == results[1],
+                "seed {seed}, running {running}: the maps differ"
+            );
+        }
+    }
+}
+
+/// A full disk refuses a reservation before anything is appended; the
+/// store still reads, checkpoints, drops a tree through the reserve, and
+/// once the space is free again takes entries.
+#[test]
+fn a_full_disk_refuses_reservations_and_the_store_still_reads_and_checkpoints() {
+    let mut reached = Reached::default();
+    let (sim, mut run) = quiet_run(7, &mut reached);
+    sim.set_capacity(16 << 20);
+    let mut refused = false;
+    for _ in 0..2_000 {
+        let before = run.reached.full;
+        let index = run.next_index();
+        run.append(Logged {
+            entry: entry_id(index),
+            ops: vec![(
+                tree_name(index as usize % 2),
+                Op::Edits(
+                    (0..4)
+                        .map(|i| {
+                            Edit::leaf(
+                                vec![b"big".to_vec(), [index as u8, i].to_vec()],
+                                vec![i; 9_000],
+                            )
+                        })
+                        .collect(),
+                ),
+            )],
+            taken: None,
+        });
+        assert!(run.proc.is_some(), "a full disk stopped the store");
+        if run.reached.full > before {
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "the disk never filled");
+    // The refusal checked every version and made a checkpoint.
+    assert_eq!(run.reached.checkpoints_failed, 0);
+    let confirmed = run.pf().checkpoint_entry().0;
+    assert_eq!(confirmed, run.confirmed);
+    // An entry is refused again, with nothing reserved.
+    assert!(run.last_full.is_some());
+    assert_eq!(run.pf().space().promised, 0, "nothing reserved");
+    let index = run.next_index();
+    // Dropping a tree draws on the reserve.
+    run.append_for(
+        Logged {
+            entry: entry_id(index),
+            ops: vec![(tree_name(0), Op::Recreate)],
+            taken: None,
+        },
+        Purpose::Discard,
+    );
+    assert!(run.proc.is_some());
+    run.checkpoint(false);
+    run.checkpoint(false);
+    run.check(true);
+    let space = run.pf().space();
+    assert!(space.free > space.floor + 20, "{space:?}");
+    let before = run.reached.entries;
+    run.entry();
+    assert_eq!(run.reached.entries, before + 1, "an entry is taken again");
+    run.check(true);
+}
+
+/// Share counts at the level of the map (section 6.8): a tree cloned by
+/// sharing its root, both changed, one dropped, then the other: every
+/// version reads its model, nothing a live tree reaches is freed, and
+/// nothing leaks, across a restart.
+#[test]
+fn share_counts_keep_a_cloned_tree_whole_until_both_are_dropped() {
+    let mut reached = Reached::default();
+    let (_sim, mut run) = quiet_run(8, &mut reached);
+    let fill = |run: &mut Run<'_>, t: usize, n: u8, keys: u8| {
+        let index = run.next_index();
+        let edits = (0..keys)
+            .map(|i| {
+                let mut value = vec![n; 80];
+                if i % 13 == 0 {
+                    value.resize(6_000, i);
+                }
+                Edit::leaf(vec![vec![b'k', i], vec![n]], value)
+            })
+            .collect();
+        run.append(Logged {
+            entry: entry_id(index),
+            ops: vec![(tree_name(t), Op::Edits(edits))],
+            taken: None,
+        });
+    };
+    for n in 0..6 {
+        fill(&mut run, 0, n, 40);
+    }
+    run.checkpoint(false);
+    // The clone: tree 3 is tree 0 as it is, sharing every page.
+    let (root, content) = run.newest.trees[&tree_name(0)].clone();
+    run.pf().share_for_test(root.page);
+    run.newest.trees.insert(tree_name(3), (root, content));
+    run.checkpoint(false);
+    assert_eq!(run.pf().count_for_test(root.page), 2);
+    for n in 6..10 {
+        fill(&mut run, 0, n, 2);
+        fill(&mut run, 3, n + 50, 3);
+    }
+    assert!(
+        run.pf().space().shared > 1,
+        "counts passed down: {:?}",
+        run.pf().space()
+    );
+    run.check(true);
+    run.stop(true);
+    run.reopen();
+    run.check(true);
+    // Tree 0 dropped: what tree 3 shares stays.
+    let index = run.next_index();
+    run.append(Logged {
+        entry: entry_id(index),
+        ops: vec![(tree_name(0), Op::Recreate)],
+        taken: None,
+    });
+    run.checkpoint(false);
+    run.checkpoint(false);
+    run.check(true);
+    // Tree 3 dropped too: everything goes.
+    let index = run.next_index();
+    run.append(Logged {
+        entry: entry_id(index),
+        ops: vec![(tree_name(3), Op::Recreate)],
+        taken: None,
+    });
+    run.checkpoint(false);
+    run.checkpoint(false);
+    run.check(true);
+    assert_eq!(run.pf().space().shared, 0);
+    assert!(run.reached.leak_checks >= 4, "{}", run.reached.leak_checks);
+}
+
+/// Paths deep and long, values of every size: what an entry writes never
+/// exceeds `entry_bound`, for entries of one edit up to a thousand.
+#[test]
+fn entry_bound_covers_what_an_entry_writes() {
+    let store = MemStore::new(Numbering::Sequential);
+    let mut root = tree::create(&store, 1).unwrap();
+    let mut rng = Rng::new(5);
+    let mut worst = 0f64;
+    for entry in 2..400u64 {
+        let n = match rng.below(12) {
+            0 => 200 + rng.below(800),
+            1..=3 => 10 + rng.below(50),
+            _ => 1 + rng.below(4),
+        };
+        let edits: Vec<Edit> = (0..n)
+            .map(|_| {
+                let depth = 1 + rng.below(5) as usize;
+                let path: Vec<Vec<u8>> = (0..depth)
+                    .map(|_| {
+                        let len = match rng.below(40) {
+                            0 => 2_000 + rng.below(9_000),
+                            _ => 1 + rng.below(6),
+                        };
+                        let mut s = vec![0u8; len as usize];
+                        rng.fill(&mut s);
+                        s[0] = b'a' + rng.below(3) as u8;
+                        s
+                    })
+                    .collect();
+                if tree::key::encoded_len(&path) > crate::page::MAX_KEY {
+                    return Edit::delete(path[..1].to_vec());
+                }
+                match rng.below(8) {
+                    0 => Edit::delete(path[..1.max(depth / 2)].to_vec()),
+                    _ => Edit::leaf(path, value(&mut rng)),
+                }
+            })
+            .collect();
+        let height = Tree::open(&store, root).unwrap().height();
+        store.take_written();
+        root = tree::apply(&store, root, entry, &edits).unwrap();
+        let written = store.take_written().len() as u64;
+        let bound = entry_bound(&edits, height);
+        assert!(
+            written <= bound,
+            "entry {entry}: {written} pages written, bound {bound}"
+        );
+        worst = worst.max(written as f64 / bound as f64);
+    }
+    assert!(worst > 0.0);
+    let one = entry_bound(&[Edit::leaf(vec![b"a".to_vec()], b"x".to_vec())], 3);
+    assert_eq!(one, 45, "the bound of one put into a tree of height 3");
+}
+
+/// A damaged, misplaced or missing page is reported by the read that
+/// reaches it, by number and kind, and never served.
+#[test]
+fn a_damaged_misplaced_or_missing_page_is_reported_by_the_read_that_reaches_it() {
+    let mut reached = Reached::default();
+    let sim = Sim::new(9);
+    let mut run = Run::new(Disk::Sim(sim.clone()), Device::Lying, 9, &mut reached);
+    for n in 0..4u8 {
+        let index = run.next_index();
+        let edits = (0..60u8)
+            .map(|i| Edit::leaf(vec![vec![b'k', i], vec![n]], vec![i; 300]))
+            .collect();
+        run.append(Logged {
+            entry: entry_id(index),
+            ops: vec![(tree_name(0), Op::Edits(edits))],
+            taken: None,
+        });
+    }
+    run.checkpoint(false);
+    run.checkpoint(false);
+    let (root, _) = run.newest.trees[&tree_name(0)].clone();
+    let pages: Vec<PageNo> = tree::check(run.pf(), root)
+        .unwrap()
+        .pages
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|&n| n != root.page)
+        .collect();
+    assert!(pages.len() >= 2, "tree 0 has pages below its root");
+    let (victim, donor) = (pages[0], pages[pages.len() - 1]);
+    run.stop(false);
+    sim.damage(FILE, victim * PAGE + 1_000, 3).unwrap();
+    run.reopen();
+    let walk = |run: &Run<'_>| -> Result<usize, tree::Error> {
+        let tree = Tree::open(run.pf(), root)?;
+        let mut n = 0;
+        for item in tree.walk(&[] as &[&[u8]]) {
+            item?;
+            n += 1;
+        }
+        Ok(n)
+    };
+    match walk(&run) {
+        Err(tree::Error::Page(f)) => {
+            assert_eq!((f.page, f.fault.clone()), (victim, Fault::Damaged), "{f}")
+        }
+        other => panic!("damage not reported: {other:?}"),
+    }
+    // The donor's bytes written over the victim's place: misplaced.
+    let bytes = run.pf().read_raw(donor).unwrap();
+    let fs = run.disk.fs();
+    let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+    file.write_at(victim * PAGE, &bytes).unwrap();
+    file.flush().unwrap();
+    drop(file);
+    run.stop(false);
+    run.reopen();
+    match walk(&run) {
+        Err(tree::Error::Page(f)) => assert_eq!(
+            (f.page, f.fault.clone()),
+            (victim, Fault::Misplaced { found: donor }),
+            "{f}"
+        ),
+        other => panic!("misplacement not reported: {other:?}"),
+    }
+    // Beyond the file: missing.
+    let end = run.pf().space().end;
+    assert!(matches!(run.pf().read_raw(end + 3), Err(RawRead::Beyond)));
+    assert_eq!(
+        run.pf().read_page(end + 3, &Hash::default()).unwrap_err(),
+        Fault::Missing
+    );
+    // A file that ends inside a page: a short read.
+    let short = fs.create("short", FileOptions::PLAIN).unwrap();
+    short.write_at(0, &vec![1u8; PAGE_SIZE + 100]).unwrap();
+    assert!(matches!(
+        raw(&*short, 1, 4),
+        Err(RawRead::Short { read: 100 })
+    ));
+}
+
+/// An open passes over a newest checkpoint whose root, meta stream or
+/// both superblock copies are damaged, says why, and uses the one before
+/// it, which is whole; the next checkpoint then takes the damaged one's
+/// slots.
+#[test]
+fn an_open_passes_over_a_newest_checkpoint_it_cannot_check() {
+    for case in 0..3 {
+        let mut reached = Reached::default();
+        let (sim, mut run) = quiet_run(10 + case, &mut reached);
+        for _ in 0..8 {
+            run.entry_all();
+        }
+        run.checkpoint(false);
+        let older = run.confirmed;
+        run.entry_all();
+        run.checkpoint(false);
+        let newest = run.confirmed;
+        let kept = run.pf().kept_checkpoints();
+        let root = run.pf().checkpoint_trees()[1].1;
+        run.stop(false);
+        match case {
+            0 => sim.damage(FILE, root.page * PAGE + 64, 2).unwrap(),
+            1 => sim.damage(FILE, kept[0].meta.0 * PAGE + 40, 2).unwrap(),
+            _ => {
+                let file = run.disk.fs().open(FILE, FileOptions::PLAIN).unwrap();
+                for slot in 0..SLOTS {
+                    let mut buf = vec![0u8; COPY];
+                    file.read_at((slot * SLOT) as u64, &mut buf).unwrap();
+                    if let Ok(superblock::Decoded::Valid(sb)) = superblock::decode(&buf) {
+                        if sb.number == newest {
+                            sim.damage(FILE, (slot * SLOT) as u64 + 30, 1).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+        run.allow_fallback = true;
+        run.reopen();
+        assert_eq!(run.confirmed, older, "case {case}");
+        let opened = run
+            .trace
+            .iter()
+            .rev()
+            .find(|l| l.starts_with("opened"))
+            .unwrap()
+            .clone();
+        match case {
+            0 => assert!(opened.contains("Root {"), "{opened}"),
+            1 => assert!(opened.contains("Meta("), "{opened}"),
+            _ => assert!(opened.contains("Invalid(Hash)"), "{opened}"),
+        }
+        if case == 2 {
+            assert!(opened.contains("cleared: [0, 2]"), "{opened}");
+        }
+        run.check(true);
+        run.entry_all();
+        run.checkpoint(false);
+        let made = (run.confirmed, run.newest.entry);
+        run.stop(true);
+        run.reopen();
+        assert_eq!((run.confirmed, run.newest.entry), made, "case {case}");
+        run.check(true);
+    }
+}

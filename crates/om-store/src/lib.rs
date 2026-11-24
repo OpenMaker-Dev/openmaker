@@ -8,6 +8,7 @@
 
 pub mod os;
 pub mod page;
+pub mod pagefile;
 pub mod sim;
 pub mod state;
 pub mod sys;
