@@ -180,7 +180,9 @@ reserved id has still used up the ids, as on FileMaker Server
   the operation's storage error in place of the one it returned;
 - when the engine cannot tell (contract rule 4), it sends no success
   reply and takes no further write to the file until it can;
-- the reply and the notices go out only after the effects are stored.
+- the reply and the notices go out only after the effects are stored. One
+  exception: on a single server, an operation whose only effects are edits
+  to the lock table is answered before they are durable (section 7.3).
 
 Writes are values, and not closures over the store, so that they can be
 sent to another server (section 7.2), recorded with their result
@@ -239,11 +241,14 @@ One store folder per server, used by one process at a time (a lock file):
 <store>/log/       the change log, in segments
 <store>/pages      the page file: superblock slots, then pages
 <store>/blobs/     container data by content hash (section 8)
-<store>/state      this server's id, its start count, and its term and vote
+<store>/state      this server's id, its start count, its term and vote,
+                   the list of log segments, and whether it is in repair
 ```
 
 The start count is raised and flushed each time the server starts, before
-it writes or sends anything else.
+it writes or sends anything else. `state` is written as two copies in
+turn, each with a number and a hash; a server without a valid copy does
+not start.
 
 ### 6.2 State and positions
 
@@ -301,9 +306,11 @@ once: lock counts and share counts are not safe to apply twice.
 
 **Segments.** The log is a sequence of files of one fixed size. A
 segment's space is allocated when it is created, so an append never fails
-for lack of space. A segment counts only after its header and its folder
-are flushed. The header holds the store's id, the segment's first index
-and the hash of the entry before it.
+for lack of space. A segment is used only after its header and its folder
+are flushed and `state` lists it. The header holds the store's id, the
+segment's first index and the hash of the entry before it. A listed
+segment that is missing, or has no valid header, is damage at or before
+the last marker (section 6.12), whatever the other segments hold.
 
 **Batches and markers.** The entries appended between two flushes are a
 batch: a header with its first index, its entry count, its length and a
@@ -315,7 +322,11 @@ of their own, each copy with its own hash. An entry is **durable** when a
 marker that covers it is flushed. Only then is it acknowledged to a
 client or to another server, or counted in a vote. While batches follow
 each other, a batch's marker is written and flushed with the next batch,
-so the number of flushes does not grow; a commit waits for two.
+so the number of flushes does not grow; a commit waits for two. Markers
+are numbered, and the valid marker with the highest number is the last.
+When a leader's log requires a follower to cut entries a marker covers
+(section 7.1), the follower first writes and flushes a marker at the
+lower position, then cuts.
 
 A marker says "everything through here was written and flushed". That is
 what lets a damaged log be read correctly (section 6.12): damage at or
@@ -354,7 +365,8 @@ for every page above it, and the old pages stay as they were. An index
 page also holds, for each child, its page number, its hash and the index
 of the entry that last wrote it. A page's hash is SHA-256 over its items
 and, for an index page, over its children's hashes, without their page
-numbers. So:
+numbers. Each page also carries a checksum of all its bytes, page numbers
+included, so damage to a pointer is found in the page that holds it. So:
 
 - reading a page recomputes its hash from its bytes and checks it against
   the hash its parent holds, which finds damaged pages, pages written to
@@ -377,8 +389,10 @@ reused never returns the page that was there before.
 
 The **superblock** names, for a checkpoint (section 6.7), the entry it
 covers, the roots of the state's trees and of the server's own map of free
-pages, and the checkpoints that are kept. It carries its own hash, and is
-written twice, to slots of their own.
+pages, and the restore points that are kept, with their roots. It carries
+a number and its own hash, and is written twice. There are four slots: a
+new checkpoint's two copies overwrite those of the older of the two
+checkpoints on disk.
 
 ### 6.5 Writing
 
@@ -424,15 +438,18 @@ and flushes its superblock copies. Only published entries are ever
 checkpointed.
 
 **What is kept.** The two newest checkpoints are kept whole, and so is
-every checkpoint held as a restore point (section 11). Each superblock
-lists the kept checkpoints. A checkpoint is retired only by a flushed
-superblock that no longer lists it, and only then may pages that it alone
-used be reused. A page is reused only when no kept checkpoint, no clone,
-no state copy in progress and no view open in the process refers to it.
-The log is kept from the oldest kept checkpoint, and further back while
-another server needs it (section 7.5). So when the newest checkpoint
-cannot be used, the one before it still has every page it names and every
-entry after it.
+every checkpoint held as a restore point (section 11), which each
+superblock lists. A checkpoint is retired when its superblock copies are
+overwritten, and a restore point when no superblock on disk lists it. A
+page is reused only when no superblock on disk names a checkpoint or
+restore point that uses it, and no clone, no state copy in progress and no
+view open in the process refers to it. The log is kept from the oldest
+kept checkpoint, and further back while another server needs it
+(section 7.5). So when the newest checkpoint cannot be used, the one
+before it still has every page it names and every entry after it. The
+page file keeps a reserve that only recovery, checkpoints and the discard
+of a group may use, so that a store whose writes have run out of space can
+still start, checkpoint and free space.
 
 The **map of free pages** records which pages are free and how many trees
 share each page (section 6.8). It is each server's own. Changes to it
@@ -440,7 +457,7 @@ since a checkpoint are rebuilt by applying the log.
 
 **Starting up.**
 
-1. Among the listed checkpoints, newest first, take the first whose
+1. Of the two checkpoints on disk, newest first, take the first whose
    superblock copy is valid and whose tree roots read back with the hashes
    it names. Deeper damage is page damage (section 6.12), found when a
    page is read, and does not send the server back to an older checkpoint.
@@ -453,8 +470,8 @@ since a checkpoint are rebuilt by applying the log.
    markers recorded and learns the rest from the leader (section 7.1).
 4. Free nothing, in the log or the page file, before step 3 is done.
 
-If the log at or before the last marker is damaged, or no listed
-checkpoint can be used, the server cannot produce what it confirmed. A
+If the log at or before the last marker is damaged, or neither checkpoint
+can be used, the server cannot produce what it confirmed. A
 single server stops and reports (section 6.12). A cluster member is **in
 repair** (section 7.5).
 
@@ -491,6 +508,14 @@ entries that name the group as its parts, and a last entry that closes it.
   same step, whether anything under those paths changed since the group
   began (section 6.4). If so it adds parts that bring the result up to
   date and checks again, or discards the group and starts it over.
+- **Locks.** A group's first part takes the protocol locks its work
+  needs, in the lock table, for the session that owns the group: for op73
+  the table's exclusive lock (schema-path.md 7.2), for a deploy the locks
+  of section 9. They are held until the group's last entry or its
+  discard, each of which releases what the group took in the same entry.
+  No other session can take a conflicting lock in between, and the last
+  entry checks the group's preconditions in the same step that appends
+  it.
 - **One leader, one term.** A group is opened and closed by one leader in
   one term. A new leader's `empty` entry discards every group left open,
   and so does a restart of a single server, which begins a new term. The
@@ -584,15 +609,22 @@ store take unbounded memory or disk:
 | Fault | Found by | Response |
 |---|---|---|
 | The log after the last marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the last marker was acknowledged |
-| The log at or before the last marker is damaged | the hash chain, against the marker | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
+| The log at or before the last marker is damaged, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
+| A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
 | The newest checkpoint's superblock or roots cannot be read | hashes | use the checkpoint before it, which is kept whole (section 6.7) |
 | A flush fails | the system's error | stop the server at once and recover on restart. Never retry the flush: the system may already have dropped the data (PostgreSQL's 2018 finding). An entry the failed flush covered may be found whole on restart; its outcome was unknown to its client (section 2) |
 | The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads |
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
 
-Both copies of the last marker and the batch it covers would have to be
-damaged for a single server to cut something it had confirmed.
+**What is not found.** The store finds writes a crash interrupted, damage
+to any byte it stored, and the loss of a file it listed. It cannot find a
+device that reported a flush as done and then holds neither the batch nor
+either copy of its marker: every local record of that write is part of
+what was lost. On a single server such a device loses confirmed changes
+without a sign. On a cluster the server concerned may believe its log
+ends earlier than it does; section 7.1's last rule narrows what that can
+do, and the comparison of section 7.5 finds it afterwards.
 
 ## 7. Replication
 
@@ -621,6 +653,9 @@ in `om-store`, with these rules as the paper gives them:
 - A leader that cannot reach a majority steps down.
 - The members in force for a server are those of the latest `members`
   entry in its log, committed or not (section 7.6).
+- Beyond the paper: a server records, with its markers, the highest
+  committed position it has heard of. It does not stand for election, and
+  does not vote for a candidate, whose log ends before that position.
 
 A server that restarts publishes only what it knows is committed
 (section 6.7). Entries after that may be replaced by a later leader.
@@ -648,28 +683,33 @@ differ. They only need to apply edits the same way (section 6.4).
 
 ### 7.3 Sessions, locks and notices
 
-- **Sessions.** A session is named by its server, that server's start
-  count (section 6.1) and its connection; a connection's number is not
-  used twice within a start. A `session` entry opens it and one closes
-  it. A server writes a `session` entry when it starts, which closes
-  every session of its earlier starts and records the start count as that
-  server's highest. An entry that opens a session of a lower start count,
-  or one that was closed, does nothing. When a server is lost, the leader
-  closes its sessions after the time a silent session is kept (FileMaker
-  Server drops a silent session after 125 s; that a lost transport counts
-  as silence is inferred, network-protocol.md 6.3). Closing a session
-  releases its locks and discards its groups (section 6.9). The leader
-  checks that an operation's session is open in the same step in which it
-  runs the operation, and refuses it otherwise. A server that learns its
-  sessions were closed drops those connections. A client that reconnects
-  is a new session.
+- **Sessions.** A session is named by its server, that server's start count
+  (section 6.1) and its connection; within a start a server numbers its
+  connections upward. A `session` entry opens it and one closes it. A
+  server writes a `session` entry when it starts, which closes every
+  session of its earlier starts and records the start count as that
+  server's highest; one that names a lower count does nothing. The state
+  keeps, for each server, that count and the highest connection number
+  opened in it. An entry that opens a session is applied only when it names
+  that count and a higher connection number, so a delayed or repeated entry
+  can never open a session again. When a server is lost, the leader closes
+  its sessions after the time a silent session is kept (FileMaker Server
+  drops a silent session after 125 s; that a lost transport counts as
+  silence is inferred, network-protocol.md 6.3). Closing a session releases
+  its locks and discards its groups (section 6.9). The leader checks that
+  an operation's session is open in the same step in which it runs the
+  operation, and refuses it otherwise. A server that learns its sessions
+  were closed drops those connections. A client that reconnects is a new
+  session.
 - **Locks.** A lock belongs to a lock user as today (connection, session
   id and transaction, write-path.md 4.1) within a session as above, and
   lock counts are kept per lock. Locks change only by entries, so every
-  server holds the same lock table and a new leader starts with it. A
-  single server need not wait for a lock's entry to be durable before it
-  grants the lock: if it stops, every session ends, and the entry written
-  at its next start releases their locks.
+  server holds the same lock table and a new leader starts with it. On a
+  cluster a lock is granted when its entry is committed. A single server
+  grants a lock when its entry is appended, without waiting for it to be
+  durable, and views do not depend on it: if the server stops, every
+  session ends, and the entry written at its next start releases their
+  locks. This is the one exception to section 5's rule.
 - **Notices.** A change entry carries the notices its operation raised:
   the path, the attention code, the session that caused it and whether
   that session is left out (write-path.md 6, schema-path.md 9). Each
@@ -711,12 +751,15 @@ exchange with a majority of the members in force. Another server asks the
 leader for its committed position, which the leader gives after such an
 exchange, and waits until it has published through it. Requests waiting
 at the same moment share one exchange. The view a request reads, or pages
-through, is taken after the barrier and kept for the whole reply; a
-read-only SQL transaction keeps the view of its first statement. So every
+through, is taken after the barrier and kept for the whole reply. So every
 answer includes every change that was answered before its request
 arrived, and a server cut off from the majority answers nothing. Two
-requests in flight at once may be answered in either order. No clock is
-involved. On one server the barrier is empty.
+requests in flight at once may be answered in either order. A download
+continued over several requests, and a read-only SQL transaction, keep
+the view of their first request on purpose; the guarantee is for that
+first request. No clock is involved. On one server the barrier needs no
+exchange: the server waits only until it has published what was committed
+when the request arrived.
 
 **Leader only.** Clients are served by the leader. Every other server
 relays an incoming client connection to the leader unread, so a client may
@@ -750,17 +793,23 @@ of the current term.
   receiver keeps its own later entries only when its log holds the
   installed entry with the same term; otherwise it discards its log.
   Entries after the installed one follow from the leader.
+- A server that is not in repair never installs a state older than the
+  one it has published.
 - A server that installs a state has skipped the entries before it, and
   their notices. It drops its client connections before it serves from
   the installed state; clients that reconnect ask what changed (op89).
 
 **In repair.** A server that cannot produce what it confirmed - its log is
-damaged at or before its last marker, no checkpoint it lists can be used,
-or it has no space to apply a committed entry - is in repair. It casts no
-vote, acknowledges no entry and serves no client until it has fetched
-what is missing from the other servers, checked it and written it
-durably. A cluster with a majority in repair waits for an administrator,
-as a single server does.
+damaged at or before its last marker, neither checkpoint on disk can be
+used, or it has no space to apply a committed entry - is in repair. Before
+anything else it records in `state`, flushed, that it is in repair and
+the position it had confirmed, its last marker's. It casts no vote,
+acknowledges no entry and serves no client, across restarts, until it
+again holds, checked and durable, a usable state and every entry through
+that position. Only then does it clear the record. Whatever it installs
+or discards on the way (above), it cannot rejoin short of what it had
+acknowledged. A cluster with a majority in repair waits for an
+administrator, as a single server does.
 
 **Page repair.** A page whose bytes do not match the hash its parent
 holds is damaged on this server. It is fetched from another server by its
@@ -776,16 +825,13 @@ compared. A server whose hashes differ first checks its own pages and
 repairs any that are damaged. If its pages are sound, the difference is a
 defect, and the hashes alone do not say which copy is right:
 
-- servers in a majority that agree keep serving. A server outside it, the
-  leader included (it steps down), stops serving the files concerned,
-  keeps them for inspection and raises an alert. It applies the log again
-  from the last comparison at which it agreed, and copies the majority's
-  state if it still differs;
+- servers in a majority that agree keep serving. A server outside it
+  stops serving, keeps its files for inspection, raises an alert and is in
+  repair. If it is the leader it steps down first. It copies the state
+  from the leader, which is then a server of the majority;
 - with no majority for either result, as between two full servers, the
-  files concerned are closed on all of them until each has applied the log
-  again from the last comparison at which they agreed. If they then
-  agree, they reopen. If not, the files stay closed until an
-  administrator chooses a copy.
+  files concerned are closed on all of them until an administrator
+  chooses a copy.
 
 ### 7.6 Members and witnesses
 
@@ -808,8 +854,13 @@ servers and a witness survive the loss of any one of them.
   no client. It writes its `empty` entry, sends the full server what it
   lacks, and hands leadership to it (Raft's leadership transfer) once
   that server has every entry durable. Clients wait meanwhile.
-- It discards an entry, and the blobs only that entry names, once every
-  full member has the entry durable.
+- For a witness, committing its `empty` entry is all that section 7.1
+  asks of a new leader: it has no state to publish.
+- It discards an entry, and the blobs only that entry names, once the
+  entry is committed and every full member has it durable.
+- A witness too far behind for the log gets, from the leader, the index,
+  term and hash of a committed entry and the members in force there, and
+  the entries after it.
 
 ## 8. Container data
 
@@ -828,9 +879,15 @@ back.
   not in it.
 - **Counted in the state.** Identical content is stored once across files,
   clones and versions, and the state counts the references to it.
+- **Checked when read.** A reference holds the blob's hash and a hash of
+  each part of it. Every part is checked as it is served or exported, the
+  background job (section 6.12) reads every blob and kept original image,
+  and a part that fails is fetched from another server or fails the read.
 - **Removed late.** A blob is removed only at a checkpoint, and only when
   no kept checkpoint, clone, kept entry, open group, open view, state copy
-  or operation in progress names it.
+  or operation in progress names it. Operations register a blob in a
+  table of blobs in use before they rely on it, and the collector removes
+  only what that table does not hold, under the same lock.
 
 **Container files beside the `.fmp12`.** A field with external storage
 keeps its data in files in a folder beside the file, and the tree holds
@@ -1004,18 +1061,20 @@ One executor serves FileMaker Pro's finds (op86, `om-query`) and SQL
 - **Backups.** Schedules, retention and layout as today; copies are
   exports from a view (section 6.10).
 - **Restore points.** The store keeps a checkpoint whole, with the log
-  after it, at a configured interval and for a configured time
-  (section 6.7). A file is restored by the leader as a **new file with a
-  new id and a name of its own**, in a group: the file as the restore
-  point holds it, then its kept entries up to the chosen one. Where the
-  file was made by a clone after the restore point, its source is rebuilt
-  the same way first. The new file is visible only by the group's last
-  entry. A time is turned into an entry by taking the last entry before
-  the first one the leader stamped later than that time. Giving the
-  restored file the old file's name is the administrator's step, after
-  removing the old file, which closes its sessions; it is what replacing
-  a file with a backup is on FileMaker Server, and clients that open it
-  ask what changed (op89).
+  after it, at a configured interval and for a configured time (section
+  6.7). A file is restored by the leader as a **new file with a new id and
+  a name of its own**, in a group: the file as the restore point holds it,
+  then its kept entries up to the chosen one. Where the file was made by a
+  clone after the restore point, its source is rebuilt the same way first.
+  What is rebuilt is the file's whole state: its tree, page 0, container
+  file list, kept original image and history, and no session, lock or
+  notice. The new file is visible only by the group's last entry. A time is
+  turned into an entry by taking the last entry before the first one the
+  leader stamped later than that time; where a clock jumped, that is the
+  order of the log, not of the clocks. Giving the restored file the old
+  file's name is the administrator's step, after removing the old file,
+  which closes its sessions; it is what replacing a file with a backup is
+  on FileMaker Server, and clients that open it ask what changed (op89).
 - **Formats.** Entries, pages and the superblock carry a format version. A
   newer server reads older formats. Until the format is declared stable,
   moving between versions may need export and import.
@@ -1054,16 +1113,22 @@ failing seed replays exactly. After every step it checks:
    twice within its session;
 3. servers at the same entry have the same root hashes;
 4. a view never changes, and never shows an entry that is not committed;
-5. every answer includes every change answered before its request
-   arrived;
+5. every answer to a single request, and to the first request of a
+   continued download or read-only transaction, includes every change
+   answered before it arrived;
 6. no two sessions hold locks that conflict, and no closed session's
    operation runs;
 7. an export of a view, imported again, equals the view node by node;
 8. a group is seen whole or not at all, and its result agrees with what
    it depended on at the entry that closed it;
 9. a restore to an entry equals the reference model at that entry;
-10. a server in repair never votes or acknowledges, and every server
-    starts from any state the faults above can leave, or says why not.
+10. a server in repair never votes or acknowledges, and never leaves
+    repair short of the position it had confirmed;
+11. every server starts from any state the faults above can leave, or
+    says why not;
+12. no damaged blob or page is ever served or exported;
+13. a group never completes while another session holds a lock that
+    conflicts with the ones it took.
 
 Clusters with a witness, members joining and leaving, state copies, and a
 leader lost at each step of each of these are part of the generated
@@ -1139,6 +1204,8 @@ for the file engine.
 - **A single server finds damage and cannot repair it.** It stops or
   fails the reads concerned (section 6.12); backups and a cluster are the
   remedy.
+- **A device that loses writes it confirmed**, with every record of them,
+  is outside what the store can find (section 6.12).
 - **Two developers' parallel changes** merge by section 9's rules.
   Objects OpenMaker does not decode cannot be given new ids, so such a
   merge can be refused.
