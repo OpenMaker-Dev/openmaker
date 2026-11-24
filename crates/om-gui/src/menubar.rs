@@ -170,6 +170,10 @@ pub(crate) trait MenuRows {
     fn submenu(&mut self, label: &str, enabled: bool, rows: &mut dyn FnMut(&mut dyn MenuRows));
     /// A line of text that is not a command (a script folder's name).
     fn note(&mut self, text: &str);
+    /// Rows of a list that can be longer than the screen is tall (File >
+    /// Favorites' files), which `rows` adds: they scroll where the menu
+    /// itself does not.
+    fn scrolled(&mut self, rows: &mut dyn FnMut(&mut dyn MenuRows));
     /// The user is looking at these rows now: a menu that reads its
     /// content when shown asks for it.
     fn shown(&self) -> bool;
@@ -209,6 +213,15 @@ impl MenuRows for Drawn<'_> {
 
     fn note(&mut self, text: &str) {
         self.0.weak(text);
+    }
+
+    fn scrolled(&mut self, rows: &mut dyn FnMut(&mut dyn MenuRows)) {
+        // The list keeps clear of the screen's edges and of a few rows
+        // above it, so the whole menu fits and egui keeps it on screen.
+        let room = self.0.ctx().content_rect().height() - 6.0 * theme::MENU_ROW_HEIGHT;
+        egui::ScrollArea::vertical()
+            .max_height(room.max(3.0 * theme::MENU_ROW_HEIGHT))
+            .show(self.0, |ui| rows(&mut Drawn(ui)));
     }
 
     fn shown(&self) -> bool {
@@ -390,17 +403,21 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
             let files = context.file_history.files(tab);
             if !files.is_empty() {
                 rows.separator();
-                for file in files {
-                    let name = file.name();
-                    let label = if files.iter().filter(|entry| entry.name() == name).count() > 1 {
-                        format!("{name} ({})", file.location())
-                    } else {
-                        name
-                    };
-                    if rows.item(&label, None, false, true) {
-                        actions.push(Action::OpenSaved(file.clone()));
+                // Favorites have no limit; Recent keeps 20.
+                rows.scrolled(&mut |rows| {
+                    for file in files {
+                        let name = file.name();
+                        let label = if files.iter().filter(|entry| entry.name() == name).count() > 1
+                        {
+                            format!("{name} ({})", file.location())
+                        } else {
+                            name
+                        };
+                        if rows.item(&label, None, false, true) {
+                            actions.push(Action::OpenSaved(file.clone()));
+                        }
                     }
-                }
+                });
             }
         });
     }
