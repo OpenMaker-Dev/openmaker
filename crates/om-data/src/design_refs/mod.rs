@@ -23,21 +23,27 @@
 //! inside a formula's text literal is a reference only for the function
 //! that looks it up at run time, and is listed as such.
 //!
-//! Completeness is checked, not assumed: each stored member the builder
-//! reads is a ledger of its child keys, and a key the reader did not read
-//! or know to hold no reference is reported unread, as is every value a
-//! decoder rejects or a variant the reader does not handle.
+//! Completeness is checked, not assumed: readers reach the catalogs only
+//! through one access layer (`access`), whose accessors mark every stored
+//! node they give, and a sweep at the end reports each node nothing
+//! accounted for, each that was present but not readable, and each
+//! holding a value beside keys. A value is absent, read, or present and
+//! not readable, never two of these at once; a kind is listed whole only
+//! when its member list read and every member in it did.
 //!
-//! Bounds: each script is read up to the text form's step limit
+//! Bounds: every decode is charged by the bytes it reads before it runs;
+//! each script is read up to the text form's step limit
 //! ([`MAX_PASTE_STEPS`](om_scripts::display::MAX_PASTE_STEPS)), formulas
 //! through `om_formula`'s limits and walked without recursion, a stored
-//! value many steps share is decoded once, the build stops at
-//! [`MAX_ENTRIES`] references and coverage entries or [`MAX_WORK`] units
-//! of work with an entry saying where, and the call chain walk visits each
-//! script once.
+//! value many steps share is decoded once, repeated coverage entries are
+//! counted past the first few of their kind ([`Coverage::omitted`]), the
+//! build stops at [`MAX_ENTRIES`] entries or [`MAX_WORK`] units of work
+//! saying where ([`Coverage::stopped`]), and the call chain walk visits
+//! each script once.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+mod access;
 mod catalogs;
 mod formula;
 mod layouts;
@@ -468,6 +474,29 @@ pub struct Coverage {
     /// [`MAX_WORK`]) was spent: that place and everything after it were not
     /// read, and no kind is complete.
     pub stopped: Option<Unread>,
+    /// Unread places and references by name past the first few of their
+    /// kind of place, counted rather than kept: each still counts for
+    /// [`Self::complete_for`].
+    pub omitted: Vec<Omitted>,
+}
+
+/// Entries of one kind of place past the first few, counted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Omitted {
+    pub entry: OmittedEntry,
+    /// The kind of object holding them.
+    pub holder: Kind,
+    /// Their place, with digits folded to `#`.
+    pub place: String,
+    pub could_refer_to: Vec<Kind>,
+    pub count: usize,
+}
+
+/// What an [`Omitted`] group counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OmittedEntry {
+    Unread(UnreadReason),
+    ByName(NameUse),
 }
 
 impl Coverage {
@@ -496,7 +525,35 @@ impl Coverage {
         self.stopped.is_none()
             && self.unread_for(kind).next().is_none()
             && self.by_name_for(kind).next().is_none()
+            && !self
+                .omitted
+                .iter()
+                .any(|o| o.could_refer_to.contains(&kind))
             && self.unavailable.is_empty()
+    }
+
+    /// How many unread places there are, those counted in [`Self::omitted`]
+    /// included.
+    pub fn unread_total(&self) -> usize {
+        self.unread.len()
+            + self
+                .omitted
+                .iter()
+                .filter(|o| matches!(o.entry, OmittedEntry::Unread(_)))
+                .map(|o| o.count)
+                .sum::<usize>()
+    }
+
+    /// How many references by name there are, those counted in
+    /// [`Self::omitted`] included.
+    pub fn by_name_total(&self) -> usize {
+        self.by_name.len()
+            + self
+                .omitted
+                .iter()
+                .filter(|o| matches!(o.entry, OmittedEntry::ByName(_)))
+                .map(|o| o.count)
+                .sum::<usize>()
     }
 }
 
@@ -604,6 +661,35 @@ impl DesignGraph {
 
     pub fn coverage(&self) -> &Coverage {
         &self.coverage
+    }
+
+    /// Whether every object of `kind` was listed: only then is an object
+    /// of `kind` the graph does not have known not to exist.
+    pub fn listed_whole(&self, kind: Kind) -> bool {
+        self.inventoried.contains(&kind)
+    }
+
+    /// Why the objects of `kind` were not all listed, when they were not.
+    pub fn unlisted_reason(&self, kind: Kind) -> Option<String> {
+        if self.listed_whole(kind) {
+            return None;
+        }
+        let what = kind.name().replace('_', " ");
+        let unavailable = self
+            .coverage
+            .unavailable
+            .iter()
+            .find(|u| u.kinds().contains(&kind));
+        Some(match (&self.coverage.stopped, unavailable) {
+            (Some(_), _) => format!(
+                "the analysis stopped at its budget before every {what} was listed (see \
+                 coverage.stopped)"
+            ),
+            (None, Some(u)) => format!("{} was not read: {}", u.what, u.reason),
+            (None, None) => format!(
+                "a stored {what} or its catalog's member list does not read (see coverage.unread)"
+            ),
+        })
     }
 
     /// The table occurrence `id` shows, when it is one of this file's.

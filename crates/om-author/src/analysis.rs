@@ -13,7 +13,8 @@
 //! kind; otherwise it is `no_decoded_reference`.
 
 use om_data::design_refs::{
-    self, CallChain, DesignGraph, Direction, Kind, ObjectId, Place, Resolution, Target, Use,
+    self, CallChain, DesignGraph, Direction, Kind, ObjectId, OmittedEntry, Place, Resolution,
+    Target, Use,
 };
 use om_scripts::display::Lookup;
 use serde_json::{json, Value};
@@ -104,8 +105,11 @@ impl Analysis {
                 ObjectId::File => Some(self.file.clone()),
                 _ => found.map(|o| o.name.clone()),
             },
-            "exists": found.is_some() || id == ObjectId::File,
+            "exists": self.exists(id),
         });
+        if let Some(reason) = self.existence_unknown(id) {
+            out["existence_unknown"] = json!(reason);
+        }
         if let Some(detail) = found.map(|o| &o.detail).filter(|d| !d.is_empty()) {
             out["detail"] = json!(detail);
         }
@@ -117,6 +121,60 @@ impl Analysis {
             _ => {}
         }
         out
+    }
+
+    /// Whether the file has `id`: true, false, or null when its kind was
+    /// not listed whole and the graph does not have it.
+    fn exists(&self, id: ObjectId) -> Value {
+        if id == ObjectId::File || self.graph.object(id).is_some() {
+            return json!(true);
+        }
+        if self.existence_unknown(id).is_some() {
+            return Value::Null;
+        }
+        json!(false)
+    }
+
+    /// Why whether the file has `id` is not known, when it is not.
+    fn existence_unknown(&self, id: ObjectId) -> Option<String> {
+        if id == ObjectId::File || self.graph.object(id).is_some() {
+            return None;
+        }
+        // A field is known missing only when its table's fields, and the
+        // table itself, were listed whole.
+        let kinds: &[Kind] = match id {
+            ObjectId::Field { .. } => &[Kind::Table, Kind::Field],
+            ObjectId::LayoutObject { .. } => &[Kind::Layout, Kind::LayoutObject],
+            _ => &[],
+        };
+        let kinds = if kinds.is_empty() {
+            vec![id.kind()]
+        } else {
+            kinds.to_vec()
+        };
+        kinds.iter().find_map(|k| self.graph.unlisted_reason(*k))
+    }
+
+    /// The error for an object that cannot be found: `not_found` when its
+    /// kind was listed whole, else `not_known` with the reason.
+    fn missing(&self, kind: Kind, message: String) -> AuthorError {
+        match self.graph.unlisted_reason(kind) {
+            None => AuthorError::new(ErrorKind::NotFound, message),
+            Some(reason) => AuthorError::new(
+                ErrorKind::NotKnown,
+                format!(
+                    "{message} Whether it exists is not known: not every {} of {} was \
+                     listed.",
+                    kind.name().replace('_', " "),
+                    self.file
+                ),
+            )
+            .with_details(json!({
+                "kind": kind.name(),
+                "reason": reason,
+                "stopped": self.graph.coverage().stopped.is_some(),
+            })),
+        }
     }
 
     /// An object's reference and name.
@@ -229,6 +287,40 @@ impl Analysis {
             }
             out
         });
+        // Places past the first few of their kind, counted: they count
+        // in the totals, listed by kind of place.
+        let mut unread_more = 0;
+        let mut by_name_more = 0;
+        let omitted: Vec<Value> = coverage
+            .omitted
+            .iter()
+            .filter(|o| relevant(&o.could_refer_to))
+            .take(limit)
+            .map(|o| {
+                let (entry, code) = match o.entry {
+                    OmittedEntry::Unread(reason) => ("unread", reason.code()),
+                    OmittedEntry::ByName(how) => ("by_name", how.code()),
+                };
+                json!({
+                    "entry": entry,
+                    "code": code,
+                    "holder_kind": o.holder.name(),
+                    "place": o.place,
+                    "could_refer_to": Self::kinds(&o.could_refer_to),
+                    "count": o.count,
+                })
+            })
+            .collect();
+        for o in coverage
+            .omitted
+            .iter()
+            .filter(|o| relevant(&o.could_refer_to))
+        {
+            match o.entry {
+                OmittedEntry::Unread(_) => unread_more += o.count,
+                OmittedEntry::ByName(_) => by_name_more += o.count,
+            }
+        }
         // Where the build stopped at a budget: a fixed part of every
         // result, never cut by `limit`, since it governs all of it.
         let stopped = coverage.stopped.as_ref().map(|u| {
@@ -244,15 +336,16 @@ impl Analysis {
             "stopped": stopped,
             "read": coverage.read,
             "unread": {
-                "total": unread_total,
-                "truncated": unread_truncated,
+                "total": unread_total + unread_more,
+                "truncated": unread_truncated || unread_more > 0,
                 "places": unread_listed,
             },
             "by_name": {
-                "total": by_name_total,
-                "truncated": by_name_truncated,
+                "total": by_name_total + by_name_more,
+                "truncated": by_name_truncated || by_name_more > 0,
                 "places": by_name_listed,
             },
+            "omitted": omitted,
             "unavailable": coverage.unavailable.iter().map(|u| json!({
                 "path": u.path,
                 "what": u.what,
@@ -265,6 +358,7 @@ impl Analysis {
     /// name), matched as FileMaker matches names.
     fn named(
         &self,
+        kind: Kind,
         what: &str,
         name: &str,
         candidates: Vec<(ObjectId, &str)>,
@@ -276,10 +370,9 @@ impl Analysis {
             .collect();
         match Lookup::by_name(ids, name) {
             Lookup::One(i) => Ok(candidates[i as usize].0),
-            Lookup::Missing => Err(AuthorError::new(
-                ErrorKind::NotFound,
-                format!("{} has no {what} named “{name}”.", self.file),
-            )),
+            Lookup::Missing => {
+                Err(self.missing(kind, format!("{} has no {what} named “{name}”.", self.file)))
+            }
             Lookup::Ambiguous => {
                 let folded = name.to_lowercase();
                 let refs: Vec<Value> = candidates
@@ -381,12 +474,14 @@ impl Analysis {
         }
         for (name, kind, what) in names {
             if let Some(name) = name {
-                return self.named(what, name, self.of_kind(kind));
+                return self.named(kind, what, name, self.of_kind(kind));
             }
         }
         let table = match (&params.table, &params.table_name) {
             (Some(text), None) => ObjectId::Table(refs::table_id(text, &self.file)?),
-            (None, Some(name)) => self.named("table", name, self.of_kind(Kind::Table))?,
+            (None, Some(name)) => {
+                self.named(Kind::Table, "table", name, self.of_kind(Kind::Table))?
+            }
             (Some(_), Some(_)) => return Err(invalid("Give `table` or `table_name`, not both.")),
             (None, None) => {
                 return Err(invalid(
@@ -406,7 +501,7 @@ impl Analysis {
             .filter(|o| matches!(o.id, ObjectId::Field { table, .. } if table == id))
             .map(|o| (o.id, o.name.as_str()))
             .collect();
-        self.named("field", name, fields)
+        self.named(Kind::Field, "field", name, fields)
     }
 }
 
@@ -427,10 +522,9 @@ impl Service {
         let id = analysis.resolve(params)?;
         let graph = &analysis.graph;
         if graph.object(id).is_none() && params.object.is_none() {
-            return Err(AuthorError::new(
-                ErrorKind::NotFound,
-                format!("{} has no such object.", analysis.file),
-            ));
+            return Err(
+                analysis.missing(id.kind(), format!("{} has no such object.", analysis.file))
+            );
         }
         // An object the file no longer has: the references still naming it.
         let uses: Vec<&Use> = graph
@@ -556,8 +650,8 @@ impl Service {
             ));
         };
         if analysis.graph.object(ObjectId::Script(script)).is_none() {
-            return Err(AuthorError::new(
-                ErrorKind::NotFound,
+            return Err(analysis.missing(
+                Kind::Script,
                 format!("{} has no script {script}.", analysis.file),
             ));
         }
@@ -612,5 +706,55 @@ impl Service {
         }
         out["coverage"] = analysis.coverage(&[Kind::Script], limit);
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use om_hbam::{KeySegment, KeyTree, Node, OwnedNode};
+
+    use super::*;
+
+    fn view(node: &OwnedNode) -> Node<'_> {
+        Node {
+            segment: KeySegment(&node.segment),
+            value: node.value.as_deref(),
+            push: node.push,
+            children: node.children.iter().map(view).collect(),
+        }
+    }
+
+    /// A file whose script catalog's member list is stored as a value:
+    /// whether a script exists is not known, so a script asked for is
+    /// `not_known` with the reason, never `not_found`, and an object the
+    /// graph does not have has `exists: null`.
+    #[test]
+    fn an_object_of_a_kind_not_listed_whole_is_not_known() {
+        let mut root = OwnedNode::default();
+        root.put(&[&[17], &[5]], OwnedNode::leaf(Vec::new(), vec![0x55]));
+        let tree = KeyTree { root: view(&root) };
+        let analysis = Analysis {
+            graph: design_refs::build(&tree, Vec::new()),
+            file: "Tasks.fmp12".into(),
+        };
+        let params = ObjectParams {
+            script_name: Some("Post".into()),
+            ..ObjectParams::default()
+        };
+        let error = analysis.resolve(&params).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotKnown, "{error:?}");
+        let object = analysis.object(ObjectId::Script(7));
+        assert_eq!(object["exists"], Value::Null);
+        assert!(object["existence_unknown"].is_string());
+        // A kind listed whole answers plainly.
+        let params = ObjectParams {
+            layout_name: Some("Main".into()),
+            ..ObjectParams::default()
+        };
+        assert_eq!(
+            analysis.resolve(&params).unwrap_err().kind,
+            ErrorKind::NotFound
+        );
+        assert_eq!(analysis.object(ObjectId::Layout(7))["exists"], json!(false));
     }
 }

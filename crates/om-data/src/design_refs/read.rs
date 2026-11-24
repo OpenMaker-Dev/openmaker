@@ -2,25 +2,25 @@
 //! decoder OpenMaker has for it, each reference resolved once every object
 //! is known.
 //!
-//! What the builder reads is accounted for, not assumed: a catalog member
-//! is read through a [`Member`], which records each child key the reader
-//! takes or knows to name no object, and [`Builder::close`] reports every
-//! other key unread. A value a decoder rejects, a variant the reader does
-//! not handle and a value it finds absent where one is expected are
-//! reported unread where they are met.
+//! The catalogs are reached only through the access layer
+//! ([`super::access`]), which marks every stored node a reader takes,
+//! looks into or declares; [`Layer::sweep`] reports the rest at the end.
+//! A value a decoder rejects and a variant a reader does not handle are
+//! reported where they are met.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use om_formula::{NameTable, Names};
 use om_hbam::slot::uint_segment;
-use om_hbam::{serial, KeyTree, Node};
+use om_hbam::{serial, KeyTree};
 use om_scripts::display::StepNames;
 
+use super::access::{At, Declared, Layer, Read};
 use super::formula::{self, FormulaRef};
 use super::{catalogs, layouts, steps};
 use super::{
-    ByName, Coverage, DesignGraph, Kind, NameUse, Object, ObjectId, Place, Target, Unavailable,
-    Unread, UnreadReason, Use, MAX_ENTRIES, MAX_WORK,
+    ByName, Coverage, DesignGraph, Kind, NameUse, Object, ObjectId, Omitted, OmittedEntry, Place,
+    Target, Unavailable, Unread, UnreadReason, Use, MAX_ENTRIES, MAX_WORK,
 };
 
 /// The catalogs [`build`] reads, by their paths in the file's key tree, and
@@ -85,19 +85,26 @@ pub(super) fn build_within(
         max_work,
         stopped: false,
         lost: BTreeSet::new(),
+        groups: HashMap::new(),
     };
-    catalogs::data_sources(&mut b, tree);
-    catalogs::tables(&mut b, tree);
-    catalogs::occurrences(&mut b, tree);
-    catalogs::relationships(&mut b, tree);
-    catalogs::custom_functions(&mut b, tree);
-    catalogs::value_lists(&mut b, tree);
-    layouts::layouts(&mut b, tree);
-    steps::scripts(&mut b, tree);
-    catalogs::file_options(&mut b, tree);
-    catalogs::custom_menus(&mut b, tree);
-    catalogs::privilege_sets(&mut b, tree);
-    catalogs::unknown_catalog(&mut b, tree);
+    let layer = Layer::new(tree);
+    catalogs::data_sources(&mut b, &layer);
+    catalogs::tables(&mut b, &layer);
+    catalogs::occurrences(&mut b, &layer);
+    catalogs::relationships(&mut b, &layer);
+    catalogs::custom_functions(&mut b, &layer);
+    catalogs::value_lists(&mut b, &layer);
+    layouts::layouts(&mut b, &layer);
+    steps::scripts(&mut b, &layer);
+    catalogs::file_options(&mut b, &layer);
+    catalogs::custom_menus(&mut b, &layer);
+    catalogs::privilege_sets(&mut b, &layer);
+    catalogs::unknown_catalog(&mut b, &layer);
+    // What no reader accounted for, by its path. After a stop every kind
+    // is incomplete already, and the rest was not read by design.
+    if !b.stopped {
+        layer.sweep(&mut b);
+    }
     let Builder {
         mut graph, pending, ..
     } = b;
@@ -161,12 +168,18 @@ pub(super) fn polish_found(polish: &[u8], context: Option<&[u8]>) -> (Vec<Found>
         }
     };
     let mut found = Vec::new();
-    if let Some(occurrence) = context
-        .map(|key| om_formula::Key(key.to_vec()))
-        .and_then(|key| key.id())
-        .filter(|id| *id != 0)
-    {
-        found.push(Found::Context(occurrence));
+    // A context is a key string naming the occurrence; one that does not
+    // read is unread, not taken for "no context".
+    if let Some(key) = context.filter(|key| !key.is_empty()) {
+        match om_formula::Key(key.to_vec()).id() {
+            Some(0) => {}
+            Some(occurrence) => found.push(Found::Context(occurrence)),
+            None => found.push(Found::unread(
+                UnreadReason::Malformed,
+                "a formula context whose key does not read",
+                &[Kind::Occurrence],
+            )),
+        }
     }
     let (references, nodes) = formula::references(&expr);
     found.extend(references.into_iter().map(|r| match r {
@@ -194,63 +207,46 @@ pub(super) fn polish_found(polish: &[u8], context: Option<&[u8]>) -> (Vec<Found>
     (found, nodes)
 }
 
-/// A stored formula node's references (children `04` context, `06`
-/// Polish), and the nodes walked. One without a Polish stream is unread:
-/// its formatted stream (`05`) is the source text, not what runs. A
-/// context or Polish stream that is stored but does not assemble is
-/// unread too, not taken for an absent one.
-pub(super) fn formula_found(node: &Node<'_>) -> (Vec<Found>, usize) {
+/// A stored formula node's references, read through the layer: its
+/// context `04` and compiled stream `06`; its formatted stream `05` is the
+/// text it shows. One without a compiled stream is unread (the text is not
+/// what runs); a context or stream that does not read is unread, never
+/// taken for an absent one. Any other key is left to the sweep.
+pub(super) fn formula_found(node: At<'_, '_>) -> Vec<Found> {
     let mut found = Vec::new();
-    let context = match node.get(4).map(Node::assembled) {
-        Some(Some(context)) => Some(context),
-        Some(None) => {
+    if let Some(text) = node.get(5) {
+        text.declare(Declared::FormattedFormula);
+    }
+    let context = match node.bytes_at(4) {
+        Read::Ok(context) => Some(context),
+        Read::Unreadable => {
             found.push(Found::unread(
                 UnreadReason::Malformed,
-                "a formula's context that does not assemble",
+                "a formula's context that does not read",
                 &[Kind::Occurrence],
             ));
             None
         }
-        None => None,
+        Read::Absent => None,
     };
-    match node.get(6).map(Node::assembled) {
-        Some(Some(polish)) => {
-            let (read, nodes) = polish_found(&polish, context.as_deref());
-            found.extend(read);
-            (found, nodes)
-        }
-        Some(None) => {
-            found.push(Found::unread(
-                UnreadReason::Malformed,
-                "a formula whose compiled stream does not assemble",
-                &Kind::ANY,
-            ));
-            (found, 1)
-        }
-        None => {
-            found.push(Found::unread(
-                UnreadReason::NotDecoded,
-                "a formula stored without its compiled form",
-                &Kind::ANY,
-            ));
-            (found, 1)
-        }
+    match node.bytes_at(6) {
+        Read::Ok(polish) => found.extend(polish_found(&polish, context.as_deref()).0),
+        Read::Unreadable => found.push(Found::unread(
+            UnreadReason::Malformed,
+            "a formula whose compiled stream does not read",
+            &Kind::ANY,
+        )),
+        Read::Absent => found.push(Found::unread(
+            UnreadReason::NotDecoded,
+            "a formula stored without its compiled form",
+            &Kind::ANY,
+        )),
     }
+    found
 }
 
-/// The bytes and nodes a stored subtree holds: what decoding it costs,
-/// charged before it is decoded. Counted without recursion.
-pub(super) fn size(node: &Node<'_>) -> usize {
-    let mut total = 0usize;
-    let mut stack = vec![node];
-    while let Some(node) = stack.pop() {
-        total = total.saturating_add(1 + node.value.map_or(0, <[u8]>::len));
-        stack.extend(node.children.iter());
-    }
-    total
-}
-
-/// [`size`] of an owned subtree (a step's data).
+/// The bytes and nodes an owned subtree (a step's data) holds: what
+/// reading it costs. Counted without recursion.
 pub(super) fn owned_size(node: &om_hbam::OwnedNode) -> usize {
     let mut total = 0usize;
     let mut stack = vec![node];
@@ -261,28 +257,26 @@ pub(super) fn owned_size(node: &om_hbam::OwnedNode) -> usize {
     total
 }
 
-/// One stored member whose child keys the reader accounts for: those it
-/// [`Member::get`]s and those it marks [`Member::known`]. The rest are
-/// reported unread when it is [`Builder::close`]d.
-pub(super) struct Member<'n, 'a> {
-    holder: ObjectId,
-    node: &'n Node<'a>,
-    what: String,
-    read: Vec<u64>,
+/// Entries of one kind of place kept in full; past it they are counted.
+const KEPT_PER_PLACE: usize = 20;
+/// The most of a detail kept.
+const DETAIL_CHARS: usize = 300;
+
+/// A place's shape for counting repeated entries: its text with digits
+/// folded, so the same kind of place in each object counts together.
+fn shape(part: &str) -> String {
+    part.chars()
+        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+        .collect()
 }
 
-impl<'n, 'a> Member<'n, 'a> {
-    /// The child `key`, accounted for whether present or not.
-    pub(super) fn get(&mut self, key: u64) -> Option<&'n Node<'a>> {
-        self.read.push(key);
-        self.node.get(key)
+fn bounded(detail: String) -> String {
+    if detail.chars().count() <= DETAIL_CHARS {
+        return detail;
     }
-
-    /// Mark keys that name no design object, as the spec cited at each
-    /// call says.
-    pub(super) fn known(&mut self, keys: &[u64]) {
-        self.read.extend_from_slice(keys);
-    }
+    let mut out: String = detail.chars().take(DETAIL_CHARS).collect();
+    out.push_str("...");
+    out
 }
 
 /// The graph as it is being read.
@@ -300,6 +294,9 @@ pub(super) struct Builder {
     stopped: bool,
     /// Kinds with a member that could not be listed: never read to the end.
     lost: BTreeSet<Kind>,
+    /// Entries recorded per kind of place, to keep the first few in full,
+    /// and where the rest are counted in [`Coverage::omitted`].
+    groups: HashMap<String, (usize, Option<usize>)>,
 }
 
 impl Builder {
@@ -323,14 +320,6 @@ impl Builder {
         self.graph.coverage.count(what, 1);
     }
 
-    pub(super) fn unavailable(&mut self, path: Vec<u64>, what: &str, reason: String) {
-        self.graph.coverage.unavailable.push(Unavailable {
-            path,
-            what: what.into(),
-            reason,
-        });
-    }
-
     /// Whether a budget was spent, so that readers stop.
     pub(super) fn stopped(&self) -> bool {
         self.stopped
@@ -338,7 +327,8 @@ impl Builder {
 
     /// Mark `kinds` as read to the end, unless the build stopped or a
     /// member of theirs could not be listed: only then can a reference to
-    /// an object of theirs be broken.
+    /// an object of theirs be broken, or an object of theirs be known not
+    /// to exist.
     pub(super) fn inventoried(&mut self, kinds: &[Kind]) {
         if !self.stopped {
             let whole = kinds.iter().filter(|k| !self.lost.contains(k));
@@ -346,16 +336,59 @@ impl Builder {
         }
     }
 
-    /// A member of `kind` that could not be listed (its key or its record
-    /// does not read): references to the kind cannot be broken.
+    /// A member of `kind` that could not be listed (its key, its record or
+    /// its catalog's member list does not read): the kind is never listed
+    /// whole.
     pub(super) fn lost(&mut self, kind: Kind) {
         self.lost.insert(kind);
     }
 
-    /// Charge what decoding `node` costs, before it is decoded. False once
+    /// The members of a catalog's member list `[.., 5]` with their ids,
+    /// for a catalog of `kind`. A member list that does not read, and a
+    /// member whose key does not read, keep `kind` from being listed whole
+    /// (the sweep reports them); the `00` entry and emptied (deleted)
+    /// members are not members.
+    pub(super) fn members<'t, 'a>(
+        &mut self,
+        list: Option<At<'t, 'a>>,
+        kind: Kind,
+    ) -> Vec<(u64, At<'t, 'a>)> {
+        let Some(list) = list else {
+            return Vec::new();
+        };
+        let children = match list.children() {
+            Read::Ok(children) => children,
+            Read::Absent => Vec::new(),
+            Read::Unreadable => {
+                self.lost(kind);
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for member in children {
+            if member.is_empty() {
+                member.declare(Declared::Deleted);
+                continue;
+            }
+            match member.id() {
+                Some(0) => {}
+                Some(id) => out.push((id, member)),
+                None => self.lost(kind),
+            }
+        }
+        out
+    }
+
+    /// Charge what decoding `node` costs, before it is decoded: its stored
+    /// bytes and nodes, counted no further than the budget left. False once
     /// the work budget is spent: the reader stops there.
-    pub(super) fn charge(&mut self, node: &Node<'_>, holder: ObjectId, place: &Place) -> bool {
-        self.spend(size(node), holder, place)
+    pub(super) fn charge(&mut self, node: At<'_, '_>, holder: ObjectId, place: &Place) -> bool {
+        if self.stopped {
+            return false;
+        }
+        let left = self.max_work.saturating_sub(self.work);
+        let cost = node.size_within(left).unwrap_or(left.saturating_add(1));
+        self.spend(cost, holder, place)
     }
 
     /// Spend `units` of work at `place` in `holder`. False once the work
@@ -404,6 +437,25 @@ impl Builder {
         });
     }
 
+    /// Whether an entry of this kind of place is kept in full, or counted
+    /// with the others like it ([`Coverage::omitted`]).
+    fn keep(&mut self, group: String, omitted: impl FnOnce() -> Omitted) -> bool {
+        let (seen, at) = self.groups.entry(group).or_default();
+        *seen += 1;
+        if *seen <= KEPT_PER_PLACE {
+            return true;
+        }
+        let list = &mut self.graph.coverage.omitted;
+        match at {
+            Some(i) => list[*i].count += 1,
+            None => {
+                *at = Some(list.len());
+                list.push(omitted());
+            }
+        }
+        false
+    }
+
     pub(super) fn reference(&mut self, holder: ObjectId, place: Place, target: Target) {
         if self.admit(holder, &place) {
             self.pending.push((holder, place, target));
@@ -418,7 +470,24 @@ impl Builder {
         function: Option<String>,
         could_refer_to: Vec<Kind>,
     ) {
-        if self.admit(holder, &place) {
+        if !self.admit(holder, &place) {
+            return;
+        }
+        let group = format!(
+            "by_name|{:?}|{}|{:?}|{:?}",
+            holder.kind(),
+            shape(&place.part),
+            how,
+            could_refer_to
+        );
+        let omitted = || Omitted {
+            entry: OmittedEntry::ByName(how),
+            holder: holder.kind(),
+            place: shape(&place.part),
+            could_refer_to: could_refer_to.clone(),
+            count: 1,
+        };
+        if self.keep(group, omitted) {
             self.graph.coverage.by_name.push(ByName {
                 holder,
                 place,
@@ -437,15 +506,47 @@ impl Builder {
         detail: impl Into<String>,
         could_refer_to: &[Kind],
     ) {
-        if self.admit(holder, &place) {
+        if !self.admit(holder, &place) {
+            return;
+        }
+        let group = format!(
+            "unread|{:?}|{}|{:?}|{:?}",
+            holder.kind(),
+            shape(&place.part),
+            reason,
+            could_refer_to
+        );
+        let omitted = || Omitted {
+            entry: OmittedEntry::Unread(reason),
+            holder: holder.kind(),
+            place: shape(&place.part),
+            could_refer_to: could_refer_to.to_vec(),
+            count: 1,
+        };
+        if self.keep(group, omitted) {
             self.graph.coverage.unread.push(Unread {
                 holder,
                 place,
                 reason,
-                detail: detail.into(),
+                detail: bounded(detail.into()),
                 could_refer_to: could_refer_to.to_vec(),
             });
         }
+    }
+
+    /// Report the stored `node` unread at `place`, as its reader sees it,
+    /// and account for it: the sweep does not report it again.
+    pub(super) fn unread_node(
+        &mut self,
+        node: At<'_, '_>,
+        holder: ObjectId,
+        place: Place,
+        reason: UnreadReason,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        node.declare(Declared::Reported);
+        self.unread(holder, place, reason, detail, could_refer_to);
     }
 
     /// Record what reading one stored value found, at `place`.
@@ -476,105 +577,23 @@ impl Builder {
     }
 
     /// The formula stored at `node`, at `place`: charged by its size
-    /// before it is decoded, and its keys accounted for (`04` context,
-    /// `05` formatted, `06` compiled stream).
-    pub(super) fn formula(&mut self, holder: ObjectId, place: Place, node: &Node<'_>) {
+    /// before it is decoded ([`formula_found`]).
+    pub(super) fn formula(&mut self, holder: ObjectId, place: Place, node: At<'_, '_>) {
         if !self.charge(node, holder, &place) {
             return;
         }
-        let mut member = self.member(holder, node, format!("{} formula", place.part));
-        member.known(&[4, 5, 6]);
-        self.close(member);
-        let (found, _) = formula_found(node);
+        let found = formula_found(node);
         self.count("formulas");
         self.apply(holder, &place, &found);
     }
 
-    /// Start accounting for the child keys of `node`, a member of
-    /// `holder` described as `what`.
-    pub(super) fn member<'n, 'a>(
-        &mut self,
-        holder: ObjectId,
-        node: &'n Node<'a>,
-        what: impl Into<String>,
-    ) -> Member<'n, 'a> {
-        Member {
-            holder,
-            node,
-            what: what.into(),
-            read: Vec::new(),
+    /// Account for a key whose meaning is not specified when it is in the
+    /// one form every observation shows (`expected`, exactly); otherwise it
+    /// is failed and the sweep reports it.
+    pub(super) fn observed(&mut self, node: Option<At<'_, '_>>, expected: &[u8]) {
+        if let Some(node) = node {
+            node.observed(expected);
         }
-    }
-
-    /// Report each child key of `member` the reader did not account for,
-    /// a value on the member itself, and a child holding both a value and
-    /// keys (a reader takes one or the other, so the rest would go unseen),
-    /// as unread: what it holds is not known, so it may refer to anything.
-    pub(super) fn close(&mut self, member: Member<'_, '_>) {
-        let Member {
-            holder,
-            node,
-            what,
-            read,
-        } = member;
-        if node.value.is_some_and(|v| !v.is_empty()) {
-            self.unread(
-                holder,
-                Place::new(format!("{what}: its own value")),
-                UnreadReason::NotDecoded,
-                format!("a value on the {what} itself, which OpenMaker does not read"),
-                &Kind::ANY,
-            );
-        }
-        for child in &node.children {
-            if !self.spend(1, holder, &Place::new(what.clone())) {
-                return;
-            }
-            if child.value.is_some_and(|v| !v.is_empty()) && !child.children.is_empty() {
-                self.unread(
-                    holder,
-                    Place::new(format!("{what}: key {}", child.segment)),
-                    UnreadReason::NotDecoded,
-                    format!("a key of the {what} holding both a value and keys"),
-                    &Kind::ANY,
-                );
-                continue;
-            }
-            if child.id().is_some_and(|id| read.contains(&id)) {
-                continue;
-            }
-            self.unread(
-                holder,
-                Place::new(format!("{what}: key {}", child.segment)),
-                UnreadReason::NotDecoded,
-                format!("a stored key of the {what} that OpenMaker does not read"),
-                &Kind::ANY,
-            );
-        }
-    }
-}
-
-/// A key stored as an empty or all-zero value in every observation, with
-/// no meaning in the specs: accepted only in that form, otherwise unread.
-pub(super) fn expect_empty(
-    b: &mut Builder,
-    holder: ObjectId,
-    what: &str,
-    key: u64,
-    node: Option<&Node<'_>>,
-) {
-    let Some(node) = node else {
-        return;
-    };
-    let holds = node.value.is_some_and(|v| v.iter().any(|b| *b != 0)) || !node.children.is_empty();
-    if holds {
-        b.unread(
-            holder,
-            Place::new(format!("{what}: key {key}")),
-            UnreadReason::NotDecoded,
-            format!("a value under key {key} of the {what}, empty or zero in every observation"),
-            &Kind::ANY,
-        );
     }
 }
 
@@ -644,21 +663,20 @@ impl StepNames for GraphNames {
     }
 }
 
-/// The members of the catalog at `path` (`[.., 5]`), but the `0` entry,
-/// each with its id. A member whose key does not read as an id is passed
-/// with `None`, for the caller to report.
-pub(super) fn members<'t, 'a>(
-    tree: &'t KeyTree<'a>,
-    path: &[u64],
-) -> impl Iterator<Item = (Option<u64>, &'t Node<'a>)> {
-    tree.at(path)
-        .map(|n| n.children.as_slice())
-        .unwrap_or_default()
-        .iter()
-        .filter(|n| n.id() != Some(0))
-        .map(|n| (n.id(), n))
+/// A member's name `10` as text; one that does not read is failed on the
+/// node (and reported by the sweep), and the object is listed unnamed.
+pub(super) fn name_of(member: At<'_, '_>) -> String {
+    match member.text_at(NAME) {
+        Read::Ok(name) => name,
+        Read::Absent | Read::Unreadable => String::new(),
+    }
 }
 
-pub(super) fn text_at(node: Option<&Node<'_>>) -> Option<String> {
-    node.and_then(Node::text).and_then(Result::ok)
+/// Account for a member's stamps ([`MEMBER_STAMPS`]).
+pub(super) fn stamps(member: At<'_, '_>) {
+    for key in MEMBER_STAMPS {
+        if let Some(stamp) = member.get(key) {
+            stamp.declare(Declared::Stamp);
+        }
+    }
 }

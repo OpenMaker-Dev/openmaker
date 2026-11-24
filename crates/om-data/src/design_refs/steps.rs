@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use om_hbam::slot::be_uint;
-use om_hbam::{serial, KeyTree, Node, OwnedNode};
+use om_hbam::{serial, OwnedNode};
 use om_scripts::display::{step_text_fidelity, MAX_PASTE_STEPS};
 use om_scripts::specs::{self, SortSpec, SpecField};
 use om_scripts::{
@@ -25,15 +25,13 @@ use om_scripts::{
 };
 use om_transfer::spec::{ExportOptions, FieldFlags, FieldSpec, ImportOptions, Mapping};
 
-use super::catalogs;
-use super::read::{
-    expect_empty, members, owned_size, polish_found, text_at, Builder, Found, GraphNames,
-    MEMBER_STAMPS, NAME,
-};
+use super::access::{At, Declared, Layer, Read};
+use super::read::{name_of, owned_size, polish_found, stamps, Builder, Found, GraphNames};
 use super::{Kind, NameUse, ObjectId, Place, StepPlace, Target, UnreadReason};
 
 const PERFORM_SCRIPT: u16 = 1;
 const GO_TO_LAYOUT: u16 = 6;
+const SEND_EVENT: u16 = 57;
 const PERFORM_APPLESCRIPT: u16 = 67;
 const GO_TO_RELATED_RECORD: u16 = 74;
 const OPEN_URL: u16 = 111;
@@ -49,6 +47,8 @@ const REPLACE_BY_NAME: u16 = 249;
 /// Object, Set Web Viewer, Refresh Object, Perform JavaScript in Web
 /// Viewer, Refresh Portal; script-step-params.csv).
 const OBJECT_NAME_STEPS: [u16; 5] = [145, 146, 167, 175, 180];
+/// The unexplained stored data a step's detail names at most.
+const UNEXPLAINED_SHOWN: usize = 8;
 /// Step 210's callback script from another file: a file reference
 /// calculation in slot 5 with this flag (script-steps.md 12.1).
 const CALLBACK_IN_FILE: u32 = 0x400;
@@ -62,6 +62,12 @@ const TOOL_DEFINITIONS_SLOT: u16 = 13;
 /// Perform SQL Query by Natural Language's tables: `[00 8]` 0 from the
 /// list, 1 by name, 2 by DDL (script-step-params.csv).
 const SQL_TABLES_CHOICE_SLOT: u16 = 8;
+/// Its options `[00 15]`: 0 from the list, 1 by JSON data, which sets flag
+/// `0x800` and keeps the JSON in calculation slot 16, whose `data tables`
+/// can name occurrences (script-step-params.csv; script-steps.md 12.2;
+/// Claris help, Perform SQL Query by Natural Language).
+const SQL_OPTIONS_CHOICE_SLOT: u16 = 15;
+const SQL_OPTIONS_BY_JSON: u32 = 0x800;
 /// The keys of an import or export step's specs (script-steps.md 11.3 to
 /// 11.5): the import order `84`, the export order `85`, the file type `86`,
 /// the import profile extension `87` and the per-field import options
@@ -117,7 +123,7 @@ type Parted = Vec<(&'static str, Found)>;
 #[derive(Default)]
 pub(super) struct StepCache {
     shared: HashMap<(Vec<u8>, Shared), Rc<Parted>>,
-    unexplained: HashMap<[u8; 28], Rc<Vec<String>>>,
+    unexplained: HashMap<[u8; 28], Option<Rc<str>>>,
 }
 
 /// `found` under the parameter's own part.
@@ -158,56 +164,46 @@ fn has_calculation(step: &ScriptStep, slot: u16) -> bool {
 /// flags (folders by flags `01` and `02`, scripts by their step list
 /// `04`, as `meta::scripts` tells them), then each decoded and read in
 /// turn.
-pub(super) fn scripts(b: &mut Builder, tree: &KeyTree<'_>) {
-    catalogs::catalog(b, tree, &[17], "script catalog", &[]);
+pub(super) fn scripts(b: &mut Builder, t: &Layer<'_, '_>) {
+    // A catalog the source gave without this node holds no scripts.
+    let Some(catalog) = t.at(&[17]) else {
+        b.inventoried(&[Kind::Script]);
+        return;
+    };
+    if let Some(index) = catalog.get(1) {
+        index.declare(Declared::CatalogIndex);
+    }
+    stamps(catalog);
+    let list = catalog.get(5);
     let mut listed = Vec::new();
-    for (_, entry) in members(tree, &[17, 5]) {
+    for (_, entry) in b.members(list, Kind::Script) {
         if !b.spend(1, ObjectId::File, &Place::new("scripts")) {
             return;
         }
-        // A deleted script's member is emptied (scripts.md): no member.
-        if entry.children.is_empty() && entry.value.is_none() {
-            continue;
-        }
-        let Some(id) = serial::decode(entry.segment.0).filter(|id| *id != 0) else {
+        let Some(id) = serial::decode(entry.segment().0).filter(|id| *id != 0) else {
             b.lost(Kind::Script);
-            b.unread(
-                ObjectId::File,
-                Place::new(format!("script {}", entry.segment)),
-                UnreadReason::Malformed,
-                "a script whose key does not read",
-                &Kind::ANY,
-            );
             continue;
         };
-        let flags = entry
-            .get(SCRIPT_FLAGS)
-            .and_then(Node::uint_value)
-            .unwrap_or(0);
+        let flags = match entry.uint_at(SCRIPT_FLAGS) {
+            Read::Ok(flags) => flags,
+            Read::Unreadable => {
+                // A script or a folder: not known.
+                b.lost(Kind::Script);
+                continue;
+            }
+            Read::Absent => 0,
+        };
+        let name = name_of(entry);
+        stamps(entry);
+        // `13`: four zero bytes on every stored script (scripts.md).
+        b.observed(entry.get(SCRIPT_ZERO), &[0, 0, 0, 0]);
         if flags & 0x3 == 0 && entry.get(SCRIPT_STEPS).is_some() {
-            b.object(
-                ObjectId::Script(id),
-                text_at(entry.get(NAME)).unwrap_or_default(),
-                "",
-            );
+            b.object(ObjectId::Script(id), name, "");
             listed.push((id, entry));
-        } else {
-            // Folders, their ends and separators: a name and flags, no
-            // steps (scripts.md).
-            let mut member = b.member(ObjectId::File, entry, format!("script folder {id}"));
-            member.get(NAME);
-            member.known(&[SCRIPT_FLAGS]);
-            member.known(&MEMBER_STAMPS);
-            let zero = member.get(SCRIPT_ZERO);
-            expect_empty(
-                b,
-                ObjectId::File,
-                &format!("script folder {id}"),
-                SCRIPT_ZERO,
-                zero,
-            );
-            b.close(member);
         }
+        // Folders, their ends and separators hold a name and flags, and an
+        // empty step list (scripts.md); anything else is left to the
+        // sweep.
     }
     b.inventoried(&[Kind::Script]);
     let names = GraphNames::new(&b.graph);
@@ -216,9 +212,15 @@ pub(super) fn scripts(b: &mut Builder, tree: &KeyTree<'_>) {
         if !b.charge(entry, holder, &Place::new("definition")) {
             return;
         }
-        match Script::decode(entry) {
+        // The step list, read whole: one that does not assemble is failed
+        // on its node (and reported), never read as a script without steps.
+        if !matches!(entry.bytes_at(SCRIPT_STEPS), Read::Ok(_)) {
+            continue;
+        }
+        match entry.decode(Script::decode) {
             Ok(script) => read_script(b, &script, entry, &names),
-            Err(e) => b.unread(
+            Err(e) => b.unread_node(
+                entry,
                 holder,
                 Place::new("definition"),
                 UnreadReason::Malformed,
@@ -231,18 +233,22 @@ pub(super) fn scripts(b: &mut Builder, tree: &KeyTree<'_>) {
 
 /// One script's steps, up to the text form's limit. Each step's line is
 /// the one `get_script`'s source text gives it: the lines of the steps
-/// before it (om-author's `source::script_text`).
-fn read_script(b: &mut Builder, script: &Script, entry: &Node<'_>, names: &GraphNames) {
+/// before it (om-author's `source::script_text`). Each step's data
+/// `05, K` is accounted for once the step's schema has read it; data no
+/// step names is left to the sweep, but the counter `05, 00`, the last
+/// data key issued (script-steps.md 4.2).
+fn read_script(b: &mut Builder, script: &Script, entry: At<'_, '_>, names: &GraphNames) {
     let holder = ObjectId::Script(script.id);
     b.count("scripts");
-    let mut member = b.member(holder, entry, "script");
-    member.get(NAME);
-    member.get(SCRIPT_STEPS);
-    member.get(SCRIPT_STEP_DATA);
-    member.known(&[SCRIPT_FLAGS]);
-    member.known(&MEMBER_STAMPS);
-    let zero = member.get(SCRIPT_ZERO);
-    expect_empty(b, holder, "script", SCRIPT_ZERO, zero);
+    let data = entry.get(SCRIPT_STEP_DATA);
+    if let Some(counter) = data.and_then(|d| d.child(&[0])) {
+        counter.counter();
+    }
+    let data_of = |step: &ScriptStep| {
+        step.data_key
+            .segment()
+            .and_then(|segment| data.and_then(|d| d.child(segment)))
+    };
     let mut cache = StepCache::default();
     // A step's text, and so its line count, follows from its descriptor
     // and its data, which the descriptor's data key names.
@@ -274,31 +280,14 @@ fn read_script(b: &mut Builder, script: &Script, entry: &Node<'_>, names: &Graph
             enabled: step.is_enabled(),
         };
         read(b, holder, Some(&at), "", step, false, Some(&mut cache));
+        if b.stopped() {
+            return;
+        }
+        if let Some(node) = data_of(step) {
+            node.declare(Declared::StepData);
+        }
         b.count("steps");
         line += count;
-    }
-    // Step data no step names: no step reads it, but a step whose data
-    // key OpenMaker misreads would, so it is reported, not dropped. `00` is
-    // the last data key issued (script-steps.md 4.2, as schema-path.md 5.1
-    // describes catalog counters), accepted only as a key string.
-    for data in &script.unreferenced_data {
-        let counter = data.segment == [0]
-            && data.children.is_empty()
-            && data.value.as_deref().is_some_and(|v| {
-                v.split_first().is_some_and(|(len, key)| {
-                    usize::from(*len) == key.len() && serial::decode(key).is_some()
-                })
-            });
-        if counter {
-            continue;
-        }
-        b.unread(
-            holder,
-            Place::new(format!("step data {}", om_hbam::KeySegment(&data.segment))),
-            UnreadReason::NotDecoded,
-            "step data no step of the script names",
-            &Kind::ANY,
-        );
     }
     if script.steps.len() > MAX_PASTE_STEPS {
         b.unread(
@@ -312,8 +301,12 @@ fn read_script(b: &mut Builder, script: &Script, entry: &Node<'_>, names: &Graph
             format!("only the first {MAX_PASTE_STEPS} steps of a script are read"),
             &Kind::ANY,
         );
+        for step in &script.steps[MAX_PASTE_STEPS..] {
+            if let Some(node) = data_of(step) {
+                node.declare(Declared::Reported);
+            }
+        }
     }
-    b.close(member);
 }
 
 /// What `step` stores at a shared place, from `cache` when an earlier step
@@ -327,7 +320,7 @@ fn shared(
     what: Shared,
     holder: ObjectId,
     place: &Place,
-    cost: usize,
+    cost: impl FnOnce() -> usize,
     compute: impl FnOnce() -> Parted,
 ) -> Rc<Parted> {
     let key = step
@@ -340,7 +333,8 @@ fn shared(
             return Rc::clone(found);
         }
     }
-    if !b.spend(cost, holder, place) {
+    // Sized and charged only when not cached: a hit does no work.
+    if !b.spend(cost(), holder, place) {
         return Rc::new(Vec::new());
     }
     let found = Rc::new(compute());
@@ -516,7 +510,10 @@ pub(super) fn read(
         // The SQL the model writes names fields; tables by name or by DDL
         // name occurrences (Claris help).
         SQL_BY_NATURAL_LANGUAGE => {
-            if matches!(step.list_value(SQL_TABLES_CHOICE_SLOT), Some(1 | 2)) {
+            let tables_named = matches!(step.list_value(SQL_TABLES_CHOICE_SLOT), Some(1 | 2))
+                || step.list_value(SQL_OPTIONS_CHOICE_SLOT) == Some(1)
+                || step.has_flag(SQL_OPTIONS_BY_JSON);
+            if tables_named {
                 Some((
                     "Tables",
                     NameUse::OccurrenceByName,
@@ -534,6 +531,14 @@ pub(super) fn read(
         )),
         PERFORM_APPLESCRIPT => Some((
             "AppleScript",
+            NameUse::ExternalScriptText,
+            &NAMED_BY_APPLESCRIPT,
+        )),
+        // An Apple event sent to FileMaker Pro itself (it receives them:
+        // Claris help, Receiving Apple events) can name what an AppleScript
+        // can (inferred, as for Perform AppleScript).
+        SEND_EVENT => Some((
+            "Send Event",
             NameUse::ExternalScriptText,
             &NAMED_BY_APPLESCRIPT,
         )),
@@ -568,17 +573,19 @@ pub(super) fn read(
     if id == SERVER_SCRIPT_WITH_CALLBACK {
         let at = place("Callback script");
         let in_file = step.has_flag(CALLBACK_IN_FILE);
-        let cost = [3, 5, 6, 7]
-            .iter()
-            .filter_map(|slot| step.data.as_ref()?.slot(*slot))
-            .map(|slot| {
-                slot.child_keys()
-                    .filter_map(|k| slot.child(k))
-                    .map(owned_size)
-                    .sum::<usize>()
-                    + 1
-            })
-            .sum::<usize>();
+        let cost = || {
+            [3, 5, 6, 7]
+                .iter()
+                .filter_map(|slot| step.data.as_ref()?.slot(*slot))
+                .map(|slot| {
+                    slot.child_keys()
+                        .filter_map(|k| slot.child(k))
+                        .map(owned_size)
+                        .sum::<usize>()
+                        + 1
+                })
+                .sum::<usize>()
+        };
         let found = shared(
             b,
             &mut cache,
@@ -642,7 +649,7 @@ pub(super) fn read(
                         Shared::Calculation(slot),
                         holder,
                         &at,
-                        owned_size(node),
+                        || owned_size(node),
                         || calculation_found(step, slot),
                     );
                     b.count("formulas");
@@ -670,7 +677,7 @@ pub(super) fn read(
                         Shared::Aliases(slot),
                         holder,
                         &at,
-                        owned_size(node),
+                        || owned_size(node),
                         || unparted(aliases_found(node, list_of)),
                     );
                     apply(b, holder, &at, &place, &found);
@@ -729,11 +736,13 @@ pub(super) fn read(
     if let Some(data) = &step.data {
         if TRANSFER_KEYS.iter().any(|k| data.key(*k).is_some()) {
             let at = place("Import or export order");
-            let cost = TRANSFER_KEYS
-                .iter()
-                .filter_map(|k| data.key(*k))
-                .map(owned_size)
-                .sum();
+            let cost = || {
+                TRANSFER_KEYS
+                    .iter()
+                    .filter_map(|k| data.key(*k))
+                    .map(owned_size)
+                    .sum()
+            };
             let found = shared(
                 b,
                 &mut cache,
@@ -747,16 +756,12 @@ pub(super) fn read(
             apply(b, holder, &at, &place, &found);
         }
     }
-    let unexplained = unexplained(b, &mut cache, step, holder, &place("stored data"));
-    if !unexplained.is_empty() {
+    if let Some(detail) = unexplained(b, &mut cache, step, holder, &place("stored data")) {
         b.unread(
             holder,
             place("stored data"),
             UnreadReason::NotDecoded,
-            format!(
-                "stored data the step's schema does not explain: {}",
-                unexplained.join(", ")
-            ),
+            detail.as_ref(),
             &Kind::ANY,
         );
     }
@@ -764,35 +769,48 @@ pub(super) fn read(
 
 /// What a step stores that no parameter of its schema explains
 /// (`ScriptStep::unclassified`), but flag bits and the step value, which
-/// hold no reference, and the import and export specs [`transfer`] reads.
-/// Read once per descriptor, its cost charged first.
+/// hold no reference, and the import and export specs [`transfer`] reads:
+/// as one detail, its length bounded. Read once per descriptor, its cost
+/// charged first; a cache hit does no work.
 fn unexplained(
     b: &mut Builder,
     cache: &mut Option<&mut StepCache>,
     step: &ScriptStep,
     holder: ObjectId,
     place: &Place,
-) -> Rc<Vec<String>> {
+) -> Option<Rc<str>> {
     let descriptor = step.descriptor();
     if let Some(found) = cache
         .as_deref()
         .and_then(|c| c.unexplained.get(&descriptor))
     {
-        return Rc::clone(found);
+        return found.clone();
     }
     if !b.spend(data_size(step), holder, place) {
-        return Rc::new(Vec::new());
+        return None;
     }
-    let found: Rc<Vec<String>> = Rc::new(
-        step.unclassified()
-            .into_iter()
-            .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
-            .filter(|u| !matches!(u, Unclassified::Key(key) if TRANSFER_KEYS.contains(key)))
-            .map(|u| u.to_string())
-            .collect(),
-    );
+    let items: Vec<String> = step
+        .unclassified()
+        .into_iter()
+        .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
+        .filter(|u| !matches!(u, Unclassified::Key(key) if TRANSFER_KEYS.contains(key)))
+        .take(UNEXPLAINED_SHOWN + 1)
+        .map(|u| u.to_string())
+        .collect();
+    let found: Option<Rc<str>> = (!items.is_empty()).then(|| {
+        let more = if items.len() > UNEXPLAINED_SHOWN {
+            ", ..."
+        } else {
+            ""
+        };
+        let shown = &items[..items.len().min(UNEXPLAINED_SHOWN)];
+        Rc::from(format!(
+            "stored data the step's schema does not explain: {}{more}",
+            shown.join(", ")
+        ))
+    });
     if let Some(cache) = cache.as_deref_mut() {
-        cache.unexplained.insert(descriptor, Rc::clone(&found));
+        cache.unexplained.insert(descriptor, found.clone());
     }
     found
 }
@@ -928,7 +946,7 @@ fn item(
                     Shared::Requests,
                     holder,
                     &at,
-                    owned_size(node),
+                    || owned_size(node),
                     || unparted(requests_found(node)),
                 );
                 apply(b, holder, &at, &|_| at.clone(), &found);
@@ -941,7 +959,7 @@ fn item(
                     Shared::Sort,
                     holder,
                     &at,
-                    owned_size(node),
+                    || owned_size(node),
                     || {
                         unparted(
                             match om_scripts::node_bytes(node).and_then(|b| SortSpec::decode(&b)) {

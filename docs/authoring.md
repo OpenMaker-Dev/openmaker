@@ -213,6 +213,8 @@ is not a transaction covering all metadata in the inspection. A layout's
 layout's indexes), leaving out every stamp in it.
 
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
+`not_known` (whether the object exists is not known: the design analysis
+read its kind's catalog only in part, `details.reason` says why),
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
 `outcome_unknown`, `save_failed`, `verification_failed`. An
@@ -1145,85 +1147,103 @@ in a script, the `step` with its `index`, the `line` it starts on in
 `resolution`: `resolved`; `broken` with what is `missing` (a field, or the
 occurrence or table it is named through); `external` with the data source;
 or `unresolved` with the reason. A reference is `broken` only when every
-object of the missing kind was read: a catalog the host did not give, a
-catalog not read to its end because the build stopped, or a member that
-did not read leaves the target `unresolved`. A disabled step's references
-are listed with `enabled` false. `find_uses` given the reference of an
-object the file no longer has returns the references still naming it.
+object of the missing kind was listed: its catalog's member list read, and
+every member in it. A catalog the host did not give, a build that stopped
+before the catalog was read to its end, a member list that does not read
+and a member whose key or record does not read each leave the target
+`unresolved`. A disabled step's references are listed with `enabled`
+false. `find_uses` given the reference of an object the file no longer
+has returns the references still naming it.
+
+**Whether an object exists.** An object a result names has `exists`:
+true, false, or null when the graph does not have it and its kind was not
+listed whole, with `existence_unknown` saying why. A command asked about an
+object it cannot find answers `not_found` only when its kind was listed
+whole; otherwise `not_known`, with `details.kind`, `details.reason` and
+`details.stopped`. Nothing is said not to exist on the strength of a
+catalog that was not read whole.
 
 **Coverage.** Every result has `coverage` for the kinds of object it is
 about: the `read` counts; the `unread` places, each with its `reason`
 (`not_decoded`, `malformed` or `limit`), `detail` and the kinds it
-`could_refer_to`; the references `by_name`; the catalogs the host did not
-give (`unavailable`); `stopped`, the place where the build stopped at a
-budget, or null; and `complete`, true only when nothing in them could
-refer to those kinds and the build did not stop. Lists stop at `limit`;
-their `total` is always given. `stopped` is a field of its own, never cut
-by `limit`, since it governs the whole result.
+`could_refer_to`; the references `by_name`; `omitted`, the places past the
+first 20 of their kind (the holder's kind and the place, digits folded),
+each kind of place with its `count`; the catalogs the host did not give
+(`unavailable`); `stopped`, the place where the build stopped at a budget,
+or null; and `complete`, true only when nothing in them could refer to
+those kinds and the build did not stop. The `total` of `unread` and
+`by_name` counts the omitted ones; lists stop at `limit`. `stopped` is a
+field of its own, never cut by `limit`, since it governs the whole result.
+A detail is at most 300 characters.
 
-Completeness is checked, not assumed. Each catalog member the graph reads
-(a field, table, occurrence, relationship, custom function, value list,
-script or folder, layout, privilege set, catalog `[64]` member) and each
-catalog node is read through a ledger of its keys: a key that is neither
-read nor known from the specs to name no object (a name, a comment, a
-stamp, an index the objects' own references are read for) is reported
-unread, as is a value on the member itself, every value a decoder rejects,
-every variant the reader does not handle, and a value stored but not
-assembling, which is never taken for an absent one. A place that is not
-read is taken to refer to anything. Nested structures are accounted the
-same way, each by its own ledger or count:
+**Completeness is checked, not assumed.** Readers reach the catalogs only
+through one access layer (`design_refs::access`): no reader function
+takes the key tree or a node, and a test fails if one names them. Every
+accessor marks what it gives on the stored node itself: a value taken, a
+list whose keys were looked at, or a place declared to name nothing. A
+value is absent, read, or present and not readable (a list where a value
+is expected and the reverse, a value stored in pieces that do not
+assemble, text or a number that does not decode, a value beside keys); the
+third is marked on the node when it is met, and nothing turns it into an
+absent value. At the end one walk of every catalog the build was given
+reports, by its path (`stored 4/5/12/119`), each node nothing accounted
+for, each that was not readable and each holding a value beside keys; each
+such place could refer to anything. A reader that stops early, returns
+early or does not know a key leaves nodes unmarked, and they are reported
+without the reader having to remember to. The walk is charged to the work
+budget; after a stop it does not run, since every kind is then incomplete.
 
-- a formula node, wherever it is (a field option, an object attribute, a
-  conditional format, a trigger parameter, a record access calculation):
-  its context `04`, text `05` and compiled stream `06`, and no other key;
-  a context or stream that does not assemble is unread;
-- a layout's parts `03, P`, its objects' attributes `05, O` (and within
-  them conditional formats, items, the web address), its trigger cache
-  `30` and each trigger record, and a stored table view `0d` with its own
-  parts, store and attributes;
-- the field index `01, occurrence, field, object` (layout-model.md 10.5) is
-  skipped only for entries naming an object the store was read for; an
-  entry at any level holding a value, or naming an object not read, is
-  unread;
-- a step's data through `om_scripts`' classification
-  (`ScriptStep::unclassified`): a slot or slot child, calculation child or
-  data key that the step's schema does not explain is unread; a field
-  operand stored but not reading is unread; step data no step names is
-  unread;
-- a find step's requests: keys other than the order `05` and rows `06`, an
-  order that does not read, a row holding a value, and every criterion cell
-  `om_scripts::specs::requests` does not read (stored cells are counted
-  against those read);
-- an import or export order stored but not assembling;
-- any key holding both a value and keys, since a reader takes one or the
-  other.
+Places are declared to name nothing in one table (`access::Declared`),
+each with its spec:
 
-Some keys are accepted only in the form every observation shows, without
-a spec saying what they hold; any other form is unread: a script's and a
-folder's `13` (zero), a conditional format's `06` (empty) and the formats'
-count `04` (a two-byte value), a layout's or table view's `16`, `17` and
-`21` (empty), a field's `26` (zeros), and the step data's `00` (a key
-string, the last data key issued, as schema-path.md 5.1 describes catalog
-counters). The access catalog `[23]` is read for its privilege sets
-`[23, 2]`; its accounts `01`, extended privileges `03` and file access
-`04` name privilege sets and other files, never an object whose uses are
-analysed.
+| Declared | Places | Source |
+|---|---|---|
+| catalog index | a catalog's `01`: names, display order, counters | schema-path.md 5.1 |
+| stamps | a member's `d7`-`da`, `fc`, `fc01`-`fc03` | script-steps.md 4.3; schema-path.md 8.1 |
+| text | comments and descriptions, a value list's custom values | schema-path.md 5, 5.5; calc-functions.md 6.0; file-metadata.md 6 |
+| data version | `fb` on tables, fields and occurrences | schema-path.md 5.3, 5.8, 5.10; file-metadata.md 4.2 |
+| field settings | a field's next serial value, entered data, message, range | schema-path.md 5.5, 5.13 |
+| function signature | a custom function's parameter count, names and flag | calc-encoding.md 8; calc-functions.md 6.0 |
+| access settings | a privilege set's access settings and checksum, and its tables' and fields' access | session-identity.md 2, 4.1 |
+| layout indexes | a layout's `08`, `0a`, `15` | layout-model.md 10.5 |
+| layout settings | a layout's theme `0b` and flags `f0` `f1`, a part's object list `03, P, 07`, an object's tab order `07` and format `0d` | layout-model.md 4.1, 5.5, 7.5, 10.5, 10.6 |
+| formatted formula | a formula's `05`, the text it shows (`06` holds what runs) | calc-encoding.md 1, 2 |
+| file status | `[2]` but the document preferences `18` | file-format.md (catalog 2); file-metadata.md 0, 2 |
+| data source paths | a data source's file reference `82` | file-metadata.md 1.1 |
+| trigger count | a trigger cache's `04` | file-metadata.md 7.1 |
+| step data | a step's data `[17, 5, S, 5, K]`, read through its schema, which reports what it does not explain | script-steps.md 4, 5 |
+| inactive formula | a formula stored for an option that is off | schema-path.md 5.5; layout-model.md 5.1, 5.3.4 |
+| deleted member | a member FileMaker emptied, its key kept | scripts.md |
+| layout folder | a layout folder, folder end or separator's layout keys: never shown, so not a use | file-metadata.md 1.1; layout-model.md 10.5, 10.6 |
 
-A structural test generates a file holding each of these structures and
-gives every list node in it, one at a time, an unknown key and then a
-value of its own: the build must report each as unread
-(`design_refs::tests::completeness`). Not read:
+Keys with no meaning in the specs are accepted only in the one form every
+observation shows, byte for byte; any other form is reported: a script's
+and folder's `13` (`00 00 00 00`), a field's `26` (`00 00 00 00`), a
+layout's and table view's `16` (`00 00`), `17` and `21` (empty), a
+conditional format's `06` (empty) and the formats' count `04` (two bytes,
+the number of formats), a field index entry's value (empty, or one of `00`
+`02` `09` `0a` `0d`, under occurrence and field keys that read, for an
+object the store was read for), and the counters `05, 00` and `03, 00` of
+a layout and `05, 00` of a script's step data (a key string). A layout
+without references holds an empty list at `01, 00`, which is accepted.
+Besides these:
 
-- custom menus `[65, 5, M]`, whose items run steps: each is listed;
-- privilege sets when the host does not give `[23, 2]`;
+- custom menus `[65, 5, M]` are listed, and their items reported unread;
+- privilege sets are reported unread when the host does not give
+  `[23, 2]`;
 - a step's list of several table occurrences or scripts, a step id without
-  a parameter schema, and stored step data the schema does not explain;
+  a parameter schema, and stored step data the schema does not explain are
+  reported;
 - a chart's or plug-in object's setup, an object of an unknown type, and
-  fields of a stored record (an object, a field binding, a portal, a
-  button) its decoder does not know;
-- a key of a member that the specs do not describe, and keys accepted
-  only in their observed form that hold something else;
+  fields of a stored record its decoder does not know are reported;
 - whatever does not decode, and a script's steps past the 20,000th.
+
+A test generates a file holding each structure the readers know and, for
+every node in it, makes a list a leaf, a leaf a list, cuts the last piece
+from a value stored in pieces, adds an unknown key and sets a value beside
+keys, one at a time: the result must be unchanged or report a place at
+that node, and claim nothing complete that changed. Removing a node must
+not add a use (`design_refs::tests::completeness`).
 
 **References by name.** Never resolved; each is listed with the kinds the
 name can be:
@@ -1237,12 +1257,13 @@ name can be:
 | Set Field By Name, Replace Field Contents by Name | a field, through its occurrence | script-step-params.csv (`kFieldSpecByCalc`); script-steps.md 12.4 |
 | Go to Object, Set Web Viewer, Refresh Object, Perform JavaScript in Web Viewer, Refresh Portal: object name | a layout object | script-step-params.csv |
 | Execute FileMaker Data API: the request | layouts, table occurrences, fields, portals by object name; the request's script keys are ignored | Claris help, Execute FileMaker Data API |
-| Perform SQL Query by Natural Language | fields; table occurrences when the tables are given by name or by DDL | Claris help; script-step-params.csv (Tables, slot 8) |
+| Perform SQL Query by Natural Language | fields; table occurrences when the tables are given by name or by DDL, or the options as JSON (whose `data tables` can name them) | Claris help; script-step-params.csv (Tables slot 8, Options slot 15); script-steps.md 12.2 |
 | Perform Find by Natural Language | fields, through their occurrences | Claris help |
 | Generate Response from Model, Perform SQL Query by Natural Language: Perform JavaScript in Web Viewer | a web viewer, by object name | Claris help, Generate Response from Model; script-step-params.csv (`LLMWebScript`, slot 20) |
 | Generate Response from Model: tool definitions | custom functions | Claris help; calc-functions.md (`GetToolDefinitions`) |
 | Open URL | a script, in an `fmp://` URL's `script` parameter | Claris help, Open URL and Opening files using a URL |
 | Perform AppleScript | scripts, layouts, tables, occurrences and fields, through FileMaker Pro's AppleScript dictionary (inferred) | docs/re/architecture.md (`fmpro.sdef`) |
+| Send Event | the same as Perform AppleScript: an Apple event sent to FileMaker Pro itself (inferred; Send Event names no restriction on its target, and FileMaker Pro receives Apple events) | Claris help, Send Event and Receiving Apple events |
 | A web viewer allowed to perform scripts from JavaScript | a script (`FileMaker.PerformScript`) | layout-model.md 9.6 |
 | A button bar's active segment calculation | a segment, by object name | layout-model.md 5.5.1 |
 | OnWindowTransaction's field name | a field | file-metadata.md 3 |
@@ -1257,28 +1278,32 @@ name can be:
 | Design functions | by function: value lists, scripts, layouts and their objects, fields, tables and occurrences | calc-functions.md, Design functions |
 | Plug-in functions | anything | not knowable |
 
-Insert from URL, Execute URL, Send Event and Send DDE Execute are not in
-the table. Insert from URL supports http, https, ftp, ftps, sftp, file,
-smb, smtp, smtps, ldap and ldaps, and no other protocol (Claris help), so
-not `fmp`; Execute URL makes a REST call (script-steps.csv); Send Event
-sends to another application, and FileMaker Pro sends DDE commands but
-does not receive them (Claris help). A request such a step sends over
-http to the file's own Data API or OData runs in another session, as any
-other client's does, and is not counted.
+A step that names objects in its own parameters is counted, as Execute
+FileMaker Data API is. A request a step sends over the network to any
+server, this file's host included (Insert from URL, Execute URL, Open URL
+with an http address), is not: nothing in the step's stored data
+identifies the target as this file. Insert from URL supports http, https,
+ftp, ftps, sftp, file, smb, smtp, smtps, ldap and ldaps, and no other
+protocol (Claris help), so not `fmp`; Execute URL makes a REST call
+(script-steps.csv). FileMaker Pro sends DDE commands but does not receive
+them (Claris help), so Send DDE Execute is not in the table.
 
 **Bounds.** A hostile file cannot make the build unbounded. Before a
-reader decodes anything sized by the file (a member, a catalog decoded at
-once, a script, a formula, a step's data, a shared value), it charges the
-stored bytes and nodes against the work budget; formulas are decoded
-within `om_formula`'s limits and walked without recursion; a script is
-read up to 20,000 steps; a value that steps naming one data key share, a
-step's unexplained data and its line count are each decoded once per
-script, charged once, and recorded at each step. The build stops after
-1,000,000 references, unread places and references by name together
-(`MAX_ENTRIES`) or 50,000,000 units of work (`MAX_WORK`), and says where
-in `stopped`: the result is incomplete for every kind, references whose
-target's catalog was not read to its end are `unresolved`, never
-`broken`, and nothing is silently short.
+reader decodes anything sized by the file (a member, a script, a formula,
+a step's data, a shared value), it charges the stored bytes and nodes
+against the work budget, sizing them no further than the budget left; a
+layout is decoded from its member alone, so the layout decoder reads no
+theme, font or image outside the charge. Formulas are decoded within
+`om_formula`'s limits and walked without recursion; a script is read up to
+20,000 steps; a value that steps naming one data key share, a step's
+unexplained data and its line count are each decoded once per script and
+charged once, and a cache hit does no work. Every coverage entry is
+charged to the entry budget, and past the first 20 of their kind they are
+counted, not kept. The build stops after 1,000,000 references, unread
+places and references by name together (`MAX_ENTRIES`) or 50,000,000 units
+of work (`MAX_WORK`), and says where in `stopped`: the result is
+incomplete for every kind, references whose target's catalog was not read
+to its end are `unresolved`, never `broken`, and nothing is silently short.
 
 **Nothing refers to it.** `unused_objects` lists the tables, fields,
 occurrences, layouts, scripts, value lists, custom functions and data
@@ -1303,11 +1328,12 @@ in 11 languages): 9,350 objects (209 tables, 2,354 fields, 209
 occurrences, 143 relationships, 231 layouts, 5,544 layout objects, 198
 scripts with 935 steps, 264 value lists, 198 privilege sets) and 264
 custom menus; 6,261 references from 4,950 formulas and the other places,
-every one resolved; 264 places not read, the custom menus; 121 references
-by name, all Go to Object's object names
-(`crates/om-data/tests/design_refs_corpus.rs`, ignored by default). The
-results have not been compared with FileMaker's Database Design Report or
-with FMPerception.
+every one resolved; places not read: the 264 custom menus' items, and in
+the six Korean files `[2, 0e]`, whose one key `4c` is an empty list the
+specs do not describe; 121 references by name, all Go to Object's object
+names (`crates/om-data/tests/design_refs_corpus.rs`, ignored by default).
+The results have not been compared with FileMaker's Database Design
+Report or with FMPerception.
 
 **Limits.** The analysis is of the file's current design: a past revision
 needs the store's design history (server-storage.md 9). There is no
@@ -1318,7 +1344,9 @@ kind is complete; whether FileMaker Server gives `[23, 2]` and `[64]` has
 not been measured. Catalogs outside the list above (themes, fonts, the
 image library and image streams, base directories, accounts) are taken to
 name no design object. A Go to Related Record step's layout in another
-file and the objects of other files are not followed.
+file and the objects of other files are not followed. What a layout
+folder or separator stores (a separator keeps a table occurrence) is not
+counted as a use, since it is never shown; that is OpenMaker's choice.
 
 ## Command line
 

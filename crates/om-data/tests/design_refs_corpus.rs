@@ -53,6 +53,13 @@ struct Counts {
     unread_by_reason: BTreeMap<&'static str, usize>,
     unread_by_holder: BTreeMap<&'static str, usize>,
     unread_details: BTreeMap<String, usize>,
+    /// Stored keys the sweep found no reader took, by holder kind and the
+    /// key's path below its member.
+    swept: BTreeMap<String, usize>,
+    /// Unread places and references by name counted past the first few
+    /// of their kind of place.
+    omitted: usize,
+    stopped: usize,
     by_name: BTreeMap<&'static str, usize>,
     layout_fields_checked: usize,
     button_performs_checked: usize,
@@ -157,6 +164,23 @@ fn check(path: &Path, counts: &mut Counts) {
     for b in &coverage.by_name {
         *counts.by_name.entry(b.how.code()).or_default() += 1;
     }
+    for u in &coverage.unread {
+        if let Some(path) = u.place.part.strip_prefix("stored ") {
+            let segments: Vec<&str> = path.split('/').collect();
+            // The catalog, then the key below the member (or the catalog's
+            // own key when there is no member).
+            let shown = match segments.as_slice() {
+                [catalog, "5", _member, rest @ ..] => format!("{catalog}/5/*/{}", rest.join("/")),
+                other => other.join("/"),
+            };
+            *counts
+                .swept
+                .entry(format!("{} {shown}", u.holder.kind().name()))
+                .or_default() += 1;
+        }
+    }
+    counts.omitted += coverage.omitted.iter().map(|o| o.count).sum::<usize>();
+    counts.stopped += usize::from(coverage.stopped.is_some());
     // A layout field object's field, read by `om_layout` directly.
     for layout in file.catalog().unwrap().layouts {
         let Ok(Some(decoded)) = om_layout::Layout::decode_from_tree(&tree, layout.id) else {

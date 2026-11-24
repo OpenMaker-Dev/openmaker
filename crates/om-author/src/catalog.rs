@@ -845,8 +845,10 @@ macro_rules! analysis {
             " Every result carries its coverage: what was read, the places whose references \
              could not be read, references made by a name looked up when the file runs (a \
              script performed by a calculated name, Evaluate, ExecuteSQL), catalogs the \
-             host did not give, and `stopped`: where the build stopped at its work budget, \
-             or null. Reads metadata only, never records."
+             host did not give, `omitted` (places past the first few of their kind, counted) \
+             and `stopped`: where the build stopped at its work budget, or null. An object \
+             whose kind was not read whole is `not_known`, never `not_found`. Reads metadata \
+             only, never records."
         )
     };
 }

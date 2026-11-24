@@ -1021,6 +1021,9 @@ pub enum ErrorKind {
     Connection,
     /// No such object in the file.
     NotFound,
+    /// Whether the object exists is not known: the file's catalogs were
+    /// not read whole (`details.reason` says why). Never "does not exist".
+    NotKnown,
     /// The reference names another file than the one connected to.
     WrongFile,
     /// A name that several objects share.
