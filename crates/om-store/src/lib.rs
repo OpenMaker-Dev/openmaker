@@ -1,0 +1,12 @@
+//! OpenMaker Server's store engine (`docs/server-storage.md` section 6): a
+//! change log, copy-on-write page trees with a hash of every page, views,
+//! checkpoints and recovery. The byte formats are in
+//! `docs/server-storage-format.md`.
+//!
+//! The crate knows paths, values, files, entries and pages. It knows nothing
+//! of records, catalogs or the protocol.
+
+pub mod os;
+pub mod sim;
+pub mod state;
+pub mod sys;

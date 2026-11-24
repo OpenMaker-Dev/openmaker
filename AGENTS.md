@@ -26,9 +26,10 @@ Read this file first, then the documents it points to.
 ## 2. Where things live
 
 ```text
-crates/       the Rust workspace (24 crates; map in docs/architecture.md)
+crates/       the Rust workspace (25 crates; map in docs/architecture.md)
   om-gui        desktop client          om-server   OpenMaker Server
                                         om-admin    its Admin Console
+                                        om-store    its store engine
   om-provider   client data access      om-data     the GUI's data contract
                                         om-report   the report renderer's interface
   om-calc, om-formula, om-scripts, om-sql, om-query, om-transfer, om-url,

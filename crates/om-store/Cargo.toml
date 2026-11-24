@@ -1,0 +1,13 @@
+[package]
+name = "om-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenMaker Server's store engine: a change log and copy-on-write page trees"
+
+[dependencies]
+ring = "0.17"
+
+[lints]
+workspace = true

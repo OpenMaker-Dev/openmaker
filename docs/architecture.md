@@ -49,6 +49,7 @@ toolkit (egui/eframe).
 | | `om-crypto` | Login credential obscuring and password hashing |
 | | `om-rctransaction` | The RCTransaction envelope inside `Perform` (header + LIFO body) |
 | File | `om-hbam` | The HBAM7 (`.fmp12`) container: pages, key space, packed slots; reader and writer |
+| | `om-store` | OpenMaker Server's store engine: a change log and copy-on-write page trees over a disk, clock and randomness reached through traits, with a simulator that injects crashes and storage faults ([server-storage.md](server-storage.md) section 6; formats in [server-storage-format.md](server-storage-format.md)) |
 | Engines | `om-collate` | Text index keys (DUCET 5.2.0) and word breaking |
 | | `om-formula` | Stored formula codec, source parser, compiler and printer |
 | | `om-layout` | Typed `FMLayoutPB` layouts, objects, styles and themes |

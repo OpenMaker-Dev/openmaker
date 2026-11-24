@@ -235,22 +235,30 @@ knows nothing of records, catalogs or the protocol.
 
 ### 6.1 On disk
 
-One store folder per server, used by one process at a time (a lock file):
+One store folder per server, used by one process at a time:
 
 ```text
+<store>/lock       locked by the running server (flock on Unix), never removed
 <store>/log/       the change log, in segments
 <store>/pages      the page file: superblock slots, then pages
 <store>/blobs/     container data by content hash (section 8)
 <store>/state      this server's id, its start count, its term and vote,
-                   the list of log segments, the marker (section 6.3),
+                   the run of log segments in use, the marker (section 6.3),
                    and whether it is in repair (section 7.5)
 ```
 
 The start count is raised and flushed each time the server starts, before
-it writes or sends anything else. `state` is written as two copies in
-turn, each with a number and a hash, and the valid copy with the highest
-number counts. A server without a valid copy does not know what it
-confirmed, and does not start (section 7.5).
+it writes or sends anything else. `state` holds two copies in fixed
+slots, each with a number and a hash. An update writes the next number in
+place over the slot that does not hold the current copy, and flushes; the
+valid copy with the highest number counts. An open first writes the copy
+it read back into its slot and flushes it, because an earlier process's
+failed write or flush can leave the system's cache showing a copy the
+device does not hold. A server without a valid copy does not know what it
+confirmed, and does not start (section 7.5). The format, its costs and
+what the copies protect against are in
+[server-storage-format.md](server-storage-format.md) section 1
+(`om_store::state`).
 
 ### 6.2 State and positions
 
