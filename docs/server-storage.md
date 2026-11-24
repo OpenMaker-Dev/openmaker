@@ -215,9 +215,11 @@ file engine completes it under the store's write lock, taking what waits
 into the operation it runs (`ChangeSchema`, `StoreIndexes`). A recording is
 offered each operation by reference, completed and before it runs; that is
 what it holds, and a replay submits it as it is. The running server records
-nothing, so no operation's data is copied. Member keys a draft took go back
-to waiting if its run is left by a panic before it writes them, as they
-stayed waiting before. The store engine will have to make issuing a member
+nothing, so submitting an operation copies none of its uploaded trees or
+staged records. What it does copy is small: the member keys a draft took (a
+catalog path and two numbers each), kept so that they go back to waiting if
+its run is left by a panic before it writes them, as they stayed waiting
+before. The store engine will have to make issuing a member
 key and building an index operations of their own.
 
 One function, `engine::run`, runs an operation against a transaction (a
