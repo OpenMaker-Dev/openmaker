@@ -90,6 +90,7 @@ log.
   twice before it counts: as the next number into the other slot,
   flushed, then as the number after into the first slot, flushed. What
   such an update confirmed is then in both slots.
+- **An update that changes nothing** writes nothing.
 - **An open** flushes the store folder, reads the two slots one at a
   time, and takes the valid copy with the highest number (slot 0 between
   equal numbers). It writes that copy back into its own slot and flushes
@@ -116,14 +117,18 @@ log.
 - **After a failed write or flush** nothing more is written to the file
   until it is opened again: what reached the device is unknown.
 - **One writer.** What writes `state` holds the store folder's lock for
-  as long as it can write.
+  as long as it can write, and refuses a lock that the store folder's
+  `Fs` did not give out or that is no longer held.
 
 ### 1.4 Cost and bounds
 
 - A copy is at most one slot, 4096 bytes; version 1 uses 178 of them.
 - A marker advance is one 178-byte write in place and one flush of the
   file. Any other update is two such writes and two flushes. An open is
-  three writes, three file flushes and one folder flush.
+  three writes, three file flushes and one folder flush. Before it, the
+  server makes sure of the store folder itself (`OsFs::create_root`):
+  one folder flush per name of the folder's path, so that a folder an
+  interrupted first start made is durable too.
 
 ### 1.5 What the two copies protect against
 
@@ -140,9 +145,12 @@ any time:
   losing either slot loses none of them.
 - **The marker** goes back by at most one advance: an advance is in one
   slot, and the other holds the copy before it. Recovery re-establishes
-  the lost advance from the log, whose entries through that advance were
-  flushed before it was written, when the log's tail is whole
-  (server-storage.md 6.7, step 3).
+  the lost advance's index and hash from the log, whose entries through
+  that advance were flushed before it was written, when the log's tail
+  is whole (server-storage.md 6.7, step 3). The committed position the
+  marker carries is not in the log: on one server it equals the durable
+  position, so it comes back with the index; a member of a cluster
+  learns it again from the leader (server-storage.md 6.7 step 4, 7.1).
 - **Damage to both slots, or one slot lost together with the other
   failing to read**: no copy, and the open fails.
 
@@ -152,6 +160,10 @@ What is not covered:
   back one advance and the log no longer holds the entries of that
   advance whole, so the batch it confirmed is lost without a sign. This
   is a double fault; a single one of them is found.
+- **One slot changed on the device while a write to the other is cut
+  short**: neither slot holds a valid copy, and the server does not start
+  (server-storage.md 6.12). This is a double fault too; a crash alone, or
+  damage alone, leaves a valid copy.
 - **A write the device misplaces or drops after reporting it done**: the
   copy read is one that was written, never a mixture, but it can be older
   than the last one confirmed, and the guarantees above do not hold

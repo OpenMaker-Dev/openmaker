@@ -235,7 +235,9 @@ knows nothing of records, catalogs or the protocol.
 
 ### 6.1 On disk
 
-One store folder per server, used by one process at a time:
+One store folder per server, used by one process at a time. It holds no
+symbolic links, and its names are lowercase ASCII, so that no two can be
+one file on a file system that ignores case (`om_store::sys`):
 
 ```text
 <store>/lock       locked by the running server (flock on Unix), never removed
@@ -256,10 +258,13 @@ slot that does not hold the current copy and flushes: one write and one
 flush per commit batch. Every other change - the start count, the term
 and vote, the segment run, the repair record, a marker that goes back -
 is written to both slots, one after the other, each flushed, before it
-counts. Losing either slot therefore costs at most one marker advance,
-which step 3 of section 6.7 re-establishes from the log when the log's
-tail is whole; losing a slot and the log's tail together loses that
-batch. An open first writes the copy it read back into its slot and
+counts. Losing either slot therefore costs at most one marker advance:
+step 3 of section 6.7 re-establishes its index and hash from the log when
+the log's tail is whole, and its committed position equals the durable
+one on a single server and is learned again from the leader in a cluster
+(step 4, section 7.1). Losing a slot and the log's tail together loses
+that batch, and one slot changed on the device while a write to the
+other is cut short leaves no valid copy. An open first writes the copy it read back into its slot and
 flushes it, because an earlier process's failed write or flush can leave
 the system's cache showing a copy the device does not hold. A server
 without a valid copy does not know what it confirmed, and does not start

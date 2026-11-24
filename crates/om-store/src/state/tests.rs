@@ -1004,18 +1004,34 @@ impl<'a> Run<'a> {
         }
         let next = self.change(&before);
         self.attempts.push(next);
+        let calls = self.machine.sim().map(|(_, log)| log.lock().unwrap().len());
         let state = self.state.as_mut().expect("open");
         let updated = state.update(|v| *v = next);
         self.log.push(match &updated {
             Ok(()) => format!("update -> {:?}", state.copy()),
             Err(e) => format!("update: {e}"),
         });
+        // The copies it wrote, against the rule in words.
+        let expected = copies(&before, &next);
+        if let (Some((_, log)), Some(calls), Ok(())) = (self.machine.sim(), calls, &updated) {
+            let written = log.lock().unwrap()[calls..]
+                .iter()
+                .filter(|(_, call)| matches!(call, Call::Write { .. }))
+                .count();
+            assert_eq!(
+                written, expected,
+                "seed {seed}: an update from {before:?} to {next:?} wrote {written} copies"
+            );
+        }
         self.follow();
         match updated {
+            Ok(()) if expected == 0 => {
+                self.attempts.pop();
+            }
             Ok(()) => {
                 let state = self.state.take().expect("open");
                 assert_eq!(*state.values(), next, "seed {seed}");
-                self.confirm(&state, before.advances_marker_to(&next));
+                self.confirm(&state, expected == 1);
                 self.state = Some(state);
             }
             Err(StateError::Disk(_)) => {
@@ -1041,7 +1057,7 @@ impl<'a> Run<'a> {
             plan.fill(&mut id);
             ServerId(id)
         };
-        match self.plan.below(10) {
+        match self.plan.below(12) {
             0..=3 => {
                 // A batch was flushed.
                 v.marker.index += 1 + self.plan.below(50);
@@ -1076,14 +1092,45 @@ impl<'a> Run<'a> {
                 v.marker.index = v.marker.index.saturating_sub(1 + self.plan.below(5));
                 self.plan.fill(&mut v.marker.hash);
             }
-            _ => {
+            9 => {
                 // A new segment listed with the batch that needed it.
                 v.segments.count += 1;
                 v.marker.index += 1;
                 self.plan.fill(&mut v.marker.hash);
             }
+            // A cut and a new entry at the same index: not an advance.
+            10 => self.plan.fill(&mut v.marker.hash),
+            // Nothing changes.
+            _ => {}
         }
         v
+    }
+}
+
+/// How many copies an update from `before` to `after` writes, by the rule
+/// in words (`docs/server-storage-format.md` 1.3), kept apart from
+/// `state.rs`'s own test of it so that an error there is not mirrored
+/// here: none when nothing changes; one when only the marker changes, its
+/// index and committed position do not go down, and at an unchanged index
+/// its hash does not change; two otherwise.
+fn copies(before: &Values, after: &Values) -> usize {
+    if before == after {
+        return 0;
+    }
+    let (was, now) = (&before.marker, &after.marker);
+    let only_the_marker = before.server_id == after.server_id
+        && before.start_count == after.start_count
+        && before.term == after.term
+        && before.vote == after.vote
+        && before.segments == after.segments
+        && before.repair == after.repair;
+    let forward = now.index >= was.index
+        && now.committed >= was.committed
+        && (now.index != was.index || now.hash == was.hash);
+    if only_the_marker && forward {
+        1
+    } else {
+        2
     }
 }
 
@@ -1447,6 +1494,28 @@ fn one_lock_makes_one_writer() {
         Err(StateError::Refused(_))
     ));
     assert!(open(&sim).is_ok());
+
+    // Across the two implementations: neither takes the other's lock,
+    // however the two were made.
+    let folder = TempFolder::new("owner");
+    let os = folder.fs();
+    let sim = Sim::new(10);
+    let sim_fs = sim.fs();
+    let mut real = State::create(&os, &OsRandom::new(), os.lock().unwrap()).unwrap();
+    assert!(matches!(
+        State::open(&os, sim_fs.lock().unwrap()),
+        Err(StateError::Refused(_))
+    ));
+    drop(State::create(&sim_fs, &sim.random(), sim_fs.lock().unwrap()).unwrap());
+    let other = OsFs::new(folder.fs().root().join("other"));
+    other.create_root().unwrap();
+    assert!(matches!(
+        State::open(&sim_fs, other.lock().unwrap()),
+        Err(StateError::Refused(_))
+    ));
+    // The real state is still the one writer of its folder.
+    real.update(|v| v.term = 1).unwrap();
+    assert_eq!(os.lock().unwrap_err().kind(), ErrorKind::Locked);
 }
 
 fn state_values() -> &'static Values {

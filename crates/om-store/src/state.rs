@@ -463,7 +463,8 @@ impl State {
     }
 
     /// Change the values with `change` and make the result durable: a
-    /// marker advance in one slot, anything else in both (module docs).
+    /// marker advance in one slot, anything else in both (module docs); a
+    /// change that changes nothing writes nothing.
     /// Refused, with nothing written, when the result changes the server id
     /// or the start count, lowers the term, changes a vote already cast in
     /// the term, or changes the required end of a repair. After an error
@@ -477,6 +478,9 @@ impl State {
         let mut after = before;
         change(&mut after);
         check(&before, &after)?;
+        if after == before {
+            return Ok(());
+        }
         let twice = !before.advances_marker_to(&after);
         self.write(after, twice)
     }

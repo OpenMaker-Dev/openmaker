@@ -23,16 +23,20 @@
 //!   `symlink_metadata` before the operation, and a file is opened with
 //!   `O_NOFOLLOW` where its value is known (Linux, macOS) and then checked
 //!   to be the entry at its path (Unix) or not a link (Windows, opened
-//!   with `FILE_FLAG_OPEN_REPARSE_POINT`). What remains is a race: a
+//!   with `FILE_FLAG_OPEN_REPARSE_POINT`). What remains: a race, a
 //!   process with the server's own rights that swaps a folder for a link
-//!   between the check and the use. Closing it needs operations relative
-//!   to an open folder, which the standard library does not offer.
+//!   between the check and the use (closing it needs operations relative
+//!   to an open folder, which the standard library does not offer); and
+//!   hard links, which are not detected.
 //! - **The lock** is `File::try_lock` (`flock` on Unix, `LockFileEx` on
 //!   Windows) on the file [`sys::LOCK_NAME`] in the store folder, created
 //!   when missing and never removed: no operation takes that name. The
 //!   system releases it when the process ends.
-//! - **A new store folder** ([`OsFs::create_root`]): each folder it makes
-//!   is made durable in the folder above it, outermost first.
+//! - **The store folder** ([`OsFs::create_root`]): every folder on its
+//!   path, made now or found, is flushed in the folder above it, outermost
+//!   first, so that a folder an interrupted earlier call made is durable
+//!   too. Call it at every start; it costs one folder flush per name of
+//!   the path.
 //! - **Permissions.** On Unix, new files are readable by the server's
 //!   account only (0600) and new folders 0700 (`docs/server-storage.md`
 //!   section 11).
@@ -43,11 +47,12 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::sys::{
-    self, Clock, Error, ErrorKind, File, FileOptions, FolderLock, Fs, Op, Random, Result,
+    self, Clock, Error, ErrorKind, File, FileOptions, FolderLock, Fs, LockRecord, Op, Random,
+    Result,
 };
 
 /// The name of the lock file in the store folder.
@@ -147,14 +152,12 @@ const O_NOFOLLOW: Option<i32> = None;
 #[cfg(windows)]
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
-/// Tells one [`OsFs`] (and its clones) from another, for [`Fs::owns`].
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-/// A store folder on the operating system's file system.
+/// A store folder on the operating system's file system. Clones share the
+/// record of the lock they gave out.
 #[derive(Clone, Debug)]
 pub struct OsFs {
     root: PathBuf,
-    id: u64,
+    issued: Arc<Mutex<Option<LockRecord>>>,
 }
 
 impl OsFs {
@@ -163,7 +166,7 @@ impl OsFs {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            issued: Arc::default(),
         }
     }
 
@@ -173,36 +176,48 @@ impl OsFs {
     }
 
     /// Create the store folder and the folders above it that are missing
-    /// (0700 on Unix), outermost first, flushing the folder above each one
-    /// it makes, so that a store created in it cannot lose its folder in a
-    /// crash. A folder that exists is left as it is.
+    /// (0700 on Unix), outermost first, and flush the folder above each
+    /// folder on the way, whether this call made it or found it: a folder
+    /// an earlier call made and then stopped before flushing is made
+    /// durable now. That is one folder flush per name of the path, cheap
+    /// when nothing changed, so it belongs at every start. A folder above
+    /// that this account cannot read cannot be flushed and is passed over;
+    /// it is not one the server made.
     pub fn create_root(&self) -> Result<()> {
         let error = |e| Error::from_io(e, ErrorKind::Other, Op::CreateFolder, "");
-        let mut missing = Vec::new();
-        let mut at = self.root.as_path();
-        loop {
-            match fs::metadata(at) {
-                Ok(_) => break,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => missing.push(at),
+        let mut chain: Vec<&Path> = self
+            .root
+            .ancestors()
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .collect();
+        chain.reverse();
+        for folder in chain {
+            match fs::metadata(folder) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return Err(Error::new(ErrorKind::Other, Op::CreateFolder, "")),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    match folder_builder().create(folder) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                        Err(e) => return Err(error(e)),
+                    }
+                }
                 Err(e) => return Err(error(e)),
             }
-            match at.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => at = parent,
-                _ => break,
-            }
-        }
-        for folder in missing.into_iter().rev() {
-            match folder_builder().create(folder) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(error(e)),
-            }
-            let parent = match folder.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => parent,
-                _ => Path::new("."),
+            let Some(parent) = folder.parent() else {
+                // The file system's own root.
+                continue;
             };
-            sync_folder(parent)
-                .map_err(|e| Error::from_io(e, ErrorKind::Flush, Op::FlushFolder, ""))?;
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            match sync_folder(parent) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {}
+                Err(e) => return Err(Error::from_io(e, ErrorKind::Flush, Op::FlushFolder, "")),
+            }
         }
         Ok(())
     }
@@ -314,7 +329,11 @@ impl Fs for OsFs {
             .map_err(|e| Error::from_io(e, ErrorKind::Other, Op::Lock, LOCK_FILE))?;
         check_opened(&file, &full).map_err(|kind| Error::new(kind, Op::Lock, LOCK_FILE))?;
         match file.try_lock() {
-            Ok(()) => Ok(FolderLock::new((self.id, 0), file)),
+            Ok(()) => {
+                let (lock, record) = FolderLock::new(file);
+                *self.issued.lock().unwrap_or_else(|e| e.into_inner()) = Some(record);
+                Ok(lock)
+            }
             Err(fs::TryLockError::WouldBlock) => {
                 Err(Error::new(ErrorKind::Locked, Op::Lock, LOCK_FILE))
             }
@@ -325,7 +344,11 @@ impl Fs for OsFs {
     }
 
     fn owns(&self, lock: &FolderLock) -> bool {
-        lock.owner() == (self.id, 0)
+        self.issued
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|record| record.is(lock))
     }
 
     fn create(&self, path: &str, options: FileOptions) -> Result<Box<dyn File>> {
@@ -705,13 +728,31 @@ mod tests {
             kind(fs.rename("x", LOCK_FILE)),
             kind(fs.create(LOCK_FILE, plain)),
             kind(fs.open(LOCK_FILE, plain)),
+            // The lock in another case, as a file system that ignores case
+            // would read it, and names that break the rule.
+            kind(fs.rename("LOCK", "old-lock")),
+            kind(fs.remove("Lock")),
+            kind(fs.create("State", plain)),
             kind(fs.create("a:b", plain)),
+            kind(fs.create("trailing.", plain)),
+            kind(fs.create("nul.txt", plain)),
+            kind(fs.create("log/com1", plain)),
+            kind(fs.create("caf\u{e9}", plain)),
         ] {
             assert_eq!(refused, Some(ErrorKind::InvalidPath));
         }
+        drop(fs.create("com", plain).unwrap());
         assert_eq!(kind(fs.lock()), Some(ErrorKind::Locked));
         assert!(fs.owns(&lock));
+        assert!(fs.clone().owns(&lock));
+        // Another Fs of the same folder did not give it out.
         assert!(!OsFs::new(&root).owns(&lock));
+        // Nor a lock made outside any Fs, nor one let go.
+        let (forged, _) = FolderLock::new(());
+        assert!(!fs.owns(&forged));
+        drop(lock);
+        let live = fs.lock().unwrap();
+        assert!(fs.owns(&live));
     }
 
     #[test]

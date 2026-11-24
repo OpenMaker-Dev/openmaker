@@ -79,16 +79,17 @@
 //! A run is a function of its seed, the faults placed and the calls made:
 //! every choice comes from streams derived from the seed, maps are ordered
 //! by key, and nothing reads a clock, an address or another thread. (A
-//! machine's number, which [`Fs::owns`] compares, comes from a counter of
-//! the process, and decides nothing else.) The same seed and calls give
-//! the same events and the same bytes.
+//! lock's token is compared by address, and decides nothing but whether
+//! [`Fs::owns`] recognizes it.) The same seed and calls give the same
+//! events and the same bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::sys::{
-    self, Clock, Error, ErrorKind, File, FileOptions, FolderLock, Fs, Op, Random, Result,
+    self, Clock, Error, ErrorKind, File, FileOptions, FolderLock, Fs, LockRecord, Op, Random,
+    Result,
 };
 
 /// The unit a crash keeps or loses a part of a write by, from the file's
@@ -108,9 +109,6 @@ const WALL_START: Duration = Duration::from_secs(1_767_225_600);
 
 /// The store folder's node.
 const ROOT: u64 = 0;
-
-/// Tells one simulated machine from another, for [`Fs::owns`].
-static NEXT_MACHINE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// A seeded generator (SplitMix64): the simulator's source of choices, and
 /// a source of deterministic plans for tests.
@@ -354,7 +352,7 @@ impl Sim {
         let mut nodes = BTreeMap::new();
         nodes.insert(ROOT, Node::Folder(FolderNode::default()));
         let world = World {
-            id: NEXT_MACHINE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            issued: None,
             rates,
             crash_fates: Fates::Drawn,
             fired: BTreeMap::new(),
@@ -453,6 +451,7 @@ impl Sim {
         world.epoch += 1;
         world.halted = false;
         world.lock = None;
+        world.issued = None;
         world.handles.clear();
         world.collect();
     }
@@ -569,18 +568,19 @@ impl Fs for SimFs {
             return Err(Error::new(ErrorKind::Locked, Op::Lock, ""));
         }
         world.lock = Some(epoch);
-        Ok(FolderLock::new(
-            (world.id, epoch),
-            SimLock {
-                world: self.world.clone(),
-                epoch,
-            },
-        ))
+        let (lock, record) = FolderLock::new(SimLock {
+            world: self.world.clone(),
+            epoch,
+        });
+        world.issued = Some(record);
+        Ok(lock)
     }
 
     fn owns(&self, lock: &FolderLock) -> bool {
         let world = lock_world(&self.world);
-        !world.halted && world.lock == Some(world.epoch) && lock.owner() == (world.id, world.epoch)
+        !world.halted
+            && world.lock == Some(world.epoch)
+            && world.issued.as_ref().is_some_and(|record| record.is(lock))
     }
 
     fn create(&self, path: &str, options: FileOptions) -> Result<Box<dyn File>> {
@@ -765,8 +765,9 @@ impl File for SimFile {
 
 /// The machine's state.
 struct World {
-    /// This machine, among others in the process (for [`Fs::owns`]).
-    id: u64,
+    /// The record of the lock the running process holds (for
+    /// [`Fs::owns`]).
+    issued: Option<LockRecord>,
     rates: Rates,
     /// How a crash in a call settles what was not flushed.
     crash_fates: Fates,
@@ -908,6 +909,7 @@ impl World {
         self.collect();
         self.halted = true;
         self.lock = None;
+        self.issued = None;
         let step = self.step;
         self.events.push(Event::Crash {
             step,
@@ -1444,7 +1446,23 @@ impl World {
                         FileOp::Extend(_) => None,
                     })
                     .collect();
-                if writes.is_empty() {
+                if writes.is_empty() && !file.pending.is_empty() {
+                    // Only the size is pending: the cache's bytes up to it.
+                    let old = file.durable.len();
+                    let size = intended_len(file) as usize;
+                    file.durable.resize(size, 0);
+                    let upto = size.min(file.cache.len());
+                    if upto > old {
+                        file.durable[old..upto].copy_from_slice(&file.cache[old..upto]);
+                    }
+                    file.pending.clear();
+                    Event::WrittenBack {
+                        step,
+                        path,
+                        offset: old as u64,
+                        len: size.saturating_sub(old) as u64,
+                    }
+                } else if writes.is_empty() {
                     // Clean: the cache may drop what it holds.
                     file.cache = file.durable.clone();
                     Event::Evicted { step, path }
@@ -1478,6 +1496,8 @@ impl World {
         };
         *self.fired.entry(Fault::Writeback).or_default() += 1;
         self.events.push(event);
+        // A remove that reached the device gives the file's space back.
+        self.collect();
     }
 
     /// A name for node `id` in events: its path as the process sees it,
@@ -1882,6 +1902,200 @@ mod tests {
         assert_eq!(bytes[11], 7);
     }
 
+    /// What a process sees of a file it holds open: what it wrote, until
+    /// a fault says otherwise.
+    struct Seen {
+        file: Box<dyn File>,
+        /// Its bytes as written, while they are known.
+        bytes: Option<Vec<u8>>,
+    }
+
+    /// Take in what the simulator did: what changes what a process sees
+    /// of a file makes its bytes unknown; nothing else may. `diverged`
+    /// holds the files whose device may hold other bytes than the cache
+    /// since the last crash (damage, a lost or misplaced write, a failed
+    /// flush): dropping their cache may show those.
+    fn excuse(
+        events: &[Event],
+        files: &mut BTreeMap<&'static str, Seen>,
+        diverged: &mut BTreeSet<String>,
+    ) -> bool {
+        let mut stopped = false;
+        for event in events {
+            let path = match event {
+                Event::Crash { .. } => {
+                    diverged.clear();
+                    stopped = true;
+                    continue;
+                }
+                Event::Stopped { .. } => {
+                    stopped = true;
+                    continue;
+                }
+                Event::Damaged { path, .. }
+                | Event::Misplaced { path, .. }
+                | Event::Lost { path, .. }
+                | Event::FlushFailed { path, .. }
+                | Event::Evicted { path, .. }
+                | Event::WriteFailed { path, .. }
+                | Event::NoSpace { path, .. } => path,
+                _ => continue,
+            };
+            let unknown = match event {
+                Event::FlushFailed {
+                    cache_dropped: true,
+                    ..
+                }
+                | Event::WriteFailed { .. }
+                | Event::NoSpace { .. } => true,
+                Event::Evicted { .. } => diverged.contains(path),
+                _ => {
+                    diverged.insert(path.clone());
+                    false
+                }
+            };
+            if unknown {
+                if let Some(seen) = files.get_mut(path.as_str()) {
+                    seen.bytes = None;
+                }
+            }
+        }
+        stopped
+    }
+
+    /// The simulator's own invariant, under every fault it injects: between
+    /// faults that say so, a process reads back the size and bytes it
+    /// wrote.
+    #[test]
+    fn a_process_reads_back_what_it_wrote_whatever_else_happens() {
+        let rates = Rates {
+            crash: 60,
+            fail_flush: 15,
+            fail_write: 20,
+            no_space: 30,
+            fail_read: 25,
+            damage: 15,
+            misplace: 20,
+            lose_write: 20,
+            writeback: 3,
+        };
+        let mut fired: BTreeMap<Fault, u64> = BTreeMap::new();
+        for seed in 0..200 {
+            let sim = Sim::with_rates(seed, rates);
+            sim.set_capacity(16 * 1024);
+            let fs = sim.fs();
+            let mut plan = Rng::stream(seed, 9);
+            let mut files: BTreeMap<&'static str, Seen> = BTreeMap::new();
+            let mut diverged = BTreeSet::new();
+            let mut taken = 0;
+            for _ in 0..120 {
+                let name = ["a", "b", "c"][plan.below(3) as usize];
+                match plan.below(8) {
+                    0 if !files.contains_key(name) => {
+                        let opened = fs
+                            .open(name, FileOptions::PLAIN)
+                            .or_else(|_| fs.create(name, FileOptions::PLAIN));
+                        if let Ok(file) = opened {
+                            let mut bytes = vec![0; 32 * 1024];
+                            let read = file.read_at(0, &mut bytes).ok().map(|n| {
+                                bytes.truncate(n);
+                                bytes
+                            });
+                            files.insert(name, Seen { file, bytes: read });
+                        }
+                    }
+                    1 | 2 if files.contains_key(name) => {
+                        let offset = plan.below(2048);
+                        let mut data = vec![0; 1 + plan.below(600) as usize];
+                        plan.fill(&mut data);
+                        let seen = files.get_mut(name).unwrap();
+                        match seen.file.write_at(offset, &data) {
+                            Ok(()) => {
+                                if let Some(bytes) = &mut seen.bytes {
+                                    put(bytes, offset, &data);
+                                }
+                            }
+                            Err(_) => seen.bytes = None,
+                        }
+                    }
+                    3 if files.contains_key(name) => {
+                        let size = plan.below(3000);
+                        let seen = files.get_mut(name).unwrap();
+                        match seen.file.allocate(size) {
+                            Ok(()) => {
+                                if let Some(bytes) = &mut seen.bytes {
+                                    if bytes.len() < size as usize {
+                                        bytes.resize(size as usize, 0);
+                                    }
+                                }
+                            }
+                            Err(_) => seen.bytes = None,
+                        }
+                    }
+                    4 if files.contains_key(name) => {
+                        let _ = files[name].file.flush();
+                    }
+                    5 => {
+                        let _ = fs.flush_folder("");
+                    }
+                    6 if files.contains_key(name) && fs.remove(name).is_ok() => {
+                        files.remove(name);
+                    }
+                    _ => {}
+                }
+                // What every open file shows now.
+                let mut shown = BTreeMap::new();
+                for (&name, seen) in &files {
+                    let size = seen.file.size();
+                    let mut bytes = vec![0; 32 * 1024];
+                    let read = seen.file.read_at(0, &mut bytes).map(|n| {
+                        bytes.truncate(n);
+                        bytes
+                    });
+                    shown.insert(name, (size, read));
+                }
+                let events = sim.events();
+                let stopped = excuse(&events[taken..], &mut files, &mut diverged);
+                taken = events.len();
+                if stopped || sim.halted() {
+                    files.clear();
+                    sim.restart();
+                    continue;
+                }
+                for (name, (size, read)) in shown {
+                    let Some(expected) = &files[name].bytes else {
+                        continue;
+                    };
+                    if let Ok(size) = size {
+                        assert_eq!(size, expected.len() as u64, "seed {seed}: size of {name}");
+                    }
+                    if let Ok(read) = read {
+                        assert!(read == *expected, "seed {seed}: the bytes of {name}");
+                    }
+                }
+            }
+            for (fault, n) in sim.fired() {
+                *fired.entry(fault).or_default() += n;
+            }
+        }
+        for fault in [
+            Fault::Crash,
+            Fault::FailFlush,
+            Fault::FailWrite,
+            Fault::NoSpace,
+            Fault::FailRead,
+            Fault::Damage,
+            Fault::Misplace,
+            Fault::LoseWrite,
+            Fault::Writeback,
+        ] {
+            assert!(
+                fired.contains_key(&fault),
+                "{fault:?} never fired: {fired:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_disk_fills_and_frees_as_files_come_and_go() {
         let sim = Sim::new(4);
@@ -1900,6 +2114,21 @@ mod tests {
         assert_eq!(b.write_at(0, &[1]).unwrap_err().kind(), ErrorKind::NoSpace);
         // The last handle gone: given back, without a power loss.
         drop(a);
+        b.write_at(0, &[1; 100]).unwrap();
+
+        // A remove the system writes back on its own gives the space back
+        // too.
+        let sim = Sim::new(4);
+        sim.set_capacity(100);
+        let fs = sim.fs();
+        let a = fs.create("a", FileOptions::PLAIN).unwrap();
+        a.write_at(0, &[1; 100]).unwrap();
+        a.flush().unwrap();
+        let b = fs.create("b", FileOptions::PLAIN).unwrap();
+        fs.flush_folder("").unwrap();
+        fs.remove("a").unwrap();
+        drop(a);
+        sim.place(sim.steps() + 1, Fault::Writeback);
         b.write_at(0, &[1; 100]).unwrap();
 
         // A misplaced write takes space where it lands.

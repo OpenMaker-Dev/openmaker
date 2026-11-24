@@ -10,15 +10,32 @@
 //! runs a whole cluster in one thread from a seed.
 //!
 //! **Paths** are relative to the store folder, with `/` between names:
-//! `state`, `log/00000001`. A name is not empty, not `.` or `..`, and
-//! holds no `/`, `\`, `:` (a drive or stream on Windows) or NUL. `""` is
-//! the store folder itself. [`LOCK_NAME`] is reserved: no operation takes
-//! it.
+//! `state`, `log/00000001`. `""` is the store folder itself. One rule for
+//! names holds on every system, so that a store folder moves between them
+//! and no two names can be one file:
+//!
+//! - a name is 1 to 255 bytes of lowercase ASCII letters, digits, `.`, `_`
+//!   and `-`; it is not `.` or `..` and does not end in `.`. With no
+//!   capital letters and nothing outside ASCII, two names that differ
+//!   only by case, or by a Unicode form, cannot both exist: a file system
+//!   that ignores case (APFS and NTFS by default, ext4 with casefolding)
+//!   would take them for one file. Windows reads a trailing `.` and `:`
+//!   (a drive or a stream) as other names, and neither is allowed;
+//! - Windows device names (`con`, `prn`, `aux`, `nul`, `com0` to `com9`,
+//!   `lpt0` to `lpt9`, alone or before a `.`) are refused anywhere;
+//! - [`LOCK_NAME`] in the store folder is reserved, in any case: no
+//!   operation takes it.
+//!
+//! The store's own names (`state`, `state.new`, `pages`, `log/` with
+//! numbered segments, `blobs/` with hashes written in lowercase hex) keep
+//! the rule.
 //!
 //! **No links.** A store folder holds no symbolic links: an operation
 //! whose path runs through one fails with [`ErrorKind::Link`] rather than
 //! reach outside the folder. A log on another disk is a mount, not a link.
-//! The store folder itself may be reached through links.
+//! The store folder itself may be reached through links. Hard links are
+//! not detected: a file of the store folder that also has a name
+//! elsewhere can be changed through that name.
 //!
 //! **Durability.** A write is durable once a [`File::flush`] of its file
 //! has returned `Ok`, or once it has returned on a file opened with
@@ -33,6 +50,7 @@
 //! error of this layer: damage is found above it, by hashes.
 
 use std::fmt;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 /// The result of an operation of this layer.
@@ -43,6 +61,9 @@ pub const MAX_PATH: usize = 1024;
 
 /// The most names in a path.
 pub const MAX_DEPTH: usize = 16;
+
+/// The longest name, in bytes.
+pub const MAX_NAME: usize = 255;
 
 /// The name in the store folder kept for its lock (the real file system
 /// keeps the lock in a file of this name). No path may be it.
@@ -56,9 +77,11 @@ pub trait Fs: Send + Sync {
     /// with [`ErrorKind::Locked`] without waiting.
     fn lock(&self) -> Result<FolderLock>;
 
-    /// Whether `lock` is this store folder's lock and still held: what
-    /// writes the store's files takes the lock by value and checks it
-    /// here, so that one lock makes one writer.
+    /// Whether `lock` is the lock this `Fs` (or a clone of it) gave out
+    /// and that is still held: what writes the store's files takes the
+    /// lock by value and checks it here, so that one lock makes one
+    /// writer. A lock another `Fs` gave out, for this folder or another,
+    /// is not this one's.
     fn owns(&self, lock: &FolderLock) -> bool;
 
     /// Create the file `path`, empty. A name that exists fails with
@@ -136,33 +159,54 @@ impl FileOptions {
 }
 
 /// The store folder's lock (section 6.1), released when dropped.
+///
+/// Each lock carries a token of its own, which nothing can copy: an `Fs`
+/// keeps a [`LockRecord`] of the lock it gave out and recognizes that lock,
+/// and only that one, for as long as it lives.
 pub struct FolderLock {
-    owner: (u64, u64),
+    token: Arc<Token>,
     _held: Box<dyn Send + Sync>,
 }
 
-impl FolderLock {
-    /// A lock of the folder `owner` names, which `held` keeps until it is
-    /// dropped (for implementations; [`Fs::owns`] compares `owner`).
-    pub fn new(owner: (u64, u64), held: impl Send + Sync + 'static) -> Self {
-        Self {
-            owner,
-            _held: Box::new(held),
-        }
-    }
+/// What makes a lock itself: its allocation, which outlives no lock.
+struct Token;
 
-    /// Which folder, and which holding of it, this is (for
-    /// implementations).
-    pub fn owner(&self) -> (u64, u64) {
-        self.owner
+impl FolderLock {
+    /// A new lock, which `held` keeps until it is dropped, and the record
+    /// that recognizes it (for implementations).
+    pub fn new(held: impl Send + Sync + 'static) -> (Self, LockRecord) {
+        let token = Arc::new(Token);
+        let record = LockRecord(Arc::downgrade(&token));
+        let lock = Self {
+            token,
+            _held: Box::new(held),
+        };
+        (lock, record)
     }
 }
 
 impl fmt::Debug for FolderLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FolderLock")
-            .field("owner", &self.owner)
-            .finish()
+        f.write_str("FolderLock")
+    }
+}
+
+/// What an `Fs` keeps of the lock it gave out.
+#[derive(Debug, Clone)]
+pub struct LockRecord(Weak<Token>);
+
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Token")
+    }
+}
+
+impl LockRecord {
+    /// Whether `lock` is the recorded lock, and still held. The record
+    /// keeps the token's allocation, so no other lock can share its
+    /// address while the record exists.
+    pub fn is(&self, lock: &FolderLock) -> bool {
+        self.0.strong_count() > 0 && Weak::ptr_eq(&self.0, &Arc::downgrade(&lock.token))
     }
 }
 
@@ -213,8 +257,8 @@ pub enum ErrorKind {
     /// The process has stopped: in the simulator, it crashed or was
     /// stopped and nothing it does reaches the disk any more.
     Halted,
-    /// Not a path inside the store folder, the reserved lock name, or a
-    /// rename between folders.
+    /// Not a path inside the store folder, a name that breaks the rule for
+    /// names (module docs), or a rename between folders.
     InvalidPath,
     /// A name along the path is a symbolic link (module docs).
     Link,
@@ -363,15 +407,31 @@ pub fn names(path: &str, op: Op) -> Result<Vec<&str>> {
     if names.len() > MAX_DEPTH {
         return Err(invalid());
     }
-    for name in &names {
-        if name.is_empty() || *name == "." || *name == ".." || name.contains(['\\', ':', '\0']) {
-            return Err(invalid());
-        }
-    }
-    if path == LOCK_NAME {
+    if !names.iter().all(|name| allowed(name)) || path.eq_ignore_ascii_case(LOCK_NAME) {
         return Err(invalid());
     }
     Ok(names)
+}
+
+/// Whether `name` keeps the rule for names (module docs).
+fn allowed(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let charset = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(b);
+    if bytes.is_empty()
+        || bytes.len() > MAX_NAME
+        || !bytes.iter().all(charset)
+        || name == "."
+        || name == ".."
+        || name.ends_with('.')
+    {
+        return false;
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    let device = matches!(stem, "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    !device
 }
 
 /// The folder `path` is in (`""` for the store folder) and its name.
