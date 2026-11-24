@@ -908,8 +908,10 @@ rebuilt for them when those entries are applied again (4.7).
   join with, and a part each join splits off; the levels are the tree's
   height plus at most `1 + log2(sets)` new ones; leaf splits and joins add
   the overflow pages of a new separator, and new items theirs. The bound
-  is loose (45 pages for one put into a tree of height 3, which writes 3)
-  and grows with the edits counted per primitive. The exact count is a
+  is loose, and looser for larger entries: one put of a node at depth 1
+  into a tree of height 3 is bounded by 45 pages, one at depth 3 by 82,
+  and either writes 3; a thousand puts at depth 3 are bounded by about
+  200,000 pages. The exact count is a
   function of the tree and the edits (section 2.7), so a reservation
   reports the pages its units took (`Reservation::taken`): an entry can
   carry it, and recovery and followers reserve exactly that.
