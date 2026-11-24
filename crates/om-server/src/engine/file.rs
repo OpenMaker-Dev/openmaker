@@ -30,12 +30,14 @@ impl Default for FileEngine {
 }
 
 /// What of the file the engine holds for an operation: what today's code
-/// took for each request. op61, op62 and op65 never took the store, and
-/// op60 only read it. op13, op73, op86's writes, a find's indexes, op87,
-/// op88 and op240's save took the store for writing and never the lock
-/// table, which their runs do not use; an authoring edit took the store
-/// for writing and the lock table only while it took and released its
-/// locks.
+/// took for each request. op61, op62 and op65 never took the store, nor did
+/// a server script's lock and its releases or a session's end, and op60
+/// only read it. op13, op73, op86's writes, a find's indexes, op87, op88,
+/// op240's save (and a server script's end) and Set Next Serial Value took
+/// the store for writing and never the lock table, which their runs do not
+/// use; an authoring edit took the store for writing and the lock table
+/// only while it took and released its locks; a server script's commit
+/// took both from its start.
 enum Needs {
     LockTable,
     View,
@@ -47,10 +49,12 @@ enum Needs {
 /// (every change saved before it is answered, a failed save reported).
 enum Save {
     /// Nothing to save: lock-table edits only, or a server script's op71,
-    /// whose reservation its commit saves.
+    /// whose reservation its commit saves, or its end
+    /// ([`Save::Requested`]).
     Nothing,
-    /// The operation's commit (`Hosted::save_commit`); a failed save takes
-    /// it back.
+    /// The operation's commit (`Hosted::save_commit`): op70, an authoring
+    /// edit, a server script's commit and Set Next Serial Value. A failed
+    /// save takes it back.
     Commit,
     /// A client's op71: its reservation is saved before the ids are
     /// answered (`Hosted::save_held`); a failed save takes it back.
@@ -65,7 +69,9 @@ enum Save {
     UncheckedIfChanged,
     /// op240's save: [`Save::Unchecked`] when the file may be written, the
     /// reply then saying whether it holds changes the disk lacks
-    /// (`Store::has_unsaved_changes`), as op240 always answered it.
+    /// (`Store::has_unsaved_changes`), as op240 always answered it. A
+    /// server script's end saves the same way, as `Hosted::save` did, and
+    /// reads no reply.
     Requested,
 }
 
@@ -81,19 +87,28 @@ fn needs(operation: &Operation) -> Needs {
         | Operation::StoreContainerData(_)
         | Operation::AdjustContainerCount(_)
         | Operation::EditDesign(_)
-        | Operation::SaveFile => Needs::Transaction,
+        | Operation::SaveFile
+        | Operation::CommitScriptRecords(_)
+        | Operation::SetNextSerial(_) => Needs::Transaction,
         Operation::TakeLock(_) => Needs::View,
-        Operation::UpgradeLock(_) | Operation::ReleaseLock(_) | Operation::ReleaseLocks(_) => {
-            Needs::LockTable
-        }
+        Operation::UpgradeLock(_)
+        | Operation::ReleaseLock(_)
+        | Operation::ReleaseLocks(_)
+        | Operation::TakeScriptLock(_)
+        | Operation::ReleaseScriptLock(_)
+        | Operation::ReleaseSessionLocks(_) => Needs::LockTable,
     }
 }
 
 fn save(operation: &Operation) -> Save {
     match operation {
         Operation::ReserveRecordIds(op) if op.durable => Save::Reservation,
-        // An authoring edit that changed the file did it in a commit.
-        Operation::CommitRecords(_) | Operation::EditDesign(_) => Save::Commit,
+        // An authoring edit that changed the file did it in a commit, and so
+        // does a server script's Set Next Serial Value.
+        Operation::CommitRecords(_)
+        | Operation::EditDesign(_)
+        | Operation::CommitScriptRecords(_)
+        | Operation::SetNextSerial(_) => Save::Commit,
         Operation::AdvanceSerial(_)
         | Operation::UploadToCatalog(_)
         | Operation::ChangeSchema(_)
@@ -280,6 +295,7 @@ impl FileEngine {
             reservation,
             stored_lines,
             released_libraries,
+            emptied_libraries,
             field_bases,
             ..
         } = tx;
@@ -313,6 +329,16 @@ impl FileEngine {
         };
         let outcome = match saved {
             Ok(()) => {
+                if !emptied_libraries.is_empty() {
+                    // Member ids start again in a new library: no cached
+                    // thumbnail of the old one may answer for them. Under
+                    // the store and the lock table, as a server script's
+                    // commit always forgot them.
+                    let mut thumbnails = file.thumbnails.lock().expect("thumbnail lock");
+                    for library in &emptied_libraries {
+                        thumbnails.forget_library(library);
+                    }
+                }
                 locks.keep();
                 for (table, field) in field_bases {
                     store.add_field_basis(&table, field);

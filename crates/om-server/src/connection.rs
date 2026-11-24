@@ -53,8 +53,8 @@ use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
     AdjustContainerCount, AdvanceSerial, CommitRecords, Draft, FileEngine, Operation, ReleaseLock,
-    ReleaseLocks, Reply, ReserveRecordIds, StoreContainerData, TakeLock, UpdateTable, UpgradeLock,
-    UploadToCatalog,
+    ReleaseLocks, ReleaseSessionLocks, Reply, ReserveRecordIds, StoreContainerData, TakeLock,
+    UpdateTable, UpgradeLock, UploadToCatalog,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
@@ -1103,7 +1103,9 @@ impl Connection {
             let connection = session.connection_id;
             self.shared.scripts.forget(connection);
             for file in self.shared.hosting.files() {
-                file.lock_table().release_connection(connection);
+                let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks { connection });
+                let outcome = self.shared.engine.submit(&file, release);
+                outcome.notices.deliver(&file, &self.shared.mailboxes);
                 file.registrations().retain(|r| r.connection != connection);
             }
             self.shared.mailboxes.close(connection);
@@ -1853,9 +1855,11 @@ fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
                 &account.name,
             ));
         }
-        file.hosted
-            .lock_table()
-            .release_connection(session.connection_id);
+        let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks {
+            connection: session.connection_id,
+        });
+        let outcome = shared.engine.submit(&file.hosted, release);
+        outcome.notices.deliver(&file.hosted, &shared.mailboxes);
         let mut registrations = file.hosted.registrations();
         registrations.retain(|r| r.connection != session.connection_id);
         shared

@@ -149,19 +149,21 @@ The rest of the server reaches a file's contents only through this
 interface. It has three parts.
 
 **Status.** Write operations are built for record writes, locks, schema
-changes, container data and authoring edits, with the file engine behind
-them (`crates/om-server/src/engine/`): op70, op71, op72, op60, op61, op62,
-op65, op13, op73, op86's schema instructions and stored indexes, op87,
-op88, and op240's edits and its Save, from clients, and the same
-operations of server scripts (reserving a record id, advancing a serial,
-releasing a transaction's or a session's locks, storing the indexes a
-find or a related-record lookup built). Everything else still changes a
-file from its request handler: account edits, a server script's commit
-(with the container data it stores and counts) and its record and account
-locks, the release of a closed session's locks, the desktop's saved found
-sets, and the deferred field work a file is opened with
-(`Store::recover`) with its save. Views, `export`, `import` and
-`capabilities` are not built.
+changes, container data, authoring edits and server scripts, with the
+file engine behind them (`crates/om-server/src/engine/`): op70, op71,
+op72, op60, op61, op62, op65, op13, op73, op86's schema instructions and
+stored indexes, op87, op88, and op240's edits and its Save, from clients;
+the same operations of server scripts (reserving a record id, advancing a
+serial, releasing a transaction's locks, storing the indexes a find or a
+related-record lookup built), a server script's commit (with the
+container data it stores and counts), its Set Next Serial Value, its
+locks on a record and on the accounts catalog with their releases, and
+the save at its end; and the release of a session's locks when its
+connection ends, it logs out of a file or closes it, or a server script's
+session ends. Everything else still changes a file from its request
+handler: account edits, the desktop's saved found sets, and the deferred
+field work a file is opened with (`Store::recover`) with its save. Views,
+`export`, `import` and `capabilities` are not built.
 
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
@@ -185,24 +187,41 @@ update a table (op73, `UpdateTable`), store an index built for a find
 adjust a container's reference count, which releases it at 0 (op87,
 `AdjustContainerCount`), an authoring edit (op240, `EditDesign`, one
 variant carrying the decoded edit), the authoring extension's Save
-(op240, `SaveFile`), a deploy (section 9), and taking, upgrading and
+(op240, `SaveFile`), a deploy (section 9), taking, upgrading and
 releasing locks (op60, op61, op62, op65: `TakeLock`, `UpgradeLock`,
-`ReleaseLock`, `ReleaseLocks`). An operation owns its data and names who
-asks: the lock user (connection and transaction), the name other users see
-for it, for op70 the account, its privilege set at login and those of
-the listed records the session was served without their values, for
-op73 the account its calculations see, and for an authoring edit the
-connection, session name and account its locks and stamps name. op70's
-staged records travel in it: the session's temporary area lends them
-(`writes::TempArea::lend`) and takes back those the commit did not take.
-A commit that was not stored has still taken the records it reached, as
-before the interface: the file is put back, the staged edits are gone,
+`ReleaseLock`, `ReleaseLocks`), a server script's commit
+(`CommitScriptRecords`) and Set Next Serial Value (`SetNextSerial`), a
+server script's lock on a record or on the accounts catalog and its
+release (`TakeScriptLock`, `ReleaseScriptLock`), and the release of a
+session's locks when it ends (`ReleaseSessionLocks`). An operation owns
+its data and names who asks: the lock user (connection and transaction),
+the name other users see for it, for op70 the account, its privilege set
+at login and those of the listed records the session was served without
+their values, for op73 the account its calculations see, for an
+authoring edit the connection, session name and account its locks and
+stamps name, and for a server script's operations its session's lock
+user, whose connection no client has, so that its notices reach every
+client registered on the file. A server script's lock is not op60: it
+reads nothing of the store, no cap applies, and the script host answers
+a conflict with the step's error (301 for a record, as a client's lock is
+refused; 310 for the accounts catalog, script-runtime.md 2.3). Its commit carries its records as the
+script host finished them, with the container data its steps set: the
+host applied the records' rules and checked the session's privileges
+before, so the operation names no account. The release of the accounts
+catalog carries the notices of the change the account step made
+(schema-path.md 9), as op62 names the change its release tells of. The
+record ids a server script reserves wait unsaved for its commit, so its
+end submits op240's Save, which saves those of records it did not commit.
+op70's staged records travel in it: the session's temporary area lends
+them (`writes::TempArea::lend`) and takes back those the commit did not
+take. A commit that was not stored has still taken the records it reached,
+as before the interface: the file is put back, the staged edits are gone,
 and the client uploads them again to retry. op88's container data is read
 from the upload before its operation, within the memory the client may
 hold (`--upload-memory-mib`), and travels in it, or, when it is not valid
-binary data, why not; the request keeps the charge until `submit`
-returns. An authoring edit's request travels as it was decoded, its
-definition charged the same way.
+binary data, why not; the request keeps the charge until `submit` returns.
+An authoring edit's request travels as it was decoded, its definition
+charged the same way.
 
 Finds and op86 programs run before their operation, as reads of the file
 under its read lock, and leave state of the running server outside the
@@ -316,14 +335,17 @@ computes it
 
 **The file engine behind it.** `FileEngine::submit` takes what each request
 took before the interface: the store's write lock for op70, op71, op72,
-op13, op73, op86's schema instructions and stored indexes, op87, op88 and
-op240, its read lock for op60, and for op61, op62 and op65 only the lock
-table. It takes the store first and the lock table when the operation
-first uses it (op13, op73, op86's operations, op87, op88 and op240's Save
-never do), completes a draft right after taking the store, holds both
-while it saves, and lets go of the lock table first; the caller then
-delivers the notices, taking the file's registrations and then the
-mailboxes (the order is in the module doc of `engine`). An authoring edit
+op13, op73, op86's schema instructions and stored indexes, op87, op88,
+op240, a server script's commit and its Set Next Serial Value, its read
+lock for op60, and for op61, op62, op65, a server script's lock and its
+release and the release of a session's locks only the lock table. It
+takes the store first and the lock table when the operation first uses
+it (op13, op73, op86's operations, op87, op88, op240's Save and Set Next
+Serial Value never do; a server script's commit takes it at its start,
+as it always held both), completes a draft right after taking the store,
+holds both while it saves, and lets go of the lock table first; the
+caller then delivers the notices, taking the file's registrations and
+then the mailboxes (the order is in the module doc of `engine`). An authoring edit
 holds its locks as op240 always did: it takes the lock table only while
 it takes them (and again while it releases them when it is refused after
 that), saves under the store alone while the locks keep other clients out
@@ -371,8 +393,24 @@ FileMaker Server's behaviour here is unmeasured.
   the storage error (status 800, 809 or 810) saying what the file keeps,
   and its locks are released all the same;
 - op240's Save: as op72, its reply then saying whether the file holds
-  changes the disk lacks (status 800), or that it is hosted read-only;
-- the lock requests save nothing.
+  changes the disk lacks (status 800), or that it is hosted read-only. A
+  server script's end submits it and does not read its reply, as it
+  called `Hosted::save`;
+- a server script's commit and its Set Next Serial Value: their journal
+  (`Hosted::save_commit`), as op70. A failed save takes the change back,
+  a commit's records stay locked, and the step fails with the save's
+  FileMaker error (`hosting::save_error`);
+- the lock requests, a server script's locks and their releases, and the
+  release of a session's locks save nothing.
+
+A server script's commit, lock, release and end, and a session's end,
+take what they took, in the same order, and save as they did, so a
+request that overlaps one of them sees what it could see before. The
+commit's container data takes its new members' unique ids from the
+engine's environment, which on the running server is the system's random
+source it took them from before. The release of a server script's locks
+at its end, which was op65's for all of its connection's locks, is now
+the release of a session's locks, which does the same.
 
 op86's schema instructions and stored indexes, and a server script's
 stored indexes, were made under one hold of the store and saved under a
@@ -407,9 +445,9 @@ of the budget left.
 The follow-up of #673's step 1, once every write goes through `submit`,
 changes what the file engine does when a save fails, on purpose. Today
 `submit` reports nothing for op72, op13, op73, op86's operations, op87 and
-op88, and server scripts' other saves call `Hosted::save`, which reports
-nothing either, so a client can be told a serial, catalog or container is
-stored when it is not. Behind the interface:
+op88, and a server script's end does not read its Save's reply, so a
+client can be told a serial, catalog or container is stored when it is
+not. Behind the interface:
 
 - a save that fails before the rename takes the operation's effects back,
   and the reply is the storage error;

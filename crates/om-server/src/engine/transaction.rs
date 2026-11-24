@@ -16,12 +16,14 @@ use crate::store::{IndexId, Journal, MemberKey, Store};
 /// What the engine holds of a file for an operation: what the operation
 /// needs, and no more (`FileEngine::submit`).
 pub enum Hold<'h, 'a> {
-    /// Nothing of the tree: only the lock table (op61, op62, op65).
+    /// Nothing of the tree: only the lock table (op61, op62, op65, a
+    /// server script's lock and its release, a session's end).
     LockTable,
     /// The tree, for reading (op60).
     View(&'h Store),
     /// A transaction on the tree (op70, op71, op72, op13, op73, op86's
-    /// writes and a find's indexes, op87, op88 and op240).
+    /// writes and a find's indexes, op87, op88, op240, a server script's
+    /// commit and Set Next Serial Value).
     Transaction(&'h mut Transaction<'a>),
 }
 
@@ -32,11 +34,12 @@ pub enum Hold<'h, 'a> {
 /// It exposes the `Store` methods the operations use, and `view` for the
 /// state derived from the tree (a privilege set's hidden fields and record
 /// limits, the decoded catalog an authoring edit checks). The changes are
-/// a commit's record writes and an authoring edit's catalog members
-/// (`Journal`), op71's reservation and op72's serial value, and the schema
-/// changes of op13, op73 and op86 with a find's stored indexes and op87's
-/// and op88's container data, which are made in place and not taken back
-/// (their saves are not checked yet).
+/// a commit's record writes (with a server script's container data and
+/// reference counts), an authoring edit's catalog members and Set Next
+/// Serial Value's value (`Journal`), op71's reservation and op72's serial
+/// value, and the schema changes of op13, op73 and op86 with a find's
+/// stored indexes and op87's and op88's container data, which are made in
+/// place and not taken back (their saves are not checked yet).
 pub struct Transaction<'a> {
     pub(super) store: &'a mut Store,
     /// The commit the record writes go into ([`Self::begin_commit`]).
@@ -48,6 +51,10 @@ pub struct Transaction<'a> {
     /// The container libraries deleted tables took with them
     /// ([`Self::apply`]), whose thumbnails the engine forgets.
     pub(super) released_libraries: Vec<Vec<Vec<u8>>>,
+    /// The libraries of tables a server script's commit left without
+    /// records ([`Self::drop_emptied_library`]), whose thumbnails the
+    /// engine forgets once the commit is stored.
+    pub(super) emptied_libraries: Vec<Vec<Vec<u8>>>,
     /// Fields an authoring edit added, counted as computed once the edit
     /// is stored ([`Self::add_field_basis_once_stored`]).
     pub(super) field_bases: Vec<(Vec<u8>, u64)>,
@@ -72,6 +79,7 @@ impl<'a> Transaction<'a> {
             reservation: None,
             stored_lines: Vec::new(),
             released_libraries: Vec::new(),
+            emptied_libraries: Vec::new(),
             field_bases: Vec::new(),
             wrote_member_keys: false,
         }
@@ -147,6 +155,82 @@ impl<'a> Transaction<'a> {
             .journal
             .get_or_insert_with(|| self.store.begin_commit());
         self.store.write_record_in(journal, table, id, record);
+    }
+
+    /// Store container data a server script set into a cell of a record of
+    /// `table` in the table's library, within the commit
+    /// (`Store::store_container_in`), a new member's unique id from
+    /// `unique_id`. Returns the member, its reference counted.
+    pub fn store_container(
+        &mut self,
+        table: &[u8],
+        data: BinaryData,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
+    ) -> Vec<u8> {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store
+            .store_container_in(journal, table, data, unique_id)
+    }
+
+    /// Count the container references of a server script's record of
+    /// `table`, `old` as stored and `new` as it will be, within the commit
+    /// (`Store::count_containers_in`).
+    pub fn count_containers(
+        &mut self,
+        table: &[u8],
+        old: Option<&OwnedNode>,
+        new: Option<&OwnedNode>,
+        counted: &[Vec<u8>],
+    ) {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store
+            .count_containers_in(journal, table, old, new, counted);
+    }
+
+    /// Release the container references of the records the commit deleted
+    /// (`Store::release_deleted_record_containers`).
+    pub fn release_deleted_record_containers(&mut self) {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store.release_deleted_record_containers(journal);
+    }
+
+    /// Delete All Records or Truncate Table: drop the library of `table`
+    /// when the commit left it without records
+    /// (`Store::drop_emptied_library_in`), its thumbnails forgotten once
+    /// the commit is stored. Whether it did.
+    pub fn drop_emptied_library(&mut self, table: &[u8]) -> bool {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        let dropped = self.store.drop_emptied_library_in(journal, table);
+        if dropped {
+            self.emptied_libraries
+                .push(vec![table.to_vec(), vec![crate::library::LIBRARY]]);
+        }
+        dropped
+    }
+
+    /// Set Next Serial Value: replace a field's next serial value within
+    /// the commit (`Store::set_serial_in`), the value it had returned.
+    /// `None` when the table has no such field or the tree cannot take the
+    /// value, which changes nothing and begins no commit.
+    pub fn set_serial(&mut self, table: &[u8], field: &[u8], value: &str) -> Option<String> {
+        let begun = self.journal.is_some();
+        let mut journal = self
+            .journal
+            .take()
+            .unwrap_or_else(|| self.store.begin_commit());
+        let set = self.store.set_serial_in(&mut journal, table, field, value);
+        if set.is_some() || begun {
+            self.journal = Some(journal);
+        }
+        set
     }
 
     /// Run `work`: when it panics, the commit's changes are put back before
@@ -359,6 +443,18 @@ impl<'a> Locks<'a> {
     /// `LockTable::unlock`, kept.
     pub fn unlock(&mut self, path: &[Vec<u8>], user: LockUser, lock_type: u16) -> bool {
         self.table().unlock(path, user, lock_type)
+    }
+
+    /// Take the table now, before the operation reads anything else: a
+    /// server script's commit held it from its start before the engine
+    /// interface, so no lock request ran between its checks and its store.
+    pub fn hold(&mut self) {
+        self.table();
+    }
+
+    /// `LockTable::release_path`, kept.
+    pub fn release_path(&mut self, path: &[Vec<u8>], user: LockUser) {
+        self.table().release_path(path, user);
     }
 
     /// `LockTable::release_txn`, kept.

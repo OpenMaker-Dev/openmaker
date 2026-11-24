@@ -1,5 +1,6 @@
 //! The engine interface (`docs/server-storage.md` 5) for record writes,
-//! locks and schema changes: every change of this kind a request makes is
+//! locks, schema changes, container data, authoring edits and server
+//! scripts' writes and locks: every change of this kind a request makes is
 //! an [`Operation`], a value that owns its data, [`run`] against what the
 //! engine holds of the file, and answered with an [`Outcome`]: the reply
 //! and the notices for other clients. Effects are what the run did to the
@@ -14,37 +15,49 @@
 //! DeleteTable), store the indexes a find built on demand, update a table
 //! (op73), store container data and adjust a library member's reference
 //! count (op88, op87), an authoring edit and the authoring extension's
-//! save (op240). The other writes (accounts, a server script's commit)
-//! still change the file from their handlers (#673).
+//! save (op240); a server script's commit, its Set Next Serial Value, its
+//! locks on a record and on the accounts catalog and their releases, and
+//! the save at its end (op240's save again); the release of a session's
+//! locks when it ends, logs out of a file or closes it. The other writes
+//! (account edits, the deferred field work a file is opened with) still
+//! change the file from their handlers (#673).
 //!
 //! # Lock order
 //!
 //! [`FileEngine::submit`] takes, in this order and only what the operation
 //! needs: the file's store (`Hosted::read_store` for op60,
 //! `Hosted::write_store` for op70, op71, op72, the schema operations,
-//! op87, op88 and op240), then its lock table (`Hosted::locks`, when the
-//! operation first uses it, [`Locks`]; the schema operations, op87, op88
-//! and op240's save never do). It holds both while it saves, and lets go
-//! of the lock table first; dropping the store's write guard takes the
-//! file's accounts while it still holds the store
-//! (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
-//! table, as before. [`FileEngine::submit_draft`] completes its draft
-//! right after it takes the store, from state the write guard gives it
-//! alone (see "Drafts"). An authoring edit (op240) takes the lock table
-//! only while it takes its locks, and again while it releases them when
-//! it is refused after taking them; it saves under the store alone, and
-//! its locks are released after the engine lets go of the store, the lock
-//! table taken on its own for that ([`Locks::lock_while_stored`]), as
-//! op240 always held them. The one other lock taken inside `submit` is the
-//! file's thumbnail cache (`Hosted::thumbnails`), under the store, when
-//! op86's DeleteTable took a table's container library: store, then
-//! thumbnails, as a server script's commit and op96 take them. Nothing
-//! else: the caller delivers notices after it returns, taking the file's
-//! registrations and then the mailboxes (`writes::notify`), and a
-//! session's own state (its temporary area, the records it was served
-//! withheld, the memory its uploads are charged) is read before and
-//! settled after. This is the order the write path has always used
-//! (store, lock table, registrations, mailboxes), with the last two no
+//! op87, op88, op240, a server script's commit and its Set Next Serial
+//! Value), then its lock table (`Hosted::locks`, when the operation first
+//! uses it, [`Locks`]; the schema operations, op87, op88, op240's save and
+//! Set Next Serial Value never do; a server script's commit takes it first
+//! thing, [`Locks::hold`], as it always held both from its start). It
+//! holds both while it saves, and lets go of the lock table first;
+//! dropping the store's write guard takes the file's accounts while it
+//! still holds the store (`hosting::StoreWriteGuard`). op61, op62 and op65
+//! take only the lock table, as before, and so do a server script's lock
+//! and its release and the release of a session's locks, as the script
+//! host and a connection's end took it: a connection's end releases its
+//! locks one file at a time, each under that file's lock table alone,
+//! before it removes the file's registration.
+//! [`FileEngine::submit_draft`] completes its draft right after it takes
+//! the store, from state the write guard gives it alone (see "Drafts"). An
+//! authoring edit (op240) takes the lock table only while it takes its
+//! locks, and again while it releases them when it is refused after taking
+//! them; it saves under the store alone, and its locks are released after
+//! the engine lets go of the store, the lock table taken on its own for
+//! that ([`Locks::lock_while_stored`]), as op240 always held them. The one
+//! other lock taken inside `submit` is the file's thumbnail cache
+//! (`Hosted::thumbnails`): under the store when op86's DeleteTable took a
+//! table's container library, and under the store and the lock table once
+//! a server script's commit that left a table without records is stored;
+//! store, then thumbnails, as op96 takes them. Nothing else: the caller
+//! delivers notices after it returns, taking the file's registrations and
+//! then the mailboxes (`writes::notify`), and a session's own state (its
+//! temporary area, the records it was served withheld, the memory its
+//! uploads are charged, a server script's waiting container data) is read
+//! before and settled after. This is the order the write path has always
+//! used (store, lock table, registrations, mailboxes), with the last two no
 //! longer inside the first two.
 //!
 //! # Drafts
@@ -84,7 +97,7 @@ use om_protocol::container::{AdjustReferenceCount, UploadBinaryReply, COUNT_FAIL
 use om_protocol::schema::Upgrade;
 use om_protocol::write::{
     Conflict, CreateRecord, CreateRecordReply, GetSerial, GetSerialReply, KeyPath, KillAllLocks,
-    Lock, LockReply, Unlock,
+    Lock, LockReply, Unlock, LOCK_WRITE,
 };
 
 use crate::hosting::Hosted;
@@ -92,7 +105,7 @@ use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::store::{IndexId, MemberKey};
 use crate::views::Withheld;
-use crate::writes::{self, Change, CommitError, Mailboxes};
+use crate::writes::{self, Change, CommitError, Mailboxes, RecordWrite};
 
 pub(crate) use file::FileEngine;
 pub(crate) use transaction::{Hold, Locks, Transaction};
@@ -138,8 +151,21 @@ pub enum Operation {
     EditDesign(Box<EditDesign>),
     /// op240's Save: write the file now if it holds changes the disk lacks,
     /// such as a client's op13 uploads, and answer whether the disk holds
-    /// them all.
+    /// them all. A server script's end submits it too, for what its
+    /// reservations left unsaved (`scripts::host`, `ServerHost::close`).
     SaveFile,
+    /// A server script's commit of its records.
+    CommitScriptRecords(CommitScriptRecords),
+    /// A server script's Set Next Serial Value.
+    SetNextSerial(SetNextSerial),
+    /// A server script's lock on a record or on the accounts catalog.
+    TakeScriptLock(TakeScriptLock),
+    /// The release of a server script's locks on one path.
+    ReleaseScriptLock(ReleaseScriptLock),
+    /// The release of a session's locks when it ends: a client's
+    /// connection that ended, logged out of the file or closed it, or a
+    /// server script's session.
+    ReleaseSessionLocks(ReleaseSessionLocks),
 }
 
 /// op71: reserve record ids and lock them for a transaction
@@ -265,6 +291,73 @@ pub struct ChangeSchema {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreIndexes {
     pub indexes: Vec<IndexId>,
+}
+
+/// A server script's commit (write-path.md 3.4, 5;
+/// [`writes::commit_records`]): its records as they will be stored, each
+/// with the container data its steps set, checked and written all or none.
+/// The script host applied the records' rules (auto-enter, stored
+/// calculations, validation) and checked the session's privileges before:
+/// the run reads no account and no privilege set. The container data and
+/// reference counts are part of the commit, saved and taken back with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitScriptRecords {
+    /// The script session's lock user: the records' locks are its own, and
+    /// its connection, which no client has, sends the notices, so every
+    /// client registered on the file is told, the one that asked for the
+    /// script included.
+    pub user: LockUser,
+    pub records: Vec<RecordWrite>,
+    /// Delete All Records or Truncate Table: a table they leave without
+    /// records loses its library.
+    pub bulk_delete: bool,
+}
+
+/// A server script's Set Next Serial Value (script-runtime.md, "Steps";
+/// [`writes::set_next_serial`]): a field's next serial value replaced in
+/// a commit, saved before it counts as a record commit is. The script host
+/// checked the session's [Full Access].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetNextSerial {
+    /// The table key `[T]`.
+    pub table: Vec<u8>,
+    /// The field key `[F]`.
+    pub field: Vec<u8>,
+    pub value: String,
+}
+
+/// A server script's write lock on a record it changes, or on the accounts
+/// catalog `[23, 1]` while an account step changes it (script-runtime.md
+/// 2.3, local-files.md 2.4). Its rules are not op60's: it reads nothing of
+/// the store (no modification count), no cap applies, and the script host
+/// answers a conflict with the step's error (301 for a record, 310 for the
+/// accounts).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TakeScriptLock {
+    pub user: LockUser,
+    /// "server name (script engine, account)": what a conflict names.
+    pub holder: String,
+    pub path: KeyPath,
+}
+
+/// The release of every lock a server script's lock user holds on a path
+/// (`LockTable::release_path`): a record it left unchanged, or the accounts
+/// catalog after an account step, whose release tells the other clients of
+/// the `changes` the step made (schema-path.md 9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseScriptLock {
+    pub user: LockUser,
+    pub path: KeyPath,
+    pub changes: Vec<Change>,
+}
+
+/// The release of every lock a session's connection holds in the file
+/// (`LockTable::release_connection`): a client's connection that ended,
+/// logged out of the file or closed it, or a server script's session that
+/// ended or was aborted (docs/server-storage.md 7.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseSessionLocks {
+    pub connection: u32,
 }
 
 /// An operation still to be completed with what reads left waiting in the
@@ -398,6 +491,14 @@ pub enum Reply {
     EditDesign(Edited),
     /// Whether the disk holds every change the file holds.
     SaveFile(Result<(), FileNotSaved>),
+    /// Whether the commit was written, or FileMaker's error and why.
+    CommitScriptRecords(Result<(), (u32, String)>),
+    /// Whether the value was set, or FileMaker's error.
+    SetNextSerial(Result<(), u32>),
+    /// Whether the lock was taken, or the holders that keep it.
+    TakeScriptLock(Result<(), Conflict>),
+    ReleaseScriptLock,
+    ReleaseSessionLocks,
 }
 
 /// op240's reply: the edit's answer, and for an edit that changed the file,
@@ -472,9 +573,11 @@ impl Outcome {
     /// The outcome when what the operation did could not be stored: the
     /// storage error in place of its reply, and no notices
     /// (docs/server-storage.md 5). op70 fails with the save's message
-    /// (`writes::CommitError::NotSaved`), op71 and an authoring edit with
-    /// the save's FileMaker error ([`crate::hosting::save_error`]), the
-    /// edit's message saying what the file keeps.
+    /// (`writes::CommitError::NotSaved`), op71, an authoring edit and a
+    /// server script's commit and Set Next Serial Value with the save's
+    /// FileMaker error ([`crate::hosting::save_error`]), the edit's message
+    /// saying what the file keeps, the script commit's that the file could
+    /// not be saved.
     fn not_stored(self, error: &std::io::Error) -> Outcome {
         let reply = match self.reply {
             Reply::EditDesign(Edited {
@@ -501,6 +604,13 @@ impl Outcome {
                 ))),
                 unused: reply.unused,
             }),
+            Reply::CommitScriptRecords(_) => Reply::CommitScriptRecords(Err((
+                u32::from(crate::hosting::save_error(error)),
+                format!("the file could not be saved: {error}"),
+            ))),
+            Reply::SetNextSerial(_) => {
+                Reply::SetNextSerial(Err(u32::from(crate::hosting::save_error(error))))
+            }
             other => other,
         };
         Outcome {
@@ -647,6 +757,39 @@ pub fn run(
                 Ok(())
             }))
         }
+        (Operation::CommitScriptRecords(op), Hold::Transaction(tx)) => {
+            let from = op.user.connection;
+            let (result, changes) = writes::commit_records(op, file, tx, locks, environment);
+            Outcome {
+                reply: Reply::CommitScriptRecords(result),
+                notices: Notices { from, changes },
+            }
+        }
+        (Operation::SetNextSerial(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::SetNextSerial(writes::set_next_serial(op, tx)))
+        }
+        (Operation::TakeScriptLock(op), _) => Outcome::new(Reply::TakeScriptLock(
+            locks.lock(&op.path, op.user, LOCK_WRITE, &op.holder),
+        )),
+        (Operation::ReleaseScriptLock(op), _) => {
+            let ReleaseScriptLock {
+                user,
+                path,
+                changes,
+            } = op;
+            locks.release_path(&path, user);
+            Outcome {
+                reply: Reply::ReleaseScriptLock,
+                notices: Notices {
+                    from: user.connection,
+                    changes,
+                },
+            }
+        }
+        (Operation::ReleaseSessionLocks(op), _) => {
+            locks.release_connection(op.connection);
+            Outcome::new(Reply::ReleaseSessionLocks)
+        }
         (operation, _) => not_held(operation, file),
     }
 }
@@ -702,6 +845,16 @@ fn not_held(operation: Operation, file: &str) -> Outcome {
             not_stored: None,
         }),
         Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed)),
+        Operation::CommitScriptRecords(_) => {
+            Reply::CommitScriptRecords(Err((writes::UNAVAILABLE, NOT_HELD.into())))
+        }
+        Operation::SetNextSerial(_) => Reply::SetNextSerial(Err(writes::UNAVAILABLE)),
+        Operation::TakeScriptLock(_) => Reply::TakeScriptLock(Err(Conflict {
+            self_conflict: false,
+            users: String::new(),
+        })),
+        Operation::ReleaseScriptLock(_) => Reply::ReleaseScriptLock,
+        Operation::ReleaseSessionLocks(_) => Reply::ReleaseSessionLocks,
     })
 }
 

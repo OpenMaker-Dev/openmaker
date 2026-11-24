@@ -1075,14 +1075,16 @@ impl Store {
     /// the data counts one more reference, otherwise a new member holds it
     /// with count 1, the library made on first use. Returns the member; the
     /// reference is counted, for [`Store::count_containers_in`]. What the
-    /// store changes goes into `journal`.
+    /// store changes goes into `journal`. A new member's unique id comes
+    /// from `unique_id`.
     pub fn store_container_in(
         &mut self,
         journal: &mut Journal,
         table: &[u8],
         data: BinaryData,
+        unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Vec<u8> {
-        self.store_container_with(journal, table, data, &mut system_unique_id)
+        self.store_container_with(journal, table, data, unique_id)
     }
 
     /// [`Store::store_container_in`], a new member's unique id taken from
