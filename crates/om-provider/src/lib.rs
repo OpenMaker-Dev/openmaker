@@ -288,6 +288,10 @@ pub struct NativeProvider {
     /// How long an open file's connection may stay silent before the
     /// session tickles it (`om_session::KEEPALIVE_INTERVAL`).
     keepalive: Option<Duration>,
+    /// The only host and port the configuration's additional certificate
+    /// authority is trusted for ([`Self::with_ca_scope`]); `None` trusts it
+    /// on every host.
+    ca_scope: Option<(String, u16)>,
     /// A hosted file's related files open when something reads them
     /// ([`Self::with_related_on_demand`], calc/demand.rs).
     related_on_demand: bool,
@@ -382,6 +386,22 @@ impl NativeProvider {
 /// name, or, named as `fmnet:/host:port/Name`
 /// ([`om_data::file_refs::fmnet_name`]), on that host and port, and then
 /// whether that is another than `auth`'s (the host's text in any case).
+/// `config` for a connection to `host` and `port`: its additional
+/// certificate authority only where `scope`
+/// ([`NativeProvider::with_ca_scope`]) trusts it.
+pub(crate) fn scoped_config(
+    config: &NativeConfig,
+    scope: Option<&(String, u16)>,
+    host: &str,
+    port: u16,
+) -> NativeConfig {
+    let mut config = config.clone();
+    if scope.is_some_and(|(scoped, at)| !(scoped.eq_ignore_ascii_case(host) && *at == port)) {
+        config.additional_ca_pem.clear();
+    }
+    config
+}
+
 fn peer_target(auth: &PeerAuth, file: &str) -> (String, u16, String, bool) {
     match om_data::file_refs::fmnet_target(file) {
         Some((host, port, name)) => {
@@ -577,6 +597,7 @@ impl NativeProvider {
             routed_plan: None,
             caller: None,
             keepalive: Some(om_session::KEEPALIVE_INTERVAL),
+            ca_scope: None,
             related_on_demand: false,
             related_retry_after: None,
             close_requests: om_data::CloseRequests::default(),
@@ -591,6 +612,25 @@ impl NativeProvider {
 
     pub fn from_env() -> Result<Self, DataError> {
         NativeConfig::from_env().map(Self::new)
+    }
+
+    /// Trust the configuration's additional certificate authority for
+    /// `host` and `port` only, as a private authority saved for one host
+    /// is: a file this provider opens on another host or port (a script's
+    /// open, or that file's related files) is verified against the public
+    /// roots alone. Unset, the authority is trusted on every host, as
+    /// `OPENMAKER_CA_CERT` is.
+    #[must_use]
+    pub fn with_ca_scope(mut self, host: &str, port: u16) -> Self {
+        self.ca_scope = Some((host.to_owned(), port));
+        self
+    }
+
+    /// The configuration a file this provider opens on `host` and `port`
+    /// gets: the additional certificate authority goes only where
+    /// [`Self::with_ca_scope`] trusts it.
+    fn config_for(&self, host: &str, port: u16) -> NativeConfig {
+        scoped_config(&self.config, self.ca_scope.as_ref(), host, port)
     }
 
     /// Tickle an open file's connection after `interval` of silence instead
@@ -2508,6 +2548,7 @@ impl NativeProvider {
                     None => external::ExternalFiles::for_connection(connection, self.keepalive),
                 }
                 .remembering(self.login_refusals.clone());
+                self.external.set_ca_scope(self.ca_scope.clone());
                 self.external.set_on_demand(self.related_on_demand);
                 self.external.set_retry_after(self.related_retry_after);
                 self.session = Some(session);
@@ -2587,7 +2628,9 @@ impl NativeProvider {
             ));
         }
         let endpoint = Endpoint {
-            ca_pem: self.config.additional_ca_pem.clone(),
+            ca_pem: self
+                .config_for(&connection.host, connection.port)
+                .additional_ca_pem,
             machine: self.config.machine.clone(),
             local: None,
         };
@@ -2656,6 +2699,7 @@ impl NativeProvider {
         let mut peer = NativeProvider::new(self.config.clone())
             .with_keepalive(self.keepalive)
             .with_related_on_demand(self.related_on_demand);
+        peer.ca_scope = self.ca_scope.clone();
         peer.close_requests = self.close_requests.clone();
         peer.desktop = self.desktop.clone();
         peer.local_hosts = self.local_hosts.clone();
@@ -2749,9 +2793,14 @@ impl NativeProvider {
         {
             return Err(error);
         }
+        // The whole configuration and its scope: each connection the peer
+        // makes takes the authority only where the scope trusts it
+        // (`config_for`, `scoped_config`), so a peer on another host can
+        // still reach this one.
         let mut peer = NativeProvider::new(self.config.clone())
             .with_keepalive(self.keepalive)
             .with_related_on_demand(self.related_on_demand);
+        peer.ca_scope = self.ca_scope.clone();
         peer.close_requests = self.close_requests.clone();
         peer.desktop = self.desktop.clone();
         peer.login_refusals = refusals.clone();
@@ -4797,7 +4846,7 @@ impl DataProvider for NativeProvider {
 
     fn list_files(&mut self, host: &str, port: u16) -> Result<Vec<HostedFile>, DataError> {
         use om_data::HostBrowser;
-        browse::NativeBrowser::new(self.config.clone())
+        browse::NativeBrowser::new(self.config.clone(), self.ca_scope.clone())
             .browse(host, port, &std::sync::atomic::AtomicBool::new(false))
             .map(|listing| listing.files)
             .map_err(DataError::from)
@@ -4806,6 +4855,7 @@ impl DataProvider for NativeProvider {
     fn host_browser(&self) -> Option<std::sync::Arc<dyn om_data::HostBrowser>> {
         Some(std::sync::Arc::new(browse::NativeBrowser::new(
             self.config.clone(),
+            self.ca_scope.clone(),
         )))
     }
 
@@ -6408,6 +6458,34 @@ mod tests {
             slots: vec![0x40, 0x40],
         };
         assert!(validate_download(&data).is_err());
+    }
+
+    #[test]
+    fn a_scoped_certificate_authority_goes_to_its_own_host_only() {
+        let provider = NativeProvider::new(NativeConfig {
+            client_cert_pem: vec![],
+            client_key_pem: vec![],
+            additional_ca_pem: b"private authority".to_vec(),
+            callback_host: "127.0.0.1".into(),
+            machine: MachineInfo::default(),
+        });
+        assert!(!provider
+            .config_for("other.example", 5003)
+            .additional_ca_pem
+            .is_empty());
+        let provider = provider.with_ca_scope("Files.Example", 5003);
+        assert!(!provider
+            .config_for("files.example", 5003)
+            .additional_ca_pem
+            .is_empty());
+        assert!(provider
+            .config_for("files.example", 5004)
+            .additional_ca_pem
+            .is_empty());
+        assert!(provider
+            .config_for("other.example", 5003)
+            .additional_ca_pem
+            .is_empty());
     }
 
     #[test]

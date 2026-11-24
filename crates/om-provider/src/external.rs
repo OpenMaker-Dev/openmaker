@@ -532,6 +532,9 @@ pub(crate) struct ExternalFiles {
     owner_plans: RefCell<BTreeMap<usize, std::sync::Arc<OwnerPlan>>>,
     /// The Tickle interval of each related connection (the open file's).
     keepalive: Option<Duration>,
+    /// Where the opened file's additional certificate authority is trusted
+    /// ([`crate::NativeProvider::with_ca_scope`]).
+    ca_scope: Option<(String, u16)>,
     files: Vec<RelatedFile>,
     /// What went wrong opening each file that could not be, by
     /// [`Target::key`]: it is not tried again until the file is reopened.
@@ -811,6 +814,12 @@ impl ExternalFiles {
 
     pub fn set_on_demand(&mut self, on: bool) {
         self.on_demand = on && self.local.is_none();
+    }
+
+    /// A related file on another host or port than `scope` is not verified
+    /// against the opened file's additional certificate authority.
+    pub fn set_ca_scope(&mut self, scope: Option<(String, u16)>) {
+        self.ca_scope = scope;
     }
 
     /// Whether related files open only when something reads them.
@@ -1169,8 +1178,9 @@ impl ExternalFiles {
         if let Some(error) = earlier {
             return Err(error);
         }
+        let config = crate::scoped_config(config, self.ca_scope.as_ref(), &auth.host, auth.port);
         let loaded = load(
-            config,
+            &config,
             &auth,
             self.local.as_ref(),
             self.keepalive,
@@ -1761,6 +1771,7 @@ impl ExternalFiles {
             // Each file with the account of its host: only files with one
             // are in the batch.
             let keepalive = self.keepalive;
+            let ca_scope = self.ca_scope.as_ref();
             let local = self.local.as_ref();
             let refusals = &self.refusals;
             // On demand, a file's open reads the field catalogs of the tables
@@ -1772,8 +1783,9 @@ impl ExternalFiles {
             let results = load_batch(&batch, &|(_, _, file, account)| {
                 let auth = account_of(account, auth.as_ref(), &other_hosts)
                     .ok_or_else(|| DataError::new("there is no account for its host"))?;
+                let config = crate::scoped_config(config, ca_scope, &auth.host, auth.port);
                 load(
-                    config,
+                    &config,
                     auth,
                     local,
                     keepalive,

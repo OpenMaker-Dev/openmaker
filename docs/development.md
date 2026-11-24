@@ -26,6 +26,9 @@ in [architecture.md](architecture.md).
   - Saving a FileMaker client license: an unlocked desktop Secret Service
     on Linux (Keychain on macOS, Credential Manager on Windows).
   - Print: CUPS (`lp`).
+  - OpenMaker Go: Xcode and an iOS SDK on an Apple silicon Mac for iPhone
+    and iPad; JDK 21 and the Android SDK and NDK for Android. Building
+    and trying the apps is in [mobile/README.md](../mobile/README.md).
 
 ## Build and run
 

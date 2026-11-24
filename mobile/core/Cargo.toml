@@ -1,0 +1,37 @@
+[package]
+name = "openmaker-go"
+description = "OpenMaker Go's engine: the desktop client's window for the iOS and Android apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The apps' static (iOS) and shared (Android) libraries are built by
+# mobile/build-core.sh with `cargo rustc --crate-type`, so that workspace
+# builds and tests make only the Rust library.
+
+[dependencies]
+om-gui = { path = "../../crates/om-gui" }
+om-data = { path = "../../crates/om-data" }
+om-provider = { path = "../../crates/om-provider" }
+# The version om-gui uses.
+egui = "0.37"
+log = "0.4"
+thiserror = "2"
+zeroize = "1"
+# The bindings generator in mobile/bindings must be the same version.
+uniffi = { version = "=0.29.5", default-features = false }
+
+[dev-dependencies]
+om-crypto = { path = "../../crates/om-crypto" }
+om-formula = { path = "../../crates/om-formula" }
+om-hbam = { path = "../../crates/om-hbam" }
+om-layout = { path = "../../crates/om-layout" }
+om-scripts = { path = "../../crates/om-scripts" }
+om-server = { path = "../../crates/om-server", default-features = false }
+rcgen = "0.13"
+tempfile = "3"
+
+[lints]
+workspace = true

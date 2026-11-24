@@ -1164,8 +1164,25 @@ impl ScriptSession {
         let Some(endpoint) = self.s.file.endpoint.clone() else {
             return failed("OpenMaker cannot tell where this file was opened.");
         };
+        // A password kept from another sign-in goes only where it was
+        // typed: a file a script opened on another host, or with another
+        // account, waits for its own. Account names are not case-sensitive
+        // in FileMaker.
+        if let Some((host, port, account)) = &job.typed_for {
+            let same = endpoint.local.is_none()
+                && endpoint.host.eq_ignore_ascii_case(host)
+                && endpoint.port == *port
+                && endpoint.account.to_lowercase() == account.to_lowercase();
+            if !same {
+                return failed(
+                    "This file was opened on another host or with another account: type its \
+                     password to reconnect.",
+                );
+            }
+        }
         let worker::ReconnectJob {
             password,
+            typed_for: _,
             use_saved_license,
             records,
             current,

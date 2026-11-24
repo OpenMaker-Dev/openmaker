@@ -25,7 +25,9 @@ members = [
     "crates/om-url",
     "crates/om-author",
     "crates/om-report",
+    "mobile/core",
 ]
+exclude = ["mobile/bindings"]
 
 [workspace.package]
 version = "0.0.0"
