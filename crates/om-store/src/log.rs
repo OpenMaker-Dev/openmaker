@@ -49,7 +49,7 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -165,6 +165,11 @@ pub struct Opened {
     pub kept: u64,
     /// What followed the durable entry and was cut, if anything did.
     pub cut: Option<Cut>,
+    /// The log ends, for this open, at a place after the durable entry the
+    /// device failed to read. It may continue past it: nothing there was
+    /// cut, dropped or written over, and the log refuses appends
+    /// ([`LogError::EndUnreadable`]) until it is opened again.
+    pub unreadable_end: Option<UnreadableEnd>,
     /// The numbers of segment files no longer listed that the open
     /// removed: segments retired or cut by a process that stopped before
     /// removing them, and spares.
@@ -192,11 +197,18 @@ pub enum CutWhy {
     NotWhole,
     /// A batch was written before the last cut.
     OlderCut,
-    /// A read failed. The open raised the cut count, so that what it cut
-    /// is not read again should it become readable.
-    Unreadable,
     /// Only listed segments past the end were dropped.
     Segments,
+}
+
+/// A place after the durable entry the device failed to read, where an
+/// open ended the log: the segment, the offset of the read that failed, and
+/// the index the log expected there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnreadableEnd {
+    pub segment: u64,
+    pub offset: u64,
+    pub index: u64,
 }
 
 /// What is wrong with a damaged log (section 6.12).
@@ -264,6 +276,10 @@ pub enum LogError {
     TooLarge { len: usize, max: u32 },
     /// An earlier failure stopped the log: open it again.
     Poisoned,
+    /// The log ends, for this open, at a place the device failed to read
+    /// ([`Opened::unreadable_end`]): an append would write over what may
+    /// continue the log. Open it again.
+    EndUnreadable(UnreadableEnd),
     /// A cut was asked for before the caller supplied a committed position
     /// since the log was opened; nothing was changed.
     CommittedUnconfirmed,
@@ -306,6 +322,12 @@ impl fmt::Display for LogError {
             LogError::Poisoned => f.write_str(
                 "an earlier write or flush of the log failed; the store must stop and be opened \
                  again",
+            ),
+            LogError::EndUnreadable(end) => write!(
+                f,
+                "the log refuses appends: it ends at a place the device failed to read \
+                 (segment {}, offset {}, entry {}), past which it may continue; open it again",
+                end.segment, end.offset, end.index
             ),
             LogError::CommittedUnconfirmed => f.write_str(
                 "log refused a cut: no committed position has been supplied since the log was \
@@ -379,6 +401,9 @@ pub struct Log {
     floor: u64,
     /// The caller supplied a committed position since the log was opened.
     committed_confirmed: bool,
+    /// The open ended the log at a place it could not read: no append
+    /// until the log is opened again, or a cut moves the end before it.
+    unreadable_end: Option<UnreadableEnd>,
     batch: Vec<Pending>,
     /// The bytes of the open batch's entries in the current segment and in
     /// the next.
@@ -469,6 +494,41 @@ struct Recovered {
     opened: Opened,
 }
 
+/// How much [`write_back`] reads and writes at a time.
+const WRITE_BACK_CHUNK: u64 = 1 << 20;
+
+/// Write the bytes from `from` to `to` of `seg` again, as they read now,
+/// with synchronous writes, so that they are on the device when this
+/// returns whatever an earlier process's failed flush left.
+fn write_back(seg: &Seg, from: u64, to: u64) -> Result<(), LogError> {
+    let mut buf = vec![0u8; WRITE_BACK_CHUNK.min(to - from) as usize];
+    let mut at = from;
+    while at < to {
+        let len = WRITE_BACK_CHUNK.min(to - at) as usize;
+        let n = read_exact(&*seg.file, at, &mut buf[..len]).map_err(|error| {
+            if error.kind() == ErrorKind::Read {
+                LogError::Unreadable {
+                    segment: seg.number,
+                    offset: at,
+                    error,
+                }
+            } else {
+                LogError::Disk(error)
+            }
+        })?;
+        if n < len {
+            return Err(LogError::Disk(sys::Error::new(
+                ErrorKind::Read,
+                sys::Op::Read,
+                &segment_path(seg.number),
+            )));
+        }
+        seg.file.write_at(at, &buf[..len]).map_err(LogError::Disk)?;
+        at += len as u64;
+    }
+    Ok(())
+}
+
 impl Log {
     /// Open the log of the store whose `state` is given (section 6.7 step
     /// 3), reading it from `start`: the entry a checkpoint covers, or
@@ -507,6 +567,7 @@ impl Log {
                     appended: recovered.durable,
                     floor: start.index,
                     committed_confirmed: false,
+                    unreadable_end: recovered.opened.unreadable_end,
                     batch: Vec::new(),
                     here: 0,
                     there: 0,
@@ -607,9 +668,17 @@ impl Log {
         let firm = marker.index.max(start.index);
         let mut last = start;
         let mut end: Option<(usize, u64)> = None;
-        let mut tail_segs = BTreeSet::new();
+        // The byte ranges, by segment, of the batches holding entries after
+        // the marker: written again before the marker moves over them.
+        let mut tail_ranges: BTreeMap<usize, (u64, u64)> = BTreeMap::new();
+        let mut add_range = |seg: usize, from: u64, to: u64| {
+            let range = tail_ranges.entry(seg).or_insert((from, to));
+            range.0 = range.0.min(from);
+            range.1 = range.1.max(to);
+        };
         let mut kept = 0u64;
         let mut why: Option<CutWhy> = None;
+        let mut unreadable_end: Option<UnreadableEnd> = None;
         if let Some(first) = segs.first() {
             if first.header.first > after_start {
                 return Err(damage(
@@ -657,14 +726,19 @@ impl Log {
             let stop = loop {
                 let event = match scanner.next_event() {
                     Ok(event) => event,
-                    // After the firm position a read that fails ends the
-                    // log, as any incomplete tail does (section 6.12):
-                    // nothing there was acknowledged. At or before it, the
-                    // caller tells it apart from damage.
+                    // After the firm position a read that fails ends the log
+                    // for this open only (format section 3.6): nothing past
+                    // it is cut, dropped or written over, and the log takes
+                    // no appends until it is opened again. At or before the
+                    // firm position, the caller tells it apart from damage.
                     Err(fault)
                         if fault.error.kind() == ErrorKind::Read && scanner.position().0 > firm =>
                     {
-                        why = Some(CutWhy::Unreadable);
+                        unreadable_end = Some(UnreadableEnd {
+                            segment: segs[fault.seg].number,
+                            offset: fault.offset,
+                            index: scanner.position().0,
+                        });
                         break end.expect("set before the walk");
                     }
                     Err(fault) => return Err(unreadable(&segs, fault)),
@@ -691,7 +765,7 @@ impl Log {
                     Event::Entry(found) if found.index <= firm => {
                         check(&position(&found), found.seg, found.offset)?;
                         if found.index > marker.index {
-                            tail_segs.insert(found.seg);
+                            add_range(found.seg, found.batch_offset, found.offset + found.size);
                             kept += 1;
                         }
                         end = Some((found.seg, found.offset + found.size));
@@ -705,7 +779,7 @@ impl Log {
                         // A batch written before the last cut is never part
                         // of the log after it, however it chains.
                         Some((count, found)) if whole && batch_cut_count == cut_count => {
-                            tail_segs.insert(found.seg);
+                            add_range(found.seg, found.batch_offset, found.offset + found.size);
                             kept += count;
                             end = Some((found.seg, found.offset + found.size));
                             last = position(&found);
@@ -754,11 +828,16 @@ impl Log {
             fs.create_folder(FOLDER).map_err(LogError::Disk)?;
         }
         fs.flush_folder("").map_err(LogError::Disk)?;
-        for &seg in &tail_segs {
-            segs[seg].file.flush().map_err(LogError::Disk)?;
+        // What is kept after the marker is written again, as the very bytes
+        // the walk found whole, with synchronous writes: bytes read back are
+        // never made durable by a flush alone, since the system's cache can
+        // show bytes the device does not hold after an earlier flush failed
+        // (format section 3.6).
+        for (&seg, &(from, to)) in &tail_ranges {
+            write_back(&segs[seg], from, to)?;
         }
         let mut cut = None;
-        if let Some((seg, offset)) = end {
+        if let (Some((seg, offset)), None) = (end, &unreadable_end) {
             let dropped = (segs.len() - seg - 1) as u64;
             if why.is_some() || dropped > 0 {
                 cut = Some(Cut {
@@ -771,15 +850,6 @@ impl Log {
             }
             segs.truncate(seg + 1);
         }
-        // What a read failure cut may become readable again, whole: a
-        // raised cut count keeps it out of the log for good.
-        let new_cut_count = if why == Some(CutWhy::Unreadable) {
-            cut_count
-                .checked_add(1)
-                .ok_or(LogError::Refused("the cut count is at its limit"))?
-        } else {
-            cut_count
-        };
         let listed = Segments {
             first: run.first,
             count: segs.len() as u64,
@@ -793,7 +863,6 @@ impl Log {
             .update(|v| {
                 v.marker = new_marker;
                 v.segments = listed;
-                v.cut_count = new_cut_count;
             })
             .map_err(LogError::State)?;
 
@@ -824,9 +893,10 @@ impl Log {
             opened: Opened {
                 durable: last,
                 recorded_committed: marker.committed,
-                cut_count: new_cut_count,
+                cut_count,
                 kept,
                 cut,
+                unreadable_end,
                 removed,
             },
         })
@@ -1008,7 +1078,8 @@ impl Log {
 
     /// Add an entry to the open batch, in memory, and return its place.
     /// Nothing is written until [`Log::flush_batch`]. Refused, with nothing
-    /// added, when the payload is too large, the term is lower than the
+    /// added, when the log ends at a place it could not read
+    /// ([`LogError::EndUnreadable`]), when the payload is too large, the term is lower than the
     /// last entry's, the index would pass [`MAX_INDEX`], the batch would
     /// span more than two segments ([`LogError::BatchFull`]), or the entry
     /// needs the next segment and the disk has no room for it
@@ -1021,6 +1092,9 @@ impl Log {
         payload: &[u8],
     ) -> Result<Position, LogError> {
         self.usable()?;
+        if let Some(end) = self.unreadable_end {
+            return Err(LogError::EndUnreadable(end));
+        }
         if payload.len() > self.config.max_payload as usize {
             return Err(LogError::TooLarge {
                 len: payload.len(),
@@ -1296,6 +1370,9 @@ impl Log {
         self.there = 0;
         self.durable = before;
         self.appended = before;
+        // What lay past an unreadable end is now before the cut, or carries
+        // an older cut count: appends may go on.
+        self.unreadable_end = None;
         let mut remove: Vec<u64> = self.segs.drain(seg + 1..).map(|s| s.number).collect();
         if dropped && self.spare.take().is_some() {
             remove.push(spare);
@@ -1307,10 +1384,10 @@ impl Log {
                 Err(e) => return Err(self.failed(e)),
             }
         }
-        if !remove.is_empty() {
-            if let Err(e) = self.fs.flush_folder(FOLDER) {
-                return Err(self.failed(e));
-            }
+        // On every cut, whatever it removed: the folder's flush does not
+        // depend on who changed it or when.
+        if let Err(e) = self.fs.flush_folder(FOLDER) {
+            return Err(self.failed(e));
         }
         Ok(before)
     }

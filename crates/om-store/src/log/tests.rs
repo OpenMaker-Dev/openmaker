@@ -405,6 +405,8 @@ struct Reached {
     batch_full: u64,
     poisoned: u64,
     retried_opens: u64,
+    unreadable_ends: u64,
+    lost_slots: u64,
     unconfirmed: u64,
     reappended: u64,
     damaged: u64,
@@ -469,6 +471,10 @@ enum Action {
     Read,
     Stop,
     Crash,
+    /// The device loses the slot of `state` that holds its newest copy,
+    /// and the process stops: the next open finds the marker one advance
+    /// back (simulated machines only).
+    LoseStateSlot,
 }
 
 /// A schedule that does every operation at least once, for the crash at
@@ -631,7 +637,8 @@ impl<'a> Run<'a> {
             68..=72 => Action::Retire,
             73..=76 => Action::Prepare,
             77..=82 => Action::Read,
-            83..=91 => Action::Stop,
+            83..=90 => Action::Stop,
+            91 => Action::LoseStateSlot,
             _ => Action::Crash,
         }
     }
@@ -653,6 +660,7 @@ impl<'a> Run<'a> {
             Action::Read => self.read_check(),
             Action::Stop => self.stop(false),
             Action::Crash => self.stop(true),
+            Action::LoseStateSlot => self.lose_state_slot(),
         }
     }
 
@@ -685,6 +693,20 @@ impl<'a> Run<'a> {
             sim.set_rates(self.rates);
         }
         out
+    }
+
+    fn lose_state_slot(&mut self) {
+        let Some(sim) = self.machine.sim().cloned() else {
+            return;
+        };
+        let (_, slot) = self.log.as_ref().expect("open").state().copy();
+        self.trace
+            .push(stamp(&*self.machine, format!("lose state slot {slot}")));
+        self.stop(false);
+        let at = (slot * crate::state::SLOT + 40) as u64;
+        sim.damage(crate::state::FILE, at, 2)
+            .expect("state is on the device");
+        self.reached.lost_slots += 1;
     }
 
     /// The process ends, the power failing with it when `power_loss`.
@@ -842,6 +864,20 @@ impl<'a> Run<'a> {
     fn check_open(&mut self, opened: &Opened) -> Option<End> {
         let seed = self.seed;
         self.reached.opens += 1;
+        if opened.unreadable_end.is_some() {
+            // The log ends, for this open, where the device failed to read;
+            // a confirmed batch may lie past it (a lost marker advance). Its
+            // appends wait, so the caller opens it again: the model learns
+            // nothing from it.
+            self.reached.unreadable_ends += 1;
+            let log = self.log.as_mut().expect("opened");
+            assert!(
+                matches!(log.append(1, 0, 0, b""), Err(LogError::EndUnreadable(_))),
+                "seed {seed}"
+            );
+            self.stop(false);
+            return None;
+        }
         if opened.kept > 0 {
             self.reached.kept_tails += 1;
         }
@@ -1477,6 +1513,11 @@ fn the_log_survives_drawn_crashes_and_faults() {
             ("poisoned logs", reached.poisoned),
             ("cuts refused as unconfirmed", reached.unconfirmed),
             ("opens tried again with their state", reached.retried_opens),
+            ("lost state slots", reached.lost_slots),
+            (
+                "opens that ended where a read failed",
+                reached.unreadable_ends,
+            ),
             ("cut entries appended again", reached.reappended),
             ("damage reports", reached.damaged),
         ] {
@@ -2129,9 +2170,9 @@ fn a_cut_is_done_once_state_records_it() {
         log.cut(2).unwrap();
         sim.steps() - begin
     };
-    // The cut removes no file here, so its last four steps are `state`'s
-    // two writes and flushes.
-    let first_flushed = steps - 2;
+    // The cut removes no file here, so its last five steps are `state`'s
+    // two writes and flushes, then the flush of `log/`.
+    let first_flushed = steps - 3;
     for step in 1..=steps {
         for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
             let sim = Sim::new(10);
@@ -2167,7 +2208,7 @@ fn a_cut_is_done_once_state_records_it() {
     // The second slot's write fails: the log stops, and the cut is done.
     let sim = Sim::new(10);
     let (mut log, entries) = three_batches(&sim);
-    sim.place(sim.steps() + steps - 1, Fault::FailWrite);
+    sim.place(sim.steps() + steps - 2, Fault::FailWrite);
     assert!(log.cut(2).is_err());
     assert_eq!(sim.fired().get(&Fault::FailWrite), Some(&1));
     assert!(log.is_poisoned());
@@ -2414,12 +2455,15 @@ fn an_open_tried_again_after_its_folder_flush_failed_makes_log_durable() {
     assert!(tried > 0, "no failed flush left `log/` unflushed");
 }
 
-/// The second review's third finding: what follows the firm position is
-/// judged before anything is read for it where its batch header settles
-/// it, and a read that fails there ends the log; at or before the firm
+/// What follows the firm position is judged by what its batch header
+/// settles before anything else is read, and each read is of what the
+/// record being decided on takes, so that a place the device cannot read is
+/// met only by the record it belongs to. A read that fails after the firm
+/// position ends the log for that open only: nothing is cut or raised, and
+/// appends wait for an open that reads past it. At or before the firm
 /// position a read that fails is the caller's to see.
 #[test]
-fn an_unreadable_place_after_the_firm_position_ends_the_log() {
+fn an_unreadable_place_after_the_firm_position_ends_the_log_for_that_open() {
     let sim = Sim::new(15);
     let watched = Arc::new(Watched::new(Arc::new(sim.fs())));
     let fs: Arc<dyn Fs> = watched.clone();
@@ -2447,43 +2491,63 @@ fn an_unreadable_place_after_the_firm_position_ends_the_log() {
     assert_eq!(log.cut(2).unwrap(), one);
     drop(log);
     sim.restart();
-    // A place deep inside entry 2's payload, past what a read of its
-    // header brings in, cannot be read.
     let second = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 3;
-    let bad = second + BATCH_HEADER + format::ENTRY_FIXED + 200_000;
+    let payload = second + BATCH_HEADER + format::ENTRY_FIXED;
     let seg1 = format::segment_path(1);
-    watched.bad.lock().unwrap().push((seg1.clone(), bad));
 
-    // The batch written before the cut is judged by its header alone.
-    watched.largest_read.store(0, Ordering::Relaxed);
-    let (mut log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(opened.durable, one);
-    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::OlderCut));
-    assert!(watched.largest_read.load(Ordering::Relaxed) <= 64 * 1024);
+    // The batch written before the cut is judged by its header alone, with
+    // a place its payload holds that cannot be read: near its start, and
+    // deep inside.
+    for bad in [payload + 8 * 1024, payload + 200_000] {
+        watched.bad.lock().unwrap().push((seg1.clone(), bad));
+        let (log, opened) = open().unwrap_or_else(|e| panic!("{bad}: {e}"));
+        assert_eq!(opened.durable, one);
+        assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::OlderCut));
+        assert_eq!(opened.unreadable_end, None);
+        drop(log);
+        sim.restart();
+        watched.bad.lock().unwrap().clear();
+    }
 
     // A batch of the current count whose payload cannot be read, its marker
-    // never recorded, ends the log there; the cut count rises, so that it is
-    // not read again once it can be.
-    log.append(2, 0, 0, &vec![3; 256 << 10]).unwrap();
+    // never recorded, ends the log for this open: nothing is cut, the cut
+    // count stays, and appends wait.
+    let (mut log, _) = open().unwrap();
+    let again = log.append(2, 0, 0, &vec![3; 256 << 10]).unwrap();
     sim.set_crash_fates(Fates::LoseAll);
     sim.place(sim.steps() + 2, Fault::Crash);
     assert!(log.flush_batch(None).is_err());
     assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
     drop(log);
     sim.restart();
-    let (log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
+    watched
+        .bad
+        .lock()
+        .unwrap()
+        .push((seg1.clone(), payload + 200_000));
+    let (mut log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(opened.durable, one);
-    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::Unreadable));
-    assert_eq!(opened.cut_count, 2);
+    assert_eq!(opened.cut, None);
+    assert_eq!(opened.cut_count, 1);
+    let end = opened
+        .unreadable_end
+        .expect("the log ends where it could not read");
+    assert_eq!((end.segment, end.index), (1, 2));
+    assert!(matches!(
+        log.append(2, 0, 0, b"x"),
+        Err(LogError::EndUnreadable(_))
+    ));
     drop(log);
+    // An open that reads past it takes the batch as any whole tail.
     sim.restart();
     watched.bad.lock().unwrap().clear();
     let (mut log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(opened.durable, one);
-    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::OlderCut));
+    assert_eq!(opened.durable, again);
+    assert_eq!(opened.kept, 1);
+    assert_eq!(opened.unreadable_end, None);
 
     // At or before the firm position, the open fails and says so.
-    let two = log.append(2, 0, 0, b"two").unwrap();
+    let three = log.append(2, 0, 0, b"three").unwrap();
     log.flush_batch(None).unwrap();
     drop(log);
     sim.restart();
@@ -2501,7 +2565,164 @@ fn an_unreadable_place_after_the_firm_position_ends_the_log() {
     }
     watched.bad.lock().unwrap().clear();
     let (_, opened) = open().unwrap();
+    assert_eq!(opened.durable, three);
+}
+
+/// The final review's second finding: a confirmed batch whose marker
+/// advance was lost with the newest copy of `state`, and which the device
+/// fails to read once, is not lost: the open ends the log before it for
+/// that open only, and the next open that can read it takes it back.
+#[test]
+fn a_confirmed_batch_behind_a_lost_marker_and_a_failed_read_comes_back() {
+    let sim = Sim::new(17);
+    let watched = Arc::new(Watched::new(Arc::new(sim.fs())));
+    let fs: Arc<dyn Fs> = watched.clone();
+    let big = Config {
+        segment_size: 1 << 20,
+        max_payload: 300 << 10,
+    };
+    let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    let (mut log, _) = Log::open(fs.clone(), state, big, Position::START).unwrap();
+    let one = log.append(1, 0, 0, b"one").unwrap();
+    log.flush_batch(None).unwrap();
+    let two = log.append(1, 0, 0, &vec![2; 256 << 10]).unwrap();
+    log.flush_batch(None).unwrap();
+    let (_, newest) = log.state().copy();
+    drop(log);
+    sim.damage(
+        crate::state::FILE,
+        (newest * crate::state::SLOT + 40) as u64,
+        2,
+    )
+    .unwrap();
+    sim.restart();
+    let bad = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 3 + BATCH_HEADER + 100_000;
+    watched
+        .bad
+        .lock()
+        .unwrap()
+        .push((format::segment_path(1), bad));
+    let open = || {
+        let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+        Log::open(fs.clone(), state, big, Position::START).unwrap()
+    };
+    let (mut log, opened) = open();
+    assert_eq!(opened.durable, one);
+    assert!(opened.unreadable_end.is_some());
+    assert!(matches!(
+        log.append(2, 0, 0, b"x"),
+        Err(LogError::EndUnreadable(_))
+    ));
+    drop(log);
+    sim.restart();
+    watched.bad.lock().unwrap().clear();
+    let (log, opened) = open();
     assert_eq!(opened.durable, two);
+    assert_eq!(log.read(1).unwrap().count(), 2);
+}
+
+/// A batch whole in the system's cache only, after a write the device did
+/// not finish.
+fn tail_in_cache(seed: u64) -> (Sim, Position, Position, bool) {
+    let sim = Sim::new(seed);
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    fill(&mut log, 2, 2, 30);
+    let marker = log.durable();
+    let tail = log.append(1, 0, 0, &[7; 4]).unwrap();
+    sim.place(sim.steps() + 1, Fault::FailWrite);
+    assert!(log.flush_batch(None).is_err());
+    drop(log);
+    let whole = sim.events().iter().rev().find_map(|e| match e {
+        sim::Event::WriteFailed { written, .. } => {
+            Some(*written == BATCH_HEADER + ENTRY_OVERHEAD + 4)
+        }
+        _ => None,
+    });
+    sim.restart();
+    (sim, marker, tail, whole.expect("the write failed"))
+}
+
+/// The final review's first finding: a tail an open finds whole in the
+/// system's cache only is written again before the marker moves over it.
+/// A fault at any step of that open, then an open tried again with the
+/// same `State` or by a new process, then a power loss: whatever the
+/// opens confirmed is there.
+#[test]
+fn a_tail_held_only_in_the_cache_is_written_again_before_the_marker_covers_it() {
+    let seeds: Vec<u64> = (0..3000)
+        .filter(|&seed| tail_in_cache(seed).3)
+        .take(2)
+        .collect();
+    assert!(
+        !seeds.is_empty(),
+        "no write left the batch whole in the cache"
+    );
+    for seed in seeds {
+        let steps = {
+            let (sim, _, tail, _) = tail_in_cache(seed);
+            let begin = sim.steps();
+            let (_, opened) = open_store(&sim, Position::START).unwrap();
+            assert_eq!(opened.durable, tail, "seed {seed}");
+            sim.steps() - begin
+        };
+        for step in 1..=steps {
+            for fault in [Fault::FailFlush, Fault::FailWrite, Fault::FailRead] {
+                for fresh in [false, true] {
+                    let (sim, marker, tail, _) = tail_in_cache(seed);
+                    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+                    sim.place(sim.steps() + step, fault);
+                    let what = format!("seed {seed}, step {step}, {fault:?}, fresh {fresh}");
+                    let state = State::open(&*fs, fs.lock().unwrap());
+                    let opened = match state {
+                        Ok(state) => match Log::open(fs.clone(), state, CONFIG, Position::START) {
+                            Ok((_, opened)) => Some(opened),
+                            Err(failed) if !fresh => {
+                                // Tried again with the state handed back.
+                                let OpenFailed { state, .. } = *failed;
+                                Log::open(fs.clone(), state, CONFIG, Position::START)
+                                    .ok()
+                                    .map(|(_, opened)| opened)
+                            }
+                            Err(_) => None,
+                        },
+                        Err(_) => None,
+                    };
+                    let confirmed = if let Some(opened) = opened {
+                        opened.durable
+                    } else {
+                        // A new process, the cache kept, until one opens (the
+                        // fault placed may fire in the first of them).
+                        let mut opened = None;
+                        for _ in 0..3 {
+                            sim.restart();
+                            if let Ok((_, o)) = open_store(&sim, Position::START) {
+                                opened = Some(o);
+                                break;
+                            }
+                        }
+                        opened.unwrap_or_else(|| panic!("{what}: no open")).durable
+                    };
+                    sim.crash(Fates::LoseAll);
+                    let mut last = Err(LogError::Poisoned);
+                    for _ in 0..3 {
+                        sim.restart();
+                        last = open_store(&sim, Position::START);
+                        if last.is_ok() {
+                            break;
+                        }
+                    }
+                    let (log, opened) = last.unwrap_or_else(|e| panic!("{what}: {e}"));
+                    assert!(
+                        opened.durable.index >= confirmed.index,
+                        "{what}: {:?} after {confirmed:?}",
+                        opened.durable
+                    );
+                    assert!(opened.durable == marker || opened.durable == tail, "{what}");
+                    assert_eq!(log.read(1).unwrap().count() as u64, opened.durable.index);
+                }
+            }
+        }
+    }
 }
 
 /// A batch header after the end whose index and cut count fit but which

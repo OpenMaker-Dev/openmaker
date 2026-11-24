@@ -18,22 +18,21 @@ pub(crate) struct Seg {
     pub file: Box<dyn File>,
 }
 
-/// How much a cursor reads at a time.
+/// The largest entry read into the walk's own buffer; a larger one is read
+/// into a buffer of its own, which becomes its payload.
 const CHUNK: usize = 64 * 1024;
 
-/// Buffered reads of one segment, never past its size.
+/// Reads of one segment, never past its size. Each reads exactly the bytes
+/// asked for, and nothing ahead of them: what the walk reads is what the
+/// record it is deciding on takes, so that a place the device cannot read
+/// is met only by the record it belongs to (format section 3.5).
 struct Cursor {
     buf: Vec<u8>,
-    /// The offset of `buf[0]`.
-    at: u64,
 }
 
 impl Cursor {
     fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            at: 0,
-        }
+        Self { buf: Vec::new() }
     }
 
     /// The bytes from `offset` to `offset + len` of `file`, or fewer when the
@@ -43,17 +42,9 @@ impl Cursor {
         if offset >= end {
             return Ok(&[]);
         }
-        let have = self.at + self.buf.len() as u64;
-        if offset < self.at || end > have {
-            let want = (end - offset).max(CHUNK as u64).min(size - offset);
-            self.buf.resize(want as usize, 0);
-            let done = read_exact(file, offset, &mut self.buf)?;
-            self.buf.truncate(done);
-            self.at = offset;
-        }
-        let from = (offset - self.at) as usize;
-        let to = ((end - self.at) as usize).min(self.buf.len());
-        Ok(&self.buf[from.min(to)..to])
+        self.buf.resize((end - offset) as usize, 0);
+        let done = read_exact(file, offset, &mut self.buf)?;
+        Ok(&self.buf[..done])
     }
 }
 
