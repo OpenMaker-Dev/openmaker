@@ -24,10 +24,11 @@ pub mod schema;
 mod typing;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use om_calc::eval::{
-    display, evaluate_formula_with_calculation_budget, CalcLimits, Context, Pending, Variables,
+    display, evaluate_formula_with_calculation_budget, CalcLimits, Context, Lcg, Pending, Variables,
 };
 use om_calc::ops::{self, CompareOp};
 use om_calc::{Ctx, Date, Locale, Number, Time, Timestamp, Value, ValueType};
@@ -448,6 +449,52 @@ pub struct RecordEnvironment {
     /// key the write itself computes ([`RelatedNeeds`]); `None`: such a
     /// read refuses the write.
     pub related_needs: Option<Arc<RelatedNeeds>>,
+    /// What the write's calculations read of the clock and the random
+    /// source besides [`Self::date`], [`Self::time`] and
+    /// [`Self::timestamp`]; `None`: the process's own (the system clock,
+    /// `Random`'s generator shared by the process).
+    pub sources: Option<WriteSources>,
+}
+
+/// What a write's calculations read of the world besides the clock
+/// reading [`RecordEnvironment`] gives as text, supplied by the host so
+/// that a write can be repeated with the same answers: OpenMaker Server
+/// fills it from its engine's environment (docs/server-storage.md 5, 12).
+/// Clones share the generator, so every formula of one write draws from
+/// one sequence.
+#[derive(Clone)]
+pub struct WriteSources {
+    /// The write's clock reading, the instant of
+    /// [`RecordEnvironment::timestamp`], in microseconds since 1/1/1970
+    /// UTC: its UTC date is today for the calculations' conversions (a
+    /// year text leaves out, the two-digit year window, calc-values.md
+    /// 4.6), as the system clock's is without it. Record rules answer no
+    /// UTC clock selector (`RECORD_RULE_SELECTORS`).
+    pub utc_micros: i128,
+    /// The generator `Random` draws from: FileMaker's (calc-functions.md
+    /// 3.9), with a state of its own.
+    random: Arc<Mutex<Lcg>>,
+    /// What a time budget of the write's calculations is measured on (a
+    /// record limit's, `recalc::RecordLimit::allows`): the host's elapsed
+    /// monotonic time, or a seeded environment's virtual time that advances
+    /// by a fixed step at each reading.
+    pub stopwatch: Stopwatch,
+}
+
+/// A clock a time budget is measured on: each call answers the time since
+/// an origin of its own, never less than the call before.
+pub type Stopwatch = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+impl WriteSources {
+    /// The sources of a write whose clock reads `utc_micros`, whose `Random`
+    /// sequence starts from `seed`, and whose budgets run on `stopwatch`.
+    pub fn new(utc_micros: i128, seed: u64, stopwatch: Stopwatch) -> Self {
+        WriteSources {
+            utc_micros,
+            random: Arc::new(Mutex::new(Lcg(seed))),
+            stopwatch,
+        }
+    }
 }
 
 /// The related reads a write's formulas need with match keys the write
@@ -666,6 +713,11 @@ impl RunError {
 /// container data.
 pub(crate) struct Evaluation {
     info: SessionInfo,
+    /// Today for conversions, when the write's sources fix it
+    /// ([`Self::today`]).
+    today: Option<Date>,
+    /// [`WriteSources::random`]; `None`: the process's generator.
+    random: Option<Arc<Mutex<Lcg>>>,
     containers: Option<Arc<dyn ContainerReader + Send + Sync>>,
     interrupted: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     limits: CalcLimits,
@@ -700,20 +752,55 @@ impl Evaluation {
     fn calculation_budget(&self) -> u64 {
         self.limits.calculations.min(MAX_UNSTORED_EVALUATIONS)
     }
+
+    /// Today's date for a conversion of the write's calculations: the one
+    /// its sources fix ([`RecordEnvironment::today`]), else the system
+    /// clock's, read again at each use as without sources.
+    fn today(&self) -> Date {
+        self.today.unwrap_or_else(|| crate::host::session::today(0))
+    }
 }
 
 impl RecordEnvironment {
+    /// Today's date for the conversions of the write's calculations: the
+    /// UTC date of the supplied clock ([`WriteSources::utc_micros`]), else
+    /// of the system clock.
+    pub(crate) fn today(&self) -> Date {
+        match &self.sources {
+            Some(sources) => crate::host::session::date_at(sources.utc_micros, 0),
+            None => crate::host::session::today(0),
+        }
+    }
+
+    /// What a time budget of the write's calculations is measured on: the
+    /// supplied stopwatch ([`WriteSources::stopwatch`]), else one on the
+    /// process's monotonic clock.
+    pub(crate) fn stopwatch(&self) -> Stopwatch {
+        match &self.sources {
+            Some(sources) => Arc::clone(&sources.stopwatch),
+            None => {
+                let started = std::time::Instant::now();
+                Arc::new(move || started.elapsed())
+            }
+        }
+    }
+
     /// What `Get` answers while the record's values are computed: one
-    /// clock reading and one UUID for the whole write.
+    /// clock reading and one UUID for the whole write. A supplied clock
+    /// whose reading is not a FileMaker date answers the clock selectors
+    /// with error 500, never with the system clock.
     pub(crate) fn session(&self) -> Evaluation {
         let locale = Locale::en_us();
-        let today = crate::host::session::today(0);
+        let today = self.today();
         let context = &self.context;
         // A host clock that does not read as a timestamp is no answer.
         let host_now = context
             .host_timestamp
             .as_deref()
             .and_then(|text| Timestamp::parse(text, &locale, today).ok().flatten());
+        let now = Timestamp::parse(&self.timestamp, &locale, today)
+            .ok()
+            .flatten();
         let unanswered = CONTEXT_SELECTORS
             .into_iter()
             .filter(|selector| match *selector {
@@ -727,9 +814,8 @@ impl RecordEnvironment {
             info: SessionInfo {
                 account_name: self.account_name.clone(),
                 user_name: self.user_name.clone(),
-                now: Timestamp::parse(&self.timestamp, &locale, today)
-                    .ok()
-                    .flatten(),
+                now,
+                now_unrepresentable: self.sources.is_some() && now.is_none(),
                 host_now,
                 uuid: Some(self.uuid.clone()),
                 layout_number: match context.layout {
@@ -739,6 +825,11 @@ impl RecordEnvironment {
                 privilege_set_name: context.privilege_set.clone().unwrap_or_default(),
                 ..SessionInfo::for_this_machine()
             },
+            today: self.sources.as_ref().map(|_| today),
+            random: self
+                .sources
+                .as_ref()
+                .map(|sources| Arc::clone(&sources.random)),
             containers: self.containers.clone(),
             interrupted: self.interrupted.clone(),
             limits: self.limits,
@@ -4302,8 +4393,7 @@ impl RecordPlan {
             }
             let unmodified_too =
                 field.options.validation_options & VALIDATE_CALCULATION_ALWAYS != 0;
-            let today = crate::host::session::today(0);
-            let cx = Ctx::new(&self.schema.locale, today);
+            let cx = Ctx::new(&self.schema.locale, session.today());
             for repetition in 1..=field.repetitions() {
                 // A repetition that cannot have a cell is empty and
                 // unchanged: nothing to check.
@@ -4423,7 +4513,7 @@ impl RecordPlan {
         let Some(CustomMessage::Calculation(Some(expression))) = &field.message else {
             return self.invalid(field, code, requirement);
         };
-        let cx = Ctx::new(&self.schema.locale, crate::host::session::today(0));
+        let cx = Ctx::new(&self.schema.locale, session.today());
         let value = cell_of(id, repetition)
             .and_then(|cell| row.get(&cell))
             .map_or("", String::as_str);
@@ -4580,7 +4670,7 @@ impl RecordPlan {
                 return Ok(true);
             }
         }
-        let cx = Ctx::new(&self.schema.locale, crate::host::session::today(0));
+        let cx = Ctx::new(&self.schema.locale, session.today());
         // The record as written (0) and as stored (1, an existing one's).
         let mut itself = MemorySource::new();
         itself.put_record(self.table, 0, self.row_values(row, &cx, None));
@@ -4721,7 +4811,7 @@ impl RecordPlan {
                 ),
             )));
         }
-        let today = crate::host::session::today(0);
+        let today = session.today();
         let cx = Ctx::new(&self.schema.locale, today);
         let containers = session.containers.as_deref();
         let values = self.row_values(row, &cx, containers);
@@ -4839,7 +4929,7 @@ impl RecordPlan {
         let mut info = session.info.clone();
         info.file_name = self.schema.file_name.clone();
         let mut host = FileHost::new(
-            FileCalc::new(&self.schema, &source, today),
+            FileCalc::new(&self.schema, &source, today).with_random(session.random.as_deref()),
             &info,
             &mut locals,
             &mut globals,
@@ -5007,8 +5097,7 @@ impl RecordPlan {
         row: &BTreeMap<u64, String>,
         session: &Evaluation,
     ) -> Result<bool, DataError> {
-        let today = crate::host::session::today(0);
-        let cx = Ctx::new(&self.schema.locale, today);
+        let cx = Ctx::new(&self.schema.locale, session.today());
         let def = self
             .schema
             .table(self.table)
@@ -6439,6 +6528,7 @@ mod tests {
             held: None,
             others_held: BTreeSet::new(),
             related_needs: None,
+            sources: None,
         }
     }
     fn decoded(prepared: &PreparedRecord, id: u64) -> Option<String> {

@@ -5,7 +5,7 @@
 //! saves are not checked yet, so nothing of them is taken back
 //! (`FileEngine::submit`).
 
-use super::{uuid, ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog};
+use super::{ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog};
 
 /// The refusal of a write to a file hosted read-only.
 const READ_ONLY: &str = "the file is hosted read-only";
@@ -68,8 +68,10 @@ pub(super) fn finish_deferred_work(
 }
 
 /// What a recalculation of stored values takes from `environment`: each
-/// record's environment, whose calculations see `account`, and the unique
-/// ids of the container data it stores.
+/// record's environment, whose calculations see `account`
+/// ([`crate::recalc::record_environment_in`]), and the unique ids of the
+/// container data it stores. The one place an operation's recalculation
+/// builds them (op73 and the deferred work finished at opening).
 fn recalculation<'a>(
     account: &'a str,
     environment: &'a dyn Environment,
@@ -77,9 +79,7 @@ fn recalculation<'a>(
     impl FnMut() -> om_data::rules::RecordEnvironment + 'a,
     impl FnMut() -> [u8; 16] + 'a,
 ) {
-    let record_environment = move || {
-        crate::recalc::record_environment_at(account, uuid(environment), &environment.now())
-    };
+    let record_environment = move || crate::recalc::record_environment_in(account, environment);
     let unique_id = move || {
         let mut id = [0u8; 16];
         environment.fill_random(&mut id);

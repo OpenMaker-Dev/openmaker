@@ -29,8 +29,8 @@ use om_protocol::write::{
 
 use crate::connection::ACCESS_DENIED;
 use crate::engine::{
-    self, CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReleaseLock,
-    ReleaseLocks, ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
+    CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReleaseLock, ReleaseLocks,
+    ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
 };
 use crate::hosting::Hosted;
 use crate::library::BinaryData;
@@ -620,13 +620,7 @@ pub(crate) fn commit(
         mut staged,
         withheld,
     } = op;
-    let mut record_environment = || {
-        crate::recalc::record_environment_at(
-            &account,
-            engine::uuid(environment),
-            &environment.now(),
-        )
-    };
+    let mut record_environment = || crate::recalc::record_environment_in(&account, environment);
     if let Some((table, action)) = refused_action(
         tx.view(),
         &staged,

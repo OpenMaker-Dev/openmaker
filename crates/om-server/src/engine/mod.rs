@@ -828,24 +828,41 @@ impl Outcome {
 
 /// What an operation may read of the world besides the file: the clock and
 /// a random source, so that two engines can be given the same seeded source
-/// (docs/server-storage.md 12). [`run`] itself reads them only through
-/// this: the time and the UUID of a write's record environment, an
+/// (docs/server-storage.md 12). [`run`] reads them only through this, and
+/// so do the formulas an operation evaluates (a privilege set's record
+/// limit, `writes::refused_action`; the stored calculations op73 and the
+/// deferred work finished at opening recompute, `Store::update_table`):
+/// their record environment ([`crate::recalc::record_environment_in`])
+/// takes from it one clock reading (the date and time `Get` selectors, and
+/// today for a year text leaves out), a UUID, the seed of `Random`'s
+/// generator, and the stopwatch of a record limit's time budget. So do an
 /// authoring edit's stamps and the UUIDs of what it adds, an account
-/// edit's stamps, status time and password salt, and the unique ids of
-/// container data op73's recalculation (and the deferred work finished at
-/// opening) and op88 store. The
-/// calculation engine below it does not yet: a formula an operation
-/// evaluates (a privilege set's record limit, `writes::refused_action`;
-/// the stored calculations op73 recomputes, `Store::update_table`) takes
-/// today's date, `Random` and its time budget from the process
-/// (`om_data::rules`, `om_calc::eval::CalcHost::random`), so an operation
-/// whose formulas read them need not replay to the same reply or tree
-/// ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)).
+/// edit's stamps, status time and password salt, and the unique ids of the
+/// container data op73's recalculation, op88 and a server script's commit
+/// store; the order of the draws is in the module doc ("The environment").
+/// Functions a record limit may call still read the process
+/// ([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)):
+/// `CryptEncrypt` and `CryptEncryptBase64` draw their salt from the
+/// system, so a limit comparing their output need not replay; the size and
+/// attributes of a PDF a formula makes (`GetWidth ( Base64Decode ( ... ;
+/// "a.pdf" ) )`) come from a worker with a wall-clock deadline, so such a
+/// limit can fail on a slow machine; `CryptGenerateSignature` blinds with
+/// the system's randomness, which its result does not depend on.
 pub trait Environment: Send + Sync {
     /// The host's time now, in its time zone.
     fn now(&self) -> jiff::Zoned;
     /// Fill `bytes` from the random source, which does not fail.
     fn fill_random(&self, bytes: &mut [u8]);
+    /// A stopwatch started now: each reading answers the time since, never
+    /// less than the reading before. The time budgets of an operation's
+    /// formulas are measured on it, the evaluator reading it each time it
+    /// checks whether to stop. The host's answers the monotonic time that
+    /// elapsed. A seeded environment's answers virtual time that advances
+    /// by a fixed step at each reading, so that a budget is met after a
+    /// fixed number of the evaluator's checks, the same on every machine;
+    /// one that never advances would leave a formula with a large
+    /// `SetRecursion` allowance unbounded.
+    fn stopwatch(&self) -> om_data::rules::Stopwatch;
     /// Fill `bytes` from the random source, or say that it failed: for a
     /// draw whose failure is a reply, as a password's salt is ("no random
     /// salt"). By default [`Self::fill_random`].
@@ -879,6 +896,11 @@ impl Environment for HostEnvironment {
             .fill(bytes)
             .map_err(|_| NoRandom)
     }
+
+    fn stopwatch(&self) -> om_data::rules::Stopwatch {
+        let started = std::time::Instant::now();
+        std::sync::Arc::new(move || started.elapsed())
+    }
 }
 
 /// A random UUID in `Get ( UUID )`'s form, from `environment`.
@@ -892,8 +914,7 @@ pub fn uuid(environment: &dyn Environment) -> String {
 /// passwords it was given beside it (`credentials`, the module doc's
 /// "Credentials"), against what the engine holds of it (`hold`) and its
 /// lock table (`locks`), taking the clock and randomness from
-/// `environment` (formulas it evaluates excepted, [`Environment`]). It
-/// sends nothing,
+/// `environment`, its formulas' too ([`Environment`]). It sends nothing,
 /// saves nothing and takes no lock of its own: the effects are what it did
 /// to the transaction and the lock table, and the engine stores them
 /// before the outcome may go out. A refusal can keep effects: op71 refused

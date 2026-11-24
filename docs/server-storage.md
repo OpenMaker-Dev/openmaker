@@ -263,11 +263,9 @@ view plus put, delete and replace-subtree), the file's lock table
 (`engine::Locks`) and an environment (`engine::Environment`), from which
 it takes the clock and randomness: an authoring edit's modification
 stamps and the UUIDs of what it adds, an account edit's stamps, status
-time and password salt, and the unique ids of the container data op88
-stores. Formulas an operation evaluates are not
-covered yet: a privilege set's record limit and the stored calculations
-op73 recomputes take today's date, `Random` and their time budget from the
-process ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)). It returns the
+time and password salt, the unique ids of the container data op88 and a
+server script's commit store, and what the formulas it evaluates read
+(below). It returns the
 **reply** and the **notices** for other clients (`engine::Outcome`); the
 **effects** (edits to the tree and to the lock table) are what it did to
 the transaction and the lock table, which keep what the engine needs to
@@ -282,6 +280,59 @@ reply is typed, one shape per operation (`engine::Reply`); the caller
 encodes it for the wire. Operations on one file run one at a time, in one
 order; how far the file engine does that today is under "The file engine
 behind it".
+
+**Formulas.** The formulas an operation evaluates (so far a privilege
+set's record limits, in op70) read the world through their record
+environment (`recalc::record_environment_in`). It is drawn from the
+operation's environment in this order:
+
+- a UUID;
+- one clock reading. It answers the date and time `Get` selectors, and
+  its UTC date gives the year a date without one takes. A reading outside
+  FileMaker's dates answers those selectors with error 500, as an
+  out-of-range date is (calc-values.md 4.1), never with the system clock;
+- eight bytes of the random source, which seed a generator for `Random`,
+  FileMaker's (calc-functions.md 3.9), so that each operation draws its own
+  sequence;
+- a stopwatch, on which a record limit's 100 ms budget is measured. The
+  host's measures the monotonic time that elapsed. A seeded environment's
+  answers virtual time that advances by a fixed step at each reading, so
+  that the budget is met after the same number of the evaluator's checks
+  on every machine.
+
+op70 draws them once, when it checks the first listed record that exists
+or that it creates, also for an account whose access is unconditional. An
+empty commit, or one that lists only deletions of records that do not
+exist, draws nothing, and nor do the other operations.
+
+Writes not behind the interface yet build the same record environment from
+the host's clock and random source (`recalc::record_environment`,
+`engine::HostEnvironment`): a server script's commit, op73's
+recalculation and a file's recovery recalculation. So does a download's
+view filter, a read, which takes its date for conversions once for the
+filter. A recalculation over a table draws once. When its calculations
+read `Get ( UUID )`, each record gets its own UUID and clock reading, but
+the first record's generator, date for conversions and stopwatch serve the
+whole recalculation.
+
+Formulas still read the process in these places
+([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)):
+
+- `CryptEncrypt` and `CryptEncryptBase64` draw their salt from the system.
+  A record limit may call them, so one that compares their output need
+  not replay to the same reply.
+- The size and attributes of a PDF that a formula makes
+  (`GetWidth ( Base64Decode ( ... ; "a.pdf" ) )`) come from a worker with a
+  wall-clock deadline. A record limit may read them, so on a slow machine
+  such a limit can fail.
+- `CryptGenerateSignature` blinds with the system's randomness. Its result
+  does not depend on it.
+- A server script's own calculations are answered by the script's host
+  from the system clock and the process's `Random`, among them an unstored
+  match key that a script's lookup reads.
+- Text typed outside a formula (lookups' related values and keys, held
+  records, typed entry) takes today from the system clock, which matters
+  only for a year the text leaves out.
 
 Reply and effects are separate, because the protocol separates them. A
 refusal can keep effects: op71 refused for a lock another user holds on a
