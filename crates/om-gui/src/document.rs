@@ -7499,6 +7499,7 @@ fn guarded_editor(
     let Some(refusal) = refusal else {
         let response = show(ui, buffer);
         let changed = response.changed();
+        note_focused_text(ui, id, buffer);
         return (response, changed);
     };
     let before = (buffer.clone(), egui::TextEdit::load_state(ui.ctx(), id));
@@ -7512,7 +7513,32 @@ fn guarded_editor(
         response.flags.remove(egui::response::Flags::CHANGED);
         actions.push(Action::RefuseTyping(refusal));
     }
+    note_focused_text(ui, id, buffer);
     (response, false)
+}
+
+/// Where [`note_focused_text`] keeps the focused field's text.
+fn focused_text_id() -> egui::Id {
+    egui::Id::unique("openmaker-focused-field-text")
+}
+
+/// Keep the focused field editor's text as this pass left it, for
+/// [`focused_field_text`]: an input method counts what it deletes in
+/// UTF-16 units, which OpenMaker Go converts to characters against it.
+fn note_focused_text(ui: &Ui, id: egui::Id, buffer: &str) {
+    if ui.memory(|memory| memory.has_focus(id)) {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(focused_text_id(), (id, buffer.to_owned())));
+    }
+}
+
+/// The text of the field editor that has the keyboard focus, as the last
+/// pass left it; `None` when no field editor has it.
+pub(crate) fn focused_field_text(ctx: &egui::Context) -> Option<String> {
+    let focused = ctx.memory(|memory| memory.focused())?;
+    ctx.data(|data| data.get_temp::<(egui::Id, String)>(focused_text_id()))
+        .filter(|(id, _)| *id == focused)
+        .map(|(_, text)| text)
 }
 
 /// Why the user cannot change value-list control `object` (a set or a

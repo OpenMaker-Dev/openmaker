@@ -184,6 +184,13 @@ impl OpenMakerApp {
         })
     }
 
+    /// The text of the layout field being edited, as the last pass left
+    /// it; `None` when the keyboard focus is in no layout field (a dialog's
+    /// field, or none).
+    pub fn focused_field_text(&self, ctx: &egui::Context) -> Option<String> {
+        crate::document::focused_field_text(ctx)
+    }
+
     /// The file the front window shows, by its id in this app.
     pub fn front_file(&self) -> u64 {
         self.front_doc().file_id

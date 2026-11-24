@@ -33,7 +33,13 @@ import kotlin.math.abs
 class CanvasView(context: Context, private val session: DocumentSession) : GLSurfaceView(context) {
     private val density = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-    private val accessibility = CanvasAccessibility(this) { session.send(it) }
+    // An element's action can move the focus to another field, as a tap
+    // does: the composition is committed in its own field first.
+    private val accessibility =
+        CanvasAccessibility(this) {
+            if (it is Input.Activate) commitComposition()
+            session.send(it)
+        }
     private val keyboard = context.getSystemService(InputMethodManager::class.java)
 
     /** Find mode: Return performs the find (the keyboard shows Search). */
@@ -189,6 +195,11 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
                     }
                     else -> {
                         performClick()
+                        // A tap can move the focus to another field, which
+                        // the same input connection then serves: what the
+                        // input method composes is committed in its own
+                        // field first, and the input method told it ended.
+                        commitComposition()
                         session.send(Input.Tap(event.x / density, event.y / density))
                     }
                 }

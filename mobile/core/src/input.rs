@@ -31,10 +31,16 @@ pub enum Input {
     },
     /// Text pasted into the field being edited.
     Paste { text: String },
-    /// An input method deletes characters before and after the field's
-    /// selection and keeps the selection (Android's
-    /// `deleteSurroundingText`), at most 64 each way.
-    DeleteAround { before: u32, after: u32 },
+    /// An input method deletes text before and after the field's
+    /// selection (or composition) and keeps it, at most 64 units each way:
+    /// counted in UTF-16 code units when `utf16` (Android's
+    /// `deleteSurroundingText`), in characters otherwise
+    /// (`deleteSurroundingTextInCodePoints`).
+    DeleteAround {
+        before: u32,
+        after: u32,
+        utf16: bool,
+    },
     /// An accessibility element's action ([`crate::Element::id`]).
     Activate { id: u64 },
     /// A menu row chosen ([`crate::MenuRow::id`]).

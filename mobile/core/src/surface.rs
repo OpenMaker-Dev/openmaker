@@ -278,7 +278,8 @@ impl Surface {
         let mut took = false;
         while let Some(input) = inputs.front() {
             // A deletion around the selection reads the field's selection
-            // as the last pass left it: it waits for a pass of its own.
+            // and text as the last pass left them: it waits for a pass of
+            // its own.
             if took && matches!(input, Input::DeleteAround { .. }) {
                 break;
             }
@@ -407,71 +408,43 @@ impl Surface {
         }
     }
 
-    /// Delete `before` characters before the field's selection and `after`
-    /// after it, keeping the selection, as Android's input connection
-    /// does. Backspace and Delete would take a selection instead, so it is
-    /// collapsed to the side being deleted and selected again after. An
-    /// input method's composition is the field's selection while it shows:
-    /// it is taken out for the deletion and shown again.
-    fn delete_around(&mut self, before: u32, after: u32, events: &mut Vec<Event>) {
-        const MOST: u32 = 64;
-        let composed = self.preedit.clone();
-        let selected = if composed.is_some() {
-            0
-        } else {
-            self.ctx
-                .memory(|memory| memory.focused())
-                .and_then(|id| egui::text_edit::TextEditState::load(&self.ctx, id))
-                .and_then(|state| state.cursor.char_range())
-                .map_or(0, |range| {
-                    range.primary.index.0.abs_diff(range.secondary.index.0)
-                })
+    /// Delete `before` and `after` units around the focused field's
+    /// selection, keeping the selection, as Android's input connection
+    /// does: one edit (egui's `DeleteSurrounding`), not keys a keystroke
+    /// trigger could take one by one. While an input method composes, the
+    /// composition is the selection and stays. UTF-16 counts are turned
+    /// into characters against the field's text; with no layout field's
+    /// text known (a dialog's field) a unit is taken as a character.
+    fn delete_around(&mut self, before: u32, after: u32, utf16: bool, events: &mut Vec<Event>) {
+        const MOST: usize = 64;
+        let Some(range) = self
+            .ctx
+            .memory(|memory| memory.focused())
+            .and_then(|id| egui::text_edit::TextEditState::load(&self.ctx, id))
+            .and_then(|state| state.cursor.char_range())
+        else {
+            // No field takes typing: there is nothing to delete.
+            return;
         };
-        let press = |events: &mut Vec<Event>, key: egui::Key, shift: bool, times: usize| {
-            for _ in 0..times {
-                for pressed in [true, false] {
-                    events.push(Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed,
-                        repeat: false,
-                        modifiers: input::modifiers(shift, false),
-                    });
-                }
+        let [start, end] = range.sorted_cursors().map(|cursor| cursor.index.0);
+        let units = |count: u32| (count as usize).min(MOST);
+        let (before, after) = match self.app.focused_field_text(&self.ctx) {
+            Some(text) => {
+                let chars: Vec<char> = text.chars().collect();
+                let start = start.min(chars.len());
+                let end = end.clamp(start, chars.len());
+                (
+                    chars_for(chars[..start].iter().rev(), units(before), utf16),
+                    chars_for(chars[end..].iter(), units(after), utf16),
+                )
             }
+            None => (units(before).min(start), units(after)),
         };
-        let compose = |events: &mut Vec<Event>, text: String| {
-            events.push(Event::Ime(egui::ImeEvent::Preedit {
-                text,
-                active_range_chars: None,
+        if before > 0 || after > 0 {
+            events.push(Event::Ime(egui::ImeEvent::DeleteSurrounding {
+                before_chars: before,
+                after_chars: after,
             }));
-        };
-        if composed.is_some() {
-            compose(events, String::new());
-        }
-        let (before, after) = (before.min(MOST) as usize, after.min(MOST) as usize);
-        if before > 0 {
-            press(
-                events,
-                egui::Key::ArrowLeft,
-                false,
-                usize::from(selected > 0),
-            );
-            press(events, egui::Key::Backspace, false, before);
-            press(events, egui::Key::ArrowRight, true, selected);
-        }
-        if after > 0 {
-            press(
-                events,
-                egui::Key::ArrowRight,
-                false,
-                usize::from(selected > 0),
-            );
-            press(events, egui::Key::Delete, false, after);
-            press(events, egui::Key::ArrowLeft, true, selected);
-        }
-        if let Some(text) = composed {
-            compose(events, text);
         }
     }
 
@@ -553,7 +526,11 @@ impl Surface {
                 }
             }
             Input::Paste { text } => events.push(Event::Paste(text)),
-            Input::DeleteAround { before, after } => self.delete_around(before, after, events),
+            Input::DeleteAround {
+                before,
+                after,
+                utf16,
+            } => self.delete_around(before, after, utf16, events),
             Input::Activate { id } => {
                 let Some(element) = self.elements.iter().find(|e| e.id == id && e.enabled) else {
                     return;
@@ -898,5 +875,37 @@ fn wheel(delta: Vec2, phase: TouchPhase) -> Event {
         // smooth a trackpad's scrolling.
         source: MouseWheelSource::Trackpad,
         modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// How many of `side`'s characters, nearest first, make up `units` units
+/// (UTF-16 code units when `utf16`, characters otherwise): a character is
+/// taken whole, as a deletion never splits one.
+fn chars_for<'a>(side: impl Iterator<Item = &'a char>, units: usize, utf16: bool) -> usize {
+    let mut taken = 0;
+    let mut chars = 0;
+    for c in side {
+        if taken >= units {
+            break;
+        }
+        taken += if utf16 { c.len_utf16() } else { 1 };
+        chars += 1;
+    }
+    chars
+}
+
+#[cfg(test)]
+mod delete_around_tests {
+    use super::chars_for;
+
+    #[test]
+    fn utf16_units_are_counted_as_whole_characters() {
+        let before: Vec<char> = "A\u{1F600}".chars().collect();
+        // The emoji is two UTF-16 units and one character: A stays.
+        assert_eq!(chars_for(before.iter().rev(), 2, true), 1);
+        assert_eq!(chars_for(before.iter().rev(), 3, true), 2);
+        assert_eq!(chars_for(before.iter().rev(), 2, false), 2);
+        // No more than the side holds.
+        assert_eq!(chars_for(before.iter().rev(), 64, true), 2);
     }
 }

@@ -47,22 +47,23 @@ internal class TextInput(private val canvas: CanvasView, private val session: Do
         return composed != null
     }
 
-    override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        // This editor holds only the composition, which the deletion leaves
-        // alone, as BaseInputConnection's does: what the keyboard deletes is
-        // the field's text around its selection (or composition), which the
-        // engine keeps (Surface::delete_around).
+    // This editor holds only the composition, which a deletion leaves
+    // alone, as BaseInputConnection's does: what the keyboard deletes is the
+    // field's text around its selection (or composition), which the engine
+    // keeps (Surface::delete_around). The two calls count in different
+    // units, which the engine tells apart.
+    override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean =
+        deleteAround(beforeLength, afterLength, utf16 = true)
+
+    override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
+        deleteAround(beforeLength, afterLength, utf16 = false)
+
+    private fun deleteAround(beforeLength: Int, afterLength: Int, utf16: Boolean): Boolean {
         val before = beforeLength.coerceIn(0, MAX_DELETE)
         val after = afterLength.coerceIn(0, MAX_DELETE)
-        if (before > 0 || after > 0) session.send(Input.DeleteAround(before.toUInt(), after.toUInt()))
+        if (before > 0 || after > 0) session.send(Input.DeleteAround(before.toUInt(), after.toUInt(), utf16))
         return true
     }
-
-    // Keyboards that count in code points delete through this one; the
-    // inherited version would edit only this connection's own editor.
-    // The engine's Backspace and Delete take a character each.
-    override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
-        deleteSurroundingText(beforeLength, afterLength)
 
     override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) canvas.key(event)

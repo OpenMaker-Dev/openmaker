@@ -113,7 +113,8 @@ fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
     });
     // An input method's delete around the selection (Android's
     // deleteSurroundingText) takes the X before the selected "f" and keeps
-    // the selection; Backspace would have taken the "f".
+    // the selection, which the "f" typed next replaces: a lost selection
+    // would leave "Veriffied", a Backspace would have taken the "f".
     let press = |key, shift| Input::Press {
         key,
         shift,
@@ -126,7 +127,9 @@ fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
     local.doc.send(Input::DeleteAround {
         before: 1,
         after: 0,
+        utf16: true,
     });
+    local.doc.send(Input::Text { text: "f".into() });
     // No Done, and no wait for the text to show: closing the file saves
     // what was typed, the keys the field had not read yet included.
     assert!(local.doc.close(10_000), "the file did not close");
