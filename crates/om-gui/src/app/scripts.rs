@@ -205,6 +205,9 @@ pub(super) struct ScriptUi {
     /// A close trigger's Close File or Exit Application took its close over
     /// (`take_over_close`): the close goes on once the script has ended.
     taken_over: bool,
+    /// The file a script's own Close File closes once the script has ended
+    /// (`close_after_script`).
+    close_file: Option<u64>,
     /// What started each script sent to the worker, oldest first and at
     /// most [`STARTED_KEPT`]: for measures that run a file's scripts and
     /// triggers (`OpenMakerApp::scripts_started`).
@@ -1946,7 +1949,7 @@ impl OpenMakerApp {
                 }
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
-                let resumed = self.resume_taken_over(ctx);
+                let resumed = self.close_after_script(ctx);
                 if std::mem::take(&mut self.script.quit) && !resumed {
                     self.apply(ctx, Action::Quit);
                 }
@@ -2015,10 +2018,11 @@ impl OpenMakerApp {
             ScriptEvent::SchemaChanged => self.request(ctx, Request::CalcSchema),
             ScriptEvent::CloseFile => {
                 self.script.running = false;
-                // A close trigger's own Close File takes over its close,
-                // which goes on when the script has ended.
+                // A close trigger's own Close File takes over its close;
+                // any other script's closes the file. Either goes on when
+                // the script has ended.
                 if !self.take_over_close(Some(self.w.file_id), false) {
-                    self.apply(ctx, Action::CloseFile);
+                    self.script.close_file = Some(self.w.file_id);
                 }
             }
             ScriptEvent::Failed(message) => {
@@ -2032,7 +2036,7 @@ impl OpenMakerApp {
                 // waiting behind the script run now.
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
-                self.resume_taken_over(ctx);
+                self.close_after_script(ctx);
                 self.start_queued(ctx);
             }
         }
@@ -2041,7 +2045,7 @@ impl OpenMakerApp {
     /// A close trigger ran Close File (of its own file, `file`) or Exit
     /// Application (`file` is `None`): it takes over the close it holds.
     /// The halt's veto then finds nothing to stop, and once the script has
-    /// ended ([`Self::resume_taken_over`]) the trigger's file's windows
+    /// ended ([`Self::close_after_script`]) the trigger's file's windows
     /// close without their close triggers, each committing
     /// (`Closing::quiet`); with `quit`, or in a Quit, the other files close
     /// after as Quit closes them. The trigger's own window may have closed
@@ -2075,17 +2079,29 @@ impl OpenMakerApp {
     pub(super) fn close_waits(&self) -> bool {
         self.script.running
             || self.script.taken_over
+            || self.script.close_file.is_some()
             || self.script.saving.is_some()
             || !self.script.held.is_empty()
             || !self.script.resumes.is_empty()
             || self.docs().any(|doc| doc.document.pending)
     }
 
-    /// A close taken over by its trigger ([`Self::take_over_close`]) goes
-    /// on now that the script has ended: the worker has sent the windows'
-    /// last states first, a frozen window's edits included, so each window
-    /// commits what the script left. Whether it went on.
-    fn resume_taken_over(&mut self, ctx: &egui::Context) -> bool {
+    /// A close a script's Close File asked for, or a close its trigger
+    /// took over ([`Self::take_over_close`]), goes on now that the script
+    /// has ended: the worker has sent the windows' last states first, a
+    /// frozen window's edits included, so each window commits what the
+    /// script left. Whether it went on.
+    fn close_after_script(&mut self, ctx: &egui::Context) -> bool {
+        if let Some(file) = self.script.close_file.take() {
+            let window = self
+                .docs()
+                .find(|doc| doc.file_id == file && doc.session.is_some())
+                .map(|doc| doc.id);
+            if let Some(window) = window {
+                self.with_window(window, |app| app.apply(ctx, Action::CloseFile));
+                return true;
+            }
+        }
         if !std::mem::take(&mut self.script.taken_over) {
             return false;
         }
@@ -2194,7 +2210,8 @@ impl OpenMakerApp {
                 .is_some_and(|closing| closing.windows.contains(&origin));
             if closes && began_with {
                 self.close_next(ctx, origin);
-            } else {
+            } else if !self.script.taken_over {
+                // A close a trigger took over is that script's now.
                 self.closing = None;
             }
         }
@@ -2212,6 +2229,7 @@ impl OpenMakerApp {
         self.script.held.clear();
         self.script.resumes.clear();
         self.script.taken_over = false;
+        self.script.close_file = None;
         for id in self.window_ids() {
             self.with_window(id, |app| {
                 app.w.pending_enter = None;
@@ -3671,6 +3689,15 @@ mod queued_window_tests {
         assert_eq!(closing.windows, [2]);
         assert!(app.script.held.is_empty() && app.script.taken_over);
         app.resume_held(&ctx, 2, Held::Action(Action::GoToRecord(1), 1), false, None);
+        assert_eq!(app.closing.as_ref(), Some(&closing));
+        // A veto from a window that has closed since leaves it too.
+        app.resume_held(
+            &ctx,
+            FIRST,
+            Held::Action(Action::GoToRecord(1), 1),
+            false,
+            None,
+        );
         assert_eq!(app.closing, Some(closing));
     }
 

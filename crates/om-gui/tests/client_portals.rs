@@ -6127,37 +6127,61 @@ fn a_close_trigger_that_closes_its_file_closes_it_once() {
     }
 }
 
-/// A close trigger that freezes its window, sets a field there, selects
-/// another window and runs Close File: its window still commits what the
-/// script left, which the worker sends only as the script ends.
+/// A script that freezes its window, sets a field there, selects another
+/// window and runs Close File, run as a close trigger or from the Scripts
+/// menu: its window still commits what the script left, which the worker
+/// sends only as the script ends.
 #[test]
-fn a_close_trigger_s_close_file_keeps_its_frozen_window_s_edit() {
+fn close_file_keeps_a_frozen_window_s_edit() {
     const FREEZE_AND_CLOSE: u64 = 91;
-    let hosted = host_with("frozen-close-file", |root| {
-        add_layout_trigger_script(root, TriggerEvent::WindowClose, FREEZE_AND_CLOSE, "close");
-        let steps = vec![
-            ScriptStep::new(79),
-            set_field(OCCURRENCE, CODE, 0, "\"fz\""),
-            select_window("W2"),
-            ScriptStep::new(34),
-        ];
-        add_script(
-            root,
-            &fixture::script(FREEZE_AND_CLOSE, "Freeze and close", steps),
+    for trigger in [true, false] {
+        let tag = if trigger {
+            "frozen-close-file-trigger"
+        } else {
+            "frozen-close-file-script"
+        };
+        let hosted = host_with(tag, |root| {
+            if trigger {
+                add_layout_trigger_script(
+                    root,
+                    TriggerEvent::WindowClose,
+                    FREEZE_AND_CLOSE,
+                    "close",
+                );
+            }
+            let steps = vec![
+                ScriptStep::new(79),
+                set_field(OCCURRENCE, CODE, 0, "\"fz\""),
+                select_window("W2"),
+                ScriptStep::new(34),
+            ];
+            add_script(
+                root,
+                &fixture::script(FREEZE_AND_CLOSE, "Freeze and close", steps),
+            );
+            add_script(root, &two_windows());
+        });
+        let mut app = open(&hosted);
+        run_without_dialog(&mut app, "Two windows");
+        if trigger {
+            open_root_menu(&mut app, "File");
+            app.get_by_role_and_label(egui::accesskit::Role::Button, "Close")
+                .click();
+        } else {
+            open_root_menu(&mut app, "Scripts");
+            common::click(&mut app, "Freeze and close");
+        }
+        common::wait_until(&mut app, "the file to close", |app| {
+            !app.state().is_open() && !app.state().script_running()
+        });
+        assert!(
+            app.state().error().is_none(),
+            "{tag}: {:?}",
+            app.state().error()
         );
-        add_script(root, &two_windows());
-    });
-    let mut app = open(&hosted);
-    run_without_dialog(&mut app, "Two windows");
-    open_root_menu(&mut app, "File");
-    app.get_by_role_and_label(egui::accesskit::Role::Button, "Close")
-        .click();
-    common::wait_until(&mut app, "the file to close", |app| {
-        !app.state().is_open() && !app.state().script_running()
-    });
-    assert!(app.state().error().is_none(), "{:?}", app.state().error());
-    // Code takes at most 3 characters.
-    assert_eq!(codes(&hosted)[0], "fz");
+        // Code takes at most 3 characters.
+        assert_eq!(codes(&hosted)[0], "fz", "{tag}");
+    }
 }
 
 /// Run `script` and wait until it pauses.

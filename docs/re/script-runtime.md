@@ -3437,7 +3437,9 @@ Execution (2.1, 6)
   otherwise.
 - Exit Application, Close File and Close Window on the file's only window
   halt the scripts; with Allow User Abort Off the script may go on until
-  the end of its 50 ms slice.
+  the end of its 50 ms slice. The file closes, or the app quits, once the
+  script has ended, after the worker has sent every window's last state,
+  so a window under Freeze Window commits what the script left in it.
 - The worker keeps the window the script works on (layout, mode, view,
   found-set position, current record and its unsaved values, Find mode
   requests, title, toolbars, zoom). A script starts from the window as the
