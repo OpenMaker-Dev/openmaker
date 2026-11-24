@@ -33,9 +33,11 @@
 //! Set Next Serial Value never do; a server script's commit takes it first
 //! thing, [`Locks::hold`], as it always held both from its start). op70, a
 //! client's op71 and a server script's commit, which take the lock table,
-//! hold it with the store while they save and let go of it first; dropping
-//! the store's write guard takes the file's accounts while it still holds
-//! the store (`hosting::StoreWriteGuard`). op61, op62 and op65 take only
+//! hold it with the store while they save and let go of it first, then
+//! write the log lines that say what was stored
+//! ([`Transaction::once_stored`]) under the store alone, where they wrote
+//! them under both; dropping the store's write guard takes the file's
+//! accounts while it still holds the store (`hosting::StoreWriteGuard`). op61, op62 and op65 take only
 //! the lock table, as before, and so do a server script's lock and its
 //! release and the release of a session's locks, as the script host and a
 //! connection's end took it: a connection's end releases its locks one file

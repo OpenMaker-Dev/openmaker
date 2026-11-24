@@ -413,12 +413,22 @@ FileMaker Server's behaviour here is unmeasured.
 
 A server script's commit, lock, release and end, and a session's end,
 take what they took, in the same order, and save as they did, so a
-request that overlaps one of them sees what it could see before. The
-commit's container data takes its new members' unique ids from the
-engine's environment, which on the running server is the system's random
-source it took them from before. The release of a server script's locks
-at its end, which was op65's for all of its connection's locks, is now
-the release of a session's locks, which does the same.
+request that overlaps one of them sees what it could see before. One
+thing is timed differently. The log lines that say a change was made are
+written once it is stored (`Transaction::once_stored`), after the engine
+lets go of the lock table and before it lets go of the store. op70, op71
+and a server script's commit wrote theirs before they let go of the lock
+table, op70 and the script's commit one per record right after releasing
+that record's lock. So a request that takes only the lock table (op61,
+op62, op65, a server script's lock or release, the release of a session's
+locks) can now run while those lines are written, where it waited for
+them. It finds the change stored and the records released either way; a
+request that takes the store still waits for the lines. The commit's
+container data takes its new members' unique ids from the engine's
+environment, which on the running server is the system's random source
+it took them from before. The release of a server script's locks at its
+end, which was op65's for all of its connection's locks, is now the
+release of a session's locks, which does the same.
 
 op86's schema instructions and stored indexes, and a server script's
 stored indexes, were made under one hold of the store and saved under a

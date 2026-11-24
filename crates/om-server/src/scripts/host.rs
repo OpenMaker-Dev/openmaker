@@ -5619,6 +5619,20 @@ impl ServerHost {
             return Err(ErrorCode::UNAVAILABLE.into());
         }
         let catalog = vec![vec![23], vec![1]];
+        // What the release tells the other clients once the edit wrote,
+        // made before the catalog is locked so that the lock is held for
+        // the edit alone: another account step that asks for it meanwhile
+        // is refused with 310.
+        let mut changed = vec![
+            writes::Change {
+                path: catalog.clone(),
+                code: ATTENTION_CATALOG,
+            },
+            writes::Change {
+                path: vec![vec![23], vec![1], vec![1]],
+                code: ATTENTION_CATALOG,
+            },
+        ];
         self.lock_path(catalog.clone()).map_err(|conflict| {
             info!(
                 "{:?}: {step} refused: the accounts are in use by {}",
@@ -5634,19 +5648,8 @@ impl ServerHost {
             time: &time,
         };
         let result = edit(&stamp);
-        // The release tells the other clients the catalog changed, once the
-        // edit wrote.
         let changes = if result == Ok(true) {
-            vec![
-                writes::Change {
-                    path: catalog.clone(),
-                    code: ATTENTION_CATALOG,
-                },
-                writes::Change {
-                    path: vec![vec![23], vec![1], vec![1]],
-                    code: ATTENTION_CATALOG,
-                },
-            ]
+            std::mem::take(&mut changed)
         } else {
             Vec::new()
         };

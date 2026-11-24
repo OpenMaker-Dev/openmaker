@@ -1210,10 +1210,11 @@ fn state(file: &Hosted) -> State {
 /// the release of a session's locks, are operations too, so a recorded
 /// sequence of them replays against a fresh load to the same replies,
 /// notices, tree, lock table and saves. A script session reserves record
-/// 4 and locks record 2; a client locks record 3, which the script is then
-/// refused (the conflict a step answers with 301); the script commits a new
-/// record 4 with container data, an edit of 2 and the deletion of 1, which
-/// releases the photo 1 held; its commit of 3 is refused; it locks and
+/// 4 and locks record 2 and a Notes record; a client locks record 3, which
+/// the script is then refused (the conflict a step answers with 301); the
+/// script commits a new record 4 with container data, an edit of 2 and the
+/// deletion of 1, which releases the photo 1 held, and keeps its lock on
+/// the Notes record; its commit of 3 is refused; it locks and
 /// releases the accounts catalog, telling of a change; it sets a field's
 /// next serial value, reserves record 5 and ends, its locks released and
 /// the reservation saved; the client's session ends. Each effect is checked
@@ -1224,6 +1225,8 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
     use crate::library::{self, LIBRARY};
     use crate::writes::RecordWrite;
     use om_data::containers::reference_text;
+    /// The container data the script sets in record 4's photo.
+    const SCRIPT_FILE: &[u8] = b"a script's file";
     let mut tree = fixture::tree(&[], true);
     fixture::add_tasks(&mut tree, 1..=3);
     fixture::add_photo(&mut tree);
@@ -1266,6 +1269,9 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
             path,
         })
     };
+    // A record the script holds and does not commit: its lock outlasts the
+    // commit.
+    let kept = vec![uint_segment(fixture::NOTES), vec![0x05], serial::encode(1)];
     let catalog = vec![vec![23], vec![1]];
     let catalog_changes = vec![
         Change {
@@ -1295,7 +1301,7 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
                 id: 4,
                 record: Some(new),
                 new: true,
-                uploads: vec![(fixture::PHOTO, file_data(b"a script's file"))],
+                uploads: vec![(fixture::PHOTO, file_data(SCRIPT_FILE))],
             },
             RecordWrite {
                 table: fixture::TABLE,
@@ -1334,9 +1340,25 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
         uint_segment(fixture::COUNT),
         vec![0x0c],
     ];
+    // The steps, in order.
+    const RESERVE_4: usize = 0;
+    const LOCK_2: usize = 1;
+    const LOCK_KEPT: usize = 2;
+    const CLIENT_LOCK_3: usize = 3;
+    const REFUSED_LOCK_3: usize = 4;
+    const COMMIT: usize = 5;
+    const REFUSED_COMMIT: usize = 6;
+    const LOCK_ACCOUNTS: usize = 7;
+    const RELEASE_ACCOUNTS: usize = 8;
+    const SET_SERIAL: usize = 9;
+    const RESERVE_5: usize = 10;
+    const SCRIPT_END: usize = 11;
+    const SAVE: usize = 12;
+    const CLIENT_END: usize = 13;
     let operations = vec![
         reserve(),
         script_lock(record(2)),
+        script_lock(kept.clone()),
         Operation::TakeLock(TakeLock {
             user: client,
             holder: client_holder.into(),
@@ -1375,8 +1397,9 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
             connection: client.connection,
         }),
     ];
+    assert_eq!(operations.len(), CLIENT_END + 1);
     // The steps that change nothing: the refused lock and commit.
-    let refusals = [3, 5];
+    let refusals = [REFUSED_LOCK_3, REFUSED_COMMIT];
     let recording = engine();
     let mut recorded: Vec<(Operation, Outcome, State)> = Vec::new();
     for operation in operations {
@@ -1393,41 +1416,47 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
 
     // Record 4 reserved and locked for the script, not saved.
     assert!(
-        matches!(&outcome(0).reply, Reply::ReserveRecordIds(r) if r.status == 0 && r.record == [serial::encode(4)]),
+        matches!(&outcome(RESERVE_4).reply, Reply::ReserveRecordIds(r) if r.status == 0 && r.record == [serial::encode(4)]),
         "{:?}",
-        outcome(0).reply
+        outcome(RESERVE_4).reply
     );
-    assert_eq!(locks(0), &vec![script_lock_on(&record(4))]);
-    assert!(recorded[0].2.unsaved, "the reservation waits unsaved");
-    assert_eq!(outcome(1).reply, Reply::TakeScriptLock(Ok(())));
+    assert_eq!(locks(RESERVE_4), &vec![script_lock_on(&record(4))]);
+    assert!(
+        recorded[RESERVE_4].2.unsaved,
+        "the reservation waits unsaved"
+    );
+    assert_eq!(outcome(LOCK_2).reply, Reply::TakeScriptLock(Ok(())));
+    assert_eq!(outcome(LOCK_KEPT).reply, Reply::TakeScriptLock(Ok(())));
     assert!(matches!(
-        outcome(2).reply,
+        outcome(CLIENT_LOCK_3).reply,
         Reply::TakeLock(LockReply::Granted { mod_count: None })
     ));
     // The script is refused the record the client holds, with its name.
     assert_eq!(
-        outcome(3).reply,
+        outcome(REFUSED_LOCK_3).reply,
         Reply::TakeScriptLock(Err(Conflict {
             self_conflict: false,
             users: client_holder.into(),
         }))
     );
     assert_eq!(
-        locks(3),
+        locks(REFUSED_LOCK_3),
         &vec![
             script_lock_on(&record(2)),
             client_lock_on(&record(3)),
             script_lock_on(&record(4)),
+            script_lock_on(&kept),
         ]
     );
 
-    // The commit: record 4 with its photo stored as member 2, record 2
-    // edited, record 1 deleted and the photo it held, member 1, released;
-    // the script's locks on 2 and 4 released, the file saved.
-    assert_eq!(outcome(4).reply, Reply::CommitScriptRecords(Ok(())));
+    // The commit: record 4 with its name and its photo stored as member
+    // 2, record 2 edited, record 1 deleted and the photo it held, member 1,
+    // released; the script's locks on 2 and 4 released and the one on the
+    // Notes record it did not commit kept; the file saved.
+    assert_eq!(outcome(COMMIT).reply, Reply::CommitScriptRecords(Ok(())));
     let code = |kind| kind | attention::RECORD;
     assert_eq!(
-        outcome(4).notices,
+        outcome(COMMIT).notices,
         Notices {
             from: script.connection,
             changes: vec![
@@ -1446,83 +1475,108 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
             ],
         }
     );
-    let after_commit = &recorded[4].2.tree;
+    let after_commit = &recorded[COMMIT].2.tree;
     let at = |path: &[Vec<u8>]| {
         let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         after_commit.at(&path).cloned()
     };
+    let name =
+        |id: u64| at(&record(id)).and_then(|n| crate::recalc::texts(&n).remove(&fixture::NAME));
+    assert_eq!(name(4).as_deref(), Some("Task 4"));
+    assert_eq!(name(2).as_deref(), Some("Task two"));
+    assert_eq!(
+        at(&record(2)).map(|n| crate::recalc::texts(&n)),
+        Some(crate::recalc::texts(&edited))
+    );
     assert_eq!(
         at(&photo(4)).and_then(|n| n.value),
         text_node(&[], &reference_text(&serial::encode(2))).value
     );
+    let stored = at(&member(2)).expect("the photo's member");
+    assert_eq!(library::reference_count(&stored), 1);
     assert_eq!(
-        at(&member(2)).as_ref().map(library::reference_count),
-        Some(1)
+        stored.child(b"FILE"),
+        Some(&om_data::containers::stream_node(b"FILE", SCRIPT_FILE)),
+        "the bytes the script set"
     );
+    assert_eq!(library::member_tree(&stored), Some(file_data(SCRIPT_FILE)));
     assert!(
         at(&member(1)).is_none(),
         "the deleted record's photo is released"
     );
     assert!(at(&record(1)).is_none(), "record 1 is deleted");
     assert_eq!(
-        at(&record(2)).map(|n| crate::recalc::texts(&n)),
-        Some(crate::recalc::texts(&edited))
+        locks(COMMIT),
+        &vec![client_lock_on(&record(3)), script_lock_on(&kept)]
     );
-    assert_eq!(locks(4), &vec![client_lock_on(&record(3))]);
-    assert_eq!(saves(4), saves(3) + 1);
+    assert_eq!(saves(COMMIT), saves(REFUSED_LOCK_3) + 1);
     assert!(
-        !recorded[4].2.unsaved,
+        !recorded[COMMIT].2.unsaved,
         "the commit saved the reservation too"
     );
 
     // The commit of the record the client holds is refused with 301, and
     // changes nothing.
     assert!(
-        matches!(&outcome(5).reply, Reply::CommitScriptRecords(Err((301, _)))),
+        matches!(
+            &outcome(REFUSED_COMMIT).reply,
+            Reply::CommitScriptRecords(Err((301, _)))
+        ),
         "{:?}",
-        outcome(5).reply
+        outcome(REFUSED_COMMIT).reply
     );
-    assert!(outcome(5).notices.changes.is_empty());
+    assert!(outcome(REFUSED_COMMIT).notices.changes.is_empty());
 
     // The accounts catalog: locked, then released telling of the change.
-    assert_eq!(outcome(6).reply, Reply::TakeScriptLock(Ok(())));
-    assert!(locks(6).contains(&script_lock_on(&catalog)));
+    assert_eq!(outcome(LOCK_ACCOUNTS).reply, Reply::TakeScriptLock(Ok(())));
+    assert!(locks(LOCK_ACCOUNTS).contains(&script_lock_on(&catalog)));
     assert_eq!(
-        outcome(7).notices,
+        outcome(RELEASE_ACCOUNTS).notices,
         Notices {
             from: script.connection,
             changes: catalog_changes,
         }
     );
-    assert_eq!(locks(7), &vec![client_lock_on(&record(3))]);
+    assert_eq!(
+        locks(RELEASE_ACCOUNTS),
+        &vec![client_lock_on(&record(3)), script_lock_on(&kept)]
+    );
 
     // Set Next Serial Value: stored and saved.
-    assert_eq!(outcome(8).reply, Reply::SetNextSerial(Ok(())));
+    assert_eq!(outcome(SET_SERIAL).reply, Reply::SetNextSerial(Ok(())));
     let path: Vec<&[u8]> = serial_path.iter().map(Vec::as_slice).collect();
     assert_eq!(
-        recorded[8].2.tree.at(&path).and_then(|n| n.value.clone()),
+        recorded[SET_SERIAL]
+            .2
+            .tree
+            .at(&path)
+            .and_then(|n| n.value.clone()),
         Some(om_scsu::encode_scsu("10"))
     );
-    assert_eq!(saves(8), saves(7) + 1);
+    assert_eq!(saves(SET_SERIAL), saves(RELEASE_ACCOUNTS) + 1);
 
-    // Record 5 reserved; the script's end releases its lock, and the save
+    // Record 5 reserved; the script's end releases its locks, and the save
     // after it writes the reservation.
     assert!(
-        matches!(&outcome(9).reply, Reply::ReserveRecordIds(r) if r.record == [serial::encode(5)]),
+        matches!(&outcome(RESERVE_5).reply, Reply::ReserveRecordIds(r) if r.record == [serial::encode(5)]),
         "{:?}",
-        outcome(9).reply
+        outcome(RESERVE_5).reply
     );
-    assert!(locks(9).contains(&script_lock_on(&record(5))));
-    assert_eq!(locks(10), &vec![client_lock_on(&record(3))]);
-    assert_eq!(outcome(11).reply, Reply::SaveFile(Ok(())));
-    assert_eq!(saves(11), saves(10) + 1);
-    assert!(!recorded[11].2.unsaved);
+    assert!(locks(RESERVE_5).contains(&script_lock_on(&record(5))));
+    assert_eq!(locks(SCRIPT_END), &vec![client_lock_on(&record(3))]);
+    assert_eq!(outcome(SAVE).reply, Reply::SaveFile(Ok(())));
+    assert_eq!(saves(SAVE), saves(SCRIPT_END) + 1);
+    assert!(!recorded[SAVE].2.unsaved);
     // The client's session ends: no lock is left.
-    assert!(locks(12).is_empty());
+    assert!(locks(CLIENT_END).is_empty());
     let noticed: Vec<usize> = (0..recorded.len())
         .filter(|step| !outcome(*step).notices.changes.is_empty())
         .collect();
-    assert_eq!(noticed, [4, 7], "only the commit and the accounts tell");
+    assert_eq!(
+        noticed,
+        [COMMIT, RELEASE_ACCOUNTS],
+        "only the commit and the accounts tell"
+    );
 
     let (_second, again) = host("engine-script-replayed", &tree);
     let replaying = engine();
