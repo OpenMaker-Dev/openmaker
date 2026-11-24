@@ -367,8 +367,10 @@ are sent again exactly and what followed them on disk chains again. A
 follower cuts only with a committed position given since it last
 started: after a restart the one its marker recorded can be one advance
 behind (a lost copy of `state`, section 6.1), so until the leader gives
-it again the log refuses every cut, and then any at or before it. On a
-single server nothing cuts.
+it again the log refuses every cut, and then any at or before it. What
+the caller supplies must cover everything it has ever been told was
+committed: in a cluster the current leader's committed position, never a
+value of the follower's own choosing. On a single server nothing cuts.
 
 The marker says "everything through here was written and flushed", and it
 is kept outside the log on purpose: a segment, or the end of one, can be

@@ -98,11 +98,12 @@ log.
 - **An update that changes nothing** writes nothing.
 - **An open** flushes the store folder, reads the two slots one at a
   time, and takes the valid copy with the highest number (slot 0 between
-  equal numbers). It writes that copy back into its own slot and flushes
-  it; then it writes the same values with the start count raised by one
-  as the next number into the other slot and flushes, and as the number
-  after into the first slot and flushes, before it returns. So an open
-  costs three writes, three file flushes and a folder flush.
+  equal numbers). It writes that copy back into its own slot, as the very
+  bytes it read, and flushes it; then it writes the same values with the
+  start count raised by one as the next number into the other slot and
+  flushes, and as the number after into the first slot and flushes,
+  before it returns. So an open costs three writes, three file flushes
+  and a folder flush.
   - The folder flush makes `state`'s own name durable, in case an earlier
     creation stopped between its rename and its folder flush.
   - The write back is there because an earlier process may have stopped
@@ -110,7 +111,17 @@ log.
     cache can then show a copy the device does not hold
     (server-storage.md 6.12). Only once the copy read is on the device
     does the open write over the other slot.
-  - A slot the device fails to read is passed over like an invalid one.
+  - **A format change** never rewrites a copy in place in the new form.
+    The write back is the bytes read, so a write cut short there leaves
+    the copy as it was, of whatever version; the new form reaches the
+    disk only as new copies, through the two writes that follow (next
+    number into the other slot, flushed, then the first slot, flushed).
+    Version 1 copies become version 2 this way at the first open by this
+    code. Every later version keeps this rule.
+  - A slot the device fails to read is read again, up to three times in
+    all; one that fails every time is passed over like an invalid one,
+    and written over before the open returns, so that its copy is lost:
+    with a marker advance in it, that advance (1.5).
   - An open cut short may have written a raised start count that no start
     used; the next open raises from it. So start counts can skip values,
     and are never issued twice.
@@ -248,7 +259,7 @@ same first index: a cut back to a segment's first entry leaves it empty
 
 ### 3.3 A batch
 
-The entries one batch flush writes to one segment. Its header, 104 bytes:
+The entries one batch flush writes to one segment. Its header, 136 bytes:
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -259,8 +270,9 @@ The entries one batch flush writes to one segment. Its header, 104 bytes:
 | 16 | 8 | the index of its first entry |
 | 24 | 8 | the bytes its entries take |
 | 32 | 8 | the cut count `state` held when the batch was written (1.2) |
-| 40 | 32 | the hash of its last entry |
-| 72 | 32 | SHA-256 of bytes 0 to 72 |
+| 40 | 32 | the hash of the entry before its first, which that entry chains from |
+| 72 | 32 | the hash of its last entry |
+| 104 | 32 | SHA-256 of bytes 0 to 104 |
 
 A batch header is valid when it begins with the mark, its hash matches,
 its version is the segment's, the reserved bytes are zero, the count is not
@@ -273,7 +285,9 @@ that a batch whose write was cut short, or one whose header survived an
 overwrite that did not, is never taken for whole, even when every entry
 read under it chains. It names the cut count so that a batch written before
 a cut is never taken for part of the log after it, even when its entries
-chain from entries appended again after the cut, byte for byte (3.9).
+chain from entries appended again after the cut, byte for byte (3.9). It
+names the entry before its first so that a header that does not continue
+the chain is passed over without anything of its entries being read.
 
 **Segment boundaries.** An entry never spans segments. A batch flush
 writes the entries that fit in what is left of the current segment as one
@@ -322,11 +336,13 @@ from the hash it names. At each place, in this order:
    writer moved to it at this point: the walk continues at its first
    batch, and nothing more of the current segment is read.
 2. **Inside a batch** that has entries left: a valid batch header whose
-   first index is the one expected ends the batch (a cut, 3.9, and the
-   batch written after it); otherwise the next entry must be whole and
-   chained, or the walk ends there.
+   first index is the one expected, and that names the entry just read
+   as the one before it, ends the batch (a cut, 3.9, and the batch written
+   after it); otherwise the next entry must be whole and chained, or the
+   walk ends there.
 3. **Between batches**: a valid batch header whose first index is the one
-   expected begins a batch; otherwise the walk ends.
+   expected, and that names the entry just read as the one before it,
+   begins a batch; otherwise the walk ends.
 
 The walk itself takes batches of any cut count. Up to the marker that is
 right: what the marker covers was written and flushed, and is chained to
@@ -363,32 +379,49 @@ the marker.
    are; damage to them is reported too.
 4. After the firm position, an entry counts only once its whole batch has
    been read, found whole (3.3), and found to carry the cut count `state`
-   holds. The first batch that is not whole, or carries an older count,
-   and everything after it, is **cut**; so is anything after a walk that
-   ended.
+   holds. What its header settles is settled before anything else is
+   read: of a batch with an older count, no entry past the firm position
+   is read at all. The first batch that is not whole, or carries an older
+   count, and everything after it, is **cut**; so is anything after a walk
+   that ended.
+5. After the firm position, a read the device fails is the end of the log,
+   as an incomplete tail is (server-storage.md 6.12, first row): nothing
+   there was acknowledged. The open cuts there, reports it
+   (`CutWhy::Unreadable`), and raises the cut count with the marker, so
+   that what it cut is not taken back should it become readable, whole. At
+   or before the firm position a read the device fails is
+   `LogError::Unreadable`, which the caller tells apart from damage.
 
 On damage the open returns it (`LogError::Damaged`: what, the segment, the
 offset and the index expected there) and writes nothing: nothing is cut,
 and the marker and the segment run stand. It hands `state` back
 (`OpenFailed`), so that the caller can record what it decides
 (server-storage.md 6.12): in repair on a cluster, stop on a single server.
-A read error is `LogError::Unreadable`, which the caller tells apart from
-damage.
+It hands `state` back on every other error too, so that the open can be
+tried again in the same process; a `state` whose own write failed refuses
+every update until it is opened again.
 
 Otherwise the open makes what it found durable, in this order:
 
-1. Every segment holding entries after the marker is flushed. An earlier
+1. `log/` is made if it is missing, and the store folder flushed, on every
+   open: an earlier open may have made `log/` and failed to flush, and a
+   later one that finds it must not take its name for durable. The same
+   rule holds for every name the log makes: its folder is flushed after
+   it, whoever made it and whenever (3.7).
+2. Every segment holding entries after the marker is flushed. An earlier
    process may have written them and stopped without a power failure,
    leaving them in the system's cache only.
-2. One `state` update moves the marker to the last entry kept (its
-   committed position unchanged) and drops the listed segments after the
-   one the log ends in: a marker advance in one slot when only the marker
-   moves, both slots when the run changes.
-3. Segment files `state` does not list are removed, and the folder flushed.
+3. One `state` update moves the marker to the last entry kept (its
+   committed position unchanged), drops the listed segments after the one
+   the log ends in, and raises the cut count when a failed read ended the
+   log: a marker advance in one slot when only the marker moves, both
+   slots otherwise.
+4. Segment files `state` does not list are removed, and `log/` is flushed,
+   on every open.
 
 A crash at any point leaves a log that the next open reads to the same end:
-step 1 only makes durable what the walk found whole; until step 2 the
-marker is where it was, and the dropped segments are after the end; step 3
+step 2 only makes durable what the walk found whole; until step 3 the
+marker is where it was, and the dropped segments are after the end; step 4
 removes only what `state` no longer lists. What follows the end is not
 written over at the open: a torn batch stays torn, and a batch of an older
 cut count stays older, however a later crash settles the system's cache,
@@ -417,7 +450,8 @@ needs the next segment and finds it missing:
 A disk too full for it refuses the append (`LogError::NoSpace`) before
 anything of the entry is kept, and so does an allocation that fails part
 way; neither stops the log, since nothing listed changed, and a later call
-finishes the file. A failed flush stops the log. A crash at any point
+finishes the file: it opens the file the refused call made, and flushes it
+and the folder as if it had made it. A failed flush stops the log. A crash at any point
 leaves an unlisted file, which the next open removes.
 
 ### 3.8 A batch flush
@@ -497,7 +531,7 @@ header where the cut entry was, which ends the batch the cut entry was in
 |---|---|
 | before step 2 | the old marker, cut count and run; nothing was cut |
 | during step 2, before the first slot's flush returns | the old copy of `state`, or the new one if its write landed: nothing cut, or the cut done |
-| after the first slot's flush returns | the cut done: the next open reads the new copy, writes it to both slots, ends the log at the entry before the cut and removes the dropped segments' files |
+| after the first slot's flush returns | the cut done: the next open reads the new copy, writes it to both slots, ends the log at the entry before the cut and removes the dropped segments' files. Unless that slot, the only one with the new copy, is lost or cannot be read before that open: the open then takes the old copy, and the cut is undone, as one slot lost costs the update it held alone (1.5) |
 | after step 2 | the cut done; dropped files still there are removed by the next open |
 
 ### 3.10 Retiring

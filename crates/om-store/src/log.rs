@@ -329,7 +329,9 @@ impl std::error::Error for LogError {
 }
 
 /// [`Log::open`] failed: why, and the `state` it was given, so that the
-/// caller can still record what it decides (in repair, say).
+/// caller can still record what it decides (in repair, say), or try the
+/// open again in the same process. A `state` whose own write failed
+/// refuses every update until it is opened again.
 #[derive(Debug)]
 pub struct OpenFailed {
     pub error: LogError,
