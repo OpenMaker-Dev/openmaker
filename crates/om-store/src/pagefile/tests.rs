@@ -2478,3 +2478,44 @@ fn a_checkpoint_number_at_its_limit_refuses_the_open() {
     file.read_at(0, &mut after).unwrap();
     assert!(before == after, "the open wrote nothing");
 }
+
+/// Review of #719 (P2): an allocation that fails other than for a full
+/// disk (it can write) latches the page file's failure like a failed
+/// write: every later reservation, growth and checkpoint is refused until
+/// the page file is opened again. A full disk does not latch.
+#[test]
+fn a_failed_growth_latches_the_failure() {
+    let sim = Sim::new(44);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let pf = &proc.pf;
+    let res = pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let root = res.create_tree(&tree_name(0)).unwrap();
+    drop(res);
+    let trees = [(tree_name(0), root)];
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    // A full disk (more than the simulated disk's 1 GiB) refuses a
+    // reservation and latches nothing.
+    let big = 1 << 17;
+    assert!(matches!(
+        pf.reserve(2, big, Purpose::Entry),
+        Err(SpaceError::Full { .. })
+    ));
+    assert!(!pf.failed());
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    // A failed allocation latches.
+    sim.place(sim.steps() + 1, SimFault::FailWrite);
+    assert!(matches!(
+        pf.reserve(2, 64, Purpose::Entry),
+        Err(SpaceError::Disk(_))
+    ));
+    assert!(pf.failed());
+    assert!(matches!(
+        pf.reserve(2, 1, Purpose::Entry),
+        Err(SpaceError::Failed)
+    ));
+    assert!(matches!(
+        pf.checkpoint(entry_id(1), &trees, None),
+        Err(CheckpointError::Failed)
+    ));
+}

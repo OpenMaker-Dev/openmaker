@@ -21,7 +21,10 @@
 //! nothing does on drop. Committed pages stay in memory until a checkpoint
 //! writes them, and are served from there; they count against a budget,
 //! past which a reservation is refused with
-//! [`SpaceError::CheckpointNeeded`].
+//! [`SpaceError::CheckpointNeeded`]. Trees are made, dropped and renamed
+//! through a reservation too ([`Reservation::create_tree`]), so that the
+//! page file knows the trees that exist: a checkpoint names exactly those,
+//! and the room kept for checkpoints is sized from them.
 //!
 //! **Versions.** The page file holds one line of versions: units are
 //! committed in entry order, each entry after the last checkpoint's, and a
@@ -40,7 +43,9 @@
 //! [`PageFile::reclaim`] finds them so (bounded work per call), or at once
 //! on commit when the page never reached the disk and no kept version
 //! reaches it. Pins live in memory; after a restart, what the superblocks
-//! on disk name is what is kept.
+//! on disk name is what is kept. Recovery frees the same way, so applying
+//! the entries after a checkpoint again needs no more space than they
+//! needed the first time (format section 4.8).
 
 mod cache;
 mod map;

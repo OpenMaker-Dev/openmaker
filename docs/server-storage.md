@@ -427,7 +427,8 @@ committed and not yet written by a checkpoint are held in memory apart
 from the **page cache**, which cannot evict them. The cache holds pages
 read from disk, up to a configured size, least recently used first out.
 It is keyed by page number and hash, so a page number that is reused
-never returns the page that was there before, and it never invalidates.
+never returns the page that was there before; a page never changes once
+it is on disk, and a number freed for reuse is dropped from the cache.
 
 The **superblock** names, for a checkpoint (section 6.7), the entry it
 covers, the tree format version and the first page of the checkpoint's
@@ -437,8 +438,9 @@ its own meta stream) and the server's own map of free pages, and every
 page of it is checked by the hash that names it, so a copy of the
 superblock has a fixed size however many files the server hosts. A copy
 carries the checkpoint's number and its own hash, and is written twice.
-There are four slots in two pairs: a new checkpoint's two copies
-overwrite those of the checkpoint on disk that is not the newest.
+There are four slots in two pairs: a new checkpoint's two copies go into
+the pair the newest checkpoint does not hold, over the older
+checkpoint's copies when there is one.
 
 ### 6.5 Writing
 
@@ -547,7 +549,11 @@ settled (server-storage-format.md 4.5).
    the committed position. On one server that is every durable entry. A
    member of a cluster applies as far as the committed position its
    marker recorded and learns the rest from the leader (section 7.1).
-5. Free nothing, in the log or the page file, before step 4 is done.
+5. Free nothing in the log before step 4 is done. The page file frees
+   during step 4 what normal running frees, which is only what no
+   checkpoint or restore point on disk reaches, so applying the entries
+   again never needs more space than the first time
+   (server-storage-format.md 4.8).
 
 If the log does not hold every entry through the marker, or neither
 checkpoint can be used, the server cannot produce what it confirmed. A
