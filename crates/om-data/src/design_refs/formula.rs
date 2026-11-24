@@ -60,10 +60,12 @@ fn design_kinds(name: &str) -> Vec<Kind> {
 }
 
 /// The built-in functions that look an object up by a name or an
-/// expression when they run (calc-functions.md, the function catalog
-/// `calc-functions.csv`), by their English names, and what the name can be.
-/// `Evaluate` and `GetField` have Polish forms of their own (`dc`, `dd`).
+/// expression when they run, by their English names, and what the name
+/// can be (calc-functions.md and the Claris help page of each; the table
+/// in docs/authoring.md gives each one's source). `Evaluate` and
+/// `GetField` have Polish forms of their own (`dc`, `dd`).
 const NAMING_FUNCTIONS: [(&str, NameUse, &[Kind]); 8] = [
+    // The SQL names tables by occurrence and their fields.
     (
         "ExecuteSQL",
         NameUse::ExecuteSql,
@@ -74,6 +76,7 @@ const NAMING_FUNCTIONS: [(&str, NameUse, &[Kind]); 8] = [
         NameUse::ExecuteSql,
         &[Kind::Field, Kind::Occurrence],
     ),
+    // The expression it checks can name anything a calculation can.
     ("IsValidExpression", NameUse::ExpressionCheck, &Kind::ANY),
     // `GetLayoutObjectAttribute ( objectName ; attributeName ... )`.
     (
@@ -81,29 +84,29 @@ const NAMING_FUNCTIONS: [(&str, NameUse, &[Kind]); 8] = [
         NameUse::ObjectByName,
         &[Kind::LayoutObject],
     ),
-    // `GetRecordIDsFromFoundSet ( type { ; tableOccurrenceOrPortal } )`.
+    // `GetRecordIDsFromFoundSet ( type { ; tableOccurrenceOrPortal } )`:
+    // a table occurrence or a portal's object name.
     (
         "GetRecordIDsFromFoundSet",
         NameUse::OccurrenceByName,
         &[Kind::Occurrence, Kind::LayoutObject],
     ),
-    // `GetFieldsOnLayout ( layoutName )`.
-    (
-        "GetFieldsOnLayout",
-        NameUse::LayoutByName,
-        &[Kind::Layout, Kind::Field],
-    ),
-    // `GetTableDDL ( tableOccurrenceNames ; ignoreError )`.
+    // `GetFieldsOnLayout ( layoutName )`: names a layout; the fields it
+    // returns are found by the layout, not named.
+    ("GetFieldsOnLayout", NameUse::LayoutByName, &[Kind::Layout]),
+    // `GetTableDDL ( tableOccurrenceNames ; ignoreError )`: names table
+    // occurrences; their fields come with them, not by name.
     (
         "GetTableDDL",
         NameUse::OccurrenceByName,
-        &[Kind::Occurrence, Kind::Field],
+        &[Kind::Occurrence],
     ),
-    // `GetToolDefinitions ( provider ; functionName ... )`.
+    // `GetToolDefinitions ( provider ; functionName ... )`: custom
+    // functions only (calc-functions.md).
     (
         "GetToolDefinitions",
         NameUse::FunctionByName,
-        &[Kind::Script, Kind::CustomFunction],
+        &[Kind::CustomFunction],
     ),
 ];
 

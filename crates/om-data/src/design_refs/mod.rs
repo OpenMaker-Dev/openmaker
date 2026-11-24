@@ -105,6 +105,23 @@ impl Kind {
         Kind::DataSource,
     ];
 
+    /// Every kind: what a build that stopped early leaves incomplete.
+    pub const ALL: [Kind; 13] = [
+        Kind::Table,
+        Kind::Field,
+        Kind::Occurrence,
+        Kind::Relationship,
+        Kind::Layout,
+        Kind::LayoutObject,
+        Kind::Script,
+        Kind::ValueList,
+        Kind::CustomFunction,
+        Kind::DataSource,
+        Kind::CustomMenu,
+        Kind::PrivilegeSet,
+        Kind::File,
+    ];
+
     /// The name references and results use (`script`, `value_list`, ...).
     pub fn name(self) -> &'static str {
         match self {
@@ -447,6 +464,10 @@ pub struct Coverage {
     pub unread: Vec<Unread>,
     pub by_name: Vec<ByName>,
     pub unavailable: Vec<Unavailable>,
+    /// Where the build stopped when a budget ([`MAX_ENTRIES`],
+    /// [`MAX_WORK`]) was spent: that place and everything after it were not
+    /// read, and no kind is complete.
+    pub stopped: Option<Unread>,
 }
 
 impl Coverage {
@@ -472,7 +493,8 @@ impl Coverage {
     /// read: nothing unread, no name looked up at run time, and no
     /// catalog missing. A catalog that was not read could hold anything.
     pub fn complete_for(&self, kind: Kind) -> bool {
-        self.unread_for(kind).next().is_none()
+        self.stopped.is_none()
+            && self.unread_for(kind).next().is_none()
             && self.by_name_for(kind).next().is_none()
             && self.unavailable.is_empty()
     }
@@ -560,6 +582,9 @@ pub struct DesignGraph {
     uses: Vec<Use>,
     coverage: Coverage,
     bases: BTreeMap<u64, Base>,
+    /// The kinds whose catalogs were read to the end: only an object of
+    /// one of these can be known to be missing.
+    inventoried: BTreeSet<Kind>,
 }
 
 impl DesignGraph {
@@ -773,19 +798,32 @@ impl DesignGraph {
                     reason: format!("{} was not read: {}", u.what, u.reason),
                 })
         };
+        // Missing only when its whole catalog was read; otherwise not known.
+        let absent = |id: ObjectId| {
+            unavailable(id).unwrap_or_else(|| {
+                if self.inventoried.contains(&id.kind()) {
+                    Resolution::Broken { missing: id }
+                } else {
+                    Resolution::Unresolved {
+                        reason: format!(
+                            "not every {} of the file was read",
+                            id.kind().name().replace('_', " ")
+                        ),
+                    }
+                }
+            })
+        };
         let object = |id: ObjectId| {
             if self.objects.contains_key(&id) {
                 Resolution::Resolved(id)
             } else {
-                unavailable(id).unwrap_or(Resolution::Broken { missing: id })
+                absent(id)
             }
         };
         match target {
             Target::Object(ObjectId::Field { table, field }) => {
                 if !self.objects.contains_key(&ObjectId::Table(table)) {
-                    return unavailable(ObjectId::Table(table)).unwrap_or(Resolution::Broken {
-                        missing: ObjectId::Table(table),
-                    });
+                    return absent(ObjectId::Table(table));
                 }
                 object(ObjectId::Field { table, field })
             }

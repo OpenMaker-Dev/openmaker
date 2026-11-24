@@ -7,9 +7,10 @@
 //! no parameter explains. A layout object's single step (a button) is read
 //! the same way.
 //!
-//! Steps that name one data key share its subtree (`om_scripts::StepData`);
-//! what a shared value holds is read once per script and recorded at each
-//! step that holds it.
+//! Steps that name one data key share its subtree (`om_scripts::StepData`):
+//! what a shared value holds is decoded once per script, its cost charged
+//! before, and recorded at each step that holds it. Every script is listed
+//! before any is decoded, and each is decoded only when it is read.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -19,32 +20,30 @@ use om_hbam::{serial, KeyTree, Node, OwnedNode};
 use om_scripts::display::{step_text_fidelity, MAX_PASTE_STEPS};
 use om_scripts::specs::{self, SortSpec, SpecField};
 use om_scripts::{
-    flag, Item, Location, ParamKind, Script, ScriptKind, ScriptStep, SlotKind, StepData,
-    Unclassified,
+    flag, FieldSpec as StepFieldSpec, Item, Location, ParamKind, Script, ScriptStep, SlotKind,
+    StepData, Unclassified,
 };
 use om_transfer::spec::{ExportOptions, FieldFlags, FieldSpec, ImportOptions, Mapping};
 
+use super::catalogs;
 use super::read::{
-    members, polish_found, text_at, Builder, Found, GraphNames, MEMBER_STAMPS, NAME,
+    expect_empty, members, owned_size, polish_found, text_at, Builder, Found, GraphNames,
+    MEMBER_STAMPS, NAME,
 };
 use super::{Kind, NameUse, ObjectId, Place, StepPlace, Target, UnreadReason};
 
 const PERFORM_SCRIPT: u16 = 1;
 const GO_TO_LAYOUT: u16 = 6;
-const SEND_EVENT: u16 = 57;
-const SEND_DDE_EXECUTE: u16 = 64;
 const PERFORM_APPLESCRIPT: u16 = 67;
 const GO_TO_RELATED_RECORD: u16 = 74;
 const OPEN_URL: u16 = 111;
 const SET_FIELD_BY_NAME: u16 = 147;
-const INSERT_FROM_URL: u16 = 160;
 const SERVER_SCRIPT: u16 = 164;
 const EXECUTE_DATA_API: u16 = 203;
 const SERVER_SCRIPT_WITH_CALLBACK: u16 = 210;
 const SQL_BY_NATURAL_LANGUAGE: u16 = 214;
 const GENERATE_RESPONSE: u16 = 220;
 const FIND_BY_NATURAL_LANGUAGE: u16 = 221;
-const EXECUTE_URL: u16 = 224;
 const REPLACE_BY_NAME: u16 = 249;
 /// Steps whose "Object name" calculation names a layout object (Go to
 /// Object, Set Web Viewer, Refresh Object, Perform JavaScript in Web
@@ -53,9 +52,16 @@ const OBJECT_NAME_STEPS: [u16; 5] = [145, 146, 167, 175, 180];
 /// Step 210's callback script from another file: a file reference
 /// calculation in slot 5 with this flag (script-steps.md 12.1).
 const CALLBACK_IN_FILE: u32 = 0x400;
-/// The "Web script" name of the AI steps: a calculation in slot 20
-/// (script-step-params.csv, `LLMWebScript`).
-const WEB_SCRIPT_SLOT: u16 = 20;
+/// The AI steps' Perform JavaScript in Web Viewer option: the web
+/// viewer's object name in slot 20 (script-step-params.csv `LLMWebScript`;
+/// Claris help, Generate Response from Model).
+const WEB_VIEWER_SLOT: u16 = 20;
+/// Generate Response from Model's tool definitions, slot 13, which name
+/// custom functions (Claris help; calc-functions.md, `GetToolDefinitions`).
+const TOOL_DEFINITIONS_SLOT: u16 = 13;
+/// Perform SQL Query by Natural Language's tables: `[00 8]` 0 from the
+/// list, 1 by name, 2 by DDL (script-step-params.csv).
+const SQL_TABLES_CHOICE_SLOT: u16 = 8;
 /// The keys of an import or export step's specs (script-steps.md 11.3 to
 /// 11.5): the import order `84`, the export order `85`, the file type `86`,
 /// the import profile extension `87` and the per-field import options
@@ -69,10 +75,18 @@ const TRANSFER_KEYS: [u8; 5] = [IMPORT_ORDER, EXPORT_ORDER, 0x86, 0x87, IMPORT_F
 const SCRIPT_STEPS: u64 = 0x04;
 const SCRIPT_STEP_DATA: u64 = 0x05;
 const SCRIPT_FLAGS: u64 = 0xf0;
-/// `13`, 0 on every stored script (scripts.md).
+/// `13`: zero on every stored script, meaning not known (scripts.md):
+/// accepted only as zero.
 const SCRIPT_ZERO: u64 = 0x13;
-/// What text another application or a URL can name.
-const NAMED_BY_TEXT: [Kind; 5] = [
+/// Slot children: a calculation `05`, a field spec `10`, occurrence keys
+/// `11` (script-steps.md 4.2).
+const SLOT_CALCULATION: u8 = 0x05;
+const SLOT_FIELD: u8 = 0x10;
+const SLOT_ALIASES: u8 = 0x11;
+/// What an AppleScript can name in FileMaker Pro, which has an AppleScript
+/// dictionary (`fmpro.sdef`, docs/re/architecture.md): inferred, not
+/// specified.
+const NAMED_BY_APPLESCRIPT: [Kind; 5] = [
     Kind::Script,
     Kind::Layout,
     Kind::Table,
@@ -89,29 +103,74 @@ pub(super) enum Shared {
     Requests,
     Sort,
     Transfer,
+    /// Step 210's callback, whose reading depends on its file flag.
+    Callback(bool),
 }
 
 /// What a shared value found, each with the part it is recorded under:
 /// empty for the parameter's own.
 type Parted = Vec<(&'static str, Found)>;
 
-/// What a script's shared step data found, by data key.
-pub(super) type StepCache = HashMap<(Vec<u8>, Shared), Rc<Parted>>;
+/// What a script's steps share, each read once: by data key, what each
+/// shared value found; by descriptor (which holds the data key), the
+/// stored data the step's schema does not explain.
+#[derive(Default)]
+pub(super) struct StepCache {
+    shared: HashMap<(Vec<u8>, Shared), Rc<Parted>>,
+    unexplained: HashMap<[u8; 28], Rc<Vec<String>>>,
+}
 
 /// `found` under the parameter's own part.
 fn unparted(found: Vec<Found>) -> Parted {
     found.into_iter().map(|f| ("", f)).collect()
 }
 
-/// Every script of the catalog, then each one's steps.
+/// What a step's data holds, in bytes and nodes: what reading it costs.
+fn data_size(step: &ScriptStep) -> usize {
+    let Some(data) = &step.data else {
+        return 1;
+    };
+    let mut total = 1usize;
+    for (_, slot) in data.slots() {
+        total += 1 + slot.value().map_or(0, <[u8]>::len);
+        for key in slot.child_keys() {
+            total += slot.child(key).map_or(0, owned_size);
+        }
+        total += slot.other().iter().map(owned_size).sum::<usize>();
+    }
+    for key in data.keys() {
+        total += data.key(key).map_or(0, owned_size);
+    }
+    total + data.other().iter().map(owned_size).sum::<usize>()
+}
+
+/// The child `key` of slot `slot` of the step's data, as stored.
+fn slot_child(step: &ScriptStep, slot: u16, key: u8) -> Option<&OwnedNode> {
+    step.data.as_ref()?.slot(slot)?.child(key)
+}
+
+/// Whether slot `slot` stores a calculation, without decoding it.
+fn has_calculation(step: &ScriptStep, slot: u16) -> bool {
+    slot_child(step, slot, SLOT_CALCULATION).is_some()
+}
+
+/// Every script of the catalog: all listed first, from their names and
+/// flags (folders by flags `01` and `02`, scripts by their step list
+/// `04`, as `meta::scripts` tells them), then each decoded and read in
+/// turn.
 pub(super) fn scripts(b: &mut Builder, tree: &KeyTree<'_>) {
-    let mut scripts = Vec::new();
+    catalogs::catalog(b, tree, &[17], "script catalog", &[]);
+    let mut listed = Vec::new();
     for (_, entry) in members(tree, &[17, 5]) {
+        if !b.spend(1, ObjectId::File, &Place::new("scripts")) {
+            return;
+        }
         // A deleted script's member is emptied (scripts.md): no member.
         if entry.children.is_empty() && entry.value.is_none() {
             continue;
         }
         let Some(id) = serial::decode(entry.segment.0).filter(|id| *id != 0) else {
+            b.lost(Kind::Script);
             b.unread(
                 ObjectId::File,
                 Place::new(format!("script {}", entry.segment)),
@@ -121,42 +180,52 @@ pub(super) fn scripts(b: &mut Builder, tree: &KeyTree<'_>) {
             );
             continue;
         };
-        match Script::decode(entry) {
-            Ok(script) if script.kind == ScriptKind::Script => {
-                b.object(ObjectId::Script(id), &script.name, "");
-                scripts.push((script, entry));
-            }
-            // Folders, their ends and separators have a name and flags,
-            // and no steps (scripts.md).
-            Ok(_) => {
-                let mut member = b.member(ObjectId::File, entry, format!("script folder {id}"));
-                member.get(NAME);
-                member.known(&[SCRIPT_FLAGS, SCRIPT_ZERO]);
-                member.known(&MEMBER_STAMPS);
-                b.close(member);
-            }
-            Err(e) => {
-                b.object(
-                    ObjectId::Script(id),
-                    text_at(entry.get(NAME)).unwrap_or_default(),
-                    "",
-                );
-                b.unread(
-                    ObjectId::Script(id),
-                    Place::new("definition"),
-                    UnreadReason::Malformed,
-                    format!("a script that does not decode: {e}"),
-                    &Kind::ANY,
-                );
-            }
+        let flags = entry
+            .get(SCRIPT_FLAGS)
+            .and_then(Node::uint_value)
+            .unwrap_or(0);
+        if flags & 0x3 == 0 && entry.get(SCRIPT_STEPS).is_some() {
+            b.object(
+                ObjectId::Script(id),
+                text_at(entry.get(NAME)).unwrap_or_default(),
+                "",
+            );
+            listed.push((id, entry));
+        } else {
+            // Folders, their ends and separators: a name and flags, no
+            // steps (scripts.md).
+            let mut member = b.member(ObjectId::File, entry, format!("script folder {id}"));
+            member.get(NAME);
+            member.known(&[SCRIPT_FLAGS]);
+            member.known(&MEMBER_STAMPS);
+            let zero = member.get(SCRIPT_ZERO);
+            expect_empty(
+                b,
+                ObjectId::File,
+                &format!("script folder {id}"),
+                SCRIPT_ZERO,
+                zero,
+            );
+            b.close(member);
         }
     }
+    b.inventoried(&[Kind::Script]);
     let names = GraphNames::new(&b.graph);
-    for (script, entry) in &scripts {
-        if b.stopped() {
+    for (id, entry) in listed {
+        let holder = ObjectId::Script(id);
+        if !b.charge(entry, holder, &Place::new("definition")) {
             return;
         }
-        read_script(b, script, entry, &names);
+        match Script::decode(entry) {
+            Ok(script) => read_script(b, &script, entry, &names),
+            Err(e) => b.unread(
+                holder,
+                Place::new("definition"),
+                UnreadReason::Malformed,
+                format!("a script that does not decode: {e}"),
+                &Kind::ANY,
+            ),
+        }
     }
 }
 
@@ -170,20 +239,33 @@ fn read_script(b: &mut Builder, script: &Script, entry: &Node<'_>, names: &Graph
     member.get(NAME);
     member.get(SCRIPT_STEPS);
     member.get(SCRIPT_STEP_DATA);
-    member.known(&[SCRIPT_FLAGS, SCRIPT_ZERO]);
+    member.known(&[SCRIPT_FLAGS]);
     member.known(&MEMBER_STAMPS);
-    let mut cache = StepCache::new();
+    let zero = member.get(SCRIPT_ZERO);
+    expect_empty(b, holder, "script", SCRIPT_ZERO, zero);
+    let mut cache = StepCache::default();
     // A step's text, and so its line count, follows from its descriptor
     // and its data, which the descriptor's data key names.
     let mut lines: HashMap<[u8; 28], usize> = HashMap::new();
     let mut line = 1;
     for (i, step) in script.steps.iter().take(MAX_PASTE_STEPS).enumerate() {
-        if !b.spend(1, holder, &Place::new(format!("step {}", i + 1))) {
+        let place = Place::new(format!("step {}", i + 1));
+        if !b.spend(1, holder, &place) {
             return;
         }
-        let count = *lines
-            .entry(step.descriptor())
-            .or_insert_with(|| step_text_fidelity(step, names).0.split('\n').count());
+        let descriptor = step.descriptor();
+        let count = match lines.get(&descriptor) {
+            Some(count) => *count,
+            None => {
+                // Rendering the text reads the step's data: charged first.
+                if !b.spend(data_size(step), holder, &place) {
+                    return;
+                }
+                let count = step_text_fidelity(step, names).0.split('\n').count();
+                lines.insert(descriptor, count);
+                count
+            }
+        };
         let at = StepPlace {
             index: i + 1,
             line,
@@ -194,6 +276,29 @@ fn read_script(b: &mut Builder, script: &Script, entry: &Node<'_>, names: &Graph
         read(b, holder, Some(&at), "", step, false, Some(&mut cache));
         b.count("steps");
         line += count;
+    }
+    // Step data no step names: no step reads it, but a step whose data
+    // key OpenMaker misreads would, so it is reported, not dropped. `00` is
+    // the last data key issued (script-steps.md 4.2, as schema-path.md 5.1
+    // describes catalog counters), accepted only as a key string.
+    for data in &script.unreferenced_data {
+        let counter = data.segment == [0]
+            && data.children.is_empty()
+            && data.value.as_deref().is_some_and(|v| {
+                v.split_first().is_some_and(|(len, key)| {
+                    usize::from(*len) == key.len() && serial::decode(key).is_some()
+                })
+            });
+        if counter {
+            continue;
+        }
+        b.unread(
+            holder,
+            Place::new(format!("step data {}", om_hbam::KeySegment(&data.segment))),
+            UnreadReason::NotDecoded,
+            "step data no step of the script names",
+            &Kind::ANY,
+        );
     }
     if script.steps.len() > MAX_PASTE_STEPS {
         b.unread(
@@ -212,7 +317,9 @@ fn read_script(b: &mut Builder, script: &Script, entry: &Node<'_>, names: &Graph
 }
 
 /// What `step` stores at a shared place, from `cache` when an earlier step
-/// with the same data key read it.
+/// with the same data key read it. Its `cost` is charged before it is
+/// read, so the cache holds no more than the budget allows.
+#[allow(clippy::too_many_arguments)]
 fn shared(
     b: &mut Builder,
     cache: &mut Option<&mut StepCache>,
@@ -220,7 +327,8 @@ fn shared(
     what: Shared,
     holder: ObjectId,
     place: &Place,
-    compute: impl FnOnce() -> (Parted, usize),
+    cost: usize,
+    compute: impl FnOnce() -> Parted,
 ) -> Rc<Parted> {
     let key = step
         .data_key
@@ -228,15 +336,16 @@ fn shared(
         .filter(|k| !k.is_empty())
         .map(|k| (k.to_vec(), what));
     if let (Some(cache), Some(key)) = (cache.as_deref(), key.as_ref()) {
-        if let Some(found) = cache.get(key) {
+        if let Some(found) = cache.shared.get(key) {
             return Rc::clone(found);
         }
     }
-    let (found, work) = compute();
-    b.spend(work, holder, place);
-    let found = Rc::new(found);
+    if !b.spend(cost, holder, place) {
+        return Rc::new(Vec::new());
+    }
+    let found = Rc::new(compute());
     if let (Some(cache), Some(key)) = (cache.as_deref_mut(), key) {
-        cache.insert(key, Rc::clone(&found));
+        cache.shared.insert(key, Rc::clone(&found));
     }
     found
 }
@@ -259,13 +368,23 @@ fn apply(
     }
 }
 
-/// Whether slot `slot` stores a calculation, without decoding it.
-fn has_calculation(step: &ScriptStep, slot: u16) -> bool {
-    step.data
-        .as_ref()
-        .and_then(|d| d.slot(slot))
-        .and_then(|s| s.child(0x05))
-        .is_some()
+/// A field or variable target a step stores.
+fn field_spec(b: &mut Builder, holder: ObjectId, at: Place, spec: StepFieldSpec) {
+    if spec.is_variable() || !spec.names_field() {
+        return;
+    }
+    match (spec.table().id(), spec.field().id()) {
+        (Some(occurrence), Some(field)) => {
+            b.reference(holder, at, Target::Field { occurrence, field })
+        }
+        _ => b.unread(
+            holder,
+            at,
+            UnreadReason::Malformed,
+            "a field reference whose keys do not read",
+            &[Kind::Field, Kind::Occurrence],
+        ),
+    }
 }
 
 /// Read `step`, held by `holder` (a script, or a layout object for a
@@ -295,7 +414,8 @@ pub(super) fn read(
         return;
     };
     // Names looked up when the step runs (script-steps.md 11.8, 12.1, 12.4;
-    // script-runtime.md 3.6; script-step-params.csv).
+    // script-runtime.md 3.6; script-step-params.csv; the by-name table in
+    // docs/authoring.md gives each one's source).
     let choice = step.list_value(1);
     let script_by_name = match id {
         PERFORM_SCRIPT => choice == Some(1),
@@ -381,43 +501,95 @@ pub(super) fn read(
         );
     }
     let named: Option<(&str, NameUse, &[Kind])> = match id {
+        // Layouts, table occurrences, fields and portals by name; scripts
+        // are ignored (Claris help, Execute FileMaker Data API).
         EXECUTE_DATA_API => Some((
             "Request",
             NameUse::RequestText,
-            &[Kind::Layout, Kind::Field, Kind::Occurrence, Kind::Script],
+            &[
+                Kind::Layout,
+                Kind::Occurrence,
+                Kind::Field,
+                Kind::LayoutObject,
+            ],
         )),
-        SQL_BY_NATURAL_LANGUAGE => Some((
-            "Tables",
-            NameUse::OccurrenceByName,
-            &[Kind::Occurrence, Kind::Field],
-        )),
+        // The SQL the model writes names fields; tables by name or by DDL
+        // name occurrences (Claris help).
+        SQL_BY_NATURAL_LANGUAGE => {
+            if matches!(step.list_value(SQL_TABLES_CHOICE_SLOT), Some(1 | 2)) {
+                Some((
+                    "Tables",
+                    NameUse::OccurrenceByName,
+                    &[Kind::Occurrence, Kind::Field],
+                ))
+            } else {
+                Some(("Query", NameUse::RequestText, &[Kind::Field]))
+            }
+        }
+        // The find request the model returns names fields (Claris help).
         FIND_BY_NATURAL_LANGUAGE => Some((
             "Query",
             NameUse::RequestText,
             &[Kind::Field, Kind::Occurrence],
         )),
-        PERFORM_APPLESCRIPT | SEND_EVENT | SEND_DDE_EXECUTE => {
-            Some(("Script text", NameUse::ExternalScriptText, &NAMED_BY_TEXT))
-        }
-        OPEN_URL | INSERT_FROM_URL | EXECUTE_URL => Some(("URL", NameUse::Url, &NAMED_BY_TEXT)),
+        PERFORM_APPLESCRIPT => Some((
+            "AppleScript",
+            NameUse::ExternalScriptText,
+            &NAMED_BY_APPLESCRIPT,
+        )),
+        // `fmp://...?script=name` (Claris help, Open URL and Opening files
+        // using a URL).
+        OPEN_URL => Some(("URL", NameUse::Url, &[Kind::Script])),
         _ => None,
     };
     if let Some((part, how, kinds)) = named {
         b.by_name(holder, place(part), how, None, kinds.to_vec());
     }
     if matches!(id, SQL_BY_NATURAL_LANGUAGE | GENERATE_RESPONSE)
-        && has_calculation(step, WEB_SCRIPT_SLOT)
+        && has_calculation(step, WEB_VIEWER_SLOT)
     {
         b.by_name(
             holder,
-            place("Web script"),
-            NameUse::ScriptByName,
+            place("Web viewer"),
+            NameUse::ObjectByName,
             None,
-            vec![Kind::Script],
+            vec![Kind::LayoutObject],
+        );
+    }
+    if id == GENERATE_RESPONSE && has_calculation(step, TOOL_DEFINITIONS_SLOT) {
+        b.by_name(
+            holder,
+            place("Tool definitions"),
+            NameUse::FunctionByName,
+            None,
+            vec![Kind::CustomFunction],
         );
     }
     if id == SERVER_SCRIPT_WITH_CALLBACK {
-        callback(b, holder, &place("Callback script"), step);
+        let at = place("Callback script");
+        let in_file = step.has_flag(CALLBACK_IN_FILE);
+        let cost = [3, 5, 6, 7]
+            .iter()
+            .filter_map(|slot| step.data.as_ref()?.slot(*slot))
+            .map(|slot| {
+                slot.child_keys()
+                    .filter_map(|k| slot.child(k))
+                    .map(owned_size)
+                    .sum::<usize>()
+                    + 1
+            })
+            .sum::<usize>();
+        let found = shared(
+            b,
+            &mut cache,
+            step,
+            Shared::Callback(in_file),
+            holder,
+            &at,
+            cost,
+            || callback(step),
+        );
+        apply(b, holder, &at, &place, &found);
     }
     // The file a Perform Script's script is in, when it is another file's.
     let external = step
@@ -433,16 +605,36 @@ pub(super) fn read(
                 return;
             }
             let at = place(name);
-            match *location {
-                // Read without decoding it once per step: steps naming one
-                // data key share it.
-                Location::Slot {
-                    slot,
-                    kind: SlotKind::Calculation,
-                } => {
-                    if !has_calculation(step, slot) {
+            match (*location, kind) {
+                // Options, choices and cached indexes; texts and numbers: a
+                // variable's name, a comment, text another application
+                // reads (named above). Not decoded: they name no object.
+                (Location::Flag { .. } | Location::Value, _)
+                | (
+                    Location::Slot {
+                        kind: SlotKind::Text | SlotKind::Number | SlotKind::List,
+                        ..
+                    },
+                    _,
+                ) => {}
+                // File paths name files, not objects of this one.
+                (
+                    Location::Slot {
+                        kind: SlotKind::Path,
+                        ..
+                    },
+                    ParamKind::FileReference,
+                ) => {}
+                (
+                    Location::Slot {
+                        slot,
+                        kind: SlotKind::Calculation,
+                    },
+                    _,
+                ) => {
+                    let Some(node) = slot_child(step, slot, SLOT_CALCULATION) else {
                         continue;
-                    }
+                    };
                     let found = shared(
                         b,
                         &mut cache,
@@ -450,41 +642,20 @@ pub(super) fn read(
                         Shared::Calculation(slot),
                         holder,
                         &at,
-                        || {
-                            let (found, work) = match step.calculation(slot) {
-                                Some(calculation) => match calculation.polish.as_deref() {
-                                    Some(polish) => {
-                                        polish_found(polish, calculation.context.as_deref())
-                                    }
-                                    None => (
-                                        vec![Found::unread(
-                                            UnreadReason::NotDecoded,
-                                            "a calculation stored without its compiled form",
-                                            &Kind::ANY,
-                                        )],
-                                        1,
-                                    ),
-                                },
-                                None => (
-                                    vec![Found::unread(
-                                        UnreadReason::Malformed,
-                                        "a calculation that does not read",
-                                        &Kind::ANY,
-                                    )],
-                                    1,
-                                ),
-                            };
-                            (unparted(found), work)
-                        },
+                        owned_size(node),
+                        || calculation_found(step, slot),
                     );
                     b.count("formulas");
                     apply(b, holder, &at, &place, &found);
                 }
-                Location::Slot {
-                    slot,
-                    kind: SlotKind::Aliases,
-                } => {
-                    let Some(Item::Node(node)) = step.item(location) else {
+                (
+                    Location::Slot {
+                        slot,
+                        kind: SlotKind::Aliases,
+                    },
+                    _,
+                ) => {
+                    let Some(node) = slot_child(step, slot, SLOT_ALIASES) else {
                         continue;
                     };
                     let list_of = if kind == ParamKind::Script {
@@ -499,187 +670,51 @@ pub(super) fn read(
                         Shared::Aliases(slot),
                         holder,
                         &at,
-                        || (unparted(aliases_found(node, list_of)), 1),
+                        owned_size(node),
+                        || unparted(aliases_found(node, list_of)),
                     );
                     apply(b, holder, &at, &place, &found);
                 }
+                (
+                    Location::Slot {
+                        slot,
+                        kind: SlotKind::Field,
+                    },
+                    _,
+                ) => match step.item(location) {
+                    Some(Item::Field(spec)) => field_spec(b, holder, at, spec),
+                    // Stored but not a field spec (slot 0's is `mReserved`,
+                    // read with its flag).
+                    _ if slot > 0 && slot_child(step, slot, SLOT_FIELD).is_some() => b.unread(
+                        holder,
+                        at,
+                        UnreadReason::Malformed,
+                        "a field reference that does not read",
+                        &[Kind::Field, Kind::Occurrence],
+                    ),
+                    _ => {}
+                },
                 // Read together by `transfer`, below.
-                Location::Key(key) if TRANSFER_KEYS.contains(&key) => {}
+                (Location::Key(key), _) if TRANSFER_KEYS.contains(&key) => {}
                 _ => {
                     let Some(item) = step.item(location) else {
                         continue;
                     };
-                    match item {
-                        Item::Calculation(calculation) => {
-                            let found = match calculation.polish.as_deref() {
-                                Some(polish) => {
-                                    polish_found(polish, calculation.context.as_deref()).0
-                                }
-                                None => vec![Found::unread(
-                                    UnreadReason::NotDecoded,
-                                    "a calculation stored without its compiled form",
-                                    &Kind::ANY,
-                                )],
-                            };
-                            b.apply(holder, &at, &found);
-                        }
-                        Item::Field(spec) => {
-                            if spec.is_variable() || !spec.names_field() {
-                                continue;
-                            }
-                            match (spec.table().id(), spec.field().id()) {
-                                (Some(occurrence), Some(field)) => {
-                                    b.reference(holder, at, Target::Field { occurrence, field })
-                                }
-                                _ => b.unread(
-                                    holder,
-                                    at,
-                                    UnreadReason::Malformed,
-                                    "a field reference whose keys do not read",
-                                    &[Kind::Field, Kind::Occurrence],
-                                ),
-                            }
-                        }
-                        Item::Key(key) => match kind {
-                            ParamKind::Layout => {
-                                if !layout_key_counts {
-                                    continue;
-                                }
-                                match key.id() {
-                                    Some(layout) => b.reference(
-                                        holder,
-                                        at,
-                                        Target::Object(ObjectId::Layout(layout)),
-                                    ),
-                                    None => b.unread(
-                                        holder,
-                                        at,
-                                        UnreadReason::Malformed,
-                                        "a layout key that does not read",
-                                        &[Kind::Layout],
-                                    ),
-                                }
-                            }
-                            ParamKind::Script => {
-                                if !script_by_name {
-                                    script(b, holder, at, key.serial_id(), external);
-                                }
-                            }
-                            ParamKind::TableOccurrence => match key.id() {
-                                // A base table by its member key (Truncate Table).
-                                Some(table) if parameter.xml_type == "BaseTableReference" => {
-                                    b.reference(holder, at, Target::Object(ObjectId::Table(table)))
-                                }
-                                Some(occurrence) => b.reference(
-                                    holder,
-                                    at,
-                                    Target::Object(ObjectId::Occurrence(occurrence)),
-                                ),
-                                None => b.unread(
-                                    holder,
-                                    at,
-                                    UnreadReason::Malformed,
-                                    "a table key that does not read",
-                                    &[Kind::Table, Kind::Occurrence],
-                                ),
-                            },
-                            // A custom menu set: not an object the graph has.
-                            ParamKind::MenuSet => {}
-                            _ => b.unread(
-                                holder,
-                                at,
-                                UnreadReason::NotDecoded,
-                                format!("a {name} key"),
-                                &Kind::ANY,
-                            ),
+                    self::item(
+                        b,
+                        holder,
+                        at,
+                        step,
+                        &mut cache,
+                        parameter,
+                        *location,
+                        item,
+                        ItemContext {
+                            layout_key_counts,
+                            script_by_name,
+                            external,
                         },
-                        Item::Node(node) => match (kind, *location) {
-                            // A Perform Script's file is read with its script.
-                            (ParamKind::Script, Location::Key(StepData::FILE_REFERENCES)) => {}
-                            (_, Location::Key(StepData::FILE_REFERENCES)) => {
-                                match specs::data_source(node) {
-                                    Some(source) => b.reference(
-                                        holder,
-                                        at,
-                                        Target::Object(ObjectId::DataSource(source)),
-                                    ),
-                                    None => b.unread(
-                                        holder,
-                                        at,
-                                        UnreadReason::Malformed,
-                                        "a file reference that does not read",
-                                        &[Kind::DataSource],
-                                    ),
-                                }
-                            }
-                            // File paths name files, and print settings
-                            // nothing.
-                            (ParamKind::FileReference, _) | (ParamKind::PrintSettings, _) => {}
-                            (ParamKind::FindRequests, _) => {
-                                let found = shared(
-                                    b,
-                                    &mut cache,
-                                    step,
-                                    Shared::Requests,
-                                    holder,
-                                    &at,
-                                    || {
-                                        let (found, work) = requests_found(node);
-                                        (unparted(found), work)
-                                    },
-                                );
-                                apply(b, holder, &at, &place, &found);
-                            }
-                            (ParamKind::SortOrder, _) => {
-                                let found =
-                                    shared(b, &mut cache, step, Shared::Sort, holder, &at, || {
-                                        match SortSpec::from_node(node) {
-                                            Some(sort) => {
-                                                let found = sort_found(&sort);
-                                                let work = found.len() + 1;
-                                                (unparted(found), work)
-                                            }
-                                            None => (
-                                                unparted(vec![Found::unread(
-                                                    UnreadReason::Malformed,
-                                                    "a sort order that does not read",
-                                                    &[
-                                                        Kind::Field,
-                                                        Kind::Occurrence,
-                                                        Kind::ValueList,
-                                                    ],
-                                                )]),
-                                                1,
-                                            ),
-                                        }
-                                    });
-                                apply(b, holder, &at, &place, &found);
-                            }
-                            _ => b.unread(
-                                holder,
-                                at,
-                                UnreadReason::NotDecoded,
-                                format!("{name}, kept as stored"),
-                                &Kind::ANY,
-                            ),
-                        },
-                        // A data source or privilege set key in `mReserved`.
-                        Item::Reserved(_) => {
-                            if kind != ParamKind::PrivilegeSet {
-                                b.unread(
-                                    holder,
-                                    at,
-                                    UnreadReason::NotDecoded,
-                                    format!("the {name} key"),
-                                    &[Kind::DataSource],
-                                );
-                            }
-                        }
-                        // Options, choices, numbers and texts: a text
-                        // parameter holds a variable's name, a comment or
-                        // text another application reads (above).
-                        Item::Bool(_) | Item::Value(_) | Item::Text(_) | Item::Number(_) => {}
-                    }
+                    );
                 }
             }
         }
@@ -691,26 +726,28 @@ pub(super) fn read(
             script(b, holder, place("Script"), Some(script_id), external);
         }
     }
-    if step
-        .data
-        .as_ref()
-        .is_some_and(|d| TRANSFER_KEYS.iter().any(|k| d.key(*k).is_some()))
-    {
-        let at = place("Import or export order");
-        let found = shared(b, &mut cache, step, Shared::Transfer, holder, &at, || {
-            let found = transfer(step);
-            let work = found.len() + 1;
-            (found, work)
-        });
-        apply(b, holder, &at, &place, &found);
+    if let Some(data) = &step.data {
+        if TRANSFER_KEYS.iter().any(|k| data.key(*k).is_some()) {
+            let at = place("Import or export order");
+            let cost = TRANSFER_KEYS
+                .iter()
+                .filter_map(|k| data.key(*k))
+                .map(owned_size)
+                .sum();
+            let found = shared(
+                b,
+                &mut cache,
+                step,
+                Shared::Transfer,
+                holder,
+                &at,
+                cost,
+                || transfer(step),
+            );
+            apply(b, holder, &at, &place, &found);
+        }
     }
-    let unexplained: Vec<String> = step
-        .unclassified()
-        .into_iter()
-        .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
-        .filter(|u| !matches!(u, Unclassified::Key(key) if TRANSFER_KEYS.contains(key)))
-        .map(|u| u.to_string())
-        .collect();
+    let unexplained = unexplained(b, &mut cache, step, holder, &place("stored data"));
     if !unexplained.is_empty() {
         b.unread(
             holder,
@@ -722,6 +759,226 @@ pub(super) fn read(
             ),
             &Kind::ANY,
         );
+    }
+}
+
+/// What a step stores that no parameter of its schema explains
+/// (`ScriptStep::unclassified`), but flag bits and the step value, which
+/// hold no reference, and the import and export specs [`transfer`] reads.
+/// Read once per descriptor, its cost charged first.
+fn unexplained(
+    b: &mut Builder,
+    cache: &mut Option<&mut StepCache>,
+    step: &ScriptStep,
+    holder: ObjectId,
+    place: &Place,
+) -> Rc<Vec<String>> {
+    let descriptor = step.descriptor();
+    if let Some(found) = cache
+        .as_deref()
+        .and_then(|c| c.unexplained.get(&descriptor))
+    {
+        return Rc::clone(found);
+    }
+    if !b.spend(data_size(step), holder, place) {
+        return Rc::new(Vec::new());
+    }
+    let found: Rc<Vec<String>> = Rc::new(
+        step.unclassified()
+            .into_iter()
+            .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
+            .filter(|u| !matches!(u, Unclassified::Key(key) if TRANSFER_KEYS.contains(key)))
+            .map(|u| u.to_string())
+            .collect(),
+    );
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.unexplained.insert(descriptor, Rc::clone(&found));
+    }
+    found
+}
+
+/// A step calculation's references (slot `slot`).
+fn calculation_found(step: &ScriptStep, slot: u16) -> Parted {
+    let found = match step.calculation(slot) {
+        Some(calculation) => match calculation.polish.as_deref() {
+            Some(polish) => polish_found(polish, calculation.context.as_deref()).0,
+            None => vec![Found::unread(
+                UnreadReason::NotDecoded,
+                "a calculation stored without its compiled form",
+                &Kind::ANY,
+            )],
+        },
+        None => vec![Found::unread(
+            UnreadReason::Malformed,
+            "a calculation that does not read",
+            &Kind::ANY,
+        )],
+    };
+    unparted(found)
+}
+
+/// What reading one item needs from its step.
+struct ItemContext {
+    layout_key_counts: bool,
+    script_by_name: bool,
+    external: Option<Result<u64, ()>>,
+}
+
+/// One stored item of a parameter that is not a calculation, an
+/// occurrence list or a slot's field spec: an inline field, layout,
+/// script, table or occurrence key, a node, or a reserved key.
+#[allow(clippy::too_many_arguments)]
+fn item(
+    b: &mut Builder,
+    holder: ObjectId,
+    at: Place,
+    step: &ScriptStep,
+    cache: &mut Option<&mut StepCache>,
+    parameter: &om_scripts::ParamSchema,
+    location: Location,
+    item: Item<'_>,
+    context: ItemContext,
+) {
+    let name = parameter.name.as_str();
+    let kind = parameter.kind;
+    match item {
+        Item::Calculation(calculation) => {
+            let found = match calculation.polish.as_deref() {
+                Some(polish) => polish_found(polish, calculation.context.as_deref()).0,
+                None => vec![Found::unread(
+                    UnreadReason::NotDecoded,
+                    "a calculation stored without its compiled form",
+                    &Kind::ANY,
+                )],
+            };
+            b.apply(holder, &at, &found);
+        }
+        Item::Field(spec) => field_spec(b, holder, at, spec),
+        Item::Key(key) => match kind {
+            ParamKind::Layout => {
+                if !context.layout_key_counts {
+                    return;
+                }
+                match key.id() {
+                    Some(layout) => {
+                        b.reference(holder, at, Target::Object(ObjectId::Layout(layout)))
+                    }
+                    None => b.unread(
+                        holder,
+                        at,
+                        UnreadReason::Malformed,
+                        "a layout key that does not read",
+                        &[Kind::Layout],
+                    ),
+                }
+            }
+            ParamKind::Script => {
+                if !context.script_by_name {
+                    script(b, holder, at, key.serial_id(), context.external);
+                }
+            }
+            ParamKind::TableOccurrence => match key.id() {
+                // A base table by its member key (Truncate Table).
+                Some(table) if parameter.xml_type == "BaseTableReference" => {
+                    b.reference(holder, at, Target::Object(ObjectId::Table(table)))
+                }
+                Some(occurrence) => {
+                    b.reference(holder, at, Target::Object(ObjectId::Occurrence(occurrence)))
+                }
+                None => b.unread(
+                    holder,
+                    at,
+                    UnreadReason::Malformed,
+                    "a table key that does not read",
+                    &[Kind::Table, Kind::Occurrence],
+                ),
+            },
+            // A custom menu set: not an object the graph has.
+            ParamKind::MenuSet => {}
+            _ => b.unread(
+                holder,
+                at,
+                UnreadReason::NotDecoded,
+                format!("a {name} key"),
+                &Kind::ANY,
+            ),
+        },
+        Item::Node(node) => match (kind, location) {
+            // A Perform Script's file is read with its script.
+            (ParamKind::Script, Location::Key(StepData::FILE_REFERENCES)) => {}
+            (_, Location::Key(StepData::FILE_REFERENCES)) => match specs::data_source(node) {
+                Some(source) => {
+                    b.reference(holder, at, Target::Object(ObjectId::DataSource(source)))
+                }
+                None => b.unread(
+                    holder,
+                    at,
+                    UnreadReason::Malformed,
+                    "a file reference that does not read",
+                    &[Kind::DataSource],
+                ),
+            },
+            // File paths name files, and print settings nothing.
+            (ParamKind::FileReference, _) | (ParamKind::PrintSettings, _) => {}
+            (ParamKind::FindRequests, _) => {
+                let found = shared(
+                    b,
+                    cache,
+                    step,
+                    Shared::Requests,
+                    holder,
+                    &at,
+                    owned_size(node),
+                    || unparted(requests_found(node)),
+                );
+                apply(b, holder, &at, &|_| at.clone(), &found);
+            }
+            (ParamKind::SortOrder, _) => {
+                let found = shared(
+                    b,
+                    cache,
+                    step,
+                    Shared::Sort,
+                    holder,
+                    &at,
+                    owned_size(node),
+                    || {
+                        unparted(
+                            match om_scripts::node_bytes(node).and_then(|b| SortSpec::decode(&b)) {
+                                Some(sort) => sort_found(&sort),
+                                None => vec![Found::unread(
+                                    UnreadReason::Malformed,
+                                    "a sort order that does not read",
+                                    &[Kind::Field, Kind::Occurrence, Kind::ValueList],
+                                )],
+                            },
+                        )
+                    },
+                );
+                apply(b, holder, &at, &|_| at.clone(), &found);
+            }
+            _ => b.unread(
+                holder,
+                at,
+                UnreadReason::NotDecoded,
+                format!("{name}, kept as stored"),
+                &Kind::ANY,
+            ),
+        },
+        // A data source or privilege set key in `mReserved`.
+        Item::Reserved(_) => {
+            if kind != ParamKind::PrivilegeSet {
+                b.unread(
+                    holder,
+                    at,
+                    UnreadReason::NotDecoded,
+                    format!("the {name} key"),
+                    &[Kind::DataSource],
+                );
+            }
+        }
+        // Texts, numbers and choices name no object (see `read`).
+        Item::Bool(_) | Item::Value(_) | Item::Text(_) | Item::Number(_) => {}
     }
 }
 
@@ -763,64 +1020,40 @@ fn script(
 /// Step 210's callback script (script-steps.md 12.1): `[00 6]` 0 from the
 /// list, the key as a calculation of its quoted hex in slot 3; 1 by name,
 /// slot 7; from another file, a file reference calculation in slot 5.
-fn callback(b: &mut Builder, holder: ObjectId, at: &Place, step: &ScriptStep) {
-    match step.list_value(6) {
-        Some(1) => {
-            b.by_name(
-                holder,
-                at.clone(),
-                NameUse::ScriptByName,
-                None,
-                vec![Kind::Script, Kind::DataSource],
-            );
-            return;
-        }
-        Some(0) | None => {}
-        Some(other) => {
-            b.unread(
-                holder,
-                at.clone(),
-                UnreadReason::NotDecoded,
-                format!("a callback choice {other} OpenMaker does not know"),
-                &[Kind::Script, Kind::DataSource],
-            );
-            return;
-        }
-    }
-    if !has_calculation(step, 3) {
-        return;
-    }
-    let Some(script) = step.positioned_id(3) else {
-        b.unread(
-            holder,
-            at.clone(),
-            UnreadReason::Malformed,
-            "a callback script key that does not read",
-            &[Kind::Script],
-        );
-        return;
-    };
-    if step.has_flag(CALLBACK_IN_FILE) {
-        match step.positioned_id(5) {
-            Some(data_source) => b.reference(
-                holder,
-                at.clone(),
-                Target::ExternalScript {
+fn callback(step: &ScriptStep) -> Parted {
+    let found = match step.list_value(6) {
+        Some(1) => Found::ByName {
+            how: NameUse::ScriptByName,
+            function: None,
+            kinds: vec![Kind::Script, Kind::DataSource],
+        },
+        Some(0) | None if !has_calculation(step, 3) => return Vec::new(),
+        Some(0) | None => match step.positioned_id(3) {
+            None => Found::unread(
+                UnreadReason::Malformed,
+                "a callback script key that does not read",
+                &[Kind::Script],
+            ),
+            Some(script) if step.has_flag(CALLBACK_IN_FILE) => match step.positioned_id(5) {
+                Some(data_source) => Found::Reference(Target::ExternalScript {
                     data_source,
                     script: Some(script),
-                },
-            ),
-            None => b.unread(
-                holder,
-                at.clone(),
-                UnreadReason::Malformed,
-                "a callback file reference that does not read",
-                &[Kind::Script, Kind::DataSource],
-            ),
-        }
-    } else {
-        b.reference(holder, at.clone(), Target::Object(ObjectId::Script(script)));
-    }
+                }),
+                None => Found::unread(
+                    UnreadReason::Malformed,
+                    "a callback file reference that does not read",
+                    &[Kind::Script, Kind::DataSource],
+                ),
+            },
+            Some(script) => Found::Reference(Target::Object(ObjectId::Script(script))),
+        },
+        Some(other) => Found::unread(
+            UnreadReason::NotDecoded,
+            format!("a callback choice {other} OpenMaker does not know"),
+            &[Kind::Script, Kind::DataSource],
+        ),
+    };
+    vec![("", found)]
 }
 
 /// The one key of a `[00 n, 11]` node (`KAliases`, script-steps.md 4.2):
@@ -884,9 +1117,62 @@ pub(super) fn sort_found(sort: &SortSpec) -> Vec<Found> {
     found
 }
 
-/// A find step's request fields (11.2). A criterion whose field key
-/// `specs::requests` does not read is reported, not dropped.
-fn requests_found(node: &OwnedNode) -> (Vec<Found>, usize) {
+/// A find step's request fields (11.2): its order `05` and its rows `06`,
+/// each row's cells keyed by field. A criterion whose field key
+/// `specs::requests` does not read is reported, not dropped, and so is
+/// every key of the node, the order or the rows that is not one of these.
+fn requests_found(node: &OwnedNode) -> Vec<Found> {
+    let mut odd = Vec::new();
+    if node.value.is_some() {
+        odd.push("a value on the find requests node".to_owned());
+    }
+    for child in &node.children {
+        match child.segment.as_slice() {
+            [0x05] => {
+                if child.value.is_some()
+                    || child.children.iter().any(|c| !c.children.is_empty())
+                    || om_hbam::RidList::from_owned(child).is_err()
+                {
+                    odd.push("a request order that does not read".to_owned());
+                }
+            }
+            [0x06] => {
+                if child.value.is_some() {
+                    odd.push("a value on the request rows".to_owned());
+                }
+                for row in &child.children {
+                    let highest = row.segment.as_slice() == [0x00];
+                    let stray = if highest {
+                        !row.children.is_empty()
+                    } else {
+                        row.value.as_ref().is_some_and(|v| !v.is_empty())
+                            || om_hbam::serial::decode(&row.segment).is_none()
+                    };
+                    if stray {
+                        odd.push(format!("request row {:02x?}", row.segment));
+                    }
+                }
+            }
+            other => odd.push(format!("key {other:02x?} of the find requests")),
+        }
+    }
+    let mut found: Vec<Found> = odd
+        .into_iter()
+        .map(|what| {
+            Found::unread(
+                UnreadReason::NotDecoded,
+                format!("{what}, which OpenMaker does not read"),
+                &[Kind::Field, Kind::Occurrence],
+            )
+        })
+        .collect();
+    found.extend(criteria_found(node));
+    found
+}
+
+/// The fields of a find step's criteria, with a count check: a cell
+/// `specs::requests` does not read is reported.
+fn criteria_found(node: &OwnedNode) -> Vec<Found> {
     // Each row's cells but its omit marker `00` and its stamp `fc`; the
     // rows' own `00` is the highest id issued.
     let stored: usize = node
@@ -921,16 +1207,13 @@ fn requests_found(node: &OwnedNode) -> (Vec<Found>, usize) {
                     &[Kind::Field, Kind::Occurrence],
                 ));
             }
-            (found, stored + 1)
+            found
         }
-        None => (
-            vec![Found::unread(
-                UnreadReason::Malformed,
-                "find requests that do not read",
-                &[Kind::Field, Kind::Occurrence],
-            )],
-            1,
-        ),
+        None => vec![Found::unread(
+            UnreadReason::Malformed,
+            "find requests that do not read",
+            &[Kind::Field, Kind::Occurrence],
+        )],
     }
 }
 
@@ -940,14 +1223,31 @@ fn requests_found(node: &OwnedNode) -> (Vec<Found>, usize) {
 /// group-by fields, each with its part. The file type `86` and profile
 /// `87` name no object.
 fn transfer(step: &ScriptStep) -> Parted {
-    let bytes = |key: u8| {
-        step.data_leaf(key)
-            .and_then(om_scripts::node_bytes)
-            .map(|b| b.into_owned())
-    };
     let mut out: Parted = Vec::new();
+    // A spec that is stored but does not assemble is unread, not absent.
+    let mut bytes = |key: u8, part: &'static str| match step.data_leaf(key) {
+        Some(node) => match om_scripts::node_bytes(node) {
+            Some(bytes) => Some(bytes.into_owned()),
+            None => {
+                out.push((
+                    part,
+                    Found::unread(
+                        UnreadReason::Malformed,
+                        format!("the {part}, stored but not assembling"),
+                        &[Kind::Field, Kind::Occurrence],
+                    ),
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+    let import = bytes(IMPORT_ORDER, "Import order");
+    let flags = bytes(IMPORT_FLAGS, "Import field options");
+    let export = bytes(EXPORT_ORDER, "Export order");
+
     let mut target = None;
-    if let Some(order) = bytes(IMPORT_ORDER) {
+    if let Some(order) = import {
         match ImportOptions::decode(&order).map(|o| (o.table.id(), o)) {
             Ok((Some(occurrence), options)) => {
                 target = Some(occurrence);
@@ -977,7 +1277,7 @@ fn transfer(step: &ScriptStep) -> Parted {
             )),
         }
     }
-    if let Some(flags) = bytes(IMPORT_FLAGS) {
+    if let Some(flags) = flags {
         match (FieldFlags::decode(&flags), target) {
             (Ok(flags), Some(occurrence)) => {
                 for (key, _) in &flags.fields {
@@ -1000,7 +1300,7 @@ fn transfer(step: &ScriptStep) -> Parted {
             )),
         }
     }
-    if let Some(order) = bytes(EXPORT_ORDER) {
+    if let Some(order) = export {
         match ExportOptions::decode(&order) {
             Ok(options) => {
                 for field in &options.fields {

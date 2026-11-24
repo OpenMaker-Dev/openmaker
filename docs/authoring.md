@@ -1144,28 +1144,75 @@ in a script, the `step` with its `index`, the `line` it starts on in
 `target`, the occurrence or data source it goes `via`, and its
 `resolution`: `resolved`; `broken` with what is `missing` (a field, or the
 occurrence or table it is named through); `external` with the data source;
-or `unresolved` with the reason when the catalog that would hold the
-target was not read. A disabled step's references are listed with
-`enabled` false. `find_uses` given the reference of an object the file no
-longer has returns the references still naming it.
+or `unresolved` with the reason. A reference is `broken` only when every
+object of the missing kind was read: a catalog the host did not give, a
+catalog not read to its end because the build stopped, or a member that
+did not read leaves the target `unresolved`. A disabled step's references
+are listed with `enabled` false. `find_uses` given the reference of an
+object the file no longer has returns the references still naming it.
 
 **Coverage.** Every result has `coverage` for the kinds of object it is
 about: the `read` counts; the `unread` places, each with its `reason`
 (`not_decoded`, `malformed` or `limit`), `detail` and the kinds it
 `could_refer_to`; the references `by_name`; the catalogs the host did not
-give (`unavailable`); and `complete`, true only when nothing in them could
-refer to those kinds. Lists stop at `limit`; their `total` is always
-given.
+give (`unavailable`); `stopped`, the place where the build stopped at a
+budget, or null; and `complete`, true only when nothing in them could
+refer to those kinds and the build did not stop. Lists stop at `limit`;
+their `total` is always given. `stopped` is a field of its own, never cut
+by `limit`, since it governs the whole result.
 
 Completeness is checked, not assumed. Each catalog member the graph reads
 (a field, table, occurrence, relationship, custom function, value list,
-script, layout, part, layout object's attributes, trigger, privilege set,
-catalog `[64]` member) is read through a ledger of its keys: a key that
-is neither read nor known from the specs to name no object (a name, a
-comment, a stamp, an index the objects' own references are read for) is
-reported unread, as is every value a decoder rejects and every variant
-the reader does not handle. A place that is not read is taken to refer to
-anything. Not read:
+script or folder, layout, privilege set, catalog `[64]` member) and each
+catalog node is read through a ledger of its keys: a key that is neither
+read nor known from the specs to name no object (a name, a comment, a
+stamp, an index the objects' own references are read for) is reported
+unread, as is a value on the member itself, every value a decoder rejects,
+every variant the reader does not handle, and a value stored but not
+assembling, which is never taken for an absent one. A place that is not
+read is taken to refer to anything. Nested structures are accounted the
+same way, each by its own ledger or count:
+
+- a formula node, wherever it is (a field option, an object attribute, a
+  conditional format, a trigger parameter, a record access calculation):
+  its context `04`, text `05` and compiled stream `06`, and no other key;
+  a context or stream that does not assemble is unread;
+- a layout's parts `03, P`, its objects' attributes `05, O` (and within
+  them conditional formats, items, the web address), its trigger cache
+  `30` and each trigger record, and a stored table view `0d` with its own
+  parts, store and attributes;
+- the field index `01, occurrence, field, object` (layout-model.md 10.5) is
+  skipped only for entries naming an object the store was read for; an
+  entry at any level holding a value, or naming an object not read, is
+  unread;
+- a step's data through `om_scripts`' classification
+  (`ScriptStep::unclassified`): a slot or slot child, calculation child or
+  data key that the step's schema does not explain is unread; a field
+  operand stored but not reading is unread; step data no step names is
+  unread;
+- a find step's requests: keys other than the order `05` and rows `06`, an
+  order that does not read, a row holding a value, and every criterion cell
+  `om_scripts::specs::requests` does not read (stored cells are counted
+  against those read);
+- an import or export order stored but not assembling;
+- any key holding both a value and keys, since a reader takes one or the
+  other.
+
+Some keys are accepted only in the form every observation shows, without
+a spec saying what they hold; any other form is unread: a script's and a
+folder's `13` (zero), a conditional format's `06` (empty) and the formats'
+count `04` (a two-byte value), a layout's or table view's `16`, `17` and
+`21` (empty), a field's `26` (zeros), and the step data's `00` (a key
+string, the last data key issued, as schema-path.md 5.1 describes catalog
+counters). The access catalog `[23]` is read for its privilege sets
+`[23, 2]`; its accounts `01`, extended privileges `03` and file access
+`04` name privilege sets and other files, never an object whose uses are
+analysed.
+
+A structural test generates a file holding each of these structures and
+gives every list node in it, one at a time, an unknown key and then a
+value of its own: the build must report each as unread
+(`design_refs::tests::completeness`). Not read:
 
 - custom menus `[65, 5, M]`, whose items run steps: each is listed;
 - privilege sets when the host does not give `[23, 2]`;
@@ -1174,38 +1221,64 @@ anything. Not read:
 - a chart's or plug-in object's setup, an object of an unknown type, and
   fields of a stored record (an object, a field binding, a portal, a
   button) its decoder does not know;
-- a key of a member that the specs do not describe, and keys the specs
-  describe as empty that hold something;
+- a key of a member that the specs do not describe, and keys accepted
+  only in their observed form that hold something else;
 - whatever does not decode, and a script's steps past the 20,000th.
 
-References by name, never resolved, each with the kinds it could name:
-Perform Script, Perform Script on Server and its callback by name
-(`script` or `datasource::script`, script-runtime.md 3.6); Go to Layout and
-Go to Related Record by a calculated name or number (the runtime then
-ignores the stored layout key, which is not counted); Set Field By Name and
-Replace Field Contents by Name; Go to Related Record's table by
-calculation; a layout object's name (Go to Object, Refresh Object, Set Web
-Viewer, Perform JavaScript in Web Viewer, Refresh Portal, a button bar's
-active segment calculation); Execute FileMaker Data API's request, Perform
-SQL Query by Natural Language and Perform Find by Natural Language, and the
-web script name of the AI steps; the URLs of Open URL, Insert from URL and
-Execute URL (an `fmp://` URL performs a script by name); the script text
-of Perform AppleScript, Send Event and Send DDE Execute; a web viewer
-allowed to perform scripts from JavaScript; OnWindowTransaction's field
-name; and in formulas `Evaluate`, `GetField`, `ExecuteSQL`,
-`IsValidExpression`, `GetLayoutObjectAttribute`,
-`GetRecordIDsFromFoundSet`, `GetFieldsOnLayout`, `GetTableDDL`,
-`GetToolDefinitions`, the Design functions and plug-in functions.
+**References by name.** Never resolved; each is listed with the kinds the
+name can be:
 
-**Bounds.** A hostile file cannot make the build unbounded: formulas are
-decoded within `om_formula`'s limits and walked without recursion; a
-script is read up to 20,000 steps; a value that steps naming one data key
-share is decoded once per script and recorded at each step; and the build
-stops after 1,000,000 references, unread places and references by name
-together (`MAX_ENTRIES`) or 50,000,000 units of work (`MAX_WORK`: formula
-nodes walked, steps, layout objects and stored keys read), with an unread
-entry (`limit`) at the place where it stopped, so the result is
-incomplete, not silently short.
+| Entry | Can name | Source |
+|---|---|---|
+| Perform Script, Perform Script on Server, Perform Script on Server with Callback, by name | a script, or another file's script as `datasource::script` | script-runtime.md 3.6; script-steps.md 12.1 |
+| Perform Script on Server with Callback's callback by name | the same | script-steps.md 12.1 |
+| Go to Layout, Go to Related Record: layout by name or number calculation (the stored layout key is then not counted) | a layout | script-steps.md 11.8 |
+| Go to Related Record: table by calculation | a table occurrence | script-steps.md 12.4 (ledger F114) |
+| Set Field By Name, Replace Field Contents by Name | a field, through its occurrence | script-step-params.csv (`kFieldSpecByCalc`); script-steps.md 12.4 |
+| Go to Object, Set Web Viewer, Refresh Object, Perform JavaScript in Web Viewer, Refresh Portal: object name | a layout object | script-step-params.csv |
+| Execute FileMaker Data API: the request | layouts, table occurrences, fields, portals by object name; the request's script keys are ignored | Claris help, Execute FileMaker Data API |
+| Perform SQL Query by Natural Language | fields; table occurrences when the tables are given by name or by DDL | Claris help; script-step-params.csv (Tables, slot 8) |
+| Perform Find by Natural Language | fields, through their occurrences | Claris help |
+| Generate Response from Model, Perform SQL Query by Natural Language: Perform JavaScript in Web Viewer | a web viewer, by object name | Claris help, Generate Response from Model; script-step-params.csv (`LLMWebScript`, slot 20) |
+| Generate Response from Model: tool definitions | custom functions | Claris help; calc-functions.md (`GetToolDefinitions`) |
+| Open URL | a script, in an `fmp://` URL's `script` parameter | Claris help, Open URL and Opening files using a URL |
+| Perform AppleScript | scripts, layouts, tables, occurrences and fields, through FileMaker Pro's AppleScript dictionary (inferred) | docs/re/architecture.md (`fmpro.sdef`) |
+| A web viewer allowed to perform scripts from JavaScript | a script (`FileMaker.PerformScript`) | layout-model.md 9.6 |
+| A button bar's active segment calculation | a segment, by object name | layout-model.md 5.5.1 |
+| OnWindowTransaction's field name | a field | file-metadata.md 3 |
+| `Evaluate`, `IsValidExpression` | anything a calculation can name | calc-encoding.md 3.1 (`dc`); calc-functions.md |
+| `GetField` | a field, through its occurrence | calc-encoding.md 3.1 (`dd`) |
+| `ExecuteSQL`, `ExecuteSQLe` | table occurrences and their fields | calc-functions.md |
+| `GetLayoutObjectAttribute` | a layout object | calc-functions.md |
+| `GetRecordIDsFromFoundSet` | a table occurrence or a portal's object name | Claris help |
+| `GetFieldsOnLayout` | a layout | Claris help |
+| `GetTableDDL` | table occurrences | Claris help |
+| `GetToolDefinitions` | custom functions | calc-functions.md |
+| Design functions | by function: value lists, scripts, layouts and their objects, fields, tables and occurrences | calc-functions.md, Design functions |
+| Plug-in functions | anything | not knowable |
+
+Insert from URL, Execute URL, Send Event and Send DDE Execute are not in
+the table. Insert from URL supports http, https, ftp, ftps, sftp, file,
+smb, smtp, smtps, ldap and ldaps, and no other protocol (Claris help), so
+not `fmp`; Execute URL makes a REST call (script-steps.csv); Send Event
+sends to another application, and FileMaker Pro sends DDE commands but
+does not receive them (Claris help). A request such a step sends over
+http to the file's own Data API or OData runs in another session, as any
+other client's does, and is not counted.
+
+**Bounds.** A hostile file cannot make the build unbounded. Before a
+reader decodes anything sized by the file (a member, a catalog decoded at
+once, a script, a formula, a step's data, a shared value), it charges the
+stored bytes and nodes against the work budget; formulas are decoded
+within `om_formula`'s limits and walked without recursion; a script is
+read up to 20,000 steps; a value that steps naming one data key share, a
+step's unexplained data and its line count are each decoded once per
+script, charged once, and recorded at each step. The build stops after
+1,000,000 references, unread places and references by name together
+(`MAX_ENTRIES`) or 50,000,000 units of work (`MAX_WORK`), and says where
+in `stopped`: the result is incomplete for every kind, references whose
+target's catalog was not read to its end are `unresolved`, never
+`broken`, and nothing is silently short.
 
 **Nothing refers to it.** `unused_objects` lists the tables, fields,
 occurrences, layouts, scripts, value lists, custom functions and data

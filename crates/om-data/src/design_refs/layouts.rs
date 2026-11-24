@@ -6,7 +6,8 @@
 use om_hbam::{serial, KeyTree, Node};
 use om_layout::{LayoutObject, ObjectKind};
 
-use super::read::{members, Builder, Found, MEMBER_STAMPS, NAME};
+use super::catalogs;
+use super::read::{expect_empty, members, size, Builder, Found, MEMBER_STAMPS, NAME};
 use super::steps;
 use super::{Kind, NameUse, ObjectId, Place, Target, UnreadReason};
 use crate::meta;
@@ -89,6 +90,16 @@ const MERGE_TOKEN: &str = "<<\u{1}";
 
 /// Every layout of the catalog.
 pub(super) fn layouts(b: &mut Builder, tree: &KeyTree<'_>) {
+    // `om_hbam::catalog::layouts` copies every member's records at once:
+    // its cost is charged first.
+    if !b.spend(
+        tree.at(&[4]).map_or(0, size),
+        ObjectId::File,
+        &Place::new("layouts"),
+    ) {
+        return;
+    }
+    catalogs::catalog(b, tree, &[4], "layout catalog", &[]);
     let layouts = match om_hbam::catalog::layouts(tree) {
         Ok(layouts) => layouts,
         Err(e) => {
@@ -101,26 +112,39 @@ pub(super) fn layouts(b: &mut Builder, tree: &KeyTree<'_>) {
         }
     };
     for (id, entry) in members(tree, &[4, 5]) {
-        if id.is_none() {
-            b.unread(
-                ObjectId::File,
-                Place::new(format!("layout {}", entry.segment)),
-                UnreadReason::Malformed,
-                "a layout whose key does not read",
-                &Kind::ANY,
-            );
+        match id {
+            None => {
+                b.lost(Kind::Layout);
+                b.unread(
+                    ObjectId::File,
+                    Place::new(format!("layout {}", entry.segment)),
+                    UnreadReason::Malformed,
+                    "a layout whose key does not read",
+                    &Kind::ANY,
+                );
+            }
+            Some(id) if !layouts.iter().any(|l| l.id == id) && !catalogs::emptied(entry) => {
+                catalogs::unlisted(b, ObjectId::Layout(id), "layout", Kind::Layout);
+            }
+            Some(_) => {}
         }
     }
+    // Every layout is listed before any is read, so that a stop while
+    // reading leaves the list whole.
+    let layouts: Vec<&om_hbam::Layout> = layouts
+        .iter()
+        .filter(|raw| meta::layout_flags(tree, raw.id) & NOT_A_LAYOUT == 0)
+        .collect();
+    for raw in &layouts {
+        b.object(ObjectId::Layout(raw.id), &raw.name, "");
+        b.count("layouts");
+    }
+    b.inventoried(&[Kind::Layout]);
     for raw in &layouts {
         if b.stopped() {
             return;
         }
-        if meta::layout_flags(tree, raw.id) & NOT_A_LAYOUT != 0 {
-            continue;
-        }
         let holder = ObjectId::Layout(raw.id);
-        b.object(holder, &raw.name, "");
-        b.count("layouts");
         let Some(node) = tree.at(&[4, 5, raw.id]) else {
             b.unavailable(
                 vec![4, 5, raw.id],
@@ -129,6 +153,9 @@ pub(super) fn layouts(b: &mut Builder, tree: &KeyTree<'_>) {
             );
             continue;
         };
+        if !b.charge(node, holder, &Place::new("definition")) {
+            return;
+        }
         match om_layout::Layout::decode_from_tree(tree, raw.id) {
             Ok(Some(layout)) => self::layout(b, holder, node, &layout),
             Ok(None) => b.unavailable(
@@ -145,26 +172,93 @@ pub(super) fn layouts(b: &mut Builder, tree: &KeyTree<'_>) {
             ),
         }
     }
+    b.inventoried(&[Kind::LayoutObject]);
+}
+
+/// A stored value that does not assemble (a piece missing), which a
+/// decoder reading it takes for an absent one: unread.
+fn unassembled(b: &mut Builder, holder: ObjectId, what: &str, node: Option<&Node<'_>>) -> bool {
+    let broken = node.is_some_and(|n| n.assembled().is_none());
+    if broken {
+        b.unread(
+            holder,
+            Place::new(what),
+            UnreadReason::Malformed,
+            format!("the {what}, stored but not assembling"),
+            &Kind::ANY,
+        );
+    }
+    broken
+}
+
+/// The field reference index `01, <occurrence>, <field>, <object>`
+/// (layout-model.md 10.5) names nothing the objects themselves do not:
+/// it is accounted for only when every object it names was read with its
+/// bindings. An entry for any other object, or of another shape, is
+/// unread.
+fn field_index(
+    b: &mut Builder,
+    holder: ObjectId,
+    prefix: &str,
+    index: Option<&Node<'_>>,
+    read: &[u64],
+) {
+    let Some(index) = index else {
+        return;
+    };
+    let stray = |b: &mut Builder, at: String| {
+        b.unread(
+            holder,
+            Place::new(format!("{prefix}field index {at}")),
+            UnreadReason::NotDecoded,
+            "a field index entry OpenMaker does not read",
+            &[Kind::Field, Kind::Occurrence],
+        )
+    };
+    if index.value.is_some() {
+        stray(b, "value".to_owned());
+    }
+    for occurrence in &index.children {
+        if occurrence.value.is_some() || occurrence.children.is_empty() {
+            stray(b, occurrence.segment.to_string());
+        }
+        for field in &occurrence.children {
+            if field.value.is_some() || field.children.is_empty() {
+                stray(b, format!("{}/{}", occurrence.segment, field.segment));
+            }
+            for object in &field.children {
+                let named = serial::decode(object.segment.0);
+                if object.children.is_empty() && named.is_some_and(|o| read.contains(&o)) {
+                    continue;
+                }
+                b.unread(
+                    holder,
+                    Place::new(format!(
+                        "{prefix}field index {}/{}/{}",
+                        occurrence.segment, field.segment, object.segment
+                    )),
+                    UnreadReason::NotDecoded,
+                    "a field index entry for an object that was not read",
+                    &[Kind::Field, Kind::Occurrence],
+                );
+            }
+        }
+    }
 }
 
 fn layout(b: &mut Builder, holder: ObjectId, node: &Node<'_>, layout: &om_layout::Layout) {
     let mut member = b.member(holder, node, "layout");
     member.get(NAME);
-    member.get(DEFINITION);
+    let definition = member.get(DEFINITION);
+    unassembled(b, holder, "layout definition", definition);
     // A theme names styles; `01` indexes the objects' own field bindings,
     // `08` their names, `0a` their positions and `15` the tab order; `f0`
     // and `f1` are flags (layout-model.md 4.1, 7.5, 10.5).
-    member.known(&[
-        THEME,
-        FIELD_INDEX,
-        NAME_INDEX,
-        OBJECT_INDEX,
-        TAB_ORDER_INDEX,
-    ]);
+    member.known(&[THEME, NAME_INDEX, OBJECT_INDEX, TAB_ORDER_INDEX]);
     member.known(&[MEMBER_FLAGS, VIEW_FLAGS]);
     member.known(&MEMBER_STAMPS);
     for key in EMPTY_KEYS {
-        empty(b, holder, "layout", key, member.get(key));
+        expect_empty(b, holder, "layout", key, member.get(key));
     }
     if let Some(def) = &layout.def {
         if let Some(occurrence) = Some(def.table_alias_key)
@@ -188,7 +282,8 @@ fn layout(b: &mut Builder, holder: ObjectId, node: &Node<'_>, layout: &om_layout
     if let Some(table_view) = member.get(TABLE_VIEW) {
         self::table_view(b, holder, table_view);
     }
-    member.get(OBJECTS);
+    let store = member.get(OBJECTS);
+    unassembled(b, holder, "object store", store);
     unknown_fields(b, holder, "object store", &layout.objects.other, &[]);
     let attributes = member.get(ATTRIBUTES);
     let ObjectId::Layout(id) = holder else {
@@ -217,6 +312,9 @@ fn layout(b: &mut Builder, holder: ObjectId, node: &Node<'_>, layout: &om_layout
         b.count("layout_objects");
     }
     self::objects(b, holder, "", &objects, attributes);
+    let read: Vec<u64> = layout.objects.objects.iter().map(|o| o.id).collect();
+    let index = member.get(FIELD_INDEX);
+    field_index(b, holder, "", index, &read);
     b.close(member);
 }
 
@@ -279,9 +377,12 @@ fn parts(b: &mut Builder, holder: ObjectId, prefix: &str, parts: &Node<'_>) {
         let mut part_member = b.member(holder, part_node, what.clone());
         part_member.known(&[PART_OBJECTS]);
         part_member.known(&MEMBER_STAMPS);
-        let definition = part_member.get(PART_DEFINITION).and_then(Node::assembled);
+        let stored = part_member.get(PART_DEFINITION);
         b.close(part_member);
-        let Some(definition) = definition else {
+        if unassembled(b, holder, &format!("{what} definition"), stored) {
+            continue;
+        }
+        let Some(definition) = stored.and_then(Node::assembled) else {
             continue;
         };
         let part = match om_layout::Part::decode(part_id, &definition) {
@@ -325,25 +426,32 @@ fn parts(b: &mut Builder, holder: ObjectId, prefix: &str, parts: &Node<'_>) {
 fn table_view(b: &mut Builder, holder: ObjectId, node: &Node<'_>) {
     let prefix = "table view: ";
     let mut member = b.member(holder, node, "table view");
-    member.known(&[FIELD_INDEX, NAME_INDEX, OBJECT_INDEX, TAB_ORDER_INDEX]);
+    member.known(&[NAME_INDEX, OBJECT_INDEX, TAB_ORDER_INDEX]);
     member.known(&MEMBER_STAMPS);
     for key in EMPTY_KEYS {
-        empty(b, holder, "table view", key, member.get(key));
+        expect_empty(b, holder, "table view", key, member.get(key));
     }
     if let Some(parts) = member.get(PARTS) {
         self::parts(b, holder, prefix, parts);
     }
     let attributes = member.get(ATTRIBUTES);
-    let store = member
-        .get(OBJECTS)
-        .and_then(Node::assembled)
-        .filter(|bytes| !bytes.is_empty());
+    let stored = member.get(OBJECTS);
+    let mut read = Vec::new();
+    // Present but not assembling is unread, not "no objects".
+    let store = if unassembled(b, holder, "table view: object store", stored) {
+        None
+    } else {
+        stored
+            .and_then(Node::assembled)
+            .filter(|bytes| !bytes.is_empty())
+    };
     match store.map(|bytes| om_layout::ObjectStore::decode(&bytes)) {
         Some(Ok(store)) => {
             unknown_fields(b, holder, "table view object store", &store.other, &[]);
             let objects: Vec<(ObjectId, &LayoutObject)> =
                 store.objects.iter().map(|o| (holder, o)).collect();
             self::objects(b, holder, prefix, &objects, attributes);
+            read = store.objects.iter().map(|o| o.id).collect();
         }
         Some(Err(e)) => b.unread(
             holder,
@@ -358,6 +466,8 @@ fn table_view(b: &mut Builder, holder: ObjectId, node: &Node<'_>) {
             self::objects(b, holder, prefix, &[], attributes);
         }
     }
+    let index = member.get(FIELD_INDEX);
+    field_index(b, holder, prefix, index, &read);
     b.close(member);
 }
 
@@ -646,7 +756,11 @@ fn attributes(
 fn conditions(b: &mut Builder, holder: ObjectId, prefix: &str, node: &Node<'_>) {
     for entry in &node.children {
         if entry.children.is_empty() {
-            if entry.id() != Some(CONDITION_COUNT) {
+            // The count beside the formats: a two-byte value on every
+            // stored one (observed, not specified).
+            let count =
+                entry.id() == Some(CONDITION_COUNT) && entry.value.is_some_and(|v| v.len() == 2);
+            if !count {
                 b.unread(
                     holder,
                     Place::new(format!(
@@ -663,7 +777,7 @@ fn conditions(b: &mut Builder, holder: ObjectId, prefix: &str, node: &Node<'_>) 
         let part = format!("conditional formatting {}", entry.segment);
         let mut member = b.member(holder, entry, format!("{prefix}{part}"));
         member.known(&[CONDITION_KIND, CONDITION_STYLE]);
-        empty(
+        expect_empty(
             b,
             holder,
             &format!("{prefix}{part}"),
@@ -674,24 +788,6 @@ fn conditions(b: &mut Builder, holder: ObjectId, prefix: &str, node: &Node<'_>) 
             b.formula(holder, Place::new(format!("{prefix}{part}")), formula);
         }
         b.close(member);
-    }
-}
-
-/// A key that is an empty value on every stored member: one that holds
-/// something is not read.
-fn empty(b: &mut Builder, holder: ObjectId, what: &str, key: u64, node: Option<&Node<'_>>) {
-    let Some(node) = node else {
-        return;
-    };
-    let holds = node.value.is_some_and(|v| v.iter().any(|b| *b != 0)) || !node.children.is_empty();
-    if holds {
-        b.unread(
-            holder,
-            Place::new(format!("{what}: key {key:02x}")),
-            UnreadReason::NotDecoded,
-            format!("a value under {key:02x} of the {what}, empty on every stored one"),
-            &Kind::ANY,
-        );
     }
 }
 

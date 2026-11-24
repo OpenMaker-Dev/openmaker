@@ -844,8 +844,9 @@ macro_rules! analysis {
             $text,
             " Every result carries its coverage: what was read, the places whose references \
              could not be read, references made by a name looked up when the file runs (a \
-             script performed by a calculated name, Evaluate, ExecuteSQL) and catalogs the \
-             host did not give. Reads metadata only, never records."
+             script performed by a calculated name, Evaluate, ExecuteSQL), catalogs the \
+             host did not give, and `stopped`: where the build stopped at its work budget, \
+             or null. Reads metadata only, never records."
         )
     };
 }
@@ -879,7 +880,8 @@ pub static BROKEN_REFERENCES: CommandSpec = CommandSpec {
         "Every reference OpenMaker decodes whose target is not in the file (a \
                   deleted field, script, layout, occurrence, value list, custom function or \
                   data source), with the object that holds it, the place in it and what is \
-                  missing."
+                  missing. A target is missing only when every object of its kind was \
+                  read; otherwise the reference is unresolved, not broken."
     ),
     effect: Effect::Reads,
     needs: Needs::File,

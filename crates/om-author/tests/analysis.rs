@@ -225,6 +225,7 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     assert_eq!(by_name["holder"]["ref"], r("script", "2"));
     assert_eq!(by_name["place"]["step"]["index"], 4);
     assert_eq!(count["coverage"]["unavailable"], json!([]));
+    assert_eq!(count["coverage"]["stopped"], Value::Null);
     assert_eq!(count["coverage"]["read"]["scripts"], 3);
 
     // One broken reference: Callee's Set Field of the deleted field.

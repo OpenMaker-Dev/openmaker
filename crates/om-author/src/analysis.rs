@@ -229,9 +229,19 @@ impl Analysis {
             }
             out
         });
+        // Where the build stopped at a budget: a fixed part of every
+        // result, never cut by `limit`, since it governs all of it.
+        let stopped = coverage.stopped.as_ref().map(|u| {
+            json!({
+                "holder": self.object(u.holder),
+                "place": self.place(&u.place),
+                "detail": u.detail,
+            })
+        });
         json!({
             "kinds": Self::kinds(kinds),
             "complete": kinds.iter().all(|k| coverage.complete_for(*k)),
+            "stopped": stopped,
             "read": coverage.read,
             "unread": {
                 "total": unread_total,

@@ -7,7 +7,7 @@
 use om_hbam::catalog::FieldKind;
 use om_hbam::{serial, KeyTree, Node};
 
-use super::read::{data_source_id, members, text_at, Builder, MEMBER_STAMPS, NAME};
+use super::read::{data_source_id, members, size, text_at, Builder, MEMBER_STAMPS, NAME};
 use super::steps;
 use super::{Base, Kind, NameUse, ObjectId, Place, Target, UnreadReason};
 use crate::field_options::Lookup;
@@ -99,8 +99,18 @@ const TABLE_LIMITS: [(u64, &str); 4] = [
     (0x09, "delete"),
 ];
 
-/// A member whose key does not read as an id.
-fn unreadable_member(b: &mut Builder, holder: ObjectId, what: &str, node: &Node<'_>) {
+/// A member whose key does not read as an id: when it is a member of
+/// `kind`'s catalog, that kind is not listed whole.
+fn unreadable_member(
+    b: &mut Builder,
+    holder: ObjectId,
+    what: &str,
+    node: &Node<'_>,
+    kind: Option<Kind>,
+) {
+    if let Some(kind) = kind {
+        b.lost(kind);
+    }
     b.unread(
         holder,
         Place::new(format!("{what} {}", node.segment)),
@@ -110,23 +120,97 @@ fn unreadable_member(b: &mut Builder, holder: ObjectId, what: &str, node: &Node<
     );
 }
 
+/// A member with no keys and no value: deleted (scripts.md describes
+/// FileMaker emptying a deleted member).
+pub(super) fn emptied(node: &Node<'_>) -> bool {
+    node.children.is_empty() && node.value.is_none()
+}
+
+/// A member whose key reads but which the catalog's decoder does not
+/// list: unread, and its kind is not listed whole.
+pub(super) fn unlisted(b: &mut Builder, holder: ObjectId, what: &str, kind: Kind) {
+    b.lost(kind);
+    b.unread(
+        holder,
+        Place::new(what),
+        UnreadReason::Malformed,
+        format!("a {what} its catalog's decoder does not list"),
+        &Kind::ANY,
+    );
+}
+
+/// A catalog's index `01` (names, display order and counters, derived
+/// from its members; schema-path.md 5.1) and its members `05`.
+const CATALOG_INDEX: u64 = 0x01;
+const CATALOG_MEMBERS: u64 = 0x05;
+
+/// Account for the keys of the catalog node at `path`: its index and
+/// members, and `extra` sub-catalogs read on their own.
+pub(super) fn catalog(
+    b: &mut Builder,
+    tree: &KeyTree<'_>,
+    path: &[u64],
+    what: &str,
+    extra: &[u64],
+) {
+    let Some(node) = tree.at(path) else {
+        return;
+    };
+    let mut member = b.member(ObjectId::File, node, what.to_owned());
+    member.known(&[CATALOG_INDEX, CATALOG_MEMBERS]);
+    member.known(extra);
+    member.known(&MEMBER_STAMPS);
+    b.close(member);
+}
+
+/// Charge reading the member `node` of `holder` before any of it is
+/// decoded. False once the work budget is spent.
+fn charge(b: &mut Builder, holder: ObjectId, node: &Node<'_>) -> bool {
+    b.charge(node, holder, &Place::new("definition"))
+}
+
 /// Data sources `[32, 5, D]`, named at `10`, numbered by their keys'
 /// serial decode as `inspect` numbers them. A data source names another
 /// file, never an object of this one, so nothing else of it is read.
 pub(super) fn data_sources(b: &mut Builder, tree: &KeyTree<'_>) {
+    catalog(b, tree, &[DATA_SOURCES], "data source catalog", &[]);
     for (_, entry) in members(tree, &[DATA_SOURCES, 5]) {
+        if !b.spend(1, ObjectId::File, &Place::new("data sources")) {
+            return;
+        }
         let Some(id) = serial::decode(entry.segment.0).filter(|id| *id != 0) else {
-            unreadable_member(b, ObjectId::File, "data source", entry);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "data source",
+                entry,
+                Some(Kind::DataSource),
+            );
             continue;
         };
+        if !charge(b, ObjectId::DataSource(id), entry) {
+            return;
+        }
         let name = text_at(entry.get(NAME)).unwrap_or_default();
         b.object(ObjectId::DataSource(id), name, "");
         b.count("data_sources");
     }
+    b.inventoried(&[Kind::DataSource]);
 }
 
 /// Base tables and their field definitions (schema-path.md 5).
 pub(super) fn tables(b: &mut Builder, tree: &KeyTree<'_>) {
+    // `om_hbam::catalog::tables` decodes every table and field at once:
+    // its cost is charged first.
+    let mut cost = tree.at(&[3, 16]).map_or(0, size);
+    for (id, _) in members(tree, &[3, 16, 5]) {
+        cost += id.and_then(|t| tree.at(&[t, 3])).map_or(0, size);
+    }
+    if !b.spend(cost, ObjectId::File, &Place::new("tables")) {
+        return;
+    }
+    catalog(b, tree, &[3], "schema catalog", &[16, 17, 0xfb]);
+    catalog(b, tree, &[3, 16], "base table catalog", &[]);
     let tables = match om_hbam::catalog::tables(tree) {
         Ok(tables) => tables,
         Err(e) => {
@@ -140,10 +224,13 @@ pub(super) fn tables(b: &mut Builder, tree: &KeyTree<'_>) {
     };
     for (id, entry) in members(tree, &[3, 16, 5]) {
         let Some(id) = id else {
-            unreadable_member(b, ObjectId::File, "base table", entry);
+            unreadable_member(b, ObjectId::File, "base table", entry, Some(Kind::Table));
             continue;
         };
         let holder = ObjectId::Table(id);
+        if !tables.iter().any(|t| t.id == id) && !emptied(entry) {
+            unlisted(b, holder, "base table", Kind::Table);
+        }
         let mut member = b.member(holder, entry, "base table");
         member.get(NAME);
         member.known(&[TABLE_COMMENT, DATA_VERSION]);
@@ -171,11 +258,34 @@ pub(super) fn tables(b: &mut Builder, tree: &KeyTree<'_>) {
             b.count("fields");
         }
         for (id, entry) in members(tree, &[table.id, 3, 5]) {
-            if id.is_none() {
-                unreadable_member(b, ObjectId::Table(table.id), "field", entry);
+            match id {
+                None => unreadable_member(
+                    b,
+                    ObjectId::Table(table.id),
+                    "field",
+                    entry,
+                    Some(Kind::Field),
+                ),
+                Some(id) if !table.fields.iter().any(|f| f.id == id) && !emptied(entry) => {
+                    unlisted(
+                        b,
+                        ObjectId::Table(table.id),
+                        &format!("field {id}"),
+                        Kind::Field,
+                    )
+                }
+                Some(_) => {}
             }
         }
+        catalog(
+            b,
+            tree,
+            &[table.id, 3],
+            &format!("field catalog of {}", table.name),
+            &[],
+        );
     }
+    b.inventoried(&[Kind::Table, Kind::Field]);
     for table in &tables {
         for field in &table.fields {
             if b.stopped() {
@@ -218,6 +328,9 @@ fn field(b: &mut Builder, table: u64, field: &om_hbam::Field, node: &Node<'_>) {
         }
         (_, Some(options)) => options,
     };
+    if !charge(b, holder, node) {
+        return;
+    }
     let mut member = b.member(holder, node, "field definition");
     member.get(NAME);
     member.get(FIELD_DEFINITION);
@@ -266,7 +379,13 @@ fn field(b: &mut Builder, table: u64, field: &om_hbam::Field, node: &Node<'_>) {
     }
     let summary = member.get(FIELD_SUMMARY);
     if field.kind == FieldKind::Summary {
-        let bytes = summary.and_then(Node::assembled);
+        // A stored definition that does not assemble reads as one of the
+        // wrong length: unread, not "a summary of nothing".
+        let bytes = match summary.map(Node::assembled) {
+            Some(Some(bytes)) => Some(bytes),
+            Some(None) => Some(std::borrow::Cow::Borrowed(&[][..])),
+            None => None,
+        };
         match bytes.as_deref() {
             Some(bytes) if bytes.len() == SUMMARY_BYTES => {
                 let summary = SummaryDef::decode(bytes);
@@ -417,6 +536,14 @@ fn field(b: &mut Builder, table: u64, field: &om_hbam::Field, node: &Node<'_>) {
 /// Table occurrences `[3, 17, 5, O]`: each one's table, in this file or
 /// another.
 pub(super) fn occurrences(b: &mut Builder, tree: &KeyTree<'_>) {
+    if !b.spend(
+        tree.at(&[3, 17]).map_or(0, size),
+        ObjectId::File,
+        &Place::new("occurrences"),
+    ) {
+        return;
+    }
+    catalog(b, tree, &[3, 17], "table occurrence catalog", &[]);
     let occurrences = match om_hbam::catalog::table_occurrences(tree) {
         Ok(occurrences) => occurrences,
         Err(e) => {
@@ -475,9 +602,23 @@ pub(super) fn occurrences(b: &mut Builder, tree: &KeyTree<'_>) {
     }
     for (id, entry) in members(tree, &[3, 17, 5]) {
         let Some(id) = id else {
-            unreadable_member(b, ObjectId::File, "table occurrence", entry);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "table occurrence",
+                entry,
+                Some(Kind::Occurrence),
+            );
             continue;
         };
+        if !b.graph.bases.contains_key(&id) && !emptied(entry) {
+            unlisted(
+                b,
+                ObjectId::Occurrence(id),
+                "table occurrence",
+                Kind::Occurrence,
+            );
+        }
         let mut member = b.member(ObjectId::Occurrence(id), entry, "table occurrence");
         member.get(NAME);
         member.get(OCCURRENCE_DEFINITION);
@@ -485,17 +626,28 @@ pub(super) fn occurrences(b: &mut Builder, tree: &KeyTree<'_>) {
         member.known(&MEMBER_STAMPS);
         b.close(member);
     }
+    b.inventoried(&[Kind::Occurrence]);
 }
 
 /// Relationships `[3, fb, 5, R]` (file-metadata.md 4): their occurrences,
 /// match fields and sorted sides.
 pub(super) fn relationships(b: &mut Builder, tree: &KeyTree<'_>) {
+    catalog(b, tree, &[3, 0xfb], "relationship catalog", &[]);
     for (id, entry) in members(tree, &meta::RELATIONSHIPS) {
         let Some(id) = id else {
-            unreadable_member(b, ObjectId::File, "relationship", entry);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "relationship",
+                entry,
+                Some(Kind::Relationship),
+            );
             continue;
         };
         let holder = ObjectId::Relationship(id);
+        if !charge(b, holder, entry) {
+            return;
+        }
         b.count("relationships");
         let mut member = b.member(holder, entry, "relationship");
         member.get(RELATION_DEFINITION);
@@ -562,16 +714,27 @@ pub(super) fn relationships(b: &mut Builder, tree: &KeyTree<'_>) {
         }
         b.close(member);
     }
+    b.inventoried(&[Kind::Relationship]);
 }
 
 /// Custom functions `[16, 5, F]`: their bodies.
 pub(super) fn custom_functions(b: &mut Builder, tree: &KeyTree<'_>) {
+    catalog(b, tree, &[CUSTOM_FUNCTIONS], "custom function catalog", &[]);
     for (id, entry) in members(tree, &[CUSTOM_FUNCTIONS, 5]) {
         let Some(id) = id else {
-            unreadable_member(b, ObjectId::File, "custom function", entry);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "custom function",
+                entry,
+                Some(Kind::CustomFunction),
+            );
             continue;
         };
         let holder = ObjectId::CustomFunction(id);
+        if !charge(b, holder, entry) {
+            return;
+        }
         b.object(holder, text_at(entry.get(NAME)).unwrap_or_default(), "");
         b.count("custom_functions");
         let mut member = b.member(holder, entry, "custom function");
@@ -588,17 +751,28 @@ pub(super) fn custom_functions(b: &mut Builder, tree: &KeyTree<'_>) {
         }
         b.close(member);
     }
+    b.inventoried(&[Kind::CustomFunction]);
 }
 
 /// Value lists `[33, 5, V]` (file-metadata.md 6): their fields,
 /// occurrence, file and calculation.
 pub(super) fn value_lists(b: &mut Builder, tree: &KeyTree<'_>) {
+    catalog(b, tree, &[VALUE_LISTS], "value list catalog", &[]);
     for (id, entry) in members(tree, &[VALUE_LISTS, 5]) {
         let Some(id) = id else {
-            unreadable_member(b, ObjectId::File, "value list", entry);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "value list",
+                entry,
+                Some(Kind::ValueList),
+            );
             continue;
         };
         let holder = ObjectId::ValueList(id);
+        if !charge(b, holder, entry) {
+            return;
+        }
         b.count("value_lists");
         let mut member = b.member(holder, entry, "value list");
         member.get(NAME);
@@ -676,12 +850,16 @@ pub(super) fn value_lists(b: &mut Builder, tree: &KeyTree<'_>) {
         }
         b.close(member);
     }
+    b.inventoried(&[Kind::ValueList]);
 }
 
 /// The file's options `[2, 18]` (file-metadata.md 3): the layout it opens
 /// on and its script triggers.
 pub(super) fn file_options(b: &mut Builder, tree: &KeyTree<'_>) {
-    if tree.at(&meta::DOCUMENT_PREFERENCES).is_none() {
+    let Some(stored) = tree.at(&meta::DOCUMENT_PREFERENCES) else {
+        return;
+    };
+    if !b.charge(stored, ObjectId::File, &Place::new("file options")) {
         return;
     }
     let Some(options) = meta::file_options(tree) else {
@@ -732,12 +910,22 @@ pub(super) fn file_options(b: &mut Builder, tree: &KeyTree<'_>) {
 
 /// Custom menus `[65, 5, M]`: listed, their items not decoded.
 pub(super) fn custom_menus(b: &mut Builder, tree: &KeyTree<'_>) {
+    catalog(b, tree, &[CUSTOM_MENUS], "custom menu catalog", &[]);
     for (id, entry) in members(tree, &[CUSTOM_MENUS, 5]) {
         let Some(id) = id else {
-            unreadable_member(b, ObjectId::File, "custom menu", entry);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "custom menu",
+                entry,
+                Some(Kind::CustomMenu),
+            );
             continue;
         };
         let holder = ObjectId::CustomMenu(id);
+        if !charge(b, holder, entry) {
+            return;
+        }
         b.object(holder, text_at(entry.get(NAME)).unwrap_or_default(), "");
         b.unread(
             holder,
@@ -747,6 +935,7 @@ pub(super) fn custom_menus(b: &mut Builder, tree: &KeyTree<'_>) {
             &Kind::ANY,
         );
     }
+    b.inventoried(&[Kind::CustomMenu]);
 }
 
 /// Privilege sets `[23, 2, 5, P]` (session-identity.md 2): the formulas
@@ -760,6 +949,13 @@ pub(super) fn privilege_sets(b: &mut Builder, tree: &KeyTree<'_>) {
         .unavailable
         .iter()
         .any(|u| u.path.first() == Some(&23));
+    // The access catalog: accounts `01`, privilege sets `02`, extended
+    // privileges `03` and file access `04` (F49, F52, F59, F61). Accounts
+    // and extended privileges name privilege sets, and file access other
+    // files: none names a table, field, layout, script or other object
+    // whose uses are analysed, so only the privilege sets are read.
+    catalog(b, tree, &[23], "access catalog", &[2, 3, 4]);
+    catalog(b, tree, &[23, 2], "privilege set catalog", &[]);
     let Some(sets) = tree.at(&[23, 2, 5]) else {
         if !given && tree.at(&[23, 2]).is_none() {
             b.unread(
@@ -778,13 +974,22 @@ pub(super) fn privilege_sets(b: &mut Builder, tree: &KeyTree<'_>) {
             return;
         }
         let Some(id) = set.id() else {
-            unreadable_member(b, ObjectId::File, "privilege set", set);
+            unreadable_member(
+                b,
+                ObjectId::File,
+                "privilege set",
+                set,
+                Some(Kind::PrivilegeSet),
+            );
             continue;
         };
         if id == 0 {
             continue;
         }
         let holder = ObjectId::PrivilegeSet(id);
+        if !charge(b, holder, set) {
+            return;
+        }
         b.object(holder, text_at(set.get(NAME)).unwrap_or_default(), "");
         let mut member = b.member(holder, set, "privilege set");
         member.get(NAME);
@@ -800,7 +1005,7 @@ pub(super) fn privilege_sets(b: &mut Builder, tree: &KeyTree<'_>) {
         if let Some(tables) = member.get(SET_TABLES) {
             for table in &tables.children {
                 let Some(table_id) = table.id() else {
-                    unreadable_member(b, holder, "privilege set table", table);
+                    unreadable_member(b, holder, "privilege set table", table, None);
                     continue;
                 };
                 let name = b
@@ -823,12 +1028,14 @@ pub(super) fn privilege_sets(b: &mut Builder, tree: &KeyTree<'_>) {
         }
         b.close(member);
     }
+    b.inventoried(&[Kind::PrivilegeSet]);
 }
 
 /// Catalog 64 (`[64]`, file-format.md 8): FileMaker Pro reads it when it
 /// opens a file, and every observed member holds only its UUID and stamps.
 /// What it is for is not known, so anything else stored there is unread.
 pub(super) fn unknown_catalog(b: &mut Builder, tree: &KeyTree<'_>) {
+    catalog(b, tree, &[UNKNOWN_CATALOG], "catalog 64", &[]);
     for (_, entry) in members(tree, &[UNKNOWN_CATALOG, 5]) {
         let mut member = b.member(
             ObjectId::File,
