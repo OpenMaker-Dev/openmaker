@@ -83,15 +83,21 @@ struct Watched {
     /// Places the device cannot read: a read of the file that covers the
     /// offset fails, every time.
     bad: Arc<Mutex<Vec<(String, u64)>>>,
+    /// The next write to a log file reaches the system's cache only, whole,
+    /// and fails: a write the device did not take, whose bytes a process
+    /// that goes on without a power loss still reads.
+    cache_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct WatchedFile {
     inner: Box<dyn File>,
+    inner_fs: Arc<dyn Fs>,
     path: String,
     counted: bool,
     changes: Arc<AtomicU64>,
     largest_read: Arc<AtomicU64>,
     bad: Arc<Mutex<Vec<(String, u64)>>>,
+    cache_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Watched {
@@ -101,6 +107,7 @@ impl Watched {
             changes: Arc::default(),
             largest_read: Arc::default(),
             bad: Arc::default(),
+            cache_only: Arc::default(),
         }
     }
 
@@ -113,11 +120,13 @@ impl Watched {
     fn file(&self, path: &str, inner: Box<dyn File>) -> Box<dyn File> {
         Box::new(WatchedFile {
             inner,
+            inner_fs: self.inner.clone(),
             path: path.to_owned(),
             counted: path.starts_with(FOLDER),
             changes: self.changes.clone(),
             largest_read: self.largest_read.clone(),
             bad: self.bad.clone(),
+            cache_only: self.cache_only.clone(),
         })
     }
 }
@@ -191,6 +200,17 @@ impl File for WatchedFile {
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
         if self.counted {
             self.changes.fetch_add(1, Ordering::Relaxed);
+            if self.cache_only.swap(false, Ordering::Relaxed) {
+                // Through a handle without synchronous writes: the bytes
+                // stay pending in the cache, and the write fails.
+                let plain = self.inner_fs.open(&self.path, FileOptions::PLAIN)?;
+                plain.write_at(offset, data)?;
+                return Err(sys::Error::new(
+                    ErrorKind::Write,
+                    sys::Op::Write,
+                    &self.path,
+                ));
+            }
         }
         self.inner.write_at(offset, data)
     }
@@ -216,6 +236,9 @@ trait Machine {
     fn fs(&self) -> Arc<dyn Fs>;
     /// How many calls so far changed the log's files.
     fn changes(&self) -> u64;
+    /// The next write to a log file reaches the cache only, then fails
+    /// (simulated machines only).
+    fn arm_cache_only_write(&self) -> bool;
     fn random(&self) -> &dyn Random;
     /// The process ends; with `power_loss` the power fails first, where the
     /// machine can do that.
@@ -249,11 +272,17 @@ impl Machine for Simulated {
         self.fs.changes.load(Ordering::Relaxed)
     }
 
+    fn arm_cache_only_write(&self) -> bool {
+        self.fs.cache_only.store(true, Ordering::Relaxed);
+        true
+    }
+
     fn random(&self) -> &dyn Random {
         &self.random
     }
 
     fn restart(&mut self, power_loss: bool) {
+        self.fs.cache_only.store(false, Ordering::Relaxed);
         if power_loss {
             self.sim.crash(Fates::Drawn);
         }
@@ -289,6 +318,10 @@ impl Machine for Real {
 
     fn changes(&self) -> u64 {
         self.fs.changes.load(Ordering::Relaxed)
+    }
+
+    fn arm_cache_only_write(&self) -> bool {
+        false
     }
 
     fn random(&self) -> &dyn Random {
@@ -407,6 +440,7 @@ struct Reached {
     retried_opens: u64,
     unreadable_ends: u64,
     lost_slots: u64,
+    tails_in_cache: u64,
     unconfirmed: u64,
     reappended: u64,
     damaged: u64,
@@ -475,6 +509,10 @@ enum Action {
     /// and the process stops: the next open finds the marker one advance
     /// back (simulated machines only).
     LoseStateSlot,
+    /// A batch's write reaches the system's cache only, whole, and fails;
+    /// the process stops without a power loss, and the next open meets a
+    /// failed flush or write somewhere (simulated machines only).
+    TailInCacheOnly,
 }
 
 /// A schedule that does every operation at least once, for the crash at
@@ -639,6 +677,7 @@ impl<'a> Run<'a> {
             77..=82 => Action::Read,
             83..=90 => Action::Stop,
             91 => Action::LoseStateSlot,
+            92 => Action::TailInCacheOnly,
             _ => Action::Crash,
         }
     }
@@ -661,6 +700,7 @@ impl<'a> Run<'a> {
             Action::Stop => self.stop(false),
             Action::Crash => self.stop(true),
             Action::LoseStateSlot => self.lose_state_slot(),
+            Action::TailInCacheOnly => self.tail_in_cache_only(),
         }
     }
 
@@ -693,6 +733,36 @@ impl<'a> Run<'a> {
             sim.set_rates(self.rates);
         }
         out
+    }
+
+    fn tail_in_cache_only(&mut self) {
+        let Some(sim) = self.machine.sim().cloned() else {
+            return;
+        };
+        if !self.append(false) || self.log.is_none() {
+            return;
+        }
+        // The batch's write: whole in the cache, not on the device, and it
+        // fails. The entries stay in `maybe`.
+        self.machine.arm_cache_only_write();
+        let flushed = self.log.as_mut().expect("open").flush_batch(None);
+        self.trace.push(stamp(
+            &*self.machine,
+            format!("flush, its write held in the cache: {flushed:?}"),
+        ));
+        if flushed.is_ok() {
+            return;
+        }
+        self.reached.tails_in_cache += 1;
+        // The process stops and the cache stays; the next open meets a
+        // failed flush or write at one of its steps, and is tried again.
+        self.stop(false);
+        let fault = if self.plan.below(2) == 0 {
+            Fault::FailFlush
+        } else {
+            Fault::FailWrite
+        };
+        sim.place(sim.steps() + 1 + self.plan.below(25), fault);
     }
 
     fn lose_state_slot(&mut self) {
@@ -1514,6 +1584,7 @@ fn the_log_survives_drawn_crashes_and_faults() {
             ("cuts refused as unconfirmed", reached.unconfirmed),
             ("opens tried again with their state", reached.retried_opens),
             ("lost state slots", reached.lost_slots),
+            ("tails held in the cache only", reached.tails_in_cache),
             (
                 "opens that ended where a read failed",
                 reached.unreadable_ends,
