@@ -3093,27 +3093,31 @@ impl OpenMakerApp {
     /// Run a launch command once no file is open: the front file closes
     /// first, through its usual commit path and close triggers, and a veto
     /// or refused save drops the command. Nothing closes while another file
-    /// is open, or while a window of the front file has unsaved layout
-    /// changes: an alert says which.
+    /// is open, hidden ones included, or while a window of the front file
+    /// has unsaved layout changes: an alert says which.
     fn launch(&mut self, ctx: &egui::Context, launch: Launch) {
         use crate::file_history::{Change, SavedFile};
         if !self.can_launch() {
             return;
         }
-        if self.w.session.is_some() {
-            let front = self.w.file_id;
-            let open = || {
-                std::iter::once(&self.w)
-                    .chain(&self.windows)
-                    .filter(|doc| doc.session.is_some())
-            };
-            let others = open().any(|doc| doc.file_id != front);
+        let front = self.w.session.is_some().then_some(self.w.file_id);
+        let open = || {
+            std::iter::once(&self.w)
+                .chain(&self.windows)
+                .filter(|doc| doc.session.is_some())
+        };
+        // A file left open behind Home, such as a hidden one a close
+        // trigger opened, refuses every command that would open a file:
+        // the provider would close it under its windows. Switching Home's
+        // tab opens nothing.
+        let others = open().any(|doc| Some(doc.file_id) != front);
+        if others && (front.is_some() || !matches!(launch, Launch::Home(_))) {
+            self.error = Some(OTHER_FILES_OPEN.into());
+            return;
+        }
+        if front.is_some() {
             let layout_unsaved =
                 open().any(|doc| doc.layout_workspace.has_changes() || doc.layout_workspace.saving);
-            if others {
-                self.error = Some(OTHER_FILES_OPEN.into());
-                return;
-            }
             if layout_unsaved {
                 self.error = Some(LAYOUT_UNSAVED.into());
                 return;
@@ -8030,6 +8034,23 @@ mod tests {
         assert_eq!(app.error.as_deref(), Some(OTHER_FILES_OPEN));
         assert_eq!(app.windows.len(), 1);
         assert!(app.w.session.is_some() && app.launch_after_close.is_none());
+
+        // Behind a blank Home, the hidden file refuses a command that
+        // would open a file; showing a list of Home opens nothing.
+        let front = std::mem::replace(&mut app.w, windows::Doc::new(windows::FIRST));
+        app.error = None;
+        app.apply(
+            &ctx,
+            Action::OpenSaved(crate::file_history::SavedFile::Local {
+                path: "/nowhere/Other.fmp12".into(),
+            }),
+        );
+        assert_eq!(app.error.as_deref(), Some(OTHER_FILES_OPEN));
+        assert!(app.opening.is_none() && app.status == ConnectStatus::Idle);
+        app.error = None;
+        app.apply(&ctx, Action::ShowHome(app.file_history.tab()));
+        assert!(app.error.is_none());
+        app.w = front;
 
         // A second window of the same file, with a layout save under way.
         app.error = None;

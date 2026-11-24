@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
-    pos2, vec2, Align, Align2, Color32, CornerRadius, EventFilter, FontFamily, FontId, Galley, Id,
-    Key, Layout, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder,
+    pos2, vec2, Align, Align2, Color32, CornerRadius, FocusDirection, FontFamily, FontId, Galley,
+    Id, Key, Layout, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder,
 };
 
 use crate::app::Action;
@@ -237,15 +237,6 @@ impl Home {
             Tab::Favorites => "Favorite files",
         };
         list.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ListBox, enabled, list_label));
-        ui.memory_mut(|memory| {
-            memory.set_focus_lock_filter(
-                list.id,
-                EventFilter {
-                    vertical_arrows: true,
-                    ..Default::default()
-                },
-            );
-        });
         if enabled {
             self.keys(ui, list.id, files, tab, actions);
         }
@@ -308,6 +299,13 @@ impl Home {
                     || input.consume_key(Modifiers::NONE, Key::Backspace),
             )
         });
+        if down || up {
+            // egui moves the focus with the arrows at the end of the pass;
+            // the list keeps it. (A focus lock filter would take effect
+            // only from the second pass after Tab.)
+            ui.ctx()
+                .memory_mut(|memory| memory.move_focus(FocusDirection::None));
+        }
         let moved = match (index, down, up) {
             (None, true, _) => Some(0),
             (None, _, true) => Some(files.len() - 1),
