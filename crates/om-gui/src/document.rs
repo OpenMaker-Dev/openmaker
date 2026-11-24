@@ -7561,6 +7561,35 @@ pub(crate) fn note_focused_text(ui: &Ui, id: egui::Id, buffer: &str) {
     }
 }
 
+/// Where [`note_scroll_area`] keeps the pass's scroll areas.
+fn scroll_areas_id() -> egui::Id {
+    egui::Id::unique("openmaker-scroll-areas")
+}
+
+/// Keep the visible rectangle of a scroll area this pass draws inside the
+/// layout (a portal's rows), for [`scroll_areas`]: a screen reader's page
+/// there is that area's, not the window's.
+pub(crate) fn note_scroll_area(ui: &Ui, rect: Rect) {
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx().data_mut(|data| {
+        let (at, rects) = data.get_temp_mut_or_default::<(u64, Vec<Rect>)>(scroll_areas_id());
+        if *at != pass {
+            *at = pass;
+            rects.clear();
+        }
+        rects.push(rect);
+    });
+}
+
+/// The scroll areas inside the layout the last completed pass drew.
+pub(crate) fn scroll_areas(ctx: &egui::Context) -> Vec<Rect> {
+    let completed = ctx.cumulative_pass_nr();
+    ctx.data(|data| data.get_temp::<(u64, Vec<Rect>)>(scroll_areas_id()))
+        .filter(|(at, _)| *at + 1 == completed)
+        .map(|(_, rects)| rects)
+        .unwrap_or_default()
+}
+
 /// The text of the field editor that has the keyboard focus, as the last
 /// pass left it; `None` when no field editor has it.
 pub(crate) fn focused_field_text(ctx: &egui::Context) -> Option<String> {

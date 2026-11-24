@@ -176,25 +176,23 @@ final class DocumentCanvas: MTKView {
   // MARK: Accessibility
 
   /// VoiceOver's three-finger scroll pages what is under the focused element
-  /// (a portal, a Table view, the layout), as a pan there does: a swipe up
-  /// brings what is below into view, a swipe left what is to the right.
+  /// (a portal's rows, the layout) by its own size, as a pan there does: a
+  /// swipe up brings what is below into view, a swipe left what is to the
+  /// right.
   override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
-    let (width, height) = (bounds.width * 0.8, bounds.height * 0.8)
-    let (dx, dy): (CGFloat, CGFloat)
+    let (dx, dy): (Float, Float)
     switch direction {
-    case .up: (dx, dy) = (0, -height)
-    case .down: (dx, dy) = (0, height)
-    case .left: (dx, dy) = (-width, 0)
-    case .right: (dx, dy) = (width, 0)
+    case .up: (dx, dy) = (0, -1)
+    case .down: (dx, dy) = (0, 1)
+    case .left: (dx, dy) = (-1, 0)
+    case .right: (dx, dy) = (1, 0)
     default: return false
     }
     let focused = UIAccessibility.focusedElement(using: .notificationVoiceOver) as? CanvasElement
     let at = focused.map {
       CGPoint(x: $0.accessibilityFrameInContainerSpace.midX, y: $0.accessibilityFrameInContainerSpace.midY)
     } ?? CGPoint(x: bounds.midX, y: bounds.midY)
-    document.send(input: .panBegan(x: Float(at.x), y: Float(at.y)))
-    document.send(input: .panMoved(dx: Float(dx), dy: Float(dy)))
-    document.send(input: .panEnded(vx: 0, vy: 0))
+    document.send(input: .scrollPage(x: Float(at.x), y: Float(at.y), dx: dx, dy: dy))
     // Told once the elements the scroll shows are presented.
     scrolledByVoiceOver = true
     return true
@@ -388,7 +386,27 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
     if !leaving { settle(then: .run(command: .done)) }
   }
 
+  /// A hardware keyboard's Shift going down or up: a keystroke trigger
+  /// reads it with the characters typed while it is held.
+  private func shiftChanged(_ presses: Set<UIPress>, down: Bool) {
+    let shift = presses.contains {
+      $0.key?.keyCode == .keyboardLeftShift || $0.key?.keyCode == .keyboardRightShift
+    }
+    if shift { send?(.modifiers(shift: down, command: false)) }
+  }
+
+  override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    shiftChanged(presses, down: false)
+    super.pressesEnded(presses, with: event)
+  }
+
+  override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    shiftChanged(presses, down: false)
+    super.pressesCancelled(presses, with: event)
+  }
+
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    shiftChanged(presses, down: true)
     var unhandled = Set<UIPress>()
     for press in presses {
       // Keys that edit or move go to the engine's field, unless an input

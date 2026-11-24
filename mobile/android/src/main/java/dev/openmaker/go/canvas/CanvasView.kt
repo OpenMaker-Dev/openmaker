@@ -315,7 +315,7 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
                     if (command) {
                         Key.ENTER
                     } else {
-                        returnKey()
+                        returnKey(event.isShiftPressed)
                         return true
                     }
                 else -> null
@@ -353,12 +353,12 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
     private var accent = 0
 
     /** Return: performs the find in Find mode; a field's own Return elsewhere. */
-    internal fun returnKey() {
+    internal fun returnKey(shift: Boolean = false) {
         if (finding) {
             commitComposition()
             session.send(Input.Run(Command.PerformFind))
         } else {
-            session.send(Input.Press(Key.ENTER, false, false))
+            session.send(Input.Press(Key.ENTER, shift, false))
         }
     }
 

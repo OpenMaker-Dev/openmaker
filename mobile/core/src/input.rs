@@ -13,6 +13,11 @@ pub enum Input {
     PanBegan { x: f32, y: f32 },
     /// The pan moved this far since its last report.
     PanMoved { dx: f32, dy: f32 },
+    /// A screen reader's scroll: what scrolls under `x`, `y` (a portal's
+    /// rows, the layout) moves by most of its own size, `dx` and `dy`
+    /// pages (-1, 0 or 1) the way a pan moves the content: -1 brings what
+    /// is right of it or below it into view.
+    ScrollPage { x: f32, y: f32, dx: f32, dy: f32 },
     /// The finger lifted moving this fast, in points a second: the content
     /// glides on and slows to a stop, as a native scroll view's does.
     PanEnded { vx: f32, vy: f32 },

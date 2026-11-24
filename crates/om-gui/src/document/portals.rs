@@ -356,7 +356,7 @@ fn paint_rows(
         );
     };
     if geometry.scrolls {
-        ScrollArea::vertical()
+        let output = ScrollArea::vertical()
             .id_salt(id)
             .auto_shrink([false, false])
             .max_height(geometry.viewport.height())
@@ -371,6 +371,7 @@ fn paint_rows(
                     paint_row(ui, index, row);
                 }
             });
+        super::note_scroll_area(&child, output.inner_rect);
     } else {
         for index in geometry.visible(child.clip_rect(), total) {
             let row = Rect::from_min_size(

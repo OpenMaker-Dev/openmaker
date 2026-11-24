@@ -17,6 +17,9 @@ use crate::input::{self, Input};
 /// How many passes a deletion around the selection waits at most for a Tab
 /// or Return to give the focus to the next field.
 const DELETE_WAITS: u8 = 30;
+
+/// How much of a scroll area's size a screen reader's page scroll moves.
+const PAGE: f32 = 0.8;
 use crate::state::{self, DocumentState};
 use crate::{
     accessibility, provider, Element, ElementKind, GoError, Menu, SignIn, Source, Viewport,
@@ -120,6 +123,11 @@ pub(crate) struct Surface {
     field_taps: u32,
     /// What the last Copy or Cut copied ([`Input::PasteCopied`]).
     last_copy: Option<String>,
+    /// The modifier keys a hardware keyboard holds ([`Input::Modifiers`]).
+    held: egui::Modifiers,
+    /// A screen reader's page scroll moved in the last pass: it ends in
+    /// the next ([`Input::ScrollPage`]).
+    page_scrolled: bool,
     /// The insertion point of the field that takes typing.
     caret: Option<crate::state::Caret>,
     /// What the app asked to happen to the record or file once the window
@@ -229,6 +237,8 @@ impl Surface {
             delete_waits: 0,
             field_taps: 0,
             last_copy: None,
+            held: egui::Modifiers::NONE,
+            page_scrolled: false,
             caret: None,
             intent: None,
             asked: Vec::new(),
@@ -295,6 +305,12 @@ impl Surface {
         // A pan found to drag a handle presses it where it began, in a pass
         // of its own: egui finds the handle at the pointer's last position
         // in a pass, so the finger's first move must not come with it.
+        // A screen reader's page scroll ends a pass after it moved: egui
+        // drops the scroll a pass gathered when the same pass ends it.
+        if std::mem::take(&mut self.page_scrolled) {
+            events.push(wheel(Vec2::ZERO, TouchPhase::End));
+            self.pointer_leaves = true;
+        }
         let mut press_only = false;
         if let Some(pan) = &mut self.pan {
             if pan.drags == Some(true) && !pan.pressed {
@@ -313,7 +329,10 @@ impl Surface {
             // what it shows decides whether the pan drags or scrolls.
             let moves_focus = matches!(
                 input,
-                Input::Tap { .. } | Input::Activate { .. } | Input::PanBegan { .. }
+                Input::Tap { .. }
+                    | Input::Activate { .. }
+                    | Input::PanBegan { .. }
+                    | Input::ScrollPage { .. }
             );
             // A deletion around the selection reads the field's selection
             // and text as the last pass left them: it waits for a pass of
@@ -406,7 +425,8 @@ impl Surface {
         let mut soon = |step: Duration| {
             repaint_after = Some(repaint_after.map_or(step, |delay| delay.min(step)));
         };
-        if self.pointer_leaves || !inputs.is_empty() {
+        // A page scroll's end, too, goes in the next pass.
+        if self.pointer_leaves || self.page_scrolled || !inputs.is_empty() {
             soon(Duration::ZERO);
         }
         // A glide moves on, and a close the app asked for waits for the
@@ -557,6 +577,32 @@ impl Surface {
                 });
                 events.push(Event::PointerMoved(pos));
             }
+            Input::ScrollPage { x, y, dx, dy } => {
+                self.stop_glide(events);
+                let at = egui::pos2(x, y);
+                // The smallest scroll area under the point (a portal's
+                // rows), or the canvas.
+                let area = self
+                    .app
+                    .scroll_areas(&self.ctx)
+                    .into_iter()
+                    .filter(|area| area.contains(at))
+                    .min_by(|a, b| a.area().total_cmp(&b.area()))
+                    .unwrap_or_else(|| {
+                        egui::Rect::from_min_size(
+                            Pos2::ZERO,
+                            egui::vec2(self.viewport.width, self.viewport.height),
+                        )
+                    });
+                let page = egui::vec2(
+                    dx.clamp(-1.0, 1.0) * area.width(),
+                    dy.clamp(-1.0, 1.0) * area.height(),
+                ) * PAGE;
+                events.push(Event::PointerMoved(at));
+                events.push(wheel(Vec2::ZERO, TouchPhase::Start));
+                events.push(wheel(page, TouchPhase::Move));
+                self.page_scrolled = true;
+            }
             Input::PanMoved { dx, dy } => {
                 if let Some(pan) = &mut self.pan {
                     if pan.drags == Some(true) {
@@ -613,7 +659,10 @@ impl Surface {
                 shift,
                 command,
             } => {
-                let modifiers = input::modifiers(shift, command);
+                // With the keys the hardware keyboard holds (iOS reports
+                // Shift as it goes down and up).
+                let modifiers =
+                    input::modifiers(shift || self.held.shift, command || self.held.command);
                 // Copy and Cut are egui's own events, as a desktop event
                 // loop gives them for Command-C and Command-X.
                 if command && matches!(key, input::Key::C | input::Key::X) {
@@ -625,6 +674,11 @@ impl Surface {
                         Event::Cut
                     });
                     return;
+                }
+                // A keystroke trigger reads the modifiers from their own
+                // events, as a desktop keyboard sends them around a key.
+                if modifiers != self.held {
+                    events.push(Event::ModifiersChanged(modifiers));
                 }
                 for pressed in [true, false] {
                     // Space types a space and is the key option controls
@@ -646,6 +700,9 @@ impl Surface {
                         }
                     });
                 }
+                if modifiers != self.held {
+                    events.push(Event::ModifiersChanged(self.held));
+                }
             }
             Input::Paste { text } => events.push(Event::Paste(text)),
             Input::PasteCopied { clipboard } => {
@@ -664,7 +721,8 @@ impl Surface {
                 }
             }
             Input::Modifiers { shift, command } => {
-                events.push(Event::ModifiersChanged(input::modifiers(shift, command)));
+                self.held = input::modifiers(shift, command);
+                events.push(Event::ModifiersChanged(self.held));
             }
             Input::DeleteAround {
                 before,

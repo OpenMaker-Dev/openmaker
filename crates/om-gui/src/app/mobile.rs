@@ -199,6 +199,13 @@ impl OpenMakerApp {
         self.w.document.tab_in_progress() || self.navigation_key_pending()
     }
 
+    /// The visible rectangles of the scroll areas inside the layout (a
+    /// portal's rows) the last pass drew: a screen reader pages the one
+    /// it is in by its own size.
+    pub fn scroll_areas(&self, ctx: &egui::Context) -> Vec<egui::Rect> {
+        crate::document::scroll_areas(ctx)
+    }
+
     /// The file the front window shows, by its id in this app.
     pub fn front_file(&self) -> u64 {
         self.front_doc().file_id

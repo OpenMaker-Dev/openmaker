@@ -46,27 +46,26 @@ internal class CanvasAccessibility(private val view: View, private val send: (In
     }
 
     override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
-        val density = view.resources.displayMetrics.density
-        val (width, height) = view.width / density * PAGE to view.height / density * PAGE
-        // The content follows the pan: forward and down bring what is below
-        // up, right what is to the right in.
+        // In pages, the way a pan moves the content: forward and down bring
+        // what is below into view, right what is to the right.
         val (dx, dy) =
             when (action) {
                 AccessibilityNodeInfoCompat.ACTION_SCROLL_FORWARD,
-                android.R.id.accessibilityActionScrollDown -> 0f to -height
+                android.R.id.accessibilityActionScrollDown -> 0f to -1f
                 AccessibilityNodeInfoCompat.ACTION_SCROLL_BACKWARD,
-                android.R.id.accessibilityActionScrollUp -> 0f to height
-                android.R.id.accessibilityActionScrollRight -> -width to 0f
-                android.R.id.accessibilityActionScrollLeft -> width to 0f
+                android.R.id.accessibilityActionScrollUp -> 0f to 1f
+                android.R.id.accessibilityActionScrollRight -> -1f to 0f
+                android.R.id.accessibilityActionScrollLeft -> 1f to 0f
                 else -> return super.performAccessibilityAction(host, action, args)
             }
+        val density = view.resources.displayMetrics.density
         val focused = nodes[accessibilityFocusedVirtualViewId]
         val (x, y) =
             focused?.let { (it.left + it.width / 2).toFloat() to (it.top + it.height / 2).toFloat() }
                 ?: (view.width / density / 2 to view.height / density / 2)
-        send(Input.PanBegan(x, y))
-        send(Input.PanMoved(dx, dy))
-        send(Input.PanEnded(0f, 0f))
+        // The engine pages what scrolls there (a portal's rows, the layout)
+        // by its own size.
+        send(Input.ScrollPage(x, y, dx, dy))
         return true
     }
 
@@ -123,9 +122,6 @@ internal class CanvasAccessibility(private val view: View, private val send: (In
     }
 
     private companion object {
-        /** How much of the canvas a screen reader's scroll moves. */
-        const val PAGE = 0.8f
-
         val SCROLLS =
             listOf(
                 AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_FORWARD,
