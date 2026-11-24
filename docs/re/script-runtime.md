@@ -4087,8 +4087,12 @@ Steps
   in, each committing what is left on its record (the user's typing and
   what scripts left) before it goes; a veto or a refused commit stops
   there with that window and the ones after it open and their changes
-  kept, the windows closed before having committed theirs. FileMaker's
-  order of these events for several windows is not measured. The next
+  kept, the windows closed before having committed theirs. They close the
+  windows the file had when the close began, even when a close trigger
+  brings another file's window to the front, and the last of them closes
+  the file with any window a close trigger opened meanwhile (OpenMaker's
+  choice). FileMaker's order of these events for several windows, and what
+  it does with windows a close trigger opens, are not measured. The next
   file starts from a fresh window (title, toolbars, zoom, view, `Get (
   WindowUUID )`). Exit Application commits its own window, and once its
   script has ended every other window closes as Quit closes them; while a

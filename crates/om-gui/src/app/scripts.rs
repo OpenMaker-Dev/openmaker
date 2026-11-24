@@ -1465,7 +1465,7 @@ impl OpenMakerApp {
             // OnRecordCommit).
             Action::CloseWindow if self.w.session.is_some() => {
                 stages.push(TriggerEvent::WindowClose);
-                if !self.windows.iter().any(|d| d.file_id == self.w.file_id) {
+                if self.closes_last_window() {
                     stages.push(TriggerEvent::LastWindowClose);
                 }
             }
@@ -3571,8 +3571,8 @@ mod queued_window_tests {
     /// the others are refused offline.
     #[test]
     fn a_lost_connection_drops_the_actions_held_for_triggers() {
-        let closing = |closing| (Action::CloseWindow, closing);
-        for (action, closing) in [
+        let closing = |quit| (Action::CloseWindow, quit);
+        for (action, quit) in [
             closing(None),
             closing(Some(false)),
             closing(Some(true)),
@@ -3581,12 +3581,11 @@ mod queued_window_tests {
             (Action::NewRecord, None),
         ] {
             for approved_before_loss in [true, false] {
-                let what =
-                    format!("{action:?}, closing {closing:?}, before {approved_before_loss}");
+                let what = format!("{action:?}, closing {quit:?}, before {approved_before_loss}");
                 let ctx = egui::Context::default();
                 let mut app = a_dirty_window_of_two();
                 app.script.running = true;
-                app.closing = closing;
+                app.closing = quit.map(|quit| app.closing_front(quit));
                 app.script
                     .held
                     .insert(1, (FIRST, Held::Action(action.clone(), 1)));
