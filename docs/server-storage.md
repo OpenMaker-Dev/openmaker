@@ -383,8 +383,10 @@ it. So:
 - the store can tell from a few pages whether anything under a path changed
   since a given entry: from the index pages along the two ends of the
   path's key range, at most two a level, and no leaf. The answer is never
-  "no" when something changed; it can be "yes" for a change to another
-  path in a leaf at one of the ends;
+  "no" when something under the path changed, and can be "yes" when only
+  another path in the same page did. The cache of section 6.6 and the
+  check of section 6.9 rely only on the first: a false "yes" costs a cache
+  miss or another pass;
 - a tree's root hash depends on its content and its shape, and not on
   where a server put its pages.
 

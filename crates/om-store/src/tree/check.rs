@@ -1,6 +1,7 @@
 //! Checking a whole version of a tree: every page read and checked, and the
 //! rules that span pages: keys in order and within their separators, no
-//! empty page below the root, every node's parent present and a list. What
+//! empty page below the root, no index root with one child, every node's
+//! parent present and a list. What
 //! a background check (`docs/server-storage.md` section 6.12) and the tests
 //! run.
 
@@ -108,6 +109,9 @@ impl<'a, 's, S: PageStore + ?Sized> Walk<'a, 's, S> {
             }
             PageKind::Index => {
                 self.report.index_pages += 1;
+                if root && page.count() == 1 {
+                    return Err(malformed(&page, "an index root with one child"));
+                }
                 let mut seps = Vec::with_capacity(page.count());
                 for c in 1..page.count() {
                     let separator = page.child(c).separator;

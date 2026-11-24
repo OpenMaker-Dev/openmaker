@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+use super::MAX_DEPTH;
+
 const ESCAPE: u8 = 0xff;
 const END: u8 = 0x01;
 
@@ -40,17 +42,22 @@ pub fn encoded_len<S: AsRef<[u8]>>(path: &[S]) -> usize {
         .sum()
 }
 
-/// Whether `bytes` are a whole key (`complete`), or the start of one.
+/// Whether `bytes` are a whole key (`complete`), or the start of one, of a
+/// path within [`MAX_DEPTH`] segments.
 pub(crate) fn well_formed(bytes: &[u8], complete: bool) -> bool {
     let mut i = 0;
     let mut boundary = true;
+    let mut segments = 0;
     while i < bytes.len() {
         if bytes[i] == 0 {
             match bytes.get(i + 1) {
                 Some(&ESCAPE) => boundary = false,
-                Some(&END) => boundary = true,
+                Some(&END) => {
+                    boundary = true;
+                    segments += 1;
+                }
                 Some(_) => return false,
-                None => return !complete,
+                None => return !complete && segments < MAX_DEPTH,
             }
             i += 2;
         } else {
@@ -58,7 +65,12 @@ pub(crate) fn well_formed(bytes: &[u8], complete: bool) -> bool {
             i += 1;
         }
     }
-    !complete || (boundary && !bytes.is_empty())
+    if complete {
+        boundary && segments > 0 && segments <= MAX_DEPTH
+    } else {
+        // More of the key follows, so at least one more segment.
+        segments < MAX_DEPTH
+    }
 }
 
 /// Where the segment that starts at `from` in `key` ends, its terminator
@@ -218,5 +230,11 @@ mod tests {
         assert!(!well_formed(b"a\x00", true));
         assert!(!well_formed(b"", true));
         assert!(decode(b"a\x00\x05").is_none());
+        // At most 64 segments, whole or begun.
+        let deepest = b"\x00\x01".repeat(MAX_DEPTH);
+        assert!(well_formed(&deepest, true));
+        assert!(!well_formed(&b"\x00\x01".repeat(MAX_DEPTH + 1), true));
+        assert!(!well_formed(&deepest, false));
+        assert!(well_formed(&b"\x00\x01".repeat(MAX_DEPTH - 1), false));
     }
 }

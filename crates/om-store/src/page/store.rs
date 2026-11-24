@@ -1,4 +1,5 @@
-//! What the trees need from below: the page store.
+//! What the trees need from below: the page store, and the changes one entry
+//! makes to it.
 
 use std::fmt;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ pub enum Release {
     Dropped,
 }
 
-/// The page store could not allocate or take a page.
+/// The page store could not allocate, take or commit a page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StoreError {
     /// No space for another page.
@@ -47,68 +48,88 @@ impl std::error::Error for StoreError {}
 ///
 /// - **Reads are checked.** `read(number, hash)` returns the page built by
 ///   [`Page::verify`] from the bytes stored at `number`, with `hash` as the
-///   expected hash, or a page this store was handed by `write` under that
-///   number and hash. The tree checks the number and hash of what it gets,
-///   and a [`Page`] cannot be made any other way, so a store cannot hand the
-///   tree unchecked bytes. A failure is reported as the [`Fault`] found.
+///   expected hash, or a page committed under that number and hash (below).
+///   The tree checks the number and hash of what it gets, and a [`Page`]
+///   cannot be made any other way, so a store cannot hand the tree
+///   unchecked bytes. A failure is reported as the [`Fault`] found.
 /// - **Caching by number and hash.** A cache of pages must be keyed by both,
 ///   so that a number that was freed and reused never answers for the page
-///   that was there before (section 6.4). Published pages never change, so a
+///   that was there before (section 6.4). Committed pages never change, so a
 ///   cache never invalidates anything.
-/// - **Pages stay while reached.** A page handed to `write` stays readable
-///   under its number and hash for as long as any version, view,
-///   checkpoint, restore point, clone or state copy in progress reaches it.
-///   Until a checkpoint writes it to disk it is kept in memory (section
-///   6.5), so `write` does no I/O on the commit path.
-/// - **Numbers are the store's own.** `allocate` returns a number that no
-///   reachable page uses. Nothing the tree computes depends on numbers:
-///   page hashes leave them out, so two stores that number pages
-///   differently hold trees with the same root hashes.
-/// - **Releases.** After an entry's new pages are written, the tree calls
-///   `release` for every page the version it started from reached and the
-///   new version does not, each once, a page before the pages it refers to.
-///   [`Release`] says whether what the page refers to is still reached.
-///   The store frees a page only when nothing reaches it any more. A store
-///   that shares pages between trees (clones, section 6.8) counts the trees
-///   that reach each page; on [`Release::Copied`] of a page that another
-///   tree still reaches, the copy shares the page's references, so the
-///   store raises their counts (Rodeh's method), learning them from
-///   [`Page::references`].
-/// - **Failures.** An error from `allocate`, `write` or `release` ends the
-///   entry's application with that error. Pages written before it are
-///   reached by no root, and the store reclaims them.
+/// - **Changes come in entries.** Everything the tree changes in the store
+///   for one entry goes through one [`EntryPages`] that `begin` returns, and
+///   takes effect at once when it is committed, or not at all
+///   ([`EntryPages`] says how).
+/// - **Pages stay while reached.** A committed page stays readable under its
+///   number and hash for as long as any version, view, checkpoint, restore
+///   point, clone or state copy in progress reaches it. Until a checkpoint
+///   writes it to disk it is kept in memory (section 6.5), so nothing on
+///   the commit path does I/O.
+/// - **Numbers are the store's own.** Nothing the tree computes depends on
+///   page numbers: page hashes leave them out, so two stores that number
+///   pages differently hold trees with the same root hashes.
 ///
-/// Every method takes `&self`: a store shared between the writer and
-/// readers synchronizes itself.
+/// `read` and `begin` take `&self`: a store shared between a file's writer
+/// and its readers synchronizes itself, and readers see only committed
+/// pages.
 pub trait PageStore {
+    /// The changes of one entry, open until committed or dropped.
+    type Entry<'a>: EntryPages
+    where
+        Self: 'a;
+
     /// The page at `number`, checked against `hash`, the hash its parent (or
     /// the superblock) holds for it.
     fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault>;
 
-    /// A number for a new page.
-    fn allocate(&self) -> Result<PageNo, StoreError>;
-
-    /// A new page, under the number `allocate` gave for it.
-    fn write(&self, page: Arc<Page>) -> Result<(), StoreError>;
-
-    /// The version being built no longer reaches page `number`.
-    fn release(&self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError>;
+    /// Opens the changes of one entry to one tree. The tree calls it only
+    /// once the entry's edits have all been applied to its working copy, so
+    /// that nothing before it can fail half way.
+    fn begin(&self) -> Result<Self::Entry<'_>, StoreError>;
 }
 
-impl<S: PageStore + ?Sized> PageStore for &S {
-    fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
-        (**self).read(number, hash)
-    }
+/// The changes one entry makes to the page store: the pages it writes and the
+/// pages the new version no longer reaches. Nothing of them is visible to
+/// readers or counted in the store's space until [`EntryPages::commit`].
+///
+/// - **Allocating.** `allocate` returns a number that no committed page uses
+///   and no other open entry holds, and holds it for this entry.
+/// - **Writing.** `write` takes a new page under a number this entry
+///   allocated. The page is kept as given: no copy and no hash is needed
+///   (the tree has hashed it).
+/// - **Releasing.** `release` records that the version being built no longer
+///   reaches a page the version it started from reached. The tree releases
+///   every such page once, a page before the pages it refers to, and
+///   [`Release`] says whether what the page refers to is still reached. A
+///   store that shares pages between trees (clones, section 6.8) counts the
+///   trees that reach each page; on [`Release::Copied`] of a page that
+///   another tree still reaches, the copy shares the page's references, so
+///   the store raises their counts (Rodeh's method), learning them from
+///   [`Page::references`]. A page is freed only when nothing reaches it
+///   (section 6.7).
+/// - **Committing.** `commit` makes all of it take effect together: the
+///   written pages become readable and reached, the releases are applied
+///   in the order given, and numbers allocated and not written are given
+///   back. If `commit` returns an error, none of it took effect, as if the
+///   entry had been dropped.
+/// - **Dropping.** Dropped without a commit, the entry has had no effect:
+///   every number it allocated is free again, its pages are gone and its
+///   releases forgotten. An `apply` that fails drops its entry, so the
+///   same entry can be applied again to the same root, or abandoned.
+///
+/// The space an entry may need is reserved before the entry is appended
+/// (section 6.5), so a store can make `allocate` and `commit` succeed for
+/// an entry it has reserved for.
+pub trait EntryPages {
+    /// A number for a new page.
+    fn allocate(&mut self) -> Result<PageNo, StoreError>;
 
-    fn allocate(&self) -> Result<PageNo, StoreError> {
-        (**self).allocate()
-    }
+    /// A new page, under a number `allocate` gave this entry.
+    fn write(&mut self, page: Arc<Page>) -> Result<(), StoreError>;
 
-    fn write(&self, page: Arc<Page>) -> Result<(), StoreError> {
-        (**self).write(page)
-    }
+    /// The version being built no longer reaches page `number`.
+    fn release(&mut self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError>;
 
-    fn release(&self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
-        (**self).release(number, hash, how)
-    }
+    /// Makes the entry's changes take effect, all together.
+    fn commit(self) -> Result<(), StoreError>;
 }

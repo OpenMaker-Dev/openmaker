@@ -9,8 +9,8 @@
 mod memory;
 mod store;
 
-pub use memory::{MemStore, Numbering};
-pub use store::{PageStore, Release, StoreError};
+pub use memory::{MemEntry, MemStore, Numbering};
+pub use store::{EntryPages, PageStore, Release, StoreError};
 
 use std::fmt;
 
@@ -867,6 +867,38 @@ mod tests {
         assert_eq!(
             Page::verify(12, &over.hash(), leaf.bytes().into()).unwrap_err(),
             Fault::Stale { found: leaf.hash() }
+        );
+    }
+
+    /// Review of #697: a stored key deeper than 64 segments is malformed,
+    /// whether the page holds it whole or only its start.
+    #[test]
+    fn a_stored_key_beyond_the_depth_bound_is_malformed() {
+        let segments = |n: usize| b"\x00\x01".repeat(n);
+        let leaf = |key: &[u8], value_len: usize| {
+            let mut builder = Builder::new(PageKind::Leaf, 0, 1);
+            let mut inline = key.to_vec();
+            inline.resize(key.len() + value_len, 0x33);
+            let (inline, refs) = match item_inline(key.len(), value_len) {
+                Some(n) => (&inline[..n], vec![(5, Hash([9; 32]))]),
+                None => (&inline[..], vec![]),
+            };
+            builder.item(KIND_VALUE, key.len(), value_len, inline, &refs);
+            builder.finish(1)
+        };
+        assert!(leaf(&segments(64), 1).is_ok());
+        assert_eq!(
+            leaf(&segments(65), 1).unwrap_err(),
+            Fault::Malformed("a key that is not an encoded path")
+        );
+        // A spilled item whose page holds 64 whole segments and more.
+        assert!(leaf(&segments(64), 5000).is_ok());
+        let mut deep = segments(64);
+        deep.extend(b"x".repeat(2000));
+        deep.extend(b"\x00\x01");
+        assert_eq!(
+            leaf(&deep, 10).unwrap_err(),
+            Fault::Malformed("a key that is not an encoded path")
         );
     }
 

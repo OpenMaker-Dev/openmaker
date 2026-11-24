@@ -485,6 +485,11 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             if inside {
                 return Ok(true);
             }
+            if page.level() == 1 {
+                // A leaf that holds part of the range and was written after
+                // `entry`: counted as a change, unread (format section 2.8).
+                return Ok(true);
+            }
             let child = self.pages.child(page, c)?;
             if self.changed_in(
                 &child,
@@ -615,12 +620,13 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         }
     }
 
-    fn current(&self) -> Result<Option<Item>> {
+    /// The item the cursor is at, if it is within the far bound. Reads no
+    /// more of the item than the comparison with the bound needs.
+    fn within(&self) -> Result<Option<(Arc<Page>, usize)>> {
         let Some((leaf, i)) = self.stack.last() else {
             return Ok(None);
         };
         let pages = &self.tree.pages;
-        // Stop at the far bound.
         let within = match (self.direction, &self.hi, &self.lo) {
             (Direction::Forward, Bound::Included(k), _) => {
                 pages.cmp_item(leaf, *i, k)? != Ordering::Greater
@@ -636,13 +642,27 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             }
             _ => true,
         };
-        if !within {
-            return Ok(None);
+        Ok(within.then(|| (leaf.clone(), *i)))
+    }
+
+    /// Moves to the next item within the bounds and returns its leaf and
+    /// place, without reading its value.
+    fn step(&mut self) -> Result<Option<(Arc<Page>, usize)>> {
+        let moved = match self.state {
+            State::Done => return Ok(None),
+            State::Start => self.position(),
+            State::Running => self.advance(),
+        };
+        self.state = State::Running;
+        let at = match moved {
+            Ok(true) => self.within(),
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        };
+        if !matches!(at, Ok(Some(_))) {
+            self.state = State::Done;
         }
-        Ok(Some(Item {
-            key: Key(pages.item_key(leaf, *i)?),
-            node: pages.item_node(leaf, *i)?,
-        }))
+        at
     }
 
     /// The leaf the cursor is in, to name in an error.
@@ -657,28 +677,20 @@ impl<'t, 's, S: PageStore + ?Sized> Iterator for Cursor<'t, 's, S> {
     type Item = Result<Item>;
 
     fn next(&mut self) -> Option<Result<Item>> {
-        let moved = match self.state {
-            State::Done => return None,
-            State::Start => self.position(),
-            State::Running => self.advance(),
-        };
-        self.state = State::Running;
-        let item = match moved {
-            Ok(true) => self.current(),
-            Ok(false) => Ok(None),
-            Err(e) => Err(e),
-        };
-        match item {
-            Ok(Some(item)) => Some(Ok(item)),
-            Ok(None) => {
-                self.state = State::Done;
-                None
-            }
-            Err(e) => {
-                self.state = State::Done;
-                Some(Err(e))
-            }
+        let item = self.step().and_then(|at| {
+            at.map(|(leaf, i)| {
+                let pages = &self.tree.pages;
+                Ok(Item {
+                    key: Key(pages.item_key(&leaf, i)?),
+                    node: pages.item_node(&leaf, i)?,
+                })
+            })
+            .transpose()
+        });
+        if item.is_err() {
+            self.state = State::Done;
         }
+        item.transpose()
     }
 }
 
@@ -711,18 +723,32 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
         } else {
             self.tree.range(lower, bound, Direction::Backward)
         };
-        let Some(Item { key: found, node }) = cursor.next().transpose()? else {
+        // Only keys are read on the way: the node read is the child's own.
+        let Some((leaf, i)) = cursor.step()? else {
             return Ok(None);
         };
         let orphan = || {
             let (page, hash) = cursor.leaf().unwrap_or_default();
             fault(page, hash, Fault::Malformed("a node without its parent"))
         };
-        let k = found.as_bytes();
-        let child_end = key::segment_end(k, self.prefix.len()).ok_or_else(orphan)?;
+        let pages = &self.tree.pages;
+        let item = leaf.item(i);
+        let (part, _) = item.key_part();
+        // Where the child's segment ends. The page holds it unless the
+        // child's own key is longer than the part of a spilled key a page
+        // holds; only then is the found key read in full.
+        let full;
+        let (k, child_end) = match key::segment_end(part, self.prefix.len()) {
+            Some(end) => (part, end),
+            None => {
+                full = pages.item_key(&leaf, i)?;
+                let end = key::segment_end(&full, self.prefix.len()).ok_or_else(orphan)?;
+                (full.as_slice(), end)
+            }
+        };
         let child_key = &k[..child_end];
-        let node = if child_end == k.len() {
-            node
+        let node = if child_end == item.key_len {
+            pages.item_node(&leaf, i)?
         } else if forward {
             // The child sorts before everything under it.
             return Err(orphan());

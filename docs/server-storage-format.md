@@ -50,7 +50,10 @@ bound):
 | level of an index page | at most 40 |
 
 The first two are the 64 KiB of server-storage.md section 6.11, taken as
-the largest a 16-bit length holds. The depth bound is the store's own: an
+the largest a 16-bit length holds, so a page cannot state more. Pages are
+held to the others when read: a key of more than 64 segments, whether its
+page holds it whole or only its start, or an index page above level 40,
+is malformed (2.6). The depth bound is the store's own: an
 edit creates its missing ancestors (2.6), each a prefix of its path, so
 without it one 64 KiB path of empty segments would create 32,767 items
 totalling about 1 GiB of keys. With it, one edit creates at most 64 items
@@ -122,11 +125,14 @@ A child entry's footprint is 48 bytes (hash, stamp and number), plus the
 separator's `2 + L` or `2 + 1024 + 40n`.
 
 Child `i` holds the keys from its separator (child 0: from its parent's
-lower bound) up to the next child's separator. A separator is the
-shortest key that separates the child from the one before when the
-boundary between them was made (2.7): the first key of the right side,
-cut just after the first byte where it differs from the last key of the
-left side. It need not be a whole key, and can end inside a segment.
+lower bound) up to the next child's separator. A separator made by a
+leaf split (2.7) is the shortest prefix of the right side's first key `r`
+that is above the left side's last key `l`: `r` cut just after the first
+byte where the two differ, or, when `l` is a proper prefix of `r`, just
+after the byte of `r` that follows `l` (`l` = `7a 00 01`, `r` =
+`7a 00 01 61 00 01` gives `7a 00 01 61`). It need not be a whole key, and
+can end inside a segment. Separators of index pages are not made: they
+move up from a split or down into a join (2.7).
 
 An overflow page holds `count` data bytes after its header and refers to
 no page. The overflow pages of an item or separator hold the bytes after
@@ -192,99 +198,144 @@ find is *missing*. Nothing is allocated by a size the bytes give before
 it is checked against the page size or the bounds, and no read recurses
 deeper than the tree's levels.
 
-**Writing.** An entry applies its edits (2.7) to a working copy of the
-pages it reaches. At its end every page it changed is written once,
-children before parents, each stamped with the entry's index, and the
-root is always among them: an entry that changes anything writes a new
-root, and one that changes nothing writes nothing and keeps the root. An
-item kept from an older page keeps its overflow pages, and so does a
-separator. An entry's index must be above the last entry that changed
-the tree (the root page's), so stamps only grow.
+A read touches only the pages on the way to what it returns: a lookup,
+range or walk the pages from the root to the items it returns and those
+items' overflow pages; a listing of children the keys of the items it
+passes and the children's own values; "changed since" index pages only
+(2.8). One exception: comparing with a key or separator longer than the
+1,024 bytes its page holds reads its overflow pages when those bytes do
+not decide.
 
-After writing, the tree tells the page store every page the old version
-reached and the new one does not: replaced by a copy, or dropped with
-everything under it (`om_store::page::PageStore`). The page store's
-guarantees, including what clones need, are in that trait's
-documentation.
+**Writing.** An entry applies its edits (2.7) to a working copy of the
+pages it reaches, reading the store and changing nothing in it. Then, in
+one entry of the page store (`om_store::page::EntryPages`), it writes
+every page of the working copy, children before parents, each stamped
+with the entry's index, releases every page the old version reached and
+the new one does not (replaced by a copy, or dropped with everything
+under it), and commits. A failure at any point leaves the store as it
+was, so the entry can be applied again. An entry that changes nothing
+writes nothing and keeps the root. An entry's index must be above the
+last entry that changed the tree (the root page's), so stamps only grow.
+The page store's guarantees, including what clones need, are in the
+documentation of `PageStore` and `EntryPages`.
 
 ### 2.7 The shape rules
 
 The shape of a tree, and so its root hash, is a function of the sequence
 of edits it was given, entry by entry, and of nothing else: not page
-numbers, timing, what is cached, or the order of a hash map.
+numbers, timing, what is cached, or the order of a hash map. The rules
+below fix the shape, which pages an entry copies (so which carry its
+stamp), and which overflow pages are kept.
+
+Terms: a node *fits* when its footprint (2.3, 2.4) is at most 16,344
+bytes. A node is *underfull* below a quarter of that, 4,086 bytes. A
+node *shrank* in a primitive when its footprint after the primitive (and
+the fixes below it) is smaller than before. A *unit* is an item of a
+leaf or a child entry of an index page. The child of an index page for a
+key is the child whose range holds it: the number of separators at or
+below the key.
 
 **Edits.** An entry's edits are applied in order, each as primitives:
 
-- *Put a node* at a path: for each proper ancestor, shallowest first, a
-  missing one is set as an empty list, and one that holds a value is
-  changed to hold both (as `om_hbam::OwnedNode::put` does); then the keys
-  strictly under the path, `(k, k')`, are deleted; then the node is set,
-  unless it is already exactly that node.
-- *Delete a subtree*: the keys `[k, k')` are deleted; for the root, every
-  key.
+- *Put a node* at a path with key `k`: for each proper ancestor,
+  shallowest first, a missing one is set as an empty list (kind 1, no
+  value), and one that holds a value is changed to hold both (kind 3,
+  same value), as `om_hbam::OwnedNode::put` does; then the range
+  `[k 00, k')` is deleted (`k 00`: `k` followed by one zero byte; the keys
+  strictly under the path); then the node is set, unless the item with key
+  `k` already has that kind and value.
+- *Delete a subtree* at a path with key `k`: the range `[k, k')` is
+  deleted; for the root, every key.
 
-A primitive that would change nothing (setting an item to what it is,
-deleting a range with no keys) is skipped and touches no page. The shape
-after a primitive is a function of the shape before it and the primitive.
+A primitive that would change nothing is skipped and touches no page:
+setting an item that already exists with that kind and value, or
+deleting a range that holds no key. The shape after a primitive is a
+function of the shape before it and the primitive.
 
-**Set an item.** Descend from the root, at each index page to the child
-whose range holds the key (the number of separators at or below the key).
-Insert the item in its leaf, or replace the item with that key. Then fix
-the path bottom-up: at each level, the child just changed is split if it
-no longer fits, or, if its footprint shrank in this primitive to below a
-quarter of 16,344 bytes (4,086), joined with a sibling. Then the root rule.
+**Copies and stamps.** A page is copied into the working copy when a set
+or a kind change goes through it (from the root to the leaf), when a
+delete goes into it (the root, and each child it goes into), when it is
+one side of a join, and when a delete's last step (below) goes through
+it. Pages read only to decide something (whether a primitive changes
+anything, what a root's only child is) are not copied. At the end of an
+entry that changed anything the root is copied if it is not already. The
+pages written are the copies, and the new pages splits and joins make,
+still in the tree at the end of the entry; each carries the entry's
+index.
 
-**Delete a range** `[lo, hi)`. Starting at the root, in each index page:
-the child `i` whose range holds `lo` and the last child `j` whose range
-starts below `hi`. Children strictly between them are removed whole,
-unread, with their separators; child `i`'s range then reaches to child
-`j`'s separator. Then the primitive goes into child `i` if it holds keys in
-the range, and into child `j` (when `j > i`) if it does. In a leaf, the
-keys in the range are removed. On the way back, child `i` is fixed, then
-child `j` unless fixing `i` took it in; each is split or joined by the
-rules above. Then the root rule. Last, the paths from the root to the
-leaves whose ranges hold the first and the last deleted key are copied, so
-that the pages covering the deleted keys' places carry the entry's stamp
-(2.8).
+**Overflow pages.** An item set by a primitive is written anew, and if it
+spills its overflow pages are new pages stamped with the entry. Every
+other item keeps the overflow pages it has, through copies, splits,
+joins and a change of kind. A separator made by a leaf split is new, and
+gets new overflow pages if it spills; a separator that moves up or down
+keeps its own.
 
-**Split.** A node that does not fit is split before unit `s` (an item, or
-a child entry) and each side split again in the same way, without a hint,
-until every part fits:
+**Set an item.** Descend from the root to the leaf, at each index page to
+the child for the key. Insert the item in its leaf, or replace the item
+with that key (a kind change only changes the kind). Then fix the path
+bottom-up, each index page fixing the child the primitive went through
+(below), then the root rule.
 
-- when the primitive changed unit `h` of the node (the item it set, or the
-  first child a split below it added), and the units before `h` take at
-  least seven eighths of 16,344 bytes (14,301) while both sides fit, `s`
-  is `h`. Items appended in key order therefore fill their pages;
+**Fixing a child.** A child that does not fit is split. Otherwise, if it
+shrank and is underfull or empty: when its parent has another child, it
+is joined with a sibling; when it is empty and its parent's only child,
+it is removed (and the parent is then empty); an underfull only child is
+left as it is.
+
+**Delete a range** `[lo, hi)`. Before it, note the first and the last key
+in the range. Starting at the root, in each index page: the child `i` for
+`lo`, and the last child `j` whose range starts below `hi` (the number of
+separators below `hi`; the last child when the range has no end).
+Children strictly between them are removed whole, unread, with their
+separators; child `j` keeps its separator, so child `i`'s range reaches
+to it. Then the primitive goes into child `i` if it holds a key in the
+range, and into child `j` (when `j > i`) if it does. In a leaf, the keys
+in the range are removed. On the way back, child `i` is fixed if the
+primitive went into it, then child `j` likewise unless fixing `i` took it
+in. Then the root rule. Last, the paths from the root to the leaves for
+the first and the last key noted are copied, so that the pages covering
+the deleted keys' places carry the entry's stamp (2.8).
+
+**Split.** A node of `n` units that does not fit is split before unit
+`s`, `1 <= s < n`, and each side is split again in the same way, left
+side first and without a hint, until every part fits:
+
+- the *hint* `h` exists only in a set: in the leaf, the place of the item
+  set; in an index page, the place of the first new child when fixing the
+  changed child split it, and no hint otherwise; the root takes its own.
+  When there is a hint, `1 <= h < n`, the units before `h` take at least
+  seven eighths of 16,344 bytes (14,301), and both sides fit, `s` is `h`.
+  Items appended in key order therefore fill their pages;
 - otherwise `s` is where the two sides' footprints are nearest equal, the
-  first such place on a tie.
+  smallest such `s` on a tie.
 
 The footprints of an index page's sides count each child entry, and the
 separators of every child but each side's first; the separator of child
-`s` moves up to the parent as the new part's separator. A leaf's new part
-gets the shortest separator between the last key on its left and its own
-first key.
+`s` moves up to the parent as the separator of the right side. A leaf's
+right side gets a new separator, made from the last key on its left and
+its own first key (2.4).
 
 **Join.** A child is joined with its right sibling, or with its left one
-when it is the last. Two leaves join by concatenating their items, and the
-separator between them goes. Two index pages join with that separator
-between their children, unless one of them is empty, when the other is
-the result. A joined node that does not fit is split at its middle (no
-hint). A joined node that is empty is joined again, or removed when it is
-its parent's only child, so that no page below the root is ever empty.
+when it is the last. Two leaves join by concatenating their items, and
+the separator between them goes. Two index pages join with that
+separator moved down between their children, unless one of them has no
+children, when the other is the result and the separator goes. A joined
+node that does not fit is split, without a hint. A joined node that is
+empty is joined again with its new sibling, or removed when it is its
+parent's only child, so no page below the root is ever empty.
 
-**Root rule.** After each primitive: a root that does not fit is split,
-and its parts become the children of a new root one level up (with the
-primitive's hint); an index root with no child becomes an empty leaf; an
-index root with one child is replaced by that child, as often as that
-applies. An empty tree is one empty leaf.
+**Root rule.** After each primitive, repeatedly: a root that does not fit
+is split, with the primitive's hint, and its parts become the children
+of a new root one level up; an index root with no child becomes an empty
+leaf; an index root with one child is replaced by that child, whether or
+not the entry copied either of them. It stops at a leaf, or at an index
+root with more than one child that fits. An empty tree is one empty leaf.
 
 **Why it is deterministic.** Every choice above is a function of the
 tree's content (keys, values, kinds, separators, stamps and levels) and
 of the primitive. Page numbers are only used to read a page, never to
 choose anything; the working copy is kept in vectors in key order; and
-the code has no clock, randomness or hash map. The working copy at the end
-of an entry, and so the bytes of every page written, depends on which
-pages the entry copied, and that is fixed by the primitives too.
+the code has no clock, randomness or hash map.
 
 ### 2.8 Stamps and "changed since"
 
@@ -300,8 +351,9 @@ keys' places (2.7).
 `path` changed after entry `n`. It reads index pages only: at each level,
 of the children whose ranges overlap the subtree's range `[k, k')`, those
 stamped after `n` either lie wholly inside the range (the answer is yes),
-or are at one of the range's two ends and are looked into (index pages)
-or count as a change (leaves). It reads at most two pages per level.
+or are at one of the range's two ends, where an index page is looked into
+and a leaf counts as a change without being read. It reads at most two
+pages per level, and no leaf.
 
 The answer is never no when something changed. It can be yes when
 nothing under the path changed but another path in a leaf at one of the

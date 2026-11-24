@@ -1,11 +1,11 @@
 //! A page store in memory, for tests: it keeps every page it was given,
-//! numbers pages in one of two ways, and lets a test damage, swap or drop a
-//! stored page.
+//! numbers pages in one of two ways, lets a test damage, swap or drop a
+//! stored page, and can fail any one of its calls.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::{Fault, Hash, Page, PageNo, PageStore, Release, StoreError};
+use super::{EntryPages, Fault, Hash, Page, PageNo, PageStore, Release, StoreError};
 
 /// How a [`MemStore`] numbers new pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,10 +25,14 @@ struct Stored {
 
 struct Inner {
     pages: BTreeMap<PageNo, Stored>,
-    allocated: BTreeSet<PageNo>,
+    /// Numbers committed or held by an open entry.
+    taken: BTreeSet<PageNo>,
     counter: u64,
     released: Vec<(PageNo, Hash, Release)>,
     written: Vec<PageNo>,
+    /// Calls made so far, and the one to fail.
+    calls: u64,
+    fail_at: Option<u64>,
 }
 
 /// A [`PageStore`] in memory. Pages are never freed, so every root it was
@@ -40,6 +44,10 @@ pub struct MemStore {
     /// it wrote. Otherwise every page is checked from its bytes once.
     trusting: bool,
     inner: Mutex<Inner>,
+}
+
+fn injected() -> StoreError {
+    StoreError::Failed("a failure the test asked for".into())
 }
 
 impl MemStore {
@@ -60,10 +68,12 @@ impl MemStore {
             trusting,
             inner: Mutex::new(Inner {
                 pages: BTreeMap::new(),
-                allocated: BTreeSet::new(),
+                taken: BTreeSet::new(),
                 counter: 0,
                 released: Vec::new(),
                 written: Vec::new(),
+                calls: 0,
+                fail_at: None,
             }),
         }
     }
@@ -76,6 +86,11 @@ impl MemStore {
     /// The numbers of every stored page, in order.
     pub fn numbers(&self) -> Vec<PageNo> {
         self.lock().pages.keys().copied().collect()
+    }
+
+    /// The numbers committed or held by an open entry, in order.
+    pub fn taken(&self) -> Vec<PageNo> {
+        self.lock().taken.iter().copied().collect()
     }
 
     /// How many pages are stored.
@@ -99,7 +114,9 @@ impl MemStore {
             bytes: bytes.into(),
             page: None,
         };
-        self.lock().pages.insert(number, stored);
+        let mut inner = self.lock();
+        inner.pages.insert(number, stored);
+        inner.taken.insert(number);
     }
 
     /// XORs one stored byte with `mask`.
@@ -130,14 +147,51 @@ impl MemStore {
         self.lock().pages.remove(&number).is_some()
     }
 
-    /// The releases received since the last call, in order.
+    /// The releases committed so far, in order.
+    pub fn released(&self) -> Vec<(PageNo, Hash, Release)> {
+        self.lock().released.clone()
+    }
+
+    /// The numbers of the pages committed so far, in order.
+    pub fn written(&self) -> Vec<PageNo> {
+        self.lock().written.clone()
+    }
+
+    /// The releases committed since the last call, in order.
     pub fn take_released(&self) -> Vec<(PageNo, Hash, Release)> {
         std::mem::take(&mut self.lock().released)
     }
 
-    /// The numbers of the pages written since the last call, in order.
+    /// The numbers of the pages committed since the last call, in order.
     pub fn take_written(&self) -> Vec<PageNo> {
         std::mem::take(&mut self.lock().written)
+    }
+
+    /// How many calls the store has had: reads, and `begin`, `allocate`,
+    /// `write`, `release` and `commit`.
+    pub fn calls(&self) -> u64 {
+        self.lock().calls
+    }
+
+    /// Makes call number `n` from now (0 for the next) fail, once: a read
+    /// with [`Fault::Io`], anything else with [`StoreError::Failed`]. `None`
+    /// fails nothing.
+    pub fn fail_call(&self, n: Option<u64>) {
+        let mut inner = self.lock();
+        inner.fail_at = n.map(|n| inner.calls + n);
+    }
+}
+
+impl Inner {
+    /// Counts a call; true if it is the one to fail.
+    fn fails(&mut self) -> bool {
+        let n = self.calls;
+        self.calls += 1;
+        if self.fail_at == Some(n) {
+            self.fail_at = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -148,9 +202,28 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// The changes of one entry to a [`MemStore`].
+pub struct MemEntry<'a> {
+    store: &'a MemStore,
+    /// The store's counter when the entry began, and after its last
+    /// allocation, so that a dropped entry can give its numbers back to the
+    /// counter when nothing else allocated since.
+    counter_at_begin: u64,
+    counter_after: u64,
+    allocated: Vec<PageNo>,
+    pages: Vec<Arc<Page>>,
+    released: Vec<(PageNo, Hash, Release)>,
+    committed: bool,
+}
+
 impl PageStore for MemStore {
+    type Entry<'a> = MemEntry<'a>;
+
     fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
         let mut inner = self.lock();
+        if inner.fails() {
+            return Err(Fault::Io("a failure the test asked for".into()));
+        }
         let stored = inner.pages.get_mut(&number).ok_or(Fault::Missing)?;
         if let Some(page) = &stored.page {
             if page.hash() == *hash {
@@ -162,38 +235,100 @@ impl PageStore for MemStore {
         Ok(page)
     }
 
-    fn allocate(&self) -> Result<PageNo, StoreError> {
+    fn begin(&self) -> Result<MemEntry<'_>, StoreError> {
         let mut inner = self.lock();
+        if inner.fails() {
+            return Err(injected());
+        }
+        Ok(MemEntry {
+            store: self,
+            counter_at_begin: inner.counter,
+            counter_after: inner.counter,
+            allocated: Vec::new(),
+            pages: Vec::new(),
+            released: Vec::new(),
+            committed: false,
+        })
+    }
+}
+
+impl EntryPages for MemEntry<'_> {
+    fn allocate(&mut self) -> Result<PageNo, StoreError> {
+        let mut inner = self.store.lock();
+        if inner.fails() {
+            return Err(injected());
+        }
         inner.counter += 1;
-        let number = match self.numbering {
+        let number = match self.store.numbering {
             Numbering::Sequential => inner.counter,
             Numbering::Scattered(seed) => mix(inner.counter ^ seed),
         };
-        if !inner.allocated.insert(number) {
+        if !inner.taken.insert(number) {
             return Err(StoreError::Failed(format!("page {number} allocated twice")));
         }
+        self.counter_after = inner.counter;
+        self.allocated.push(number);
         Ok(number)
     }
 
-    fn write(&self, page: Arc<Page>) -> Result<(), StoreError> {
-        let mut inner = self.lock();
+    fn write(&mut self, page: Arc<Page>) -> Result<(), StoreError> {
+        if self.store.lock().fails() {
+            return Err(injected());
+        }
         let number = page.number();
-        if !inner.allocated.contains(&number) || inner.pages.contains_key(&number) {
+        if !self.allocated.contains(&number) || self.pages.iter().any(|p| p.number() == number) {
             return Err(StoreError::Failed(format!(
                 "page {number} written without being allocated, or twice"
             )));
         }
-        let stored = Stored {
-            bytes: page.bytes().into(),
-            page: self.trusting.then_some(page),
-        };
-        inner.pages.insert(number, stored);
-        inner.written.push(number);
+        self.pages.push(page);
         Ok(())
     }
 
-    fn release(&self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
-        self.lock().released.push((number, *hash, how));
+    fn release(&mut self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
+        if self.store.lock().fails() {
+            return Err(injected());
+        }
+        self.released.push((number, *hash, how));
         Ok(())
+    }
+
+    fn commit(mut self) -> Result<(), StoreError> {
+        let mut inner = self.store.lock();
+        if inner.fails() {
+            return Err(injected());
+        }
+        for page in self.pages.drain(..) {
+            let number = page.number();
+            let stored = Stored {
+                bytes: page.bytes().into(),
+                page: self.store.trusting.then_some(page),
+            };
+            inner.pages.insert(number, stored);
+            inner.written.push(number);
+        }
+        for number in &self.allocated {
+            if !inner.pages.contains_key(number) {
+                inner.taken.remove(number);
+            }
+        }
+        inner.released.append(&mut self.released);
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for MemEntry<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut inner = self.store.lock();
+        for number in &self.allocated {
+            inner.taken.remove(number);
+        }
+        if inner.counter == self.counter_after {
+            inner.counter = self.counter_at_begin;
+        }
     }
 }

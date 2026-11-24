@@ -1032,3 +1032,164 @@ fn appends_fill_their_pages() {
     let per_leaf = report.items as f64 / report.leaves as f64;
     assert!(per_leaf > 200.0, "{per_leaf:.0} items per leaf");
 }
+
+/// Review of #697: a root that collapses onto an index page the entry did
+/// not copy, which itself has one child, keeps collapsing down to a leaf.
+#[test]
+fn a_root_collapses_through_pages_the_entry_did_not_copy() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    let p = vec![0x42u8; 3600];
+    let mut last = p.clone();
+    last.push(0x43);
+    let mut edits: Vec<Edit> = (1..=99u8)
+        .map(|i| Edit::list(vec![p.clone(), vec![i]]))
+        .collect();
+    edits.push(Edit::list(vec![last.clone()]));
+    let root = apply(&store, root, 2, &edits).unwrap();
+    assert!(check(&store, root).unwrap().height >= 4);
+    let root = apply(&store, root, 3, &[Edit::delete(vec![p])]).unwrap();
+    let report = check(&store, root).unwrap();
+    assert_eq!((report.height, report.items), (1, 1));
+    assert_eq!(
+        Tree::open(&store, root).unwrap().get(&[last]).unwrap(),
+        Some(Node::List)
+    );
+    // The leaf with that one item, written by entry 3, as the reviewer
+    // computed it on its own.
+    assert!(root.hash.to_hex().starts_with("75309266"), "{}", root.hash);
+}
+
+/// Every overflow page a tree reaches.
+fn overflow_pages(store: &MemStore, root: Root) -> Vec<PageNo> {
+    check(store, root)
+        .unwrap()
+        .pages
+        .iter()
+        .filter(|(n, h)| store.read(*n, h).unwrap().kind() == om_store::page::PageKind::Overflow)
+        .map(|(n, _)| *n)
+        .collect()
+}
+
+/// Review of #697: listing a node's children reads no value but the
+/// children's own, in either direction.
+#[test]
+fn listing_children_reads_only_their_own_values() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    let edits = [Edit::leaf(
+        vec![b"a".to_vec(), b"b".to_vec()],
+        vec![7; 5000],
+    )];
+    let root = apply(&store, root, 2, &edits).unwrap();
+    let overflow = overflow_pages(&store, root);
+    assert_eq!(overflow.len(), 1);
+    store.remove(overflow[0]);
+    let tree = Tree::open(&store, root).unwrap();
+    for direction in [Direction::Forward, Direction::Backward] {
+        let kids: Vec<_> = tree
+            .children::<Vec<u8>>(&[], Bound::Unbounded, direction)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kids, vec![(b"a".to_vec(), Node::List)], "{direction:?}");
+    }
+    // The child's own value is read, and its loss is named.
+    let err = tree
+        .children(&[b"a".to_vec()], Bound::Unbounded, Direction::Backward)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_err();
+    assert!(matches!(err, Error::Page(f) if f.page == overflow[0] && f.fault == Fault::Missing));
+}
+
+/// Review of #697: "changed since" is answered from index pages; a leaf at
+/// an end of the range is not read.
+#[test]
+fn changed_since_reads_no_leaf() {
+    let store = MemStore::new(Numbering::Sequential);
+    let root = create(&store, 1).unwrap();
+    let edits: Vec<Edit> = (1..=5u8)
+        .map(|i| Edit::leaf(vec![vec![i]], vec![i; 3992]))
+        .collect();
+    let root = apply(&store, root, 2, &edits).unwrap();
+    let report = check(&store, root).unwrap();
+    assert_eq!(report.height, 2);
+    // The first leaf, after the root.
+    store.remove(report.pages[1].0);
+    let tree = Tree::open(&store, root).unwrap();
+    assert!(tree.changed_since(&[vec![1u8]], 1).unwrap());
+    assert!(!tree.changed_since(&[vec![1u8]], 2).unwrap());
+    assert!(tree.changed_since(&[vec![5u8]], 1).unwrap());
+}
+
+/// Review of #697: a store call that fails during an entry, whichever call it
+/// is, leaves the store as it was: the old root reads the same, no number
+/// stays taken, no page is added and no release applied. Applying the entry
+/// again then gives what an undisturbed store gives, down to page numbers
+/// and the release log.
+#[test]
+fn a_failed_entry_leaves_the_store_as_it_was() {
+    let p = |s: &[&[u8]]| s.iter().map(|s| s.to_vec()).collect::<Path>();
+    let record = |r: u32| vec![b"r".to_vec(), r.to_be_bytes().to_vec()];
+    let entries: Vec<Vec<Edit>> = vec![
+        // New leaves, a spilled value, missing ancestors.
+        vec![
+            Edit::leaf(p(&[b"a"]), vec![1; 10]),
+            Edit::leaf(p(&[b"b", b"c"]), vec![2; 9000]),
+        ],
+        // A replaced value; a value that comes to hold both.
+        vec![
+            Edit::leaf(p(&[b"a"]), vec![3; 20]),
+            Edit::leaf(p(&[b"a", b"x"]), vec![4]),
+        ],
+        // Splits and a new root level.
+        (0..40)
+            .map(|r| Edit::leaf(record(r), vec![r as u8; 3000]))
+            .collect(),
+        // A list over a subtree with a spilled value; a delete.
+        vec![Edit::list(p(&[b"b"])), Edit::delete(p(&[b"a", b"x"]))],
+        // Nothing changes.
+        vec![Edit::delete(p(&[b"none"]))],
+        // A range over many pages: joins, and the root collapses.
+        vec![Edit::delete(p(&[b"r"]))],
+    ];
+    let calm = MemStore::new(Numbering::Sequential);
+    let rough = MemStore::new(Numbering::Sequential);
+    let mut calm_root = create(&calm, 1).unwrap();
+    let mut rough_root = create(&rough, 1).unwrap();
+    let mut model = Model::default();
+    let state = |s: &MemStore| (s.numbers(), s.taken(), s.released(), s.written());
+    for (e, edits) in entries.iter().enumerate() {
+        let entry = e as u64 + 2;
+        let start = calm.calls();
+        let want = apply(&calm, calm_root, entry, edits).unwrap();
+        let calls = calm.calls() - start;
+        let listing = model.listing();
+        for n in 0..calls {
+            let before = state(&rough);
+            rough.fail_call(Some(n));
+            let result = apply(&rough, rough_root, entry, edits);
+            rough.fail_call(None);
+            assert!(
+                result.is_err(),
+                "entry {entry}: call {n} of {calls} failed unseen"
+            );
+            assert!(
+                state(&rough) == before,
+                "entry {entry}: call {n} left a trace"
+            );
+            let tree = Tree::open(&rough, rough_root).unwrap();
+            assert!(
+                walk_all(&tree).unwrap() == listing,
+                "entry {entry}: call {n}"
+            );
+        }
+        let got = apply(&rough, rough_root, entry, edits).unwrap();
+        assert_eq!(got, want, "entry {entry}");
+        assert!(state(&rough) == state(&calm), "entry {entry}");
+        for edit in edits {
+            model.apply(entry, edit);
+        }
+        calm_root = want;
+        rough_root = got;
+    }
+}

@@ -17,8 +17,9 @@ use super::key;
 use super::read::{Pages, Result};
 use super::{check_edits, fault, Edit, Error, Node, Root};
 use crate::page::{
-    self, Builder, Fault, Hash, Page, PageKind, PageNo, PageStore, Release, CHILD_FOOTPRINT,
-    KIND_BOTH, KIND_LIST, KIND_VALUE, MAX_LEVEL, OVERFLOW_DATA, SPILL_INLINE, USABLE,
+    self, Builder, EntryPages, Fault, Hash, Page, PageKind, PageNo, PageStore, Release,
+    CHILD_FOOTPRINT, KIND_BOTH, KIND_LIST, KIND_VALUE, MAX_LEVEL, OVERFLOW_DATA, SPILL_INLINE,
+    USABLE,
 };
 
 /// A node of a page whose footprint shrank below this is joined with a
@@ -30,7 +31,9 @@ const SPLIT_HIGH: usize = USABLE * 7 / 8;
 
 /// A tree with no nodes: one empty leaf, written by entry `entry`.
 pub fn create<S: PageStore + ?Sized>(store: &S, entry: u64) -> Result<Root> {
-    let r = write_page(store, Builder::new(PageKind::Leaf, 0, entry))?;
+    let mut out = store.begin()?;
+    let r = write_page(&mut out, Builder::new(PageKind::Leaf, 0, entry))?;
+    out.commit()?;
     Ok(Root {
         page: r.page,
         hash: r.hash,
@@ -45,6 +48,11 @@ pub fn create<S: PageStore + ?Sized>(store: &S, entry: u64) -> Result<Root> {
 /// Every edit is checked against the store's bounds before anything is
 /// done ([`check_edits`]). `entry` must be above the index of the last entry
 /// that changed the tree.
+///
+/// The store sees only reads until every edit has been applied to the
+/// working copy; then the new pages and the releases go to one
+/// [`EntryPages`], committed last. An error at any point leaves the store as
+/// it was ([`EntryPages`]), so the entry can be applied again.
 pub fn apply<S: PageStore + ?Sized>(
     store: &S,
     root: Root,
@@ -62,7 +70,6 @@ pub fn apply<S: PageStore + ?Sized>(
     }
     let mut cx = Cx {
         pages,
-        entry,
         released: Vec::new(),
         changed: false,
     };
@@ -90,10 +97,12 @@ pub fn apply<S: PageStore + ?Sized>(
     }
     // Every entry that changes the tree rewrites its root.
     materialize(&mut cx, &mut tree.slot, tree.level)?;
-    let new = write_slot(&mut cx, tree.slot, tree.level)?;
+    let mut out = store.begin()?;
+    let new = write_slot(entry, &mut out, tree.slot, tree.level)?;
     for (number, hash, how) in &cx.released {
-        store.release(*number, hash, *how)?;
+        out.release(*number, hash, *how)?;
     }
+    out.commit()?;
     Ok(Root {
         page: new.page,
         hash: new.hash,
@@ -103,7 +112,6 @@ pub fn apply<S: PageStore + ?Sized>(
 /// What the entry being applied carries along.
 struct Cx<'s, S: ?Sized> {
     pages: Pages<'s, S>,
-    entry: u64,
     /// Pages the new version no longer reaches, in the order found: a page
     /// before what it refers to.
     released: Vec<(PageNo, Hash, Release)>,
@@ -550,18 +558,20 @@ impl Op {
     }
 }
 
-/// What a primitive did to a node, for its parent: the position of the
-/// unit it changed, and whether the node's footprint shrank.
+/// What a primitive did to a node, for its parent: the hint for a split
+/// (format section 2.7: in a leaf, the item a set changed; in an index node,
+/// the first child a split of its changed child added; none otherwise), and
+/// whether the node's footprint shrank.
 #[derive(Clone, Copy)]
 struct Change {
-    hint: usize,
+    hint: Option<usize>,
     shrank: bool,
 }
 
 fn set<S: PageStore + ?Sized>(cx: &mut Cx<'_, S>, tree: &mut Work, op: Op) -> Result<()> {
     cx.changed = true;
     let change = set_in(cx, &mut tree.slot, tree.level, op)?;
-    fix_root(tree, Some(change.hint))
+    fix_root(cx, tree, change.hint)
 }
 
 fn set_in<S: PageStore + ?Sized>(
@@ -594,7 +604,10 @@ fn set_in<S: PageStore + ?Sized>(
                 }
                 (Op::Both(_), _) => return Err(internal("no value to keep")),
             };
-            Ok(Change { hint, shrank })
+            Ok(Change {
+                hint: Some(hint),
+                shrank,
+            })
         }
         WNode::Index(ix) => {
             let before = ix.footprint();
@@ -605,7 +618,7 @@ fn set_in<S: PageStore + ?Sized>(
             let change = set_in(cx, &mut ix.children[c], level - 1, op)?;
             let fixed = fix_child(cx, ix, c, change)?;
             Ok(Change {
-                hint: fixed.hint(),
+                hint: fixed.split_hint(),
                 shrank: ix.footprint() < before,
             })
         }
@@ -629,7 +642,7 @@ fn delete<S: PageStore + ?Sized>(
     let last = last_before(cx, &tree.slot, tree.level, hi)?.unwrap_or_else(|| first.clone());
     cx.changed = true;
     delete_in(cx, &mut tree.slot, tree.level, lo, hi)?;
-    fix_root(tree, None)?;
+    fix_root(cx, tree, None)?;
     // The deleted keys' places now belong to the leaves around them, which
     // may be pages this primitive did not otherwise touch: they are
     // rewritten so that their stamps cover the deletion (format section
@@ -658,7 +671,7 @@ fn delete_in<S: PageStore + ?Sized>(
                 drop_value(cx, &item.value);
             }
             Ok(Change {
-                hint: start,
+                hint: None,
                 shrank: end > start,
             })
         }
@@ -692,7 +705,6 @@ fn delete_in<S: PageStore + ?Sized>(
             }
             // Fix the changed children left to right. Fixing the left one
             // can take in the right one.
-            let mut hint = i;
             let mut done: Option<Fixed> = None;
             for (c, change) in changed {
                 let c = match &done {
@@ -700,12 +712,10 @@ fn delete_in<S: PageStore + ?Sized>(
                     Some(f) if c >= f.start => continue,
                     _ => c,
                 };
-                let fixed = fix_child(cx, ix, c, change)?;
-                hint = fixed.hint();
-                done = Some(fixed);
+                done = Some(fix_child(cx, ix, c, change)?);
             }
             Ok(Change {
-                hint,
+                hint: None,
                 shrank: ix.footprint() < before,
             })
         }
@@ -742,13 +752,9 @@ struct Fixed {
 }
 
 impl Fixed {
-    /// Where the parent's change is: its first new child, if it gained any.
-    fn hint(&self) -> usize {
-        if self.new > self.old {
-            self.start + 1
-        } else {
-            self.start
-        }
+    /// The first new child, when the fix split the changed child.
+    fn split_hint(&self) -> Option<usize> {
+        (self.old == 1 && self.new > 1).then_some(self.start + 1)
     }
 }
 
@@ -772,7 +778,7 @@ fn fix_child<S: PageStore + ?Sized>(
     let footprint = child.footprint();
     if footprint > USABLE {
         let node = std::mem::replace(child, WNode::Leaf(WLeaf::new(Vec::new())));
-        let parts = split(node, Some(change.hint))?;
+        let parts = split(node, change.hint)?;
         let new = parts.len();
         replace(ix, c, 1, parts);
         return Ok(Fixed {
@@ -1006,10 +1012,35 @@ fn shortest_separator(left: &[u8], right: &[u8]) -> Vec<u8> {
 /// After a primitive: a root over capacity is split under a new root; an
 /// index root with one child is replaced by that child, and one with none
 /// by an empty leaf.
-fn fix_root(tree: &mut Work, hint: Option<usize>) -> Result<()> {
+fn fix_root<S: PageStore + ?Sized>(
+    cx: &mut Cx<'_, S>,
+    tree: &mut Work,
+    hint: Option<usize>,
+) -> Result<()> {
     loop {
-        let Slot::Dirty(node) = &mut tree.slot else {
-            return Ok(());
+        let node = match &mut tree.slot {
+            Slot::Dirty(node) => node,
+            // A root the entry has not copied gives way to its only child
+            // too: read it, and promote the child without copying either.
+            Slot::Clean(r) => {
+                if tree.level == 0 {
+                    return Ok(());
+                }
+                let r = *r;
+                let page = cx.pages.at(r.page, r.hash, r.stamp, tree.level)?;
+                if page.count() != 1 {
+                    return Ok(());
+                }
+                let child = page.child(0);
+                cx.released.push((r.page, r.hash, Release::Copied));
+                tree.slot = Slot::Clean(ChildRef {
+                    page: child.number,
+                    hash: child.hash,
+                    stamp: child.stamp,
+                });
+                tree.level -= 1;
+                continue;
+            }
         };
         if node.footprint() > USABLE {
             if tree.level >= MAX_LEVEL {
@@ -1042,8 +1073,8 @@ fn fix_root(tree: &mut Work, hint: Option<usize>) -> Result<()> {
 
 // Writing the new pages.
 
-fn write_page<S: PageStore + ?Sized>(store: &S, builder: Builder) -> Result<ChildRef> {
-    let number = store.allocate()?;
+fn write_page<E: EntryPages>(out: &mut E, builder: Builder) -> Result<ChildRef> {
+    let number = out.allocate()?;
     let page = builder
         .finish(number)
         .map_err(|f| fault(number, Hash::default(), f))?;
@@ -1052,37 +1083,36 @@ fn write_page<S: PageStore + ?Sized>(store: &S, builder: Builder) -> Result<Chil
         hash: page.hash(),
         stamp: page.written(),
     };
-    store.write(Arc::new(page))?;
+    out.write(Arc::new(page))?;
     Ok(r)
 }
 
 /// Writes `stream[SPILL_INLINE..]` to new overflow pages.
-fn write_overflow<S: PageStore + ?Sized>(
-    cx: &Cx<'_, S>,
+fn write_overflow<E: EntryPages>(
+    entry: u64,
+    out: &mut E,
     stream: &[u8],
 ) -> Result<Vec<(PageNo, Hash)>> {
     let mut refs = Vec::new();
     for chunk in stream[SPILL_INLINE..].chunks(OVERFLOW_DATA) {
-        let mut builder = Builder::new(PageKind::Overflow, 0, cx.entry);
+        let mut builder = Builder::new(PageKind::Overflow, 0, entry);
         builder.data(chunk);
-        let r = write_page(cx.pages.store, builder)?;
+        let r = write_page(out, builder)?;
         refs.push((r.page, r.hash));
     }
     Ok(refs)
 }
 
-fn write_slot<S: PageStore + ?Sized>(
-    cx: &mut Cx<'_, S>,
-    slot: Slot,
-    level: u8,
-) -> Result<ChildRef> {
+/// Writes the working node in `slot`, children first, every page stamped
+/// with entry `entry`.
+fn write_slot<E: EntryPages>(entry: u64, out: &mut E, slot: Slot, level: u8) -> Result<ChildRef> {
     let node = match slot {
         Slot::Clean(r) => return Ok(r),
         Slot::Dirty(node) => *node,
     };
     match node {
         WNode::Leaf(leaf) => {
-            let mut builder = Builder::new(PageKind::Leaf, 0, cx.entry);
+            let mut builder = Builder::new(PageKind::Leaf, 0, entry);
             for item in &leaf.items {
                 match &item.value {
                     Value::New(value) => {
@@ -1091,7 +1121,7 @@ fn write_slot<S: PageStore + ?Sized>(
                         stream.extend_from_slice(value);
                         match page::item_inline(item.key.len(), value.len()) {
                             Some(inline) => {
-                                let refs = write_overflow(cx, &stream)?;
+                                let refs = write_overflow(entry, out, &stream)?;
                                 builder.item(
                                     item.kind,
                                     item.key.len(),
@@ -1112,14 +1142,14 @@ fn write_slot<S: PageStore + ?Sized>(
                     }
                 }
             }
-            write_page(cx.pages.store, builder)
+            write_page(out, builder)
         }
         WNode::Index(ix) => {
             let mut children = Vec::with_capacity(ix.children.len());
             for child in ix.children {
-                children.push(write_slot(cx, child, level - 1)?);
+                children.push(write_slot(entry, out, child, level - 1)?);
             }
-            let mut builder = Builder::new(PageKind::Index, level, cx.entry);
+            let mut builder = Builder::new(PageKind::Index, level, entry);
             for (t, child) in children.iter().enumerate() {
                 if t == 0 {
                     builder.child(child.page, &child.hash, child.stamp, None);
@@ -1142,7 +1172,7 @@ fn write_slot<S: PageStore + ?Sized>(
                         );
                     }
                     (None, Some(inline)) => {
-                        let refs = write_overflow(cx, &sep.key)?;
+                        let refs = write_overflow(entry, out, &sep.key)?;
                         builder.child(
                             child.page,
                             &child.hash,
@@ -1160,7 +1190,7 @@ fn write_slot<S: PageStore + ?Sized>(
                     }
                 }
             }
-            write_page(cx.pages.store, builder)
+            write_page(out, builder)
         }
     }
 }
@@ -1173,7 +1203,13 @@ mod tests {
     fn separators_are_the_shortest_that_separate() {
         assert_eq!(shortest_separator(b"abc", b"abd"), b"abd");
         assert_eq!(shortest_separator(b"abc", b"b"), b"b");
+        // The left key a proper prefix of the right: the right key cut just
+        // after the byte that follows the left key.
         assert_eq!(shortest_separator(b"ab", b"abc"), b"abc");
+        assert_eq!(
+            shortest_separator(b"z\x00\x01", b"z\x00\x01a\x00\x01"),
+            b"z\x00\x01a"
+        );
         assert_eq!(
             shortest_separator(b"a\x00\x01", b"a\x00\xff\x00\x01"),
             b"a\x00\xff"

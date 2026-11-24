@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use om_store::page::{
-    Fault, Hash, MemStore, Numbering, Page, PageNo, PageStore, Release, StoreError, PAGE_SIZE,
+    EntryPages, Fault, Hash, MemStore, Numbering, Page, PageNo, PageStore, Release, StoreError,
+    PAGE_SIZE,
 };
 use om_store::tree::{apply, check, create, Edit, Root, Tree};
 
@@ -37,6 +38,8 @@ impl Newest {
 }
 
 impl PageStore for Newest {
+    type Entry<'a> = NewestEntry<'a>;
+
     fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
         let pages = self.pages.lock().unwrap();
         let page = pages.0.get(&number).ok_or(Fault::Missing)?;
@@ -46,19 +49,48 @@ impl PageStore for Newest {
         Ok(page.clone())
     }
 
-    fn allocate(&self) -> Result<PageNo, StoreError> {
-        let mut pages = self.pages.lock().unwrap();
+    fn begin(&self) -> Result<NewestEntry<'_>, StoreError> {
+        Ok(NewestEntry {
+            store: self,
+            pages: Vec::new(),
+            released: Vec::new(),
+        })
+    }
+}
+
+/// An entry's pages and releases, kept until it commits. (Numbers it took
+/// are not given back if it is dropped: nothing here fails.)
+struct NewestEntry<'a> {
+    store: &'a Newest,
+    pages: Vec<Arc<Page>>,
+    released: Vec<(PageNo, Release)>,
+}
+
+impl EntryPages for NewestEntry<'_> {
+    fn allocate(&mut self) -> Result<PageNo, StoreError> {
+        let mut pages = self.store.pages.lock().unwrap();
         pages.1 += 1;
         Ok(pages.1)
     }
 
-    fn write(&self, page: Arc<Page>) -> Result<(), StoreError> {
-        self.pages.lock().unwrap().0.insert(page.number(), page);
+    fn write(&mut self, page: Arc<Page>) -> Result<(), StoreError> {
+        self.pages.push(page);
         Ok(())
     }
 
-    fn release(&self, number: PageNo, _: &Hash, how: Release) -> Result<(), StoreError> {
-        Newest::drop_page(&mut self.pages.lock().unwrap().0, number, how);
+    fn release(&mut self, number: PageNo, _: &Hash, how: Release) -> Result<(), StoreError> {
+        self.released.push((number, how));
+        Ok(())
+    }
+
+    fn commit(self) -> Result<(), StoreError> {
+        let mut pages = self.store.pages.lock().unwrap();
+        for page in self.pages {
+            pages.0.insert(page.number(), page);
+        }
+        for (number, how) in self.released {
+            Newest::drop_page(&mut pages.0, number, how);
+        }
         Ok(())
     }
 }
