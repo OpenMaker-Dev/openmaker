@@ -593,12 +593,12 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
     tree.put(&[&[0x21], &[1], &[0]], OwnedNode::leaf(vec![0], vec![1, 1]));
     let (_first, file) = host("engine-design-recorded", &tree);
     let edit = |edit: DesignEdit| {
-        Operation::EditDesign(EditDesign {
+        Operation::EditDesign(Box::new(EditDesign {
             connection: DESIGNER,
             session_name: "Designer".into(),
             account: fixture::ACCOUNT.into(),
             edit,
-        })
+        }))
     };
     let node = |path: &[Vec<u8>]| {
         let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();

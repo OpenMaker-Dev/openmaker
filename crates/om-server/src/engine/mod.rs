@@ -131,8 +131,8 @@ pub enum Operation {
     /// op87 AdjustReferenceCount.
     AdjustContainerCount(AdjustContainerCount),
     /// op240, OpenMaker's authoring extension: an edit of the file's
-    /// design.
-    EditDesign(EditDesign),
+    /// design, boxed: its requests are larger than every other operation.
+    EditDesign(Box<EditDesign>),
     /// op240's Save: write the file now if it holds changes the disk lacks,
     /// such as a client's op13 uploads, and answer whether the disk holds
     /// them all.
@@ -638,7 +638,7 @@ pub fn run(
         }
         (Operation::EditDesign(op), Hold::Transaction(tx)) => {
             let from = op.connection;
-            let (reply, changes) = crate::authoring::edit(op, file, tx, locks, environment);
+            let (reply, changes) = crate::authoring::edit(*op, file, tx, locks, environment);
             Outcome {
                 reply: Reply::EditDesign(reply),
                 notices: Notices { from, changes },

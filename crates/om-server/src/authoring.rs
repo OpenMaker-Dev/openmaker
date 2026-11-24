@@ -328,12 +328,12 @@ fn submit(
     account: &str,
     edit: DesignEdit,
 ) -> Result<Reply, PerformError> {
-    let operation = engine::Operation::EditDesign(EditDesign {
+    let operation = engine::Operation::EditDesign(Box::new(EditDesign {
         connection: caller.connection,
         session_name: caller.session_name.to_owned(),
         account: account.to_owned(),
         edit,
-    });
+    }));
     let outcome = shared.engine.submit(file, operation);
     match outcome.reply {
         engine::Reply::EditDesign(edited) => {
