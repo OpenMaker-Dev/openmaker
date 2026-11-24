@@ -644,7 +644,7 @@ mod copy_destination;
 /// What a saved copy holds: a version of the file, or new bytes.
 #[cfg(target_os = "linux")]
 enum Contents {
-    File(File),
+    File(crate::store::SavedFile),
     Bytes(Vec<u8>),
 }
 
@@ -652,14 +652,13 @@ enum Contents {
 /// offset it shares with the descriptor it was cloned from.
 #[cfg(target_os = "linux")]
 struct FromStart<'a> {
-    file: &'a File,
+    file: &'a crate::store::SavedFile,
     at: u64,
 }
 
 #[cfg(target_os = "linux")]
 impl Read for FromStart<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        use std::os::unix::fs::FileExt;
         let n = self.file.read_at(buf, self.at)?;
         self.at += n as u64;
         Ok(n)

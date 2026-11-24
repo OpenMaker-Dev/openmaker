@@ -217,6 +217,22 @@ pub struct Store {
 /// An index: its table, field and kind (value 0, word 1).
 pub type IndexId = (Vec<u8>, Vec<u8>, u8);
 
+/// The file as a store last loaded or saved it ([`Store::saved_file`]),
+/// to read by position and nothing else: the descriptor inside is a clone
+/// of the store's own, which is open for writing, and no way to it or to
+/// a write leaves this type.
+#[cfg(target_os = "linux")]
+pub struct SavedFile(std::fs::File);
+
+#[cfg(target_os = "linux")]
+impl SavedFile {
+    /// Read into `buf` from byte `offset` of the file, leaving the offset
+    /// the descriptor shares alone (`pread`).
+    pub fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        std::os::unix::fs::FileExt::read_at(&self.0, buf, offset)
+    }
+}
+
 /// Per catalog path: the last member id and modification count issued.
 type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
 
@@ -763,18 +779,22 @@ impl Store {
 
     /// The file as the store last loaded or saved it, for a copy of it: a
     /// new descriptor of the one the store holds locked, which names that
-    /// version whatever later saves rename over its path, read from its
-    /// start by position so as not to move the offset the two share. `None`
-    /// while the tree has changes the file lacks (a failed save's) or when
-    /// the store holds no lock, where the file at the path could be another
-    /// program's: such a copy is built from the tree
+    /// version whatever later saves rename over its path, to be read by
+    /// position so as not to move the offset the two share. It is a
+    /// [`SavedFile`], which only reads: the descriptor the store holds is
+    /// open for writing, and only the engine's save may write the file.
+    /// `None` while the tree has changes the file lacks (a failed save's)
+    /// or when the store holds no lock, where the file at the path could be
+    /// another program's: such a copy is built from the tree
     /// ([`Store::compacted`]).
     #[cfg(target_os = "linux")]
-    pub fn saved_file(&self) -> Option<std::io::Result<std::fs::File>> {
+    pub fn saved_file(&self) -> Option<std::io::Result<SavedFile>> {
         if self.dirty {
             return None;
         }
-        self.lock.as_ref().map(|lock| lock.file().try_clone())
+        self.lock
+            .as_ref()
+            .map(|lock| lock.file().try_clone().map(SavedFile))
     }
 
     /// The tree as a complete new file, packed (`om_hbam::writer::rebuild`,

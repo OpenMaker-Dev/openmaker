@@ -24,10 +24,13 @@
 //!
 //! Only the engine can change a file: the store's write guard and the
 //! lock table for changing take a [`Writer`], which only this module can
-//! make, and `Hosted::lock_table` gives everyone else the table to read.
+//! make, `Hosted::lock_table` gives everyone else the table to read, and
+//! the saved file a copy reads is a `store::SavedFile`, which only reads.
 //! What else takes the store for writing is the setup of a file no one can
 //! reach yet (`hosting::load_hosted`) and test switches
-//! (`Hosted::fail_commit_saves`, `Writer::for_tests`).
+//! (`Hosted::fail_commit_saves`, `Writer::for_tests`). The file's path and
+//! folder (`Hosted::path`, `Hosted::at`) cannot be kept from being opened
+//! for writing; docs/server-storage.md 5 lists who reads them.
 //!
 //! # The environment
 //!
@@ -36,27 +39,42 @@
 //! `try_fill_random`) and the stopwatch of its formulas' time budgets. A
 //! replay on a seeded environment gives the same outcome only if every
 //! operation draws the same bytes in the same order, so each draws in this
-//! order and only when it gets that far:
+//! order and only when it gets that far (`tests`,
+//! `each_kind_of_operation_draws_from_its_environment_as_written_here`,
+//! checks one of each against this list):
 //!
 //! - a record environment ([`crate::recalc::record_environment_in`]): 16
 //!   bytes for its UUID, one clock reading, 8 bytes for the seed of
 //!   `Random`'s generator, then a stopwatch;
+//! - container data that becomes a new library member (`library::store`):
+//!   16 bytes for the library's own unique id when the library is new,
+//!   then 16 for the member's; data the library already holds draws
+//!   nothing;
 //! - op70: one record environment, when it checks the first listed record
 //!   that exists or that it creates;
 //! - op73, and the deferred field work finished at opening (table by
 //!   table): one record environment for each recalculation, and one more
 //!   for each record when its calculations read `Get ( UUID )`, the record
-//!   keeping the first one's `Random` and stopwatch; 16 bytes for each
-//!   container library member it stores, as it reaches it;
-//! - op88: 16 bytes when the data becomes a new library member;
-//! - a server script's commit: 16 bytes for each new library member its
-//!   records' container data becomes, record by record;
-//! - an authoring edit: one clock reading for its stamps, then 16 bytes for
-//!   each UUID of what it adds, in the order it adds them;
-//! - Change Password and Reset Account Password: one clock reading, then,
-//!   once every check passed, the 10 bytes of the salt (`try_fill_random`,
-//!   whose failure refuses the edit); Enable Account and Delete Account: one
-//!   clock reading for the stamp, when they write a stamped change;
+//!   keeping the first one's `Random` and stopwatch; the container data it
+//!   stores, as it reaches it;
+//! - op88: the container data it stores;
+//! - a server script's commit: the container data of each record, record
+//!   by record, cell by cell;
+//! - an authoring edit: one clock reading for its stamps once its checks
+//!   passed, then 16 bytes for each UUID of what it adds, in the order it
+//!   adds them;
+//! - Change Password and Reset Account Password: one clock reading once
+//!   the new password is no longer than 100 characters; then, once the
+//!   account is found and its kind and status (for Change Password also
+//!   its old password and its privilege set's rules) are checked, the 10
+//!   bytes of the salt (`try_fill_random`, whose failure refuses the
+//!   edit). The account's name, its stored checksum and, for a stamped
+//!   edit, the catalog's index are checked after the salt is drawn, as
+//!   the member is rewritten: a refusal there has drawn it;
+//! - Enable Account: one clock reading for the stamp, when a stamped edit
+//!   changes the account's state, before its checksum is checked; Delete
+//!   Account: one clock reading for the stamp, once the catalog's index
+//!   reads as FileMaker keeps it;
 //! - the other operations draw nothing.
 //!
 //! # Credentials

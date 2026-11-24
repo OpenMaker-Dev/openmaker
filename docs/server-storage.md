@@ -162,11 +162,28 @@ end; the release of a session's locks when its connection ends, it logs
 out of a file or closes it, or a server script's session ends; the
 desktop's own Change Password and its saved found sets; and the deferred
 field work a file is opened with, with its save. Only the engine can take
-a file's store for writing or change its lock table (`engine::Writer`):
-code elsewhere that tries does not compile, except the setup of a file no
-one can reach yet and test switches. Views, `export`, `import` and
-`capabilities` are not built, and nor are the failed-save fixes at the
-end of this section.
+a file's store for writing or change its lock table (`engine::Writer`),
+and code elsewhere that tries does not compile; everyone else gets the
+lock table to read (`Hosted::lock_table`) and the saved file, for a copy,
+only to read (`store::SavedFile`). The exceptions:
+
+- the setup of a file no one can reach yet: `hosting::load_hosted` records
+  the file's identity in its store before serving it;
+- test switches: `Hosted::fail_commit_saves` (debug builds, behind
+  `ServerHandle::failing_commit_saves`), which sets a flag of the store
+  and never its tree, and `engine::Writer::for_tests` (test builds);
+- reads that hold the lock table: a connection's count of its locks, and
+  a debug-build test that holds every lock table to panic on purpose;
+- the file's path and folder, which no type can keep from being opened
+  for writing: `Hosted::path` is read for log lines, `Get ( FilePath )`,
+  the file's size, the Documents folder of a server script and the
+  folders backups resolve; `Hosted::at` (and `Slot::file_at`) is read by
+  backups, which look up the file's entry and open it read-only, and by
+  the engine's saves. Nothing outside the engine's saves writes through
+  either.
+
+Views, `export`, `import` and `capabilities` are not built, and nor are
+the failed-save fixes at the end of this section.
 
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
@@ -233,10 +250,19 @@ records it did not commit.
 
 The passwords an account edit was given are not part of its operation:
 they travel beside it to `run` alone (`engine::Credentials`,
-`FileEngine::submit_with`), are never copied, are wiped once checked or
-hashed, and appear in no log line or `Debug` output. So whatever keeps
-operations (a recording, a log, another server) never has them, and a
-replay supplies them again. A log will keep an account edit's effects
+`FileEngine::submit_with`), and appear in no log line or `Debug` output.
+So whatever keeps operations (a recording, a log, another server) never
+has them, and a replay supplies them again. The engine clears what it
+holds: the `engine::Password` wrapper each password is copied into when
+the caller builds the edit, which is never copied again and is wiped
+when dropped, the old one once checked and the new one once hashed. The
+text the caller copied it from stays the caller's to clear. On the
+desktop that is the Change Password dialog's fields and the request
+that carries them to the provider (`om_gui`'s `ChangePasswordDialog`
+and `PasswordPair`), and the old password the provider keeps for a
+change due at sign-in (`om_provider`), all wiped when dropped. In a
+server script it is the step's calculation results and any variable
+that held them (`om_scripts`), which are not wiped. A log will keep an account edit's effects
 (the account member as rewritten, with its salted verifier, as the file
 holds it) and its history only the fact of the change (section 9). A
 salt the random source cannot give refuses the edit as unwritten, as

@@ -40,10 +40,14 @@ impl Environment for Seeded {
 
 /// A stopwatch on virtual time, as a seeded environment's
 /// ([`Environment::stopwatch`]): its n-th reading, from 0, answers `n`
-/// times `step`; `readings` counts them.
+/// times `step`, counted from its own start, so that each stopwatch
+/// measures its own operation's time whatever others were read. `readings`
+/// counts the readings of every stopwatch it is given to, in total.
 fn virtual_stopwatch(step: Duration, readings: Arc<AtomicU64>) -> om_data::rules::Stopwatch {
+    let own = AtomicU64::new(0);
     Arc::new(move || {
-        let n = readings.fetch_add(1, Ordering::Relaxed);
+        readings.fetch_add(1, Ordering::Relaxed);
+        let n = own.fetch_add(1, Ordering::Relaxed);
         step * u32::try_from(n).unwrap_or(u32::MAX)
     })
 }
@@ -1850,8 +1854,9 @@ impl Given {
     }
 }
 
-/// A fixed clock, a random source that gives `byte` for every byte, and a
-/// virtual stopwatch advancing by `step`, whose readings it counts.
+/// A fixed clock, a random source that gives `byte` for every byte, and
+/// virtual stopwatches advancing by `step`, each from its own start
+/// ([`virtual_stopwatch`]); `readings` counts the readings of all of them.
 struct Fixed {
     now: &'static str,
     byte: u8,
@@ -1868,6 +1873,31 @@ impl Fixed {
             readings: Arc::default(),
         }
     }
+}
+
+/// The account catalog's index as FileMaker keeps it (local-files.md 3)
+/// for the accounts [`fixture::add_local_accounts`] gives: its name list,
+/// display order, `07` entries and count, which Delete Account rewrites
+/// and every stamped account edit stamps.
+fn index_accounts(tree: &mut OwnedNode) {
+    let leaf = |value: Vec<u8>| OwnedNode::leaf(Vec::new(), value);
+    let accounts = [
+        (2u8, fixture::ACCOUNT),
+        (3, fixture::CLERK),
+        (4, fixture::FORMER),
+        (5, fixture::NEWCOMER),
+    ];
+    for (place, (key, name)) in (1u32..).zip(accounts) {
+        let listed = om_data::field_catalog::listed_key(name).unwrap();
+        tree.put(&[&[23], &[1], &[1], &[1], &listed], leaf(vec![1, key]));
+        let place = place.to_be_bytes();
+        tree.put(&[&[23], &[1], &[1], &[3], &place], leaf(vec![1, key]));
+        tree.put(&[&[23], &[1], &[1], &[7], &[key]], leaf(Vec::new()));
+    }
+    tree.put(
+        &[&[23], &[1], &[1], &[4]],
+        leaf(4u32.to_be_bytes().to_vec()),
+    );
 }
 
 /// The salt and the verifier digest of every account's stored password
@@ -1926,25 +1956,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     let mut tree = fixture::tree(&[], true);
     fixture::add_tasks(&mut tree, 1..=3);
     fixture::add_local_accounts(&mut tree);
-    // The account catalog's index as FileMaker keeps it (local-files.md
-    // 3), which Delete Account rewrites and every stamped edit stamps.
-    let accounts = [
-        (2u8, fixture::ACCOUNT),
-        (3, fixture::CLERK),
-        (4, fixture::FORMER),
-        (5, fixture::NEWCOMER),
-    ];
-    for (place, (key, name)) in (1u32..).zip(accounts) {
-        let listed = om_data::field_catalog::listed_key(name).unwrap();
-        tree.put(&[&[23], &[1], &[1], &[1], &listed], leaf(vec![1, key]));
-        let place = place.to_be_bytes();
-        tree.put(&[&[23], &[1], &[1], &[3], &place], leaf(vec![1, key]));
-        tree.put(&[&[23], &[1], &[1], &[7], &[key]], leaf(Vec::new()));
-    }
-    tree.put(
-        &[&[23], &[1], &[1], &[4]],
-        leaf(4u32.to_be_bytes().to_vec()),
-    );
+    index_accounts(&mut tree);
     // Tasks' data version (schema-path.md 5.8), which a kept found set
     // names, and Doubled stored stale on record 1.
     tree.put(
@@ -2478,4 +2490,310 @@ fn a_supplied_clock_at_the_ends_of_filemakers_dates_reads_no_other_clock() {
     );
     let (outcome, _) = submit_fresh(&operation, Fixed::new("4001-01-01T12:00:00[UTC]", 7, step));
     assert!(allowed(&outcome), "{:?}", outcome.reply);
+}
+
+/// A draw an operation takes from its environment ([`Counting`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Draw {
+    Clock,
+    /// Bytes of the random source, by `fill_random` or `try_fill_random`.
+    Random(usize),
+    Stopwatch,
+}
+
+/// [`Seeded`], noting each draw an operation takes from it, in order.
+struct Counting {
+    seeded: Seeded,
+    draws: Arc<Mutex<Vec<Draw>>>,
+}
+
+impl Environment for Counting {
+    fn now(&self) -> jiff::Zoned {
+        self.draws.lock().unwrap().push(Draw::Clock);
+        self.seeded.now()
+    }
+
+    fn fill_random(&self, bytes: &mut [u8]) {
+        self.draws.lock().unwrap().push(Draw::Random(bytes.len()));
+        self.seeded.fill_random(bytes);
+    }
+
+    fn stopwatch(&self) -> om_data::rules::Stopwatch {
+        self.draws.lock().unwrap().push(Draw::Stopwatch);
+        self.seeded.stopwatch()
+    }
+}
+
+/// The engine's module doc, "The environment", says in what order each
+/// operation draws from its environment, so that a seeded replay draws
+/// the same; this checks one operation of each kind against that list, on
+/// a fresh counting environment each: op70; op73 and the deferred work
+/// finished at opening; op88 into a new library, then the same data again;
+/// a server script's commit with container data into a new library; an
+/// authoring edit with no UUID and one with two; Change Password done,
+/// refused before the salt and refused after it (a stored checksum the
+/// account's members do not give); Reset Account Password; Enable Account
+/// changing the account and changing nothing; Delete Account; and
+/// operations that draw nothing.
+#[test]
+fn each_kind_of_operation_draws_from_its_environment_as_written_here() {
+    use om_protocol::authoring::{self as design, catalog_revision, content_revision};
+    use Draw::{Clock, Random, Stopwatch};
+
+    use crate::writes::RecordWrite;
+    // The draws of a record environment (`recalc::record_environment_in`).
+    const RECORD_ENVIRONMENT: [Draw; 4] = [Random(16), Clock, Random(8), Stopwatch];
+    // Container data that becomes the first member of a new library: the
+    // library's unique id, then the member's (`library::store`).
+    const NEW_LIBRARY: [Draw; 2] = [Random(16), Random(16)];
+    const SCRIPT: u64 = 5;
+    let table = uint_segment(fixture::TABLE);
+    let script = fixture::script(SCRIPT, "Greeting", vec![fixture::exit_with("1")]);
+    let mut tree = fixture::tree(std::slice::from_ref(&script), true);
+    fixture::index_scripts(&mut tree);
+    fixture::add_tasks(&mut tree, 1..=3);
+    fixture::add_local_accounts(&mut tree);
+    index_accounts(&mut tree);
+    index_fields(&mut tree, fixture::TABLE);
+    let drawn = |file: &Hosted, operation: Operation, given: Given| {
+        let draws = Arc::new(Mutex::new(Vec::new()));
+        let environment = Counting {
+            seeded: Seeded(AtomicU64::new(0)),
+            draws: Arc::clone(&draws),
+        };
+        let outcome = FileEngine::new(Box::new(environment)).submit_with(
+            file,
+            operation,
+            given.credentials(),
+        );
+        let drawn = draws.lock().unwrap().clone();
+        (outcome, drawn)
+    };
+    let (_file, file) = host("engine-draws", &tree);
+    let stamp = AccountStamp {
+        user: fixture::ACCOUNT.into(),
+        account: fixture::ACCOUNT.into(),
+    };
+
+    // op70: one record environment.
+    let (outcome, draws) = drawn(&file, limited_edit("1"), Given::Nothing);
+    assert!(matches!(
+        outcome.reply,
+        Reply::CommitRecords(CommitReply { result: Ok(()), .. })
+    ));
+    assert_eq!(draws, RECORD_ENVIRONMENT);
+
+    // op73: Count's type changed, so Doubled is recomputed over the table,
+    // whose calculations do not read `Get ( UUID )`: one record
+    // environment. The upload draws nothing.
+    let deferred = vec![table.clone(), vec![0x03], vec![0x01], vec![0xfd]];
+    let work = OwnedNode::list(
+        vec![0xfd],
+        vec![OwnedNode::leaf(
+            uint_segment(fixture::COUNT),
+            0x40u32.to_be_bytes().to_vec(),
+        )],
+    );
+    let upload = |work: &OwnedNode| {
+        Operation::UploadToCatalog(UploadToCatalog {
+            path: deferred.clone(),
+            node: work.clone(),
+        })
+    };
+    assert_eq!(drawn(&file, upload(&work), Given::Nothing).1, []);
+    let update = Operation::UpdateTable(UpdateTable {
+        table: table.clone(),
+        account: fixture::ACCOUNT.into(),
+    });
+    let (outcome, draws) = drawn(&file, update, Given::Nothing);
+    assert_eq!(outcome.reply, Reply::UpdateTable(Ok(true)));
+    assert_eq!(draws, RECORD_ENVIRONMENT);
+    // The same work, finished as at opening.
+    drawn(&file, upload(&work), Given::Nothing);
+    let (outcome, draws) = drawn(&file, Operation::FinishDeferredWork, Given::Nothing);
+    assert_eq!(outcome.reply, Reply::FinishDeferredWork(true));
+    assert_eq!(draws, RECORD_ENVIRONMENT);
+
+    // op88 into Notes' library, which is new; the same data again is the
+    // member the library holds.
+    let store = |bytes: &[u8]| {
+        Operation::StoreContainerData(StoreContainerData {
+            table: vec![uint_segment(fixture::NOTES)],
+            data: Ok(file_data(bytes)),
+            bytes: 64,
+        })
+    };
+    let (outcome, draws) = drawn(&file, store(b"a note"), Given::Nothing);
+    assert!(matches!(outcome.reply, Reply::StoreContainerData(r) if r.status == 0));
+    assert_eq!(draws, NEW_LIBRARY);
+    assert_eq!(drawn(&file, store(b"a note"), Given::Nothing).1, []);
+    let (_, draws) = drawn(&file, store(b"another note"), Given::Nothing);
+    assert_eq!(draws, [Random(16)], "a new member of a library that exists");
+
+    // A server script's commit of record 2 with a photo, into Tasks'
+    // library, which is new.
+    let mut edited = node_at(&file, &[table.clone(), vec![0x05], serial::encode(2)]).unwrap();
+    edited.set_child(serial_leaf(MOD_COUNT, 1));
+    let commit = Operation::CommitScriptRecords(CommitScriptRecords {
+        user: LockUser {
+            connection: 9,
+            txn: 1,
+        },
+        records: vec![RecordWrite {
+            table: fixture::TABLE,
+            id: 2,
+            record: Some(edited),
+            new: false,
+            uploads: vec![(fixture::PHOTO, file_data(b"a photo"))],
+        }],
+        bulk_delete: false,
+    });
+    let (outcome, draws) = drawn(&file, commit, Given::Nothing);
+    assert_eq!(outcome.reply, Reply::CommitScriptRecords(Ok(())));
+    assert_eq!(draws, NEW_LIBRARY);
+
+    // Authoring edits: a script's steps (no UUID), a new field (two).
+    let edit = |edit: DesignEdit| {
+        Operation::EditDesign(Box::new(EditDesign {
+            connection: 3,
+            session_name: "Designer".into(),
+            account: fixture::ACCOUNT.into(),
+            edit,
+        }))
+    };
+    let definition = [vec![17], vec![5], serial::encode(SCRIPT)];
+    let path: Vec<&[u8]> = definition.iter().map(Vec::as_slice).collect();
+    let current = file.read_store().node(&path).cloned().unwrap();
+    let steps = fixture::script(SCRIPT, "Greeting", vec![fixture::exit_with("2")]).encode();
+    let replace = design::ReplaceScriptSteps {
+        script: SCRIPT,
+        expected: content_revision(&current),
+        definition: steps,
+    };
+    let (_, draws) = drawn(
+        &file,
+        edit(DesignEdit::ReplaceScriptSteps(replace)),
+        Given::Nothing,
+    );
+    assert_eq!(draws, [Clock]);
+    let fields = file.read_store().node(&[&table, &[3]]).cloned().unwrap();
+    let create = design::CreateField {
+        table: fixture::TABLE,
+        expected: catalog_revision(&fields),
+        data_type: 1,
+        name: "Priority".into(),
+        comment: String::new(),
+    };
+    let (_, draws) = drawn(&file, edit(DesignEdit::CreateField(create)), Given::Nothing);
+    assert_eq!(draws, [Clock, Random(16), Random(16)]);
+
+    // Change Password: done; refused for a wrong old password, before the
+    // salt; refused for a stored checksum its members do not give, after
+    // it.
+    let change = |account: &str| {
+        Operation::ChangePassword(ChangePassword {
+            account: AccountRef::Name(account.into()),
+            manager: false,
+            stamp: None,
+        })
+    };
+    let given = Given::Change(fixture::PASSWORD, "a new horse");
+    let (outcome, draws) = drawn(&file, change(fixture::ACCOUNT), given);
+    assert_eq!(outcome.reply, Reply::ChangePassword(Ok(())));
+    assert_eq!(draws, [Clock, Random(10)]);
+    let given = Given::Change("not it", "a new horse");
+    let (outcome, draws) = drawn(&file, change(fixture::ACCOUNT), given);
+    assert_eq!(
+        outcome.reply,
+        Reply::ChangePassword(Err(PasswordChangeError::Refused))
+    );
+    assert_eq!(draws, [Clock]);
+    let mut bad_sum = tree.clone();
+    bad_sum.put(
+        &[&[23], &[1], &[5], &[5], &[4]],
+        OwnedNode::leaf(Vec::new(), vec![0; 20]),
+    );
+    let (_bad, bad) = host("engine-draws-checksum", &bad_sum);
+    let given = Given::Change(fixture::NEWCOMER_PASSWORD, "settled in");
+    let (outcome, draws) = drawn(&bad, change(fixture::NEWCOMER), given);
+    assert!(matches!(
+        outcome.reply,
+        Reply::ChangePassword(Err(PasswordChangeError::Unwritten(_)))
+    ));
+    assert_eq!(draws, [Clock, Random(10)], "the checksum is checked last");
+
+    // Reset Account Password, Enable Account (a change, then none) and
+    // Delete Account, stamped as a script's are.
+    let reset = Operation::ResetPassword(ResetPassword {
+        account: fixture::CLERK.into(),
+        expire: false,
+        stamp: Some(stamp.clone()),
+    });
+    let (outcome, draws) = drawn(&file, reset, Given::Reset("fresh"));
+    assert_eq!(outcome.reply, Reply::ResetPassword(Ok(())));
+    assert_eq!(draws, [Clock, Random(10)]);
+    let enable = Operation::EnableAccount(EnableAccount {
+        account: fixture::FORMER.into(),
+        active: true,
+        stamp: Some(stamp.clone()),
+    });
+    let (outcome, draws) = drawn(&file, enable.clone(), Given::Nothing);
+    assert_eq!(outcome.reply, Reply::EnableAccount(Ok(true)));
+    assert_eq!(draws, [Clock]);
+    let (outcome, draws) = drawn(&file, enable, Given::Nothing);
+    assert_eq!(outcome.reply, Reply::EnableAccount(Ok(false)));
+    assert_eq!(draws, []);
+    let delete = Operation::DeleteAccount(DeleteAccount {
+        account: fixture::CLERK.into(),
+        stamp: Some(stamp),
+    });
+    let (outcome, draws) = drawn(&file, delete, Given::Nothing);
+    assert_eq!(outcome.reply, Reply::DeleteAccount(Ok(())));
+    assert_eq!(draws, [Clock]);
+
+    // Operations that draw nothing.
+    let serial = Operation::AdvanceSerial(AdvanceSerial {
+        request: GetSerial {
+            table: vec![table.clone()],
+            field: vec![uint_segment(fixture::COUNT)],
+            value: String::new(),
+            increment: 1,
+            flags: SERIAL_INCREMENT,
+        },
+    });
+    let reserve = Operation::ReserveRecordIds(ReserveRecordIds {
+        user: LockUser {
+            connection: 1,
+            txn: 7,
+        },
+        holder: "A (Admin)".into(),
+        request: CreateRecord {
+            table: vec![table.clone()],
+            count: 1,
+            txn: 7,
+        },
+        room: writes::MAX_LOCKS,
+        durable: true,
+    });
+    for operation in [serial, reserve, Operation::SaveFile] {
+        let (_, draws) = drawn(&file, operation.clone(), Given::Nothing);
+        assert_eq!(draws, [], "{operation:?}");
+    }
+}
+
+/// Each stopwatch a test environment gives measures from its own start
+/// ([`virtual_stopwatch`]), whatever others were read, so that one
+/// operation's time budget does not depend on another's readings.
+#[test]
+fn each_virtual_stopwatch_measures_from_its_own_start() {
+    let environment = Fixed::new("2026-11-24T12:00:00[UTC]", 7, Duration::from_millis(1));
+    let first = environment.stopwatch();
+    assert_eq!(
+        (first(), first()),
+        (Duration::ZERO, Duration::from_millis(1))
+    );
+    let second = environment.stopwatch();
+    assert_eq!(second(), Duration::ZERO);
+    assert_eq!(first(), Duration::from_millis(2));
+    assert_eq!(environment.readings.load(Ordering::Relaxed), 4);
 }
