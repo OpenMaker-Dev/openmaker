@@ -1123,14 +1123,49 @@ impl NativeProvider {
         for (path, what) in om_data::design_refs::DESIGN_CATALOGS {
             get(path.to_vec(), what.to_owned(), &mut downloads);
         }
-        // The tables the schema catalog `[3]` lists, then their fields. A
-        // table catalog that does not decode is the graph's to report.
-        let tables = match downloads.iter().find(|d| d.path == [key_bytes(3)]) {
-            Some(schema) => om_hbam::catalog::tables(&download_tree(std::slice::from_ref(schema))?)
-                .map(|tables| tables.into_iter().map(|t| (t.id, t.name)).collect())
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
+        // The tables the schema catalog `[3]` lists, by their member keys
+        // alone, then their fields. Nothing here is defaulted: a member
+        // list or member key that does not read is a failure of this
+        // download, reported with the catalogs not given, since the fields
+        // of a table it hides were never asked for.
+        let mut tables = Vec::new();
+        let mut unlisted = Vec::new();
+        if let Some(schema) = downloads.iter().find(|d| d.path == [key_bytes(3)]) {
+            let tree = download_tree(std::slice::from_ref(schema))?;
+            match tree.at(&[3, 16, 5]) {
+                Some(list) if list.value.is_none_or(<[u8]>::is_empty) => {
+                    for member in &list.children {
+                        let deleted =
+                            member.children.is_empty() && member.value.is_none_or(<[u8]>::is_empty);
+                        match member.id() {
+                            Some(0) => {}
+                            Some(_) if deleted => {}
+                            Some(id) => {
+                                let name = member
+                                    .get(0x10)
+                                    .and_then(om_hbam::Node::text)
+                                    .and_then(Result::ok)
+                                    .unwrap_or_else(|| format!("table {id}"));
+                                tables.push((id, name));
+                            }
+                            None => unlisted.push(om_data::design_refs::Unavailable {
+                                path: vec![3, 16, 5],
+                                what: format!("base table {}", member.segment),
+                                reason: "its key does not read, so its fields were not asked for"
+                                    .into(),
+                            }),
+                        }
+                    }
+                }
+                Some(_) => unlisted.push(om_data::design_refs::Unavailable {
+                    path: vec![3, 16, 5],
+                    what: "the base tables".into(),
+                    reason: "their member list does not read, so no table's fields were asked for"
+                        .into(),
+                }),
+                None => {}
+            }
+        }
         for (table, name) in tables {
             get(
                 vec![table, 3],
@@ -1138,6 +1173,7 @@ impl NativeProvider {
                 &mut downloads,
             );
         }
+        unavailable.extend(unlisted);
         // A key tree is built in key order.
         downloads.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(DesignCatalogs {

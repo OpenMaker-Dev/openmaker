@@ -1138,6 +1138,39 @@ without its flag) is never evaluated and is not read. A privilege set's
 access to layouts, scripts, value lists and fields is a setting on those
 objects, not a use of them.
 
+**Read cleanly.** Every result says in `coverage.read_cleanly` whether the
+file was read cleanly, and lists its first `anomalies` (`total` counts them
+all). The file was read cleanly when:
+
+- the source gave every catalog asked for and reported no failure of its
+  own (`unavailable` is empty: a refused download, or a base table list or
+  key the provider could not read, so that it never asked for those
+  tables' fields);
+- no stored node was failed: present but not readable in the form asked
+  for (a list where a value is expected or the reverse, a value stored in
+  pieces that do not assemble, text or a number that does not decode, a
+  child asked of a node that is not a list);
+- the final walk found no stored node unread and none holding a value
+  beside keys;
+- no value a reader took was rejected (a formula that does not decode, a
+  field binding whose keys do not read, a stored step parameter that does
+  not read), and nothing unknown was met (an object type, a field kind or
+  a step id without a schema, data a step's schema does not explain);
+- no budget stopped anything (the work and entry budgets, or the
+  20,000-step limit of a script).
+
+One anomaly anywhere is enough. When the file was not read cleanly, no
+claim depends on which kinds it could affect: nothing is `broken` (a
+missing target is `unresolved`), no object is said not to exist (`exists:
+null`, `not_known`), nothing is `unreferenced`, and `complete` is false for
+every kind. When it was read cleanly, a missing target is `broken`, an
+object the graph does not have does not exist, and an object is
+`unreferenced` when, besides, no place OpenMaker knows and does not decode
+and no reference by name could refer to its kind. Such places are not
+anomalies but coverage, each with the kinds it could name: a custom menu's
+items, a chart's or plug-in object's setup, a step's list of several table
+occurrences or scripts, and the references by name below.
+
 **Results.** Each reference names its `holder` (`ref`, kind, name; a
 layout object's layout), the `place` in it (`part`: the step's parameter,
 `field`, `hide condition`, `calculation`, `script trigger OnRecordLoad`;
@@ -1146,104 +1179,94 @@ in a script, the `step` with its `index`, the `line` it starts on in
 `target`, the occurrence or data source it goes `via`, and its
 `resolution`: `resolved`; `broken` with what is `missing` (a field, or the
 occurrence or table it is named through); `external` with the data source;
-or `unresolved` with the reason. A reference is `broken` only when every
-object of the missing kind was listed: its catalog's member list read, and
-every member in it. A catalog the host did not give, a build that stopped
-before the catalog was read to its end, a member list that does not read
-and a member whose key or record does not read each leave the target
-`unresolved`. A disabled step's references are listed with `enabled`
-false. `find_uses` given the reference of an object the file no longer
-has returns the references still naming it.
+or `unresolved` with the reason (the file was not read cleanly, or the
+occurrence's definition does not read). A disabled step's references are
+listed with `enabled` false. `find_uses` given the reference of an object
+the file no longer has returns the references still naming it.
 
 **Whether an object exists.** An object a result names has `exists`:
-true, false, or null when the graph does not have it and its kind was not
-listed whole, with `existence_unknown` saying why. A command asked about an
-object it cannot find answers `not_found` only when its kind was listed
-whole; otherwise `not_known`, with `details.kind`, `details.reason` and
-`details.stopped`. Nothing is said not to exist on the strength of a
-catalog that was not read whole.
+true, false, or null when the graph does not have it and the file was not
+read cleanly, with `existence_unknown` saying why. A command asked about an
+object it cannot find answers `not_found` only for a file read cleanly;
+otherwise `not_known`, with `details.kind`, `details.reason` and
+`details.stopped`.
 
 **Coverage.** Every result has `coverage` for the kinds of object it is
-about: the `read` counts; the `unread` places, each with its `reason`
-(`not_decoded`, `malformed` or `limit`), `detail` and the kinds it
+about: `read_cleanly` and `anomalies`; the `read` counts; the `unread`
+places (anomalies and the known places not decoded), each with its
+`reason` (`not_decoded`, `malformed` or `limit`), `detail` and the kinds it
 `could_refer_to`; the references `by_name`; `omitted`, the places past the
 first 20 of their kind (the holder's kind and the place, digits folded),
 each kind of place with its `count`; the catalogs the host did not give
 (`unavailable`); `stopped`, the place where the build stopped at a budget,
-or null; and `complete`, true only when nothing in them could refer to
-those kinds and the build did not stop. The `total` of `unread` and
-`by_name` counts the omitted ones; lists stop at `limit`. `stopped` is a
-field of its own, never cut by `limit`, since it governs the whole result.
-A detail is at most 300 characters.
+or null; and `complete`. The `total` of `unread` and `by_name` counts the
+omitted ones; lists stop at `limit`. `read_cleanly`, `anomalies` and
+`stopped` are fields of their own, never cut by `limit`. A detail is at
+most 300 characters.
 
-**Completeness is checked, not assumed.** Readers reach the catalogs only
-through one access layer (`design_refs::access`): no reader function
-takes the key tree or a node, and a test fails if one names them. Every
-accessor marks what it gives on the stored node itself: a value taken, a
-list whose keys were looked at, or a place declared to name nothing. A
-value is absent, read, or present and not readable (a list where a value
-is expected and the reverse, a value stored in pieces that do not
-assemble, text or a number that does not decode, a value beside keys); the
-third is marked on the node when it is met, and nothing turns it into an
-absent value. At the end one walk of every catalog the build was given
-reports, by its path (`stored 4/5/12/119`), each node nothing accounted
-for, each that was not readable and each holding a value beside keys; each
-such place could refer to anything. A reader that stops early, returns
-early or does not know a key leaves nodes unmarked, and they are reported
-without the reader having to remember to. The walk is charged to the work
-budget; after a stop it does not run, since every kind is then incomplete.
+**How the catalogs are read.** Readers reach the catalogs only through one
+access layer (`design_refs::access`). The tree and the node in each handle
+are private fields of that module, so no reader can name or reach them;
+the decoders that read a whole node (a script, a value list, a layout) are
+called by the layer itself (`At::decode_script` and the others), and what
+the reader relies on from them it takes through the accessors. A test
+fails if a reader file names the key tree or a node. Every accessor marks
+what it gives on the stored node itself: a value taken, a list whose keys
+were looked at, or a place declared to name nothing. A value is absent,
+read, or present and not readable, and the third is marked failed on the
+node when met; nothing turns it into an absent value. At the end one walk
+of every catalog the build was given reports, by its path (`stored
+4/5/12/119`), each node nothing accounted for, each failed and each holding
+a value beside keys, as anomalies. A key with no value is reported too
+when nothing took it, since a key's segment can itself name an object. The
+walk is charged to the work budget; after a stop it does not run.
 
-Places are declared to name nothing in one table (`access::Declared`),
-each with its spec:
+A subtree is accounted for whole without being read only for a reason in
+one table (`access::Declared`):
 
 | Declared | Places | Source |
 |---|---|---|
-| catalog index | a catalog's `01`: names, display order, counters | schema-path.md 5.1 |
-| stamps | a member's `d7`-`da`, `fc`, `fc01`-`fc03` | script-steps.md 4.3; schema-path.md 8.1 |
-| text | comments and descriptions, a value list's custom values | schema-path.md 5, 5.5; calc-functions.md 6.0; file-metadata.md 6 |
-| data version | `fb` on tables, fields and occurrences | schema-path.md 5.3, 5.8, 5.10; file-metadata.md 4.2 |
-| field settings | a field's next serial value, entered data, message, range | schema-path.md 5.5, 5.13 |
-| function signature | a custom function's parameter count, names and flag | calc-encoding.md 8; calc-functions.md 6.0 |
-| access settings | a privilege set's access settings and checksum, and its tables' and fields' access | session-identity.md 2, 4.1 |
-| layout indexes | a layout's `08`, `0a`, `15` | layout-model.md 10.5 |
-| layout settings | a layout's theme `0b` and flags `f0` `f1`, a part's object list `03, P, 07`, an object's tab order `07` and format `0d` | layout-model.md 4.1, 5.5, 7.5, 10.5, 10.6 |
-| formatted formula | a formula's `05`, the text it shows (`06` holds what runs) | calc-encoding.md 1, 2 |
+| catalog index | a catalog's `01`: names, display order, counters derived from its members | schema-path.md 5.1 |
+| access settings | a privilege set's object access `09` and a table's field access `05, T, 05`: settings on objects, not uses | session-identity.md 2, 4.1 |
+| layout indexes | a layout's `08`, `0a`, `15`, over its own objects | layout-model.md 10.5 |
 | file status | `[2]` but the document preferences `18` | file-format.md (catalog 2); file-metadata.md 0, 2 |
-| data source paths | a data source's file reference `82` | file-metadata.md 1.1 |
-| trigger count | a trigger cache's `04` | file-metadata.md 7.1 |
-| step data | a step's data `[17, 5, S, 5, K]`, read through its schema, which reports what it does not explain | script-steps.md 4, 5 |
-| inactive formula | a formula stored for an option that is off | schema-path.md 5.5; layout-model.md 5.1, 5.3.4 |
+| step data | a step's data `[17, 5, S, 5, K]` (or a button's `11`), only when its steps read all of it: every stored place of every parameter read, nothing the schema does not explain, no anomaly | script-steps.md 4, 5 |
 | deleted member | a member FileMaker emptied, its key kept | scripts.md |
-| layout folder | a layout folder, folder end or separator's layout keys: never shown, so not a use | file-metadata.md 1.1; layout-model.md 10.5, 10.6 |
+| reported | a place its reader reported itself | |
+
+Everything else is read through the accessors: stamps, comments, names,
+settings, a formula's formatted stream, an inactive formula's streams (a
+formula stored for an option that is off, never evaluated, so not a use),
+a layout folder's or separator's keys (never shown, so not a use; that is
+OpenMaker's choice), and a setting kept for an option that is off. Derived
+structures the file stores are read as uses, not checked and dropped, so
+that one that disagrees with what it is derived from cannot make an object
+look unused: a layout's field index (each entry a use of the field it
+names, held by the object it names, at `field index`), the layout index's
+table occurrence (`layout index: table occurrence`) and an occurrence's
+relationship index (`relationship index`, the related occurrence and the
+relationship). The other indexes name only a catalog's own members or a
+layout's own objects.
 
 Keys with no meaning in the specs are accepted only in the one form every
-observation shows, byte for byte; any other form is reported: a script's
+observation shows, byte for byte; any other form is an anomaly: a script's
 and folder's `13` (`00 00 00 00`), a field's `26` (`00 00 00 00`), a
 layout's and table view's `16` (`00 00`), `17` and `21` (empty), a
 conditional format's `06` (empty) and the formats' count `04` (two bytes,
 the number of formats), a field index entry's value (empty, or one of `00`
-`02` `09` `0a` `0d`, under occurrence and field keys that read, for an
-object the store was read for), and the counters `05, 00` and `03, 00` of
-a layout and `05, 00` of a script's step data (a key string). A layout
-without references holds an empty list at `01, 00`, which is accepted.
-Besides these:
+`02` `09` `0a` `0d`), and the counters `05, 00` and `03, 00` of a layout
+and `05, 00` of a script's step data (a key string). A layout without
+references holds an empty list at `01, 00`, which is accepted.
 
-- custom menus `[65, 5, M]` are listed, and their items reported unread;
-- privilege sets are reported unread when the host does not give
-  `[23, 2]`;
-- a step's list of several table occurrences or scripts, a step id without
-  a parameter schema, and stored step data the schema does not explain are
-  reported;
-- a chart's or plug-in object's setup, an object of an unknown type, and
-  fields of a stored record its decoder does not know are reported;
-- whatever does not decode, and a script's steps past the 20,000th.
-
-A test generates a file holding each structure the readers know and, for
-every node in it, makes a list a leaf, a leaf a list, cuts the last piece
-from a value stored in pieces, adds an unknown key and sets a value beside
-keys, one at a time: the result must be unchanged or report a place at
-that node, and claim nothing complete that changed. Removing a node must
-not add a use (`design_refs::tests::completeness`).
+A test generates a file holding every structure the readers know, checked
+against the readers' own lists (`read::Structure` and `access::Declared`,
+each generated with its enum). For every node in it, it makes a list a
+leaf, a leaf a list, cuts the last piece from a value stored in pieces,
+adds an unknown key and sets a value beside keys, one at a time: the read
+must be still clean with the result byte for byte the same, or not clean
+with nothing broken, listed whole or complete. Removing a node must not
+add a use to an object that was there, nor break a reference to anything
+but what was removed (`design_refs::tests::completeness`).
 
 **References by name.** Never resolved; each is listed with the kinds the
 name can be:
@@ -1299,11 +1322,22 @@ theme, font or image outside the charge. Formulas are decoded within
 unexplained data and its line count are each decoded once per script and
 charged once, and a cache hit does no work. Every coverage entry is
 charged to the entry budget, and past the first 20 of their kind they are
-counted, not kept. The build stops after 1,000,000 references, unread
-places and references by name together (`MAX_ENTRIES`) or 50,000,000 units
-of work (`MAX_WORK`), and says where in `stopped`: the result is
-incomplete for every kind, references whose target's catalog was not read
-to its end are `unresolved`, never `broken`, and nothing is silently short.
+counted, not kept. Lookups among many keys (a script's step data, a
+layout's object attributes) go through one map per list, not a scan per
+key. The build stops after 1,000,000 references, unread places and
+references by name together (`MAX_ENTRIES`) or 50,000,000 units of work
+(`MAX_WORK`), and says where in `stopped`: the file was then not read
+cleanly, and nothing strong is claimed.
+
+The budgets bound work and memory up to a constant factor, not exactly. A
+unit of work is a stored byte or node charged before it is decoded, a
+step, an object, or a node of the final walk; each unit stands for a
+bounded number of operations. Some work proportional to what was already
+charged is not charged again: listing a list's children into handles,
+building the map of a list's keys, sizing a subtree (counted only up to
+the budget left), the walk's stacks (as deep and wide as the tree), and
+the marks (one per stored node). Memory is bounded by the size of the
+stored catalogs, which the tree already holds, plus the kept entries.
 
 **Nothing refers to it.** `unused_objects` lists the tables, fields,
 occurrences, layouts, scripts, value lists, custom functions and data
@@ -1327,11 +1361,15 @@ not its callers.
 in 11 languages): 9,350 objects (209 tables, 2,354 fields, 209
 occurrences, 143 relationships, 231 layouts, 5,544 layout objects, 198
 scripts with 935 steps, 264 value lists, 198 privilege sets) and 264
-custom menus; 6,261 references from 4,950 formulas and the other places,
-every one resolved; places not read: the 264 custom menus' items, and in
-the six Korean files `[2, 0e]`, whose one key `4c` is an empty list the
-specs do not describe; 121 references by name, all Go to Object's object
-names (`crates/om-data/tests/design_refs_corpus.rs`, ignored by default).
+custom menus; 9,803 references, every one resolved: 6,261 from 4,950
+formulas and the other places, and 3,542 from the derived indexes (2,739
+field index entries, 231 layout index occurrences, 286 related
+occurrences and 286 relationships of the occurrences' relationship
+indexes); the 264 custom menus' items not decoded; 121 references by
+name, all Go to Object's object names. 60 files read cleanly; the six
+Korean files do not, each for one anomaly: `[2, 0e]`, whose one key `4c`
+is an empty list the specs do not describe
+(`crates/om-data/tests/design_refs_corpus.rs`, ignored by default).
 The results have not been compared with FileMaker's Database Design
 Report or with FMPerception.
 
@@ -1339,8 +1377,8 @@ Report or with FMPerception.
 needs the store's design history (server-storage.md 9). There is no
 security review. Each command downloads every design catalog and builds
 the graph again. A catalog the host does not give an account is listed as
-`unavailable`, references into it are `unresolved`, not `broken`, and no
-kind is complete; whether FileMaker Server gives `[23, 2]` and `[64]` has
+`unavailable`, the file is not read cleanly, and nothing strong is
+claimed; whether FileMaker Server gives `[23, 2]` and `[64]` has
 not been measured. Catalogs outside the list above (themes, fonts, the
 image library and image streams, base directories, accounts) are taken to
 name no design object. A Go to Related Record step's layout in another

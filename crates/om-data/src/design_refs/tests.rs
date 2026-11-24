@@ -77,7 +77,8 @@ mod completeness {
     use om_layout::encode;
     use om_scripts::{Calculation, FieldSpec, Script, ScriptStep, StoredKey};
 
-    use super::super::read::build_within;
+    use super::super::access::Declared;
+    use super::super::read::{build_traced, build_within, Structure};
     use super::super::*;
 
     const TABLE: u64 = 0x8001;
@@ -1070,50 +1071,227 @@ mod completeness {
         format!("{:?}\n{:?}\n{objects:?}", g.uses(), g.coverage())
     }
 
-    /// What the graph says about objects of `kind`: the objects, every use
-    /// that could name one, and what is unused.
-    fn about(g: &DesignGraph, kind: Kind) -> String {
-        let objects: Vec<&Object> = g.objects().filter(|o| o.id.kind() == kind).collect();
-        let uses: Vec<&Use> = g
-            .uses()
-            .iter()
-            .filter(|u| match u.target {
-                Target::Object(id) => id.kind() == kind,
-                Target::Field { .. } => matches!(kind, Kind::Field | Kind::Occurrence),
-                Target::ExternalScript { .. } => matches!(kind, Kind::Script | Kind::DataSource),
-            })
-            .collect();
-        let unused: Vec<(ObjectId, Finding)> =
-            g.unused(kind).into_iter().map(|(o, f)| (o.id, f)).collect();
-        format!("{objects:?}\n{uses:?}\n{unused:?}")
+    /// The member paths an object is stored at, and those of what it is
+    /// stored in (a field's table).
+    fn member_paths(id: ObjectId) -> Vec<Vec<Vec<u8>>> {
+        let member = |catalog: &[&[u8]], key: Vec<u8>| -> Vec<Vec<u8>> {
+            catalog
+                .iter()
+                .map(|s| s.to_vec())
+                .chain([vec![5], key])
+                .collect()
+        };
+        match id {
+            ObjectId::Field { table, field } => vec![
+                vec![uint_segment(table), vec![3], vec![5], uint_segment(field)],
+                member(&[&[3], &[0x10]], uint_segment(table)),
+            ],
+            ObjectId::Table(t) => vec![member(&[&[3], &[0x10]], uint_segment(t))],
+            ObjectId::Occurrence(o) => vec![member(&[&[3], &[0x11]], uint_segment(o))],
+            ObjectId::Relationship(r) => vec![member(&[&[3], &[0xfb]], uint_segment(r))],
+            ObjectId::Layout(l) => vec![member(&[&[4]], uint_segment(l))],
+            ObjectId::Script(s) => vec![member(&[&[0x11]], serial::encode(s))],
+            ObjectId::ValueList(v) => vec![member(&[&[0x21]], uint_segment(v))],
+            ObjectId::CustomFunction(c) => vec![member(&[&[0x10]], uint_segment(c))],
+            ObjectId::DataSource(d) => vec![member(&[&[0x20]], serial::encode(d))],
+            _ => Vec::new(),
+        }
     }
 
-    /// Every node of a generated file, corrupted one at a time (a list
-    /// made a leaf and a leaf a list, a value in pieces truncated, an
-    /// unknown key added, a value set beside keys): the result is either
-    /// the same, or reports a place at or around that node unread and
-    /// claims nothing complete that depends on it. Removing a node can
-    /// only take information away: no use appears that was not there. The
-    /// walk covers whatever the file holds, with no list of structures.
+    /// `rich` with every other structure the readers know, so that the
+    /// test of every node covers them all (checked against the readers'
+    /// own list, [`Structure::ALL`] and [`Declared::ALL`]).
+    fn full() -> OwnedNode {
+        let mut root = rich();
+        let t = uint_segment(TABLE);
+        let l = uint_segment(LAYOUT);
+        let o = serial::encode(OBJECT);
+        let occurrence = uint_segment(OCCURRENCE);
+        let alias = serial::decode(&occurrence).unwrap();
+        // The file's status and options: its version, and the script Go
+        // run when the first window opens.
+        text(&mut root, &[&[2], &[3]], "12.0");
+        put(
+            &mut root,
+            &[&[2], &[0x18]],
+            vec![0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 0],
+        );
+        // The occurrence's relationship index: itself, by relationship 1.
+        put(
+            &mut root,
+            &[&[3], &[0x11], &[5], &occurrence, &[0xfb], &occurrence],
+            vec![1, 1],
+        );
+        // An inactive auto-enter formula on A, which does not auto-enter.
+        root.put(
+            &[&t, &[3], &[5], &uint_segment(A), &[5]],
+            formula(&[5], "B"),
+        );
+        // A layout folder, the layout's index entry and name index.
+        let folder = uint_segment(9);
+        text(&mut root, &[&[4], &[5], &folder, &[0x10]], "Folder");
+        put(
+            &mut root,
+            &[&[4], &[5], &folder, &[0xf0]],
+            vec![0, 0, 0, 0, 0, 0, 0, 1],
+        );
+        put(
+            &mut root,
+            &[&[4], &[5], &folder, &[2]],
+            encode::new_layout_def(alias, 400.0),
+        );
+        put(
+            &mut root,
+            &[&[4], &[1], &[7], &l, &[2]],
+            encode::layout_entry(alias, 0),
+        );
+        put(&mut root, &[&[4], &[5], &l, &[8], &[1, 2]], vec![1, 1]);
+        // The edit box's web address, items, conditional format and sort.
+        let attributes = [&[4][..], &[5], &l, &[5], &o];
+        let under = |keys: &[&[u8]]| -> Vec<Vec<u8>> {
+            attributes.iter().chain(keys).map(|s| s.to_vec()).collect()
+        };
+        fn at(path: &[Vec<u8>]) -> Vec<&[u8]> {
+            path.iter().map(Vec::as_slice).collect()
+        }
+        root.put(&at(&under(&[&[0, 0], &[5]])), formula(&[5], "\"x\""));
+        root.put(&at(&under(&[&[0x11], &[1], &[5]])), formula(&[5], "A"));
+        put(&mut root, &at(&under(&[&[0x8a], &[0, 0], &[1]])), vec![0]);
+        root.put(
+            &at(&under(&[&[0x8a], &[0, 0], &[5]])),
+            formula(&[5], "A = 1"),
+        );
+        put(
+            &mut root,
+            &at(&under(&[&[0x8a], &[0, 0], &[6]])),
+            Vec::new(),
+        );
+        put(&mut root, &at(&under(&[&[0x8a], &[4]])), vec![0, 1]);
+        put(
+            &mut root,
+            &at(&under(&[&[0x0a]])),
+            om_scripts::specs::SortSpec {
+                keep_sorted: true,
+                blanks_last: false,
+                fields: Vec::new(),
+            }
+            .encode(),
+        );
+        // The layout's OnLayoutEnter trigger, performing Go with a parameter.
+        let trigger = om_layout::triggers::ScriptTrigger {
+            event: 101,
+            script: Some(SCRIPT),
+            file_reference: None,
+            external: false,
+            modes: 1,
+            option: 0,
+            extra: Vec::new(),
+            parameter: None,
+        };
+        put(&mut root, &[&[4], &[5], &l, &[0x30], &[4]], vec![0, 1]);
+        put(
+            &mut root,
+            &[&[4], &[5], &l, &[0x30], &[5], &[101], &[1]],
+            om_layout::triggers::encode_record(&trigger),
+        );
+        root.put(
+            &[&[4], &[5], &l, &[0x30], &[5], &[101], &[0x31]],
+            formula(&[0x31], "1"),
+        );
+        // A script folder, a deleted script, the catalog's index, and an
+        // export order.
+        text(
+            &mut root,
+            &[&[0x11], &[5], &serial::encode(5), &[0x10]],
+            "Folder",
+        );
+        put(
+            &mut root,
+            &[&[0x11], &[5], &serial::encode(5), &[0xf0]],
+            vec![0, 0, 0, 0, 0, 0, 0, 1],
+        );
+        root.put(
+            &[&[0x11], &[5], &serial::encode(6)],
+            OwnedNode::list(serial::encode(6), Vec::new()),
+        );
+        put(&mut root, &[&[0x11], &[1], &[3], &[1]], vec![1, 1]);
+        let order = om_transfer::spec::ExportOptions {
+            fields: vec![om_transfer::spec::ExportField {
+                field: om_transfer::spec::FieldSpec::new(OCCURRENCE, A),
+                sum_by: om_transfer::spec::FieldSpec::none(),
+            }],
+            group_by: Vec::new(),
+            formatting: false,
+            charset: om_transfer::ExportCharset::Windows,
+            use_name_alias: None,
+            field_names: None,
+        };
+        let mut export = ScriptStep::new(36);
+        export.set_data_leaf(0x85, Some(om_scripts::bytes_node(&[0x85], &order.encode())));
+        add_script(&mut root, 7, "Export", vec![export]);
+        // A privilege set's object access, a custom menu, catalog 64.
+        put(
+            &mut root,
+            &[&[0x17], &[2], &[5], &uint_segment(SET), &[9], &[1]],
+            vec![1],
+        );
+        text(&mut root, &[&[0x41], &[5], &[1], &[0x10]], "Menu");
+        put(&mut root, &[&[0x40], &[5], &[1], &[0xd8]], vec![1; 16]);
+        root
+    }
+
+    /// The fixture holds every structure the readers know and uses every
+    /// declaration: the lists come from the reader code
+    /// ([`Structure::ALL`], [`Declared::ALL`], each generated with its
+    /// enum), so a new reader or declaration fails here until the fixture
+    /// holds one.
+    #[test]
+    fn the_fixture_holds_every_structure_the_readers_know() {
+        let root = full();
+        let (graph, visited, declared) = build_traced(
+            &KeyTree { root: view(&root) },
+            Vec::new(),
+            MAX_ENTRIES,
+            MAX_WORK,
+        );
+        assert!(
+            graph.coverage().read_cleanly(),
+            "{:#?}",
+            graph.coverage().anomalies
+        );
+        let missing: Vec<&Structure> = Structure::ALL
+            .iter()
+            .filter(|s| !visited.contains(s))
+            .collect();
+        assert!(missing.is_empty(), "the fixture lacks {missing:?}");
+        let unused: Vec<&Declared> = Declared::ALL
+            .iter()
+            .filter(|d| !declared.contains(d))
+            .collect();
+        assert!(unused.is_empty(), "the fixture uses no {unused:?}");
+    }
+
+    /// Every node of a file holding every structure the readers know,
+    /// corrupted one at a time (a list made a leaf and a leaf a list, a
+    /// value in pieces truncated, an unknown key added, a value set beside
+    /// keys): the read is either still clean and the result byte for byte
+    /// the same, or not clean, and then nothing strong is claimed: no
+    /// reference broken, no kind listed whole, nothing complete. Removing a
+    /// node can only take information away: no use appears that was not
+    /// there, and none is newly broken but those naming what was removed.
+    /// The walk covers whatever the file holds, with no list of
+    /// structures.
     #[test]
     fn every_stored_node_is_read_or_reported() {
-        let root = rich();
+        let root = full();
         let before = graph(&root);
-        for kind in Kind::ANY {
-            assert!(
-                before.coverage().complete_for(kind),
-                "{kind:?}: {:#?}",
-                before.coverage()
-            );
-        }
+        assert!(
+            before.coverage().read_cleanly(),
+            "{:#?}",
+            before.coverage().anomalies
+        );
         assert!(before.broken().is_empty(), "{:#?}", before.broken());
         let base = signature(&before);
-        let old: Vec<String> = before
-            .coverage()
-            .unread
-            .iter()
-            .map(|u| format!("{u:?}"))
-            .collect();
         let mut paths = Vec::new();
         nodes(&root, &mut Vec::new(), &mut paths);
         paths.retain(|p| in_catalogs(p));
@@ -1135,47 +1313,46 @@ mod completeness {
                 let after = graph(&mutated);
                 let at = format!("{mutation:?} at {path:02x?}");
                 if let Mutation::Remove = mutation {
-                    // A place's label may lose a removed name; the holder
-                    // and target say what the use is.
                     for u in after.uses() {
-                        let known = before
-                            .uses()
-                            .iter()
-                            .any(|v| v.holder == u.holder && v.target == u.target);
+                        // A removed flag can make a new object of what was
+                        // none (a folder without its flags is a layout);
+                        // an object that was there gains no use.
+                        let known = before.object(u.holder).is_none()
+                            || before
+                                .uses()
+                                .iter()
+                                .any(|v| v.holder == u.holder && v.target == u.target);
                         if !known {
                             failures.push(format!("{at}: a new use {u:?}"));
+                        }
+                        if let Resolution::Broken { missing } = u.resolution {
+                            let removed = member_paths(missing)
+                                .iter()
+                                .any(|member| member.starts_with(path));
+                            if !removed {
+                                failures.push(format!("{at}: newly broken {u:?}"));
+                            }
                         }
                     }
                     continue;
                 }
-                if signature(&after) == base {
+                if after.coverage().read_cleanly() {
+                    if signature(&after) != base {
+                        failures.push(format!("{at}: read cleanly, but the result changed"));
+                    }
                     continue;
                 }
-                let shown: Vec<String> = path
-                    .iter()
-                    .map(|s| om_hbam::KeySegment(s.as_slice()).to_string())
-                    .collect();
-                let shown = format!("stored {}", shown.join("/"));
-                let holder = super::super::access::holder_of(path);
-                let reported = after.coverage().unread.iter().any(|u| {
-                    !old.contains(&format!("{u:?}"))
-                        && (u.holder == holder
-                            || shown.starts_with(&u.place.part)
-                            || u.place.part.starts_with(&shown))
-                });
-                if !reported {
-                    failures.push(format!("{at}: nothing reported"));
+                if !after.broken().is_empty() {
+                    failures.push(format!("{at}: not clean, yet references are broken"));
                 }
-                for kind in Kind::ANY {
-                    if after.coverage().complete_for(kind)
-                        && about(&after, kind) != about(&before, kind)
-                    {
-                        failures.push(format!("{at}: {kind:?} complete but changed"));
+                for kind in Kind::ALL {
+                    if after.listed_whole(kind) || after.coverage().complete_for(kind) {
+                        failures.push(format!("{at}: not clean, yet {kind:?} is complete"));
                     }
                 }
             }
         }
-        assert!(checked > 300, "{checked} mutations");
+        assert!(checked > 500, "{checked} mutations");
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
@@ -1206,8 +1383,11 @@ mod completeness {
             OwnedNode::list(vec![7], vec![OwnedNode::leaf(vec![1], vec![1])]),
         );
         let graph = self::graph(&root);
-        assert!(!graph.listed_whole(Kind::LayoutObject));
-        assert!(graph.listed_whole(Kind::Layout));
+        assert!(!graph.coverage().read_cleanly());
+        for kind in Kind::ALL {
+            assert!(!graph.listed_whole(kind), "{kind:?}");
+            assert!(!graph.coverage().complete_for(kind), "{kind:?}");
+        }
     }
 
     /// Instance 2: a step list missing a piece is not a script without
@@ -1310,18 +1490,24 @@ mod completeness {
     /// as JSON can name occurrences.
     #[test]
     fn sql_by_natural_language_with_json_options_names_occurrences() {
-        let mut root = base();
-        let mut step = ScriptStep::new(214);
-        step.set_list_value(15, Some(1));
-        step.set_calculation(16, Some(&step_calculation("\"{}\"")));
-        with_step(&mut root, step);
-        let graph = graph(&root);
-        assert!(graph
-            .coverage()
-            .by_name
-            .iter()
-            .any(|b| b.holder == OTHER && b.could_refer_to.contains(&Kind::Occurrence)));
-        assert!(!graph.coverage().complete_for(Kind::Occurrence));
+        for by_slot in [true, false] {
+            let mut root = base();
+            let mut step = ScriptStep::new(214);
+            if by_slot {
+                step.set_list_value(15, Some(1));
+            } else {
+                step.set_flag(0x800, true);
+            }
+            step.set_calculation(16, Some(&step_calculation("\"{}\"")));
+            with_step(&mut root, step);
+            let graph = graph(&root);
+            assert!(graph
+                .coverage()
+                .by_name
+                .iter()
+                .any(|b| b.holder == OTHER && b.could_refer_to.contains(&Kind::Occurrence)));
+            assert!(!graph.coverage().complete_for(Kind::Occurrence));
+        }
     }
 
     /// Instance 6: a formula context whose key string does not read, and a
@@ -1477,6 +1663,7 @@ mod completeness {
             takes_tree,
             [
                 "pub fn build(tree: &KeyTree<'_>, unavailable: Vec<Unavailable>) -> DesignGraph {",
+                "tree: &KeyTree<'_>,",
                 "tree: &KeyTree<'_>,",
             ]
         );

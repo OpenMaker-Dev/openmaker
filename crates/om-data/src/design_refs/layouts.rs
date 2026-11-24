@@ -9,7 +9,7 @@ use om_hbam::slot::be_uint;
 use om_layout::{LayoutObject, ObjectKind};
 
 use super::access::{At, Declared, Layer, Read};
-use super::read::{name_of, stamps, Builder, Found};
+use super::read::{stamps, Builder, Found, Structure};
 use super::steps;
 use super::{Kind, NameUse, ObjectId, Place, Target, UnreadReason};
 
@@ -89,20 +89,6 @@ const TOOLTIP_FLAG: u64 = 0x4000;
 const PORTAL_SORTED: i32 = 0x8;
 /// Layout catalog flags of folders, their ends and separators.
 const NOT_A_LAYOUT: u64 = 0x1 | 0x2 | 0x10;
-/// The keys a folder or separator keeps from a layout (observed on the
-/// templates' folders): field index, definition, parts, object store, the
-/// object indexes, theme and view flags.
-const FOLDER_KEYS: [u64; 9] = [
-    FIELD_INDEX,
-    DEFINITION,
-    PARTS,
-    OBJECTS,
-    NAME_INDEX,
-    OBJECT_INDEX,
-    THEME,
-    TAB_ORDER_INDEX,
-    VIEW_FLAGS,
-];
 /// A control token that opens a merge field in an object's text
 /// (`LayoutObject::merge_field_specs`).
 const MERGE_TOKEN: &str = "<<\u{1}";
@@ -112,7 +98,6 @@ const MERGE_TOKEN: &str = "<<\u{1}";
 pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
     // A catalog the source gave without this node holds no layouts.
     let Some(catalog) = t.at(&[4]) else {
-        b.inventoried(&[Kind::Layout, Kind::LayoutObject]);
         return;
     };
     if let Some(index) = catalog.get(1) {
@@ -121,43 +106,30 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
     stamps(catalog);
     let list = catalog.get(5);
     let mut layouts = Vec::new();
-    for (id, entry) in b.members(list, Kind::Layout) {
-        if !b.spend(1, ObjectId::Layout(id), &Place::new("layouts")) {
+    for (id, entry) in b.members(list) {
+        let holder = ObjectId::Layout(id);
+        if !b.spend(1, holder, &Place::new("layouts")) {
             return;
         }
-        let name = name_of(entry);
+        let name = b.name(entry, holder);
         // Member flags (file-metadata.md 1.1), also in the catalog's index.
         let flags = match entry.uint_at(MEMBER_FLAGS) {
             Read::Ok(flags) => flags,
-            Read::Unreadable => {
-                b.lost(Kind::Layout);
-                continue;
-            }
+            // Failed on its node: an anomaly, and not known to be a layout.
+            Read::Unreadable => continue,
             Read::Absent => match t.at(&[4, 1, 7, id, MEMBER_FLAGS]).map(At::uint) {
                 Some(Read::Ok(flags)) => flags,
                 _ => 0,
             },
         };
         if flags & NOT_A_LAYOUT != 0 {
-            // A folder, its end or a separator: no layout, never shown. It
-            // keeps a layout's keys, with no objects; anything else is
-            // left to the sweep.
-            stamps(entry);
-            for key in FOLDER_KEYS {
-                if let Some(kept) = entry.get(key) {
-                    kept.declare(Declared::LayoutFolder);
-                }
-            }
-            for (key, form) in OBSERVED_KEYS {
-                b.observed(entry.get(key), form);
-            }
+            folder(b, holder, entry);
             continue;
         }
-        b.object(ObjectId::Layout(id), &name, "");
+        b.object(holder, &name, "");
         b.count("layouts");
         layouts.push((id, entry));
     }
-    b.inventoried(&[Kind::Layout]);
     for (id, node) in layouts {
         if b.stopped() {
             return;
@@ -166,13 +138,11 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
         if !b.charge(node, holder, &Place::new("definition")) {
             return;
         }
-        // Decoded from the member alone, so that the decoder reads nothing
-        // the charge did not cover (no themes, fonts or images).
-        let decoded = node.decode_alone(&[4], |tree| om_layout::Layout::decode_from_tree(tree, id));
-        match decoded {
+        b.visit(Structure::Layout);
+        index_entry(b, holder, t.at(&[4, 1, 7, id, DEFINITION]));
+        match node.decode_layout(id) {
             Ok(Some(layout)) => self::layout(b, holder, node, &layout),
             Ok(None) => {
-                b.lost(Kind::LayoutObject);
                 b.unread_node(
                     node,
                     holder,
@@ -183,7 +153,6 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
                 );
             }
             Err(e) => {
-                b.lost(Kind::LayoutObject);
                 b.unread_node(
                     node,
                     holder,
@@ -195,7 +164,84 @@ pub(super) fn layouts(b: &mut Builder, t: &Layer<'_, '_>) {
             }
         }
     }
-    b.inventoried(&[Kind::LayoutObject]);
+}
+
+/// A layout folder, folder end or separator (member flags `01`, `02`,
+/// `10`; file-metadata.md 1.1): not a layout and never shown, so what it
+/// names is no use (OpenMaker's choice; a separator keeps a table
+/// occurrence). It keeps a layout's keys with no objects, each read for
+/// its form: the definition, view flags and theme as values, parts with
+/// their definitions and object lists, an empty object store, the
+/// object indexes, and a field index holding only the empty list
+/// `01, 00`. Anything else is left to the sweep.
+fn folder(b: &mut Builder, holder: ObjectId, entry: At<'_, '_>) {
+    if !b.charge(entry, holder, &Place::new("folder")) {
+        return;
+    }
+    b.visit(Structure::LayoutFolder);
+    stamps(entry);
+    for key in [DEFINITION, THEME, VIEW_FLAGS] {
+        entry.take_at(key);
+    }
+    if let Some(Read::Ok(parts)) = entry.get(PARTS).map(At::children) {
+        for part in parts {
+            if part.id() == Some(0) {
+                part.counter();
+                continue;
+            }
+            part.take_at(PART_DEFINITION);
+            part.take_at(PART_OBJECTS);
+            stamps(part);
+        }
+    }
+    if let Some(store) = entry.get(OBJECTS) {
+        store.observed(&[]);
+    }
+    for key in [NAME_INDEX, OBJECT_INDEX, TAB_ORDER_INDEX] {
+        if let Some(index) = entry.get(key) {
+            index.declare(Declared::LayoutIndex);
+        }
+    }
+    for (key, form) in OBSERVED_KEYS {
+        b.observed(entry.get(key), form);
+    }
+    field_index(b, 0, &|_| holder, entry.get(FIELD_INDEX), &[]);
+}
+
+/// A layout's entry in the layout catalog's index `[4, 1, 07, L, 02]`:
+/// its table occurrence and menu set (layout-model.md 10.2, 10.6). Derived
+/// from the layout, but stored: its occurrence is read as a use, so an
+/// index that disagrees with the layout cannot make the occurrence look
+/// unused. The rest of the index is declared with it.
+fn index_entry(b: &mut Builder, holder: ObjectId, entry: Option<At<'_, '_>>) {
+    let Some(entry) = entry else {
+        return;
+    };
+    b.visit(Structure::LayoutIndexEntry);
+    let Read::Ok(bytes) = entry.bytes() else {
+        return;
+    };
+    match om_layout::LayoutDef::decode(&bytes) {
+        Ok(def) => {
+            if let Some(occurrence) = Some(def.table_alias_key)
+                .filter(|key| *key != 0)
+                .and_then(om_layout::occurrence_id)
+            {
+                b.reference(
+                    holder,
+                    Place::new("layout index: table occurrence"),
+                    Target::Object(ObjectId::Occurrence(occurrence)),
+                );
+            }
+        }
+        Err(e) => b.unread(
+            holder,
+            Place::new("layout index"),
+            UnreadReason::Malformed,
+            format!("a layout index entry that does not decode: {e}"),
+            &Kind::ANY,
+        ),
+    }
 }
 
 /// Account for a list's counter `00`, the last key issued under it
@@ -207,37 +253,61 @@ fn counter(node: Option<At<'_, '_>>) {
 }
 
 /// The field reference index `01, <occurrence>, <field>, <object>`
-/// (layout-model.md 10.5) names nothing the objects themselves do not: an
-/// entry is accounted for only when it names an object whose bindings were
-/// read, under keys that read, with one of the values observed there. Any
-/// other entry, at any level, is left to the sweep. A layout without
-/// references holds an empty list at `01, 00`, which holds nothing.
-fn field_index(index: Option<At<'_, '_>>, read: &[u64]) {
+/// (layout-model.md 10.5): which objects show which fields. Derived from
+/// the objects' bindings, but stored: each entry is read as a use of the
+/// field it names through its occurrence (field `00`, under a portal, of
+/// the occurrence), held by the object it names (`holder`) at the place
+/// `field index`, so an index that disagrees with the bindings cannot make
+/// a field look unused. An entry is taken only for an object that was
+/// read, under keys that read, with a value in one of the forms observed;
+/// any other is left to the sweep. A layout without references holds an
+/// empty list at `01, 00`.
+fn field_index(
+    b: &mut Builder,
+    _layout: u64,
+    holder: &dyn Fn(u64) -> ObjectId,
+    index: Option<At<'_, '_>>,
+    read: &[u64],
+) {
     let Some(index) = index else {
         return;
     };
+    b.visit(Structure::FieldIndex);
     let Read::Ok(occurrences) = index.children() else {
         return;
     };
-    for occurrence in occurrences {
-        if be_uint(occurrence.segment().0).is_none() {
-            continue;
-        }
-        let Read::Ok(fields) = occurrence.children() else {
+    for occurrence_node in occurrences {
+        let Some(occurrence) = be_uint(occurrence_node.segment().0) else {
             continue;
         };
-        for field in fields {
-            if be_uint(field.segment().0).is_none() {
-                continue;
-            }
-            let Read::Ok(objects) = field.children() else {
+        let Read::Ok(fields) = occurrence_node.children() else {
+            continue;
+        };
+        if occurrence == 0 {
+            // The empty list a layout without references holds; anything
+            // under it is left to the sweep.
+            continue;
+        }
+        for field_node in fields {
+            let Some(field) = be_uint(field_node.segment().0) else {
                 continue;
             };
-            for object in objects {
-                let named = serial::decode(object.segment().0).is_some_and(|o| read.contains(&o));
-                if named {
-                    object.observed_any(&INDEX_VALUES);
+            let Read::Ok(objects) = field_node.children() else {
+                continue;
+            };
+            for object_node in objects {
+                let Some(object) = serial::decode(object_node.segment().0) else {
+                    continue;
+                };
+                if !read.contains(&object) || !object_node.observed_any(&INDEX_VALUES) {
+                    continue;
                 }
+                let target = if field == 0 {
+                    Target::Object(ObjectId::Occurrence(occurrence))
+                } else {
+                    Target::Field { occurrence, field }
+                };
+                b.reference(holder(object), Place::new("field index"), target);
             }
         }
     }
@@ -252,7 +322,7 @@ fn layout(b: &mut Builder, holder: ObjectId, node: At<'_, '_>, layout: &om_layou
     // (layout-model.md 4.1, 7.5, 10.5).
     for key in [THEME, VIEW_FLAGS] {
         if let Some(setting) = node.get(key) {
-            setting.declare(Declared::LayoutSetting);
+            setting.take();
         }
     }
     for key in [NAME_INDEX, OBJECT_INDEX, TAB_ORDER_INDEX] {
@@ -292,7 +362,6 @@ fn layout(b: &mut Builder, holder: ObjectId, node: At<'_, '_>, layout: &om_layou
     // leaves the layout's objects unknown, so layout objects are not
     // listed whole.
     if matches!(node.bytes_at(OBJECTS), Read::Unreadable) {
-        b.lost(Kind::LayoutObject);
         return;
     }
     unknown_fields(b, holder, "object store", &layout.objects.other, &[]);
@@ -322,7 +391,8 @@ fn layout(b: &mut Builder, holder: ObjectId, node: At<'_, '_>, layout: &om_layou
     }
     self::objects(b, "", &objects, attributes);
     let read: Vec<u64> = layout.objects.objects.iter().map(|o| o.id).collect();
-    field_index(node.get(FIELD_INDEX), &read);
+    let object_holder = |object| ObjectId::LayoutObject { layout: id, object };
+    field_index(b, id, &object_holder, node.get(FIELD_INDEX), &read);
 }
 
 /// Objects and their attributes `05, O`; `05, 00` is the last object key
@@ -334,11 +404,18 @@ fn objects(
     objects: &[(ObjectId, &LayoutObject)],
     attributes: Option<At<'_, '_>>,
 ) {
+    // One map of the attributes, not a scan per object.
+    let attributes = match attributes.map(At::by_segment) {
+        Some(Read::Ok(map)) => map,
+        _ => Default::default(),
+    };
     for (holder, object) in objects {
         if !b.spend(1, *holder, &Place::new(format!("{prefix}object"))) {
             return;
         }
-        let attribute = attributes.and_then(|a| a.child(&serial::encode(object.id)));
+        let attribute = attributes
+            .get(serial::encode(object.id).as_slice())
+            .copied();
         self::object(b, *holder, prefix, object, attribute);
     }
 }
@@ -347,6 +424,7 @@ fn objects(
 /// and its list of objects; `03, 00` is the last part key issued
 /// (layout-model.md 10.6).
 fn parts(b: &mut Builder, holder: ObjectId, prefix: &str, parts: At<'_, '_>) {
+    b.visit(Structure::Part);
     counter(Some(parts));
     let Read::Ok(children) = parts.children() else {
         return;
@@ -357,7 +435,7 @@ fn parts(b: &mut Builder, holder: ObjectId, prefix: &str, parts: At<'_, '_>) {
         };
         let what = format!("{prefix}part {part_id}");
         if let Some(objects) = part_node.get(PART_OBJECTS) {
-            objects.declare(Declared::LayoutSetting);
+            objects.take();
         }
         stamps(part_node);
         let definition = match part_node.bytes_at(PART_DEFINITION) {
@@ -403,6 +481,7 @@ fn parts(b: &mut Builder, holder: ObjectId, prefix: &str, parts: At<'_, '_>) {
 /// whose columns are field objects in its own object store `07`, with
 /// their attributes `05` and parts `03`.
 fn table_view(b: &mut Builder, holder: ObjectId, node: At<'_, '_>) {
+    b.visit(Structure::TableView);
     let prefix = "table view: ";
     for key in [NAME_INDEX, OBJECT_INDEX, TAB_ORDER_INDEX] {
         if let Some(index) = node.get(key) {
@@ -429,7 +508,6 @@ fn table_view(b: &mut Builder, holder: ObjectId, node: At<'_, '_>) {
                 read = store.objects.iter().map(|o| o.id).collect();
             }
             Err(e) => {
-                b.lost(Kind::LayoutObject);
                 b.unread(
                     holder,
                     Place::new("table view: objects"),
@@ -440,10 +518,10 @@ fn table_view(b: &mut Builder, holder: ObjectId, node: At<'_, '_>) {
             }
         },
         // Not readable: failed on its node, and the sweep reports it.
-        Read::Unreadable => b.lost(Kind::LayoutObject),
+        Read::Unreadable => {}
         Read::Ok(_) | Read::Absent => {}
     }
-    field_index(node.get(FIELD_INDEX), &read);
+    field_index(b, 0, &|_| holder, node.get(FIELD_INDEX), &read);
 }
 
 /// One object: its record's references, then its attributes.
@@ -455,6 +533,7 @@ fn object(
     attribute: Option<At<'_, '_>>,
 ) {
     let place = |part: &str| Place::new(format!("{prefix}{part}"));
+    b.visit(Structure::LayoutObject);
     if let ObjectKind::Unknown(kind) = object.kind() {
         b.unread(
             holder,
@@ -558,10 +637,11 @@ fn object(
         // accounted for once the step's schema has read it.
         let items = attribute.and_then(|a| a.get(ITEMS));
         let mut stored = stored.clone();
-        stored.data = items.map(|items| items.decode(|raw| raw.to_owned_node()));
+        stored.data = items.map(At::owned);
         match om_scripts::ScriptStep::from_layout(&stored) {
             Some(step) => {
-                steps::read(
+                b.visit(Structure::ButtonStep);
+                let consumed = steps::read(
                     b,
                     holder,
                     None,
@@ -570,8 +650,14 @@ fn object(
                     true,
                     None,
                 );
+                // Taken whole only when the step's schema read all of it;
+                // otherwise the step reported what it did not.
                 if let Some(items) = items {
-                    items.declare(Declared::StepData);
+                    items.declare(if consumed {
+                        Declared::StepData
+                    } else {
+                        Declared::Reported
+                    });
                 }
             }
             None => b.unread(
@@ -595,10 +681,11 @@ fn object(
                 vec![Kind::Script],
             ),
             Some(_) => {}
-            None => b.unread(
+            // A known structure OpenMaker does not decode: coverage that
+            // could name anything, not an anomaly.
+            None => b.undecoded(
                 holder,
                 place("setup"),
-                UnreadReason::NotDecoded,
                 "a chart or plug-in object's setup",
                 &Kind::ANY,
             ),
@@ -629,11 +716,12 @@ fn attributes(
     object: &ObjectContext<'_>,
 ) {
     let place = |part: &str| Place::new(format!("{prefix}{part}"));
+    b.visit(Structure::Attributes);
     // The name, the tab order, the text's format (layout-model.md 5.5).
-    let _ = name_of(node);
+    let _ = b.name(node, holder);
     for key in [TAB_ORDER, FORMAT] {
         if let Some(setting) = node.get(key) {
-            setting.declare(Declared::LayoutSetting);
+            setting.take();
         }
     }
     stamps(node);
@@ -658,7 +746,7 @@ fn attributes(
             if active {
                 b.formula(holder, place(part), formula);
             } else {
-                formula.declare(Declared::Inactive);
+                b.inactive_formula(holder, place(&format!("inactive {part}")), formula);
             }
         }
     }
@@ -674,6 +762,7 @@ fn attributes(
         );
     }
     if let Some(web) = node.get(WEB_ADDRESS) {
+        b.visit(Structure::WebAddress);
         if let Some(formula) = web.get(WEB_ADDRESS_FORMULA) {
             b.formula(holder, place("web address"), formula);
         }
@@ -682,6 +771,7 @@ fn attributes(
         self::conditions(b, holder, prefix, conditions);
     }
     if let Some(sort) = node.get(PORTAL_SORT) {
+        b.visit(Structure::PortalSort);
         let sorted = record
             .portal
             .as_ref()
@@ -701,11 +791,14 @@ fn attributes(
             };
             b.apply(holder, &place("portal sort"), &found);
         } else {
-            sort.declare(Declared::Inactive);
+            // Kept for a portal that does not sort: never used, but it
+            // must still read.
+            sort.take();
         }
     }
     if let Some(items) = node.get(ITEMS) {
         if !object.has_step {
+            b.visit(Structure::Items);
             if let Read::Ok(items) = items.children() {
                 for item in items {
                     let part = format!("item {}", item.segment());
@@ -744,6 +837,7 @@ fn attributes(
 /// accepted only in the form every observation shows: `06` an empty value,
 /// the count two bytes equal to the number of formats.
 fn conditions(b: &mut Builder, holder: ObjectId, prefix: &str, node: At<'_, '_>) {
+    b.visit(Structure::ConditionalFormat);
     let Read::Ok(entries) = node.children() else {
         return;
     };
@@ -758,7 +852,7 @@ fn conditions(b: &mut Builder, holder: ObjectId, prefix: &str, node: At<'_, '_>)
         let part = format!("conditional formatting {}", format.segment());
         for key in [CONDITION_KIND, CONDITION_STYLE] {
             if let Some(setting) = format.get(key) {
-                setting.declare(Declared::LayoutSetting);
+                setting.take();
             }
         }
         b.observed(format.get(CONDITION_EMPTY), &[]);
@@ -804,8 +898,9 @@ fn merge_fields(b: &mut Builder, holder: ObjectId, place: &Place, object: &Layou
 /// read one by one so a record that does not decode is reported, and its
 /// parameter.
 fn triggers(b: &mut Builder, holder: ObjectId, prefix: &str, cache: At<'_, '_>) {
+    b.visit(Structure::Triggers);
     if let Some(count) = cache.get(TRIGGER_COUNT) {
-        count.declare(Declared::TriggerCount);
+        count.take();
     }
     stamps(cache);
     let Some(records) = cache.get(TRIGGER_RECORDS) else {

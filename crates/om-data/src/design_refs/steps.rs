@@ -26,7 +26,7 @@ use om_scripts::{
 use om_transfer::spec::{ExportOptions, FieldFlags, FieldSpec, ImportOptions, Mapping};
 
 use super::access::{At, Declared, Layer, Read};
-use super::read::{name_of, owned_size, polish_found, stamps, Builder, Found, GraphNames};
+use super::read::{owned_size, polish_found, stamps, Builder, Found, GraphNames, Structure};
 use super::{Kind, NameUse, ObjectId, Place, StepPlace, Target, UnreadReason};
 
 const PERFORM_SCRIPT: u16 = 1;
@@ -123,7 +123,7 @@ type Parted = Vec<(&'static str, Found)>;
 #[derive(Default)]
 pub(super) struct StepCache {
     shared: HashMap<(Vec<u8>, Shared), Rc<Parted>>,
-    unexplained: HashMap<[u8; 28], Option<Rc<str>>>,
+    unexplained: HashMap<[u8; 28], Option<(UnreadReason, Rc<str>)>>,
 }
 
 /// `found` under the parameter's own part.
@@ -167,7 +167,6 @@ fn has_calculation(step: &ScriptStep, slot: u16) -> bool {
 pub(super) fn scripts(b: &mut Builder, t: &Layer<'_, '_>) {
     // A catalog the source gave without this node holds no scripts.
     let Some(catalog) = t.at(&[17]) else {
-        b.inventoried(&[Kind::Script]);
         return;
     };
     if let Some(index) = catalog.get(1) {
@@ -176,36 +175,37 @@ pub(super) fn scripts(b: &mut Builder, t: &Layer<'_, '_>) {
     stamps(catalog);
     let list = catalog.get(5);
     let mut listed = Vec::new();
-    for (_, entry) in b.members(list, Kind::Script) {
+    for (_, entry) in b.members(list) {
         if !b.spend(1, ObjectId::File, &Place::new("scripts")) {
             return;
         }
         let Some(id) = serial::decode(entry.segment().0).filter(|id| *id != 0) else {
-            b.lost(Kind::Script);
             continue;
         };
         let flags = match entry.uint_at(SCRIPT_FLAGS) {
             Read::Ok(flags) => flags,
-            Read::Unreadable => {
-                // A script or a folder: not known.
-                b.lost(Kind::Script);
-                continue;
-            }
+            // Failed on its node (an anomaly): a script or a folder, not
+            // known.
+            Read::Unreadable => continue,
             Read::Absent => 0,
         };
-        let name = name_of(entry);
+        let name = b.name(entry, ObjectId::Script(id));
         stamps(entry);
         // `13`: four zero bytes on every stored script (scripts.md).
         b.observed(entry.get(SCRIPT_ZERO), &[0, 0, 0, 0]);
         if flags & 0x3 == 0 && entry.get(SCRIPT_STEPS).is_some() {
             b.object(ObjectId::Script(id), name, "");
             listed.push((id, entry));
+        } else {
+            // Folders, their ends and separators hold a name and flags,
+            // and an empty step list (scripts.md); anything else is left
+            // to the sweep.
+            b.visit(Structure::ScriptFolder);
+            if let Some(steps) = entry.get(SCRIPT_STEPS) {
+                steps.observed(&[]);
+            }
         }
-        // Folders, their ends and separators hold a name and flags, and an
-        // empty step list (scripts.md); anything else is left to the
-        // sweep.
     }
-    b.inventoried(&[Kind::Script]);
     let names = GraphNames::new(&b.graph);
     for (id, entry) in listed {
         let holder = ObjectId::Script(id);
@@ -217,7 +217,8 @@ pub(super) fn scripts(b: &mut Builder, t: &Layer<'_, '_>) {
         if !matches!(entry.bytes_at(SCRIPT_STEPS), Read::Ok(_)) {
             continue;
         }
-        match entry.decode(Script::decode) {
+        b.visit(Structure::Script);
+        match entry.decode_script() {
             Ok(script) => read_script(b, &script, entry, &names),
             Err(e) => b.unread_node(
                 entry,
@@ -240,15 +241,22 @@ pub(super) fn scripts(b: &mut Builder, t: &Layer<'_, '_>) {
 fn read_script(b: &mut Builder, script: &Script, entry: At<'_, '_>, names: &GraphNames) {
     let holder = ObjectId::Script(script.id);
     b.count("scripts");
-    let data = entry.get(SCRIPT_STEP_DATA);
-    if let Some(counter) = data.and_then(|d| d.child(&[0])) {
+    // One map of the step data by key, not a scan per step.
+    let data = match entry.get(SCRIPT_STEP_DATA).map(At::by_segment) {
+        Some(Read::Ok(map)) => map,
+        _ => HashMap::new(),
+    };
+    if let Some(counter) = data.get(&[0][..]) {
         counter.counter();
     }
     let data_of = |step: &ScriptStep| {
         step.data_key
             .segment()
-            .and_then(|segment| data.and_then(|d| d.child(segment)))
+            .and_then(|segment| data.get(segment).copied())
     };
+    // Whether every step naming a data key read all of it: only then is
+    // the data taken whole.
+    let mut consumed: HashMap<&[u8], bool> = HashMap::new();
     let mut cache = StepCache::default();
     // A step's text, and so its line count, follows from its descriptor
     // and its data, which the descriptor's data key names.
@@ -279,12 +287,12 @@ fn read_script(b: &mut Builder, script: &Script, entry: At<'_, '_>, names: &Grap
             name: step.name(),
             enabled: step.is_enabled(),
         };
-        read(b, holder, Some(&at), "", step, false, Some(&mut cache));
+        let read_all = read(b, holder, Some(&at), "", step, false, Some(&mut cache));
         if b.stopped() {
             return;
         }
-        if let Some(node) = data_of(step) {
-            node.declare(Declared::StepData);
+        if let Some(segment) = step.data_key.segment() {
+            *consumed.entry(segment).or_insert(true) &= read_all;
         }
         b.count("steps");
         line += count;
@@ -305,6 +313,17 @@ fn read_script(b: &mut Builder, script: &Script, entry: At<'_, '_>, names: &Grap
             if let Some(node) = data_of(step) {
                 node.declare(Declared::Reported);
             }
+        }
+    }
+    // Taken whole only when its steps read all of it; otherwise they
+    // reported what they did not, as anomalies.
+    for step in script.steps.iter().take(MAX_PASTE_STEPS) {
+        if let (Some(segment), Some(node)) = (step.data_key.segment(), data_of(step)) {
+            node.declare(if consumed.get(segment).copied().unwrap_or(false) {
+                Declared::StepData
+            } else {
+                Declared::Reported
+            });
         }
     }
 }
@@ -383,6 +402,9 @@ fn field_spec(b: &mut Builder, holder: ObjectId, at: Place, spec: StepFieldSpec)
 
 /// Read `step`, held by `holder` (a script, or a layout object for a
 /// button), into `b`. Each place is `prefix` and the parameter's name.
+/// True when the step read all its stored data: every stored place of
+/// every parameter read, nothing stored that the schema does not explain,
+/// and no anomaly met. Only then may its data be taken whole.
 pub(super) fn read(
     b: &mut Builder,
     holder: ObjectId,
@@ -391,11 +413,13 @@ pub(super) fn read(
     step: &ScriptStep,
     in_button: bool,
     mut cache: Option<&mut StepCache>,
-) {
+) -> bool {
+    let anomalies = b.graph.coverage.anomaly_count;
     let place = |part: &str| Place {
         step: at.cloned(),
         part: format!("{prefix}{part}"),
     };
+    b.visit(Structure::Step);
     let id = step.id();
     let Some(schema) = step.schema() else {
         b.unread(
@@ -405,7 +429,7 @@ pub(super) fn read(
             format!("step {id} has no parameter schema"),
             &Kind::ANY,
         );
-        return;
+        return false;
     };
     // Names looked up when the step runs (script-steps.md 11.8, 12.1, 12.4;
     // script-runtime.md 3.6; script-step-params.csv; the by-name table in
@@ -609,7 +633,7 @@ pub(super) fn read(
         let kind = parameter.kind;
         for location in &parameter.storage {
             if b.stopped() {
-                return;
+                return false;
             }
             let at = place(name);
             match (*location, kind) {
@@ -642,6 +666,7 @@ pub(super) fn read(
                     let Some(node) = slot_child(step, slot, SLOT_CALCULATION) else {
                         continue;
                     };
+                    b.visit(Structure::StepCalculation);
                     let found = shared(
                         b,
                         &mut cache,
@@ -736,6 +761,7 @@ pub(super) fn read(
     if let Some(data) = &step.data {
         if TRANSFER_KEYS.iter().any(|k| data.key(*k).is_some()) {
             let at = place("Import or export order");
+            b.visit(Structure::Transfer);
             let cost = || {
                 TRANSFER_KEYS
                     .iter()
@@ -756,29 +782,32 @@ pub(super) fn read(
             apply(b, holder, &at, &place, &found);
         }
     }
-    if let Some(detail) = unexplained(b, &mut cache, step, holder, &place("stored data")) {
+    if let Some((reason, detail)) = check_data(b, &mut cache, step, holder, &place("stored data")) {
         b.unread(
             holder,
             place("stored data"),
-            UnreadReason::NotDecoded,
+            reason,
             detail.as_ref(),
             &Kind::ANY,
         );
     }
+    b.graph.coverage.anomaly_count == anomalies
 }
 
-/// What a step stores that no parameter of its schema explains
-/// (`ScriptStep::unclassified`), but flag bits and the step value, which
-/// hold no reference, and the import and export specs [`transfer`] reads:
-/// as one detail, its length bounded. Read once per descriptor, its cost
-/// charged first; a cache hit does no work.
-fn unexplained(
+/// What a step stores that it does not read: data no parameter of its
+/// schema explains (`ScriptStep::unclassified`, but flag bits and the
+/// step value, which hold no reference, and the import and export specs
+/// [`transfer`] reads), and each stored place of a parameter that does not
+/// read (a list choice of the wrong length, text that does not decode). As
+/// one detail, its length bounded. Read once per descriptor (which names
+/// the data), its cost charged first; a cache hit does no work.
+fn check_data(
     b: &mut Builder,
     cache: &mut Option<&mut StepCache>,
     step: &ScriptStep,
     holder: ObjectId,
     place: &Place,
-) -> Option<Rc<str>> {
+) -> Option<(UnreadReason, Rc<str>)> {
     let descriptor = step.descriptor();
     if let Some(found) = cache
         .as_deref()
@@ -789,7 +818,7 @@ fn unexplained(
     if !b.spend(data_size(step), holder, place) {
         return None;
     }
-    let items: Vec<String> = step
+    let unexplained: Vec<String> = step
         .unclassified()
         .into_iter()
         .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
@@ -797,18 +826,66 @@ fn unexplained(
         .take(UNEXPLAINED_SHOWN + 1)
         .map(|u| u.to_string())
         .collect();
-    let found: Option<Rc<str>> = (!items.is_empty()).then(|| {
+    let mut unreadable: Vec<String> = Vec::new();
+    if let (Some(schema), Some(data)) = (step.schema(), &step.data) {
+        for parameter in &schema.params {
+            for location in &parameter.storage {
+                let Location::Slot { slot, kind } = *location else {
+                    continue;
+                };
+                // Slot 0's field spec is `mReserved`'s, read with its flag.
+                if kind == SlotKind::Field && slot == 0 {
+                    continue;
+                }
+                let Some(stored) = data.slot(slot) else {
+                    continue;
+                };
+                let present = match kind.child() {
+                    None => stored.value().is_some(),
+                    Some(key) => stored.child(key).is_some(),
+                };
+                if present && step.item(location).is_none() && unreadable.len() <= UNEXPLAINED_SHOWN
+                {
+                    unreadable.push(format!("{} (slot {slot})", parameter.name));
+                }
+            }
+        }
+    }
+    let shown = |items: &[String]| {
         let more = if items.len() > UNEXPLAINED_SHOWN {
             ", ..."
         } else {
             ""
         };
-        let shown = &items[..items.len().min(UNEXPLAINED_SHOWN)];
-        Rc::from(format!(
-            "stored data the step's schema does not explain: {}{more}",
-            shown.join(", ")
-        ))
-    });
+        format!(
+            "{}{more}",
+            items[..items.len().min(UNEXPLAINED_SHOWN)].join(", ")
+        )
+    };
+    let found = match (unexplained.is_empty(), unreadable.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some((
+            UnreadReason::NotDecoded,
+            format!(
+                "stored data the step's schema does not explain: {}",
+                shown(&unexplained)
+            ),
+        )),
+        (true, false) => Some((
+            UnreadReason::Malformed,
+            format!("stored parameters that do not read: {}", shown(&unreadable)),
+        )),
+        (false, false) => Some((
+            UnreadReason::Malformed,
+            format!(
+                "stored parameters that do not read: {}; stored data the step's schema does \
+                 not explain: {}",
+                shown(&unreadable),
+                shown(&unexplained)
+            ),
+        )),
+    }
+    .map(|(reason, detail)| (reason, Rc::from(detail)));
     if let Some(cache) = cache.as_deref_mut() {
         cache.unexplained.insert(descriptor, found.clone());
     }
@@ -939,6 +1016,7 @@ fn item(
             // File paths name files, and print settings nothing.
             (ParamKind::FileReference, _) | (ParamKind::PrintSettings, _) => {}
             (ParamKind::FindRequests, _) => {
+                b.visit(Structure::Requests);
                 let found = shared(
                     b,
                     cache,
@@ -952,6 +1030,7 @@ fn item(
                 apply(b, holder, &at, &|_| at.clone(), &found);
             }
             (ParamKind::SortOrder, _) => {
+                b.visit(Structure::SortOrder);
                 let found = shared(
                     b,
                     cache,
@@ -1092,16 +1171,16 @@ fn aliases_found(node: &OwnedNode, list_of: Kind) -> Vec<Found> {
         (Some(occurrence), Kind::Occurrence) => vec![Found::Reference(Target::Object(
             ObjectId::Occurrence(occurrence),
         ))],
-        (_, Kind::Script) => vec![Found::unread(
-            UnreadReason::NotDecoded,
-            "a list of scripts",
-            &[Kind::Script],
-        )],
-        _ => vec![Found::unread(
-            UnreadReason::NotDecoded,
-            "a list of table occurrences",
-            &[Kind::Occurrence],
-        )],
+        // A list of several: a known structure OpenMaker does not decode
+        // (#705), coverage rather than an anomaly.
+        (_, Kind::Script) => vec![Found::Undecoded {
+            detail: "a list of scripts".into(),
+            kinds: vec![Kind::Script],
+        }],
+        _ => vec![Found::Undecoded {
+            detail: "a list of table occurrences".into(),
+            kinds: vec![Kind::Occurrence],
+        }],
     }
 }
 

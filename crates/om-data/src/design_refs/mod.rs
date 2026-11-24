@@ -27,9 +27,10 @@
 //! through one access layer (`access`), whose accessors mark every stored
 //! node they give, and a sweep at the end reports each node nothing
 //! accounted for, each that was present but not readable, and each
-//! holding a value beside keys. A value is absent, read, or present and
-//! not readable, never two of these at once; a kind is listed whole only
-//! when its member list read and every member in it did.
+//! holding a value beside keys. Every strong claim (a reference `broken`,
+//! an object known not to exist, anything complete or unreferenced) depends
+//! on one condition: the file was read cleanly
+//! ([`Coverage::read_cleanly`]). One anomaly anywhere withdraws them all.
 //!
 //! Bounds: every decode is charged by the bytes it reads before it runs;
 //! each script is read up to the text form's step limit
@@ -478,6 +479,10 @@ pub struct Coverage {
     /// kind of place, counted rather than kept: each still counts for
     /// [`Self::complete_for`].
     pub omitted: Vec<Omitted>,
+    /// The first anomalies met ([`Self::read_cleanly`]), each also an
+    /// unread place; [`Self::anomaly_count`] counts them all.
+    pub anomalies: Vec<Unread>,
+    pub anomaly_count: usize,
 }
 
 /// Entries of one kind of place past the first few, counted.
@@ -522,7 +527,7 @@ impl Coverage {
     /// read: nothing unread, no name looked up at run time, and no
     /// catalog missing. A catalog that was not read could hold anything.
     pub fn complete_for(&self, kind: Kind) -> bool {
-        self.stopped.is_none()
+        self.read_cleanly()
             && self.unread_for(kind).next().is_none()
             && self.by_name_for(kind).next().is_none()
             && !self
@@ -530,6 +535,37 @@ impl Coverage {
                 .iter()
                 .any(|o| o.could_refer_to.contains(&kind))
             && self.unavailable.is_empty()
+    }
+
+    /// Whether the file was read cleanly: the source gave every catalog
+    /// asked for and reported no failure of its own ([`Self::unavailable`]
+    /// empty), no stored node was failed or left unread, none held a value
+    /// beside keys, no value was rejected, and no budget stopped anything.
+    /// Only then is any strong claim made: an inventory sealed, a reference
+    /// `broken`, an object known not to exist, anything complete or
+    /// unreferenced. A place OpenMaker knows and does not decode (a custom
+    /// menu, a reference by name) is coverage, not an anomaly.
+    pub fn read_cleanly(&self) -> bool {
+        self.anomaly_count == 0 && self.stopped.is_none() && self.unavailable.is_empty()
+    }
+
+    /// Why the file was not read cleanly, when it was not.
+    pub fn not_clean_reason(&self) -> Option<String> {
+        if let Some(stop) = &self.stopped {
+            return Some(format!(
+                "the analysis stopped at its budget: {}",
+                stop.detail
+            ));
+        }
+        if let Some(u) = self.unavailable.first() {
+            return Some(format!("{} was not read: {}", u.what, u.reason));
+        }
+        self.anomalies.first().map(|a| {
+            format!(
+                "{} anomalies, the first at {}: {}",
+                self.anomaly_count, a.place.part, a.detail
+            )
+        })
     }
 
     /// How many unread places there are, those counted in [`Self::omitted`]
@@ -639,9 +675,6 @@ pub struct DesignGraph {
     uses: Vec<Use>,
     coverage: Coverage,
     bases: BTreeMap<u64, Base>,
-    /// The kinds whose catalogs were read to the end: only an object of
-    /// one of these can be known to be missing.
-    inventoried: BTreeSet<Kind>,
 }
 
 impl DesignGraph {
@@ -663,33 +696,16 @@ impl DesignGraph {
         &self.coverage
     }
 
-    /// Whether every object of `kind` was listed: only then is an object
-    /// of `kind` the graph does not have known not to exist.
-    pub fn listed_whole(&self, kind: Kind) -> bool {
-        self.inventoried.contains(&kind)
+    /// Whether every object of `kind` was listed: only when the file was
+    /// read cleanly ([`Coverage::read_cleanly`]), whatever the kind. Only
+    /// then is an object the graph does not have known not to exist.
+    pub fn listed_whole(&self, _kind: Kind) -> bool {
+        self.coverage.read_cleanly()
     }
 
     /// Why the objects of `kind` were not all listed, when they were not.
-    pub fn unlisted_reason(&self, kind: Kind) -> Option<String> {
-        if self.listed_whole(kind) {
-            return None;
-        }
-        let what = kind.name().replace('_', " ");
-        let unavailable = self
-            .coverage
-            .unavailable
-            .iter()
-            .find(|u| u.kinds().contains(&kind));
-        Some(match (&self.coverage.stopped, unavailable) {
-            (Some(_), _) => format!(
-                "the analysis stopped at its budget before every {what} was listed (see \
-                 coverage.stopped)"
-            ),
-            (None, Some(u)) => format!("{} was not read: {}", u.what, u.reason),
-            (None, None) => format!(
-                "a stored {what} or its catalog's member list does not read (see coverage.unread)"
-            ),
-        })
+    pub fn unlisted_reason(&self, _kind: Kind) -> Option<String> {
+        self.coverage.not_clean_reason()
     }
 
     /// The table occurrence `id` shows, when it is one of this file's.
@@ -884,19 +900,13 @@ impl DesignGraph {
                     reason: format!("{} was not read: {}", u.what, u.reason),
                 })
         };
-        // Missing only when its whole catalog was read; otherwise not known.
+        // Missing only when the file was read cleanly; otherwise not known.
         let absent = |id: ObjectId| {
-            unavailable(id).unwrap_or_else(|| {
-                if self.inventoried.contains(&id.kind()) {
-                    Resolution::Broken { missing: id }
-                } else {
-                    Resolution::Unresolved {
-                        reason: format!(
-                            "not every {} of the file was read",
-                            id.kind().name().replace('_', " ")
-                        ),
-                    }
-                }
+            unavailable(id).unwrap_or_else(|| match self.coverage.not_clean_reason() {
+                None => Resolution::Broken { missing: id },
+                Some(reason) => Resolution::Unresolved {
+                    reason: format!("the file was not read cleanly: {reason}"),
+                },
             })
         };
         let object = |id: ObjectId| {

@@ -5,14 +5,15 @@
 //! sweep.
 
 use om_hbam::catalog::FieldKind;
+use om_hbam::slot::be_uint;
 use om_hbam::{serial, FieldOptions};
 
 use super::access::{At, Declared, Layer, Read};
-use super::read::{data_source_id, name_of, stamps, Builder};
+use super::read::{data_source_id, stamps, Builder, Structure};
 use super::steps;
 use super::{Base, Kind, NameUse, ObjectId, Place, Target, UnreadReason};
 use crate::field_options::Lookup;
-use crate::meta::{self, relation_option, SummaryDef, ValueList, ValueSource};
+use crate::meta::{self, relation_option, SummaryDef, ValueSource};
 
 /// Keys under a field definition `[T, 3, 5, F]` (schema-path.md 5.5, 5.13;
 /// calc-encoding.md 8; `crate::field_options`).
@@ -135,23 +136,21 @@ fn charge(b: &mut Builder, holder: ObjectId, node: At<'_, '_>) -> bool {
 /// source names another file, never an object of this one.
 pub(super) fn data_sources(b: &mut Builder, t: &Layer<'_, '_>) {
     let list = catalog(t, &[DATA_SOURCES]);
-    for (_, entry) in b.members(list, Kind::DataSource) {
+    for (_, entry) in b.members(list) {
         let Some(id) = serial::decode(entry.segment().0).filter(|id| *id != 0) else {
-            b.lost(Kind::DataSource);
             continue;
         };
         let holder = ObjectId::DataSource(id);
         if !charge(b, holder, entry) {
             return;
         }
-        b.object(holder, name_of(entry), "");
-        if let Some(paths) = entry.get(DATA_SOURCE_PATHS) {
-            paths.declare(Declared::DataSourcePath);
-        }
+        b.visit(Structure::DataSource);
+        let name = b.name(entry, holder);
+        b.object(holder, name, "");
+        entry.take_at(DATA_SOURCE_PATHS);
         stamps(entry);
         b.count("data_sources");
     }
-    b.inventoried(&[Kind::DataSource]);
 }
 
 /// A field as its definition `02` gives it (schema-path.md 5.5).
@@ -170,24 +169,22 @@ pub(super) fn tables(b: &mut Builder, t: &Layer<'_, '_>) {
     let _ = catalog(t, &[3]);
     let list = catalog(t, &[3, 16]);
     let mut tables: Vec<(u64, Vec<(FieldDef, At<'_, '_>)>)> = Vec::new();
-    for (id, entry) in b.members(list, Kind::Table) {
+    for (id, entry) in b.members(list) {
         let holder = ObjectId::Table(id);
         if !charge(b, holder, entry) {
             return;
         }
-        let name = name_of(entry);
-        if let Some(comment) = entry.get(TABLE_COMMENT) {
-            comment.declare(Declared::Text);
-        }
-        if let Some(version) = entry.get(DATA_VERSION) {
-            version.declare(Declared::DataVersion);
-        }
+        b.visit(Structure::Table);
+        let name = b.name(entry, holder);
+        // The comment is text; `fb` the table's data version.
+        entry.take_at(TABLE_COMMENT);
+        entry.take_at(DATA_VERSION);
         stamps(entry);
         b.object(holder, &name, "");
         b.count("tables");
         let fields_list = catalog(t, &[id, 3]);
         let mut fields = Vec::new();
-        for (field_id, field) in b.members(fields_list, Kind::Field) {
+        for (field_id, field) in b.members(fields_list) {
             if !b.spend(1, holder, &Place::new("fields")) {
                 return;
             }
@@ -202,9 +199,13 @@ pub(super) fn tables(b: &mut Builder, t: &Layer<'_, '_>) {
                 Some(other) => FieldKind::Unknown(other),
                 None => FieldKind::Unknown(0),
             };
+            let field_holder = ObjectId::Field {
+                table: id,
+                field: field_id,
+            };
             let def = FieldDef {
                 id: field_id,
-                name: name_of(field),
+                name: b.name(field, field_holder),
                 kind,
                 options,
             };
@@ -227,7 +228,6 @@ pub(super) fn tables(b: &mut Builder, t: &Layer<'_, '_>) {
         }
         tables.push((id, fields));
     }
-    b.inventoried(&[Kind::Table, Kind::Field]);
     for (table, fields) in &tables {
         for (def, node) in fields {
             if b.stopped() {
@@ -248,6 +248,7 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
     if !charge(b, holder, node) {
         return;
     }
+    b.visit(Structure::Field);
     let options = match (field.kind, &field.options) {
         (FieldKind::Unknown(kind), Some(_)) => {
             b.unread_node(
@@ -278,24 +279,22 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
     // Texts and values that name nothing: the comment, the next serial
     // value, auto-entered data, the custom message, the range's bounds
     // (field_options.rs).
-    if let Some(comment) = node.get(FIELD_COMMENT) {
-        comment.declare(Declared::Text);
-    }
-    for key in [FIELD_NEXT_SERIAL, FIELD_ENTERED_DATA, FIELD_MESSAGE]
-        .into_iter()
-        .chain(FIELD_RANGE)
+    for key in [
+        FIELD_COMMENT,
+        FIELD_NEXT_SERIAL,
+        FIELD_ENTERED_DATA,
+        FIELD_MESSAGE,
+        DATA_VERSION,
+    ]
+    .into_iter()
+    .chain(FIELD_RANGE)
     {
-        if let Some(setting) = node.get(key) {
-            setting.declare(Declared::FieldSetting);
-        }
-    }
-    if let Some(version) = node.get(DATA_VERSION) {
-        version.declare(Declared::DataVersion);
+        node.take_at(key);
     }
     stamps(node);
     // A formula is read where the definition uses it; one stored for an
     // option that is off is kept by FileMaker but never evaluated, and is
-    // left to the sweep.
+    // read as an inactive formula.
     let formula = node.get(FIELD_FORMULA);
     if field.kind == FieldKind::Calculation {
         match formula {
@@ -313,7 +312,16 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
             b.formula(holder, Place::new("auto-enter calculation"), formula);
         }
     } else if let Some(formula) = formula {
-        formula.declare(Declared::Inactive);
+        b.inactive_formula(holder, Place::new("inactive calculation"), formula);
+    }
+    // A setting kept for an option that is off is never used; it must
+    // still read.
+    if field.kind != FieldKind::Summary {
+        node.take_at(FIELD_SUMMARY);
+    }
+    if options.options & AUTO_LOOKUP == 0 {
+        node.take_at(FIELD_LOOKUP);
+        node.take_at(FIELD_LOOKUP_CONSTANT);
     }
     if field.kind == FieldKind::Summary {
         match node.bytes_at(FIELD_SUMMARY) {
@@ -392,6 +400,9 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
     }
     let in_list = options.validation_options & VALIDATE_IN_VALUE_LIST != 0;
     let furigana = options.options & FURIGANA != 0;
+    if !in_list && !furigana {
+        node.take_at(FIELD_VALUE_LIST);
+    }
     if in_list || furigana {
         let list = match node.bytes_at(FIELD_VALUE_LIST) {
             Read::Ok(bytes) => Some(bytes),
@@ -467,7 +478,9 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
                 &Kind::ANY,
             ),
             // Stored for an option that is off: never evaluated.
-            (Some(formula), false) => formula.declare(Declared::Inactive),
+            (Some(formula), false) => {
+                b.inactive_formula(holder, Place::new(format!("inactive {part}")), formula)
+            }
             _ => {}
         }
     }
@@ -477,16 +490,15 @@ fn field(b: &mut Builder, table: u64, field: &FieldDef, node: At<'_, '_>) {
 /// another.
 pub(super) fn occurrences(b: &mut Builder, t: &Layer<'_, '_>) {
     let list = catalog(t, &[3, 17]);
-    for (id, entry) in b.members(list, Kind::Occurrence) {
+    for (id, entry) in b.members(list) {
         let holder = ObjectId::Occurrence(id);
         if !charge(b, holder, entry) {
             return;
         }
-        let name = name_of(entry);
-        if let Some(version) = entry.get(DATA_VERSION) {
-            version.declare(Declared::DataVersion);
-        }
+        b.visit(Structure::Occurrence);
+        let name = b.name(entry, holder);
         stamps(entry);
+        relation_index(b, holder, entry.get(DATA_VERSION));
         b.count("occurrences");
         let definition = match entry.bytes_at(OCCURRENCE_DEFINITION) {
             Read::Ok(bytes) => Some(bytes.into_owned()),
@@ -537,18 +549,66 @@ pub(super) fn occurrences(b: &mut Builder, t: &Layer<'_, '_>) {
         }
         b.graph.bases.insert(id, base.unwrap_or(Base::Unknown));
     }
-    b.inventoried(&[Kind::Occurrence]);
+}
+
+/// An occurrence's relationship index `fb, <other O>` (schema-path.md
+/// 5.3): for each directly related occurrence, the key string of the
+/// relationship joining them. Derived from the relationships, but stored:
+/// each entry is read as a use of that occurrence and that relationship,
+/// so an index that disagrees with the relationships cannot make either
+/// look unused.
+fn relation_index(b: &mut Builder, holder: ObjectId, index: Option<At<'_, '_>>) {
+    let Some(index) = index else {
+        return;
+    };
+    b.visit(Structure::OccurrenceRelationIndex);
+    let Read::Ok(entries) = index.children() else {
+        return;
+    };
+    for entry in entries {
+        let other = be_uint(entry.segment().0);
+        let relationship = match entry.bytes() {
+            Read::Ok(value) => value.split_first().and_then(|(len, key)| {
+                (usize::from(*len) == key.len())
+                    .then(|| be_uint(key))
+                    .flatten()
+            }),
+            Read::Absent | Read::Unreadable => continue,
+        };
+        match (other, relationship) {
+            (Some(other), Some(relationship)) => {
+                b.reference(
+                    holder,
+                    Place::new("relationship index: related occurrence"),
+                    Target::Object(ObjectId::Occurrence(other)),
+                );
+                b.reference(
+                    holder,
+                    Place::new("relationship index: relationship"),
+                    Target::Object(ObjectId::Relationship(relationship)),
+                );
+            }
+            _ => b.unread(
+                holder,
+                Place::new("relationship index"),
+                UnreadReason::Malformed,
+                "a relationship index entry that does not read",
+                &Kind::ANY,
+            ),
+        }
+    }
 }
 
 /// Relationships `[3, fb, 5, R]` (file-metadata.md 4): both occurrences,
 /// each match's fields, and the sort of a sorted side.
 pub(super) fn relationships(b: &mut Builder, t: &Layer<'_, '_>) {
     let list = catalog(t, &[3, 0xfb]);
-    for (id, entry) in b.members(list, Kind::Relationship) {
+    for (id, entry) in b.members(list) {
         let holder = ObjectId::Relationship(id);
         if !charge(b, holder, entry) {
             return;
         }
+        b.visit(Structure::Relationship);
         b.count("relationships");
         stamps(entry);
         let definition = entry.bytes_at(RELATION_DEFINITION);
@@ -632,57 +692,59 @@ pub(super) fn relationships(b: &mut Builder, t: &Layer<'_, '_>) {
             }
         }
     }
-    b.inventoried(&[Kind::Relationship]);
 }
 
 /// Custom functions `[16, 5, F]`: their bodies.
 pub(super) fn custom_functions(b: &mut Builder, t: &Layer<'_, '_>) {
     let list = catalog(t, &[CUSTOM_FUNCTIONS]);
-    for (id, entry) in b.members(list, Kind::CustomFunction) {
+    for (id, entry) in b.members(list) {
         let holder = ObjectId::CustomFunction(id);
         if !charge(b, holder, entry) {
             return;
         }
-        b.object(holder, name_of(entry), "");
+        b.visit(Structure::CustomFunction);
+        let name = b.name(entry, holder);
+        b.object(holder, name, "");
         b.count("custom_functions");
-        if let Some(description) = entry.get(FUNCTION_DESCRIPTION) {
-            description.declare(Declared::Text);
-        }
-        for key in [FUNCTION_ARITY, FUNCTION_PARAMETERS, FUNCTION_FLAG] {
-            if let Some(signature) = entry.get(key) {
-                signature.declare(Declared::FunctionSignature);
-            }
+        // The description, parameter count, parameter names and flag name
+        // nothing (calc-encoding.md 8; calc-functions.md 6.0).
+        for key in [
+            FUNCTION_DESCRIPTION,
+            FUNCTION_ARITY,
+            FUNCTION_PARAMETERS,
+            FUNCTION_FLAG,
+        ] {
+            entry.take_at(key);
         }
         stamps(entry);
         if let Some(body) = entry.get(FUNCTION_BODY) {
             b.formula(holder, Place::new("body"), body);
         }
     }
-    b.inventoried(&[Kind::CustomFunction]);
 }
 
 /// Value lists `[33, 5, V]` (file-metadata.md 6): their fields,
 /// occurrence, file and calculation.
 pub(super) fn value_lists(b: &mut Builder, t: &Layer<'_, '_>) {
     let list = catalog(t, &[VALUE_LISTS]);
-    for (id, entry) in b.members(list, Kind::ValueList) {
+    for (id, entry) in b.members(list) {
         let holder = ObjectId::ValueList(id);
         if !charge(b, holder, entry) {
             return;
         }
         b.count("value_lists");
-        let name = name_of(entry);
+        b.visit(Structure::ValueList);
+        let name = b.name(entry, holder);
         stamps(entry);
         // Custom values are text (file-metadata.md 6).
-        if let Some(values) = entry.get(LIST_VALUES) {
-            values.declare(Declared::Text);
-        }
+        let values = entry.text_at(LIST_VALUES);
         let definition = entry.bytes_at(LIST_DEFINITION);
         let calculation = entry.get(LIST_CALCULATION);
-        let readable = !matches!(definition, Read::Unreadable);
+        let readable =
+            !matches!(definition, Read::Unreadable) && !matches!(values, Read::Unreadable);
         // The list decoder reads the definition, the name and the values,
-        // each marked above.
-        let decoded = entry.decode(ValueList::from_node).filter(|_| readable);
+        // each read above through the accessors.
+        let decoded = entry.decode_value_list().filter(|_| readable);
         let Some(list) = decoded else {
             b.object(holder, name, "");
             b.unread(
@@ -701,6 +763,14 @@ pub(super) fn value_lists(b: &mut Builder, t: &Layer<'_, '_>) {
             ValueSource::Calculation(_) => "calculated",
         };
         b.object(holder, &list.name, detail);
+        // A formula kept from when the list was calculated is never
+        // evaluated.
+        if let (Some(formula), false) = (
+            calculation,
+            matches!(list.source, ValueSource::Calculation(_)),
+        ) {
+            b.inactive_formula(holder, Place::new("inactive calculation"), formula);
+        }
         match &list.source {
             ValueSource::Custom(_) => {}
             ValueSource::Field {
@@ -750,7 +820,6 @@ pub(super) fn value_lists(b: &mut Builder, t: &Layer<'_, '_>) {
             },
         }
     }
-    b.inventoried(&[Kind::ValueList]);
 }
 
 /// The file's options `[2, 18]` (file-metadata.md 3): the layout it opens
@@ -770,6 +839,7 @@ pub(super) fn file_options(b: &mut Builder, t: &Layer<'_, '_>) {
     if !b.charge(stored, ObjectId::File, &Place::new("file options")) {
         return;
     }
+    b.visit(Structure::FileOptions);
     let options = match stored.bytes() {
         Read::Ok(bytes) => meta::FileOptions::decode(&bytes),
         _ => None,
@@ -824,22 +894,24 @@ pub(super) fn file_options(b: &mut Builder, t: &Layer<'_, '_>) {
 /// reported for each.
 pub(super) fn custom_menus(b: &mut Builder, t: &Layer<'_, '_>) {
     let list = catalog(t, &[CUSTOM_MENUS]);
-    for (id, entry) in b.members(list, Kind::CustomMenu) {
+    for (id, entry) in b.members(list) {
         let holder = ObjectId::CustomMenu(id);
         if !charge(b, holder, entry) {
             return;
         }
-        b.object(holder, name_of(entry), "");
-        b.unread_node(
+        b.visit(Structure::CustomMenu);
+        let name = b.name(entry, holder);
+        b.object(holder, name, "");
+        // A known structure OpenMaker does not decode: coverage that
+        // could name anything, not an anomaly.
+        b.undecoded_node(
             entry,
             holder,
             Place::new("menu items"),
-            UnreadReason::NotDecoded,
             "a custom menu's items and conditions are not decoded",
             &Kind::ANY,
         );
     }
-    b.inventoried(&[Kind::CustomMenu]);
 }
 
 /// Privilege sets `[23, 2, 5, P]` (session-identity.md 2): the formulas
@@ -867,27 +939,31 @@ pub(super) fn privilege_sets(b: &mut Builder, t: &Layer<'_, '_>) {
         }
         return;
     }
-    for (id, set) in b.members(list, Kind::PrivilegeSet) {
+    for (id, set) in b.members(list) {
         let holder = ObjectId::PrivilegeSet(id);
         if !charge(b, holder, set) {
             return;
         }
-        b.object(holder, name_of(set), "");
-        if let Some(description) = set.get(SET_DESCRIPTION) {
-            description.declare(Declared::Text);
-        }
+        b.visit(Structure::PrivilegeSet);
+        let name = b.name(set, holder);
+        b.object(holder, name, "");
+        // The description, default record access, checksum, other
+        // privileges and password settings are values; the layout, script
+        // and value list access `09` a list of settings on those objects,
+        // not uses of them (session-identity.md 2, 4.1).
         for key in [
+            SET_DESCRIPTION,
             SET_DEFAULT_ACCESS,
             SET_CHECKSUM,
-            SET_OBJECT_ACCESS,
             SET_PRIVILEGES,
         ]
         .into_iter()
         .chain(SET_PASSWORD)
         {
-            if let Some(setting) = set.get(key) {
-                setting.declare(Declared::AccessSetting);
-            }
+            set.take_at(key);
+        }
+        if let Some(access) = set.get(SET_OBJECT_ACCESS) {
+            access.declare(Declared::AccessSetting);
         }
         stamps(set);
         let Some(tables) = set.get(SET_TABLES) else {
@@ -904,13 +980,15 @@ pub(super) fn privilege_sets(b: &mut Builder, t: &Layer<'_, '_>) {
                 .graph
                 .object(ObjectId::Table(table_id))
                 .map_or_else(|| format!("table {table_id}"), |t| t.name.clone());
-            for key in [TABLE_ACCESS, TABLE_FIELD_ACCESS] {
-                if let Some(setting) = table.get(key) {
-                    setting.declare(Declared::AccessSetting);
-                }
+            // The table's record access is a value, its fields' access a
+            // list of settings (session-identity.md 2).
+            table.take_at(TABLE_ACCESS);
+            if let Some(fields) = table.get(TABLE_FIELD_ACCESS) {
+                fields.declare(Declared::AccessSetting);
             }
             for (key, action) in TABLE_LIMITS {
                 if let Some(formula) = table.get(key) {
+                    b.visit(Structure::RecordAccess);
                     b.formula(
                         holder,
                         Place::new(format!("record access: {action} calculation of {name}")),
@@ -920,7 +998,6 @@ pub(super) fn privilege_sets(b: &mut Builder, t: &Layer<'_, '_>) {
             }
         }
     }
-    b.inventoried(&[Kind::PrivilegeSet]);
 }
 
 /// Catalog 64 (`[64]`, file-format.md 8): FileMaker Pro reads it when it
@@ -934,6 +1011,7 @@ pub(super) fn unknown_catalog(b: &mut Builder, t: &Layer<'_, '_>) {
             if !b.spend(1, ObjectId::File, &Place::new("catalog 64")) {
                 return;
             }
+            b.visit(Structure::UnknownCatalog);
             stamps(member);
         }
     }

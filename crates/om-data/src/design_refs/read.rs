@@ -70,6 +70,17 @@ pub(super) fn build_within(
     max_entries: usize,
     max_work: usize,
 ) -> DesignGraph {
+    build_traced(tree, unavailable, max_entries, max_work).0
+}
+
+/// [`build_within`], with the reader structures it met and the
+/// declarations it used, for the test that a fixture exercises them all.
+pub(super) fn build_traced(
+    tree: &KeyTree<'_>,
+    unavailable: Vec<Unavailable>,
+    max_entries: usize,
+    max_work: usize,
+) -> (DesignGraph, BTreeSet<Structure>, BTreeSet<Declared>) {
     let mut b = Builder {
         graph: DesignGraph {
             coverage: Coverage {
@@ -84,8 +95,8 @@ pub(super) fn build_within(
         max_entries,
         max_work,
         stopped: false,
-        lost: BTreeSet::new(),
         groups: HashMap::new(),
+        visited: BTreeSet::new(),
     };
     let layer = Layer::new(tree);
     catalogs::data_sources(&mut b, &layer);
@@ -100,14 +111,20 @@ pub(super) fn build_within(
     catalogs::custom_menus(&mut b, &layer);
     catalogs::privilege_sets(&mut b, &layer);
     catalogs::unknown_catalog(&mut b, &layer);
-    // What no reader accounted for, by its path. After a stop every kind
-    // is incomplete already, and the rest was not read by design.
+    // What no reader accounted for, by its path. After a stop the read is
+    // not clean already, and the rest was not read by design.
     if !b.stopped {
         layer.sweep(&mut b);
     }
+    let declared = layer.declared();
     let Builder {
-        mut graph, pending, ..
+        mut graph,
+        pending,
+        visited,
+        ..
     } = b;
+    // Resolved once the read is known clean or not: a missing target is
+    // `broken` only then.
     let uses: Vec<Use> = pending
         .into_iter()
         .map(|(holder, place, target)| Use {
@@ -118,8 +135,67 @@ pub(super) fn build_within(
         })
         .collect();
     graph.uses = uses;
-    graph
+    (graph, visited, declared)
 }
+
+/// Declares the reader structures and `ALL`, generated from the same list
+/// so that it cannot miss one.
+macro_rules! structures {
+    ($($variant:ident),* $(,)?) => {
+        /// The kinds of stored structure the readers know, each recorded
+        /// when a reader meets one ([`Builder::visit`]): the test of every
+        /// stored node requires its fixture to hold each.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        pub(super) enum Structure {
+            $($variant),*
+        }
+
+        impl Structure {
+            /// Every structure, for the test that each is exercised.
+            #[cfg(test)]
+            pub(super) const ALL: &'static [Structure] = &[$(Structure::$variant),*];
+        }
+    };
+}
+
+structures!(
+    DataSource,
+    Table,
+    Field,
+    Occurrence,
+    OccurrenceRelationIndex,
+    Relationship,
+    CustomFunction,
+    ValueList,
+    Layout,
+    LayoutFolder,
+    LayoutIndexEntry,
+    Part,
+    TableView,
+    LayoutObject,
+    Attributes,
+    ButtonStep,
+    WebAddress,
+    Items,
+    ConditionalFormat,
+    Triggers,
+    FieldIndex,
+    PortalSort,
+    Script,
+    ScriptFolder,
+    Step,
+    StepCalculation,
+    Requests,
+    SortOrder,
+    Transfer,
+    FileOptions,
+    CustomMenu,
+    PrivilegeSet,
+    RecordAccess,
+    UnknownCatalog,
+    Formula,
+    InactiveFormula,
+);
 
 /// What reading one stored value found, to be recorded at each place that
 /// holds it: a value many steps share is read once.
@@ -136,6 +212,12 @@ pub(super) enum Found {
     },
     Unread {
         reason: UnreadReason,
+        detail: String,
+        kinds: Vec<Kind>,
+    },
+    /// A known structure OpenMaker does not decode: coverage, not an
+    /// anomaly.
+    Undecoded {
         detail: String,
         kinds: Vec<Kind>,
     },
@@ -214,9 +296,9 @@ pub(super) fn polish_found(polish: &[u8], context: Option<&[u8]>) -> (Vec<Found>
 /// taken for an absent one. Any other key is left to the sweep.
 pub(super) fn formula_found(node: At<'_, '_>) -> Vec<Found> {
     let mut found = Vec::new();
-    if let Some(text) = node.get(5) {
-        text.declare(Declared::FormattedFormula);
-    }
+    // The formatted stream `05` is the text the formula shows; `06` holds
+    // what runs (calc-encoding.md 1, 2). It must still read.
+    node.take_at(5);
     let context = match node.bytes_at(4) {
         Read::Ok(context) => Some(context),
         Read::Unreadable => {
@@ -292,8 +374,8 @@ pub(super) struct Builder {
     max_work: usize,
     /// A budget was spent: nothing more is read or recorded.
     stopped: bool,
-    /// Kinds with a member that could not be listed: never read to the end.
-    lost: BTreeSet<Kind>,
+    /// The reader structures met.
+    visited: BTreeSet<Structure>,
     /// Entries recorded per kind of place, to keep the first few in full,
     /// and where the rest are counted in [`Coverage::omitted`].
     groups: HashMap<String, (usize, Option<usize>)>,
@@ -325,44 +407,22 @@ impl Builder {
         self.stopped
     }
 
-    /// Mark `kinds` as read to the end, unless the build stopped or a
-    /// member of theirs could not be listed: only then can a reference to
-    /// an object of theirs be broken, or an object of theirs be known not
-    /// to exist.
-    pub(super) fn inventoried(&mut self, kinds: &[Kind]) {
-        if !self.stopped {
-            let whole = kinds.iter().filter(|k| !self.lost.contains(k));
-            self.graph.inventoried.extend(whole.copied());
-        }
+    /// Record that a reader met a structure of `kind`.
+    pub(super) fn visit(&mut self, kind: Structure) {
+        self.visited.insert(kind);
     }
 
-    /// A member of `kind` that could not be listed (its key, its record or
-    /// its catalog's member list does not read): the kind is never listed
-    /// whole.
-    pub(super) fn lost(&mut self, kind: Kind) {
-        self.lost.insert(kind);
-    }
-
-    /// The members of a catalog's member list `[.., 5]` with their ids,
-    /// for a catalog of `kind`. A member list that does not read, and a
-    /// member whose key does not read, keep `kind` from being listed whole
-    /// (the sweep reports them); the `00` entry and emptied (deleted)
-    /// members are not members.
-    pub(super) fn members<'t, 'a>(
-        &mut self,
-        list: Option<At<'t, 'a>>,
-        kind: Kind,
-    ) -> Vec<(u64, At<'t, 'a>)> {
+    /// The members of a catalog's member list `[.., 5]` with their ids. A
+    /// member list that does not read, and a member whose key does not
+    /// read, are failed or left unread, and reported by the sweep; the
+    /// `00` entry is not a member, and is left to the sweep too. Emptied
+    /// (deleted) members are no members.
+    pub(super) fn members<'t, 'a>(&mut self, list: Option<At<'t, 'a>>) -> Vec<(u64, At<'t, 'a>)> {
         let Some(list) = list else {
             return Vec::new();
         };
-        let children = match list.children() {
-            Read::Ok(children) => children,
-            Read::Absent => Vec::new(),
-            Read::Unreadable => {
-                self.lost(kind);
-                return Vec::new();
-            }
+        let Read::Ok(children) = list.children() else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for member in children {
@@ -370,13 +430,26 @@ impl Builder {
                 member.declare(Declared::Deleted);
                 continue;
             }
-            match member.id() {
-                Some(0) => {}
-                Some(id) => out.push((id, member)),
-                None => self.lost(kind),
+            if let Some(id) = member.id().filter(|id| *id != 0) {
+                out.push((id, member));
             }
         }
         out
+    }
+
+    /// A member's name `10` as text, charged first; one that does not read
+    /// is failed on its node (an anomaly) and the object listed unnamed.
+    pub(super) fn name(&mut self, member: At<'_, '_>, holder: ObjectId) -> String {
+        let Some(name) = member.get(NAME) else {
+            return String::new();
+        };
+        if !self.charge(name, holder, &Place::new("name")) {
+            return String::new();
+        }
+        match name.text() {
+            Read::Ok(name) => name,
+            Read::Absent | Read::Unreadable => String::new(),
+        }
     }
 
     /// Charge what decoding `node` costs, before it is decoded: its stored
@@ -498,6 +571,9 @@ impl Builder {
         }
     }
 
+    /// Report a place unread as an anomaly: something stored that does
+    /// not read, or that OpenMaker does not understand. The read is then
+    /// not clean ([`Coverage::read_cleanly`]).
     pub(super) fn unread(
         &mut self,
         holder: ObjectId,
@@ -506,8 +582,53 @@ impl Builder {
         detail: impl Into<String>,
         could_refer_to: &[Kind],
     ) {
+        self.record(holder, place, reason, detail.into(), could_refer_to, true);
+    }
+
+    /// Report a known structure OpenMaker does not decode (a custom menu's
+    /// items, a chart's setup, a step's list of several occurrences):
+    /// coverage with the kinds it could name, not an anomaly.
+    pub(super) fn undecoded(
+        &mut self,
+        holder: ObjectId,
+        place: Place,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        self.record(
+            holder,
+            place,
+            UnreadReason::NotDecoded,
+            detail.into(),
+            could_refer_to,
+            false,
+        );
+    }
+
+    fn record(
+        &mut self,
+        holder: ObjectId,
+        place: Place,
+        reason: UnreadReason,
+        detail: String,
+        could_refer_to: &[Kind],
+        anomaly: bool,
+    ) {
         if !self.admit(holder, &place) {
             return;
+        }
+        if anomaly {
+            let coverage = &mut self.graph.coverage;
+            coverage.anomaly_count += 1;
+            if coverage.anomalies.len() < KEPT_PER_PLACE {
+                coverage.anomalies.push(Unread {
+                    holder,
+                    place: place.clone(),
+                    reason,
+                    detail: bounded(detail.clone()),
+                    could_refer_to: could_refer_to.to_vec(),
+                });
+            }
         }
         let group = format!(
             "unread|{:?}|{}|{:?}|{:?}",
@@ -528,7 +649,7 @@ impl Builder {
                 holder,
                 place,
                 reason,
-                detail: bounded(detail.into()),
+                detail: bounded(detail),
                 could_refer_to: could_refer_to.to_vec(),
             });
         }
@@ -547,6 +668,20 @@ impl Builder {
     ) {
         node.declare(Declared::Reported);
         self.unread(holder, place, reason, detail, could_refer_to);
+    }
+
+    /// [`Self::undecoded`] for the stored `node`, accounted for as
+    /// reported: a known structure OpenMaker does not decode.
+    pub(super) fn undecoded_node(
+        &mut self,
+        node: At<'_, '_>,
+        holder: ObjectId,
+        place: Place,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        node.declare(Declared::Reported);
+        self.undecoded(holder, place, detail, could_refer_to);
     }
 
     /// Record what reading one stored value found, at `place`.
@@ -572,6 +707,9 @@ impl Builder {
                     detail,
                     kinds,
                 } => self.unread(holder, place.clone(), *reason, detail.clone(), kinds),
+                Found::Undecoded { detail, kinds } => {
+                    self.undecoded(holder, place.clone(), detail.clone(), kinds)
+                }
             }
         }
     }
@@ -582,9 +720,25 @@ impl Builder {
         if !self.charge(node, holder, &place) {
             return;
         }
+        self.visit(Structure::Formula);
         let found = formula_found(node);
         self.count("formulas");
         self.apply(holder, &place, &found);
+    }
+
+    /// A formula stored for an option that is off (an auto-enter
+    /// calculation of a field that does not auto-enter one, a tooltip
+    /// without its flag): kept by FileMaker, never evaluated, so what it
+    /// names is no use. Its stored form is still read: its context and its
+    /// two streams must read, and any other key is left to the sweep.
+    pub(super) fn inactive_formula(&mut self, holder: ObjectId, place: Place, node: At<'_, '_>) {
+        if !self.charge(node, holder, &place) {
+            return;
+        }
+        self.visit(Structure::InactiveFormula);
+        for key in [4, 5, 6] {
+            node.take_at(key);
+        }
     }
 
     /// Account for a key whose meaning is not specified when it is in the
@@ -663,20 +817,9 @@ impl StepNames for GraphNames {
     }
 }
 
-/// A member's name `10` as text; one that does not read is failed on the
-/// node (and reported by the sweep), and the object is listed unnamed.
-pub(super) fn name_of(member: At<'_, '_>) -> String {
-    match member.text_at(NAME) {
-        Read::Ok(name) => name,
-        Read::Absent | Read::Unreadable => String::new(),
-    }
-}
-
 /// Account for a member's stamps ([`MEMBER_STAMPS`]).
 pub(super) fn stamps(member: At<'_, '_>) {
     for key in MEMBER_STAMPS {
-        if let Some(stamp) = member.get(key) {
-            stamp.declare(Declared::Stamp);
-        }
+        member.take_at(key);
     }
 }

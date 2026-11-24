@@ -845,10 +845,12 @@ macro_rules! analysis {
             " Every result carries its coverage: what was read, the places whose references \
              could not be read, references made by a name looked up when the file runs (a \
              script performed by a calculated name, Evaluate, ExecuteSQL), catalogs the \
-             host did not give, `omitted` (places past the first few of their kind, counted) \
-             and `stopped`: where the build stopped at its work budget, or null. An object \
-             whose kind was not read whole is `not_known`, never `not_found`. Reads metadata \
-             only, never records."
+             host did not give, `omitted` (places past the first few of their kind, counted), \
+             `stopped` (where the build stopped at its work budget, or null) and \
+             `read_cleanly` with its `anomalies`. Only a file read cleanly gets strong \
+             answers: when it was not, nothing is broken, unreferenced or complete, and an \
+             object not found is `not_known`, never `not_found`. Reads metadata only, never \
+             records."
         )
     };
 }
@@ -882,8 +884,8 @@ pub static BROKEN_REFERENCES: CommandSpec = CommandSpec {
         "Every reference OpenMaker decodes whose target is not in the file (a \
                   deleted field, script, layout, occurrence, value list, custom function or \
                   data source), with the object that holds it, the place in it and what is \
-                  missing. A target is missing only when every object of its kind was \
-                  read; otherwise the reference is unresolved, not broken."
+                  missing. A target is missing only when the file was read cleanly; \
+                  otherwise the reference is unresolved, not broken."
     ),
     effect: Effect::Reads,
     needs: Needs::File,

@@ -60,6 +60,9 @@ struct Counts {
     /// of their kind of place.
     omitted: usize,
     stopped: usize,
+    /// Files read cleanly, and why each other one was not.
+    read_cleanly: usize,
+    not_clean: BTreeMap<String, usize>,
     by_name: BTreeMap<&'static str, usize>,
     layout_fields_checked: usize,
     button_performs_checked: usize,
@@ -180,6 +183,10 @@ fn check(path: &Path, counts: &mut Counts) {
         }
     }
     counts.omitted += coverage.omitted.iter().map(|o| o.count).sum::<usize>();
+    match coverage.not_clean_reason() {
+        None => counts.read_cleanly += 1,
+        Some(reason) => *counts.not_clean.entry(reason).or_default() += 1,
+    }
     counts.stopped += usize::from(coverage.stopped.is_some());
     // A layout field object's field, read by `om_layout` directly.
     for layout in file.catalog().unwrap().layouts {

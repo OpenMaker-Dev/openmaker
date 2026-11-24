@@ -135,24 +135,13 @@ impl Analysis {
         json!(false)
     }
 
-    /// Why whether the file has `id` is not known, when it is not.
+    /// Why whether the file has `id` is not known, when it is not: the
+    /// file was not read cleanly.
     fn existence_unknown(&self, id: ObjectId) -> Option<String> {
         if id == ObjectId::File || self.graph.object(id).is_some() {
             return None;
         }
-        // A field is known missing only when its table's fields, and the
-        // table itself, were listed whole.
-        let kinds: &[Kind] = match id {
-            ObjectId::Field { .. } => &[Kind::Table, Kind::Field],
-            ObjectId::LayoutObject { .. } => &[Kind::Layout, Kind::LayoutObject],
-            _ => &[],
-        };
-        let kinds = if kinds.is_empty() {
-            vec![id.kind()]
-        } else {
-            kinds.to_vec()
-        };
-        kinds.iter().find_map(|k| self.graph.unlisted_reason(*k))
+        self.graph.unlisted_reason(id.kind())
     }
 
     /// The error for an object that cannot be found: `not_found` when its
@@ -321,6 +310,22 @@ impl Analysis {
                 OmittedEntry::ByName(_) => by_name_more += o.count,
             }
         }
+        // Whether the file was read cleanly, with its first anomalies: a
+        // fixed part of every result, never cut by `limit`, since every
+        // strong claim depends on it.
+        let anomalies: Vec<Value> = coverage
+            .anomalies
+            .iter()
+            .take(limit)
+            .map(|u| {
+                json!({
+                    "holder": self.object(u.holder),
+                    "place": self.place(&u.place),
+                    "reason": u.reason.code(),
+                    "detail": u.detail,
+                })
+            })
+            .collect();
         // Where the build stopped at a budget: a fixed part of every
         // result, never cut by `limit`, since it governs all of it.
         let stopped = coverage.stopped.as_ref().map(|u| {
@@ -333,6 +338,11 @@ impl Analysis {
         json!({
             "kinds": Self::kinds(kinds),
             "complete": kinds.iter().all(|k| coverage.complete_for(*k)),
+            "read_cleanly": coverage.read_cleanly(),
+            "anomalies": {
+                "total": coverage.anomaly_count,
+                "places": anomalies,
+            },
             "stopped": stopped,
             "read": coverage.read,
             "unread": {
@@ -724,37 +734,59 @@ mod tests {
         }
     }
 
-    /// A file whose script catalog's member list is stored as a value:
-    /// whether a script exists is not known, so a script asked for is
-    /// `not_known` with the reason, never `not_found`, and an object the
-    /// graph does not have has `exists: null`.
-    #[test]
-    fn an_object_of_a_kind_not_listed_whole_is_not_known() {
-        let mut root = OwnedNode::default();
-        root.put(&[&[17], &[5]], OwnedNode::leaf(Vec::new(), vec![0x55]));
-        let tree = KeyTree { root: view(&root) };
-        let analysis = Analysis {
+    fn analysis(root: &OwnedNode) -> Analysis {
+        let tree = KeyTree { root: view(root) };
+        Analysis {
             graph: design_refs::build(&tree, Vec::new()),
             file: "Tasks.fmp12".into(),
-        };
-        let params = ObjectParams {
-            script_name: Some("Post".into()),
-            ..ObjectParams::default()
-        };
-        let error = analysis.resolve(&params).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::NotKnown, "{error:?}");
-        let object = analysis.object(ObjectId::Script(7));
+        }
+    }
+
+    /// A file not read cleanly (here a script member list stored as a
+    /// value): whether any object exists is not known, so a lookup that
+    /// finds nothing is `not_known` with the reason, never `not_found`, for
+    /// every kind, and an object the graph does not have has `exists:
+    /// null`. A file read cleanly answers plainly.
+    #[test]
+    fn an_object_of_a_file_not_read_cleanly_is_not_known() {
+        // The privilege set catalog, given and empty: nothing else is read.
+        let mut clean = OwnedNode::default();
+        clean.put(&[&[23], &[2], &[5]], OwnedNode::list(vec![5], Vec::new()));
+        let mut not_clean = clean.clone();
+        not_clean.put(&[&[17], &[5]], OwnedNode::leaf(Vec::new(), vec![0x55]));
+        let not_clean = analysis(&not_clean);
+        assert!(!not_clean.graph.coverage().read_cleanly());
+        for params in [
+            ObjectParams {
+                script_name: Some("Post".into()),
+                ..ObjectParams::default()
+            },
+            ObjectParams {
+                layout_name: Some("Main".into()),
+                ..ObjectParams::default()
+            },
+        ] {
+            let error = not_clean.resolve(&params).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::NotKnown, "{error:?}");
+            assert!(error.details["reason"].is_string());
+        }
+        let object = not_clean.object(ObjectId::Layout(7));
         assert_eq!(object["exists"], Value::Null);
         assert!(object["existence_unknown"].is_string());
-        // A kind listed whole answers plainly.
+        let clean = analysis(&clean);
+        assert!(
+            clean.graph.coverage().read_cleanly(),
+            "{:?}",
+            clean.graph.coverage().anomalies
+        );
         let params = ObjectParams {
             layout_name: Some("Main".into()),
             ..ObjectParams::default()
         };
         assert_eq!(
-            analysis.resolve(&params).unwrap_err().kind,
+            clean.resolve(&params).unwrap_err().kind,
             ErrorKind::NotFound
         );
-        assert_eq!(analysis.object(ObjectId::Layout(7))["exists"], json!(false));
+        assert_eq!(clean.object(ObjectId::Layout(7))["exists"], json!(false));
     }
 }

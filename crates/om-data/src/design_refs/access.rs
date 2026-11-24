@@ -1,36 +1,40 @@
 //! The one way the design graph reaches a file's catalogs.
 //!
-//! The builder holds the key tree only inside a [`Layer`], and readers reach
-//! nodes only through the [`At`] handles it gives: the node in a handle is
-//! private to this module, and no reader function takes a `KeyTree` or a
-//! `Node`. Every accessor marks what it gives, on the node itself:
+//! The builder holds the key tree only inside a [`Layer`], and readers
+//! reach nodes only through the [`At`] handles it gives. The node in a
+//! handle is a private field of this module, and so is the tree: a reader
+//! module cannot name or reach either. Decoders that read a whole node
+//! (`om_scripts::Script`, `meta::ValueList`, `om_layout::Layout`) are
+//! called by this module ([`At::decode_script`] and the others), never
+//! given to a reader.
 //!
-//! - a value taken ([`At::bytes`], [`At::text`], [`At::uint`]) or a place
-//!   declared to name nothing ([`At::declare`], with its reason from one
-//!   table, [`Declared`]): the node and everything under it is accounted
-//!   for;
+//! Every accessor marks what it gives, on the node itself:
+//!
+//! - a value taken ([`At::bytes`], [`At::text`], [`At::uint`],
+//!   [`At::take`]): the node and its pieces are accounted for;
 //! - a list whose keys were looked at ([`At::get`], [`At::children`]): each
 //!   key under it must be accounted for in turn;
-//! - a value present but not readable in the form asked for: failed. The
-//!   accessor answers [`Read::Unreadable`], which has no conversion to an
-//!   absent value, and the failure stays on the node.
+//! - a place the specs say names nothing, declared with its reason from one
+//!   table ([`Declared`]);
+//! - a value present but not readable in the form asked for, or a child
+//!   asked of a node that is not a list: failed. The accessor answers
+//!   [`Read::Unreadable`], which has no conversion to an absent value, and
+//!   the failure stays on the node.
 //!
 //! At the end [`Layer::sweep`] walks every catalog the build was given and
 //! reports, by its path, each stored node nothing accounted for, each
-//! failed one, and each that holds a value beside keys. A reader that stops
-//! early, returns early or does not know a key leaves nodes unmarked, and
-//! they are reported without the reader having to remember to.
-//!
-//! Decoders that take a node ([`At::decode`]) get it unmarked: whatever the
-//! reader relies on from them it marks through the accessors, so trusting a
-//! decoder can only leave a node reported, never hide one.
+//! failed one, and each that holds a value beside keys. Each is an anomaly:
+//! the file was not read cleanly, and the graph then makes no strong claim
+//! (`Coverage::read_cleanly`). A decoder's output is trusted only for what
+//! the reader marks through the accessors, so trusting a decoder can only
+//! leave a node reported, never hide one.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use om_hbam::slot::be_uint;
-use om_hbam::{serial, KeySegment, KeyTree, Node};
+use om_hbam::{serial, KeySegment, KeyTree, Node, OwnedNode};
 
 use super::read::Builder;
 use super::{Kind, ObjectId, Place, UnreadReason};
@@ -46,86 +50,63 @@ pub(super) enum Read<T> {
     Unreadable,
 }
 
-/// Places a reader accounts for without reading them, because the spec
-/// says what they hold and that it names no design object. One table: each
-/// declaration's reason is [`Declared::spec`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Declared {
+/// Declares the declarations and `ALL`, generated from the same list so
+/// that it cannot miss one.
+macro_rules! declarations {
+    ($($(#[$doc:meta])* $variant:ident),* $(,)?) => {
+        /// Places a reader accounts for whole without reading what is under
+        /// them, because the specs say what they hold and that it names no
+        /// design object (or, for the last three, why the subtree is
+        /// already accounted for). One table: each declaration's reason is
+        /// [`Declared::spec`].
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        pub(super) enum Declared {
+            $($(#[$doc])* $variant),*
+        }
+
+        impl Declared {
+            /// Every declaration, for the test that each is exercised.
+            #[cfg(test)]
+            pub(super) const ALL: &'static [Declared] = &[$(Declared::$variant),*];
+        }
+    };
+}
+
+declarations!(
     /// A catalog's index `01`: names, display order and counters derived
     /// from its members.
     CatalogIndex,
-    /// A member's owner, UUIDs and tags `d7`-`da` and its modification
-    /// stamps `fc`, `fc01`-`fc03`.
-    Stamp,
-    /// A comment, a description or a value list's custom values: text.
-    Text,
-    /// `fb`: a table's or field's data version, or an occurrence's list of
-    /// the occurrences relationships join it to.
-    DataVersion,
-    /// A field's next serial value, auto-entered data, custom message and
-    /// range bounds.
-    FieldSetting,
-    /// A custom function's parameter count, parameter names and flag.
-    FunctionSignature,
-    /// A privilege set's access settings and checksum, and a table's or
-    /// field's access within it: settings on objects, not uses of them.
+    /// A privilege set's lists of object and field access: settings on
+    /// objects, not uses of them.
     AccessSetting,
-    /// A layout's indexes of its objects' names `08`, positions `0a` and
-    /// tab order `15`.
+    /// A layout's indexes of its own objects' names `08`, positions `0a`
+    /// and tab order `15`.
     LayoutIndex,
-    /// A layout's theme `0b`, member and view flags `f0` `f1`, a part's
-    /// list of its objects `03, P, 07`, and an object's tab order `07`
-    /// and data format `0d`.
-    LayoutSetting,
-    /// A formula's formatted stream `05`: the text it shows; the compiled
-    /// stream `06` holds what runs.
-    FormattedFormula,
     /// `[2]` besides the document preferences `18`: version, creation,
     /// history, locale, icons and page setup.
     FileStatus,
-    /// A data source's file paths and options.
-    DataSourcePath,
-    /// A trigger cache's count of triggers `04`.
-    TriggerCount,
-    /// A step's data, read through the step's parameter schema: what the
-    /// schema does not explain is reported by the step's reader.
+    /// A step's data, once the step's schema has read all of it: every
+    /// stored place of every parameter read, and nothing the schema does
+    /// not explain (`ScriptStep::unclassified` empty).
     StepData,
-    /// A formula stored for an option that is off (an auto-enter
-    /// calculation of a field that does not auto-enter one, a tooltip
-    /// without its flag): kept by FileMaker, never evaluated.
-    Inactive,
     /// A deleted member: FileMaker empties it, keeping only its key.
     Deleted,
-    /// A layout folder, folder end or separator (member flags `01`, `02`,
-    /// `10`): not a layout and never shown, so what its definition and
-    /// settings name is not used.
-    LayoutFolder,
-    /// A place its reader reported unread itself, with what it could name.
+    /// A place its reader reported itself, as an anomaly or as a known
+    /// structure OpenMaker does not decode, with what it could name.
     Reported,
-}
+);
 
 impl Declared {
     /// Where the specs say what the place holds.
     pub(super) fn spec(self) -> &'static str {
         match self {
             Declared::CatalogIndex => "schema-path.md 5.1",
-            Declared::Stamp => "script-steps.md 4.3; schema-path.md 8.1",
-            Declared::Text => "schema-path.md 5, 5.5; calc-functions.md 6.0; file-metadata.md 6",
-            Declared::DataVersion => "schema-path.md 5.3, 5.8, 5.10; file-metadata.md 4.2",
-            Declared::FieldSetting => "schema-path.md 5.5, 5.13 (om_data::field_options)",
-            Declared::FunctionSignature => "calc-encoding.md 8; calc-functions.md 6.0",
             Declared::AccessSetting => "session-identity.md 2, 4.1",
             Declared::LayoutIndex => "layout-model.md 10.5",
-            Declared::LayoutSetting => "layout-model.md 4.1, 5.5, 7.5, 10.5, 10.6",
-            Declared::FormattedFormula => "calc-encoding.md 1, 2",
             Declared::FileStatus => "file-format.md (catalog 2); file-metadata.md 0, 2",
-            Declared::DataSourcePath => "file-metadata.md 1.1",
-            Declared::TriggerCount => "file-metadata.md 7.1",
             Declared::StepData => "script-steps.md 4, 5 (om_scripts::schema)",
-            Declared::Inactive => "schema-path.md 5.5; layout-model.md 5.1, 5.3.4",
             Declared::Deleted => "scripts.md (a deleted member is emptied)",
-            Declared::LayoutFolder => "file-metadata.md 1.1; layout-model.md 10.5, 10.6",
-            Declared::Reported => "reported unread by its reader",
+            Declared::Reported => "reported by its reader",
         }
     }
 }
@@ -143,6 +124,9 @@ enum Mark {
 pub(super) struct Layer<'t, 'a> {
     tree: &'t KeyTree<'a>,
     marks: RefCell<HashMap<usize, Mark>>,
+    /// The declarations this build used, for the test that each is
+    /// exercised.
+    used: RefCell<BTreeSet<Declared>>,
 }
 
 /// A stored node, reached through a [`Layer`].
@@ -161,6 +145,7 @@ impl<'t, 'a> Layer<'t, 'a> {
         Layer {
             tree,
             marks: RefCell::new(HashMap::new()),
+            used: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -174,6 +159,11 @@ impl<'t, 'a> Layer<'t, 'a> {
             at = at.get(*key)?;
         }
         Some(at)
+    }
+
+    /// The declarations used so far.
+    pub(super) fn declared(&self) -> BTreeSet<Declared> {
+        self.used.borrow().clone()
     }
 
     fn mark(&self, node: &Node<'_>, mark: Mark) {
@@ -395,21 +385,25 @@ impl<'t, 'a> At<'t, 'a> {
         true
     }
 
-    /// The child `key`. A node holding a value has no keys to give: it is
-    /// failed, and every child absent.
-    pub(super) fn get(self, key: u64) -> Option<At<'t, 'a>> {
+    /// The child `key`: absent, or unreadable when this node is not a list
+    /// (it is failed).
+    pub(super) fn lookup(self, key: u64) -> Read<At<'t, 'a>> {
         if !self.open() {
-            return None;
+            return Read::Unreadable;
         }
-        self.node.get(key).map(|n| self.wrap(n))
+        match self.node.get(key) {
+            Some(child) => Read::Ok(self.wrap(child)),
+            None => Read::Absent,
+        }
     }
 
-    /// The child with exactly these segment bytes.
-    pub(super) fn child(self, segment: &[u8]) -> Option<At<'t, 'a>> {
-        if !self.open() {
-            return None;
+    /// The child `key`, when stored. A node that is not a list is failed
+    /// (and reported), and has no child to give.
+    pub(super) fn get(self, key: u64) -> Option<At<'t, 'a>> {
+        match self.lookup(key) {
+            Read::Ok(child) => Some(child),
+            Read::Absent | Read::Unreadable => None,
         }
-        self.node.child(segment).map(|n| self.wrap(n))
     }
 
     /// Every child, in key order.
@@ -418,6 +412,20 @@ impl<'t, 'a> At<'t, 'a> {
             return Read::Unreadable;
         }
         Read::Ok(self.node.children.iter().map(|n| self.wrap(n)).collect())
+    }
+
+    /// Every child by its segment, for lookups in a loop over many keys.
+    pub(super) fn by_segment(self) -> Read<HashMap<&'t [u8], At<'t, 'a>>> {
+        if !self.open() {
+            return Read::Unreadable;
+        }
+        Read::Ok(
+            self.node
+                .children
+                .iter()
+                .map(|n| (n.segment.0, self.wrap(n)))
+                .collect(),
+        )
     }
 
     /// Whether the node holds nothing: no value (or an empty one) and no
@@ -435,13 +443,13 @@ impl<'t, 'a> At<'t, 'a> {
                 self.layer.mark(node, Mark::Taken);
                 Read::Ok(Cow::Borrowed(value))
             }
-            (Some([]), false) => match node.assembled() {
-                Some(bytes) if !bytes.is_empty() => {
+            (Some([]), false) | (None, false) => match node.assembled() {
+                Some(bytes) => {
                     self.layer.mark(node, Mark::Taken);
                     Read::Ok(bytes)
                 }
-                _ => {
-                    self.fail("a value stored in pieces that do not assemble");
+                None => {
+                    self.fail("a value stored in pieces that do not assemble, or keys where a value was expected");
                     Read::Unreadable
                 }
             },
@@ -453,32 +461,48 @@ impl<'t, 'a> At<'t, 'a> {
                 self.layer.mark(node, Mark::Taken);
                 Read::Ok(Cow::Borrowed(&[]))
             }
-            (None, false) => match node.assembled() {
-                Some(bytes) => {
-                    self.layer.mark(node, Mark::Taken);
-                    Read::Ok(bytes)
-                }
-                None => {
-                    self.fail("a value stored in pieces that do not assemble");
-                    Read::Unreadable
-                }
-            },
         }
+    }
+
+    /// Take the node's value without using it: a value the specs say
+    /// names nothing (a stamp, a comment, a setting). It must still read
+    /// as a value.
+    pub(super) fn take(self) {
+        let _ = self.bytes();
     }
 
     /// [`Self::bytes`] of the child `key`: absent when there is none.
     pub(super) fn bytes_at(self, key: u64) -> Read<Cow<'a, [u8]>> {
-        self.get(key).map_or(Read::Absent, At::bytes)
+        match self.lookup(key) {
+            Read::Ok(child) => child.bytes(),
+            Read::Absent => Read::Absent,
+            Read::Unreadable => Read::Unreadable,
+        }
     }
 
     /// [`Self::text`] of the child `key`: absent when there is none.
     pub(super) fn text_at(self, key: u64) -> Read<String> {
-        self.get(key).map_or(Read::Absent, At::text)
+        match self.lookup(key) {
+            Read::Ok(child) => child.text(),
+            Read::Absent => Read::Absent,
+            Read::Unreadable => Read::Unreadable,
+        }
     }
 
     /// [`Self::uint`] of the child `key`: absent when there is none.
     pub(super) fn uint_at(self, key: u64) -> Read<u64> {
-        self.get(key).map_or(Read::Absent, At::uint)
+        match self.lookup(key) {
+            Read::Ok(child) => child.uint(),
+            Read::Absent => Read::Absent,
+            Read::Unreadable => Read::Unreadable,
+        }
+    }
+
+    /// Take the value of the child `key`, when stored ([`Self::take`]).
+    pub(super) fn take_at(self, key: u64) {
+        if let Some(child) = self.get(key) {
+            child.take();
+        }
     }
 
     /// The value as FileMaker text (file-format.md 3.5).
@@ -514,13 +538,7 @@ impl<'t, 'a> At<'t, 'a> {
     /// Whether the node is exactly the leaf `expected`, the one form every
     /// observation shows. Accounted for when it is; failed when not.
     pub(super) fn observed(self, expected: &[u8]) -> bool {
-        let exact = self.node.children.is_empty() && self.node.value == Some(expected);
-        if exact {
-            self.layer.mark(self.node, Mark::Taken);
-        } else {
-            self.fail("a key whose meaning is not specified, not in its observed form");
-        }
-        exact
+        self.observed_any(&[expected])
     }
 
     /// [`Self::observed`] for a key observed in any one of `forms`.
@@ -554,27 +572,30 @@ impl<'t, 'a> At<'t, 'a> {
     }
 
     /// Account for the node and everything under it, for the reason the
-    /// spec gives (`why`). Its shape is still checked by the sweep.
+    /// table gives (`why`). Its shape is still checked by the sweep.
     pub(super) fn declare(self, why: Declared) {
-        let _ = why.spec();
+        debug_assert!(!why.spec().is_empty());
+        self.layer.used.borrow_mut().insert(why);
         self.layer.mark(self.node, Mark::Taken);
     }
 
-    /// Hand the node to a decoder that reads it by itself. Nothing is
-    /// marked: the reader marks what it relies on through the accessors.
-    pub(super) fn decode<T>(self, decoder: impl FnOnce(&Node<'a>) -> T) -> T {
-        decoder(self.node)
+    /// The script whose definition `[17, 5, S]` this node is
+    /// (`om_scripts::Script::decode`). Nothing is marked.
+    pub(super) fn decode_script(self) -> Result<om_scripts::Script, String> {
+        om_scripts::Script::decode(self.node).map_err(|e| e.to_string())
     }
 
-    /// Hand the node to a decoder that reads a whole tree, as the only
-    /// member of the catalog at `catalog` (`[4]` and `5` for a layout), so
-    /// that the decoder reads nothing outside the node (no themes, fonts
-    /// or images elsewhere in the file). Nothing is marked.
-    pub(super) fn decode_alone<T>(
-        self,
-        catalog: &'static [u8],
-        decoder: impl FnOnce(&KeyTree<'a>) -> T,
-    ) -> T {
+    /// The value list whose member `[33, 5, V]` this node is
+    /// (`meta::ValueList::from_node`). Nothing is marked.
+    pub(super) fn decode_value_list(self) -> Option<crate::meta::ValueList> {
+        crate::meta::ValueList::from_node(self.node)
+    }
+
+    /// The layout whose member `[4, 5, L]` this node is, decoded from the
+    /// member alone as the only member of a layout catalog, so that the
+    /// decoder reads nothing outside it (no theme, font or image elsewhere
+    /// in the file). Nothing is marked.
+    pub(super) fn decode_layout(self, id: u64) -> Result<Option<om_layout::Layout>, String> {
         let list = |segment: &'static [u8], children: Vec<Node<'a>>| Node {
             segment: KeySegment(segment),
             value: None,
@@ -584,10 +605,16 @@ impl<'t, 'a> At<'t, 'a> {
         let tree = KeyTree {
             root: list(
                 &[],
-                vec![list(catalog, vec![list(&[5], vec![self.node.clone()])])],
+                vec![list(&[4], vec![list(&[5], vec![self.node.clone()])])],
             ),
         };
-        decoder(&tree)
+        om_layout::Layout::decode_from_tree(&tree, id).map_err(|e| e.to_string())
+    }
+
+    /// The node as an owned copy, for a decoder of owned step data (a
+    /// button's step). Nothing is marked.
+    pub(super) fn owned(self) -> OwnedNode {
+        self.node.to_owned_node()
     }
 
     /// The bytes and nodes stored under the node, counted only up to `cap`:
