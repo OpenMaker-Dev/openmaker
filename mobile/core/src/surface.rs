@@ -118,6 +118,8 @@ pub(crate) struct Surface {
     delete_waits: u8,
     /// Taps that left a field taking typing ([`DocumentState::field_taps`]).
     field_taps: u32,
+    /// What the last Copy or Cut copied ([`Input::PasteCopied`]).
+    last_copy: Option<String>,
     /// The insertion point of the field that takes typing.
     caret: Option<crate::state::Caret>,
     /// What the app asked to happen to the record or file once the window
@@ -226,6 +228,7 @@ impl Surface {
             preedit: None,
             delete_waits: 0,
             field_taps: 0,
+            last_copy: None,
             caret: None,
             intent: None,
             asked: Vec::new(),
@@ -317,6 +320,10 @@ impl Surface {
             // its own, and while a Tab or Return still moves the focus to
             // another field (om-gui gives it in a later pass), so that it
             // counts against the field it will delete in.
+            // A paste of the last copy waits for the pass that copied it.
+            if took && matches!(input, Input::PasteCopied) {
+                break;
+            }
             let deletes = matches!(input, Input::DeleteAround { .. });
             let moving = deletes && self.app.focus_moving();
             // The wait is bounded: a trigger's script can wait for the
@@ -608,6 +615,8 @@ impl Surface {
                 // Copy and Cut are egui's own events, as a desktop event
                 // loop gives them for Command-C and Command-X.
                 if command && matches!(key, input::Key::C | input::Key::X) {
+                    // What it copies, if anything, is this copy's.
+                    self.last_copy = None;
                     events.push(if key == input::Key::C {
                         Event::Copy
                     } else {
@@ -637,6 +646,11 @@ impl Surface {
                 }
             }
             Input::Paste { text } => events.push(Event::Paste(text)),
+            Input::PasteCopied => {
+                if let Some(text) = &self.last_copy {
+                    events.push(Event::Paste(text.clone()));
+                }
+            }
             Input::DeleteAround {
                 before,
                 after,
@@ -802,7 +816,10 @@ impl Surface {
         });
         for command in platform.commands {
             match command {
-                egui::OutputCommand::CopyText(text) => self.copied = Some(text),
+                egui::OutputCommand::CopyText(text) => {
+                    self.last_copy = Some(text.clone());
+                    self.copied = Some(text);
+                }
                 egui::OutputCommand::OpenUrl(url) => self.open_urls.push(url.url),
                 _ => {}
             }

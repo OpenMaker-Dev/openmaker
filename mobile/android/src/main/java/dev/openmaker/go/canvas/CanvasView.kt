@@ -237,30 +237,26 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = key(event) || super.onKeyDown(keyCode, event)
 
     // A copy or cut asked for reaches the clipboard with a later frame: a
-    // paste asked for meanwhile waits for it, so that it pastes that text
-    // and not what the clipboard held before. A copy of nothing copies
-    // nothing, so the wait is bounded.
+    // paste asked for meanwhile pastes what the engine copied
+    // (Input.PasteCopied), in its place among the keys typed, not what the
+    // clipboard held before. A copy of nothing copies nothing, so this
+    // lasts only a moment.
     private var copyAsked = false
-    private var pasteWaiting = false
 
     /** The file's copied text reached the clipboard. */
     fun copied() {
         copyAsked = false
-        if (pasteWaiting) {
-            pasteWaiting = false
-            readClipboard()
-        }
     }
 
     private fun askCopy(key: Key) {
         copyAsked = true
         session.send(Input.Press(key, false, true))
-        postDelayed({ if (copyAsked) copied() }, COPY_WAIT_MS)
+        postDelayed({ copyAsked = false }, COPY_WAIT_MS)
     }
 
     /** The clipboard's text into the field being edited. */
     internal fun paste() {
-        if (copyAsked) pasteWaiting = true else readClipboard()
+        if (copyAsked) session.send(Input.PasteCopied) else readClipboard()
     }
 
     private fun readClipboard() {
@@ -416,7 +412,7 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
     }
 
     private companion object {
-        /** How long a paste waits for a copy or cut asked for just before it. */
+        /** How long after a copy or cut a paste takes what the engine copied. */
         const val COPY_WAIT_MS = 500L
         // How far two fingers travel sideways to turn to another record.
         const val SWIPE_DP = 80f

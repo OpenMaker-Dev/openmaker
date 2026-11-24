@@ -31,6 +31,10 @@ pub enum Input {
     },
     /// Text pasted into the field being edited.
     Paste { text: String },
+    /// Paste what this document's last Copy or Cut copied: Android sends it
+    /// while that text has yet to reach the clipboard, so a paste right
+    /// after a cut takes the cut text, in its place among what was typed.
+    PasteCopied,
     /// An input method deletes text before and after the field's
     /// selection (or composition) and keeps it, at most 64 units each way:
     /// counted in UTF-16 code units when `utf16` (Android's

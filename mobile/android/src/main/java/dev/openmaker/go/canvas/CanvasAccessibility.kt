@@ -37,6 +37,29 @@ internal class CanvasAccessibility(private val view: View, private val send: (In
         invalidateRoot()
     }
 
+    // The layout scrolls under TalkBack's scroll gestures, a page at a time,
+    // as a pan of the canvas does.
+    override fun onPopulateNodeForHost(node: AccessibilityNodeInfoCompat) {
+        node.isScrollable = true
+        node.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_FORWARD)
+        node.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SCROLL_BACKWARD)
+    }
+
+    override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+        val forward = action == AccessibilityNodeInfoCompat.ACTION_SCROLL_FORWARD
+        if (!forward && action != AccessibilityNodeInfoCompat.ACTION_SCROLL_BACKWARD) {
+            return super.performAccessibilityAction(host, action, args)
+        }
+        val density = view.resources.displayMetrics.density
+        val (width, height) = view.width / density to view.height / density
+        // The content follows the pan: forward brings what is below up.
+        val page = height * PAGE * if (forward) -1 else 1
+        send(Input.PanBegan(width / 2, height / 2))
+        send(Input.PanMoved(0f, page))
+        send(Input.PanEnded(0f, 0f))
+        return true
+    }
+
     override fun getVirtualViewAt(x: Float, y: Float): Int {
         val density = view.resources.displayMetrics.density
         val (px, py) = x / density to y / density
@@ -87,5 +110,10 @@ internal class CanvasAccessibility(private val view: View, private val send: (In
         if (action != AccessibilityNodeInfoCompat.ACTION_CLICK || !item.enabled) return false
         send(Input.Activate(item.id))
         return true
+    }
+
+    private companion object {
+        /** How much of the canvas's height a screen reader's scroll moves. */
+        const val PAGE = 0.8f
     }
 }

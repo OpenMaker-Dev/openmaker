@@ -272,7 +272,13 @@ struct LaunchCenter: View {
     {
       reload()
       tab = .local
-      choose(FileEntry(name: url.lastPathComponent))
+      // One file is open at a time: the open one keeps its window (and a
+      // save it may be waiting on) until it is closed.
+      if let open = opened {
+        error = "Close \(open.entry.name) to open \(url.lastPathComponent)."
+      } else {
+        choose(FileEntry(name: url.lastPathComponent))
+      }
       return
     }
     busy = true
@@ -420,6 +426,9 @@ struct LaunchCenter: View {
     }.value
     signingIn = nil
     recentData = encode(Array(([file] + recent.filter { $0 != file }).prefix(30)))
+    // A file opened meanwhile keeps its window: this one is let go of,
+    // which closes it.
+    guard opened == nil else { return }
     opened = DocumentModel(entry: file, document: document, signal: signal)
   }
 
