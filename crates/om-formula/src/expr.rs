@@ -190,8 +190,9 @@ impl Expr {
         false
     }
 
-    /// Call `f` with each of the node's direct operands.
-    fn for_each_child<'a>(&'a self, mut f: impl FnMut(&'a Expr)) {
+    /// Call `f` with each of the node's direct operands, so a caller can
+    /// walk a formula with a stack of its own rather than by recursion.
+    pub fn for_each_child<'a>(&'a self, mut f: impl FnMut(&'a Expr)) {
         match self {
             Expr::List(items)
             | Expr::Call { args: items, .. }
