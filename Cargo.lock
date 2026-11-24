@@ -4830,6 +4830,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-store"
+version = "0.0.0"
+dependencies = [
+ "ring",
+]
+
+[[package]]
 name = "om-transfer"
 version = "0.0.0"
 dependencies = [
