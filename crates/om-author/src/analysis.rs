@@ -87,6 +87,7 @@ impl Analysis {
             ObjectId::CustomFunction(c) => reference("custom_function", c, file),
             ObjectId::DataSource(d) => reference("data_source", d, file),
             ObjectId::CustomMenu(m) => reference("custom_menu", m, file),
+            ObjectId::PrivilegeSet(p) => reference("privilege_set", p, file),
         };
         json!(text)
     }

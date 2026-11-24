@@ -1,7 +1,8 @@
 //! The references in one formula (calc-encoding.md 2.5, 4.1, 5.2, 7): the
-//! fields, custom functions and plug-in functions it stores by id, and the
-//! functions that look a name up when it runs. Walked with a stack of its
-//! own, so a deeply nested formula cannot exhaust the thread's.
+//! fields and custom functions it stores by id, and the functions that look
+//! a name up when it runs. Walked with a stack of its own, so a deeply
+//! nested formula cannot exhaust the thread's; the number of nodes walked
+//! is returned for the build's work budget.
 
 use om_formula::Expr;
 
@@ -34,8 +35,8 @@ pub(super) enum FormulaRef {
 }
 
 /// What a Design function's text arguments can name, by the function's
-/// English name (calc-functions.md, Design functions). An unknown one can
-/// name anything.
+/// English name (calc-functions.md, Design functions: each takes a file
+/// name and an object's name). An unknown one can name anything.
 fn design_kinds(name: &str) -> Vec<Kind> {
     let lower = name.to_ascii_lowercase();
     let starts = |prefix: &str| lower.starts_with(prefix);
@@ -54,21 +55,66 @@ fn design_kinds(name: &str) -> Vec<Kind> {
     } else if starts("databasenames") || starts("windownames") {
         Vec::new()
     } else {
-        Kind::REFERABLE.to_vec()
+        Kind::ANY.to_vec()
     }
 }
 
-/// What `Evaluate`'s and `IsValidExpression`'s text can name: anything a
-/// formula can, and through Design functions anything else.
-fn expression_kinds() -> Vec<Kind> {
-    Kind::REFERABLE.to_vec()
-}
+/// The built-in functions that look an object up by a name or an
+/// expression when they run (calc-functions.md, the function catalog
+/// `calc-functions.csv`), by their English names, and what the name can be.
+/// `Evaluate` and `GetField` have Polish forms of their own (`dc`, `dd`).
+const NAMING_FUNCTIONS: [(&str, NameUse, &[Kind]); 8] = [
+    (
+        "ExecuteSQL",
+        NameUse::ExecuteSql,
+        &[Kind::Field, Kind::Occurrence],
+    ),
+    (
+        "ExecuteSQLe",
+        NameUse::ExecuteSql,
+        &[Kind::Field, Kind::Occurrence],
+    ),
+    ("IsValidExpression", NameUse::ExpressionCheck, &Kind::ANY),
+    // `GetLayoutObjectAttribute ( objectName ; attributeName ... )`.
+    (
+        "GetLayoutObjectAttribute",
+        NameUse::ObjectByName,
+        &[Kind::LayoutObject],
+    ),
+    // `GetRecordIDsFromFoundSet ( type { ; tableOccurrenceOrPortal } )`.
+    (
+        "GetRecordIDsFromFoundSet",
+        NameUse::OccurrenceByName,
+        &[Kind::Occurrence, Kind::LayoutObject],
+    ),
+    // `GetFieldsOnLayout ( layoutName )`.
+    (
+        "GetFieldsOnLayout",
+        NameUse::LayoutByName,
+        &[Kind::Layout, Kind::Field],
+    ),
+    // `GetTableDDL ( tableOccurrenceNames ; ignoreError )`.
+    (
+        "GetTableDDL",
+        NameUse::OccurrenceByName,
+        &[Kind::Occurrence, Kind::Field],
+    ),
+    // `GetToolDefinitions ( provider ; functionName ... )`.
+    (
+        "GetToolDefinitions",
+        NameUse::FunctionByName,
+        &[Kind::Script, Kind::CustomFunction],
+    ),
+];
 
-/// Every reference `expr` makes, in the order met.
-pub(super) fn references(expr: &Expr) -> Vec<FormulaRef> {
+/// Every reference `expr` makes, in the order met, and how many nodes were
+/// walked.
+pub(super) fn references(expr: &Expr) -> (Vec<FormulaRef>, usize) {
     let mut out = Vec::new();
+    let mut nodes = 0;
     let mut stack = vec![expr];
     while let Some(expr) = stack.pop() {
+        nodes += 1;
         match expr {
             Expr::Field(f) | Expr::FieldRef(f) => match (f.occurrence.id(), f.field.id()) {
                 (Some(occurrence), Some(field)) => {
@@ -87,7 +133,7 @@ pub(super) fn references(expr: &Expr) -> Vec<FormulaRef> {
             Expr::Evaluate { .. } => out.push(FormulaRef::ByName {
                 how: NameUse::Evaluate,
                 function: None,
-                could_refer_to: expression_kinds(),
+                could_refer_to: Kind::ANY.to_vec(),
             }),
             Expr::GetField { .. } => out.push(FormulaRef::ByName {
                 how: NameUse::GetField,
@@ -96,19 +142,14 @@ pub(super) fn references(expr: &Expr) -> Vec<FormulaRef> {
             }),
             Expr::Call { op, .. } => {
                 let name = op.name().unwrap_or_default();
-                if name.eq_ignore_ascii_case("ExecuteSQL")
-                    || name.eq_ignore_ascii_case("ExecuteSQLe")
+                if let Some((name, how, kinds)) = NAMING_FUNCTIONS
+                    .iter()
+                    .find(|(known, ..)| name.eq_ignore_ascii_case(known))
                 {
                     out.push(FormulaRef::ByName {
-                        how: NameUse::ExecuteSql,
-                        function: Some(name.to_owned()),
-                        could_refer_to: vec![Kind::Field, Kind::Occurrence],
-                    });
-                } else if name.eq_ignore_ascii_case("IsValidExpression") {
-                    out.push(FormulaRef::ByName {
-                        how: NameUse::ExpressionCheck,
-                        function: Some(name.to_owned()),
-                        could_refer_to: expression_kinds(),
+                        how: *how,
+                        function: Some((*name).to_owned()),
+                        could_refer_to: kinds.to_vec(),
                     });
                 }
             }
@@ -118,7 +159,7 @@ pub(super) fn references(expr: &Expr) -> Vec<FormulaRef> {
                 out.push(FormulaRef::ByName {
                     how: NameUse::DesignFunction,
                     function: name.map(str::to_owned),
-                    could_refer_to: name.map_or_else(|| Kind::REFERABLE.to_vec(), design_kinds),
+                    could_refer_to: name.map_or_else(|| Kind::ANY.to_vec(), design_kinds),
                 });
             }
             Expr::PluginCall { function, .. } => out.push(FormulaRef::ByName {
@@ -128,7 +169,7 @@ pub(super) fn references(expr: &Expr) -> Vec<FormulaRef> {
                     String::from_utf8_lossy(&function.plugin),
                     function.function
                 )),
-                could_refer_to: Kind::REFERABLE.to_vec(),
+                could_refer_to: Kind::ANY.to_vec(),
             }),
             _ => {}
         }
@@ -137,12 +178,5 @@ pub(super) fn references(expr: &Expr) -> Vec<FormulaRef> {
         expr.for_each_child(|c| stack.push(c));
         stack[at..].reverse();
     }
-    out
-}
-
-/// The kinds a formula that does not decode could refer to: what a
-/// formula names by id, and through functions that look names up,
-/// anything.
-pub(super) fn unreadable_kinds() -> Vec<Kind> {
-    Kind::REFERABLE.to_vec()
+    (out, nodes)
 }

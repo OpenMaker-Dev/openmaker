@@ -1101,7 +1101,9 @@ impl NativeProvider {
     /// catalog the reference graph reads, whole, and each table's field
     /// catalog. A catalog the host does not have is left out; one it does
     /// not send is listed in [`DesignCatalogs::unavailable`] with the
-    /// host's error. No record, account or privilege set is read.
+    /// host's error. No record or account is read: of the security
+    /// catalog, only the privilege sets `[23, 2]`, which hold no
+    /// credential.
     pub fn design_catalogs(&mut self) -> Result<DesignCatalogs, DataError> {
         self.require_open()?;
         let session = self.session.as_mut().expect("open session");

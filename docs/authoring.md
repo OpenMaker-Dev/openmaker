@@ -1098,37 +1098,43 @@ as FMPerception do from FileMaker's Database Design Report (issue
 downloads the file's design catalogs over a new connection
 (`NativeProvider::design_catalogs`): the file's options `[2]`, the schema
 `[3]` and each table's fields `[T, 3]`, layouts `[4]`, custom functions
-`[16]`, scripts `[17]`, data sources `[32]`, value lists `[33]` and custom
-menus `[65]`. From them it builds the file's reference graph
-(`om_data::design_refs`). It reads no record, account or privilege set, and
-writes nothing. The graph is built from the catalogs as a key tree holds
-them, not from a connection, so a server can build it from any version of
-a file it hosts ([server-storage.md](server-storage.md) 9).
+`[16]`, scripts `[17]`, privilege sets `[23, 2]`, data sources `[32]`,
+value lists `[33]`, catalog `[64]` and custom menus `[65]`. From them it
+builds the file's reference graph (`om_data::design_refs`). It reads no
+record and no account, and writes nothing. The graph is built from the
+catalogs as a key tree holds them, not from a connection, so a server can
+build it from any version of a file it hosts
+([server-storage.md](server-storage.md) 9).
 
 **What counts as a reference.** An id one design object stores to name
 another, read by the decoder OpenMaker already has for it:
 
 | Holder | References | Read by |
 |---|---|---|
-| Script step | each parameter of the step's schema: a field or a variable's target, a layout, a script (also another file's, through its data source), a table occurrence or base table, a data source, calculations, find request fields, a sort order's fields, summary fields and value lists; an import order's target occurrence and fields and an export order's fields | `om_scripts` (script-steps.md 4, 5), `om_transfer::spec` (11.3, 11.4) |
-| Layout | its table occurrence, sub-summary parts' break fields, script triggers and their parameters | `om_layout` |
-| Layout object | a field object's field and value list; a portal's occurrence, filter and stored sort; a button's or group's step, read as a script step; script triggers; merge fields; its label, tooltip, placeholder, hide condition, conditional formatting, active segment, web address, calculated icon and item calculations | `om_layout` (layout-model.md, calc-encoding.md 8) |
-| Field | its calculation, auto-enter, validation, validation message and external storage path calculations; a lookup's occurrences and copied field; the value list it validates by; its furigana field; a summary's summarized and additional fields | `om_data::field_options`, `om_data::meta` (schema-path.md 5.5, 5.13; file-metadata.md 5) |
+| Script step | each stored location of each parameter of the step's schema: a field or a variable's target, a layout, a script (also another file's, through its data source), a table occurrence or base table, a data source, calculations, find request fields, a sort order's fields, summary fields and value lists; an import order's target occurrence and fields and an export order's fields | `om_scripts` (script-steps.md 4, 5), `om_transfer::spec` (11.3, 11.4) |
+| Layout | its table occurrence, sub-summary parts' break fields, script triggers and their parameters, and a stored table view's own parts and columns | `om_layout` (layout-model.md 4, 10.14) |
+| Layout object | a field object's field and value list; a portal's occurrence and stored sort; a button's or group's step, read as a script step with the data in its attribute `11`; script triggers; merge fields; every formula in its attributes (label, tooltip, older button text, placeholder, portal filter, hide condition, conditional formatting, active segment, web address, calculated icon, item calculations) | `om_layout` (layout-model.md 5.5, calc-encoding.md 8) |
+| Field | its calculation, auto-enter, validation, validation message, external storage path and display names calculations; a lookup's occurrences and copied field; the value list it validates by; its furigana field; a summary's summarized and additional fields | `om_data::field_options`, `om_data::meta` (schema-path.md 5.5, 5.13; file-metadata.md 5) |
 | Table occurrence | its table, or its data source | `om_hbam::catalog` (file-metadata.md 1.1) |
 | Relationship | both occurrences, each match's fields, the sort of a sorted side | `om_data::meta` (file-metadata.md 4) |
 | Value list | its fields, the related-values occurrence, another file's data source, a calculated list's formula | `om_data::meta` (file-metadata.md 6) |
 | Custom function | its body | `om_formula` |
+| Privilege set | the calculations that limit a table's records | session-identity.md 2.1 |
 | The file | File Options' startup layout and file script triggers | `om_data::meta` (file-metadata.md 3) |
 
 A formula stores the fields and custom functions it names by id, and its
 context occurrence (calc-encoding.md 2.5, 4.2): those are its references.
 It stores Design and plug-in functions by id too, but they name no object
-of the file. A field is named through a table occurrence and
-resolves to the occurrence's table's field; through an occurrence of
-another file's table it is `external`. A name in a text literal is never
-resolved: a function that looks a name up when the formula runs is listed
-as a reference by name instead (below). A reference an object holds to
-itself is not a use of it.
+of the file. A field is named through a table occurrence and resolves to
+the occurrence's table's field; through an occurrence of another file's
+table it is `external`. A name in a text literal is never resolved: a
+function that looks a name up when the formula runs is listed as a
+reference by name instead (below). A reference an object holds to itself
+is not a use of it. A formula stored for an option that is off (an
+auto-enter calculation of a field that does not auto-enter one, a tooltip
+without its flag) is never evaluated and is not read. A privilege set's
+access to layouts, scripts, value lists and fields is a setting on those
+objects, not a use of them.
 
 **Results.** Each reference names its `holder` (`ref`, kind, name; a
 layout object's layout), the `place` in it (`part`: the step's parameter,
@@ -1149,26 +1155,57 @@ about: the `read` counts; the `unread` places, each with its `reason`
 `could_refer_to`; the references `by_name`; the catalogs the host did not
 give (`unavailable`); and `complete`, true only when nothing in them could
 refer to those kinds. Lists stop at `limit`; their `total` is always
-given. Not read:
+given.
+
+Completeness is checked, not assumed. Each catalog member the graph reads
+(a field, table, occurrence, relationship, custom function, value list,
+script, layout, part, layout object's attributes, trigger, privilege set,
+catalog `[64]` member) is read through a ledger of its keys: a key that
+is neither read nor known from the specs to name no object (a name, a
+comment, a stamp, an index the objects' own references are read for) is
+reported unread, as is every value a decoder rejects and every variant
+the reader does not handle. A place that is not read is taken to refer to
+anything. Not read:
 
 - custom menus `[65, 5, M]`, whose items run steps: each is listed;
-- privilege sets' record access calculations: the security catalog is not
-  read;
-- a step's list of several table occurrences or scripts, a step id
-  without a parameter schema, and stored step data the schema does not
-  explain;
-- a chart's or plug-in object's setup;
+- privilege sets when the host does not give `[23, 2]`;
+- a step's list of several table occurrences or scripts, a step id without
+  a parameter schema, and stored step data the schema does not explain;
+- a chart's or plug-in object's setup, an object of an unknown type, and
+  fields of a stored record (an object, a field binding, a portal, a
+  button) its decoder does not know;
+- a key of a member that the specs do not describe, and keys the specs
+  describe as empty that hold something;
 - whatever does not decode, and a script's steps past the 20,000th.
 
-References by name, never resolved: Perform Script, Perform Script on
-Server and its callback by name; Go to Layout by name or number; Set Field
-By Name and Replace Field Contents by Name; Go to Related Record's table by
+References by name, never resolved, each with the kinds it could name:
+Perform Script, Perform Script on Server and its callback by name
+(`script` or `datasource::script`, script-runtime.md 3.6); Go to Layout and
+Go to Related Record by a calculated name or number (the runtime then
+ignores the stored layout key, which is not counted); Set Field By Name and
+Replace Field Contents by Name; Go to Related Record's table by
 calculation; a layout object's name (Go to Object, Refresh Object, Set Web
-Viewer, Perform JavaScript in Web Viewer, Refresh Portal); Execute
-FileMaker Data API's request, Perform SQL Query by Natural Language and
-Perform Find by Natural Language; OnWindowTransaction's field name; and in
-formulas `Evaluate`, `GetField`, `ExecuteSQL`, `IsValidExpression`, the
-Design functions and plug-in functions.
+Viewer, Perform JavaScript in Web Viewer, Refresh Portal, a button bar's
+active segment calculation); Execute FileMaker Data API's request, Perform
+SQL Query by Natural Language and Perform Find by Natural Language, and the
+web script name of the AI steps; the URLs of Open URL, Insert from URL and
+Execute URL (an `fmp://` URL performs a script by name); the script text
+of Perform AppleScript, Send Event and Send DDE Execute; a web viewer
+allowed to perform scripts from JavaScript; OnWindowTransaction's field
+name; and in formulas `Evaluate`, `GetField`, `ExecuteSQL`,
+`IsValidExpression`, `GetLayoutObjectAttribute`,
+`GetRecordIDsFromFoundSet`, `GetFieldsOnLayout`, `GetTableDDL`,
+`GetToolDefinitions`, the Design functions and plug-in functions.
+
+**Bounds.** A hostile file cannot make the build unbounded: formulas are
+decoded within `om_formula`'s limits and walked without recursion; a
+script is read up to 20,000 steps; a value that steps naming one data key
+share is decoded once per script and recorded at each step; and the build
+stops after 1,000,000 references, unread places and references by name
+together (`MAX_ENTRIES`) or 50,000,000 units of work (`MAX_WORK`: formula
+nodes walked, steps, layout objects and stored keys read), with an unread
+entry (`limit`) at the place where it stopped, so the result is
+incomplete, not silently short.
 
 **Nothing refers to it.** `unused_objects` lists the tables, fields,
 occurrences, layouts, scripts, value lists, custom functions and data
@@ -1176,9 +1213,8 @@ sources no decoded reference names. Its `finding` is `unreferenced` only
 when the coverage of its kind is complete; otherwise it is
 `no_decoded_reference`: it may still be used from a place in `coverage`.
 A file with custom menus, as every shipped template has, gives
-`no_decoded_reference` for every kind, and the unread privilege sets do so
-for fields, occurrences and custom functions in any file. A layout reached
-only from the layout menu has no reference.
+`no_decoded_reference` for every kind. A layout reached only from the
+layout menu has no reference.
 
 **Call chains.** `script_calls` follows every step parameter naming a
 script of this file (Perform Script, Perform Script on Server, a callback,
@@ -1190,22 +1226,26 @@ Buttons, triggers and menus that perform a script are in its `find_uses`,
 not its callers.
 
 **Measured.** Over the 66 FileMaker Pro 26 templates (6 starter solutions
-in 11 languages): 9,152 objects (209 tables, 2,354 fields, 209
+in 11 languages): 9,350 objects (209 tables, 2,354 fields, 209
 occurrences, 143 relationships, 231 layouts, 5,544 layout objects, 198
-scripts with 935 steps, 264 value lists) and 264 custom menus; 6,261
-references, every one resolved; 330 places not read (the 264 custom menus,
-and each file's privilege sets); 121 references by name, all Go to
-Object's object names (`crates/om-data/tests/design_refs_corpus.rs`,
-ignored by default). The results have not been compared with FileMaker's
-Database Design Report or with FMPerception.
+scripts with 935 steps, 264 value lists, 198 privilege sets) and 264
+custom menus; 6,261 references from 4,950 formulas and the other places,
+every one resolved; 264 places not read, the custom menus; 121 references
+by name, all Go to Object's object names
+(`crates/om-data/tests/design_refs_corpus.rs`, ignored by default). The
+results have not been compared with FileMaker's Database Design Report or
+with FMPerception.
 
 **Limits.** The analysis is of the file's current design: a past revision
 needs the store's design history (server-storage.md 9). There is no
 security review. Each command downloads every design catalog and builds
 the graph again. A catalog the host does not give an account is listed as
-`unavailable`, and references into it are `unresolved`, not `broken`. A
-Go to Related Record step's layout in another file and the layouts of
-other files are not followed.
+`unavailable`, references into it are `unresolved`, not `broken`, and no
+kind is complete; whether FileMaker Server gives `[23, 2]` and `[64]` has
+not been measured. Catalogs outside the list above (themes, fonts, the
+image library and image streams, base directories, accounts) are taken to
+name no design object. A Go to Related Record step's layout in another
+file and the objects of other files are not followed.
 
 ## Command line
 

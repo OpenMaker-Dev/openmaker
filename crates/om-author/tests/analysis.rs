@@ -2,7 +2,8 @@
 //! on a synthetic file whose references are known: the field Tasks::Count
 //! is used by a script step, a layout field object and a calculation
 //! field; the script Caller performs Callee and is performed by a button;
-//! Callee sets a field that was deleted; the script Unused is used by
+//! Callee sets a field that was deleted, exports and imports other fields
+//! and reads one by name with `GetField`; the script Unused is used by
 //! nothing.
 
 mod common;
@@ -87,6 +88,7 @@ fn analysis_tree() -> OwnedNode {
                 fixture::set_field(DELETED, "\"x\""),
                 export_records(fixture::NAME),
                 import_records(fixture::SETTING),
+                fixture::set_variable("$due", "GetField ( \"Tasks::Due\" )"),
                 fixture::exit_with("\"done\""),
             ],
         ),
@@ -213,15 +215,15 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
         assert_eq!(u["via"]["ref"], r("occurrence", "13631489"));
     }
     assert_eq!(count["total"], 3);
-    // Privilege sets' record access calculations, which can name fields,
-    // are not read: the result says so.
+    // Every place was read, privilege sets included, but Callee's
+    // `GetField` names a field when it runs: the result says so.
     assert_eq!(count["complete"], false);
-    assert_eq!(count["coverage"]["unread"]["total"], 1, "{count:#}");
-    assert_eq!(
-        count["coverage"]["unread"]["places"][0]["place"]["part"],
-        "privilege sets"
-    );
-    assert_eq!(count["coverage"]["by_name"]["total"], 0);
+    assert_eq!(count["coverage"]["unread"]["total"], 0, "{count:#}");
+    assert_eq!(count["coverage"]["by_name"]["total"], 1, "{count:#}");
+    let by_name = &count["coverage"]["by_name"]["places"][0];
+    assert_eq!(by_name["how"], "get_field");
+    assert_eq!(by_name["holder"]["ref"], r("script", "2"));
+    assert_eq!(by_name["place"]["step"]["index"], 4);
     assert_eq!(count["coverage"]["unavailable"], json!([]));
     assert_eq!(count["coverage"]["read"]["scripts"], 3);
 
@@ -273,7 +275,7 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     );
 
     // One unused script; every place that could perform a script was
-    // read, so it is certain. Fields are not: privilege sets are unread.
+    // read, so it is certain. Fields are not: `GetField` names one by name.
     let unused = run(&mut service, "unused_objects", json!({"kinds": ["script"]}));
     println!("unused_objects {unused:#}");
     assert_eq!(unused["findings"]["script"], "unreferenced", "{unused:#}");

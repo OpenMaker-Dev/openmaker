@@ -23,18 +23,36 @@
 //! inside a formula's text literal is a reference only for the function
 //! that looks it up at run time, and is listed as such.
 //!
+//! Completeness is checked, not assumed: each stored member the builder
+//! reads is a ledger of its child keys, and a key the reader did not read
+//! or know to hold no reference is reported unread, as is every value a
+//! decoder rejects or a variant the reader does not handle.
+//!
 //! Bounds: each script is read up to the text form's step limit
 //! ([`MAX_PASTE_STEPS`](om_scripts::display::MAX_PASTE_STEPS)), formulas
-//! through `om_formula`'s limits and walked without recursion, and the call
-//! chain walk visits each script once.
+//! through `om_formula`'s limits and walked without recursion, a stored
+//! value many steps share is decoded once, the build stops at
+//! [`MAX_ENTRIES`] references and coverage entries or [`MAX_WORK`] units
+//! of work with an entry saying where, and the call chain walk visits each
+//! script once.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+mod catalogs;
 mod formula;
+mod layouts;
 mod read;
 mod steps;
 
 pub use read::{build, DESIGN_CATALOGS};
+
+/// The most references, unread places and references by name one build
+/// records, together. Past it the build stops, with an unread entry where.
+pub const MAX_ENTRIES: usize = 1_000_000;
+/// The most work one build does: formula nodes walked, steps, layout
+/// objects and stored keys read. Past it the build stops, with an unread
+/// entry where.
+pub const MAX_WORK: usize = 50_000_000;
 
 /// The kinds of design object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -51,6 +69,9 @@ pub enum Kind {
     DataSource,
     /// A custom menu (`[65, 5, M]`), whose items are not decoded.
     CustomMenu,
+    /// A privilege set (`[23, 2, 5, P]`), as the holder of its record
+    /// access calculations.
+    PrivilegeSet,
     /// The file's own options: the layout it opens on and its script
     /// triggers.
     File,
@@ -64,6 +85,20 @@ impl Kind {
         Kind::Field,
         Kind::Occurrence,
         Kind::Layout,
+        Kind::Script,
+        Kind::ValueList,
+        Kind::CustomFunction,
+        Kind::DataSource,
+    ];
+
+    /// Every kind a place can refer to, by id or by name: what a place
+    /// that could not be read is taken to refer to.
+    pub const ANY: [Kind; 9] = [
+        Kind::Table,
+        Kind::Field,
+        Kind::Occurrence,
+        Kind::Layout,
+        Kind::LayoutObject,
         Kind::Script,
         Kind::ValueList,
         Kind::CustomFunction,
@@ -84,6 +119,7 @@ impl Kind {
             Kind::CustomFunction => "custom_function",
             Kind::DataSource => "data_source",
             Kind::CustomMenu => "custom_menu",
+            Kind::PrivilegeSet => "privilege_set",
             Kind::File => "file",
         }
     }
@@ -108,6 +144,7 @@ pub enum ObjectId {
     CustomFunction(u64),
     DataSource(u64),
     CustomMenu(u64),
+    PrivilegeSet(u64),
 }
 
 impl ObjectId {
@@ -125,6 +162,7 @@ impl ObjectId {
             ObjectId::CustomFunction(_) => Kind::CustomFunction,
             ObjectId::DataSource(_) => Kind::DataSource,
             ObjectId::CustomMenu(_) => Kind::CustomMenu,
+            ObjectId::PrivilegeSet(_) => Kind::PrivilegeSet,
         }
     }
 }
@@ -278,16 +316,32 @@ pub struct Unread {
 pub enum NameUse {
     /// Perform Script and its variants "by name".
     ScriptByName,
-    /// Go to Layout by a calculated name or number.
+    /// Go to Layout and Go to Related Record by a calculated name or
+    /// number.
     LayoutByCalculation,
+    /// A layout by name (`GetFieldsOnLayout`).
+    LayoutByName,
     /// Set Field By Name, Replace Field Contents by Name.
     FieldByName,
     /// A layout object named by a calculation (Go to Object, Refresh
     /// Object, Set Web Viewer, ...).
     ObjectByName,
     /// A table occurrence by a calculated name (Go to Related Record's
-    /// table by calculation, Perform SQL Query by Natural Language).
+    /// table by calculation, Perform SQL Query by Natural Language,
+    /// `GetTableDDL`, `GetRecordIDsFromFoundSet`).
     OccurrenceByName,
+    /// A function by name (`GetToolDefinitions`).
+    FunctionByName,
+    /// A URL a step opens or calls: an `fmp://` URL performs a script by
+    /// name, and the Data API and OData name layouts, tables and fields.
+    Url,
+    /// A web viewer allowed to perform scripts from JavaScript
+    /// (`FileMaker.PerformScript`).
+    WebViewerScript,
+    /// Script text another application runs (Perform AppleScript, Send
+    /// Event, Send DDE Execute), which can name a script, a layout or a
+    /// field.
+    ExternalScriptText,
     /// Text a step sends to be read at run time (Execute FileMaker Data
     /// API, the natural-language steps).
     RequestText,
@@ -310,9 +364,14 @@ impl NameUse {
         match self {
             NameUse::ScriptByName => "script_by_name",
             NameUse::LayoutByCalculation => "layout_by_calculation",
+            NameUse::LayoutByName => "layout_by_name",
             NameUse::FieldByName => "field_by_name",
             NameUse::ObjectByName => "object_by_name",
             NameUse::OccurrenceByName => "occurrence_by_name",
+            NameUse::FunctionByName => "function_by_name",
+            NameUse::Url => "url",
+            NameUse::WebViewerScript => "web_viewer_script",
+            NameUse::ExternalScriptText => "external_script_text",
             NameUse::RequestText => "request_text",
             NameUse::Evaluate => "evaluate",
             NameUse::GetField => "get_field",
@@ -358,8 +417,9 @@ impl Unavailable {
             [32, ..] => vec![Kind::DataSource],
             [33, ..] => vec![Kind::ValueList],
             [65, ..] => vec![Kind::CustomMenu],
+            [23, ..] => vec![Kind::PrivilegeSet],
             [_, 3] => vec![Kind::Field],
-            _ => Kind::REFERABLE.to_vec(),
+            _ => Kind::ANY.to_vec(),
         }
     }
 
