@@ -33,17 +33,26 @@
 //! [`crate::slot::MAX_DEPTH`] segments of up to 255 bytes. Pages are at
 //! most [`MAX_PAGE_SIZE`] bytes.
 //!
-//! **What it refuses.** Everything [`crate::HbamFile`] refuses, with the
-//! same error kinds: a missing magic, an unusable page size or a file of
-//! partial pages when it opens; a broken leaf chain, a bad page header, an
-//! undecodable chunk, a key out of order or a key given two values while
-//! it reads (an encrypted file fails there, as in `HbamFile`). A chain that
-//! loops is stopped by its back links (`container::ChainLinks`)
-//! and reported as a broken chain, "prev link does not match", where
-//! `HbamFile` says "cycle". It also refuses four things `HbamFile` reads:
+//! **What it refuses.** Everything [`crate::HbamFile`] refuses: a missing
+//! magic, an unusable page size or a file of partial pages when it opens; a
+//! broken leaf chain, a bad page header, an undecodable chunk, a key out of
+//! order or a key given two values while it reads (an encrypted file fails
+//! there, as in `HbamFile`). A check the two readers share gives the same
+//! error kind in both. A file with more than one fault can fail on a
+//! different one here: the stream stops at the first fault in reading
+//! order, and its own checks below can come before one `HbamFile` reports.
+//! A chain that loops is stopped by its back links
+//! (`container::ChainLinks`) and reported as a broken chain, "prev link
+//! does not match", where `HbamFile` says "cycle". It also refuses five
+//! things `HbamFile` reads:
 //!
 //! - a page larger than [`MAX_PAGE_SIZE`] ([`Error::BadPageSize`]), which
 //!   it would have to hold;
+//! - a page that does not begin by pushing again the path the page before
+//!   it left open ([`Error::BrokenChain`]; hbam-writer.md 2.1). Each page's
+//!   stream starts at the root, so without that the pages do not join into
+//!   one stream, and a pop on the later page would seem to close the root
+//!   list while lists of the earlier page are still open;
 //! - a value given to a key after its children ([`Error::KeyOrder`]),
 //!   which a stream cannot return before them;
 //! - a leaf chain that ends before its stream closes the root list
@@ -51,8 +60,9 @@
 //! - a leaf chain that goes on after its stream closed the root list
 //!   ([`Error::BrokenChain`]).
 //!
-//! Every file FileMaker wrote closes the root list with the last byte of
-//! its tail page (file-format.md 3.6), and no key of it has a value and
+//! Every file FileMaker wrote pushes the open path again at each page start
+//! (hbam-writer.md 2.1) and closes the root list with the last byte of its
+//! tail page (file-format.md 3.6), and no key of it has a value and
 //! children (hbam-writer.md 2.2).
 //!
 //! The stream returns keys before it finds an error further on; a reader
@@ -75,6 +85,10 @@ use crate::slot::{decode_chunk, path_string, step, ChunkKind, KeySegment, Step};
 /// most FileMaker's page body length `mPageDataMax`, a u16, can say
 /// (file-format.md 2.4). Every file FileMaker wrote has 4,096-byte pages.
 pub const MAX_PAGE_SIZE: u32 = u16::MAX as u32 + PAGE_HEADER_LEN as u32;
+
+/// Why a page that does not push again the path left open before it is
+/// refused.
+const UNJOINED: &str = "the page does not push again the path left open before it";
 
 /// A node's kind: what [`crate::Node`]'s `push` and `value` say together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -150,6 +164,10 @@ pub struct NodeStream<R> {
     depth: usize,
     /// Whether the current page's stream closed the root list.
     root_closed: bool,
+    /// How many segments of the path the page before left open the current
+    /// page has still to push again, before any other slot or pop
+    /// (hbam-writer.md 2.1).
+    repush: usize,
     spine: Spine,
     /// After the end or an error: nothing more is read.
     done: bool,
@@ -329,11 +347,18 @@ impl<R: Read + Seek> NodeStream<R> {
         let mut superblock = vec![0; page_size as usize];
         superblock[..HEADER_LEN].copy_from_slice(&head);
         source.read_exact(&mut superblock[HEADER_LEN..])?;
+        // Page numbers are 32 bits (file-format.md 2.2): a longer file has
+        // pages no link can name, and is not read as if it ended there.
+        let page_count =
+            u32::try_from(len / u64::from(page_size)).map_err(|_| Error::BrokenChain {
+                page: 0,
+                reason: "the file has more pages than a page number can name",
+            })?;
         Ok(NodeStream {
             source,
             position: Some(u64::from(page_size)),
             page_size,
-            page_count: u32::try_from(len / u64::from(page_size)).unwrap_or(u32::MAX),
+            page_count,
             superblock,
             buffer: vec![0; page_size as usize],
             in_buffer: None,
@@ -342,6 +367,7 @@ impl<R: Read + Seek> NodeStream<R> {
             offset: 0,
             depth: 0,
             root_closed: false,
+            repush: 0,
             spine: Spine::default(),
             done: false,
         })
@@ -403,7 +429,22 @@ impl<R: Read + Seek> NodeStream<R> {
                 let body = &self.buffer[PAGE_HEADER_LEN..PAGE_HEADER_LEN + page.used];
                 let chunk = decode_chunk(body, self.offset)?;
                 let end = self.offset + chunk.raw.len();
-                match step(chunk.kind, self.depth, self.root_closed, self.offset)? {
+                let step = step(chunk.kind, self.depth, self.root_closed, self.offset)?;
+                if self.repush > 0 && step != Step::Begin {
+                    // The first `depth` segments of the spine are the path
+                    // pushed again so far; the next one is due.
+                    let again = step == Step::Push
+                        && self.depth < self.spine.len
+                        && self.spine.segments[self.depth] == chunk.key;
+                    if !again {
+                        return Err(Error::BrokenChain {
+                            page: page.number,
+                            reason: UNJOINED,
+                        });
+                    }
+                    self.repush -= 1;
+                }
+                match step {
                     Step::Begin => {}
                     Step::Pop => self.depth -= 1,
                     Step::CloseRoot => self.root_closed = true,
@@ -426,6 +467,9 @@ impl<R: Read + Seek> NodeStream<R> {
                 page: page.number,
                 reason,
             };
+            if self.repush > 0 {
+                return Err(broken(UNJOINED));
+            }
             if page.next == 0 {
                 if !self.root_closed {
                     return Err(broken("the leaf chain ends before the root list closes"));
@@ -467,6 +511,9 @@ impl<R: Read + Seek> NodeStream<R> {
             used,
         });
         self.offset = 0;
+        // The path open at the end of the page before, which this page's
+        // stream must push again.
+        self.repush = self.depth;
         self.depth = 0;
         self.root_closed = false;
         Ok(())
@@ -813,9 +860,27 @@ mod tests {
         small[0x14..0x18].copy_from_slice(&100u32.to_be_bytes());
         assert!(matches!(both_refuse(&small), Error::BadPageSize(100)));
 
-        // What the stream refuses and `HbamFile` reads: a chain that ends
+        // What the stream refuses and `HbamFile` reads: a page that does
+        // not push again the list the page before left open (its pop would
+        // seem to close the root with that list still open), or pushes
+        // another key or holds a leaf in its place; a chain that ends
         // before the root list closes (the tail page lost), one that goes
         // on after it closed, and pages larger than it holds.
+        let open: &[u8] = &[0x80, 0x20, 0x05, 0x80, 0x01, 0x01, 0xaa];
+        for tail in [
+            &[0x40][..],
+            &[0x20, 0x06, 0x40, 0x40],
+            &[0x01, 0x05, 0xbb, 0x40],
+            &[],
+        ] {
+            let unjoined = file_of(&[open, tail]);
+            assert!(matches!(
+                streamed(&unjoined),
+                Err(Error::BrokenChain { page: 3, .. })
+            ));
+        }
+        assert!(walked(&file_of(&[open, &[0x40]])).is_ok());
+        assert_streams_as_walked(&file_of(&[open, &[0x20, 0x05, 0x40, 0x40]]));
         let mut cut = two[..3 * 4096].to_vec();
         link(&mut cut, 2, 0, 0);
         assert!(walked(&cut).is_ok());

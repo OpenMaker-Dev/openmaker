@@ -426,6 +426,12 @@ pub(crate) fn find_leaf_head(
 /// page read before this one: that page would be reached twice, earlier.
 /// Either way the check fails, so a walk ends, with an error or at the
 /// tail, within the file's page count.
+///
+/// That holds for a source that gives the same bytes each time a page is
+/// read. One that changes under the walk (a file another process is
+/// writing) could pass every back link and still lead it round, so the
+/// walk also counts its pages and stops when it has read as many as the
+/// file holds.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ChainLinks {
     /// The page the walk reads next: `None` before the head, `Some(0)`
@@ -433,6 +439,8 @@ pub(crate) struct ChainLinks {
     next: Option<u32>,
     /// The page read last (0 before the head).
     prev: u32,
+    /// How many pages the walk has read.
+    read: u32,
 }
 
 impl ChainLinks {
@@ -454,6 +462,13 @@ impl ChainLinks {
                 reason: "link out of range",
             });
         }
+        // Page 0 is no leaf, so a chain has fewer pages than the file.
+        if self.read >= page_count.saturating_sub(1) {
+            return Err(Error::BrokenChain {
+                page: number,
+                reason: "the chain has more pages than the file",
+            });
+        }
         Ok(Some(number))
     }
 
@@ -472,6 +487,7 @@ impl ChainLinks {
         }
         self.prev = number;
         self.next = Some(header.next);
+        self.read = self.read.saturating_add(1);
         Ok(())
     }
 }
@@ -554,6 +570,39 @@ impl<'a> Iterator for FileSlots<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source that changes under the walk can satisfy every back link
+    /// and still lead it round: here pages 2 and 3 each name the other as
+    /// both neighbours on every read after the head's first. The walk ends
+    /// once it has read as many pages as the file has leaves to give.
+    #[test]
+    fn a_chain_walk_ends_within_the_files_pages_whatever_the_headers_say() {
+        let header = |prev, next| PageHeader {
+            log_seq_num: 0,
+            prev,
+            next,
+            level: 0,
+            free_space: 0,
+            mod_count: 0,
+        };
+        let page_count = 4;
+        let mut links = ChainLinks::default();
+        let mut read = 0;
+        let ended = loop {
+            let number = match links.next_page(page_count, || Ok(2)) {
+                Ok(Some(number)) => number,
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e),
+            };
+            let other = if number == 2 { 3 } else { 2 };
+            let prev = if read == 0 { 0 } else { other };
+            links.follow(number, &header(prev, other)).unwrap();
+            read += 1;
+            assert!(read < 100, "the walk does not end");
+        };
+        assert!(matches!(ended, Err(Error::BrokenChain { .. })), "{ended:?}");
+        assert_eq!(read, page_count - 1);
+    }
 
     #[test]
     fn header_round_trip() {
