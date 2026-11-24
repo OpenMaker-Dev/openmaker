@@ -29,6 +29,10 @@ impl Environment for Seeded {
             *byte = self.0.fetch_add(1, Ordering::Relaxed) as u8;
         }
     }
+
+    fn stopwatch(&self) -> om_data::rules::Stopwatch {
+        std::sync::Arc::new(|| std::time::Duration::ZERO)
+    }
 }
 
 fn engine() -> FileEngine {
@@ -260,6 +264,165 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
         assert_eq!(
             (locks.held_by(a.connection), locks.held_by(b.connection)),
             (0, 0)
+        );
+    }
+}
+
+/// A fixed clock, a random source that gives `byte` for every byte, and a
+/// stopwatch that reads `jump` from its second reading on.
+struct Fixed {
+    now: &'static str,
+    byte: u8,
+    jump: std::time::Duration,
+}
+
+impl Environment for Fixed {
+    fn now(&self) -> jiff::Zoned {
+        self.now.parse().unwrap()
+    }
+
+    fn fill_random(&self, bytes: &mut [u8]) {
+        bytes.fill(self.byte);
+    }
+
+    fn stopwatch(&self) -> om_data::rules::Stopwatch {
+        let (read, jump) = (std::sync::atomic::AtomicBool::new(false), self.jump);
+        std::sync::Arc::new(move || {
+            if read.swap(true, Ordering::Relaxed) {
+                jump
+            } else {
+                std::time::Duration::ZERO
+            }
+        })
+    }
+}
+
+/// #692: the formulas an operation evaluates take the date, `Random` and
+/// their time budget from the engine's environment. An op70 whose record
+/// limit reads the date (as `Get` answers it, and as a date without a year
+/// takes it) and `Random`, in a year other than the system clock's,
+/// replays to the same outcome under the same environment, and is refused
+/// under another date, under a seed whose first `Random` is past the
+/// limit's, and under a stopwatch that meets the budget while the
+/// formula's loop runs.
+#[test]
+fn a_record_limit_takes_the_date_random_and_its_budget_from_the_environment() {
+    use om_data::host::privilege_set::{
+        AccessLevel, Actions, Allow, CustomRules, MenuCommands, TableRules,
+    };
+    use std::time::Duration;
+
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=1);
+    let names = fixture::names();
+    let mut context = om_formula::Context::new(&names);
+    context.occurrence = Some(fixture::OCCURRENCE);
+    let limit = om_formula::compile(
+        "While ( [ i = 0 ] ; i < 100 ; [ i = i + 1 ] ; i ) = 100 \
+         and Get ( CurrentDate ) = Date ( 11 ; 24 ; 2031 ) \
+         and GetAsDate ( \"11/24\" ) = Get ( CurrentDate ) and Random < .5",
+        &context,
+    )
+    .unwrap();
+    let rules = TableRules {
+        actions: Actions {
+            create: Allow::Yes,
+            view: Allow::Yes,
+            edit: Allow::Limited(om_formula::polish::encode(&limit.expr)),
+            delete: Allow::Yes,
+        },
+        fields: AccessLevel::Modifiable,
+        field_levels: Default::default(),
+    };
+    let access = SetAccess::Custom(Box::new(CustomRules {
+        default: rules,
+        tables: Default::default(),
+        layouts: Default::default(),
+        scripts: Default::default(),
+        value_lists: Default::default(),
+        prints: true,
+        exports: true,
+        menus: MenuCommands::All,
+    }));
+    let table = uint_segment(fixture::TABLE);
+    let record = vec![table.clone(), vec![0x05], serial::encode(1)];
+    let edited = OwnedNode::list(
+        serial::encode(1),
+        vec![
+            text_node(&uint_segment(fixture::NAME), "Task one"),
+            serial_leaf(MOD_COUNT, 2),
+        ],
+    );
+    let entry = OwnedNode::list(
+        serial::encode(1),
+        vec![OwnedNode::leaf(uint_segment(fixture::NAME), Vec::new())],
+    );
+    let operation = Operation::CommitRecords(CommitRecords {
+        user: LockUser {
+            connection: 1,
+            txn: 7,
+        },
+        account: fixture::ACCOUNT.into(),
+        access,
+        list: OwnedNode::list(
+            Vec::new(),
+            vec![OwnedNode::list(
+                table,
+                vec![OwnedNode::list(vec![0x05], vec![entry])],
+            )],
+        ),
+        staged: Staged::from([(record, edited)]),
+        withheld: Withheld::default(),
+    });
+    // Each run on a fresh load of the file.
+    let commit = |environment: Fixed| {
+        let file = fixture::TempFile::from_tree("engine-limit", &tree);
+        let hosted = HostedFile {
+            name: fixture::FILE.into(),
+            path: file.0.clone(),
+        };
+        let hosting = Hosting::load(&[hosted], false, &EventLog::default()).unwrap();
+        let hosted = hosting.by_name(fixture::FILE).unwrap();
+        let outcome = FileEngine::new(Box::new(environment)).submit(&hosted, operation.clone());
+        let stored = hosted.read_store().node(&[]).cloned();
+        (outcome, stored)
+    };
+    // The engine seeds the operation's generator from eight bytes of the
+    // environment's random source.
+    let first_random = |byte: u8| om_calc::eval::Lcg(u64::from_le_bytes([byte; 8])).next_f64();
+    let (below, past) = (7, 1);
+    assert!(first_random(below) < 0.5 && first_random(past) >= 0.5);
+    let today = "2031-11-24T12:00:00[UTC]";
+    let at = |now, byte, jump| Fixed { now, byte, jump };
+    let (recorded, tree_after) = commit(at(today, below, Duration::ZERO));
+    assert_eq!(
+        recorded.reply,
+        Reply::CommitRecords(CommitReply {
+            result: Ok(()),
+            unused: Staged::new(),
+        })
+    );
+    assert_eq!(
+        commit(at(today, below, Duration::ZERO)),
+        (recorded, tree_after)
+    );
+    for environment in [
+        at("2031-11-25T12:00:00[UTC]", below, Duration::ZERO),
+        at(today, past, Duration::ZERO),
+        at(today, below, Duration::from_secs(1)),
+    ] {
+        let (now, byte, jump) = (environment.now, environment.byte, environment.jump);
+        let (outcome, _) = commit(environment);
+        assert!(
+            matches!(
+                &outcome.reply,
+                Reply::CommitRecords(CommitReply {
+                    result: Err(CommitError::Refused(_)),
+                    ..
+                })
+            ),
+            "{now} {byte} {jump:?}: {:?}",
+            outcome.reply
         );
     }
 }

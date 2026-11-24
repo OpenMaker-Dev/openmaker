@@ -253,19 +253,24 @@ impl Outcome {
 
 /// What an operation may read of the world besides the file: the clock and
 /// a random source, so that two engines can be given the same seeded source
-/// (docs/server-storage.md 12). [`run`] itself reads them only through
-/// this: the time and the UUID of a write's record environment. The
-/// calculation engine below it does not yet: a formula an operation
-/// evaluates (a privilege set's record limit, `writes::refused_action`)
-/// takes today's date, `Random` and its time budget from the process
-/// (`om_data::rules`, `om_calc::eval::CalcHost::random`), so an operation
-/// whose formulas read them need not replay to the same reply
-/// ([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)).
+/// (docs/server-storage.md 12). [`run`] reads them only through this, and
+/// so do the formulas an operation evaluates (a privilege set's record
+/// limit, `writes::refused_action`): their record environment
+/// ([`crate::recalc::record_environment_in`]) takes from it one clock
+/// reading (the date and time `Get` selectors, and today for a year text
+/// leaves out), a UUID, the seed of `Random`'s generator, and the
+/// stopwatch of a record limit's time budget. One read of the process
+/// remains: the salt `CryptEncrypt` draws
+/// ([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)).
 pub trait Environment: Send + Sync {
     /// The host's time now, in its time zone.
     fn now(&self) -> jiff::Zoned;
     /// Fill `bytes` from the random source.
     fn fill_random(&self, bytes: &mut [u8]);
+    /// A stopwatch started now, on a clock that never goes back: what the
+    /// time budgets of an operation's formulas are measured on. One that
+    /// does not advance never meets a budget.
+    fn stopwatch(&self) -> om_data::rules::Stopwatch;
 }
 
 /// The host's clock and the system's random source.
@@ -283,6 +288,11 @@ impl Environment for HostEnvironment {
             .fill(bytes)
             .expect("the system random source is available");
     }
+
+    fn stopwatch(&self) -> om_data::rules::Stopwatch {
+        let started = std::time::Instant::now();
+        std::sync::Arc::new(move || started.elapsed())
+    }
 }
 
 /// A random UUID in `Get ( UUID )`'s form, from `environment`.
@@ -294,8 +304,8 @@ pub fn uuid(environment: &dyn Environment) -> String {
 
 /// Run `operation` on the file named `file` (for log lines), against what
 /// the engine holds of it (`hold`) and its lock table (`locks`), taking
-/// the clock and randomness from `environment` (formulas it evaluates
-/// excepted, [`Environment`]). It sends nothing,
+/// the clock and randomness from `environment`, its formulas' too
+/// ([`Environment`]). It sends nothing,
 /// saves nothing and takes no lock of its own: the effects are what it did
 /// to the transaction and the lock table, and the engine stores them
 /// before the outcome may go out. A refusal can keep effects: op71 refused

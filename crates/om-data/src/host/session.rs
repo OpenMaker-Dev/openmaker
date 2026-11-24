@@ -931,8 +931,15 @@ fn local_micros(utc_offset: i64) -> i128 {
 
 /// Today's date `utc_offset` seconds east of UTC.
 pub fn today(utc_offset: i64) -> Date {
+    date_at(now_micros(), utc_offset)
+}
+
+/// The date `utc_offset` seconds east of UTC at `utc_micros`, microseconds
+/// since 1/1/1970 UTC: [`today`] at a clock reading a host supplies.
+pub fn date_at(utc_micros: i128, utc_offset: i64) -> Date {
     let epoch = Date::from_ymd(1970, 1, 1).expect("valid date").day_number();
-    let days = local_micros(utc_offset).div_euclid(86_400_000_000) as i64;
+    let local = utc_micros + i128::from(utc_offset) * 1_000_000;
+    let days = local.div_euclid(86_400_000_000) as i64;
     Date::from_day(epoch + days).unwrap_or_else(|| Date::from_ymd(1970, 1, 1).expect("valid date"))
 }
 

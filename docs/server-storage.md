@@ -192,10 +192,20 @@ the client uploads them again to retry.
 One function, `engine::run`, runs an operation against a transaction (a
 view plus put, delete and replace-subtree), the file's lock table
 (`engine::Locks`) and an environment (`engine::Environment`), from which
-it takes the clock and randomness. Formulas an operation evaluates are not
-covered yet: a privilege set's record limit takes today's date, `Random`
-and its time budget from the process
-([#692](https://github.com/OpenMaker-Dev/openmaker/issues/692)). It returns the
+it takes the clock and randomness, also for the formulas it evaluates (a
+privilege set's record limit). Their record environment
+(`recalc::record_environment_in`) holds one clock reading, which answers
+the date and time `Get` selectors and gives the year a date without one
+takes; a UUID; a generator for `Random`, FileMaker's (calc-functions.md
+3.9), seeded with eight bytes of the environment's random source, so that
+each operation draws its own sequence; and the environment's stopwatch, on
+which a record limit's 100 ms budget is measured, so that a stopwatch that
+does not advance never meets it and a seeded run does not depend on the
+machine's speed. The salt `CryptEncrypt` draws still comes from the
+system ([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)).
+Writes not behind the interface yet (a server script's commit, op73's and
+a file's recovery's recalculation) build the same record environment from
+the host's clock and random source (`engine::HostEnvironment`). It returns the
 **reply** and the **notices** for other clients (`engine::Outcome`); the
 **effects** (edits to the tree and to the lock table) are what it did to
 the transaction and the lock table, which keep what the engine needs to
