@@ -114,6 +114,17 @@ client can use, and the client connects to it like any host. One code path
 serves hosted and local files; files a window opens together share one
 host per file ([local-files.md](re/local-files.md)).
 
+**Storage engines.** OpenMaker Server may work differently from FileMaker
+Server inside. What stays exact is what clients see on the wire, and that
+a hosted file can always be exported as an `.fmp12`. Today the server has
+one storage engine, the file engine: each hosted `.fmp12` whole in memory,
+written back whole (`om-server/src/store.rs`); it also serves the desktop's
+local files. [server-storage.md](server-storage.md) specifies the
+interface the rest of the server uses to reach a file's contents (views
+and write operations) and a second engine behind it, the store engine,
+with replication, design history, deploys and SQL on top. That design is
+not built yet.
+
 **Host traits for the engines.** `om_calc::CalcHost`,
 `om_scripts::ScriptHost` and `om_sql::SqlSource` are what the engines need
 from their surroundings (records, windows, dialogs, files). The desktop
