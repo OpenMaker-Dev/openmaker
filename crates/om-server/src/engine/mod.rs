@@ -43,19 +43,19 @@
 //! `Hosted::write_store` for op70, op71, op72, the schema operations,
 //! op87, op88 and op240), then its lock table (`Hosted::locks`, when the
 //! operation first uses it, [`Locks`]; the schema operations, op87, op88
-//! and op240's save never do). It holds both while it saves, and lets go
-//! of the lock table first; dropping the store's write guard takes the
-//! file's accounts while it still holds the store
-//! (`hosting::StoreWriteGuard`), which is when a changed password counts
-//! for the next login. op61, op62 and op65 take only the lock table, as
-//! before. The account edits, finishing deferred field work and keeping a
-//! found set take the store for writing and never the lock table; a server
-//! script takes its lock on the account catalog before it submits an
-//! account edit and releases it after (`scripts::host`), as it always has:
-//! lock table, then store, each let go before the next is taken. A found
-//! set is kept only when no one holds the store
-//! ([`FileEngine::try_submit`]): a window closing never waits on a
-//! request. Deferred field work is finished as a file is loaded, before
+//! and op240's save never do). op70 and a client's op71, which take the
+//! lock table, hold it with the store while they save and let go of it
+//! first; dropping the store's write guard takes the file's accounts while
+//! it still holds the store (`hosting::StoreWriteGuard`), which is when a
+//! changed password counts for the next login. op61, op62 and op65 take
+//! only the lock table, as before. The account edits, finishing deferred
+//! field work and keeping a found set take the store for writing and never
+//! the lock table; a server script takes its lock on the account catalog
+//! before it submits an account edit and releases it after
+//! (`scripts::host`), as it always has: lock table, then store, each let
+//! go before the next is taken. A found set is kept only when no one holds
+//! the store ([`FileEngine::try_submit`]): a window closing never waits on
+//! a request. Deferred field work is finished as a file is loaded, before
 //! anyone else can reach it. [`FileEngine::submit_draft`] completes its draft
 //! right after it takes the store, from state the write guard gives it
 //! alone (see "Drafts"). An authoring edit (op240) takes the lock table
