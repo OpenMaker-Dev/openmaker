@@ -7,7 +7,9 @@ text, validate and plan an edit against the file's names, and apply it with
 conflict protection, reading the result back over a new connection; plan
 and add a field to a table, add a layout, and place a field on a layout,
 the same way;
-and run a script on the host to see what an edit does. The same service
+run a script on the host to see what an edit does; and find where a design
+object is used, which references are broken, what nothing refers to and a
+script's call chain ([Design analysis](#design-analysis)). The same service
 (`om_author::Service`) answers a command-line tool and an MCP server; both
 print the same versioned JSON.
 
@@ -174,12 +176,19 @@ and every response is one JSON object:
 | `get_value_lists` | none | the file's value lists in display order (`om_data::value_lists`, the catalog File > Manage > Value Lists shows): each list's `ref`, `id`, `filemaker_id` (the id FileMaker shows), `name` and `source`: `custom` with its `values`; `field` with the `field`, `second_field`, `related_from` occurrence, `sort_by_second_field` and `show_second_field_only`; `external` with the stored `file_reference` and `list_key`, unresolved; `calculation`; or `unreadable` with the reason. Decoded lists add `sort_language` and `unknown_options`. `editable` is `false` and `read_only` gives the reason. Never reads records |
 | `complete_calculation` | `text` (formula text), optional `cursor` (characters; default the end), `occurrence` or `occurrence_name` (the context; default the first occurrence), `limit` (default 50, at most 1000) | the `prefix` typed at the cursor, the characters it `replace`s, the `candidates` best first (`kind`, `name`, `label`, the text to `insert`, `selection_after`, a function's `category`, a field's `field` and `occurrence` refs), `total`, `truncated`, `refused` when nothing is completed, and each name source's availability. Reads metadata only. [Calculation name completion](#calculation-name-completion) |
 | `create_file` | `path` (on this computer; `.fmp12` added when missing) | the new file's `path`, its `name` (the file name without the extension, also its table's and layout's), and the `account` (`Admin`) and `password` (empty) that open it. Makes a blank file as File > Create New... does ([docs/new-files.md](new-files.md)); never replaces a file (`duplicate_name`); a name the table or layout cannot have is `invalid_name`, a failed write `save_failed`, with nothing left. Needs no connection |
+| `find_uses` | `object` (a reference of any kind below) or one of `script_name`, `table_name`, `occurrence_name`, `layout_name`, `value_list_name`, `custom_function_name`, `data_source_name`, or `field_name` with `table` or `table_name`; optional `limit` (default 500, at most 100,000) | the `object` (`exists` false for one the file no longer has), each decoded reference to it in `uses` (holder, place, target, `via`, `resolution`), `total`, `truncated`, `complete` and `coverage`. Reads metadata only. [Design analysis](#design-analysis) |
+| `broken_references` | optional `limit` | each decoded reference whose target is not in the file, in `broken`, with what is `missing`; `total`, `truncated`, `complete` and `coverage`. [Design analysis](#design-analysis) |
+| `unused_objects` | optional `kinds` (`table`, `field`, `occurrence`, `layout`, `script`, `value_list`, `custom_function`, `data_source`; all when absent) and `limit` | the `objects` no decoded reference names, each with its `finding` (`unreferenced` or `no_decoded_reference`), the `findings` per kind, their `meaning`, `total`, `truncated` and `coverage`. [Design analysis](#design-analysis) |
+| `script_calls` | `script` or `script_name`, optional `direction` (`calls`, `callers`, `both`, the default) and `limit` | the `script`, and in `calls` and `callers` the `scripts` reached with their `depth`, the `performs` among them with each step, and the `cycles`; `complete` and `coverage`. [Design analysis](#design-analysis) |
 
 **References** are `kind:id@file` with the file's own ids:
 `script:5@Tasks.fmp12`, `table:32769@Tasks.fmp12`,
 `field:32769.2@Tasks.fmp12`, `occurrence:13631489@Tasks.fmp12`,
-`layout:1@Tasks.fmp12`, `value_list:3@Tasks.fmp12`, and a layout's
-objects `layout_object:1.4@Tasks.fmp12` (layout 1, object key 4). A
+`layout:1@Tasks.fmp12`, `value_list:3@Tasks.fmp12`, a layout's
+objects `layout_object:1.4@Tasks.fmp12` (layout 1, object key 4), and
+for the analysis commands `custom_function:1@Tasks.fmp12`,
+`data_source:1@Tasks.fmp12` (as `inspect` gives it) and
+`relationship:1@Tasks.fmp12`. A
 reference naming
 another file than the one connected to is refused (`wrong_file`); it is
 never resolved to an object of this file with the same id. A name
@@ -1080,6 +1089,124 @@ issue [#69](https://github.com/OpenMaker-Dev/openmaker/issues/69); docs/desktop-
 The matching and order are OpenMaker's choices; FileMaker's own list has
 not been measured (re/client-ui.md, Unknowns).
 
+### Design analysis
+
+`find_uses`, `broken_references`, `unused_objects` and `script_calls`
+answer questions across a file's design objects, as third-party tools such
+as FMPerception do from FileMaker's Database Design Report (issue
+[#691](https://github.com/OpenMaker-Dev/openmaker/issues/691)). Each
+downloads the file's design catalogs over a new connection
+(`NativeProvider::design_catalogs`): the file's options `[2]`, the schema
+`[3]` and each table's fields `[T, 3]`, layouts `[4]`, custom functions
+`[16]`, scripts `[17]`, data sources `[32]`, value lists `[33]` and custom
+menus `[65]`. From them it builds the file's reference graph
+(`om_data::design_refs`). It reads no record, account or privilege set, and
+writes nothing. The graph is built from the catalogs as a key tree holds
+them, not from a connection, so a server can build it from any version of
+a file it hosts ([server-storage.md](server-storage.md) 9).
+
+**What counts as a reference.** An id one design object stores to name
+another, read by the decoder OpenMaker already has for it:
+
+| Holder | References | Read by |
+|---|---|---|
+| Script step | each parameter of the step's schema: a field or a variable's target, a layout, a script (also another file's, through its data source), a table occurrence or base table, a data source, calculations, find request fields, a sort order's fields, summary fields and value lists | `om_scripts` (script-steps.md 4, 5) |
+| Layout | its table occurrence, sub-summary parts' break fields, script triggers and their parameters | `om_layout` |
+| Layout object | a field object's field and value list; a portal's occurrence, filter and stored sort; a button's or group's step, read as a script step; script triggers; merge fields; its label, tooltip, placeholder, hide condition, conditional formatting, active segment, web address, calculated icon and item calculations | `om_layout` (layout-model.md, calc-encoding.md 8) |
+| Field | its calculation, auto-enter, validation, validation message and external storage path calculations; a lookup's occurrences and copied field; the value list it validates by; its furigana field; a summary's summarized and additional fields | `om_data::field_options`, `om_data::meta` (schema-path.md 5.5, 5.13; file-metadata.md 5) |
+| Table occurrence | its table, or its data source | `om_hbam::catalog` (file-metadata.md 1.1) |
+| Relationship | both occurrences, each match's fields, the sort of a sorted side | `om_data::meta` (file-metadata.md 4) |
+| Value list | its fields, the related-values occurrence, another file's data source, a calculated list's formula | `om_data::meta` (file-metadata.md 6) |
+| Custom function | its body | `om_formula` |
+| The file | File Options' startup layout and file script triggers | `om_data::meta` (file-metadata.md 3) |
+
+A formula stores the fields and custom functions it names by id, and its
+context occurrence (calc-encoding.md 2.5, 4.2): those are its references.
+It stores Design and plug-in functions by id too, but they name no object
+of the file. A field is named through a table occurrence and
+resolves to the occurrence's table's field; through an occurrence of
+another file's table it is `external`. A name in a text literal is never
+resolved: a function that looks a name up when the formula runs is listed
+as a reference by name instead (below). A reference an object holds to
+itself is not a use of it.
+
+**Results.** Each reference names its `holder` (`ref`, kind, name; a
+layout object's layout), the `place` in it (`part`: the step's parameter,
+`field`, `hide condition`, `calculation`, `script trigger OnRecordLoad`;
+in a script, the `step` with its `index`, the `line` it starts on in
+`get_script`'s source, its id and name, and whether it is `enabled`), its
+`target`, the occurrence or data source it goes `via`, and its
+`resolution`: `resolved`; `broken` with what is `missing` (a field, or the
+occurrence or table it is named through); `external` with the data source;
+or `unresolved` with the reason when the catalog that would hold the
+target was not read. A disabled step's references are listed with
+`enabled` false. `find_uses` given the reference of an object the file no
+longer has returns the references still naming it.
+
+**Coverage.** Every result has `coverage` for the kinds of object it is
+about: the `read` counts; the `unread` places, each with its `reason`
+(`not_decoded`, `malformed` or `limit`), `detail` and the kinds it
+`could_refer_to`; the references `by_name`; the catalogs the host did not
+give (`unavailable`); and `complete`, true only when nothing in them could
+refer to those kinds. Lists stop at `limit`; their `total` is always
+given. Not read:
+
+- custom menus `[65, 5, M]`, whose items run steps: each is listed;
+- privilege sets' record access calculations: the security catalog is not
+  read;
+- a step's import or export order, a list of several table occurrences, a
+  step id without a parameter schema, and stored step data the schema does
+  not explain;
+- a chart's or plug-in object's setup;
+- whatever does not decode, and a script's steps past the 20,000th.
+
+References by name, never resolved: Perform Script, Perform Script on
+Server and its callback by name; Go to Layout by name or number; Set Field
+By Name and Replace Field Contents by Name; Go to Related Record's table by
+calculation; a layout object's name (Go to Object, Refresh Object, Set Web
+Viewer, Perform JavaScript in Web Viewer, Refresh Portal); Execute
+FileMaker Data API's request, Perform SQL Query by Natural Language and
+Perform Find by Natural Language; OnWindowTransaction's field name; and in
+formulas `Evaluate`, `GetField`, `ExecuteSQL`, `IsValidExpression`, the
+Design functions and plug-in functions.
+
+**Nothing refers to it.** `unused_objects` lists the tables, fields,
+occurrences, layouts, scripts, value lists, custom functions and data
+sources no decoded reference names. Its `finding` is `unreferenced` only
+when the coverage of its kind is complete; otherwise it is
+`no_decoded_reference`: it may still be used from a place in `coverage`.
+A file with custom menus, as every shipped template has, gives
+`no_decoded_reference` for every kind, and the unread privilege sets do so
+for fields, occurrences and custom functions in any file. A layout reached
+only from the layout menu has no reference.
+
+**Call chains.** `script_calls` follows every step parameter naming a
+script of this file (Perform Script, Perform Script on Server, a callback,
+Install OnTimer Script), in either direction, transitively: each script
+reached once with its least `depth`, every perform among them with its
+step, and each cycle as the scripts on it (at most 100, then
+`cycles_truncated`). Each script is walked once, so a cycle ends the walk.
+Buttons, triggers and menus that perform a script are in its `find_uses`,
+not its callers.
+
+**Measured.** Over the 66 FileMaker Pro 26 templates (6 starter solutions
+in 11 languages): 9,152 objects (209 tables, 2,354 fields, 209
+occurrences, 143 relationships, 231 layouts, 5,544 layout objects, 198
+scripts with 935 steps, 264 value lists) and 264 custom menus; 6,261
+references, every one resolved; 330 places not read (the 264 custom menus,
+and each file's privilege sets); 121 references by name, all Go to
+Object's object names (`crates/om-data/tests/design_refs_corpus.rs`,
+ignored by default). The results have not been compared with FileMaker's
+Database Design Report or with FMPerception.
+
+**Limits.** The analysis is of the file's current design: a past revision
+needs the store's design history (server-storage.md 9). There is no
+security review. Each command downloads every design catalog and builds
+the graph again. A catalog the host does not give an account is listed as
+`unavailable`, and references into it are `unresolved`, not `broken`. A
+Go to Related Record step's layout in another file and the layouts of
+other files are not followed.
+
 ## Command line
 
 ```sh
@@ -1104,6 +1231,10 @@ om-author place-field --layout layout:1@Tasks.fmp12 --field-name "Follow up" --f
 echo '{"version":"openmaker.authoring/v1","command":"capabilities"}' | om-author request
 om-author run-script --script-name Greeting --parameter agent   # run it on the host, wait for the result
 om-author complete-calculation --text 'Left ( Tasks::Ti' # names completing the one typed at the end
+om-author find-uses --field-name Title --table-name Tasks   # every decoded use, with coverage
+om-author broken-references                 # references to objects the file does not have
+om-author unused-objects --kinds script,layout
+om-author script-calls --script-name Greeting --direction callers
 om-author commands                          # every command and its parameters; no connection
 ```
 
@@ -1363,7 +1494,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   frame chosen, not of the placement. Other field types, labels, layouts
   and script edits have not been opened in FileMaker Pro.
 - **Records.** `list_choices` reads records, as above; no other command
-  does. `choose_value_list_item` and `enter_other_value` are unavailable
+  does.
+- **Design analysis.** It reads only what [Design analysis](#design-analysis)
+  lists, and says what it could not read. `choose_value_list_item` and `enter_other_value` are unavailable
   without a window.
 - **Operations.** Only replacing an existing script's steps and adding a
   stored text, number, date, time or timestamp field with the default

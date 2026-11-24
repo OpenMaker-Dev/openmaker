@@ -39,7 +39,7 @@ use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeSt
 use om_session::Session;
 
 mod schema;
-pub use authoring::{Authoring, AuthoringError, ScriptDefinitions};
+pub use authoring::{Authoring, AuthoringError, DesignCatalogs, ScriptDefinitions};
 pub use calc::local_utc_offset;
 pub use choice::ListedChoices;
 pub use schema::{schema_from_tree, schema_from_tree_with, DatabaseSchemaSnapshot};

@@ -49,6 +49,23 @@ enum ScriptSave {
     Native,
 }
 
+/// A file's design catalogs as the host gave them, for the reference
+/// graph (`om_data::design_refs`): one download of each of
+/// [`om_data::design_refs::DESIGN_CATALOGS`] and of each table's field
+/// catalog, and the catalogs the host would not give.
+pub struct DesignCatalogs {
+    downloads: Vec<crate::Download>,
+    /// What the host refused or could not send, with its error.
+    pub unavailable: Vec<om_data::design_refs::Unavailable>,
+}
+
+impl DesignCatalogs {
+    /// The catalogs as one key tree.
+    pub fn tree(&self) -> Result<om_hbam::KeyTree<'_>, DataError> {
+        download_tree(&self.downloads)
+    }
+}
+
 /// The scripts as the host stores them: the catalog, each member's
 /// definition node `[17, 5, S]`, by id, and the catalog's index `[17, 1]`.
 #[derive(Clone, Debug, Default)]
@@ -1078,6 +1095,53 @@ impl NativeProvider {
                 "the host answered the placement with something else".into(),
             )),
         }
+    }
+
+    /// The file's design catalogs as stored on the host, read now: each
+    /// catalog the reference graph reads, whole, and each table's field
+    /// catalog. A catalog the host does not have is left out; one it does
+    /// not send is listed in [`DesignCatalogs::unavailable`] with the
+    /// host's error. No record, account or privilege set is read.
+    pub fn design_catalogs(&mut self) -> Result<DesignCatalogs, DataError> {
+        self.require_open()?;
+        let session = self.session.as_mut().expect("open session");
+        let mut downloads = Vec::new();
+        let mut unavailable = Vec::new();
+        let mut get = |path: Vec<u64>, what: String, downloads: &mut Vec<crate::Download>| {
+            match download_node(session, path.iter().map(|k| key_bytes(*k)).collect()) {
+                Ok(Some(download)) => downloads.push(download),
+                Ok(None) => {}
+                Err(e) => unavailable.push(om_data::design_refs::Unavailable {
+                    path,
+                    what,
+                    reason: e.to_string(),
+                }),
+            }
+        };
+        for (path, what) in om_data::design_refs::DESIGN_CATALOGS {
+            get(path.to_vec(), what.to_owned(), &mut downloads);
+        }
+        // The tables the schema catalog `[3]` lists, then their fields. A
+        // table catalog that does not decode is the graph's to report.
+        let tables = match downloads.iter().find(|d| d.path == [key_bytes(3)]) {
+            Some(schema) => om_hbam::catalog::tables(&download_tree(std::slice::from_ref(schema))?)
+                .map(|tables| tables.into_iter().map(|t| (t.id, t.name)).collect())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        for (table, name) in tables {
+            get(
+                vec![table, 3],
+                format!("the fields of table “{name}”"),
+                &mut downloads,
+            );
+        }
+        // A key tree is built in key order.
+        downloads.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(DesignCatalogs {
+            downloads,
+            unavailable,
+        })
     }
 
     /// The scripts as stored on the host, read now.

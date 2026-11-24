@@ -962,7 +962,14 @@ arrive there.
 revision: where an object is used, broken references, objects nothing
 refers to, references made by name at run time (scripts run by name,
 ExecuteSQL text, `Evaluate`), script call chains, and a security review
-(accounts without a password, scripts that run with full access).
+(accounts without a password, scripts that run with full access). For a
+file's current design, `om-author`'s `find_uses`, `broken_references`,
+`unused_objects` and `script_calls` exist ([authoring.md](authoring.md),
+"Design analysis"); every result lists the references made by name at run
+time and the places not read. They build the reference graph with
+`om_data::design_refs` from the catalogs as a key tree holds them, so the
+store can build it for a revision. Analysis of a past revision and the
+security review are not built yet.
 
 **Deploy.** Bringing selected design changes from a source into a hosted
 file without closing it:

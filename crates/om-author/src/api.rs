@@ -90,6 +90,14 @@ pub enum Command {
     /// Make a new, blank file on this computer, as File > Create New...
     /// does (`om_data::new_file::create`). Needs no connection.
     CreateFile(CreateFileParams),
+    /// Every decoded reference to a design object (`om_data::design_refs`).
+    FindUses(ObjectParams),
+    /// Every decoded reference whose target is not in the file.
+    BrokenReferences(AnalysisParams),
+    /// The objects nothing decoded refers to.
+    UnusedObjects(UnusedParams),
+    /// A script's calls and callers, transitively.
+    ScriptCalls(ScriptCallsParams),
 }
 
 impl Command {
@@ -132,6 +140,10 @@ impl Command {
             Command::GetValueLists(_) => &catalog::GET_VALUE_LISTS,
             Command::CompleteCalculation(_) => &catalog::COMPLETE_CALCULATION,
             Command::CreateFile(_) => &catalog::CREATE_FILE,
+            Command::FindUses(_) => &catalog::FIND_USES,
+            Command::BrokenReferences(_) => &catalog::BROKEN_REFERENCES,
+            Command::UnusedObjects(_) => &catalog::UNUSED_OBJECTS,
+            Command::ScriptCalls(_) => &catalog::SCRIPT_CALLS,
         }
     }
 
@@ -202,6 +214,112 @@ pub struct CreateFileParams {
     /// file name without the extension names the file, its table and its
     /// layout. A file already there is never replaced.
     pub path: String,
+}
+
+/// A design object for the analysis commands: `object`, a reference of
+/// any kind `inspect`, `get_layout` or `get_value_lists` gives
+/// (`script:5@Tasks.fmp12`, `field:32769.2@Tasks.fmp12`, ...) or of a
+/// custom function, data source or relationship
+/// (`custom_function:1@Tasks.fmp12`), or exactly one name: a script's,
+/// table's, occurrence's, layout's, value list's, custom function's or
+/// data source's, or `field_name` with the field's table (`table` or
+/// `table_name`). A reference may name an object the file no longer has:
+/// the references still naming it are returned.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectParams {
+    #[serde(default)]
+    pub object: Option<String>,
+    #[serde(default)]
+    pub script_name: Option<String>,
+    #[serde(default)]
+    pub table_name: Option<String>,
+    #[serde(default)]
+    pub occurrence_name: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    #[serde(default)]
+    pub value_list_name: Option<String>,
+    #[serde(default)]
+    pub custom_function_name: Option<String>,
+    #[serde(default)]
+    pub data_source_name: Option<String>,
+    /// A field by name, of the table `table` (a reference) or
+    /// `table_name` names.
+    #[serde(default)]
+    pub field_name: Option<String>,
+    #[serde(default)]
+    pub table: Option<String>,
+    /// The most references and coverage places listed (default 500, at
+    /// most 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// How much an analysis lists.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AnalysisParams {
+    /// The most references and coverage places listed (default 500, at
+    /// most 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// The kinds of design object nothing can refer to.
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectKind {
+    Table,
+    Field,
+    Occurrence,
+    Layout,
+    Script,
+    ValueList,
+    CustomFunction,
+    DataSource,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UnusedParams {
+    /// The kinds to list; every one when absent.
+    #[serde(default)]
+    pub kinds: Option<Vec<ObjectKind>>,
+    /// The most objects and coverage places listed (default 500, at most
+    /// 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Which way a call chain goes.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CallDirection {
+    /// The scripts it performs.
+    Calls,
+    /// The scripts that perform it.
+    Callers,
+    Both,
+}
+
+/// A script, as for `get_script`, and the direction of its chain.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptCallsParams {
+    #[serde(default)]
+    pub script: Option<String>,
+    #[serde(default)]
+    pub script_name: Option<String>,
+    /// `calls`, `callers` or `both` (the default).
+    #[serde(default)]
+    pub direction: Option<CallDirection>,
+    /// The most performs and coverage places listed (default 500, at most
+    /// 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 /// Metadata `inspect` can list.
