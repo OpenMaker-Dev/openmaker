@@ -284,14 +284,49 @@ impl Event {
         Self::new(Log::Event, Level::Error, number, message)
     }
 
+    /// Hosted file `name` was opened with the copy a save that stopped part
+    /// way left beside it (`<file>.omsave`), which it removed. OpenMaker's
+    /// own message.
+    pub fn leftover_copy_removed(name: &str) -> Self {
+        Self::new(
+            Log::Event,
+            Level::Warning,
+            0,
+            format!(
+                "Removed the copy an earlier save of database \"{}\" left beside it.",
+                database(name)
+            ),
+        )
+    }
+
+    /// Hosted file `name` was opened with an entry under the name of a
+    /// save's new copy beside it that was not removed, for the reason
+    /// `why`: its saves fail while it is there. OpenMaker's own message.
+    pub fn leftover_copy_kept(name: &str, why: &str) -> Self {
+        Self::new(
+            Log::Event,
+            Level::Error,
+            0,
+            format!(
+                "An entry named like a save's copy is beside database \"{}\" and was left as \
+                 it is ({}); the database's changes cannot be saved until it is removed.",
+                database(name),
+                value(why)
+            ),
+        )
+    }
+
     /// Saving hosted file `name` failed with `error`; `outcome` says what
     /// became of the changes. OpenMaker's own message: FileMaker Server
     /// writes its files a page at a time and has no such event.
     pub fn save_failed(name: &str, error: &dyn fmt::Display, outcome: SaveOutcome) -> Self {
         let outcome = match outcome {
             SaveOutcome::Kept => "Its unsaved changes are kept in memory.",
-            SaveOutcome::Unwritable => "What the file cannot hold is kept in memory and not saved.",
-            SaveOutcome::TakenBack => "The commit was taken back.",
+            SaveOutcome::TakenBack => "The change was taken back.",
+            SaveOutcome::Unknown => {
+                "The file may or may not keep the change, and takes no more changes until it \
+                 is hosted again."
+            }
         };
         Self::new(
             Log::Event,
@@ -684,10 +719,11 @@ impl Event {
 pub(crate) enum SaveOutcome {
     /// They stay in memory for the next save.
     Kept,
-    /// The file cannot hold some of them, which stay in memory unsaved.
-    Unwritable,
-    /// The commit that made them was taken back.
+    /// The change that made them was taken back.
     TakenBack,
+    /// The new copy was renamed over the file, but the folder could not be
+    /// flushed: the file keeps the change in memory and takes no more.
+    Unknown,
 }
 
 /// How a client's session ended, for its last line in `Access.log`.

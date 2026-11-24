@@ -23,8 +23,11 @@
 //! A file is served read-only ([`ReadOnly`]) when it cannot be written
 //! safely: this user or its folder may not write it, it has other names
 //! (hard links, which a save's new copy would leave behind), it cannot be
-//! locked here, or an entry is where a save would make its new copy. Its
-//! writes are refused and nothing reaches the disk. A file that is not a
+//! locked here, or an entry is where a save would make its new copy that
+//! is not a copy a save left (a link, a folder, a file with other names).
+//! Its writes are refused and nothing reaches the disk. A copy a save left
+//! when it stopped part way is removed once the open holds the file's
+//! lock, as OpenMaker Server removes one (`store::clear_leftover_copy`). A file that is not a
 //! FileMaker Pro 12 file, or does not decode (damaged or encrypted at
 //! rest), is refused before anything is written. Deferred field work
 //! finished on opening stays in memory until an admitted account logs in.
@@ -49,6 +52,7 @@ use log::{info, warn};
 use om_hbam::HbamFile;
 use rustls::pki_types::CertificateDer;
 
+use crate::anchored::FileAt;
 use crate::config::{ConnectionLimits, HostedFile, ServerConfig, ServerIdentity};
 use crate::connection::Shared;
 use crate::engine::{
@@ -57,7 +61,7 @@ use crate::engine::{
 use crate::filelock::{link_count, same_file, FileLock, LockKind};
 use crate::hosting::Hosting;
 use crate::server::{Server, ServerHandle};
-use crate::store::save_copy_path;
+use crate::store::{clear_leftover_copy, LeftoverCopy};
 use crate::tls::{private_server_config, Identity};
 
 /// How long [`LocalHost::close`] lets running scripts end, and then the
@@ -95,7 +99,9 @@ pub enum ReadOnly {
     /// programs' writes could not be kept out.
     NoLocks,
     /// Something is where a save would make its new copy
-    /// (`<file>.omsave`, left by an earlier save?).
+    /// (`<file>.omsave`) that a save does not leave there (a link, a
+    /// folder, a file with other names), or a copy a save left that could
+    /// not be removed.
     CopyInTheWay,
 }
 
@@ -107,7 +113,8 @@ impl std::fmt::Display for ReadOnly {
             ReadOnly::OtherNames => "it has other names (hard links) a save would not update",
             ReadOnly::NoLocks => "it cannot be locked here, so other programs could change it",
             ReadOnly::CopyInTheWay => {
-                "an earlier save's copy (.omsave) is beside it; remove that to save changes"
+                "an entry named like a save's copy (.omsave) is beside it; remove that to save \
+                 changes"
             }
         })
     }
@@ -670,15 +677,20 @@ impl Read for FromStart<'_> {
 /// on is still the file at `path` (another OpenMaker's save may have put a
 /// new file there since the open, leaving the old one's lock free): when
 /// it is not, the open is tried again, and the file is in use when it keeps
-/// changing. `before_lock` runs between each open and its lock (tests).
+/// changing. A file opened for writing, its lock held, loses the copy a
+/// save that stopped part way left beside it ([`clear_copy`]); an entry
+/// there that is not such a copy, or that could not be removed, makes the
+/// file read-only. `before_lock` runs between each open and its lock
+/// (tests).
 fn open_locked(
     path: &Path,
     before_lock: &mut dyn FnMut(u32),
 ) -> Result<(Locked, Option<ReadOnly>), LocalHostError> {
     let in_use = || LocalHostError::InUse(path.to_path_buf());
+    let mut copy_kept = false;
     for attempt in 0..OPEN_ATTEMPTS {
         let (file, mut read_only) = open_file(path)?;
-        if read_only.is_none() && std::fs::symlink_metadata(save_copy_path(path)).is_ok() {
+        if read_only.is_none() && (copy_kept || copy_in_the_way(path)) {
             read_only = Some(ReadOnly::CopyInTheWay);
         }
         if read_only.is_none() && matches!(link_count(&file), Ok(n) if n > 1) {
@@ -717,9 +729,50 @@ fn open_locked(
         if read_only.is_none() && !matches!(link_count(locked.file()), Ok(1)) {
             continue;
         }
+        // Opened for writing, with the lock: no other OpenMaker can be in
+        // the middle of a save of the file.
+        if read_only.is_none() {
+            match clear_copy(path) {
+                LeftoverCopy::None => {}
+                LeftoverCopy::Removed => warn!(
+                    "{}: removed the copy an earlier save left beside it",
+                    path.display()
+                ),
+                LeftoverCopy::Kept(why) => {
+                    warn!(
+                        "{}: an entry named like a save's copy is beside it and was left as it \
+                         is ({why}); opening it read-only",
+                        path.display()
+                    );
+                    // Open again shared.
+                    copy_kept = true;
+                    continue;
+                }
+            }
+        }
         return Ok((locked, read_only));
     }
     Err(in_use())
+}
+
+/// Whether an entry is where a save of the file at `path` makes its new
+/// copy that the open would not remove: anything but a copy a save left
+/// (`store::copy_beside`), looked at in the file's folder without following
+/// a link. One that cannot be looked at counts.
+fn copy_in_the_way(path: &Path) -> bool {
+    let beside = FileAt::open_as_named(path)
+        .and_then(|at| crate::store::copy_beside(&at.folder_now()?, at.name()));
+    !matches!(beside, Ok(None | Some(true)))
+}
+
+/// Remove the copy a save that stopped part way left beside the file at
+/// `path` (`store::clear_leftover_copy`), for an open that holds the file's
+/// lock for writing.
+fn clear_copy(path: &Path) -> LeftoverCopy {
+    match FileAt::open_as_named(path).and_then(|at| Ok((at.folder_now()?, at))) {
+        Ok((folder, at)) => clear_leftover_copy(&folder, at.name()),
+        Err(e) => LeftoverCopy::Kept(format!("its folder could not be opened: {e}")),
+    }
 }
 
 /// Open `path` for writing when this user may write it and the folder that

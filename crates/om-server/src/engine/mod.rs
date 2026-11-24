@@ -75,7 +75,9 @@
 //!   changes the account's state, before its checksum is checked; Delete
 //!   Account: one clock reading for the stamp, once the catalog's index
 //!   reads as FileMaker keeps it;
-//! - the other operations draw nothing.
+//! - the other operations draw nothing, and neither does any operation
+//!   refused unrun because the file takes no more changes
+//!   ([`FileEngine::submit`]).
 //!
 //! # Credentials
 //!
@@ -132,10 +134,21 @@
 //! the engine lets go of the store, the lock table taken on its own for
 //! that ([`Locks::lock_while_stored`]), as op240 always held them. The one
 //! other lock taken inside `submit` is the file's thumbnail cache
-//! (`Hosted::thumbnails`): under the store when op86's DeleteTable took a
-//! table's container library, and under the store and the lock table once
-//! a server script's commit that left a table without records is stored;
-//! store, then thumbnails, as op96 takes them. Nothing
+//! (`Hosted::thumbnails`): under the store once op86's DeleteTable that
+//! took a table's container library is stored, where it was taken before
+//! the save, and under the store and the lock table once a server script's
+//! commit that left a table without records is stored; store, then
+//! thumbnails, as op96 takes them. A save that fails is answered under
+//! what the operation held: taking its change back (`Store::roll_back`)
+//! needs the store alone, and releasing the locks it took
+//! ([`Locks::take_back`]) the lock table, taken again after the store if
+//! the run let it go. Its alert takes the event log's own lock under the
+//! store, as a failed save's alert always did. The no-more-changes state
+//! of a save whose outcome is unknown is the store's (read and set under
+//! its write lock, `Store::writes_refused`) and the file's
+//! (`Hosted::writes_refused`, set once under the store and read without a
+//! lock, so that the administrator's list of files never waits for the
+//! store). Nothing
 //! else: the caller delivers notices after it returns, taking the file's
 //! registrations and then the mailboxes (`writes::notify`), and a session's
 //! own state (its temporary area, the records it was served withheld, the
@@ -697,19 +710,23 @@ pub enum Reply {
     ReleaseLock,
     /// op65 is answered with the request's own header (write-path.md 4.4).
     ReleaseLocks,
-    /// Whether the subtree was stored: it is not on a read-only file or
-    /// where the file cannot hold it. op13's reply is the same either way
-    /// (schema-path.md 3.3).
-    UploadToCatalog(bool),
+    /// Whether the subtree was put into the file: it is not on a read-only
+    /// file or where the file cannot hold it, and op13's reply is the same
+    /// either way (schema-path.md 3.3); or the storage error when it was
+    /// not stored.
+    UploadToCatalog(Result<bool, StorageError>),
     /// op86's reply is what its program answered when it ran; this is
     /// only whether its writes were refused because the file became
-    /// read-only after it ran, which fails the request.
-    ChangeSchema(Result<(), &'static str>),
-    /// A find's reply is what it answered when it ran.
-    StoreIndexes,
+    /// read-only after it ran, or were not stored, which fails the
+    /// request.
+    ChangeSchema(Result<(), SchemaNotChanged>),
+    /// A find's reply is what it answered when it ran; this is whether the
+    /// indexes it left waiting were stored. Those that were not wait again.
+    StoreIndexes(Result<(), StorageError>),
     /// Whether the work changed the file, or why it was refused, which
-    /// leaves the file hosted read-only (`Store::update_table`).
-    UpdateTable(Result<bool, &'static str>),
+    /// leaves the file hosted read-only (`Store::update_table`), or why it
+    /// was not stored.
+    UpdateTable(Result<bool, String>),
     /// op88's reply as the wire has it (containers.md 3.2).
     StoreContainerData(UploadBinaryReply),
     /// The member's count after the change, or `COUNT_FAILED`.
@@ -761,12 +778,70 @@ pub struct NotStored {
 }
 
 /// Why op240's Save leaves changes off the disk.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileNotSaved {
     /// The file is hosted read-only: nothing is written to it.
     ReadOnly,
-    /// The save failed: the changes wait in memory for the next one.
-    Failed,
+    /// The save failed before it wrote the file: the changes wait in memory
+    /// for the next one.
+    Failed(StorageError),
+    /// Whether the file on disk holds them is unknown: this save, or an
+    /// earlier one, renamed its copy over the file and could not flush the
+    /// folder, and the file takes no more changes until it is hosted again.
+    Unknown(StorageError),
+}
+
+/// Why op86's schema instructions changed nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SchemaNotChanged {
+    /// Refused before they ran: the file became read-only after the program
+    /// ran, or an engine's mistake.
+    Refused(&'static str),
+    /// Not stored: the storage error.
+    NotStored(StorageError),
+}
+
+/// What a reply says when an operation's change could not be stored, or
+/// may not have been (docs/server-storage.md 2, rule 4; 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageError {
+    /// FileMaker's error for it ([`crate::hosting::save_error`]): 800, 809
+    /// or 810.
+    pub code: u16,
+    /// What happened, for a log line or the reply's text.
+    pub message: String,
+    /// The file may hold the change: the save renamed its copy over the
+    /// file and could not flush the folder. The file then takes no more
+    /// changes until it is hosted again.
+    pub unknown: bool,
+}
+
+impl StorageError {
+    /// The error of a save that failed with `error`.
+    pub(crate) fn of(error: &crate::store::SaveError) -> Self {
+        StorageError {
+            code: crate::hosting::save_error(error.error()),
+            message: error.to_string(),
+            unknown: error.is_unknown(),
+        }
+    }
+
+    /// The error of an operation refused, unrun, because the file takes no
+    /// more changes (`why`, `Store::writes_refused`): nothing of it is
+    /// stored.
+    fn refused(why: &str) -> Self {
+        StorageError {
+            code: crate::hosting::save_error(&std::io::Error::other(why)),
+            message: why.to_owned(),
+            unknown: false,
+        }
+    }
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// op70's reply: whether the commit was written, and the staged records it
@@ -811,59 +886,100 @@ impl Outcome {
         }
     }
 
-    /// The outcome when what the operation did could not be stored: the
-    /// storage error in place of its reply, and no notices
-    /// (docs/server-storage.md 5). op70 fails with the save's message
-    /// (`writes::CommitError::NotSaved`), op71, an authoring edit and a
-    /// server script's commit and Set Next Serial Value with the save's
-    /// FileMaker error ([`crate::hosting::save_error`]), the edit's message
-    /// saying what the file keeps, the script commit's that the file could
-    /// not be saved, an account edit as unwritten with the save's message,
-    /// and a found set as not kept.
-    fn not_stored(self, error: &std::io::Error) -> Outcome {
+    /// The outcome when what the operation did could not be stored, or may
+    /// not have been (`error.unknown`): the storage error in place of its
+    /// reply, and no notices (docs/server-storage.md 5, where the table of
+    /// replies is). op70 fails with the save's message
+    /// (`writes::CommitError::NotSaved`, which its caller answers with a
+    /// system exception); op71, op72 and op88 with the save's FileMaker
+    /// error in their status; op13, op73 and op86's schema instructions with
+    /// the error their callers encode (a system exception for op13 and
+    /// op73, op86's error slot); a find's indexes as not stored; op87 with
+    /// its failure count; an authoring edit with the save's FileMaker error
+    /// and a message saying what the file keeps, or, when the outcome is
+    /// unknown, the extension's status for it; op240's Save as failed or
+    /// unknown; a server script's commit and Set Next Serial Value with the
+    /// save's FileMaker error, the commit's message saying the file could
+    /// not be saved; an account edit as unwritten with the save's message;
+    /// a found set as not kept.
+    fn not_stored(self, error: &StorageError) -> Outcome {
+        let unwritten = || format!("the file could not be saved: {error}");
         let reply = match self.reply {
-            Reply::EditDesign(Edited {
-                not_stored: Some(not_stored),
-                ..
-            }) => Reply::EditDesign(Edited {
-                reply: design::Reply::Refused {
-                    status: crate::hosting::save_error(error),
-                    message: format!(
-                        "The file could not be saved ({error}); {}.",
-                        not_stored.kept
-                    ),
-                    current: None,
+            Reply::EditDesign(Edited { not_stored, reply }) => Reply::EditDesign(Edited {
+                reply: if error.unknown {
+                    design::Reply::Refused {
+                        status: design::status::OUTCOME_UNKNOWN,
+                        message: format!(
+                            "The change may or may not be in the file: {error}. The file takes \
+                             no more changes until it is hosted again."
+                        ),
+                        current: None,
+                    }
+                } else {
+                    match not_stored {
+                        Some(not_stored) => design::Reply::Refused {
+                            status: error.code,
+                            message: format!(
+                                "The file could not be saved ({error}); {}.",
+                                not_stored.kept
+                            ),
+                            current: None,
+                        },
+                        None => reply,
+                    }
                 },
                 not_stored: None,
             }),
-            Reply::ReserveRecordIds(_) => Reply::ReserveRecordIds(writes::refused_ids(u32::from(
-                crate::hosting::save_error(error),
-            ))),
+            Reply::ReserveRecordIds(_) => {
+                Reply::ReserveRecordIds(writes::refused_ids(u32::from(error.code)))
+            }
+            Reply::AdvanceSerial(_) => Reply::AdvanceSerial(GetSerialReply {
+                conflict: None,
+                status: u32::from(error.code),
+                value: String::new(),
+            }),
             Reply::CommitRecords(reply) => Reply::CommitRecords(CommitReply {
                 result: Err(CommitError::NotSaved(format!(
-                    "commit of {} record(s) taken back: the file could not be saved: {error}",
-                    self.notices.changes.len()
+                    "commit of {} record(s) {}: {}",
+                    self.notices.changes.len(),
+                    if error.unknown {
+                        "may or may not be stored"
+                    } else {
+                        "taken back"
+                    },
+                    unwritten()
                 ))),
                 unused: reply.unused,
             }),
-            Reply::CommitScriptRecords(_) => Reply::CommitScriptRecords(Err((
-                u32::from(crate::hosting::save_error(error)),
-                format!("the file could not be saved: {error}"),
-            ))),
-            Reply::SetNextSerial(_) => {
-                Reply::SetNextSerial(Err(u32::from(crate::hosting::save_error(error))))
+            Reply::UploadToCatalog(_) => Reply::UploadToCatalog(Err(error.clone())),
+            Reply::ChangeSchema(_) => {
+                Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error.clone())))
             }
+            Reply::StoreIndexes(_) => Reply::StoreIndexes(Err(error.clone())),
+            Reply::UpdateTable(_) => Reply::UpdateTable(Err(unwritten())),
+            Reply::StoreContainerData(_) => Reply::StoreContainerData(
+                crate::containers::upload_reply(error.code, Vec::new(), unwritten()),
+            ),
+            Reply::AdjustContainerCount(_) => Reply::AdjustContainerCount(COUNT_FAILED),
+            Reply::SaveFile(_) if error.unknown => {
+                Reply::SaveFile(Err(FileNotSaved::Unknown(error.clone())))
+            }
+            Reply::SaveFile(_) => Reply::SaveFile(Err(FileNotSaved::Failed(error.clone()))),
+            Reply::CommitScriptRecords(_) => {
+                Reply::CommitScriptRecords(Err((u32::from(error.code), unwritten())))
+            }
+            Reply::SetNextSerial(_) => Reply::SetNextSerial(Err(u32::from(error.code))),
             Reply::ChangePassword(Ok(())) => {
-                Reply::ChangePassword(Err(PasswordChangeError::Unwritten(error.to_string())))
+                Reply::ChangePassword(Err(PasswordChangeError::Unwritten(unwritten())))
             }
             Reply::ResetPassword(Ok(())) => {
-                Reply::ResetPassword(Err(AccountEditError::Unwritten(error.to_string())))
+                Reply::ResetPassword(Err(AccountEditError::Unwritten(unwritten())))
             }
             Reply::EnableAccount(Ok(_)) => {
-                Reply::EnableAccount(Err(AccountEditError::Unwritten(error.to_string())))
+                Reply::EnableAccount(Err(AccountEditError::Unwritten(unwritten())))
             }
             Reply::DeleteAccount(Ok(())) => {
-                Reply::DeleteAccount(Err(AccountEditError::Unwritten(error.to_string())))
+                Reply::DeleteAccount(Err(AccountEditError::Unwritten(unwritten())))
             }
             Reply::SaveFoundSet(_) => Reply::SaveFoundSet(false),
             other => other,
@@ -876,6 +992,61 @@ impl Outcome {
             },
         }
     }
+}
+
+/// The outcome of `operation`, refused without running because the file
+/// takes no more changes (`error`, [`StorageError::refused`]): its storage
+/// error, as [`Outcome::not_stored`] gives it for the reply it would have
+/// had, nothing of it stored and no notices. op70's staged records go back
+/// to the session's temporary area.
+fn not_run(operation: Operation, error: &StorageError) -> Outcome {
+    let unchanged = || NotStored {
+        not_done: "not done".into(),
+        kept: "nothing was changed".into(),
+    };
+    let reply = match operation {
+        Operation::ReserveRecordIds(_) => Reply::ReserveRecordIds(writes::refused_ids(0)),
+        Operation::AdvanceSerial(_) => Reply::AdvanceSerial(GetSerialReply {
+            conflict: None,
+            status: 0,
+            value: String::new(),
+        }),
+        Operation::CommitRecords(op) => Reply::CommitRecords(CommitReply {
+            result: Ok(()),
+            unused: op.staged,
+        }),
+        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Ok(false)),
+        Operation::ChangeSchema(_) => Reply::ChangeSchema(Ok(())),
+        Operation::StoreIndexes(_) => Reply::StoreIndexes(Ok(())),
+        Operation::UpdateTable(_) => Reply::UpdateTable(Ok(false)),
+        Operation::StoreContainerData(_) => Reply::StoreContainerData(
+            crate::containers::upload_reply(0, Vec::new(), String::new()),
+        ),
+        Operation::AdjustContainerCount(_) => Reply::AdjustContainerCount(0),
+        Operation::EditDesign(_) => Reply::EditDesign(Edited {
+            reply: design::Reply::Saved,
+            not_stored: Some(unchanged()),
+        }),
+        // Whether the disk holds what the file holds is what is unknown.
+        Operation::SaveFile => {
+            let error = StorageError {
+                unknown: true,
+                ..error.clone()
+            };
+            return Outcome::new(Reply::SaveFile(Err(FileNotSaved::Unknown(error))));
+        }
+        Operation::CommitScriptRecords(_) => Reply::CommitScriptRecords(Ok(())),
+        Operation::SetNextSerial(_) => Reply::SetNextSerial(Ok(())),
+        Operation::ChangePassword(_) => Reply::ChangePassword(Ok(())),
+        Operation::ResetPassword(_) => Reply::ResetPassword(Ok(())),
+        Operation::EnableAccount(_) => Reply::EnableAccount(Ok(false)),
+        Operation::DeleteAccount(_) => Reply::DeleteAccount(Ok(())),
+        Operation::FinishDeferredWork => Reply::FinishDeferredWork(false),
+        Operation::SaveFoundSet(_) => Reply::SaveFoundSet(false),
+        // Not refused: they change only the lock table, or read.
+        other => return refusal(other, NOT_HELD),
+    };
+    Outcome::new(reply).not_stored(error)
 }
 
 /// What an operation may read of the world besides the file: the clock and
@@ -1044,18 +1215,18 @@ pub fn run(
             writes::kill_all_locks(op, locks);
             Outcome::new(Reply::ReleaseLocks)
         }
-        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::UploadToCatalog(schema::upload_to_catalog(op, tx)))
-        }
-        (Operation::ChangeSchema(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::ChangeSchema(schema::change_schema(op, tx)))
-        }
+        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => Outcome::new(
+            Reply::UploadToCatalog(Ok(schema::upload_to_catalog(op, tx))),
+        ),
+        (Operation::ChangeSchema(op), Hold::Transaction(tx)) => Outcome::new(Reply::ChangeSchema(
+            schema::change_schema(op, tx).map_err(SchemaNotChanged::Refused),
+        )),
         (Operation::StoreIndexes(op), Hold::Transaction(tx)) => {
             tx.store_indexes(op.indexes);
-            Outcome::new(Reply::StoreIndexes)
+            Outcome::new(Reply::StoreIndexes(Ok(())))
         }
         (Operation::UpdateTable(op), Hold::Transaction(tx)) => Outcome::new(Reply::UpdateTable(
-            schema::update_table(op, tx, environment),
+            schema::update_table(op, tx, environment).map_err(String::from),
         )),
         (Operation::StoreContainerData(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::StoreContainerData(crate::containers::store_upload(op, file, tx, environment)),
@@ -1232,10 +1403,10 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
         Operation::UpgradeLock(_) => Reply::UpgradeLock(refused_lock),
         Operation::ReleaseLock(_) => Reply::ReleaseLock,
         Operation::ReleaseLocks(_) => Reply::ReleaseLocks,
-        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(false),
-        Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(why)),
-        Operation::StoreIndexes(_) => Reply::StoreIndexes,
-        Operation::UpdateTable(_) => Reply::UpdateTable(Err(why)),
+        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Ok(false)),
+        Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(SchemaNotChanged::Refused(why))),
+        Operation::StoreIndexes(_) => Reply::StoreIndexes(Ok(())),
+        Operation::UpdateTable(_) => Reply::UpdateTable(Err(why.to_owned())),
         Operation::StoreContainerData(_) => Reply::StoreContainerData(
             crate::containers::upload_reply(writes::UNAVAILABLE as u16, Vec::new(), why.into()),
         ),
@@ -1248,7 +1419,11 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
             },
             not_stored: None,
         }),
-        Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed)),
+        Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed(StorageError {
+            code: writes::UNAVAILABLE as u16,
+            message: why.into(),
+            unknown: false,
+        }))),
         Operation::CommitScriptRecords(_) => {
             Reply::CommitScriptRecords(Err((writes::UNAVAILABLE, why.into())))
         }

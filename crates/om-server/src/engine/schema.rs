@@ -1,9 +1,10 @@
 //! The schema operations of [`super::run`]: op13's catalog uploads, what
 //! an op86 program with schema instructions stores, a find's indexes,
 //! op73's table updates and the deferred field work a file is opened with
-//! (schema-path.md 3.3, 3.4, 3.6, 7.2; query-program.md 7.1). They change the file's tree in place: their
-//! saves are not checked yet, so nothing of them is taken back
-//! (`FileEngine::submit`).
+//! (schema-path.md 3.3, 3.4, 3.6, 7.2; query-program.md 7.1). Each change
+//! goes into the transaction's journal, which the engine stores or takes
+//! back (`FileEngine::submit`); the deferred work finished at opening is
+//! made in place, as its save waits.
 
 use super::{ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog};
 

@@ -160,6 +160,9 @@ pub struct Entry {
     pub id: Option<FileId>,
     /// Whether it is a regular file (not a link, folder or other).
     pub regular: bool,
+    /// How many names (hard links) it has; 1 on Windows, which this does
+    /// not read.
+    pub links: u64,
     pub permissions: std::fs::Permissions,
 }
 
@@ -257,6 +260,8 @@ impl Folder {
                         id: Some(identity(&stat)),
                         regular: rustix::fs::FileType::from_raw_mode(stat.st_mode)
                             == rustix::fs::FileType::RegularFile,
+                        #[allow(clippy::useless_conversion)]
+                        links: u64::from(stat.st_nlink),
                         permissions: std::fs::Permissions::from_mode(mode_bits(mode)),
                     }))
                 }
@@ -269,6 +274,7 @@ impl Folder {
             Ok(m) => Ok(Some(Entry {
                 id: None,
                 regular: m.is_file(),
+                links: 1,
                 permissions: m.permissions(),
             })),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),

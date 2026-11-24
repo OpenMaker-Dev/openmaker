@@ -53,8 +53,8 @@ use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
     AdjustContainerCount, AdvanceSerial, CommitRecords, Draft, FileEngine, Operation, ReleaseLock,
-    ReleaseLocks, ReleaseSessionLocks, Reply, ReserveRecordIds, StoreContainerData, TakeLock,
-    UpdateTable, UpgradeLock, UploadToCatalog,
+    ReleaseLocks, ReleaseSessionLocks, Reply, ReserveRecordIds, SchemaNotChanged,
+    StoreContainerData, TakeLock, UpdateTable, UpgradeLock, UploadToCatalog,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
@@ -2550,30 +2550,55 @@ fn query(
                 let store = file.hosted.read_store();
                 store.has_issued_member_keys() || store.has_indexes_on_demand()
             };
+            let mut slots = outcome.slots;
             if pending || !outcome.writes.is_empty() {
-                for write in &outcome.writes {
-                    let (done, path) = match write {
-                        om_query::Write::Put { path, .. } => ("stored", path),
-                        om_query::Write::Remove { path } => ("removed", path),
-                    };
-                    info!("{peer}: {:?}: {done} {path:02x?}", file.hosted.name);
-                }
+                let done: Vec<String> = outcome
+                    .writes
+                    .iter()
+                    .map(|write| match write {
+                        om_query::Write::Put { path, .. } => format!("stored {path:02x?}"),
+                        om_query::Write::Remove { path } => format!("removed {path:02x?}"),
+                    })
+                    .collect();
                 let draft = Draft::ChangeSchema {
                     writes: outcome.writes,
                 };
                 match shared.engine.submit_draft(&file.hosted, draft).reply {
-                    Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes => {}
-                    Reply::ChangeSchema(Err(_)) => return Err(Refused.into()),
+                    Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes(Ok(())) => {
+                        for done in done {
+                            info!("{peer}: {:?}: {done}", file.hosted.name);
+                        }
+                    }
+                    // A find's answer stands: the indexes it built are a
+                    // cache of the records, which wait again for the next
+                    // write (docs/server-storage.md 5).
+                    Reply::StoreIndexes(Err(error)) => {
+                        warn!(
+                            "{peer}: {:?}: indexes built on demand not stored, waiting \
+                             again: {error}",
+                            file.hosted.name
+                        );
+                    }
+                    Reply::ChangeSchema(Err(SchemaNotChanged::Refused(_))) => {
+                        return Err(Refused.into())
+                    }
+                    // The program's writes were not stored: its reply is
+                    // the error slot with the save's FileMaker error
+                    // (query-program.md 11.2).
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) => {
+                        warn!(
+                            "{peer}: {:?}: query program's writes not stored: {error}",
+                            file.hosted.name
+                        );
+                        slots = error_slot(error.code);
+                    }
                     other => return Err(mismatched(&other)),
                 }
             }
-            outcome.slots
+            slots
         }
         // Not open or not logged in: the error slot with "access denied".
-        _ => {
-            let code = ACCESS_DENIED.to_be_bytes();
-            vec![0x80, 0x06, 0x00, 0x03, 0x02, code[0], code[1], 0x40]
-        }
+        _ => error_slot(ACCESS_DENIED),
     };
     // The program's tree went with the query, and its charge goes now.
     drop(reading);
@@ -2585,6 +2610,13 @@ fn query(
         .transfers
         .start(owner, slots, limit, || shared.handle());
     Ok(reply(page, resume).to_result_within(max_return as usize))
+}
+
+/// An op86 reply that is the error slot alone, `[00] = 02 <code>`
+/// (query-program.md 11.2).
+fn error_slot(code: u16) -> Vec<u8> {
+    let [high, low] = code.to_be_bytes();
+    vec![0x80, 0x06, 0x00, 0x03, 0x02, high, low, 0x40]
 }
 
 /// Reject schema writes before execution: member-key reservation changes the
@@ -3092,12 +3124,7 @@ fn upload_to_file(
             }
         }
     };
-    info!(
-        "{peer}: {:?}: stored {:02x?} ({} bytes)",
-        hosted.name,
-        request.dest,
-        payload.len().max(request.terminal.len())
-    );
+    let bytes = payload.len().max(request.terminal.len());
     let upload = UploadToCatalog {
         path: request.dest.clone(),
         node,
@@ -3107,7 +3134,19 @@ fn upload_to_file(
         .submit(hosted, Operation::UploadToCatalog(upload))
         .reply
     {
-        Reply::UploadToCatalog(_) => Ok(()),
+        Reply::UploadToCatalog(Ok(_)) => {
+            info!(
+                "{peer}: {:?}: stored {:02x?} ({bytes} bytes)",
+                hosted.name, request.dest
+            );
+            Ok(())
+        }
+        // op13's reply has no status: one that was not stored fails with a
+        // system exception, as op70's does (docs/server-storage.md 5).
+        Reply::UploadToCatalog(Err(error)) => Err(PerformError::Status(format!(
+            "upload to {:02x?} not stored: {error}",
+            request.dest
+        ))),
         other => Err(mismatched(&other)),
     }
 }
@@ -3137,7 +3176,7 @@ fn update_table(
             .reply
         {
             Reply::UpdateTable(Ok(_)) => {}
-            Reply::UpdateTable(Err(reason)) => return Err(PerformError::Status(reason.into())),
+            Reply::UpdateTable(Err(reason)) => return Err(PerformError::Status(reason)),
             other => return Err(mismatched(&other)),
         }
     }

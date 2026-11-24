@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use log::{debug, info, warn};
+use log::{debug, warn};
 use om_protocol::container::{
     AdjustReferenceCount, DownloadThumbnail, ThumbnailReply, UploadBinaryReply, COUNT_FAILED,
     LIBRARY_OBJECT_EXISTS, THUMBNAIL_MISSING, THUMBNAIL_MORE,
@@ -122,13 +122,15 @@ pub fn store_upload(
             "the file cannot hold it there".to_string(),
         ),
         Some(Stored::New(member)) => {
-            info!(
+            tx.once_stored(format!(
                 "{file:?}: stored container data ({bytes} bytes) as member {member:02x?} of {path:02x?}"
-            );
+            ));
             upload_reply(0, vec![member], String::new())
         }
         Some(Stored::Existing(member)) => {
-            info!("{file:?}: container data already stored as member {member:02x?} of {path:02x?}");
+            tx.once_stored(format!(
+                "{file:?}: container data already stored as member {member:02x?} of {path:02x?}"
+            ));
             upload_reply(LIBRARY_OBJECT_EXISTS, vec![member], String::new())
         }
     }
@@ -159,7 +161,9 @@ pub fn adjust_reference_count(
     match tx.adjust_reference_count(&segments(&path), member, req.delta) {
         Some(count) => {
             if count == 0 {
-                info!("{file:?}: deleted container member {member:02x?} of {path:02x?}");
+                tx.once_stored(format!(
+                    "{file:?}: deleted container member {member:02x?} of {path:02x?}"
+                ));
             } else {
                 debug!("{file:?}: member {member:02x?} of {path:02x?}: count {count}");
             }

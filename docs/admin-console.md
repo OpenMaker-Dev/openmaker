@@ -585,9 +585,14 @@ list shows them.
 - Each hosted file: id, name, absolute path, folder, size on disk, status
   (`FileStatus`: FileMaker Server's `NORMAL`, `CLOSING`, `CLOSED`,
   `OPENING`, `PAUSED`, re 7), the number of connected clients that have it
-  open, and why it is closed when it failed to open again. Every hosted
-  file is opened at startup; the administrator closes, opens, pauses and
-  resumes it (below).
+  open, and why it is closed when it failed to open again. A file that is
+  served but takes no more changes, because a save of it renamed its new
+  copy over the file and could not flush the folder, gives that reason in
+  the same field (`FileInfo::error`) with its status unchanged; closing it
+  and opening it again clears it (docs/server-storage.md 5, "Failed
+  saves"). The Admin API's and the console's database lists do not show
+  the field. Every hosted file is opened at startup; the administrator
+  closes, opens, pauses and resumes it (below).
 - Each client as its entry holds it, oldest session first, and whether it is
   being disconnected (at once, or with notice during its grace time;
   FileMaker Server's Admin API lists such a client as `NORMAL`, re 9). A

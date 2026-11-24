@@ -787,8 +787,12 @@ than a second reader and writer.
   safely: this user or its file system may not write it, its folder does not
   allow the new copy a save writes, it has other names (hard links, which
   the renamed copy would leave with old contents), it cannot be locked here
-  (Windows; file systems without `flock`), or an entry already has the name
-  of a save's copy (`<file>.omsave`). The window shows why; the provider
+  (Windows; file systems without `flock`), or an entry that a save does
+  not leave has the name of a save's copy (`<file>.omsave`: a link, a
+  folder, a file with other names). A copy a save left when it stopped
+  part way, a regular file with no other name, is removed once the open
+  holds the lock for writing, as OpenMaker Server removes one
+  (docs/server-storage.md 5, "Failed saves"). The window shows why; the provider
   refuses changes before sending them (FileMaker's error 6, also for the
   deletions scripts and portals make), the host refuses every write request
   (record creation, uploads, commits, serials, schema and container

@@ -23,7 +23,7 @@ use crate::engine::{
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
 use crate::locks::LockTable;
-use crate::store::{Journal, Store};
+use crate::store::{Journal, LeftoverCopy, SaveError, Store};
 use crate::thumbnail;
 
 /// An account defined in a file's security catalog.
@@ -244,6 +244,12 @@ pub struct Hosted {
     /// account logs in ([`Hosted::commit_recovery`]); closing before that
     /// leaves the file as it was.
     pending_recovery: std::sync::atomic::AtomicBool,
+    /// Why the file takes no more changes, once a save's outcome was
+    /// unknown (`Store::writes_refused`): kept here too, so that the
+    /// administrator's list of files reads it without waiting for the
+    /// store ([`Hosted::writes_refused`]). Set once; hosting the file again
+    /// makes a new `Hosted`.
+    unknown: std::sync::OnceLock<String>,
     /// Where a failed save is recorded and raised as an alert.
     events: EventLog,
 }
@@ -382,6 +388,7 @@ impl Hosted {
             internal_creation,
             accounts,
             pending_recovery: std::sync::atomic::AtomicBool::new(false),
+            unknown: std::sync::OnceLock::new(),
             events: events.clone(),
         })
     }
@@ -469,6 +476,20 @@ impl Hosted {
         self.store_for_writing().fail_commit_saves = fail;
     }
 
+    /// Make every save of this file fail at `fault`, or work again with
+    /// `None` (`ServerHandle::failing_saves`, a test's switch).
+    #[cfg(debug_assertions)]
+    pub(crate) fn fail_saves(&self, fault: Option<crate::store::SaveFault>) {
+        self.store_for_writing().save_fault = fault;
+    }
+
+    /// Why the file takes no more changes until it is hosted again: a
+    /// save's outcome was unknown ([`crate::store::SaveError::Unknown`]).
+    /// Read without waiting for the store.
+    pub fn writes_refused(&self) -> Option<&str> {
+        self.unknown.get().map(String::as_str)
+    }
+
     /// Whether a request panicked holding the store.
     #[cfg(test)]
     pub(crate) fn store_is_poisoned(&self) -> bool {
@@ -515,102 +536,71 @@ impl Hosted {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Write `store`, this file's, which the caller holds, back to disk if
-    /// its contents changed: whether the disk now holds every change, or
-    /// the last error. A failure of the disk is logged and the changes stay
-    /// in memory for the next attempt; this is for changes that may wait
-    /// (reserved record ids and serial numbers, indexes built on demand,
-    /// schema and container uploads). Every such change is checked against
-    /// the tree before it is made, so it cannot leave what the file cannot
-    /// hold. If a field index the file cannot hold is in the tree anyway,
-    /// it is taken out ([`Store::drop_unwritable_indexes`]; the next find
-    /// that reads it builds it again), logged, and the save tried again.
-    /// Anything else the file cannot hold is kept as it is and logged, and
-    /// saves fail rather than delete data. Record commits are saved with
-    /// [`Self::save_commit`], which takes them back when the file cannot be
-    /// written. A change that must be on disk before it is answered (an
-    /// issued record id, #927) is taken back by the engine when this
-    /// fails.
-    pub(crate) fn save_held(&self, store: &mut Store) -> std::io::Result<()> {
-        if store.is_read_only() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ReadOnlyFilesystem,
-                "the file is hosted read-only",
-            ));
-        }
+    /// Store `journal`, the change an operation made to `store`, this
+    /// file's, which the engine holds for writing: the file is written if
+    /// it holds changes the disk lacks ([`Store::save_commit`] for a
+    /// commit, [`Store::save_change`] for another change; each also writes
+    /// the changes others left waiting). Logged, and alerted in the event
+    /// log unless it is a [`Saving::QuietCommit`] (a window's found set): a
+    /// save that did not write the file put back what the change did when
+    /// it had effects (otherwise what waited stays waiting), and one whose
+    /// outcome is unknown leaves the file taking no more changes, which is
+    /// alerted once, quiet or not.
+    pub(crate) fn save_change(
+        &self,
+        store: &mut Store,
+        journal: Journal,
+        saving: Saving,
+    ) -> Result<(), SaveError> {
         let started = Instant::now();
-        let error = match store.save(&self.at) {
-            Ok(true) => {
-                debug!("{:?}: saved in {:?}", self.name, started.elapsed());
-                return Ok(());
-            }
-            Ok(false) => return Ok(()),
-            Err(e) => e,
+        let effects = journal.changed();
+        let quiet = saving == Saving::QuietCommit;
+        let saved = match saving {
+            Saving::Commit | Saving::QuietCommit => store.save_commit(&self.at, journal),
+            Saving::Change => store.save_change(&self.at, journal),
         };
-        let (dropped, kept) = store.drop_unwritable_indexes();
-        if !kept.is_empty() {
-            error!(
-                "{:?}: saving to {} failed ({error}): the file cannot hold what the tree holds \
-                 here, which is kept as it is and not saved: {}",
-                self.name,
-                self.path.display(),
-                crate::store::describe(&kept)
-            );
-            self.events.alert(Event::save_failed(
-                &self.name,
-                &error,
-                SaveOutcome::Unwritable,
-            ));
-        }
-        if dropped.is_empty() {
-            if kept.is_empty() {
-                error!(
-                    "{:?}: saving to {} failed, unsaved changes are kept in memory: {error}",
+        match &saved {
+            Ok(()) => debug!("{:?}: saved in {:?}", self.name, started.elapsed()),
+            Err(SaveError::Unknown(e)) => {
+                let why = store
+                    .writes_refused()
+                    .map_or_else(|| e.to_string(), str::to_owned);
+                if self.unknown.set(why).is_ok() {
+                    error!(
+                        "{:?}: saving to {} could not be confirmed on disk ({e}): the file \
+                         keeps the change in memory and takes no more changes until it is \
+                         hosted again",
+                        self.name,
+                        self.path.display()
+                    );
+                    self.events
+                        .alert(Event::save_failed(&self.name, e, SaveOutcome::Unknown));
+                }
+            }
+            Err(SaveError::NotWritten(e)) if quiet => {
+                debug!(
+                    "{:?}: saving to {} failed: {e}",
                     self.name,
                     self.path.display()
                 );
-                self.events
-                    .alert(Event::save_failed(&self.name, &error, SaveOutcome::Kept));
             }
-            return Err(error);
-        }
-        error!(
-            "{:?}: saving to {} failed ({error}): took out field indexes the file cannot hold, \
-             which the next find that reads them builds again: {}",
-            self.name,
-            self.path.display(),
-            crate::store::describe(&dropped)
-        );
-        if !kept.is_empty() {
-            return Err(error);
-        }
-        if let Err(e) = store.save(&self.at) {
-            error!(
-                "{:?}: saving to {} failed, unsaved changes are kept in memory: {e}",
-                self.name,
-                self.path.display()
-            );
-            self.events
-                .alert(Event::save_failed(&self.name, &e, SaveOutcome::Kept));
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    /// [`Store::save_commit`] for this file, logged.
-    pub(crate) fn save_commit(&self, store: &mut Store, journal: Journal) -> std::io::Result<()> {
-        let started = Instant::now();
-        let saved = store.save_commit(&self.at, journal);
-        match &saved {
-            Ok(()) => debug!("{:?}: saved in {:?}", self.name, started.elapsed()),
-            Err(e) => {
+            Err(SaveError::NotWritten(e)) if effects => {
                 error!(
-                    "{:?}: saving to {} failed, the commit was taken back: {e}",
+                    "{:?}: saving to {} failed, the change was taken back: {e}",
                     self.name,
                     self.path.display()
                 );
                 self.events
                     .alert(Event::save_failed(&self.name, e, SaveOutcome::TakenBack));
+            }
+            Err(SaveError::NotWritten(e)) => {
+                error!(
+                    "{:?}: saving to {} failed, unsaved changes are kept in memory: {e}",
+                    self.name,
+                    self.path.display()
+                );
+                self.events
+                    .alert(Event::save_failed(&self.name, e, SaveOutcome::Kept));
             }
         }
         saved
@@ -653,6 +643,18 @@ impl Hosted {
         let matched = std::hint::black_box(stored.verify(password));
         account.filter(|account| matched && account.password.is_ok())
     }
+}
+
+/// What [`Hosted::save_change`] stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Saving {
+    /// A commit: op70, an authoring edit, a server script's commit and Set
+    /// Next Serial Value, an account edit.
+    Commit,
+    /// A window's saved found set, whose failed save is not alerted.
+    QuietCommit,
+    /// Any other change.
+    Change,
 }
 
 /// FileMaker's error for a save that failed (OpenMaker's choice; how
@@ -1957,6 +1959,28 @@ fn load_hosted(
     // this file (#468).
     loaded.store_for_writing().set_file(on_disk);
     drop(file);
+    // A copy a save left when it stopped part way would stop every save:
+    // removed under the file's lock, before any save.
+    match crate::store::clear_leftover_copy_at(at, on_disk) {
+        LeftoverCopy::None => {}
+        LeftoverCopy::Removed => {
+            warn!(
+                "{:?}: removed the copy an earlier save left beside {}",
+                hosted.name,
+                at.path().display()
+            );
+            events.record(Event::leftover_copy_removed(&hosted.name));
+        }
+        LeftoverCopy::Kept(why) => {
+            error!(
+                "{:?}: an entry named like a save's copy is beside {} and was left as it is \
+                 ({why}); saves of the file fail until it is removed",
+                hosted.name,
+                at.path().display()
+            );
+            events.alert(Event::leftover_copy_kept(&hosted.name, &why));
+        }
+    }
     loaded.finish_deferred_work(engine);
     loaded.commit_recovery(engine);
     Ok(loaded)

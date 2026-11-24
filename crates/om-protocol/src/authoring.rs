@@ -79,6 +79,11 @@ pub mod status {
     /// create file on disk", 809 "Disk/volume is full", 810 "Disk/volume
     /// is locked").
     pub const SAVE_FAILED: [u16; 3] = [800, 809, 810];
+    /// The host wrote the change but could not confirm that the file on
+    /// disk keeps it: the change may or may not be in the file, which takes
+    /// no more changes until it is hosted again (FileMaker's -1, "Unknown
+    /// error"). A client reports it as an outcome it cannot know.
+    pub const OUTCOME_UNKNOWN: u16 = 0xffff;
     /// The table already has a field of that name ("Name already exists").
     pub const NAME_EXISTS: u16 = 12;
     /// No such table ("Table is missing").

@@ -207,7 +207,12 @@ layout's indexes), leaving out every stamp in it.
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
 `outcome_unknown`, `save_failed`, `verification_failed`. An
-`outcome_unknown` result means the save could not be confirmed. For an
+`outcome_unknown` result means the save could not be confirmed: the answer
+was lost, or OpenMaker Server answered status 65535, as it does when its
+save renamed the new copy over the file and could not flush the folder
+(the change may or may not be in the file, which takes no more changes
+until it is hosted again; docs/server-storage.md 5). `save_failed`
+(800, 809, 810) means nothing was written. For an
 OpenMaker Server script save, read the script again and compare its
 revision with `after_revision` and `previous_revision`. The same edit from
 the same revision reports `already_applied` if the script has the requested

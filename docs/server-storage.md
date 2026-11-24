@@ -10,10 +10,10 @@ it except the contract in section 2.
 **Status: design.** Only the file engine exists
 (`crates/om-server/src/store.rs`). Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
-its lock table goes through them (section 5). Still to come: views and
-`export`, `import` and `capabilities` (section 5), the file engine's
-reporting of failed saves (section 5, last part), the store engine and
-everything in sections 6 to 12, which are specified here and not built.
+its lock table goes through them, and every save's outcome is reported
+(section 5). Still to come: views and `export`, `import` and
+`capabilities` (section 5), the store engine and everything in sections 6
+to 12, which are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -22,7 +22,7 @@ work. A section is rewritten in place when its part is built.
 The file engine loads each hosted `.fmp12` whole into memory as its key
 tree and writes every change back as a complete new file, renamed over the
 old one, while it holds the file's write lock (`Store::save`,
-`Hosted::save_held`). That is simple and never leaves a half-written file.
+`Hosted::save_change`). That is simple and never leaves a half-written file.
 Its costs grow with the file:
 
 - a commit costs a rebuild and a flush of the whole file, and every other
@@ -169,9 +169,10 @@ only to read (`store::SavedFile`). The exceptions:
 
 - the setup of a file no one can reach yet: `hosting::load_hosted` records
   the file's identity in its store before serving it;
-- test switches: `Hosted::fail_commit_saves` (debug builds, behind
-  `ServerHandle::failing_commit_saves`), which sets a flag of the store
-  and never its tree, and `engine::Writer::for_tests` (test builds);
+- test switches: `Hosted::fail_commit_saves` and `Hosted::fail_saves`
+  (debug builds, behind `ServerHandle::failing_commit_saves` and
+  `ServerHandle::failing_saves`), which set a flag of the store and never
+  its tree, and `engine::Writer::for_tests` (test builds);
 - reads that hold the lock table: a connection's count of its locks, and
   a debug-build test that holds every lock table to panic on purpose;
 - the file's path and folder, which no type can keep from being opened
@@ -182,8 +183,7 @@ only to read (`store::SavedFile`). The exceptions:
   the engine's saves. Nothing outside the engine's saves writes through
   either.
 
-Views, `export`, `import` and `capabilities` are not built, and nor are
-the failed-save fixes at the end of this section.
+Views, `export`, `import` and `capabilities` are not built.
 
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
@@ -507,48 +507,49 @@ used up. Now the lock request waits for the save and is refused, and op71
 gets its ids. Both are orders the two requests could have run in;
 FileMaker Server's behaviour here is unmeasured.
 
-`submit` saves as each request saved before:
+`submit` saves at the points each request saved before, so that with
+saves succeeding the file is written as often as before, and reads every
+save's outcome ("Failed saves", below):
 
-- op70: the commit's journal (`Hosted::save_commit`). A failed save takes
-  the commit back, its records stay locked, and the reply is the storage
-  error;
-- a client's op71: the new last issued id before the ids are answered
-  (`Hosted::save_held`, #927). A failed save takes back the reservation and
-  the locks it took, and the reply is the save's error. A server script's
-  op71 is saved by the script's commit;
-- op72, op13, op86's schema instructions and the indexes a find built
-  (a client's or a server script's): the file is saved if it changed, and
-  a failed save leaves the change in memory and is not reported, as
-  `Hosted::save` did and as op13 dropped the result of `save_held`;
+- op70: its commit. A save that fails takes the commit back, its records
+  stay locked, and the staged records go back to the session's temporary
+  area;
+- a client's op71: the new last issued id, before the ids are answered
+  (#927); on a read-only file the save fails. A failed save takes back
+  the reservation and the locks it took. A server script's op71 saves
+  nothing: its commit, or the Save at its end, saves it;
+- op72, op13, op86's schema instructions and the indexes a find built (a
+  client's or a server script's), op87 and op88: the file, when it holds
+  changes the disk lacks and is not hosted read-only (op88 also when the
+  upload was not valid binary data, as after every op88 that was read).
+  A failed save takes the operation back;
 - op73: the same, only when its work changed the file;
-- op87 and op88: the same, op88 also when the upload was not valid binary
-  data, as `Hosted::save` was called after every op88 that was read;
-- an authoring edit that changed the file: its journal
-  (`Hosted::save_commit`). A failed save takes the edit back, the reply is
-  the storage error (status 800, 809 or 810) saying what the file keeps,
-  and its locks are released all the same;
-- op240's Save: as op72, its reply then saying whether the file holds
-  changes the disk lacks (status 800), or that it is hosted read-only. A
-  server script's end submits it and does not read its reply, as it
-  called `Hosted::save`;
-- a server script's commit and its Set Next Serial Value: their journal
-  (`Hosted::save_commit`), as op70. A failed save takes the change back,
-  a commit's records stay locked, and the step fails with the save's
-  FileMaker error (`hosting::save_error`);
-- an account edit that changed the file: its journal
-  (`Hosted::save_commit`). A failed save takes the edit back and the
-  reply is the edit's "not written" error with the save's message (3 for
-  a script step);
-- a saved found set: its journal, saved by the store alone
-  (`Store::save_commit`), as the desktop saved it. A failed save takes it
-  back and is logged as a warning, with no alert;
+- an authoring edit that changed the file: its commit. A failed save
+  takes the edit back, the reply is the storage error (status 800, 809 or
+  810) saying what the file keeps, and its locks are released all the
+  same;
+- op240's Save: the file, when it may be written, the reply then saying
+  whether the disk holds every change the file holds (status 800, 809 or
+  810 when it does not), or that it is hosted read-only. A server
+  script's end submits it, and a failed save there is the script's
+  error, and so does the save of the deferred work finished at opening;
+- a server script's commit and its Set Next Serial Value: their commit, as
+  op70. A failed save takes the change back, a commit's records stay
+  locked, and the step fails with the save's FileMaker error
+  (`hosting::save_error`);
+- an account edit that changed the file: its commit. A failed save takes
+  the edit back and the reply is the edit's "not written" error with the
+  save's message (3 for a script step);
+- a saved found set: its commit, as the desktop saved it. A failed save
+  takes it back and is logged as a warning, with no alert;
 - finishing deferred work saves nothing. Its save waits: a server saves
   the file as soon as it is loaded, a local file once an account it
   admits logs in (`SaveFile`, `Hosted::commit_recovery`), and a local
   file closed before that is left as it was. In between, every reader
   sees the finished work in memory, as before: the operation runs when
   the file is loaded, before it is served, with the engine that then
-  serves it;
+  serves it. A failed save of it is logged and alerted, and the work
+  waits in memory for the next save;
 - the lock requests, a server script's locks and their releases, and the
   release of a session's locks save nothing.
 
@@ -632,25 +633,162 @@ The deferred work finished at opening and a saved found set are as
 before: the first runs before anyone can reach the file, the second only
 when no one holds the store.
 
-The follow-up of #673's step 1, once every write goes through `submit`,
-changes what the file engine does when a save fails, on purpose. Today
-`submit` reports nothing for op72, op13, op73, op86's operations, op87 and
-op88, and a server script's end and the save of the deferred work
-finished at opening do not read their Save's reply, so a client can be
-told a serial, catalog or container is stored when it is not. Behind the interface:
+**Failed saves.** Each save has one of the three outcomes of contract
+rule 4 (section 2), and `submit` reads it for every operation
+(`FileEngine::submit`, `Hosted::save_change`, `Store::save`):
 
-- a save that fails before the rename takes the operation's effects back,
-  and the reply is the storage error;
-- a save whose folder flush fails after the rename (`Store::save` logs a
-  warning and reports success today) has an unknown outcome. The renamed
-  file holds the change and may or may not survive a crash. The reply is
-  the storage error, readers go on reading the version in memory, which is
-  the renamed file's, the file takes no more writes, and an alert is
-  raised;
-- a leftover `.omsave` is removed when the file is opened for hosting,
-  only while the server holds the file's lock, so that no other OpenMaker
-  process can be in the middle of a save, and only when it is a regular
-  file in the file's own folder reached without following links.
+- *stored*: the outcome is the operation's own;
+- *not stored*: the save stopped before it renamed its new copy over the
+  file (`store::SaveError::NotWritten`), so the file on disk is as it was
+  and the copy the save made is gone. Everything the operation changed is
+  taken back, and the reply is its storage error, with no notices
+  (`Outcome::not_stored`);
+- *unknown*: the rename succeeded and flushing the folder after it failed
+  (`store::SaveError::Unknown`). The renamed file holds the change, which
+  may or may not survive a crash. The reply is the storage error, with no
+  notices; the tree keeps the change, as the renamed file holds it, and so
+  does everything that follows from it (a commit's records are released);
+  and the file takes no more changes (below).
+
+An operation that changed nothing of the tree (op72 reading a serial,
+op87 with a delta of 0, an account edit that leaves the account as it
+was) still saves where its request saved before, which writes the changes
+others left waiting: a server script's reserved record ids, the deferred
+work of a local file before its first login. When that save fails it is
+answered as it would have been, the waiting changes wait on, and the event
+log says so; op240's Save answers that the disk lacks them.
+
+*Taking a change back.* Every operation that changes the tree writes into
+one journal (`store::Journal`, which `engine::Transaction` holds), which
+keeps what each change replaced; `Store::roll_back` puts it back, newest
+first, byte for byte, the root's list flag included. What it keeps:
+
+| Operation | What the journal keeps |
+|---|---|
+| op70, a server script's commit | each record as it was, the record lists and index entries and counts it changed, a script's library entries (as before) |
+| op71 | the last issued id `[T, 00]` |
+| op72, Set Next Serial Value | the field's serial node |
+| op13, op86's UploadMultiple and DeleteTable | the subtree each write replaced or deleted, moved, not copied, and the first parent a write created |
+| op86's GenerateMemberKey | the catalog index keys it advanced |
+| a find's indexes | the index nodes it put, absent as a rule |
+| op88 | the library header and the new member's absence, or the counts of the member that already held the data; a new library's absence |
+| op87 | the member's counts, or, when it is deleted, the member and the header |
+| op73 | each record before its first change, the work list, the global values it drops, the indexes it rebuilds or drops (moved), the library entries it releases or stores, and the table's basis of stored calculations |
+| an authoring edit, an account edit, a found set | the catalog members and nodes it replaced, and the parents it created (as before, the parents added) |
+
+What follows from the tree is taken back with it: the schema is read again
+when a catalog was replaced, and the store's schema generation advances,
+so the accounts and the verified-index marks are derived again. The locks
+the operation took are released and the releases that waited for it
+dropped (`Locks::take_back`); an authoring edit's locks are released all
+the same. The member keys and indexes a draft took from what reads left
+waiting wait again, for the next write. Thumbnails of the libraries a
+deleted table took or a script's commit emptied are forgotten, a new
+field's basis is counted and the log lines that say a change was made are
+written only for a change the file holds (stored or unknown). The deferred
+work finished at opening writes no journal: its save waits, and nothing
+takes it back. A run left by a panic is taken back the same way.
+
+What a journal costs, on the file of a million records measured in
+[#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) (522 MB on
+disk, 1.6 GB of tree in memory, 3.8 s to rebuild and 0.9 s to write a
+save): a record commit keeps the records it writes, as before; op71, op72,
+op87 and op13 a node or two of their own size; op86's DeleteTable of that
+table keeps the table, moved, so its 1.6 GB are freed after the save
+rather than at once; a find's index nothing; op88 a copy of the library's
+header (a key and an MD5 per member). The largest is op73: each record
+whose values it rewrites is copied before its change, so recomputing a
+stored calculation on every record, or dropping or converting a field's
+values in every record, holds a second copy of the records changed, about
+1.5 GB on that file, until the save returns, beside the tree and the
+save's 0.5 GB image; building or dropping an index copies nothing. Taking
+the change back costs a put per kept node.
+
+The other way to take a change back, discarding the tree and loading the
+file again from disk, costs nothing while an operation runs but a full
+load on each failure (2.2 s on that file, all readers waiting, and the
+memory of the load), and is exact only when the file on disk holds the
+tree as it was before the operation. It does not while changes wait
+unsaved (a server script's reserved record ids until its commit, a local
+file's deferred work until a login, the field indexes taken out after a
+save failed on content the file cannot hold), and it reads the disk that
+just failed a write. A journal needs neither, op70 and the edits kept one
+already, and a commit refused part way (a write the file cannot hold) is
+taken back without a load: one mechanism for every operation.
+
+*The reply.* What FileMaker Server answers when it cannot write a hosted
+file is unmeasured (it would need a server whose disk fails), so each
+reply is OpenMaker's choice, made from what the request's reply can
+carry. The FileMaker error is the save's (`hosting::save_error`): 809
+"Disk/volume is full" for a full disk, a quota or a size limit, 810
+"Disk/volume is locked" for a read-only file system, else 800 "Unable to
+create file on disk".
+
+| Request | Not stored, or unknown | What the reply can carry |
+|---|---|---|
+| op70 | a system exception (MARSHAL), as before; not stored, the staged records go back to the temporary area and the records stay locked | no status (write-path.md 3.4) |
+| op71 | status 800, 809 or 810, the key `[00]` | a status (write-path.md 3.1) |
+| op72 | status 800, 809 or 810, an empty value | a status (write-path.md 3.2) |
+| op13 | a system exception (MARSHAL), as op70 | no status (schema-path.md 3.3) |
+| op73 | a system exception (MARSHAL), as its refusals | an empty reply (write-path.md 3.6) |
+| op86 with schema instructions or issued member keys | the error slot `[00] = 02 <800, 809 or 810>` alone | the error slot (query-program.md 11.2) |
+| op86 that only finds, a server script's find | the find's answer: the indexes it built wait again for the next write, logged | (a find's answer says nothing is stored) |
+| op87 | `ffffffff` | the failure count (containers.md 5.3) |
+| op88 | status 800, 809 or 810, the save's message as the error text, no member | a status and a text (containers.md 3.2) |
+| op240, an edit | status 800, 809 or 810 with what the file keeps; unknown: status 65535 (`OUTCOME_UNKNOWN`), which `om-author` reports as `outcome_unknown` | OpenMaker's own extension (docs/authoring.md) |
+| op240, Save | status 800, 809 or 810; unknown: status 65535 | as above |
+| a server script's commit, Set Next Serial Value, and the serial numbers New Record and Duplicate Record take | the step's error 800, 809 or 810 | Get ( LastError ) |
+| a server script's end | its result's error 800, 809 or 810 (op30's reply, a schedule's last error), whatever its last step's was | op30's error |
+| an account edit | "not written" with the save's message (3 for a script step) | as its refusals |
+| the desktop's found set | not kept, a warning in the log | — |
+
+*No more changes.* After an unknown outcome the store refuses every later
+save (`Store::writes_refused`), and `submit` refuses every operation that
+would change the file before running it, so nothing is drawn from its
+environment, with its storage error (code 800) saying that the file takes
+no more changes until it is hosted again; op240's Save answers status
+65535, as whether the disk holds what the file holds is what is unknown.
+What a draft took waits again. Reads, op60 and the operations that change
+only the lock table go on. One alert is raised (`Event::save_failed`: the
+file may or may not keep the change and takes no more until it is hosted
+again), and the administrator's list of files gives the reason in the
+file's `error` with its status unchanged (`FileInfo::error`;
+admin-console.md). Closing the file and opening it again, or a restart,
+loads it from the renamed file, which clears the state. The no-more-changes
+state is held in the store (checked under its write lock) and once more in
+the file (`Hosted::writes_refused`, set once, read without a lock), so that
+the list of files does not wait for a busy store.
+
+*A leftover copy.* A save that stops part way (the process or the machine
+stopped) leaves `<file>.omsave`, whose name a save creates only where
+nothing is, so every later save of the file fails while it is there. When
+a file is opened for hosting, before anything is saved, the entry is
+looked at once in the file's own folder without following a link, and
+(`store::clear_leftover_copy`, the one implementation for the server and
+the desktop):
+
+- a regular file with no other name, as a save creates it, is removed by
+  name through the same folder handle, which never follows a link, and the
+  removal is logged (on a server also in the event log);
+- anything else is left as it is: a link (to a file or a folder), a
+  folder, a file with other names (hard links), and a copy whose removal
+  fails. A server then hosts the file as it did before this rule: it is
+  served, each change is answered with the storage error while the entry
+  is there, and an alert says why; the administrator can remove the entry
+  without closing the file, and the next save works. The desktop opens
+  the file read-only (`ReadOnly::CopyInTheWay`), as it did.
+
+Removal happens only while the host holds the file's lock
+([local-files.md](re/local-files.md) 4, `crate::filelock`): an OpenMaker
+that has a file open holds that lock from opening to closing, its saves
+included, so none can be in the middle of a save of the file. The desktop
+holds it for writing from its open on. OpenMaker Server holds no lock on
+the files it hosts, so it takes the lock for this, exclusive and without
+waiting, through a descriptor of the file opened in its folder and checked
+to be the file it read, and leaves the copy when it cannot: another
+OpenMaker has the file open, or the file system has no locks. Another
+OpenMaker Server hosting the same file holds no lock and is not seen
+([#724](https://github.com/OpenMaker-Dev/openmaker/issues/724)).
 
 ## 6. The store engine
 

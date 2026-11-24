@@ -657,6 +657,12 @@ impl ImportTarget for ServerImport<'_> {
                 .and_then(|key| serial::decode(key))
                 .ok_or_else(|| TransferError::new(-1, "No record id."))?,
             106 => return Err(TransferError::new(106, "The table is missing.")),
+            code @ (800 | 809 | 810) => {
+                return Err(TransferError::new(
+                    code as i32,
+                    "The file takes no more changes.",
+                ))
+            }
             _ => return Err(TransferError::new(301, "The record is in use.")),
         };
         let record = OpenRecord {
