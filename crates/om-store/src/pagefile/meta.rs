@@ -35,8 +35,8 @@ pub const MAX_TREES: usize = if cfg!(test) { 4_096 } else { 1 << 16 };
 
 /// The most restore points a checkpoint lists (and as many retiring),
 /// enforced when a checkpoint is planned and by the open. The crate's own
-/// tests are built with 64.
-pub const MAX_RESTORE_POINTS: usize = if cfg!(test) { 64 } else { 1 << 16 };
+/// tests are built with 256.
+pub const MAX_RESTORE_POINTS: usize = if cfg!(test) { 256 } else { 1 << 16 };
 
 /// The longest restore point name, in bytes.
 pub const MAX_RESTORE_NAME: usize = 64;

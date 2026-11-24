@@ -173,6 +173,8 @@ enum Op {
     Create,
     /// The tree is dropped whole and made again, empty.
     Recreate,
+    /// The tree takes another name.
+    Rename(TreeName),
 }
 
 #[derive(Clone, Debug)]
@@ -197,6 +199,7 @@ fn bound(store: &impl PageStore, model: &Model, ops: &[(TreeName, Op)]) -> Resul
             }
             // A root page, and room for the name in the tables.
             Op::Create | Op::Recreate => 1 + TABLE_ROOM,
+            Op::Rename(_) => TABLE_ROOM,
         };
     }
     Ok(total)
@@ -230,6 +233,11 @@ fn apply_logged(res: &Reservation<'_>, model: &mut Model, logged: &Logged) -> Re
                 model.trees.remove(name);
                 let root = res.create_tree(name).map_err(|e| e.to_string())?;
                 model.trees.insert(name.clone(), (root, Content::new()));
+            }
+            Op::Rename(to) => {
+                res.rename_tree(name, to).map_err(|e| e.to_string())?;
+                let tree = model.trees.remove(name).ok_or("no such tree")?;
+                model.trees.insert(to.clone(), tree);
             }
         }
     }
@@ -334,6 +342,8 @@ struct Reached {
     unrecoverable: u64,
     replayed: u64,
     recreated: u64,
+    renamed: u64,
+    same_entry: u64,
     leak_checks: u64,
     /// Dying pages found held for a map on disk at a leak check.
     held: u64,
@@ -514,7 +524,8 @@ impl<'r> Run<'r> {
                 }
                 62..=66 => self.pin(),
                 67..=70 => self.unpin(),
-                71..=73 => self.drop_restore_point(),
+                71..=72 => self.drop_restore_point(),
+                73 => self.same_entry(),
                 74..=81 => self.reclaim(),
                 82..=86 => self.check(step % 3 == 0),
                 87..=92 => self.stop(false),
@@ -605,6 +616,9 @@ impl<'r> Run<'r> {
                 if logged.ops.iter().any(|(_, op)| matches!(op, Op::Recreate)) {
                     self.reached.recreated += 1;
                 }
+                if logged.ops.iter().any(|(_, op)| matches!(op, Op::Rename(_))) {
+                    self.reached.renamed += 1;
+                }
                 match apply_logged(&res, &mut self.newest, &logged) {
                     Ok(()) => {
                         if let Some(last) = self.log.last_mut() {
@@ -656,16 +670,22 @@ impl<'r> Run<'r> {
             return;
         }
         let index = self.log.last().map_or(1, |l| l.entry.index + 1);
-        let n = 1 + self.plan.below(2) as usize;
-        let first = self.plan.below(3) as usize;
+        let names: Vec<TreeName> = self.newest.trees.keys().cloned().collect();
+        let n = (1 + self.plan.below(2) as usize).min(names.len());
+        let first = self.plan.below(names.len() as u64) as usize;
         let ops = (0..n)
             .map(|i| {
-                let name = tree_name((first + i) % 3);
-                let op = if self.plan.one_in(25) {
-                    Op::Recreate
-                } else {
-                    let count = 1 + self.plan.below(6);
-                    Op::Edits(edits(&mut self.plan, count))
+                let name = names[(first + i) % names.len()].clone();
+                let op = match self.plan.below(30) {
+                    0 => Op::Recreate,
+                    1 => {
+                        self.names += 1;
+                        Op::Rename(TreeName::new(format!("r{}", self.names)).unwrap())
+                    }
+                    _ => {
+                        let count = 1 + self.plan.below(6);
+                        Op::Edits(edits(&mut self.plan, count))
+                    }
                 };
                 (name, op)
             })
@@ -677,13 +697,48 @@ impl<'r> Run<'r> {
         });
     }
 
+    /// A checkpoint is of one exact version (review of #719, second round):
+    /// a reservation at or before the newest checkpoint's entry is refused,
+    /// and a checkpoint is refused while a reservation for an entry it
+    /// would cover is open.
+    fn same_entry(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pf = &proc.pf;
+        let (_, at) = pf.checkpoint_entry();
+        if at.index > 0 {
+            assert!(
+                matches!(
+                    pf.reserve(at.index, 1, Purpose::Entry),
+                    Err(SpaceError::Refused(_))
+                ),
+                "a reservation at the checkpoint's entry {}",
+                at.index
+            );
+        }
+        let next = self.next_index();
+        let held = pf.reserve(next, 1, Purpose::Entry);
+        if held.is_ok() {
+            let refused = pf.checkpoint(entry_id(next), &self.newest.roots(), None);
+            assert!(
+                matches!(refused, Err(CheckpointError::Refused(_))),
+                "a checkpoint at {next} with its reservation open: {refused:?}"
+            );
+        }
+        self.reached.same_entry += 1;
+        self.trace.push(format!("same-entry checks at {next}"));
+    }
+
     /// An entry that changes all three trees.
     fn entry_all(&mut self) {
         let index = self.log.last().map_or(1, |l| l.entry.index + 1);
-        let ops = (0..3)
-            .map(|i| {
+        let names: Vec<TreeName> = self.newest.trees.keys().cloned().collect();
+        let ops = names
+            .into_iter()
+            .map(|name| {
                 let count = 2 + self.plan.below(4);
-                (tree_name(i), Op::Edits(edits(&mut self.plan, count)))
+                (name, Op::Edits(edits(&mut self.plan, count)))
             })
             .collect();
         self.append(Logged {
@@ -737,7 +792,6 @@ impl<'r> Run<'r> {
             return;
         };
         let pf = &proc.pf;
-        let number = pf.next_checkpoint();
         // Names come from a small pool, so that a name dropped is kept
         // again while the old restore point is still on disk.
         let listed: Vec<String> = pf
@@ -753,7 +807,17 @@ impl<'r> Run<'r> {
                     .find(|n| !listed.contains(n))
             })
             .flatten();
-        self.names += u64::from(name.is_some());
+        self.checkpoint_as(name);
+    }
+
+    /// A checkpoint of the newest version, kept as restore point `name`
+    /// when given.
+    fn checkpoint_as(&mut self, name: Option<String>) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pf = &proc.pf;
+        let number = pf.next_checkpoint();
         self.checkpoints.insert(number, self.newest.clone());
         self.pred.insert(number, Some(self.confirmed));
         let result = pf.checkpoint(self.newest.entry, &self.newest.roots(), name.as_deref());
@@ -1289,6 +1353,7 @@ fn seeded_schedules_on_an_honest_disk() {
             reached.restore_dropped > 0 && reached.recreated > 0,
             "{reached:?}"
         );
+        assert!(reached.renamed > 0 && reached.same_entry > 0, "{reached:?}");
     }
 }
 
@@ -1309,6 +1374,9 @@ fn seeded_schedules_on_a_lying_disk() {
     }
     eprintln!("{reached:#?}");
     reached.assert_fired(&lying());
+    if std::env::var("OM_STORE_SEED").is_err() {
+        assert!(reached.renamed > 0 && reached.same_entry > 0, "{reached:?}");
+    }
 }
 
 /// The same scenario body on the real file system, without faults.
@@ -2178,12 +2246,21 @@ fn replay_fits_in_the_space_the_first_run_had() {
             },
             Purpose::Discard,
         );
-        run.checkpoint(false);
+        // Restore points kept, to be dropped during the tail with no
+        // checkpoint after: the room a reservation leaves must not shrink.
+        run.checkpoint_as(Some(format!("a{seed}")));
+        run.checkpoint_as(Some(format!("b{seed}")));
         run.checkpoint(false);
         run.check(true);
         let mut rng = Rng::stream(seed, 5);
         let tail = 300;
-        for _ in 0..tail {
+        for step in 0..tail {
+            if step == tail / 3 || step == 2 * tail / 3 {
+                let name = if step == tail / 3 { "a" } else { "b" };
+                let name = format!("{name}{seed}");
+                run.pf().drop_restore_point(&name).unwrap();
+                run.restore.remove(&name);
+            }
             let index = run.next_index();
             let key = vec![b'k', rng.below(3) as u8];
             run.append(Logged {
@@ -2596,5 +2673,291 @@ fn a_held_page_passes_its_hold_to_what_it_refers_to() {
     run.reopen();
     // Draining takes the drop apart again from the map on disk: every page
     // it reads must still be whole (an honest disk allows no other fault).
+    run.check(true);
+}
+
+/// Review of #719 (second round, P0): while a checkpoint at entry E is
+/// being written, a reservation at E is refused, and units of later
+/// entries go on; the checkpoint opened afterwards is exactly version E.
+#[test]
+fn a_checkpoint_being_written_takes_no_unit_of_its_entry() {
+    let sim = Sim::new(46);
+    let fs = Gated {
+        inner: sim.fs(),
+        gate: Arc::default(),
+    };
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&fs, &lock, config()).unwrap();
+    let name = tree_name(0);
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
+    let root = res.create_tree(&name).unwrap();
+    drop(res);
+    let edits = |value: u8| [Edit::leaf(vec![b"k".to_vec()], vec![value; 10])];
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let at_two = tree::apply(&res, root, 2, &edits(2)).unwrap();
+    drop(res);
+    // Entry 3's reservation is taken before the checkpoint (one short of
+    // space would wait for the checkpoint's writes); its unit commits while
+    // they are under way.
+    let later = pf.reserve(3, 64, Purpose::Entry).unwrap();
+    {
+        let (state, _) = &*fs.gate;
+        state.lock().unwrap().0 = true;
+    }
+    let at_three = std::thread::scope(|scope| {
+        let trees = [(name.clone(), at_two)];
+        let pf = &pf;
+        let writing = scope.spawn(move || pf.checkpoint(entry_id(2), &trees, None));
+        let (state, cv) = &*fs.gate;
+        let mut s = state.lock().unwrap();
+        while !s.1 {
+            s = cv.wait(s).unwrap();
+        }
+        drop(s);
+        // The checkpoint has fixed entry 2: nothing of entry 2 is taken
+        // now, and entry 3 goes on.
+        assert!(matches!(
+            pf.reserve(2, 4, Purpose::Entry),
+            Err(SpaceError::Refused(_))
+        ));
+        let at_three = tree::apply(&later, at_two, 3, &edits(3)).unwrap();
+        let mut s = state.lock().unwrap();
+        s.2 = true;
+        cv.notify_all();
+        drop(s);
+        writing.join().unwrap().unwrap();
+        at_three
+    });
+    drop(later);
+    assert_eq!(pf.kept_checkpoints()[0].entry, entry_id(2));
+    let read = |pf: &PageFile, root| Tree::open(pf, root).unwrap().get(&[b"k"]).unwrap();
+    assert_eq!(read(&pf, at_three), Some(Node::Value(vec![3; 10])));
+    drop(pf);
+    sim.restart();
+    let (pf, opened) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config()).unwrap();
+    assert_eq!(opened.entry, entry_id(2));
+    assert_eq!(pf.checkpoint_trees(), vec![(name, at_two)]);
+    assert_eq!(read(&pf, at_two), Some(Node::Value(vec![2; 10])));
+}
+
+/// Review of #719 (second round, P1): a rename is a unit of its entry. A
+/// checkpoint at the entry before it is refused (a unit of a later entry
+/// was committed), and after a restart the rename is applied again from
+/// the log.
+#[test]
+fn a_rename_is_ordered_with_its_entry_and_replayed() {
+    let mut reached = Reached::default();
+    let (_sim, mut run) = quiet_run(48, &mut reached);
+    for _ in 0..3 {
+        run.entry_all();
+    }
+    run.checkpoint(false);
+    let before = run.newest.clone();
+    let index = run.next_index();
+    let renamed = TreeName::new(b"renamed".to_vec()).unwrap();
+    run.append(Logged {
+        entry: entry_id(index),
+        ops: vec![(tree_name(0), Op::Rename(renamed.clone()))],
+        taken: None,
+    });
+    assert!(run.newest.trees.contains_key(&renamed));
+    // The checkpoint of the entry before the rename, with either name.
+    let mut with_new = before.roots();
+    with_new[0].0 = renamed.clone();
+    for trees in [before.roots(), with_new] {
+        assert!(matches!(
+            run.pf().checkpoint(before.entry, &trees, None),
+            Err(CheckpointError::Refused(_))
+        ));
+    }
+    run.stop(true);
+    run.reopen();
+    assert!(run.pf().tree_names().contains(&renamed));
+    run.checkpoint(false);
+    run.stop(true);
+    run.reopen();
+    assert!(run
+        .pf()
+        .checkpoint_trees()
+        .iter()
+        .any(|(n, _)| *n == renamed));
+    run.check(true);
+}
+
+/// Review of #719 (second round, P1): dropping restore points without a
+/// checkpoint does not lower the room a reservation leaves (their pages are
+/// still protected by the superblocks on disk), so an entry that just fits
+/// before a restart fits when it is applied again after one.
+#[test]
+fn replay_after_restore_points_are_dropped_fits() {
+    let sim = Sim::new(47);
+    let mut reached = Reached::default();
+    let config = Config {
+        reserve: 0,
+        ..config()
+    };
+    let mut run = Run::with(
+        Disk::Sim(sim.clone()),
+        Device::Honest,
+        47,
+        &mut reached,
+        config,
+    );
+    run.replay_must_fit = true;
+    for i in 0..250 {
+        run.entry();
+        run.checkpoint_as(Some(format!("p{i}")));
+    }
+    run.checkpoint(false);
+    run.checkpoint(false);
+    for _ in 0..20 {
+        if run.pf().reclaim(1 << 20).drained {
+            break;
+        }
+    }
+    // The disk holds the file as it is, and no more.
+    sim.set_capacity(run.pf().space().end * PAGE + (64 << 10));
+    for (rp, _) in run.pf().restore_points() {
+        run.pf().drop_restore_point(&rp.name).unwrap();
+        run.restore.remove(&rp.name);
+    }
+    // An entry taking exactly what may be taken now: trees made (5 pages
+    // each) and renamed (4 each).
+    let space = run.pf().space();
+    let avail = space.free - space.promised - space.floor;
+    assert!(avail >= 20, "{space:?}");
+    let made = avail % 4;
+    let renames = (avail - 5 * made) / 4;
+    let index = run.next_index();
+    let mut ops: Vec<(TreeName, Op)> = (0..made)
+        .map(|i| (TreeName::new(format!("n{i}")).unwrap(), Op::Create))
+        .collect();
+    let mut current = run.newest.trees.keys().next().unwrap().clone();
+    for i in 0..renames {
+        let to = TreeName::new(format!("m{i}")).unwrap();
+        ops.push((current, Op::Rename(to.clone())));
+        current = to;
+    }
+    let entries = run.reached.entries;
+    run.append(Logged {
+        entry: entry_id(index),
+        ops,
+        taken: None,
+    });
+    assert_eq!(run.reached.entries, entries + 1, "the entry fitted");
+    assert_eq!(run.log.last().unwrap().taken, Some(avail));
+    run.stop(true);
+    run.reopen();
+    assert!(run.proc.is_some());
+    run.check(true);
+}
+
+/// Review of #719 (second round, P1): the writer keeps every limit the
+/// reader enforces, by the same constants: restore points and trees past
+/// the limit are refused before anything is written, names past theirs
+/// cannot be made, a configuration that cannot be honoured is refused, and
+/// what was written opens.
+#[test]
+fn the_writer_keeps_every_limit_the_reader_enforces() {
+    let sim = Sim::new(49);
+    let disk = Disk::Sim(sim.clone());
+    assert!(matches!(
+        PageFile::create(
+            &*disk.fs(),
+            &disk.fs().lock().unwrap(),
+            Config {
+                reserve: u64::MAX,
+                ..config()
+            }
+        ),
+        Err(OpenError::Refused(_))
+    ));
+    let proc = create_proc(&disk, config());
+    let pf = &proc.pf;
+    // Trees: as many as a checkpoint names, and no more.
+    let res = pf
+        .reserve(1, 5 * MAX_TREES as u64 + 5, Purpose::Entry)
+        .unwrap();
+    let mut trees: Vec<(TreeName, Root)> = (0..MAX_TREES)
+        .map(|i| {
+            let name = TreeName::new(format!("t{i:05}")).unwrap();
+            let root = res.create_tree(&name).unwrap();
+            (name, root)
+        })
+        .collect();
+    let over = TreeName::new(b"one-more".to_vec()).unwrap();
+    assert!(res.create_tree(&over).is_err());
+    drop(res);
+    trees.sort_by(|a, b| a.0.cmp(&b.0));
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    drop(proc);
+    sim.restart();
+    let (proc, _) = open_proc(&disk, config()).unwrap();
+    assert_eq!(proc.pf.tree_names().len(), MAX_TREES);
+    drop(proc);
+
+    // Restore points, on a store of one tree: as many as a checkpoint
+    // lists, and no more.
+    let sim = Sim::new(51);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let pf = &proc.pf;
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
+    let trees = vec![(tree_name(0), res.create_tree(&tree_name(0)).unwrap())];
+    drop(res);
+    // Names: the longest there are, and no longer.
+    assert!(TreeName::new(vec![b'x'; TreeName::MAX + 1]).is_none());
+    let long = "x".repeat(MAX_RESTORE_NAME + 1);
+    assert!(matches!(
+        pf.checkpoint(entry_id(1), &trees, Some(&long)),
+        Err(CheckpointError::Refused(_))
+    ));
+    for i in 0..MAX_RESTORE_POINTS {
+        pf.checkpoint(entry_id(1), &trees, Some(&format!("p{i}")))
+            .unwrap();
+    }
+    let next = pf.next_checkpoint();
+    assert!(matches!(
+        pf.checkpoint(entry_id(1), &trees, Some("one-more")),
+        Err(CheckpointError::Refused(_))
+    ));
+    assert_eq!(pf.next_checkpoint(), next, "nothing was written");
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    drop(proc);
+    sim.restart();
+    let (proc, _) = open_proc(&disk, config()).unwrap();
+    assert_eq!(proc.pf.restore_points().len(), MAX_RESTORE_POINTS);
+}
+
+/// Review of #719 (second round, answer 5): a reclaim reads a dying page
+/// from the file even when it is cached, so a read error stops that page
+/// the same whether or not a reader cached it: the page stays dying,
+/// unsettled, the error is reported, and the next reclaim settles it.
+#[test]
+fn a_read_error_during_reclaim_does_not_depend_on_the_cache() {
+    let mut reached = Reached::default();
+    let (sim, mut run) = quiet_run(50, &mut reached);
+    run.entry_all();
+    run.checkpoint(false);
+    let (old, _) = run.newest.trees[&tree_name(0)].clone();
+    let index = run.next_index();
+    run.append(Logged {
+        entry: entry_id(index),
+        ops: vec![(tree_name(0), Op::Recreate)],
+        taken: None,
+    });
+    run.checkpoint(false);
+    // A reader caches the dropped root.
+    run.pf().read_page(old.page, &old.hash).unwrap();
+    assert!(run.pf().dying_pages().contains(&old.page));
+    sim.place(sim.steps() + 1, SimFault::FailRead);
+    let done = run.pf().reclaim(1 << 20);
+    assert!(
+        done.faults.iter().any(|f| f.page == old.page),
+        "the read failed although the page was cached: {done:?}"
+    );
+    assert!(run.pf().dying_pages().contains(&old.page));
+    let done = run.pf().reclaim(1 << 20);
+    assert!(done.faults.is_empty(), "{done:?}");
     run.check(true);
 }
