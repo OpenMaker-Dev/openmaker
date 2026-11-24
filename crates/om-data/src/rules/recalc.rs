@@ -776,9 +776,10 @@ fn in_evaluation_order(mut targets: BTreeMap<u64, Target>) -> (Vec<Target>, Vec<
 
 /// How long one evaluation of a record limit may run, on the write's
 /// stopwatch ([`super::WriteSources::stopwatch`]): a server's protection
-/// against a formula that runs long under the file's write lock, which a
-/// stopwatch that does not advance (a test's seeded environment) never
-/// meets, so that a run does not depend on the machine's speed.
+/// against a formula that runs long under the file's write lock. A seeded
+/// environment's stopwatch advances by a fixed step at each of the
+/// evaluator's checks, so that the budget is met after the same number of
+/// checks on every machine.
 const LIMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What one evaluation of a record limit may build: text values of 1 MiB at
@@ -918,7 +919,7 @@ impl RecordLimit {
                 || stopwatch().saturating_sub(started) >= LIMIT_BUDGET
         }));
         let session = environment.session();
-        let cx = om_calc::Ctx::new(&self.plan.schema.locale, session.today);
+        let cx = om_calc::Ctx::new(&self.plan.schema.locale, session.today());
         let first = InRepetition::Calculation(1);
         self.plan
             .run(

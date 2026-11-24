@@ -299,6 +299,11 @@ pub struct SessionInfo {
     /// A fixed answer for the clock selectors (a record write computes
     /// every value from one reading), else the system clock.
     pub now: Option<Timestamp>,
+    /// The host fixed the clock at a reading outside FileMaker's dates
+    /// (1/1/0001 to 12/31/4000), which `now` cannot hold: the clock
+    /// selectors answer `?` with error 500, as an out-of-range date does
+    /// (calc-values.md 4.1), and never read the system clock.
+    pub now_unrepresentable: bool,
     /// The host's clock for `Get ( CurrentHostTimestamp )` when it is not
     /// this machine's (a record write to a file another host serves reads
     /// it with op82); `None` answers it as `Get ( CurrentTimestamp )`.
@@ -532,6 +537,7 @@ impl SessionInfo {
             storage,
             utc_offset,
             now: _,
+            now_unrepresentable: _,
             host_now: _,
             uuid,
             system_locale,
@@ -811,6 +817,11 @@ impl SessionInfo {
                     .unwrap_or_else(Locale::en_us)
                     .elements_json(self.use_system_formats),
             ),
+            CURRENT_DATE | CURRENT_TIME | CURRENT_TIMESTAMP
+                if self.now.is_none() && self.now_unrepresentable =>
+            {
+                Some(Err(CalcError::INVALID_DATE))
+            }
             CURRENT_DATE => Some(Ok(Value::Date(
                 self.now
                     .map_or_else(|| today(self.utc_offset), |t| t.date()),
@@ -825,6 +836,7 @@ impl SessionInfo {
             }),
             CURRENT_HOST_TIMESTAMP => Some(match self.host_now.or(self.now) {
                 Some(t) => Ok(Value::Timestamp(t)),
+                None if self.now_unrepresentable => Err(CalcError::INVALID_DATE),
                 None => now(self.utc_offset).map(Value::Timestamp),
             }),
             CURRENT_TIME_UTC_MILLISECONDS => utc_since_year_one(1_000),

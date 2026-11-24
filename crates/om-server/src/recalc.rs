@@ -209,7 +209,11 @@ pub const CONTAINER_BUDGET: usize = 256 << 20;
 /// other record work, schema-path.md 7.3). A calculation that fails on a
 /// record leaves that record's value as it was. `environment` gives what
 /// `Get` answers; it is asked once, or per record when a calculation reads
-/// `Get ( UUID )`. A record node that holds a value is not a record
+/// `Get ( UUID )`, for the record's own UUID and clock reading. The first
+/// one's sources ([`rules::WriteSources`]: `Random`'s generator, the
+/// conversion date, the stopwatch) serve the whole recalculation, so that
+/// it draws one `Random` sequence, as one operation does. A record node
+/// that holds a value is not a record
 /// FileMaker writes and is left as it is: setting a cell would make a list
 /// of the value (`om_hbam::writer::holds_value`).
 pub fn recompute_records(
@@ -227,7 +231,11 @@ pub fn recompute_records(
         }
         outcome.records += 1;
         if per_record {
-            shared = environment();
+            let sources = shared.sources.take();
+            shared = RecordEnvironment {
+                sources,
+                ..environment()
+            };
         }
         let queue = &mut outcome.containers;
         let growth = if queue.len() == queue.capacity() {
@@ -314,11 +322,11 @@ pub fn record_environment(account: &str, uuid: String) -> RecordEnvironment {
 }
 
 /// [`record_environment`] for an operation run with `environment`, which
-/// supplies everything its formulas read of the world: one clock reading
-/// (the date, time and timestamp texts and the UTC instant), the UUID,
-/// eight bytes of the random source to seed `Random`'s generator with (so
-/// that each operation draws its own sequence), and the stopwatch of its
-/// time budgets.
+/// supplies everything its formulas read of the world, drawn in this order:
+/// the UUID, one clock reading (the date, time and timestamp texts and the
+/// UTC instant), eight bytes of the random source to seed `Random`'s
+/// generator with (so that each operation draws its own sequence), and the
+/// stopwatch of its time budgets.
 pub fn record_environment_in(account: &str, environment: &dyn Environment) -> RecordEnvironment {
     with_sources(account, crate::engine::uuid(environment), environment)
 }
@@ -327,8 +335,10 @@ fn with_sources(account: &str, uuid: String, environment: &dyn Environment) -> R
     let now = environment.now();
     let mut seed = [0u8; 8];
     environment.fill_random(&mut seed);
+    // Floored, not truncated toward zero: a reading just before 1970 keeps
+    // its UTC day.
     let sources = rules::WriteSources::new(
-        i128::from(now.timestamp().as_microsecond()),
+        now.timestamp().as_nanosecond().div_euclid(1_000),
         u64::from_le_bytes(seed),
         environment.stopwatch(),
     );

@@ -259,17 +259,29 @@ impl Outcome {
 /// ([`crate::recalc::record_environment_in`]) takes from it one clock
 /// reading (the date and time `Get` selectors, and today for a year text
 /// leaves out), a UUID, the seed of `Random`'s generator, and the
-/// stopwatch of a record limit's time budget. One read of the process
-/// remains: the salt `CryptEncrypt` draws
-/// ([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)).
+/// stopwatch of a record limit's time budget. Functions a record limit may
+/// call still read the process
+/// ([#702](https://github.com/OpenMaker-Dev/openmaker/issues/702)):
+/// `CryptEncrypt` and `CryptEncryptBase64` draw their salt from the
+/// system, so a limit comparing their output need not replay; the size and
+/// attributes of a PDF a formula makes (`GetWidth ( Base64Decode ( ... ;
+/// "a.pdf" ) )`) come from a worker with a wall-clock deadline, so such a
+/// limit can fail on a slow machine; `CryptGenerateSignature` blinds with
+/// the system's randomness, which its result does not depend on.
 pub trait Environment: Send + Sync {
     /// The host's time now, in its time zone.
     fn now(&self) -> jiff::Zoned;
     /// Fill `bytes` from the random source.
     fn fill_random(&self, bytes: &mut [u8]);
-    /// A stopwatch started now, on a clock that never goes back: what the
-    /// time budgets of an operation's formulas are measured on. One that
-    /// does not advance never meets a budget.
+    /// A stopwatch started now: each reading answers the time since, never
+    /// less than the reading before. The time budgets of an operation's
+    /// formulas are measured on it, the evaluator reading it each time it
+    /// checks whether to stop. The host's answers the monotonic time that
+    /// elapsed. A seeded environment's answers virtual time that advances
+    /// by a fixed step at each reading, so that a budget is met after a
+    /// fixed number of the evaluator's checks, the same on every machine;
+    /// one that never advances would leave a formula with a large
+    /// `SetRecursion` allowance unbounded.
     fn stopwatch(&self) -> om_data::rules::Stopwatch;
 }
 

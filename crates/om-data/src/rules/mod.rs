@@ -475,7 +475,9 @@ pub struct WriteSources {
     /// 3.9), with a state of its own.
     random: Arc<Mutex<Lcg>>,
     /// What a time budget of the write's calculations is measured on (a
-    /// record limit's, `recalc::RecordLimit::allows`).
+    /// record limit's, `recalc::RecordLimit::allows`): the host's elapsed
+    /// monotonic time, or a seeded environment's virtual time that advances
+    /// by a fixed step at each reading.
     pub stopwatch: Stopwatch,
 }
 
@@ -711,8 +713,9 @@ impl RunError {
 /// container data.
 pub(crate) struct Evaluation {
     info: SessionInfo,
-    /// Today for conversions ([`RecordEnvironment::today`]).
-    today: Date,
+    /// Today for conversions, when the write's sources fix it
+    /// ([`Self::today`]).
+    today: Option<Date>,
     /// [`WriteSources::random`]; `None`: the process's generator.
     random: Option<Arc<Mutex<Lcg>>>,
     containers: Option<Arc<dyn ContainerReader + Send + Sync>>,
@@ -749,6 +752,13 @@ impl Evaluation {
     fn calculation_budget(&self) -> u64 {
         self.limits.calculations.min(MAX_UNSTORED_EVALUATIONS)
     }
+
+    /// Today's date for a conversion of the write's calculations: the one
+    /// its sources fix ([`RecordEnvironment::today`]), else the system
+    /// clock's, read again at each use as without sources.
+    fn today(&self) -> Date {
+        self.today.unwrap_or_else(|| crate::host::session::today(0))
+    }
 }
 
 impl RecordEnvironment {
@@ -776,7 +786,9 @@ impl RecordEnvironment {
     }
 
     /// What `Get` answers while the record's values are computed: one
-    /// clock reading and one UUID for the whole write.
+    /// clock reading and one UUID for the whole write. A supplied clock
+    /// whose reading is not a FileMaker date answers the clock selectors
+    /// with error 500, never with the system clock.
     pub(crate) fn session(&self) -> Evaluation {
         let locale = Locale::en_us();
         let today = self.today();
@@ -786,6 +798,9 @@ impl RecordEnvironment {
             .host_timestamp
             .as_deref()
             .and_then(|text| Timestamp::parse(text, &locale, today).ok().flatten());
+        let now = Timestamp::parse(&self.timestamp, &locale, today)
+            .ok()
+            .flatten();
         let unanswered = CONTEXT_SELECTORS
             .into_iter()
             .filter(|selector| match *selector {
@@ -799,9 +814,8 @@ impl RecordEnvironment {
             info: SessionInfo {
                 account_name: self.account_name.clone(),
                 user_name: self.user_name.clone(),
-                now: Timestamp::parse(&self.timestamp, &locale, today)
-                    .ok()
-                    .flatten(),
+                now,
+                now_unrepresentable: self.sources.is_some() && now.is_none(),
                 host_now,
                 uuid: Some(self.uuid.clone()),
                 layout_number: match context.layout {
@@ -811,7 +825,7 @@ impl RecordEnvironment {
                 privilege_set_name: context.privilege_set.clone().unwrap_or_default(),
                 ..SessionInfo::for_this_machine()
             },
-            today,
+            today: self.sources.as_ref().map(|_| today),
             random: self
                 .sources
                 .as_ref()
@@ -4379,7 +4393,7 @@ impl RecordPlan {
             }
             let unmodified_too =
                 field.options.validation_options & VALIDATE_CALCULATION_ALWAYS != 0;
-            let cx = Ctx::new(&self.schema.locale, session.today);
+            let cx = Ctx::new(&self.schema.locale, session.today());
             for repetition in 1..=field.repetitions() {
                 // A repetition that cannot have a cell is empty and
                 // unchanged: nothing to check.
@@ -4499,7 +4513,7 @@ impl RecordPlan {
         let Some(CustomMessage::Calculation(Some(expression))) = &field.message else {
             return self.invalid(field, code, requirement);
         };
-        let cx = Ctx::new(&self.schema.locale, session.today);
+        let cx = Ctx::new(&self.schema.locale, session.today());
         let value = cell_of(id, repetition)
             .and_then(|cell| row.get(&cell))
             .map_or("", String::as_str);
@@ -4656,7 +4670,7 @@ impl RecordPlan {
                 return Ok(true);
             }
         }
-        let cx = Ctx::new(&self.schema.locale, session.today);
+        let cx = Ctx::new(&self.schema.locale, session.today());
         // The record as written (0) and as stored (1, an existing one's).
         let mut itself = MemorySource::new();
         itself.put_record(self.table, 0, self.row_values(row, &cx, None));
@@ -4797,7 +4811,7 @@ impl RecordPlan {
                 ),
             )));
         }
-        let today = session.today;
+        let today = session.today();
         let cx = Ctx::new(&self.schema.locale, today);
         let containers = session.containers.as_deref();
         let values = self.row_values(row, &cx, containers);
@@ -5083,7 +5097,7 @@ impl RecordPlan {
         row: &BTreeMap<u64, String>,
         session: &Evaluation,
     ) -> Result<bool, DataError> {
-        let cx = Ctx::new(&self.schema.locale, session.today);
+        let cx = Ctx::new(&self.schema.locale, session.today());
         let def = self
             .schema
             .table(self.table)

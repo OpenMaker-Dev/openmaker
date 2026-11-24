@@ -1,4 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode};
@@ -15,8 +17,8 @@ use crate::hosting::Hosting;
 use crate::modcount::{serial_leaf, MOD_COUNT};
 use crate::scripts::fixture;
 
-/// A fixed clock and a counter for a random source, the same for every
-/// engine made with it.
+/// A fixed clock, a counter for a random source and a virtual stopwatch,
+/// the same for every engine made with it.
 struct Seeded(AtomicU64);
 
 impl Environment for Seeded {
@@ -31,8 +33,18 @@ impl Environment for Seeded {
     }
 
     fn stopwatch(&self) -> om_data::rules::Stopwatch {
-        std::sync::Arc::new(|| std::time::Duration::ZERO)
+        virtual_stopwatch(Duration::from_millis(1), Arc::default())
     }
+}
+
+/// A stopwatch on virtual time, as a seeded environment's
+/// ([`Environment::stopwatch`]): its n-th reading, from 0, answers `n`
+/// times `step`; `readings` counts them.
+fn virtual_stopwatch(step: Duration, readings: Arc<AtomicU64>) -> om_data::rules::Stopwatch {
+    Arc::new(move || {
+        let n = readings.fetch_add(1, Ordering::Relaxed);
+        step * u32::try_from(n).unwrap_or(u32::MAX)
+    })
 }
 
 fn engine() -> FileEngine {
@@ -269,11 +281,23 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
 }
 
 /// A fixed clock, a random source that gives `byte` for every byte, and a
-/// stopwatch that reads `jump` from its second reading on.
+/// virtual stopwatch advancing by `step`, whose readings it counts.
 struct Fixed {
     now: &'static str,
     byte: u8,
-    jump: std::time::Duration,
+    step: Duration,
+    readings: Arc<AtomicU64>,
+}
+
+impl Fixed {
+    fn new(now: &'static str, byte: u8, step: Duration) -> Self {
+        Fixed {
+            now,
+            byte,
+            step,
+            readings: Arc::default(),
+        }
+    }
 }
 
 impl Environment for Fixed {
@@ -286,44 +310,20 @@ impl Environment for Fixed {
     }
 
     fn stopwatch(&self) -> om_data::rules::Stopwatch {
-        let (read, jump) = (std::sync::atomic::AtomicBool::new(false), self.jump);
-        std::sync::Arc::new(move || {
-            if read.swap(true, Ordering::Relaxed) {
-                jump
-            } else {
-                std::time::Duration::ZERO
-            }
-        })
+        virtual_stopwatch(self.step, Arc::clone(&self.readings))
     }
 }
 
-/// #692: the formulas an operation evaluates take the date, `Random` and
-/// their time budget from the engine's environment. An op70 whose record
-/// limit reads the date (as `Get` answers it, and as a date without a year
-/// takes it) and `Random`, in a year other than the system clock's,
-/// replays to the same outcome under the same environment, and is refused
-/// under another date, under a seed whose first `Random` is past the
-/// limit's, and under a stopwatch that meets the budget while the
-/// formula's loop runs.
-#[test]
-fn a_record_limit_takes_the_date_random_and_its_budget_from_the_environment() {
+/// An op70 by Admin editing record 1 of the fixture's Tasks under a custom
+/// set whose edit limit is `limit`, compiled in the Tasks context.
+fn limited_edit(limit: &str) -> Operation {
     use om_data::host::privilege_set::{
         AccessLevel, Actions, Allow, CustomRules, MenuCommands, TableRules,
     };
-    use std::time::Duration;
-
-    let mut tree = fixture::tree(&[], true);
-    fixture::add_tasks(&mut tree, 1..=1);
     let names = fixture::names();
     let mut context = om_formula::Context::new(&names);
     context.occurrence = Some(fixture::OCCURRENCE);
-    let limit = om_formula::compile(
-        "While ( [ i = 0 ] ; i < 100 ; [ i = i + 1 ] ; i ) = 100 \
-         and Get ( CurrentDate ) = Date ( 11 ; 24 ; 2031 ) \
-         and GetAsDate ( \"11/24\" ) = Get ( CurrentDate ) and Random < .5",
-        &context,
-    )
-    .unwrap();
+    let limit = om_formula::compile(limit, &context).unwrap();
     let rules = TableRules {
         actions: Actions {
             create: Allow::Yes,
@@ -357,7 +357,7 @@ fn a_record_limit_takes_the_date_random_and_its_budget_from_the_environment() {
         serial::encode(1),
         vec![OwnedNode::leaf(uint_segment(fixture::NAME), Vec::new())],
     );
-    let operation = Operation::CommitRecords(CommitRecords {
+    Operation::CommitRecords(CommitRecords {
         user: LockUser {
             connection: 1,
             txn: 7,
@@ -373,56 +373,128 @@ fn a_record_limit_takes_the_date_random_and_its_budget_from_the_environment() {
         ),
         staged: Staged::from([(record, edited)]),
         withheld: Withheld::default(),
-    });
-    // Each run on a fresh load of the file.
-    let commit = |environment: Fixed| {
-        let file = fixture::TempFile::from_tree("engine-limit", &tree);
-        let hosted = HostedFile {
-            name: fixture::FILE.into(),
-            path: file.0.clone(),
-        };
-        let hosting = Hosting::load(&[hosted], false, &EventLog::default()).unwrap();
-        let hosted = hosting.by_name(fixture::FILE).unwrap();
-        let outcome = FileEngine::new(Box::new(environment)).submit(&hosted, operation.clone());
-        let stored = hosted.read_store().node(&[]).cloned();
-        (outcome, stored)
+    })
+}
+
+/// `operation` submitted with `environment` on a fresh load of a file of
+/// one task: its outcome and the tree it leaves.
+fn submit_fresh(operation: &Operation, environment: Fixed) -> (Outcome, Option<OwnedNode>) {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=1);
+    let file = fixture::TempFile::from_tree("engine-limit", &tree);
+    let hosted = HostedFile {
+        name: fixture::FILE.into(),
+        path: file.0.clone(),
     };
-    // The engine seeds the operation's generator from eight bytes of the
-    // environment's random source.
-    let first_random = |byte: u8| om_calc::eval::Lcg(u64::from_le_bytes([byte; 8])).next_f64();
-    let (below, past) = (7, 1);
-    assert!(first_random(below) < 0.5 && first_random(past) >= 0.5);
-    let today = "2031-11-24T12:00:00[UTC]";
-    let at = |now, byte, jump| Fixed { now, byte, jump };
-    let (recorded, tree_after) = commit(at(today, below, Duration::ZERO));
-    assert_eq!(
-        recorded.reply,
+    let hosting = Hosting::load(&[hosted], false, &EventLog::default()).unwrap();
+    let hosted = hosting.by_name(fixture::FILE).unwrap();
+    let outcome = FileEngine::new(Box::new(environment)).submit(&hosted, operation.clone());
+    let stored = hosted.read_store().node(&[]).cloned();
+    (outcome, stored)
+}
+
+fn allowed(outcome: &Outcome) -> bool {
+    match &outcome.reply {
+        Reply::CommitRecords(CommitReply { result: Ok(()), .. }) => true,
         Reply::CommitRecords(CommitReply {
-            result: Ok(()),
-            unused: Staged::new(),
-        })
-    );
+            result: Err(CommitError::Refused(_)),
+            ..
+        }) => false,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// #692: the formulas an operation evaluates take the date, `Random` and
+/// their time budget from the engine's environment. An op70 whose record
+/// limit reads the date (as `Get` answers it, and as a date without a year
+/// takes it) and two `Random` draws, in a year no system clock reads,
+/// replays to the same outcome under the same environment. It is refused
+/// under another date, under another seed, and under a stopwatch whose
+/// step meets the budget at the loop's first check. The draws are compared
+/// with the exact sequence the seed gives, which no other generator gives
+/// but by a chance of one in 10^12.
+#[test]
+fn a_record_limit_takes_the_date_random_and_its_budget_from_the_environment() {
+    // The engine seeds the operation's generator with eight bytes of the
+    // environment's random source.
+    let draws = |byte: u8| {
+        let mut generator = om_calc::eval::Lcg(u64::from_le_bytes([byte; 8]));
+        [(); 2].map(|()| (generator.next_f64() * 1_000_000.0).floor() as u64)
+    };
+    let (seed, other) = (7, 1);
+    assert_ne!(draws(seed), draws(other));
+    let [first, second] = draws(seed);
+    let operation = limited_edit(&format!(
+        "While ( [ i = 0 ] ; i < 100 ; [ i = i + 1 ] ; i ) = 100 \
+         and Get ( CurrentDate ) = Date ( 11 ; 24 ; 2999 ) \
+         and GetAsDate ( \"11/24\" ) = Get ( CurrentDate ) \
+         and Floor ( Random * 1000000 ) = {first} and Floor ( Random * 1000000 ) = {second}"
+    ));
+    let today = "2999-11-24T12:00:00[UTC]";
+    let step = Duration::from_millis(1);
+    let (recorded, tree) = submit_fresh(&operation, Fixed::new(today, seed, step));
+    assert!(allowed(&recorded), "{:?}", recorded.reply);
     assert_eq!(
-        commit(at(today, below, Duration::ZERO)),
-        (recorded, tree_after)
+        submit_fresh(&operation, Fixed::new(today, seed, step)),
+        (recorded, tree)
     );
     for environment in [
-        at("2031-11-25T12:00:00[UTC]", below, Duration::ZERO),
-        at(today, past, Duration::ZERO),
-        at(today, below, Duration::from_secs(1)),
+        Fixed::new("2999-11-25T12:00:00[UTC]", seed, step),
+        Fixed::new(today, other, step),
+        Fixed::new(today, seed, Duration::from_secs(1)),
     ] {
-        let (now, byte, jump) = (environment.now, environment.byte, environment.jump);
-        let (outcome, _) = commit(environment);
-        assert!(
-            matches!(
-                &outcome.reply,
-                Reply::CommitRecords(CommitReply {
-                    result: Err(CommitError::Refused(_)),
-                    ..
-                })
-            ),
-            "{now} {byte} {jump:?}: {:?}",
-            outcome.reply
-        );
+        let (now, byte, step) = (environment.now, environment.byte, environment.step);
+        let (outcome, _) = submit_fresh(&operation, environment);
+        assert!(!allowed(&outcome), "{now} {byte} {step:?}");
     }
+}
+
+/// A record limit that would loop for ever under a large `SetRecursion`
+/// allowance is refused once the seeded stopwatch reaches the 100 ms
+/// budget: after the same number of the evaluator's checks on every run,
+/// one reading to start and one per check, the hundredth at 100 ms.
+#[test]
+fn a_runaway_record_limit_is_refused_after_the_same_number_of_checks() {
+    let operation = limited_edit(
+        "SetRecursion ( While ( [ i = 0 ] ; 1 ; [ i = i + 1 ] ; i ) ; 10000000000000000000 ) > 0",
+    );
+    let readings: Vec<u64> = (0..2)
+        .map(|_| {
+            let environment = Fixed::new("2999-11-24T12:00:00[UTC]", 7, Duration::from_millis(1));
+            let readings = Arc::clone(&environment.readings);
+            let (outcome, _) = submit_fresh(&operation, environment);
+            assert!(!allowed(&outcome), "{:?}", outcome.reply);
+            readings.load(Ordering::Relaxed)
+        })
+        .collect();
+    assert_eq!(readings, [101, 101]);
+}
+
+/// A supplied clock at the ends of FileMaker's dates: a reading just before
+/// 1970 keeps its UTC day for a date without a year (the instant is
+/// floored, not truncated toward zero), and one past 12/31/4000 answers the
+/// clock selectors with error 500, as an out-of-range date is
+/// (calc-values.md 4.1), never with the system clock.
+#[test]
+fn a_supplied_clock_at_the_ends_of_filemakers_dates_reads_no_other_clock() {
+    let step = Duration::from_millis(1);
+    let before_1970 = "1969-12-31T23:59:59.999999999[UTC]";
+    let environment =
+        crate::recalc::record_environment_in("Admin", &Fixed::new(before_1970, 7, step));
+    assert_eq!(environment.date, "12/31/1969");
+    assert_eq!(
+        environment.sources.map(|sources| sources.utc_micros),
+        Some(-1)
+    );
+    let operation = limited_edit(
+        "Get ( CurrentDate ) = Date ( 12 ; 31 ; 1969 ) and GetAsDate ( \"12/31\" ) = Get ( CurrentDate )",
+    );
+    let (outcome, _) = submit_fresh(&operation, Fixed::new(before_1970, 7, step));
+    assert!(allowed(&outcome), "{:?}", outcome.reply);
+    let operation = limited_edit(
+        "EvaluationError ( Get ( CurrentDate ) ) = 500 and EvaluationError ( Get ( CurrentTime ) ) = 500 \
+         and EvaluationError ( Get ( CurrentTimestamp ) ) = 500",
+    );
+    let (outcome, _) = submit_fresh(&operation, Fixed::new("4001-01-01T12:00:00[UTC]", 7, step));
+    assert!(allowed(&outcome), "{:?}", outcome.reply);
 }
