@@ -2070,6 +2070,17 @@ impl OpenMakerApp {
         true
     }
 
+    /// Whether a close under way still waits on something that will carry
+    /// it on or stop it: a script, a trigger's held action, or a save.
+    pub(super) fn close_waits(&self) -> bool {
+        self.script.running
+            || self.script.taken_over
+            || self.script.saving.is_some()
+            || !self.script.held.is_empty()
+            || !self.script.resumes.is_empty()
+            || self.docs().any(|doc| doc.document.pending)
+    }
+
     /// A close taken over by its trigger ([`Self::take_over_close`]) goes
     /// on now that the script has ended: the worker has sent the windows'
     /// last states first, a frozen window's edits included, so each window
@@ -2132,7 +2143,11 @@ impl OpenMakerApp {
                 // save must not run it).
                 (Held::Action(..), false) => {
                     app.w.document.cancel_pending_focus();
-                    app.closing = None;
+                    // A close a trigger's Close File or Exit Application
+                    // took over is that script's now, not this action's.
+                    if !app.script.taken_over {
+                        app.closing = None;
+                    }
                     app.w.deferred_action = None;
                 }
                 (Held::Exit(_, _, _, _, owner, _), _) if owner != app.key_owner() => {
@@ -3637,6 +3652,26 @@ mod queued_window_tests {
             !after.is_current(&app),
             "the target row changed while the current record did not"
         );
+    }
+
+    /// A close trigger's Close File or Exit Application takes over the close
+    /// it holds even after its script closed the trigger's window, and
+    /// another held action's veto (the halt's, say) leaves it.
+    #[test]
+    fn a_close_takeover_survives_its_window_and_other_vetoes() {
+        let ctx = egui::Context::default();
+        let mut app = a_dirty_window_of_two();
+        app.script
+            .held
+            .insert(7, (FIRST, Held::Action(Action::CloseWindow, 1)));
+        app.remove_window(FIRST);
+        assert!(app.take_over_close(None, true));
+        let closing = app.closing.clone().expect("taken over");
+        assert!(closing.quiet && closing.quit);
+        assert_eq!(closing.windows, [2]);
+        assert!(app.script.held.is_empty() && app.script.taken_over);
+        app.resume_held(&ctx, 2, Held::Action(Action::GoToRecord(1), 1), false, None);
+        assert_eq!(app.closing, Some(closing));
     }
 
     /// An action of the user's held for its trigger script does not go on

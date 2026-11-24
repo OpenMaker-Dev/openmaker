@@ -4385,6 +4385,20 @@ impl OpenMakerApp {
                     self.save_on_worker(ctx, Start::Commit);
                     return;
                 }
+                // Nothing left to save (an approving OnRecordCommit
+                // reverted it, say): what the save was for goes on, a
+                // close too.
+                let nothing = self
+                    .w
+                    .session
+                    .as_ref()
+                    .is_none_or(|session| self.w.document.changes(session).is_empty());
+                if nothing {
+                    if let Some(action) = self.w.deferred_action.take() {
+                        self.resume_saved_action(ctx, action);
+                    }
+                    return;
+                }
                 if !self.w.record_capabilities.update {
                     return;
                 }
@@ -5069,9 +5083,11 @@ impl OpenMakerApp {
             Action::Minimize => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
             Action::Quit => {
                 self.launch_after_close = None;
-                if let Some(closing) = &mut self.closing {
+                let waits = self.close_waits();
+                if let Some(closing) = self.closing.as_mut().filter(|_| waits) {
                     // A close waiting on its triggers or a save becomes a
-                    // Quit: a veto or refused save still stops it.
+                    // Quit: a veto or refused save still stops it. One left
+                    // with nothing to wait for is over, and Quit begins.
                     closing.quit = true;
                 } else if !self.script.busy() {
                     self.quit_next(ctx);
@@ -8291,6 +8307,16 @@ mod tests {
             assert!(app.closing.is_none(), "proceed {proceed}");
         }
 
+        // The close's commit finds nothing left to save (an approving
+        // OnRecordCommit reverted the record): the close goes on.
+        let mut app = two_record_windows();
+        app.windows[0].file_id = app.w.file_id;
+        app.closing = Some(app.closing_front(false));
+        app.w.deferred_action = Some(Action::CloseWindow);
+        app.apply(&ctx, Action::CommitRecord);
+        assert!(app.docs().all(|doc| doc.session.is_none()));
+        assert!(app.closing.is_none());
+
         // File 1's close waits on its trigger while file 2's window is in
         // front: acknowledging file 2's forced disconnect leaves it.
         let mut app = two_record_windows();
@@ -8395,6 +8421,12 @@ mod tests {
         app.apply(&ctx, Action::Quit);
         assert_eq!(app.window_ids(), [1, 2]);
         assert!(app.closing.is_none() && app.quit_waiting.is_none() && !app.quit_ready);
+
+        // Quit with a close left waiting on nothing begins at once.
+        let mut stale = two_record_windows();
+        stale.closing = Some(stale.closing_front(false));
+        stale.apply(&ctx, Action::Quit);
+        assert!(stale.quit_ready || stale.quit_waiting.is_some());
 
         // A script's Exit Application drops a command waiting for the
         // close, as Quit does.
