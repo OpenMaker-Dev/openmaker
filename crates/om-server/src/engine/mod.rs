@@ -24,10 +24,10 @@
 //! `Hosted::write_store` for op70, op71, op72, the schema operations,
 //! op87, op88 and op240), then its lock table (`Hosted::locks`, when the
 //! operation first uses it, [`Locks`]; the schema operations, op87, op88
-//! and op240's save never do). It holds both while it saves, and lets go
-//! of the lock table first; dropping the store's write guard takes the
-//! file's accounts while it still holds the store
-//! (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
+//! and op240's save never do). op70 and a client's op71, which take the
+//! lock table, hold it with the store while they save and let go of it
+//! first; dropping the store's write guard takes the file's accounts while
+//! it still holds the store (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
 //! table, as before. [`FileEngine::submit_draft`] completes its draft
 //! right after it takes the store, from state the write guard gives it
 //! alone (see "Drafts"). An authoring edit (op240) takes the lock table
