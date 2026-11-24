@@ -1,7 +1,7 @@
 //! Native accessibility elements for the visible fields, labels and buttons of
 //! the frame. Names, values and actions come from the desktop widget tree.
 use egui::accesskit::{Action, NodeId, Rect, Role, TreeUpdate};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
 pub enum ElementKind {
@@ -27,11 +27,15 @@ pub fn visible(update: &TreeUpdate, viewport: Rect) -> Vec<Element> {
     let Some(tree) = &update.tree else {
         return Vec::new();
     };
-    let mut nodes: HashMap<_, _> = update.nodes.iter().map(|(id, n)| (*id, n)).collect();
+    let nodes: HashMap<_, _> = update.nodes.iter().map(|(id, n)| (*id, n)).collect();
+    let mut seen = HashSet::new();
     let mut pending = vec![(tree.root, viewport)];
     let mut result = Vec::new();
     while let Some((NodeId(id), clip)) = pending.pop() {
-        let Some(node) = nodes.remove(&NodeId(id)) else {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(node) = nodes.get(&NodeId(id)).copied() else {
             continue;
         };
         if node.is_hidden() {
@@ -61,13 +65,26 @@ pub fn visible(update: &TreeUpdate, viewport: Rect) -> Vec<Element> {
             }
             _ => continue,
         };
-        let label = node.label().unwrap_or_default().to_owned();
+        let mut label = node.label().unwrap_or_default().to_owned();
+        if label.is_empty() {
+            // An editor egui names by the label beside it (`labelled_by`,
+            // as a dialog's input is).
+            label = node
+                .labelled_by()
+                .iter()
+                .filter_map(|by| nodes.get(by))
+                .filter_map(|by| by.label().or(by.value()))
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
         let value = if node.role() == Role::PasswordInput {
             String::new()
         } else {
             node.value().unwrap_or_default().to_owned()
         };
-        if label.is_empty() && value.is_empty() {
+        // A field with no name and nothing in it (an empty or password
+        // input) can still be focused and typed into.
+        if kind != ElementKind::Field && label.is_empty() && value.is_empty() {
             continue;
         }
         result.push(Element {

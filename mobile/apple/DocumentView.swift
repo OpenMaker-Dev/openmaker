@@ -344,7 +344,11 @@ private struct CanvasView: UIViewRepresentable {
 
   func updateUIView(_ canvas: DocumentCanvas, context: Context) {
     guard let state = model.state else { return }
-    canvas.keyboard(shown: state.keyboard, caret: state.caret, finding: state.mode == .find)
+    // Return performs the find in Find mode, unless a dialog over it (a
+    // script's) takes Return for its default button.
+    canvas.keyboard(
+      shown: state.keyboard, caret: state.caret,
+      finding: state.mode == .find && state.canPerformFind)
   }
 
   func makeCoordinator() -> Coordinator { Coordinator() }

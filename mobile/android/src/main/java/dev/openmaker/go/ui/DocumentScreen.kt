@@ -63,7 +63,11 @@ fun DocumentScreen(session: DocumentSession, onClosed: (failure: String?) -> Uni
     // the user put it away with Back.
     LaunchedEffect(canvas, state?.keyboard, state?.fieldTaps) { canvas?.showKeyboard(state?.keyboard == true) }
     LaunchedEffect(canvas, state?.caret) { canvas?.moveCaret(state?.caret) }
-    LaunchedEffect(canvas, state?.mode) { canvas?.finding = state?.mode == DocumentMode.FIND }
+    // Return performs the find in Find mode, unless a dialog over it (a
+    // script's) takes Return for its default button.
+    LaunchedEffect(canvas, state?.mode, state?.canPerformFind) {
+        canvas?.finding = state?.mode == DocumentMode.FIND && state?.canPerformFind == true
+    }
     LaunchedEffect(canvas, elements) { canvas?.present(elements) }
     // The layout keeps the focus, so a hardware keyboard's Tab and arrows
     // reach the engine also when no field takes typing.

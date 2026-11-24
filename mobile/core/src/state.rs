@@ -34,8 +34,9 @@ pub struct DocumentState {
     pub unsaved: bool,
     /// A field takes typing: the keyboard shows.
     pub keyboard: bool,
-    /// How many taps have left a field taking typing: an app shows its
-    /// keyboard again on each, after the user put it away.
+    /// How many taps or screen reader activations have left a field taking
+    /// typing: an app shows its keyboard again on each, after the user put
+    /// it away.
     pub field_taps: u32,
     /// Where the field's insertion point is, for the platform's input
     /// method (its marked text and candidates show there).

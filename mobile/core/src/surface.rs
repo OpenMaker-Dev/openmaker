@@ -328,7 +328,7 @@ impl Surface {
                 break;
             }
             let input = inputs.pop_front().expect("peeked");
-            tapped |= matches!(input, Input::Tap { .. });
+            tapped |= matches!(input, Input::Tap { .. } | Input::Activate { .. });
             self.take(input, &mut events);
             took = true;
             if moves_focus {
@@ -356,8 +356,9 @@ impl Surface {
         let geometry = frame::pack(&primitives, self.viewport);
         let pack = started.elapsed();
         let mut state = DocumentState::of(&self.app, self.caret);
-        // A tap that leaves a field taking typing asks for the keyboard
-        // again: the user may have put it away (Android's Back).
+        // A tap or an element's action that leaves a field taking typing
+        // asks for the keyboard again: the user may have put it away
+        // (Android's Back).
         if tapped && state.keyboard {
             self.field_taps = self.field_taps.wrapping_add(1);
         }
