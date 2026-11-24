@@ -126,9 +126,11 @@ log.
 - A marker advance is one 178-byte write in place and one flush of the
   file. Any other update is two such writes and two flushes. An open is
   three writes, three file flushes and one folder flush. Before it, the
-  server makes sure of the store folder itself (`OsFs::create_root`):
-  one folder flush per name of the folder's path, so that a folder an
-  interrupted first start made is durable too.
+  server makes sure of the store folder itself (`Fs::create_root`): it
+  makes the folder if it is missing, inside a folder above that must
+  exist, and flushes that folder above at every start, one more folder
+  flush, so that a store folder an interrupted first start made is
+  durable too.
 
 ### 1.5 What the two copies protect against
 
@@ -161,9 +163,10 @@ What is not covered:
   advance whole, so the batch it confirmed is lost without a sign. This
   is a double fault; a single one of them is found.
 - **One slot changed on the device while a write to the other is cut
-  short**: neither slot holds a valid copy, and the server does not start
-  (server-storage.md 6.12). This is a double fault too; a crash alone, or
-  damage alone, leaves a valid copy.
+  short**: this can leave neither slot with a valid copy, and then the
+  server does not start (server-storage.md 6.12); a cut that leaves the
+  older copy in the other slot whole does not. This is a double fault
+  too; a crash alone, or damage alone, leaves a valid copy.
 - **A write the device misplaces or drops after reporting it done**: the
   copy read is one that was written, never a mixture, but it can be older
   than the last one confirmed, and the guarantees above do not hold

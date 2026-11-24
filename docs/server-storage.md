@@ -264,9 +264,10 @@ the log's tail is whole, and its committed position equals the durable
 one on a single server and is learned again from the leader in a cluster
 (step 4, section 7.1). Losing a slot and the log's tail together loses
 that batch, and one slot changed on the device while a write to the
-other is cut short leaves no valid copy. An open first writes the copy it read back into its slot and
-flushes it, because an earlier process's failed write or flush can leave
-the system's cache showing a copy the device does not hold. A server
+other is cut short can leave no valid copy. An open first writes the
+copy it read back into its slot and flushes it, because an earlier
+process's failed write or flush can leave the system's cache showing a
+copy the device does not hold. A server
 without a valid copy does not know what it confirmed, and does not start
 (section 7.5). The format and what the copies protect against are in
 [server-storage-format.md](server-storage-format.md) section 1

@@ -57,6 +57,11 @@
 //!   pending, so damage after writeback survives the next flush.
 //! - **A stop** ([`Sim::restart`] without a crash) ends the process and
 //!   keeps the cache and the pending writes, as the system does.
+//! - **The store folder's own entry** in the folder above it is durable
+//!   once [`Fs::create_root`] has flushed that folder. A machine made with
+//!   [`Sim::unmade`] has no store folder yet; until it is made every other
+//!   call fails as not found, and a crash that loses its entry loses the
+//!   folder with all it held. Writeback does not commit that entry.
 //! - **Space** is what the files take: for each, the larger of what the
 //!   cache and the device hold. A file's space is given back once no name
 //!   on the device or in the cache reaches it, no pending folder change
@@ -192,11 +197,12 @@ impl Fault {
     pub fn applies(self, op: Op) -> bool {
         match self {
             Fault::Crash | Fault::Damage | Fault::Writeback => true,
-            Fault::FailFlush => matches!(op, Op::Flush | Op::FlushFolder),
+            Fault::FailFlush => matches!(op, Op::Flush | Op::FlushFolder | Op::CreateRoot),
             Fault::FailWrite => matches!(op, Op::Write | Op::Allocate),
-            Fault::NoSpace => {
-                matches!(op, Op::Write | Op::Allocate | Op::Create | Op::CreateFolder)
-            }
+            Fault::NoSpace => matches!(
+                op,
+                Op::Write | Op::Allocate | Op::Create | Op::CreateFolder | Op::CreateRoot
+            ),
             Fault::FailRead => op == Op::Read,
             Fault::Misplace | Fault::LoseWrite => op == Op::Write,
         }
@@ -347,12 +353,30 @@ impl Sim {
         Self::with_rates(seed, Rates::default())
     }
 
+    /// A machine whose store folder is not made yet, for
+    /// [`Fs::create_root`]: the folder above it exists when `parent` says
+    /// so. Every other call fails until the store folder is made.
+    pub fn unmade(seed: u64, rates: Rates, parent: bool) -> Self {
+        let sim = Self::with_rates(seed, rates);
+        sim.world().store = StoreEntry {
+            parent,
+            cached: false,
+            durable: false,
+        };
+        sim
+    }
+
     /// A machine that draws faults at `rates`.
     pub fn with_rates(seed: u64, rates: Rates) -> Self {
         let mut nodes = BTreeMap::new();
         nodes.insert(ROOT, Node::Folder(FolderNode::default()));
         let world = World {
             issued: None,
+            store: StoreEntry {
+                parent: true,
+                cached: true,
+                durable: true,
+            },
             rates,
             crash_fates: Fates::Drawn,
             fired: BTreeMap::new(),
@@ -476,6 +500,7 @@ impl Sim {
         if let Some(Node::File(file)) = world.nodes.get_mut(&node) {
             if file.pending.is_empty() {
                 file.cache = file.durable.clone();
+                file.lost.clear();
             }
         }
         Ok(())
@@ -490,6 +515,9 @@ impl Sim {
     /// a durable entry reaches, by path, in order.
     pub fn image(&self) -> Vec<(String, Option<Vec<u8>>)> {
         let world = self.world();
+        if !world.store.durable {
+            return Vec::new();
+        }
         world
             .durable_paths()
             .into_iter()
@@ -557,6 +585,10 @@ fn lock_world(world: &Mutex<World>) -> MutexGuard<'_, World> {
 }
 
 impl Fs for SimFs {
+    fn create_root(&self) -> Result<()> {
+        lock_world(&self.world).create_root()
+    }
+
     fn lock(&self) -> Result<FolderLock> {
         let mut world = lock_world(&self.world);
         let epoch = world.epoch;
@@ -723,6 +755,7 @@ impl File for SimFile {
                 let cache_dropped = faults.below(2) == 0;
                 if cache_dropped {
                     file.cache = file.durable.clone();
+                    file.lost.clear();
                 }
                 let step = world.step;
                 world.events.push(Event::FlushFailed {
@@ -768,6 +801,8 @@ struct World {
     /// The record of the lock the running process holds (for
     /// [`Fs::owns`]).
     issued: Option<LockRecord>,
+    /// The store folder's own entry in the folder above it.
+    store: StoreEntry,
     rates: Rates,
     /// How a crash in a call settles what was not flushed.
     crash_fates: Fates,
@@ -796,6 +831,17 @@ struct World {
     monotonic: Duration,
 }
 
+/// The store folder's entry in the folder above it (module docs).
+#[derive(Clone, Copy)]
+struct StoreEntry {
+    /// The folder above exists.
+    parent: bool,
+    /// The store folder exists, as the process sees it.
+    cached: bool,
+    /// Its entry is on the device.
+    durable: bool,
+}
+
 enum Node {
     File(FileNode),
     Folder(FolderNode),
@@ -806,6 +852,10 @@ struct FileNode {
     durable: Vec<u8>,
     cache: Vec<u8>,
     pending: Vec<FileOp>,
+    /// Ranges of the cache the device dropped ([`Fault::LoseWrite`]) and
+    /// the process has not written since: writeback never carries them to
+    /// the device.
+    lost: Vec<(u64, u64)>,
 }
 
 #[derive(Default)]
@@ -839,6 +889,9 @@ impl World {
     fn begin(&mut self, op: Op, epoch: u64, path: &str) -> Result<Option<Fault>> {
         if self.halted || epoch != self.epoch {
             return Err(Error::new(ErrorKind::Halted, op, path));
+        }
+        if op != Op::CreateRoot && !self.store.cached {
+            return Err(Error::new(ErrorKind::NotFound, op, path));
         }
         self.step += 1;
         if self.take(Fault::Writeback) {
@@ -892,6 +945,7 @@ impl World {
                 Node::File(file) => {
                     let s = settle_file(file, faults, fates);
                     file.cache = file.durable.clone();
+                    file.lost.clear();
                     s
                 }
                 Node::Folder(folder) => {
@@ -903,6 +957,19 @@ impl World {
             settled.kept += s.kept;
             settled.lost += s.lost;
             settled.partial += s.partial;
+        }
+        // The store folder's own entry, made and not flushed, is kept or
+        // lost like any folder change; without it, all it held is gone.
+        if self.store.cached
+            && !self.store.durable
+            && fate(&mut self.faults, fates, false) == Fate::Keep
+        {
+            self.store.durable = true;
+        }
+        self.store.cached = self.store.durable;
+        if !self.store.durable {
+            self.nodes.clear();
+            self.nodes.insert(ROOT, Node::Folder(FolderNode::default()));
         }
         // What no durable entry reaches is gone.
         self.handles.clear();
@@ -1067,6 +1134,48 @@ impl World {
             return Err(self.crashed(op, path));
         }
         made
+    }
+
+    fn create_root(&mut self) -> Result<()> {
+        let epoch = self.epoch;
+        let fault = self.begin(Op::CreateRoot, epoch, "")?;
+        let step = self.step;
+        let made = if !self.store.parent {
+            Err(Error::new(ErrorKind::NotFound, Op::CreateRoot, ""))
+        } else if !self.store.cached && fault == Some(Fault::NoSpace) {
+            self.events.push(Event::NoSpace {
+                step,
+                op: Op::CreateRoot,
+                path: String::new(),
+                written: 0,
+            });
+            Err(Error::new(ErrorKind::NoSpace, Op::CreateRoot, ""))
+        } else {
+            self.store.cached = true;
+            Ok(())
+        };
+        if fault == Some(Fault::Crash) {
+            return Err(self.crashed(Op::CreateRoot, ""));
+        }
+        made?;
+        if fault == Some(Fault::FailFlush) {
+            // The entry reached the device, or is still pending.
+            let reached = !self.store.durable && self.faults.below(2) == 0;
+            self.store.durable |= reached;
+            self.events.push(Event::FlushFailed {
+                step,
+                path: "..".to_owned(),
+                settled: Settled {
+                    kept: u32::from(reached),
+                    pending: u32::from(!self.store.durable),
+                    ..Settled::default()
+                },
+                cache_dropped: false,
+            });
+            return Err(Error::new(ErrorKind::Flush, Op::CreateRoot, ""));
+        }
+        self.store.durable = true;
+        Ok(())
     }
 
     fn open(&mut self, path: &str) -> Result<u64> {
@@ -1301,7 +1410,10 @@ impl World {
         }
         let file = self.file_mut(node);
         put(&mut file.cache, offset, data);
+        let end = offset + data.len() as u64;
+        subtract(&mut file.lost, offset, end);
         let Some(at) = device else {
+            file.lost.push((offset, end));
             return;
         };
         if durable {
@@ -1447,15 +1559,11 @@ impl World {
                     })
                     .collect();
                 if writes.is_empty() && !file.pending.is_empty() {
-                    // Only the size is pending: the cache's bytes up to it.
+                    // Only the size is pending: the device grows with
+                    // zeros, as a flush of it would.
                     let old = file.durable.len();
                     let size = intended_len(file) as usize;
-                    file.durable.resize(size, 0);
-                    let upto = size.min(file.cache.len());
-                    if upto > old {
-                        file.durable[old..upto].copy_from_slice(&file.cache[old..upto]);
-                    }
-                    file.pending.clear();
+                    settle_file(file, faults, Fates::KeepAll);
                     Event::WrittenBack {
                         step,
                         path,
@@ -1465,6 +1573,7 @@ impl World {
                 } else if writes.is_empty() {
                     // Clean: the cache may drop what it holds.
                     file.cache = file.durable.clone();
+                    file.lost.clear();
                     Event::Evicted { step, path }
                 } else {
                     // The sectors of one pending write, as the cache holds
@@ -1477,8 +1586,19 @@ impl World {
                         if (file.durable.len() as u64) < end {
                             file.durable.resize(end as usize, 0);
                         }
-                        file.durable[start as usize..end as usize]
-                            .copy_from_slice(&file.cache[start as usize..end as usize]);
+                        // What the device dropped stays dropped.
+                        let mut kept = vec![(start, end)];
+                        for &(from, to) in &file.lost {
+                            for range in std::mem::take(&mut kept) {
+                                let mut rest = vec![range];
+                                subtract(&mut rest, from, to);
+                                kept.extend(rest);
+                            }
+                        }
+                        for (from, to) in kept {
+                            file.durable[from as usize..to as usize]
+                                .copy_from_slice(&file.cache[from as usize..to as usize]);
+                        }
                         trim(&mut file.pending, start, end - start);
                         let size = file.durable.len() as u64;
                         file.pending
@@ -1593,6 +1713,24 @@ fn put(bytes: &mut Vec<u8>, offset: u64, data: &[u8]) {
         bytes.resize(end, 0);
     }
     bytes[start..end].copy_from_slice(data);
+}
+
+/// Take `from..to` out of the ranges in `ranges`.
+fn subtract(ranges: &mut Vec<(u64, u64)>, from: u64, to: u64) {
+    let mut out = Vec::with_capacity(ranges.len() + 1);
+    for &(start, end) in ranges.iter() {
+        if end <= from || start >= to {
+            out.push((start, end));
+            continue;
+        }
+        if start < from {
+            out.push((start, from));
+        }
+        if end > to {
+            out.push((to, end));
+        }
+    }
+    *ranges = out;
 }
 
 /// Write the part of `data` at `offset` that lies within `bytes`.
@@ -1979,6 +2117,33 @@ mod tests {
             lose_write: 20,
             writeback: 3,
         };
+        // A write the device dropped stays dropped: writeback of a size
+        // change, or of a later write to the same sector, does not carry
+        // it to the device (the first round of review's sequence).
+        for later_write in [false, true] {
+            let sim = Sim::new(1);
+            let fs = sim.fs();
+            let a = fs.create("a", FileOptions::PLAIN).unwrap();
+            fs.flush_folder("").unwrap();
+            sim.place(sim.steps() + 1, Fault::LoseWrite);
+            a.write_at(0, &[0xa5]).unwrap();
+            a.allocate(512).unwrap();
+            if later_write {
+                a.write_at(100, &[7]).unwrap();
+            }
+            sim.place(sim.steps() + 1, Fault::Writeback);
+            assert_eq!(a.size().unwrap(), 512);
+            let mut byte = [0];
+            a.read_at(0, &mut byte).unwrap();
+            assert_eq!(byte, [0xa5], "the cache still shows it");
+            drop(a);
+            sim.crash(Fates::LoseAll);
+            sim.restart();
+            let a = fs.open("a", FileOptions::PLAIN).unwrap();
+            a.read_at(0, &mut byte).unwrap();
+            assert_eq!(byte, [0], "the dropped write reached the device");
+        }
+
         let mut fired: BTreeMap<Fault, u64> = BTreeMap::new();
         for seed in 0..200 {
             let sim = Sim::with_rates(seed, rates);
@@ -2094,6 +2259,46 @@ mod tests {
                 "{fault:?} never fired: {fired:?}"
             );
         }
+    }
+
+    /// The store folder's entry is durable once `create_root` returns,
+    /// also when an earlier call made the folder and stopped short.
+    #[test]
+    fn the_store_folder_is_durable_once_create_root_returns() {
+        let sim = Sim::unmade(1, Rates::default(), false);
+        let fs = sim.fs();
+        assert_eq!(fs.create_root().unwrap_err().kind(), ErrorKind::NotFound);
+        assert_eq!(fs.lock().unwrap_err().kind(), ErrorKind::NotFound);
+
+        let mut lost = 0;
+        for seed in 0..32 {
+            let sim = Sim::unmade(seed, Rates::default(), true);
+            let fs = sim.fs();
+            // The flush of the folder above fails; the process stops, and
+            // the power may fail before the retry.
+            sim.place(1, Fault::FailFlush);
+            assert_eq!(fs.create_root().unwrap_err().kind(), ErrorKind::Flush);
+            sim.restart();
+            if seed % 2 == 0 {
+                sim.crash(Fates::LoseAll);
+                sim.restart();
+                lost += u32::from(fs.list("").is_err());
+            }
+            // The retry makes the folder again, or finds it, and flushes
+            // the folder above either way.
+            fs.create_root().unwrap();
+            let a = fs.create("a", FileOptions::PLAIN).unwrap();
+            a.flush().unwrap();
+            fs.flush_folder("").unwrap();
+            drop(a);
+            sim.crash(Fates::LoseAll);
+            sim.restart();
+            assert!(fs.open("a", FileOptions::PLAIN).is_ok(), "seed {seed}");
+        }
+        assert!(
+            lost > 0,
+            "a failed flush always made the store folder durable"
+        );
     }
 
     #[test]

@@ -107,6 +107,10 @@ impl Recorder {
 }
 
 impl Fs for Recorder {
+    fn create_root(&self) -> sys::Result<()> {
+        self.inner.create_root()
+    }
+
     fn lock(&self) -> sys::Result<FolderLock> {
         self.inner.lock()
     }

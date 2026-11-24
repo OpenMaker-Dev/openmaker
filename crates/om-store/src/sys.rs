@@ -71,6 +71,17 @@ pub const LOCK_NAME: &str = "lock";
 
 /// The files and folders of one store folder.
 pub trait Fs: Send + Sync {
+    /// Make the store folder if it is missing, inside the folder above it,
+    /// which must exist, and flush that folder above, on every call: the
+    /// store folder's own entry is then durable whether this call made it
+    /// or an earlier one that stopped short did. Call it at every start,
+    /// before [`Fs::lock`]; it costs one folder flush. A folder above that
+    /// is missing fails with [`ErrorKind::NotFound`] (create it first), one
+    /// that cannot be opened and flushed with [`ErrorKind::Flush`] (give
+    /// the server's account read access to it). Folders further up were
+    /// there before the store, and are neither made nor flushed.
+    fn create_root(&self) -> Result<()>;
+
     /// Take the store folder's lock for this process (section 6.1). It is
     /// held until the returned value is dropped or the process ends. A
     /// lock another process holds, or this process holds already, fails
@@ -271,6 +282,7 @@ pub enum ErrorKind {
 /// The operation that failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
+    CreateRoot,
     Lock,
     Create,
     Open,
@@ -291,6 +303,7 @@ impl Op {
     /// The operation in words, for messages.
     pub fn verb(self) -> &'static str {
         match self {
+            Op::CreateRoot => "set up",
             Op::Lock => "lock",
             Op::Create => "create",
             Op::Open => "open",
@@ -371,6 +384,16 @@ impl fmt::Display for Error {
             }
             ErrorKind::Unsupported => "this system cannot do it",
             ErrorKind::Other => "it failed",
+        };
+        let what = match (self.op, self.kind) {
+            (Op::CreateRoot, ErrorKind::NotFound) => {
+                "the folder above it does not exist; create that folder first"
+            }
+            (Op::CreateRoot, ErrorKind::Flush) => {
+                "the folder above it could not be flushed, so the store folder might not \
+                 survive a power cut; give the server's account read access to that folder"
+            }
+            _ => what,
         };
         let path = if self.path.is_empty() {
             "the store folder"

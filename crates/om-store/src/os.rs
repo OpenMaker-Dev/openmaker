@@ -32,11 +32,9 @@
 //!   Windows) on the file [`sys::LOCK_NAME`] in the store folder, created
 //!   when missing and never removed: no operation takes that name. The
 //!   system releases it when the process ends.
-//! - **The store folder** ([`OsFs::create_root`]): every folder on its
-//!   path, made now or found, is flushed in the folder above it, outermost
-//!   first, so that a folder an interrupted earlier call made is durable
-//!   too. Call it at every start; it costs one folder flush per name of
-//!   the path.
+//! - **The store folder** ([`Fs::create_root`]): made if missing, in a
+//!   folder above that must exist, which is flushed on every call (the
+//!   folder that really holds the entry, after following links).
 //! - **Permissions.** On Unix, new files are readable by the server's
 //!   account only (0600) and new folders 0700 (`docs/server-storage.md`
 //!   section 11).
@@ -175,53 +173,6 @@ impl OsFs {
         &self.root
     }
 
-    /// Create the store folder and the folders above it that are missing
-    /// (0700 on Unix), outermost first, and flush the folder above each
-    /// folder on the way, whether this call made it or found it: a folder
-    /// an earlier call made and then stopped before flushing is made
-    /// durable now. That is one folder flush per name of the path, cheap
-    /// when nothing changed, so it belongs at every start. A folder above
-    /// that this account cannot read cannot be flushed and is passed over;
-    /// it is not one the server made.
-    pub fn create_root(&self) -> Result<()> {
-        let error = |e| Error::from_io(e, ErrorKind::Other, Op::CreateFolder, "");
-        let mut chain: Vec<&Path> = self
-            .root
-            .ancestors()
-            .filter(|folder| !folder.as_os_str().is_empty())
-            .collect();
-        chain.reverse();
-        for folder in chain {
-            match fs::metadata(folder) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => return Err(Error::new(ErrorKind::Other, Op::CreateFolder, "")),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    match folder_builder().create(folder) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                        Err(e) => return Err(error(e)),
-                    }
-                }
-                Err(e) => return Err(error(e)),
-            }
-            let Some(parent) = folder.parent() else {
-                // The file system's own root.
-                continue;
-            };
-            let parent = if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            };
-            match sync_folder(parent) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {}
-                Err(e) => return Err(Error::from_io(e, ErrorKind::Flush, Op::FlushFolder, "")),
-            }
-        }
-        Ok(())
-    }
-
     /// The full path of `path`, after checking that no name along it that
     /// exists is a symbolic link.
     fn path(&self, path: &str, op: Op) -> Result<PathBuf> {
@@ -316,6 +267,22 @@ fn check_opened(file: &fs::File, full: &Path) -> std::result::Result<(), ErrorKi
 }
 
 impl Fs for OsFs {
+    fn create_root(&self) -> Result<()> {
+        match folder_builder().create(&self.root) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && self.root.is_dir() => {}
+            Err(e) => return Err(Error::from_io(e, ErrorKind::Other, Op::CreateRoot, "")),
+        }
+        // The folder that holds the store folder's entry, links on the way
+        // to it followed.
+        let real = fs::canonicalize(&self.root)
+            .map_err(|e| Error::from_io(e, ErrorKind::Other, Op::CreateRoot, ""))?;
+        let parent = real
+            .parent()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidPath, Op::CreateRoot, ""))?;
+        sync_folder(parent).map_err(|e| Error::from_io(e, ErrorKind::Flush, Op::CreateRoot, ""))
+    }
+
     fn lock(&self) -> Result<FolderLock> {
         let full = self.root.join(LOCK_FILE);
         if fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -693,8 +660,8 @@ mod tests {
         use std::os::unix::fs::symlink;
         let base = TempFolder::new("confined");
         let outside = TempFolder::new("outside");
-        // A new store folder, with folders above it to make.
-        let fs = OsFs::new(base.path.join("a/b/store"));
+        // A new store folder: made, or found, and its entry flushed.
+        let fs = OsFs::new(base.path.join("store"));
         fs.create_root().unwrap();
         fs.create_root().unwrap();
         let root = fs.root().to_owned();
@@ -753,6 +720,42 @@ mod tests {
         drop(lock);
         let live = fs.lock().unwrap();
         assert!(fs.owns(&live));
+    }
+
+    /// `create_root` makes only the store folder, and fails, saying what to
+    /// do, where it cannot make the folder's entry durable.
+    #[test]
+    fn create_root_needs_a_folder_above_it_can_flush() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = TempFolder::new("root");
+        let missing = OsFs::new(base.path.join("missing/store"));
+        let error = missing.create_root().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert!(
+            error.to_string().contains("create that folder first"),
+            "{error}"
+        );
+        assert!(!base.path.join("missing").exists());
+
+        // A folder above that this account may write and search but not
+        // read: the store folder can be made, but its entry not flushed.
+        let above = base.path.join("above");
+        fs::create_dir(&above).unwrap();
+        fs::set_permissions(&above, fs::Permissions::from_mode(0o300)).unwrap();
+        let readable = fs::File::open(&above).is_ok(); // run as root
+        let result = OsFs::new(above.join("store")).create_root();
+        fs::set_permissions(&above, fs::Permissions::from_mode(0o700)).unwrap();
+        if !readable {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Flush);
+            assert!(error.to_string().contains("read access"), "{error}");
+            // A retry finds the store folder and fails the same way rather
+            // than pass over the flush.
+            fs::set_permissions(&above, fs::Permissions::from_mode(0o300)).unwrap();
+            let again = OsFs::new(above.join("store")).create_root();
+            fs::set_permissions(&above, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(again.unwrap_err().kind(), ErrorKind::Flush);
+        }
     }
 
     #[test]
