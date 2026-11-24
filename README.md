@@ -13,11 +13,16 @@ An open-source replacement for Claris FileMaker, written in Rust:
   Pro 26. It opens files hosted by FileMaker Server or OpenMaker Server and
   `.fmp12` files on the computer itself, with FileMaker Pro's chrome:
   Browse, Find, Layout and Preview modes and the developer tools.
+- **OpenMaker Go** (`mobile/`), a mobile client for iPhone, iPad and
+  Android in the manner of FileMaker Go. Its Launch Center, sign-in,
+  toolbars and menus are the platform's own (SwiftUI, Jetpack Compose);
+  the file's layouts are drawn and run by the desktop client's window.
 - **OpenMaker Server** (`om-server`), which hosts `.fmp12` files for
   FileMaker Pro clients the way FileMaker Server does.
 
-Claris ships no Linux client, so Linux (Ubuntu) comes first, then macOS
-and Windows.
+On the desktop, Claris ships no Linux client, so Linux (Ubuntu) comes
+first, then macOS and Windows. OpenMaker Go runs on iOS, iPadOS and
+Android.
 
 **Status: pre-alpha.** Hosted and local files open, layouts render from
 the file, and records can be found, sorted, edited and saved; the
@@ -39,6 +44,9 @@ and the Hosts dialog connects to a server. To host a copy of a file with
 OpenMaker Server and open it from the client, follow
 [Hosting a file and opening it](docs/development.md#hosting-a-file-and-opening-it). Requirements, environment
 variables, tests and tools: [docs/development.md](docs/development.md).
+
+To build OpenMaker Go for the iOS Simulator, an iPhone or iPad, or an
+Android device, follow [mobile/README.md](mobile/README.md).
 
 To work on a hosted FileMaker solution with a coding agent, follow the
 [agent authoring quickstart](docs/authoring.md#quickstart) to set up `om-author`
@@ -62,10 +70,11 @@ translated from FileMaker binaries.
 | [docs/development.md](docs/development.md) | Build, run, check, debug; research tools |
 | [docs/re/](docs/re/README.md) | FileMaker specifications and findings |
 | [docs/authoring.md](docs/authoring.md) | `om-author`: letting coding agents edit FileMaker solutions |
+| [docs/mobile-client.md](docs/mobile-client.md) | OpenMaker Go, the iOS, iPadOS and Android client: what it does and its limits |
 
-Feature notes in `docs/` (desktop client, scripting, printing, preview, PDF,
-reports and others) describe what OpenMaker does and its limits; ROADMAP.md
-links each from its area.
+Feature notes in `docs/` (desktop client, mobile client, scripting,
+printing, preview, PDF, reports and others) describe what OpenMaker does
+and its limits; ROADMAP.md links each from its area.
 
 ## Contributing
 

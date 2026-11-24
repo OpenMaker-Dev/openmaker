@@ -77,8 +77,10 @@ fn pressed_without_command(event: &Event) -> bool {
     )
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub(crate) use event_loop::run;
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod event_loop {
     use std::sync::Mutex;
 
