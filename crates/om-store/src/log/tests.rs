@@ -752,11 +752,12 @@ impl<'a> Run<'a> {
             Err(e) => panic!("seed {seed}: open state: {e}"),
         };
         self.model.state_made = true;
-        let before = self.machine.changes();
         let mut state = state;
         let mut tries = 0;
         loop {
             self.model.opens += 1;
+            // What this attempt writes, not an earlier one's.
+            let before = self.machine.changes();
             let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
             self.trace.push(stamp(
                 &*self.machine,
