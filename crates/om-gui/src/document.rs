@@ -7554,7 +7554,7 @@ fn focused_text_id() -> egui::Id {
 /// Keep the focused field editor's text as this pass left it, for
 /// [`focused_field_text`]: an input method counts what it deletes in
 /// UTF-16 units, which OpenMaker Go converts to characters against it.
-fn note_focused_text(ui: &Ui, id: egui::Id, buffer: &str) {
+pub(crate) fn note_focused_text(ui: &Ui, id: egui::Id, buffer: &str) {
     if ui.memory(|memory| memory.has_focus(id)) {
         ui.ctx()
             .data_mut(|data| data.insert_temp(focused_text_id(), (id, buffer.to_owned())));

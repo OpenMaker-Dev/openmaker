@@ -100,7 +100,9 @@ final class DocumentCanvas: MTKView {
 
   @objc private func tapped(_ gesture: UITapGestureRecognizer) {
     let point = gesture.location(in: self)
-    document.send(input: .tap(x: Float(point.x), y: Float(point.y)))
+    // A tap can move the focus to another field: marked text is committed
+    // in its own field first.
+    proxy.settle(then: .tap(x: Float(point.x), y: Float(point.y)))
   }
 
   @objc private func panned(_ gesture: UIPanGestureRecognizer) {
@@ -185,8 +187,9 @@ final class DocumentCanvas: MTKView {
       }
       if !item.enabled && item.kind != .label { element.accessibilityTraits.insert(.notEnabled) }
       let id = item.id
+      // An element's action can move the focus too, as a tap does.
       element.activate =
-        item.enabled ? { [weak self] in self?.document.send(input: .activate(id: id)) } : nil
+        item.enabled ? { [weak self] in self?.proxy.settle(then: .activate(id: id)) } : nil
       next[item.id] = element
       ordered.append(element)
     }
@@ -274,7 +277,7 @@ private final class TextProxy: UITextField, UITextFieldDelegate {
 
   /// Commit the input method's marked text as it shows, then send `input`:
   /// a save or a move to another field never takes a provisional candidate.
-  private func settle(then input: Input) {
+  func settle(then input: Input) {
     if markedTextRange != nil {
       unmarkText()
       changed()

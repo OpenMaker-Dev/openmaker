@@ -2753,12 +2753,18 @@ fn show_prompt(ui: &mut egui::Ui, view: &mut PromptView) -> Option<Answer> {
             for (input, value) in dialog.inputs.iter().zip(view.inputs.iter_mut()) {
                 ui.add_space(6.0);
                 let label = ui.label(&input.label);
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .password(input.password)
-                        .desired_width(f32::INFINITY),
-                )
-                .labelled_by(label.id);
+                let edit = ui
+                    .add(
+                        egui::TextEdit::singleline(value)
+                            .password(input.password)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
+                // An input method's deletions are counted against it
+                // (OpenMaker Go); a password is not copied anywhere.
+                if !input.password {
+                    crate::document::note_focused_text(ui, edit.id, value);
+                }
             }
             ui.add_space(12.0);
             let mut chosen = None;
