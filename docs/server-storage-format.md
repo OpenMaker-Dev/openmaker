@@ -328,7 +328,8 @@ the marker.
    previous hash counts), must have the hashes those name, or the log is
    damaged.
 3. Entries up to the firm position are taken one by one: each must be whole
-   and chained. A walk that ends before the marker's index is damage.
+   and chained. A walk that ends before the marker's index, or before the
+   start's, is damage.
    Entries before the start in the first segment walked are read through,
    since the log keeps no index of where entries are; damage to them is
    reported too.
@@ -422,9 +423,13 @@ marker advance in `state`.
 ### 3.9 A cut
 
 `Log::cut` removes the entries from an index on (server-storage.md 7.1). It
-refuses an index at or before the highest committed position heard, or
-before the first entry the log holds. Entries of the open batch are dropped
-in memory. When the marker covers entries that are cut:
+refuses an index at or before the highest committed position heard; at or
+before the entry the log was opened from, or the one before the oldest
+entry its last retirement still needed, which are committed too (the
+committed position the marker records can go back one advance with a lost
+copy of `state`, 1.5; a checkpoint cannot); and before the first entry the
+log holds. Entries of the open batch are dropped in memory. When the marker
+covers entries that are cut:
 
 1. the walk finds the first cut entry: the record to destroy is its batch's
    header when it is its batch's first entry, else the entry itself;

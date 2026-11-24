@@ -313,6 +313,12 @@ pub struct Log {
     write: Option<u64>,
     durable: Position,
     appended: Position,
+    /// No cut reaches this entry or one before it: the entry the log was
+    /// opened from, or the one before the oldest needed when it last
+    /// retired. A checkpoint covers only committed entries, and the
+    /// committed position the marker records can go back one advance with a
+    /// lost copy of `state` (format section 1.5).
+    floor: u64,
     batch: Vec<Pending>,
     /// The bytes of the open batch's entries in the current segment and in
     /// the next.
@@ -709,6 +715,7 @@ impl Log {
             segs,
             durable: last,
             appended: last,
+            floor: start.index,
             batch: Vec::new(),
             here: 0,
             there: 0,
@@ -1034,8 +1041,10 @@ impl Log {
     /// Remove the entries from `from` on (section 7.1, a follower whose log
     /// differs from the leader's). Returns the last entry left.
     ///
-    /// Refused at or before the highest committed position heard, and
-    /// before the first entry the log holds. Entries of the open batch are
+    /// Refused at or before the highest committed position heard, at or
+    /// before the entry the log was opened from or the one before the oldest
+    /// entry a retirement still needed (both committed), and before the
+    /// first entry the log holds. Entries of the open batch are
     /// dropped in memory. When the marker covers entries that are cut, the
     /// lowered marker is recorded first, in both slots of `state` and with
     /// the listed segments after the one that holds `from` dropped; then
@@ -1046,7 +1055,7 @@ impl Log {
     pub fn cut(&mut self, state: &mut State, from: u64) -> Result<Position, LogError> {
         self.usable()?;
         self.check_state(state)?;
-        if from == 0 || from <= self.marker.committed {
+        if from == 0 || from <= self.marker.committed.max(self.floor) {
             return Err(LogError::Refused(
                 "entries at or before the committed position are never cut",
             ));
@@ -1169,6 +1178,7 @@ impl Log {
         if oldest_needed > self.durable.index.saturating_add(1) {
             return Err(LogError::Refused("entries that are not durable are needed"));
         }
+        self.floor = self.floor.max(oldest_needed.saturating_sub(1));
         let mut count = 0usize;
         while count + 1 < self.segs.len() && self.segs[count + 1].header.first <= oldest_needed {
             count += 1;

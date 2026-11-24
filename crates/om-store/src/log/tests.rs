@@ -279,6 +279,11 @@ impl Machine for Real {
     }
 }
 
+/// A line of a run's trace, with the simulator's step count.
+fn stamp(machine: &dyn Machine, line: String) -> String {
+    format!("[{}] {line}", machine.sim().map_or(0, Sim::steps))
+}
+
 /// Which promises the device keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Device {
@@ -654,7 +659,10 @@ impl<'a> Run<'a> {
 
     /// The process ends, the power failing with it when `power_loss`.
     fn stop(&mut self, power_loss: bool) {
-        self.trace.push(format!("stop (power loss: {power_loss})"));
+        self.trace.push(stamp(
+            &*self.machine,
+            format!("stop (power loss: {power_loss})"),
+        ));
         self.log = None;
         self.state = None;
         self.machine.restart(power_loss);
@@ -718,10 +726,13 @@ impl<'a> Run<'a> {
         self.model.state_made = true;
         let before = self.machine.changes();
         let opened = Log::open(fs.clone(), &mut state, CONFIG, self.model.start);
-        self.trace.push(match &opened {
-            Ok((_, opened)) => format!("open from {}: {opened:?}", self.model.start.index),
-            Err(e) => format!("open from {}: {e}", self.model.start.index),
-        });
+        self.trace.push(stamp(
+            &*self.machine,
+            match &opened {
+                Ok((_, opened)) => format!("open from {}: {opened:?}", self.model.start.index),
+                Err(e) => format!("open from {}: {e}", self.model.start.index),
+            },
+        ));
         match opened {
             Ok((log, opened)) => {
                 self.opened_at = began;
@@ -822,7 +833,8 @@ impl<'a> Run<'a> {
             Err(e @ (LogError::Disk(_) | LogError::Unreadable { .. })) => {
                 // A placed crash or read failure in the check: the process
                 // ends, and the next open checks again.
-                self.trace.push(format!("check read: {e}"));
+                self.trace
+                    .push(stamp(&*self.machine, format!("check read: {e}")));
                 self.stop(false);
                 return None;
             }
@@ -999,13 +1011,15 @@ impl<'a> Run<'a> {
             }
             Err(e @ (LogError::NoSpace(_) | LogError::Disk(_))) if !log.is_poisoned() => {
                 // Refused before anything was written; the log goes on.
-                self.trace.push(format!("append refused: {e}"));
+                self.trace
+                    .push(stamp(&*self.machine, format!("append refused: {e}")));
                 self.reached.no_space += 1;
                 assert_eq!(log.appended(), self.model.appended, "seed {seed}");
                 false
             }
             Err(e) => {
-                self.trace.push(format!("append: {e}"));
+                self.trace
+                    .push(stamp(&*self.machine, format!("append: {e}")));
                 assert!(log.is_poisoned(), "seed {seed}: {e}");
                 self.reached.poisoned += 1;
                 self.fail();
@@ -1060,7 +1074,13 @@ impl<'a> Run<'a> {
         let seed = self.seed;
         let committed = self.model.durable;
         let log = self.log.as_mut().expect("open");
-        match log.set_committed(self.state.as_mut().expect("open"), committed) {
+        let set = log.set_committed(self.state.as_mut().expect("open"), committed);
+        self.trace.push(stamp(
+            &*self.machine,
+            format!("set committed {committed}: {set:?}"),
+        ));
+        let log = self.log.as_mut().expect("open");
+        match set {
             Ok(()) => {
                 self.model.committed = self.model.committed.max(committed);
                 assert_eq!(log.committed(), self.model.committed, "seed {seed}");
@@ -1075,29 +1095,33 @@ impl<'a> Run<'a> {
 
     fn cut(&mut self, back: u64) {
         let seed = self.seed;
-        // A cut at or before the committed position is refused, with
-        // nothing changed (section 7.1).
-        if self.model.committed > 0 && self.plan.below(3) == 0 {
-            let from = 1 + self.plan.below(self.model.committed);
+        // A cut at or before the committed position, or the checkpoint
+        // (which covers only committed entries), is refused with nothing
+        // changed (section 7.1). The committed position the marker records
+        // can go back one advance with a lost copy of `state`; the
+        // checkpoint cannot.
+        let floor = self.model.committed.max(self.model.start.index);
+        if floor > 0 && self.plan.below(3) == 0 {
+            let from = 1 + self.plan.below(floor);
             let log = self.log.as_mut().expect("open");
             let refused = log.cut(self.state.as_mut().expect("open"), from);
             assert!(
                 matches!(refused, Err(LogError::Refused(_))),
-                "seed {seed}: a cut from {from} at or before committed {} gave {refused:?}",
-                self.model.committed
+                "seed {seed}: a cut from {from} at or before {floor} gave {refused:?}"
             );
             assert_eq!(log.appended(), self.model.appended, "seed {seed}");
             assert!(!log.is_poisoned(), "seed {seed}");
         }
         let last = self.model.appended.index;
         let from = last.saturating_sub(back).max(1);
-        if from <= self.model.committed {
+        if from <= floor {
             return;
         }
         let durable_before = self.model.durable;
         let log = self.log.as_mut().expect("open");
         let cut = log.cut(self.state.as_mut().expect("open"), from);
-        self.trace.push(format!("cut from {from}: {cut:?}"));
+        self.trace
+            .push(stamp(&*self.machine, format!("cut from {from}: {cut:?}")));
         match cut {
             Ok(position) => {
                 let expected = if from > last {
@@ -1128,6 +1152,9 @@ impl<'a> Run<'a> {
                 self.model.durable = self.model.durable.min(from - 1);
                 self.model.appended = position;
             }
+            // A device that drops writes can take the log back behind what
+            // the model holds.
+            Err(LogError::Refused(_)) if self.device == Device::Lying => {}
             Err(e @ (LogError::Unreadable { .. } | LogError::Disk(_) | LogError::Damaged(_)))
                 if !log.is_poisoned() =>
             {
@@ -1164,14 +1191,24 @@ impl<'a> Run<'a> {
         let start = self.model.start.index;
         let log = self.log.as_mut().expect("open");
         let first = log.first_index();
-        match log.retire(self.state.as_mut().expect("open"), start + 1) {
+        let retired = log.retire(self.state.as_mut().expect("open"), start + 1);
+        self.trace.push(stamp(
+            &*self.machine,
+            format!("retire before {}: {retired:?}", start + 1),
+        ));
+        let log = self.log.as_mut().expect("open");
+        match retired {
             Ok(n) => {
                 self.reached.retired += n;
                 assert!(log.first_index() <= start + 1, "seed {seed}");
                 assert!(log.first_index() >= first, "seed {seed}");
             }
+            // A device that drops writes can take the log back behind the
+            // checkpoint the model took.
+            Err(LogError::Refused(_)) if self.device == Device::Lying => {}
             Err(e) => {
-                self.trace.push(format!("retire: {e}"));
+                self.trace
+                    .push(stamp(&*self.machine, format!("retire: {e}")));
                 assert!(log.is_poisoned(), "seed {seed}: {e}");
                 self.reached.poisoned += 1;
                 self.fail();
@@ -1217,7 +1254,7 @@ impl<'a> Run<'a> {
                 self.stop(false);
             }
             Err(LogError::Disk(e)) => {
-                self.trace.push(format!("read: {e}"));
+                self.trace.push(stamp(&*self.machine, format!("read: {e}")));
                 self.stop(false);
             }
             Err(e) => panic!("seed {seed}: read: {e}"),
@@ -1815,4 +1852,38 @@ fn an_open_that_repairs_its_tail_survives_a_crash_at_every_step() {
         }
     }
     assert!(kept > 0);
+}
+
+#[test]
+fn a_cut_never_reaches_committed_or_checkpointed_entries() {
+    let sim = Sim::new(8);
+    let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
+    fill(&mut log, &mut state, 4, 2, 20);
+    log.set_committed(&mut state, 2).unwrap();
+    for from in [1, 2] {
+        assert!(matches!(
+            log.cut(&mut state, from),
+            Err(LogError::Refused(_))
+        ));
+    }
+    let at4: Entry = log.read(4).unwrap().next().unwrap().unwrap();
+    drop((log, state));
+    // Opened from a checkpoint at entry 4, whose committed position the
+    // marker no longer records as high (a lost copy of `state` can take it
+    // back one advance): the checkpoint's entries are committed all the
+    // same.
+    sim.restart();
+    let (mut state, mut log, _) = open_store(&sim, at4.position()).unwrap();
+    assert_eq!(log.committed(), 2);
+    for from in [3, 4] {
+        assert!(matches!(
+            log.cut(&mut state, from),
+            Err(LogError::Refused(_))
+        ));
+    }
+    // A retirement that no longer needs entry 6 raises the floor to 6.
+    log.retire(&mut state, 7).unwrap();
+    assert!(matches!(log.cut(&mut state, 6), Err(LogError::Refused(_))));
+    assert_eq!(log.durable().index, 8);
+    assert_eq!(log.cut(&mut state, 7).unwrap().index, 6);
 }
