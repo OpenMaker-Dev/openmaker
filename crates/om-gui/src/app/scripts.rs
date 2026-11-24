@@ -1465,7 +1465,7 @@ impl OpenMakerApp {
             // OnRecordCommit).
             Action::CloseWindow if self.w.session.is_some() => {
                 stages.push(TriggerEvent::WindowClose);
-                if self.closes_last_window() {
+                if !self.windows.iter().any(|d| d.file_id == self.w.file_id) {
                     stages.push(TriggerEvent::LastWindowClose);
                 }
             }

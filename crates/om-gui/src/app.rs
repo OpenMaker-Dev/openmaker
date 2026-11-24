@@ -893,8 +893,9 @@ struct Closing {
     /// The file's windows when the close began, closed in turn whichever
     /// window comes to the front meanwhile
     /// ([#652](https://github.com/OpenMaker-Dev/openmaker/issues/652)). A
-    /// window a close trigger opens is not among them: it closes with the
-    /// file when the last of these does
+    /// window of the file a close trigger opens is not among them: the
+    /// close stops there and leaves it open, edits and all, rather than
+    /// close it unasked or loop
     /// ([#653](https://github.com/OpenMaker-Dev/openmaker/issues/653)).
     windows: Vec<u32>,
     /// Quit once the files are closed.
@@ -3098,17 +3099,6 @@ impl OpenMakerApp {
         }
     }
 
-    /// Whether closing the front window closes its file: it is the file's
-    /// last window, or the last of those File > Close or Quit set out to
-    /// close.
-    fn closes_last_window(&self) -> bool {
-        let file = self.w.file_id;
-        let closing = self.closing.as_ref().filter(|closing| closing.file == file);
-        !self.windows.iter().any(|doc| {
-            doc.file_id == file && closing.is_none_or(|closing| closing.windows.contains(&doc.id))
-        })
-    }
-
     /// The window File > Close or Quit closes next: the first of the
     /// closing file's windows still open.
     fn next_to_close(&self) -> Option<u32> {
@@ -3821,7 +3811,11 @@ impl OpenMakerApp {
         // files' windows, a close of them under way and their script go on.
         let lost = om_data::DataError::connection_lost(HOST_DISCONNECTED);
         if self.with_window(window, |app| app.mark_file_lost(&lost)) == Some(true) {
-            if self.front_doc().file_id == file {
+            if self
+                .closing
+                .as_ref()
+                .is_some_and(|closing| closing.file == file)
+            {
                 self.closing = None;
             }
             if self.script.owner_file == Some(file) {
@@ -4590,21 +4584,29 @@ impl OpenMakerApp {
             Action::CloseWindow => {
                 if self.w.session.is_none() {
                     self.closing = None;
-                } else if self.closes_last_window() {
-                    // The file's last window: the file closes, with any
-                    // window a close trigger opened meanwhile.
+                } else if !self.windows.iter().any(|d| d.file_id == self.w.file_id) {
+                    // The file's last window: the file closes.
                     let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
                     self.close_file(ctx);
                     if quit {
-                        if self.w.session.is_some() {
-                            self.closing = Some(self.closing_front(true));
-                            self.apply(ctx, Action::CloseWindow);
-                        } else {
-                            self.quit_after_closes(ctx);
+                        // Quit goes on with the next open file, a hidden
+                        // one (a close trigger may have opened it) too.
+                        let next = self
+                            .docs()
+                            .find(|doc| doc.session.is_some())
+                            .map(|doc| doc.id);
+                        match next {
+                            Some(next) => {
+                                self.with_window(next, |app| {
+                                    app.closing = Some(app.closing_front(true));
+                                    app.apply(ctx, Action::CloseWindow);
+                                });
+                            }
+                            None => self.quit_after_closes(ctx),
                         }
                     }
                 } else {
-                    let file = self.w.file_id;
+                    let (id, file) = (self.w.id, self.w.file_id);
                     let returns = self.w.style.parent().is_some();
                     if let Some((window, request)) = self.w.found_set_to_keep() {
                         if let Err(err) = self.worker.send(ctx, self.epoch, window, request) {
@@ -4617,16 +4619,27 @@ impl OpenMakerApp {
                         let viewport = self.viewport_of(self.w.id);
                         ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
                     }
-                    // File > Close and Quit go on with the file's next
-                    // window, not whichever is in front now: a close
-                    // trigger may have brought another file forward.
-                    let next = self
+                    // File > Close and Quit go on with the next of the
+                    // windows they began with, not whichever is in front
+                    // now: a close trigger may have brought another file
+                    // forward. Past those, or at a window (a card too) a
+                    // close trigger opened, they stop (`Closing`).
+                    if self
                         .closing
                         .as_ref()
-                        .filter(|closing| closing.file == file)
-                        .and_then(|_| self.next_to_close());
-                    if let Some(next) = next {
-                        self.with_window(next, |app| app.apply(ctx, Action::CloseWindow));
+                        .is_some_and(|closing| closing.file == file)
+                    {
+                        let next = self
+                            .closing
+                            .as_ref()
+                            .filter(|closing| closing.windows.contains(&id))
+                            .and_then(|_| self.next_to_close());
+                        match next {
+                            Some(next) => {
+                                self.with_window(next, |app| app.apply(ctx, Action::CloseWindow));
+                            }
+                            None => self.closing = None,
+                        }
                     }
                 }
             }
@@ -4964,7 +4977,9 @@ impl OpenMakerApp {
                     let kept = (self.closing.clone(), self.opening.clone(), self.status);
                     self.with_window(window, |app| app.close_file(ctx));
                     if front != file {
-                        (self.closing, self.opening, self.status) = kept;
+                        let (closing, opening, status) = kept;
+                        self.closing = closing.filter(|closing| closing.file != file);
+                        (self.opening, self.status) = (opening, status);
                     }
                 }
             }
@@ -8158,18 +8173,32 @@ mod tests {
         assert!(app.w.session.is_some() && app.closing.is_none());
 
         // Window 2 came from a close trigger after File > Close began: the
-        // last window the close began with closes the file, and it too.
+        // close stops past the windows it began with, and at one a trigger
+        // opened, leaving it open with whatever it holds.
+        for closed in [1, 2] {
+            let mut app = two_record_windows();
+            app.w.file_id = 1;
+            app.windows[0].file_id = 1;
+            app.closing = Some(Closing {
+                file: 1,
+                windows: vec![1],
+                quit: false,
+            });
+            app.with_window(closed, |app| app.apply(&ctx, Action::CloseWindow));
+            assert_eq!(app.window_ids(), [3 - closed], "closed {closed}");
+            assert!(
+                app.w.session.is_some() && app.closing.is_none(),
+                "closed {closed}"
+            );
+        }
+
+        // Quit goes on to a file left open hidden.
         let mut app = two_record_windows();
         app.w.file_id = 1;
-        app.windows[0].file_id = 1;
-        app.closing = Some(Closing {
-            file: 1,
-            windows: vec![1],
-            quit: false,
-        });
-        assert!(app.closes_last_window());
-        app.apply(&ctx, Action::CloseWindow);
-        assert!(app.w.session.is_none() && app.windows.is_empty());
+        app.windows[0].file_id = 2;
+        app.windows[0].hidden = true;
+        app.apply(&ctx, Action::Quit);
+        assert!(app.docs().all(|doc| doc.session.is_none()));
     }
 
     #[test]
