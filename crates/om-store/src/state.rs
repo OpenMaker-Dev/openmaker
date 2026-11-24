@@ -462,6 +462,13 @@ impl State {
         self.opened.as_ref()
     }
 
+    /// Whether the store folder's lock this state holds is `fs`'s own and
+    /// still held. What writes the store's other files (the log) checks it,
+    /// so that the one lock makes one writer of all of them.
+    pub fn holds_lock_of(&self, fs: &dyn Fs) -> bool {
+        fs.owns(&self._lock)
+    }
+
     /// Change the values with `change` and make the result durable: a
     /// marker advance in one slot, anything else in both (module docs); a
     /// change that changes nothing writes nothing.
