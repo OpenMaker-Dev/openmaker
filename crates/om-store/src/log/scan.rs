@@ -47,14 +47,7 @@ impl Cursor {
         if offset < self.at || end > have {
             let want = (end - offset).max(CHUNK as u64).min(size - offset);
             self.buf.resize(want as usize, 0);
-            let mut done = 0;
-            while done < self.buf.len() {
-                let n = file.read_at(offset + done as u64, &mut self.buf[done..])?;
-                if n == 0 {
-                    break;
-                }
-                done += n;
-            }
+            let done = read_exact(file, offset, &mut self.buf)?;
             self.buf.truncate(done);
             self.at = offset;
         }
@@ -62,6 +55,19 @@ impl Cursor {
         let to = ((end - self.at) as usize).min(self.buf.len());
         Ok(&self.buf[from.min(to)..to])
     }
+}
+
+/// Read up to `buf.len()` bytes at `offset`, as far as the file reaches.
+pub(crate) fn read_exact(file: &dyn File, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+    let mut done = 0;
+    while done < buf.len() {
+        let n = file.read_at(offset + done as u64, &mut buf[done..])?;
+        if n == 0 {
+            break;
+        }
+        done += n;
+    }
+    Ok(done)
 }
 
 /// An entry the walk found whole and chained.
@@ -88,8 +94,10 @@ pub(crate) struct Found {
 /// What the walk met next.
 #[derive(Debug)]
 pub(crate) enum Event {
-    /// A batch begins.
-    Batch,
+    /// A batch begins, written under this cut count.
+    Batch {
+        cut_count: u64,
+    },
     Entry(Found),
     /// The batch ended: whole when all its entries were read, its last
     /// entry has the hash its header names and they fill its length.
@@ -201,7 +209,10 @@ impl<'a> Scanner<'a> {
     }
 
     /// A whole entry at `offset` that is the next one and continues the
-    /// chain, within `limit`.
+    /// chain, within `limit`. Its fixed fields are checked (index and
+    /// payload length within the format's bounds, the entry within the
+    /// batch) before anything is read for its payload, so that no length
+    /// read from disk sizes more than [`super::format::MAX_PAYLOAD`] bytes.
     fn entry_at(&mut self, offset: u64, limit: u64) -> Result<Option<Found>, ReadFault> {
         let fixed = self.bytes(offset, ENTRY_FIXED)?;
         if (fixed.len() as u64) < ENTRY_FIXED {
@@ -216,19 +227,48 @@ impl<'a> Scanner<'a> {
         let content_len = ENTRY_FIXED + u64::from(head.len);
         let prev = self.prev;
         let keep = self.keep_payload;
-        let bytes = self.bytes(offset, content_len + HASH)?;
-        if (bytes.len() as u64) < content_len + HASH {
-            return Ok(None);
-        }
-        let content = &bytes[..content_len as usize];
-        let hash = entry_hash(&prev, content);
-        if hash[..] != bytes[content_len as usize..] {
-            return Ok(None);
-        }
-        let payload = if keep {
-            content[ENTRY_FIXED as usize..].to_vec()
+        let total = content_len + HASH;
+        let (hash, payload) = if total <= CHUNK as u64 {
+            let bytes = self.bytes(offset, total)?;
+            if (bytes.len() as u64) < total {
+                return Ok(None);
+            }
+            let content = &bytes[..content_len as usize];
+            let hash = entry_hash(&prev, content);
+            if hash[..] != bytes[content_len as usize..] {
+                return Ok(None);
+            }
+            let payload = if keep {
+                content[ENTRY_FIXED as usize..].to_vec()
+            } else {
+                Vec::new()
+            };
+            (hash, payload)
         } else {
-            Vec::new()
+            // A large entry is read into a buffer of its own, which becomes
+            // its payload: one copy of it in memory, not two.
+            let mut bytes = vec![0u8; total as usize];
+            let file = &*self.segs[self.seg].file;
+            let n = read_exact(file, offset, &mut bytes).map_err(|error| ReadFault {
+                seg: self.seg,
+                offset,
+                error,
+            })?;
+            if n < bytes.len() {
+                return Ok(None);
+            }
+            let hash = entry_hash(&prev, &bytes[..content_len as usize]);
+            if hash[..] != bytes[content_len as usize..] {
+                return Ok(None);
+            }
+            let payload = if keep {
+                bytes.truncate(content_len as usize);
+                bytes.drain(..ENTRY_FIXED as usize);
+                bytes
+            } else {
+                Vec::new()
+            };
+            (hash, payload)
         };
         let batch = self
             .batch
@@ -301,7 +341,9 @@ impl<'a> Scanner<'a> {
             match self.entry_at(offset, limit)? {
                 Some(found) => {
                     self.offset += found.size;
-                    self.next += 1;
+                    // An entry's index is at most `MAX_INDEX`, one below
+                    // the largest number.
+                    self.next = found.index + 1;
                     self.prev = found.hash;
                     self.prev_term = found.term;
                     if let Some(batch) = &mut self.batch {
@@ -342,7 +384,9 @@ impl<'a> Scanner<'a> {
                     read: 0,
                 });
                 self.offset = offset + BATCH_HEADER;
-                Ok(Event::Batch)
+                Ok(Event::Batch {
+                    cut_count: header.cut_count,
+                })
             }
             None => {
                 self.ended = true;

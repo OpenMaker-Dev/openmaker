@@ -78,12 +78,15 @@ fn expected_hash(prev: &[u8; 32], entry: &Entry) -> [u8; 32] {
 struct Watched {
     inner: Arc<dyn Fs>,
     changes: Arc<AtomicU64>,
+    /// The largest read any of its files was asked for.
+    largest_read: Arc<AtomicU64>,
 }
 
 struct WatchedFile {
     inner: Box<dyn File>,
     counted: bool,
     changes: Arc<AtomicU64>,
+    largest_read: Arc<AtomicU64>,
 }
 
 impl Watched {
@@ -91,6 +94,7 @@ impl Watched {
         Self {
             inner,
             changes: Arc::default(),
+            largest_read: Arc::default(),
         }
     }
 
@@ -105,6 +109,7 @@ impl Watched {
             inner,
             counted: path.starts_with(FOLDER),
             changes: self.changes.clone(),
+            largest_read: self.largest_read.clone(),
         })
     }
 }
@@ -160,6 +165,8 @@ impl Fs for Watched {
 
 impl File for WatchedFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+        self.largest_read
+            .fetch_max(buf.len() as u64, Ordering::Relaxed);
         self.inner.read_at(offset, buf)
     }
 
@@ -324,8 +331,14 @@ struct Model {
     ever: BTreeMap<u64, Vec<Entry>>,
     /// The checkpoint the next open reads from.
     start: Position,
+    /// The highest committed position the scenario, as the leader, has
+    /// given the log, in calls that succeeded or failed.
     committed: u64,
     appended: Position,
+    /// Cuts of durable entries reported done, and those also attempted by
+    /// calls that failed: the cut count `state` holds is between them.
+    cuts: u64,
+    cuts_attempted: u64,
     /// `state` was made and confirmed.
     state_made: bool,
 }
@@ -341,6 +354,8 @@ impl Model {
             start: Position::START,
             committed: 0,
             appended: Position::START,
+            cuts: 0,
+            cuts_attempted: 0,
             state_made: false,
         }
     }
@@ -367,6 +382,8 @@ struct Reached {
     no_space: u64,
     batch_full: u64,
     poisoned: u64,
+    unconfirmed: u64,
+    reappended: u64,
     damaged: u64,
     no_state: u64,
     lost: u64,
@@ -469,7 +486,6 @@ struct Run<'a> {
     seed: u64,
     plan: Rng,
     rates: Rates,
-    state: Option<State>,
     log: Option<Log>,
     model: Model,
     term: u64,
@@ -511,7 +527,6 @@ impl<'a> Run<'a> {
             seed,
             plan: Rng::stream(seed, 9),
             rates,
-            state: None,
             log: None,
             model: Model::new(),
             term: 1,
@@ -577,7 +592,6 @@ impl<'a> Run<'a> {
             End::Open => {}
         }
         self.log = None;
-        self.state = None;
         end
     }
 
@@ -664,7 +678,6 @@ impl<'a> Run<'a> {
             format!("stop (power loss: {power_loss})"),
         ));
         self.log = None;
-        self.state = None;
         self.machine.restart(power_loss);
     }
 
@@ -689,7 +702,7 @@ impl<'a> Run<'a> {
                 return None;
             }
         };
-        let mut state = match State::open(&*fs, lock) {
+        let state = match State::open(&*fs, lock) {
             Ok(state) => state,
             Err(StateError::Missing) => {
                 assert!(
@@ -725,7 +738,7 @@ impl<'a> Run<'a> {
         };
         self.model.state_made = true;
         let before = self.machine.changes();
-        let opened = Log::open(fs.clone(), &mut state, CONFIG, self.model.start);
+        let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
         self.trace.push(stamp(
             &*self.machine,
             match &opened {
@@ -736,24 +749,26 @@ impl<'a> Run<'a> {
         match opened {
             Ok((log, opened)) => {
                 self.opened_at = began;
-                self.state = Some(state);
                 self.log = Some(log);
                 return self.check_open(&opened);
             }
-            Err(LogError::Damaged(damage)) => {
-                self.check_damage(&damage, before);
-                return Some(End::Damaged);
-            }
-            Err(LogError::Unreadable { .. }) => {
-                self.reached.unreadable += 1;
+            Err(failed) => {
+                // The log hands `state` back; the process ends with it.
+                let OpenFailed { error, state } = *failed;
                 drop(state);
-                self.fail();
+                match error {
+                    LogError::Damaged(damage) => {
+                        self.check_damage(&damage, before);
+                        return Some(End::Damaged);
+                    }
+                    LogError::Unreadable { .. } => {
+                        self.reached.unreadable += 1;
+                        self.fail();
+                    }
+                    LogError::Disk(_) | LogError::State(_) => self.fail(),
+                    e => panic!("seed {seed}: open: {e}"),
+                }
             }
-            Err(LogError::Disk(_) | LogError::State(_)) => {
-                drop(state);
-                self.fail();
-            }
-            Err(e) => panic!("seed {seed}: open: {e}"),
         }
         None
     }
@@ -793,7 +808,7 @@ impl<'a> Run<'a> {
         let durable = opened.durable;
         {
             let log = self.log.as_ref().expect("opened");
-            let marker = self.state.as_ref().expect("opened").values().marker;
+            let marker = log.state().values().marker;
             assert_eq!(
                 (marker.index, marker.hash),
                 (durable.index, durable.hash),
@@ -910,8 +925,27 @@ impl<'a> Run<'a> {
         self.model.durable = durable.index;
         self.model.before_advance = durable.index;
         self.model.appended = durable;
-        let committed = self.log.as_ref().expect("opened").committed();
-        self.model.committed = committed;
+        // The recorded committed position is never more than the scenario
+        // gave, and is not confirmed until it gives one again; the cut count
+        // is what the cuts reported done and attempted allow.
+        let log = self.log.as_ref().expect("opened");
+        assert!(
+            lying || log.committed() <= self.model.committed,
+            "seed {seed}: committed {} recorded, though only {} was given",
+            log.committed(),
+            self.model.committed
+        );
+        assert!(!log.committed_confirmed(), "seed {seed}");
+        let cut_count = log.state().values().cut_count;
+        assert_eq!(opened.cut_count, cut_count, "seed {seed}");
+        assert!(
+            lying || (self.model.cuts..=self.model.cuts_attempted).contains(&cut_count),
+            "seed {seed}: cut count {cut_count}, though {} cuts were done and {} attempted",
+            self.model.cuts,
+            self.model.cuts_attempted
+        );
+        self.model.cuts = cut_count;
+        self.model.cuts_attempted = cut_count;
         let last_term = self
             .model
             .acked
@@ -972,6 +1006,13 @@ impl<'a> Run<'a> {
             }
             assert_eq!(log.appended(), self.model.appended, "seed {seed}");
         }
+        self.append_entry(term, kind, file, payload)
+    }
+
+    /// Append one entry with these fields; false when the schedule should
+    /// stop appending.
+    fn append_entry(&mut self, term: u64, kind: u16, file: u64, payload: Vec<u8>) -> bool {
+        let seed = self.seed;
         let log = self.log.as_mut().expect("open");
         let appended = log.append(term, kind, file, &payload);
         match appended {
@@ -1034,7 +1075,7 @@ impl<'a> Run<'a> {
             with_committed.then(|| self.model.appended.index.saturating_sub(self.plan.below(4)));
         let log = self.log.as_mut().expect("open");
         let segments = log.segments().count;
-        let flushed = log.flush_batch(self.state.as_mut().expect("open"), committed);
+        let flushed = log.flush_batch(committed);
         self.trace
             .push(format!("flush ({committed:?}): {flushed:?}"));
         match flushed {
@@ -1059,9 +1100,15 @@ impl<'a> Run<'a> {
                 self.model.durable = durable;
                 if let Some(c) = committed {
                     self.model.committed = self.model.committed.max(c);
+                    assert!(log.committed_confirmed(), "seed {seed}");
                 }
             }
             Err(e) => {
+                // The leader knows the position it gave, whether or not
+                // `state` recorded it.
+                if let Some(c) = committed {
+                    self.model.committed = self.model.committed.max(c);
+                }
                 assert!(log.is_poisoned(), "seed {seed}: {e}");
                 assert!(matches!(log.append(1, 0, 0, b""), Err(LogError::Poisoned)));
                 self.reached.poisoned += 1;
@@ -1074,7 +1121,7 @@ impl<'a> Run<'a> {
         let seed = self.seed;
         let committed = self.model.durable;
         let log = self.log.as_mut().expect("open");
-        let set = log.set_committed(self.state.as_mut().expect("open"), committed);
+        let set = log.set_committed(committed);
         self.trace.push(stamp(
             &*self.machine,
             format!("set committed {committed}: {set:?}"),
@@ -1083,9 +1130,11 @@ impl<'a> Run<'a> {
         match set {
             Ok(()) => {
                 self.model.committed = self.model.committed.max(committed);
-                assert_eq!(log.committed(), self.model.committed, "seed {seed}");
+                assert!(log.committed() >= committed, "seed {seed}");
+                assert!(log.committed_confirmed(), "seed {seed}");
             }
             Err(e) => {
+                self.model.committed = self.model.committed.max(committed);
                 assert!(log.is_poisoned(), "seed {seed}: {e}");
                 self.reached.poisoned += 1;
                 self.fail();
@@ -1095,16 +1144,41 @@ impl<'a> Run<'a> {
 
     fn cut(&mut self, back: u64) {
         let seed = self.seed;
+        // Until the scenario, as the leader, gives a committed position
+        // since the open, every cut is refused: the one recorded can be one
+        // advance behind (a lost copy of `state`).
+        let log = self.log.as_mut().expect("open");
+        if !log.committed_confirmed() {
+            let refused = log.cut(self.model.appended.index.max(1));
+            assert!(
+                matches!(refused, Err(LogError::CommittedUnconfirmed)),
+                "seed {seed}: a cut before a committed position was given: {refused:?}"
+            );
+            assert_eq!(log.appended(), self.model.appended, "seed {seed}");
+            self.reached.unconfirmed += 1;
+            let given = self.model.committed;
+            if let Err(e) = log.set_committed(given) {
+                assert!(log.is_poisoned(), "seed {seed}: {e}");
+                self.reached.poisoned += 1;
+                self.fail();
+                return;
+            }
+        }
         // A cut at or before the committed position, or the checkpoint
         // (which covers only committed entries), is refused with nothing
-        // changed (section 7.1). The committed position the marker records
-        // can go back one advance with a lost copy of `state`; the
-        // checkpoint cannot.
+        // changed (section 7.1).
         let floor = self.model.committed.max(self.model.start.index);
         if floor > 0 && self.plan.below(3) == 0 {
             let from = 1 + self.plan.below(floor);
             let log = self.log.as_mut().expect("open");
-            let refused = log.cut(self.state.as_mut().expect("open"), from);
+            let refused = log.cut(from);
+            if !matches!(refused, Err(LogError::Refused(_))) && self.device == Device::Lying {
+                // A device that drops writes can leave the log's own floor
+                // behind the model's (a retirement it refused): start again
+                // from what the device holds.
+                self.stop(false);
+                return;
+            }
             assert!(
                 matches!(refused, Err(LogError::Refused(_))),
                 "seed {seed}: a cut from {from} at or before {floor} gave {refused:?}"
@@ -1119,7 +1193,7 @@ impl<'a> Run<'a> {
         }
         let durable_before = self.model.durable;
         let log = self.log.as_mut().expect("open");
-        let cut = log.cut(self.state.as_mut().expect("open"), from);
+        let cut = log.cut(from);
         self.trace
             .push(stamp(&*self.machine, format!("cut from {from}: {cut:?}")));
         match cut {
@@ -1141,16 +1215,38 @@ impl<'a> Run<'a> {
                 };
                 assert_eq!(position, expected, "seed {seed}");
                 assert_eq!(log.appended(), position, "seed {seed}");
-                if from <= durable_before {
-                    self.reached.cuts_of_durable += 1;
-                    self.model.before_advance = from - 1;
-                } else if from <= last {
-                    self.reached.in_memory_cuts += 1;
-                }
-                self.model.acked.split_off(&from);
+                let removed: Vec<Entry> = self.model.acked.split_off(&from).into_values().collect();
                 self.model.maybe.split_off(&from);
                 self.model.durable = self.model.durable.min(from - 1);
                 self.model.appended = position;
+                if from > durable_before {
+                    if from <= last {
+                        self.reached.in_memory_cuts += 1;
+                    }
+                    return;
+                }
+                self.reached.cuts_of_durable += 1;
+                self.model.before_advance = from - 1;
+                self.model.cuts += 1;
+                self.model.cuts_attempted = self.model.cuts_attempted.max(self.model.cuts);
+                // Sometimes the leader sends some of the cut entries again,
+                // exactly: nothing written before the cut may come back
+                // with them.
+                if self.plan.below(2) == 0 {
+                    let n = 1 + self.plan.below(removed.len() as u64) as usize;
+                    self.reached.reappended += 1;
+                    for entry in removed.into_iter().take(n) {
+                        if !self.append_entry(entry.term, entry.kind, entry.file, entry.payload) {
+                            break;
+                        }
+                        if self.plan.below(3) == 0 {
+                            self.flush(false);
+                            if self.log.is_none() {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             // A device that drops writes can take the log back behind what
             // the model holds.
@@ -1167,6 +1263,9 @@ impl<'a> Run<'a> {
                 self.reached.poisoned += 1;
                 // The cut may or may not have happened: the entries from
                 // `from` on may be found again, or not.
+                if from <= durable_before {
+                    self.model.cuts_attempted += 1;
+                }
                 for (index, entry) in self.model.acked.split_off(&from) {
                     self.model.maybe.entry(index).or_default().push(entry);
                 }
@@ -1182,16 +1281,19 @@ impl<'a> Run<'a> {
         // A checkpoint at the committed position, which the next open
         // reads from, then the segments it makes unneeded.
         let c = self.model.committed.min(self.model.durable);
-        if c > self.model.start.index {
+        let mut checkpoint = self.model.start;
+        if c > checkpoint.index {
             match self.model.position(c) {
-                Some(position) => self.model.start = position,
+                Some(position) => checkpoint = position,
                 None => assert_eq!(self.device, Device::Lying, "seed {seed}: no entry {c}"),
             }
         }
-        let start = self.model.start.index;
+        // The checkpoint exists before the retirement that relies on it.
+        self.model.start = checkpoint;
+        let start = checkpoint.index;
         let log = self.log.as_mut().expect("open");
         let first = log.first_index();
-        let retired = log.retire(self.state.as_mut().expect("open"), start + 1);
+        let retired = log.retire(start + 1);
         self.trace.push(stamp(
             &*self.machine,
             format!("retire before {}: {retired:?}", start + 1),
@@ -1240,6 +1342,18 @@ impl<'a> Run<'a> {
         let log = self.log.as_ref().expect("open");
         let read: Result<Vec<Entry>, LogError> = log.read(from).and_then(|r| r.collect());
         match read {
+            Ok(entries) if self.device == Device::Lying => {
+                for entry in &entries {
+                    assert!(
+                        self.model
+                            .ever
+                            .get(&entry.index)
+                            .is_some_and(|all| all.contains(entry)),
+                        "seed {seed}: entry {} was never appended",
+                        entry.index
+                    );
+                }
+            }
             Ok(entries) => {
                 let durable: Vec<&Entry> = self.model.acked.range(from..).map(|(_, e)| e).collect();
                 assert_eq!(entries.iter().collect::<Vec<_>>(), durable, "seed {seed}");
@@ -1297,6 +1411,8 @@ fn the_log_survives_drawn_crashes_and_faults() {
             ("refused appends", reached.no_space),
             ("full batches", reached.batch_full),
             ("poisoned logs", reached.poisoned),
+            ("cuts refused as unconfirmed", reached.unconfirmed),
+            ("cut entries appended again", reached.reappended),
             ("damage reports", reached.damaged),
         ] {
             assert!(n > 0, "no {what}: {reached:?}");
@@ -1427,9 +1543,9 @@ fn a_seed_replays_exactly() {
 
 /// A store on `sim`: `state` opened, or made where there is none, and the
 /// log opened from `start`.
-fn open_store(sim: &Sim, start: Position) -> Result<(State, Log, Opened), LogError> {
+fn open_store(sim: &Sim, start: Position) -> Result<(Log, Opened), LogError> {
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
-    let mut state = match State::open(&*fs, fs.lock().map_err(LogError::Disk)?) {
+    let state = match State::open(&*fs, fs.lock().map_err(LogError::Disk)?) {
         Ok(state) => state,
         Err(StateError::Missing) => {
             State::create(&*fs, &sim.random(), fs.lock().map_err(LogError::Disk)?)
@@ -1437,29 +1553,28 @@ fn open_store(sim: &Sim, start: Position) -> Result<(State, Log, Opened), LogErr
         }
         Err(e) => return Err(LogError::State(e)),
     };
-    let (log, opened) = Log::open(fs, &mut state, CONFIG, start)?;
-    Ok((state, log, opened))
+    Log::open(fs, state, CONFIG, start).map_err(|failed| failed.error)
 }
 
 /// Append `batches` batches of `per` entries with payloads of `len` bytes,
 /// flushing each.
-fn fill(log: &mut Log, state: &mut State, batches: usize, per: usize, len: usize) {
+fn fill(log: &mut Log, batches: usize, per: usize, len: usize) {
     for b in 0..batches {
         for i in 0..per {
             let payload = vec![(b * per + i) as u8; len];
             log.append(1, 2, 3, &payload).unwrap();
         }
-        log.flush_batch(state, None).unwrap();
+        log.flush_batch(None).unwrap();
     }
 }
 
 /// Where a segment file's entries are, by the format's description
 /// (`docs/server-storage-format.md` section 3) rather than the log's code:
 /// the header's first index at bytes 48 to 56 of 128; batches from byte
-/// 128, each a 96-byte header beginning `OMBATCH\0` with its entry count at
-/// 12 to 16 and its first index at 16 to 24; entries of 64 bytes and their
-/// payload, whose length is at 28 to 32. Returns, for each entry, its index,
-/// offset and size, and for each batch its offset.
+/// 128, each a 104-byte header beginning `OMBATCH\0` with its entry count
+/// at 12 to 16 and its first index at 16 to 24; entries of 64 bytes and
+/// their payload, whose length is at 28 to 32. Returns, for each entry, its
+/// index, offset and size, and for each batch its offset.
 fn layout(bytes: &[u8]) -> (Vec<(u64, u64, u64)>, Vec<u64>) {
     let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
     let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
@@ -1468,10 +1583,10 @@ fn layout(bytes: &[u8]) -> (Vec<(u64, u64, u64)>, Vec<u64>) {
     let mut next = u64_at(48);
     let (mut entries, mut batches) = (Vec::new(), Vec::new());
     let mut at = 128usize;
-    while at + 96 <= bytes.len() && &bytes[at..at + 8] == b"OMBATCH\0" && u64_at(at + 16) == next {
+    while at + 104 <= bytes.len() && &bytes[at..at + 8] == b"OMBATCH\0" && u64_at(at + 16) == next {
         batches.push(at as u64);
         let count = u32_at(at + 12);
-        at += 96;
+        at += 104;
         for _ in 0..count {
             let size = 64 + u64::from(u32_at(at + 28));
             entries.push((next, at as u64, size));
@@ -1499,14 +1614,24 @@ fn log_files(sim: &Sim) -> Vec<(String, Option<Vec<u8>>)> {
         .collect()
 }
 
+/// The path of the last segment file on the device.
+fn last_seg_path(sim: &Sim) -> String {
+    sim.image()
+        .into_iter()
+        .filter(|(p, _)| p.starts_with("log/"))
+        .map(|(p, _)| p)
+        .max()
+        .unwrap()
+}
+
 #[test]
 fn a_batch_that_does_not_fit_continues_in_the_next_segment_as_a_second_batch() {
     let sim = Sim::new(3);
-    let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
     // 1536-byte segments and entries of 364 bytes: a batch of two leaves
     // room for one more entry, not two.
-    fill(&mut log, &mut state, 1, 2, 300);
-    fill(&mut log, &mut state, 1, 2, 300);
+    fill(&mut log, 1, 2, 300);
+    fill(&mut log, 1, 2, 300);
     assert_eq!(log.segments().count, 2);
     let (first, first_batches) = layout(&device_bytes(&sim, &format::segment_path(1)));
     let (second, second_batches) = layout(&device_bytes(&sim, &format::segment_path(2)));
@@ -1531,7 +1656,7 @@ fn a_batch_that_does_not_fit_continues_in_the_next_segment_as_a_second_batch() {
         }
     }
     assert!(refused);
-    log.flush_batch(&mut state, None).unwrap();
+    log.flush_batch(None).unwrap();
     // Entries never span segments.
     for &(_, offset, size) in first.iter().chain(&second) {
         assert!(offset + size <= CONFIG.segment_size);
@@ -1539,7 +1664,7 @@ fn a_batch_that_does_not_fit_continues_in_the_next_segment_as_a_second_batch() {
     // The segment header names the store, its number and size, and the
     // entry before its first.
     let header = device_bytes(&sim, &format::segment_path(2));
-    assert_eq!(&header[16..32], &state.values().server_id.0);
+    assert_eq!(&header[16..32], &log.state().values().server_id.0);
     assert_eq!(u64::from_le_bytes(header[32..40].try_into().unwrap()), 2);
     assert_eq!(
         u64::from_le_bytes(header[40..48].try_into().unwrap()),
@@ -1555,11 +1680,11 @@ fn damage_through_the_marker_is_reported_where_it_is_and_nothing_is_cut() {
     // A log of several segments, its marker at its last entry.
     let build = || {
         let sim = Sim::new(4);
-        let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
-        fill(&mut log, &mut state, 8, 2, 300);
+        let (mut log, _) = open_store(&sim, Position::START).unwrap();
+        fill(&mut log, 8, 2, 300);
         assert!(log.segments().count >= 4, "{:?}", log.segments());
         let last = log.durable();
-        drop((log, state));
+        drop(log);
         sim.restart();
         (sim, last)
     };
@@ -1567,12 +1692,7 @@ fn damage_through_the_marker_is_reported_where_it_is_and_nothing_is_cut() {
     let seg2 = format::segment_path(2);
     let (entries2, _) = layout(&device_bytes(&sim, &seg2));
     let first2 = entries2[0].0;
-    let last_seg = format::segment_path(
-        sim.image()
-            .iter()
-            .filter(|(p, _)| p.starts_with("log/"))
-            .count() as u64,
-    );
+    let last_seg = last_seg_path(&sim);
     let (entries_last, _) = layout(&device_bytes(&sim, &last_seg));
     let marker_entry = *entries_last.last().unwrap();
     assert_eq!(marker_entry.0, last.index);
@@ -1623,10 +1743,13 @@ fn damage_through_the_marker_is_reported_where_it_is_and_nothing_is_cut() {
         harm(&sim);
         let files = log_files(&sim);
         let fs: Arc<dyn Fs> = Arc::new(sim.fs());
-        let mut state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+        let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
         let marker = state.values().marker;
-        match Log::open(fs, &mut state, CONFIG, Position::START) {
-            Err(LogError::Damaged(damage)) => {
+        match Log::open(fs, state, CONFIG, Position::START).map_err(|failed| *failed) {
+            Err(OpenFailed {
+                error: LogError::Damaged(damage),
+                state,
+            }) => {
                 assert_eq!(damage.kind, kind, "{what}: {damage:?}");
                 if segment != 0 {
                     assert_eq!(damage.segment, segment, "{what}: {damage:?}");
@@ -1634,32 +1757,23 @@ fn damage_through_the_marker_is_reported_where_it_is_and_nothing_is_cut() {
                 if let Some(index) = index {
                     assert_eq!(damage.index, index, "{what}: {damage:?}");
                 }
+                // The state comes back, its marker standing.
+                assert_eq!(state.values().marker, marker, "{what}");
             }
             other => panic!("{what}: {:?}", other.map(|(_, opened)| opened)),
         }
-        // Nothing was cut, and the marker stands.
+        // Nothing was cut.
         assert_eq!(log_files(&sim), files, "{what}");
-        assert_eq!(state.values().marker, marker, "{what}");
     }
 
     // The same damage before the entry a checkpoint covers is still found
     // when the walk passes it, and not when it does not.
     let (sim, last) = build();
-    sim.damage(&format::segment_path(1), 128 + 96 + 70, 1)
+    sim.damage(&format::segment_path(1), 128 + 104 + 70, 1)
         .unwrap();
-    let (_, log, opened) = open_store(&sim, last).unwrap_or_else(|e| panic!("{e}"));
+    let (log, opened) = open_store(&sim, last).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(opened.durable, last);
     drop(log);
-}
-
-/// The path of the last segment file on the device.
-fn last_seg_path(sim: &Sim) -> String {
-    sim.image()
-        .into_iter()
-        .filter(|(p, _)| p.starts_with("log/"))
-        .map(|(p, _)| p)
-        .max()
-        .unwrap()
 }
 
 #[test]
@@ -1668,10 +1782,10 @@ fn what_follows_the_marker_is_kept_when_whole_and_cut_when_not() {
     // failed as `state` was written, and kept nothing unflushed.
     let build = |damaged: bool| {
         let sim = Sim::new(5);
-        let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
+        let (mut log, _) = open_store(&sim, Position::START).unwrap();
         // The tail fits in the current segment (a part in a new segment
         // that `state` never listed is not part of the log).
-        fill(&mut log, &mut state, 2, 2, 100);
+        fill(&mut log, 2, 2, 100);
         let marker = log.durable();
         for i in 0..3u8 {
             log.append(2, 0, 0, &[i; 50]).unwrap();
@@ -1680,10 +1794,10 @@ fn what_follows_the_marker_is_kept_when_whole_and_cut_when_not() {
         // The batch's synchronous write, then state's write.
         sim.set_crash_fates(Fates::LoseAll);
         sim.place(sim.steps() + 2, Fault::Crash);
-        assert!(log.flush_batch(&mut state, None).is_err());
+        assert!(log.flush_batch(None).is_err());
         assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
         assert!(log.is_poisoned());
-        drop((log, state));
+        drop(log);
         sim.restart();
         if damaged {
             let path = last_seg_path(&sim);
@@ -1695,33 +1809,31 @@ fn what_follows_the_marker_is_kept_when_whole_and_cut_when_not() {
     };
 
     let (sim, marker, tail) = build(false);
-    let (state, log, opened) = open_store(&sim, Position::START).unwrap();
+    let (log, opened) = open_store(&sim, Position::START).unwrap();
     assert_eq!(opened.kept, tail.index - marker.index);
     assert_eq!(opened.durable, tail);
-    assert_eq!(state.values().marker.index, tail.index);
+    assert_eq!(log.state().values().marker.index, tail.index);
     assert_eq!(log.read(1).unwrap().count() as u64, tail.index);
-    drop((log, state));
+    drop(log);
 
     let (sim, marker, _) = build(true);
-    let (mut state, mut log, opened) = open_store(&sim, Position::START).unwrap();
+    let (log, opened) = open_store(&sim, Position::START).unwrap();
     assert_eq!(opened.durable, marker);
     let cut = opened.cut.expect("the damaged batch is cut");
     assert_eq!(cut.index, marker.index + 1);
     // The cut holds: after a power failure that keeps nothing unflushed, the
-    // next open finds the same end and nothing more to cut.
-    drop((log, state));
+    // next open finds the same end.
+    drop(log);
     sim.crash(Fates::LoseAll);
     sim.restart();
-    let (mut state2, mut log2, opened) = open_store(&sim, Position::START).unwrap();
+    let (mut log, opened) = open_store(&sim, Position::START).unwrap();
     assert_eq!(opened.durable, marker);
-    assert_eq!(opened.cut, None);
-    log2.append(3, 0, 0, b"after the cut").unwrap();
-    let after = log2.flush_batch(&mut state2, None).unwrap();
+    assert_eq!(opened.cut.map(|c| c.index), Some(marker.index + 1));
+    log.append(3, 0, 0, b"after the cut").unwrap();
+    let after = log.flush_batch(None).unwrap();
     assert_eq!(after.index, marker.index + 1);
-    (state, log) = (state2, log2);
     let read: Vec<Entry> = log.read(1).unwrap().map(Result::unwrap).collect();
     assert_eq!(read.last().unwrap().payload, b"after the cut");
-    let _ = &mut state;
 }
 
 #[test]
@@ -1729,13 +1841,13 @@ fn a_full_disk_refuses_the_append_before_anything_is_written() {
     let sim = Sim::new(6);
     // Room for `state`, a segment and the next one, not a third.
     sim.set_capacity(2 * crate::state::SLOT as u64 + 2 * CONFIG.segment_size + 600);
-    let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
     let mut refused = None;
     for i in 0..40u32 {
         let before = (log.appended(), log.batch_len());
         match log.append(1, 0, 0, &[i as u8; 300]) {
             Ok(_) => {
-                log.flush_batch(&mut state, None).unwrap();
+                log.flush_batch(None).unwrap();
             }
             Err(LogError::NoSpace(_)) => {
                 assert_eq!((log.appended(), log.batch_len()), before);
@@ -1747,44 +1859,41 @@ fn a_full_disk_refuses_the_append_before_anything_is_written() {
         }
     }
     let last = refused.expect("the disk filled");
-    // What was durable reads back, and an append that fits in the current
-    // segment still goes in... there is none here, so retire to make room:
-    // a checkpoint at the last entry lets the first segment go.
+    // What was durable reads back. A checkpoint at the last entry lets the
+    // first segment go, which makes room for the next.
     assert_eq!(log.read(1).unwrap().count() as u64, last.index);
     assert!(log.segments().count >= 2);
-    let retired = log.retire(&mut state, last.index + 1).unwrap();
+    let retired = log.retire(last.index + 1).unwrap();
     assert!(retired > 0);
     log.append(1, 0, 0, &[9; 300]).unwrap();
-    assert_eq!(
-        log.flush_batch(&mut state, None).unwrap().index,
-        last.index + 1
-    );
+    assert_eq!(log.flush_batch(None).unwrap().index, last.index + 1);
 }
 
 #[test]
 fn a_failed_write_or_flush_stops_the_log() {
     for fault in [Fault::FailWrite, Fault::FailFlush] {
         let sim = Sim::new(7);
-        let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
-        fill(&mut log, &mut state, 2, 2, 50);
+        let (mut log, _) = open_store(&sim, Position::START).unwrap();
+        fill(&mut log, 2, 2, 50);
         log.append(1, 0, 0, b"x").unwrap();
         sim.place(sim.steps() + 1, fault);
-        assert!(log.flush_batch(&mut state, None).is_err(), "{fault:?}");
+        assert!(log.flush_batch(None).is_err(), "{fault:?}");
         assert_eq!(sim.fired().get(&fault), Some(&1));
         assert!(log.is_poisoned());
         assert!(matches!(log.append(1, 0, 0, b""), Err(LogError::Poisoned)));
+        assert!(matches!(log.flush_batch(None), Err(LogError::Poisoned)));
+        assert!(matches!(log.cut(5), Err(LogError::Poisoned)));
+        assert!(matches!(log.retire(1), Err(LogError::Poisoned)));
+        assert!(matches!(log.prepare(), Err(LogError::Poisoned)));
         assert!(matches!(
-            log.flush_batch(&mut state, None),
+            log.update_state(|v| v.term += 1),
             Err(LogError::Poisoned)
         ));
-        assert!(matches!(log.cut(&mut state, 5), Err(LogError::Poisoned)));
-        assert!(matches!(log.retire(&mut state, 1), Err(LogError::Poisoned)));
-        assert!(matches!(log.prepare(), Err(LogError::Poisoned)));
         assert!(log.read(1).is_err());
-        drop((log, state));
+        drop(log);
         // The store opens again; the entries reported durable are there.
         sim.restart();
-        let (_, log, opened) = open_store(&sim, Position::START).unwrap();
+        let (log, opened) = open_store(&sim, Position::START).unwrap();
         assert!(opened.durable.index >= 4, "{fault:?}: {opened:?}");
         assert_eq!(log.read(1).unwrap().count() as u64, opened.durable.index);
     }
@@ -1797,15 +1906,17 @@ fn an_open_that_repairs_its_tail_survives_a_crash_at_every_step() {
     // failure, so the next open reads the cache.
     let setup = |seed: u64| {
         let sim = Sim::new(seed);
-        let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
-        fill(&mut log, &mut state, 2, 2, 30);
+        let (mut log, _) = open_store(&sim, Position::START).unwrap();
+        fill(&mut log, 2, 2, 30);
         let marker = log.durable();
         let tail = log.append(1, 0, 0, &[7; 4]).unwrap();
         sim.place(sim.steps() + 1, Fault::FailWrite);
-        assert!(log.flush_batch(&mut state, None).is_err());
-        drop((log, state));
+        assert!(log.flush_batch(None).is_err());
+        drop(log);
         let whole = sim.events().iter().rev().find_map(|e| match e {
-            sim::Event::WriteFailed { written, .. } => Some(*written == 96 + 64 + 4),
+            sim::Event::WriteFailed { written, .. } => {
+                Some(*written == BATCH_HEADER + ENTRY_OVERHEAD + 4)
+            }
             _ => None,
         });
         sim.restart();
@@ -1826,7 +1937,7 @@ fn an_open_that_repairs_its_tail_survives_a_crash_at_every_step() {
             let steps = {
                 let (sim, _, tail, _) = setup(seed);
                 let begin = sim.steps();
-                let (_, _, opened) = open_store(&sim, Position::START).unwrap();
+                let (_, opened) = open_store(&sim, Position::START).unwrap();
                 assert_eq!(opened.durable == tail, whole, "seed {seed}");
                 sim.steps() - begin
             };
@@ -1838,7 +1949,7 @@ fn an_open_that_repairs_its_tail_survives_a_crash_at_every_step() {
                     assert!(open_store(&sim, Position::START).is_err());
                     assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
                     sim.restart();
-                    let (_, log, opened) = open_store(&sim, Position::START)
+                    let (log, opened) = open_store(&sim, Position::START)
                         .unwrap_or_else(|e| panic!("seed {seed}, step {step}, {fates:?}: {e}"));
                     assert!(
                         opened.durable == marker || (whole && opened.durable == tail),
@@ -1857,33 +1968,318 @@ fn an_open_that_repairs_its_tail_survives_a_crash_at_every_step() {
 #[test]
 fn a_cut_never_reaches_committed_or_checkpointed_entries() {
     let sim = Sim::new(8);
-    let (mut state, mut log, _) = open_store(&sim, Position::START).unwrap();
-    fill(&mut log, &mut state, 4, 2, 20);
-    log.set_committed(&mut state, 2).unwrap();
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    fill(&mut log, 4, 2, 20);
+    log.set_committed(2).unwrap();
     for from in [1, 2] {
-        assert!(matches!(
-            log.cut(&mut state, from),
-            Err(LogError::Refused(_))
-        ));
+        assert!(matches!(log.cut(from), Err(LogError::Refused(_))));
     }
     let at4: Entry = log.read(4).unwrap().next().unwrap().unwrap();
-    drop((log, state));
+    drop(log);
     // Opened from a checkpoint at entry 4, whose committed position the
-    // marker no longer records as high (a lost copy of `state` can take it
-    // back one advance): the checkpoint's entries are committed all the
+    // marker records lower: the checkpoint's entries are committed all the
     // same.
     sim.restart();
-    let (mut state, mut log, _) = open_store(&sim, at4.position()).unwrap();
+    let (mut log, _) = open_store(&sim, at4.position()).unwrap();
     assert_eq!(log.committed(), 2);
+    log.set_committed(2).unwrap();
     for from in [3, 4] {
-        assert!(matches!(
-            log.cut(&mut state, from),
-            Err(LogError::Refused(_))
-        ));
+        assert!(matches!(log.cut(from), Err(LogError::Refused(_))));
     }
     // A retirement that no longer needs entry 6 raises the floor to 6.
-    log.retire(&mut state, 7).unwrap();
-    assert!(matches!(log.cut(&mut state, 6), Err(LogError::Refused(_))));
+    log.retire(7).unwrap();
+    assert!(matches!(log.cut(6), Err(LogError::Refused(_))));
     assert_eq!(log.durable().index, 8);
-    assert_eq!(log.cut(&mut state, 7).unwrap().index, 6);
+    assert_eq!(log.cut(7).unwrap().index, 6);
+}
+
+/// Entries 1, 2 and 3, each flushed as a batch of its own, entry 1
+/// committed: the store of the cut tests.
+fn three_batches(sim: &Sim) -> (Log, Vec<Position>) {
+    let (mut log, _) = open_store(sim, Position::START).unwrap();
+    let mut entries = Vec::new();
+    for i in 1..=3u8 {
+        entries.push(log.append(1, 0, 0, &[i; 40]).unwrap());
+        log.flush_batch(None).unwrap();
+    }
+    log.set_committed(1).unwrap();
+    (log, entries)
+}
+
+/// The first review's first sequence: after a cut from 2 and the same entry
+/// 2 appended again, byte for byte, the batch of entry 3 written before the
+/// cut follows it on disk and chains from it. It is not part of the log.
+#[test]
+fn a_cut_holds_when_the_cut_entries_are_appended_again() {
+    let sim = Sim::new(9);
+    let (mut log, entries) = three_batches(&sim);
+    assert_eq!(log.cut(2).unwrap(), entries[0]);
+    assert_eq!(log.state().values().cut_count, 1);
+    let again = log.append(1, 0, 0, &[2; 40]).unwrap();
+    assert_eq!(again, entries[1]);
+    log.flush_batch(None).unwrap();
+    drop(log);
+    for power_loss in [false, true] {
+        if power_loss {
+            sim.crash(Fates::LoseAll);
+        }
+        sim.restart();
+        let (log, opened) = open_store(&sim, Position::START).unwrap();
+        assert_eq!(opened.durable, entries[1], "power loss: {power_loss}");
+        assert_eq!(opened.kept, 0);
+        assert!(opened.cut.is_some(), "the batch of entry 3 is cut");
+        assert_eq!(log.read(1).unwrap().count(), 2);
+        drop(log);
+    }
+}
+
+/// A cut is done once the first slot of its `state` update is flushed: a
+/// crash at any step of it leaves the cut undone or done, never entry 2
+/// back after that point; and nothing a cut removed comes back after a stop
+/// and a power loss, whatever the system's cache held (the first review's
+/// second and seventh findings).
+#[test]
+fn a_cut_is_done_once_state_records_it() {
+    let steps = {
+        let sim = Sim::new(10);
+        let (mut log, _) = three_batches(&sim);
+        let begin = sim.steps();
+        log.cut(2).unwrap();
+        sim.steps() - begin
+    };
+    // The cut removes no file here, so its last four steps are `state`'s
+    // two writes and flushes.
+    let first_flushed = steps - 2;
+    for step in 1..=steps {
+        for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+            let sim = Sim::new(10);
+            let (mut log, entries) = three_batches(&sim);
+            sim.set_crash_fates(fates);
+            sim.place(sim.steps() + step, Fault::Crash);
+            assert!(log.cut(2).is_err());
+            assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
+            drop(log);
+            sim.restart();
+            let (log, opened) = open_store(&sim, Position::START).unwrap();
+            let done = opened.durable == entries[0];
+            assert!(
+                done || opened.durable == entries[2],
+                "step {step}, {fates:?}: {opened:?}"
+            );
+            if step > first_flushed {
+                assert!(done, "step {step}, {fates:?}: the cut was undone");
+            }
+            assert_eq!(opened.cut_count, u64::from(done));
+            drop(log);
+            // A stop and a power loss bring nothing back.
+            sim.restart();
+            let (log, again) = open_store(&sim, Position::START).unwrap();
+            drop(log);
+            sim.crash(Fates::LoseAll);
+            sim.restart();
+            let (_, last) = open_store(&sim, Position::START).unwrap();
+            assert_eq!(again.durable, opened.durable);
+            assert_eq!(last.durable, opened.durable);
+        }
+    }
+    // The second slot's write fails: the log stops, and the cut is done.
+    let sim = Sim::new(10);
+    let (mut log, entries) = three_batches(&sim);
+    sim.place(sim.steps() + steps - 1, Fault::FailWrite);
+    assert!(log.cut(2).is_err());
+    assert_eq!(sim.fired().get(&Fault::FailWrite), Some(&1));
+    assert!(log.is_poisoned());
+    drop(log);
+    sim.restart();
+    let (log, opened) = open_store(&sim, Position::START).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+    drop(log);
+    sim.crash(Fates::LoseAll);
+    sim.restart();
+    let (_, opened) = open_store(&sim, Position::START).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+}
+
+/// The first review's third sequence: the committed position the marker
+/// records goes back one advance when the newest copy of `state` is lost,
+/// so a cut waits for the caller to give it again.
+#[test]
+fn a_cut_waits_for_a_committed_position_given_since_the_open() {
+    let sim = Sim::new(11);
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    for i in 1..=4u8 {
+        log.append(1, 0, 0, &[i; 10]).unwrap();
+        log.flush_batch((i == 4).then_some(1)).unwrap();
+    }
+    let at1: Entry = log.read(1).unwrap().next().unwrap().unwrap();
+    log.set_committed(4).unwrap();
+    let (_, newest) = log.state().copy();
+    drop(log);
+    sim.damage(
+        crate::state::FILE,
+        (newest * crate::state::SLOT + 40) as u64,
+        2,
+    )
+    .unwrap();
+    sim.restart();
+    let (mut log, opened) = open_store(&sim, at1.position()).unwrap();
+    assert_eq!(opened.durable.index, 4);
+    assert_eq!(opened.recorded_committed, 1);
+    assert!(!log.committed_confirmed());
+    assert!(matches!(log.cut(2), Err(LogError::CommittedUnconfirmed)));
+    log.set_committed(4).unwrap();
+    assert!(matches!(log.cut(2), Err(LogError::Refused(_))));
+    assert_eq!(log.durable().index, 4);
+}
+
+/// The first review's fourth sequence: one store has one log. A second
+/// `Log::open` needs the `State` the first one owns, and a second `State`
+/// needs the lock it holds; a log whose process has stopped writes
+/// nothing.
+#[test]
+fn one_store_has_one_log() {
+    let sim = Sim::new(12);
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    log.prepare().unwrap();
+    assert_eq!(sim.fs().lock().unwrap_err().kind(), ErrorKind::Locked);
+    assert!(open_store(&sim, Position::START).is_err());
+    sim.restart();
+    // The first entry needs a segment, which it would write.
+    assert!(matches!(
+        log.append(1, 0, 0, b"x"),
+        Err(LogError::Refused(_))
+    ));
+    assert!(matches!(
+        log.flush_batch(Some(1)),
+        Err(LogError::Refused(_))
+    ));
+    assert!(matches!(log.set_committed(1), Err(LogError::Refused(_))));
+    assert!(matches!(log.prepare(), Err(LogError::Refused(_))));
+    assert!(matches!(
+        log.update_state(|v| v.term = 1),
+        Err(LogError::Refused(_))
+    ));
+    drop(log);
+    // The term and vote change through the log; its own fields do not.
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    log.update_state(|v| v.term = 3).unwrap();
+    assert_eq!(log.state().values().term, 3);
+    assert!(matches!(
+        log.update_state(|v| v.cut_count += 1),
+        Err(LogError::Refused(_))
+    ));
+    assert!(matches!(
+        log.update_state(|v| v.marker.committed += 1),
+        Err(LogError::Refused(_))
+    ));
+    assert_eq!(log.into_state().values().term, 3);
+}
+
+/// The first review's fifth sequence: an entry whose fixed fields declare a
+/// payload past the format's bound is not valid, and nothing is read for
+/// it, however large its segment says it is; one past the configured bound
+/// and within the format's is read.
+#[test]
+fn an_entry_declaring_a_huge_payload_is_refused_before_anything_is_read_for_it() {
+    let folder = TempFolder::new("log-huge");
+    let watched = Arc::new(Watched::new(Arc::new(folder.fs())));
+    let fs: Arc<dyn Fs> = watched.clone();
+    let open = |config: Config| {
+        let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+        Log::open(fs.clone(), state, config, Position::START).unwrap()
+    };
+    // Written under a larger configuration: a segment of 4096 bytes and an
+    // entry of 1500.
+    let larger = Config {
+        segment_size: 4096,
+        max_payload: 2000,
+    };
+    let state = State::create(&*fs, &OsRandom::new(), fs.lock().unwrap()).unwrap();
+    let (mut log, _) = Log::open(fs.clone(), state, larger, Position::START).unwrap();
+    let one = log.append(1, 0, 0, &[1; 1500]).unwrap();
+    log.flush_batch(None).unwrap();
+    let store = log.state().values().server_id.0;
+    drop(log);
+    let (log, opened) = open(CONFIG);
+    assert_eq!(opened.durable, one);
+    let read: Vec<Entry> = log.read(1).unwrap().map(Result::unwrap).collect();
+    assert_eq!(read[0].payload.len(), 1500);
+    drop(log);
+
+    // Segment 1 made a gigabyte long (a sparse file), with a batch after
+    // entry 1 whose entry declares a payload of most of it.
+    let file = fs
+        .open(&format::segment_path(1), FileOptions::PLAIN)
+        .unwrap();
+    let size = MAX_SEGMENT;
+    file.write_at(size - 1, &[0]).unwrap();
+    let header = format::SegmentHeader {
+        store,
+        number: 1,
+        size,
+        first: 1,
+        prev_term: 0,
+        prev_hash: ZERO_HASH,
+    };
+    file.write_at(0, &header.encode()).unwrap();
+    let at = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 1500;
+    let payload = size - at - BATCH_HEADER - ENTRY_OVERHEAD;
+    let batch = format::BatchHeader {
+        count: 1,
+        first: 2,
+        length: ENTRY_OVERHEAD + payload,
+        cut_count: 0,
+        last: [0; 32],
+    };
+    let mut fixed = [0u8; 32];
+    fixed[0..8].copy_from_slice(&2u64.to_le_bytes());
+    fixed[8..16].copy_from_slice(&1u64.to_le_bytes());
+    fixed[28..32].copy_from_slice(&(payload as u32).to_le_bytes());
+    file.write_at(at, &batch.encode()).unwrap();
+    file.write_at(at + BATCH_HEADER, &fixed).unwrap();
+    drop(file);
+    watched.largest_read.store(0, Ordering::Relaxed);
+    let (log, opened) = open(CONFIG);
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut.map(|c| c.index), Some(2));
+    assert_eq!(log.read(1).unwrap().count(), 1);
+    let largest = watched.largest_read.load(Ordering::Relaxed);
+    assert!(largest <= 64 * 1024, "a read of {largest} bytes");
+}
+
+/// The first review's sixth sequence: indexes at the top of the range.
+#[test]
+fn indexes_at_the_top_of_the_range() {
+    let sim = Sim::new(13);
+    let start = Position {
+        index: MAX_INDEX - 2,
+        term: 5,
+        hash: [7; 32],
+    };
+    let (mut log, opened) = open_store(&sim, start).unwrap();
+    assert_eq!(opened.durable, start);
+    assert_eq!(log.first_index(), MAX_INDEX - 1);
+    log.append(5, 0, 0, b"a").unwrap();
+    let last = log.append(5, 0, 0, b"b").unwrap();
+    assert_eq!(last.index, MAX_INDEX);
+    assert!(matches!(
+        log.append(5, 0, 0, b"c"),
+        Err(LogError::Refused(_))
+    ));
+    log.flush_batch(None).unwrap();
+    drop(log);
+    sim.restart();
+    let (log, opened) = open_store(&sim, start).unwrap();
+    assert_eq!(opened.durable, last);
+    assert_eq!(log.read(u64::MAX).unwrap().count(), 0);
+    let read: Vec<Entry> = log.read(MAX_INDEX).unwrap().map(Result::unwrap).collect();
+    assert_eq!(read.len(), 1);
+    assert_eq!(log.first_index(), MAX_INDEX - 1);
+    drop(log);
+    sim.restart();
+    let past = Position {
+        index: u64::MAX,
+        ..start
+    };
+    assert!(matches!(open_store(&sim, past), Err(LogError::Refused(_))));
 }

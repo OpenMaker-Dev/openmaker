@@ -47,25 +47,25 @@ fn main() {
     for per in [1usize, 10, 100] {
         let mut results = Vec::new();
         for r in 0..runs {
-            let (fs, mut state) = store(&folder, &format!("flush-{per}-{r}"));
+            let (fs, state) = store(&folder, &format!("flush-{per}-{r}"));
             let fs: Arc<dyn Fs> = Arc::new(fs);
             let (mut log, _) =
-                Log::open(fs, &mut state, Config::DEFAULT, Position::START).expect("the log");
+                Log::open(fs, state, Config::DEFAULT, Position::START).expect("the log");
             log.prepare().expect("the first segment");
             let payload = [7u8; PAYLOAD];
-            let batch = |log: &mut Log, state: &mut State| {
+            let batch = |log: &mut Log| {
                 for _ in 0..per {
                     log.append(1, 1, 1, &payload).expect("append");
                 }
-                log.flush_batch(state, None).expect("flush");
+                log.flush_batch(None).expect("flush");
             };
             for _ in 0..20 {
-                batch(&mut log, &mut state);
+                batch(&mut log);
             }
             let start = clock.monotonic();
             let mut batches = 0u64;
             while clock.monotonic() - start < run {
-                batch(&mut log, &mut state);
+                batch(&mut log);
                 batches += 1;
             }
             let secs = (clock.monotonic() - start).as_secs_f64();

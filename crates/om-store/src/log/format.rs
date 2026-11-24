@@ -12,7 +12,7 @@ pub const VERSION: u16 = 1;
 pub const SEGMENT_HEADER: u64 = 128;
 
 /// The bytes a batch's header takes; its entries follow it.
-pub const BATCH_HEADER: u64 = 96;
+pub const BATCH_HEADER: u64 = 104;
 
 /// An entry's fixed fields, before its payload.
 pub const ENTRY_FIXED: u64 = 32;
@@ -27,15 +27,19 @@ pub const ENTRY_OVERHEAD: u64 = ENTRY_FIXED + HASH;
 /// entry, rounded up to a sector.
 pub const MIN_SEGMENT: u64 = 512;
 
-/// The largest segment, which bounds what one read of the log can ask for.
+/// The largest segment.
 pub const MAX_SEGMENT: u64 = 1 << 30;
 
-/// The bytes zeroed where a cut ends the log: a batch's header and the fixed
-/// part and hash of the entry after it, so that neither a batch nor an entry
-/// can be read there afterwards, nor the first entry of a batch whose header
-/// was zeroed, even under a new batch's header whose own entries a later
-/// crash lost.
-pub const CUT_MARK: u64 = BATCH_HEADER + ENTRY_OVERHEAD;
+/// The largest payload the format holds, whatever the configuration: an
+/// entry that declares more is not valid. It bounds what one read of an
+/// entry can ask for. A configuration may allow less
+/// (`Config::max_payload`); entries written under a larger one stay
+/// readable up to this bound.
+pub const MAX_PAYLOAD: u32 = 64 << 20;
+
+/// The largest index an entry may have: one less than the largest number,
+/// so that the index after every entry can be represented.
+pub const MAX_INDEX: u64 = u64::MAX - 1;
 
 const SEGMENT_MAGIC: [u8; 8] = *b"OMLOGSG\0";
 const BATCH_MAGIC: [u8; 8] = *b"OMBATCH\0";
@@ -144,6 +148,7 @@ impl SegmentHeader {
         if version == 0
             || bytes[10..16] != [0; 6]
             || header.first == 0
+            || header.first > MAX_INDEX
             || !(MIN_SEGMENT..=MAX_SEGMENT).contains(&header.size)
         {
             return Err(HeaderFault::Malformed);
@@ -161,6 +166,8 @@ pub struct BatchHeader {
     pub first: u64,
     /// The bytes its entries take, after the header.
     pub length: u64,
+    /// The cut count `state` held when the batch was written.
+    pub cut_count: u64,
     /// The hash of its last entry.
     pub last: [u8; 32],
 }
@@ -173,9 +180,10 @@ impl BatchHeader {
         out[12..16].copy_from_slice(&self.count.to_le_bytes());
         out[16..24].copy_from_slice(&self.first.to_le_bytes());
         out[24..32].copy_from_slice(&self.length.to_le_bytes());
-        out[32..64].copy_from_slice(&self.last);
-        let hash = sha256(&[&out[..64]]);
-        out[64..96].copy_from_slice(&hash);
+        out[32..40].copy_from_slice(&self.cut_count.to_le_bytes());
+        out[40..72].copy_from_slice(&self.last);
+        let hash = sha256(&[&out[..72]]);
+        out[72..104].copy_from_slice(&hash);
         out
     }
 
@@ -186,19 +194,21 @@ impl BatchHeader {
         if bytes.len() < BATCH_HEADER as usize || bytes[..BATCH_MAGIC.len()] != BATCH_MAGIC {
             return None;
         }
-        if sha256(&[&bytes[..64]]) != hash_at(bytes, 64) {
+        if sha256(&[&bytes[..72]]) != hash_at(bytes, 72) {
             return None;
         }
         let header = BatchHeader {
             count: u32_at(bytes, 12),
             first: u64_at(bytes, 16),
             length: u64_at(bytes, 24),
-            last: hash_at(bytes, 32),
+            cut_count: u64_at(bytes, 32),
+            last: hash_at(bytes, 40),
         };
         let valid = u16_at(bytes, 8) == VERSION
             && bytes[10..12] == [0; 2]
             && header.count > 0
             && header.first > 0
+            && header.first <= MAX_INDEX
             && header.length >= u64::from(header.count) * ENTRY_OVERHEAD;
         valid.then_some(header)
     }
@@ -217,9 +227,15 @@ pub struct EntryHead {
 
 impl EntryHead {
     /// The fixed fields at the start of `bytes` (at least
-    /// [`ENTRY_FIXED`] long), or `None` when a reserved field is not zero.
+    /// [`ENTRY_FIXED`] long), or `None` when a reserved field is not zero,
+    /// the index is past [`MAX_INDEX`] or the payload's length past
+    /// [`MAX_PAYLOAD`]: those are checked before anything is read for the
+    /// payload.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes[26..28] != [0; 2] {
+        if bytes[26..28] != [0; 2]
+            || u64_at(bytes, 0) > MAX_INDEX
+            || u32_at(bytes, 28) > MAX_PAYLOAD
+        {
             return None;
         }
         Some(EntryHead {

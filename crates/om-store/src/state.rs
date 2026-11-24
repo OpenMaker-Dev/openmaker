@@ -1,7 +1,7 @@
 //! The store's `state` file (`docs/server-storage.md` section 6.1): this
 //! server's id, its start count, its term and vote, its log segments, the
-//! marker (section 6.3) and the repair record (section 7.5). The byte
-//! format is section 1 of `docs/server-storage-format.md`.
+//! marker and the cut count (section 6.3) and the repair record (section
+//! 7.5). The byte format is section 1 of `docs/server-storage-format.md`.
 //!
 //! The file holds two copies in fixed slots, each with a number and a
 //! SHA-256 hash. The valid copy with the highest number counts.
@@ -9,10 +9,11 @@
 //! - **A marker advance** (only the marker changes, and neither its index
 //!   nor its committed position goes down) writes the next number into the
 //!   slot that does not hold the current copy, in place, and flushes: one
-//!   write of the copy's 178 bytes and one flush, since the marker moves
+//!   write of the copy's 186 bytes and one flush, since the marker moves
 //!   once per commit batch.
-//! - **Every other update** (the term, the vote, the segments, the repair
-//!   record, a marker that goes back) and the start count raised by an
+//! - **Every other update** (the term, the vote, the segments, the cut
+//!   count, the repair record, a marker that goes back) and the start count
+//!   raised by an
 //!   open are written twice before they count: as the next number into the
 //!   other slot, flushed, then as the number after into the first slot,
 //!   flushed. So what such an update confirmed is in both slots, and
@@ -53,21 +54,24 @@ pub const FILE: &str = "state";
 /// place.
 pub const NEW_FILE: &str = "state.new";
 
-/// The format version this code writes, and the newest it reads.
-pub const VERSION: u16 = 1;
+/// The format version this code writes, and the newest it reads. Version
+/// 1, without the cut count, is read as a cut count of 0.
+pub const VERSION: u16 = 2;
 
 /// The size of each copy's slot. A copy never exceeds it.
 pub const SLOT: usize = 4096;
 
-/// The bytes of a version 1 copy its hash covers, with the hash: the rest
-/// of the slot is padding.
-pub const COPY_V1: usize = HEADER + BODY_V1 + HASH;
+/// The bytes of a copy this code writes that its hash covers, with the
+/// hash: the rest of the slot is padding.
+pub const COPY: usize = HEADER + BODY_V2 + HASH;
 
 const MAGIC: [u8; 8] = *b"OMSTATE\0";
 const HEADER: usize = 24;
 const HASH: usize = 32;
 /// The body of a version 1 copy.
 const BODY_V1: usize = 122;
+/// The body of a version 2 copy: version 1's, then the cut count.
+const BODY_V2: usize = BODY_V1 + 8;
 
 /// A server's id: 16 random bytes drawn when its store is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -114,6 +118,11 @@ pub struct Values {
     pub vote: Option<ServerId>,
     pub segments: Segments,
     pub marker: Marker,
+    /// How many times the log was cut back over entries the marker covered
+    /// (section 6.3). It never goes down. Every batch the log writes
+    /// carries it, so that what was written before a cut is never read
+    /// after it.
+    pub cut_count: u64,
     /// Present while the server is in repair.
     pub repair: Option<Repair>,
 }
@@ -344,6 +353,7 @@ impl State {
                 hash: [0; 32],
                 committed: 0,
             },
+            cut_count: 0,
             repair: None,
         };
         let mut bytes = encode(1, &values);
@@ -473,8 +483,8 @@ impl State {
     /// marker advance in one slot, anything else in both (module docs); a
     /// change that changes nothing writes nothing.
     /// Refused, with nothing written, when the result changes the server id
-    /// or the start count, lowers the term, changes a vote already cast in
-    /// the term, or changes the required end of a repair. After an error
+    /// or the start count, lowers the term or the cut count, changes a vote
+    /// already cast in the term, or changes the required end of a repair. After an error
     /// other than a refusal, every later update fails with
     /// [`StateError::Failed`].
     pub fn update(&mut self, change: impl FnOnce(&mut Values)) -> Result<(), StateError> {
@@ -557,6 +567,9 @@ fn check(before: &Values, after: &Values) -> Result<(), StateError> {
     if after.term < before.term {
         return Err(StateError::Refused("the term never goes back"));
     }
+    if after.cut_count < before.cut_count {
+        return Err(StateError::Refused("the cut count never goes back"));
+    }
     if after.term == before.term && before.vote.is_some() && after.vote != before.vote {
         return Err(StateError::Refused("a vote cast in a term stays"));
     }
@@ -589,11 +602,11 @@ enum Decoded {
 /// hash. An update writes just these at the start of a slot; what follows
 /// them in the slot is not read.
 fn encode(number: u64, values: &Values) -> Vec<u8> {
-    let mut out = Vec::with_capacity(COPY_V1);
+    let mut out = Vec::with_capacity(COPY);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&(BODY_V1 as u32).to_le_bytes());
+    out.extend_from_slice(&(BODY_V2 as u32).to_le_bytes());
     out.extend_from_slice(&number.to_le_bytes());
     out.extend_from_slice(&values.server_id.0);
     out.extend_from_slice(&values.start_count.to_le_bytes());
@@ -607,7 +620,8 @@ fn encode(number: u64, values: &Values) -> Vec<u8> {
     out.extend_from_slice(&values.marker.committed.to_le_bytes());
     out.push(u8::from(values.repair.is_some()));
     out.extend_from_slice(&values.repair.map_or(0, |r| r.required_end).to_le_bytes());
-    debug_assert_eq!(out.len(), HEADER + BODY_V1);
+    out.extend_from_slice(&values.cut_count.to_le_bytes());
+    debug_assert_eq!(out.len(), HEADER + BODY_V2);
     let hash = digest::digest(&digest::SHA256, &out);
     out.extend_from_slice(hash.as_ref());
     out
@@ -644,7 +658,12 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
     if version > VERSION {
         return Ok(Decoded::Newer(version));
     }
-    if version == 0 || slot[10..12] != [0, 0] || length != BODY_V1 {
+    let body_len = match version {
+        1 => BODY_V1,
+        2 => BODY_V2,
+        _ => return Err(Invalid::Malformed),
+    };
+    if slot[10..12] != [0, 0] || length != body_len {
         return Err(Invalid::Malformed);
     }
     let number = u64::from_le_bytes(slot[16..24].try_into().expect("8 bytes"));
@@ -677,6 +696,7 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
             hash: body[73..105].try_into().expect("32 bytes"),
             committed: u64_at(105),
         },
+        cut_count: if version >= 2 { u64_at(122) } else { 0 },
         repair,
     };
     if values

@@ -189,7 +189,7 @@ impl File for RecordedFile {
 
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
         assert!(
-            offset as usize % SLOT == 0 && (data.len() == COPY_V1 || data.len() % SLOT == 0),
+            offset as usize % SLOT == 0 && (data.len() == COPY || data.len() % SLOT == 0),
             "state writes copies at the start of slots"
         );
         let slots = data
@@ -421,7 +421,7 @@ impl Slots {
                 path, offset, len, ..
             } if watched(path) => {
                 for (i, slot) in self.file(path).iter_mut().enumerate() {
-                    let hashed = (i * SLOT) as u64..(i * SLOT + COPY_V1) as u64;
+                    let hashed = (i * SLOT) as u64..(i * SLOT + COPY) as u64;
                     if *offset < hashed.end && offset + len > hashed.start {
                         slot.damaged();
                     }
@@ -838,7 +838,7 @@ impl<'a> Run<'a> {
             let damaged = sim.events()[self.trusted_from..].iter().any(|event| {
                 matches!(event, Event::Damaged { path, offset, len, .. }
                 if watched(path) && (0..2).any(|i| {
-                    *offset < (i * SLOT + COPY_V1) as u64 && offset + len > (i * SLOT) as u64
+                    *offset < (i * SLOT + COPY) as u64 && offset + len > (i * SLOT) as u64
                 }))
             });
             assert!(
@@ -885,6 +885,7 @@ impl<'a> Run<'a> {
                     hash: [0; 32],
                     committed: 0,
                 },
+                cut_count: 0,
                 repair: None,
                 ..read.values
             };
@@ -963,6 +964,12 @@ impl<'a> Run<'a> {
             "seed {seed}: repair record {:?} after {:?}",
             read.repair,
             c.repair
+        );
+        assert!(
+            read.cut_count == c.cut_count || attempted(&|a| a.cut_count == read.cut_count),
+            "seed {seed}: cut count {} after {}",
+            read.cut_count,
+            c.cut_count
         );
         assert!(
             read.segments == c.segments || attempted(&|a| a.segments == read.segments),
@@ -1092,9 +1099,11 @@ impl<'a> Run<'a> {
                 }
             }
             8 => {
-                // A follower cuts entries: the marker goes back.
+                // A follower cuts entries: the marker goes back, and the
+                // cut count goes up.
                 v.marker.index = v.marker.index.saturating_sub(1 + self.plan.below(5));
                 self.plan.fill(&mut v.marker.hash);
+                v.cut_count += 1;
             }
             9 => {
                 // A new segment listed with the batch that needed it.
@@ -1127,6 +1136,7 @@ fn copies(before: &Values, after: &Values) -> usize {
         && before.term == after.term
         && before.vote == after.vote
         && before.segments == after.segments
+        && before.cut_count == after.cut_count
         && before.repair == after.repair;
     let forward = now.index >= was.index
         && now.committed >= was.committed
@@ -1298,8 +1308,8 @@ fn open_refuses_what_it_cannot_trust() {
 
     // A copy of a newer format, whole: refused rather than passed over.
     let mut copy = encode(99, state_values());
-    copy[8] = 2;
-    let end = HEADER + BODY_V1;
+    copy[8] = 3;
+    let end = HEADER + BODY_V2;
     let hash = digest::digest(&digest::SHA256, &copy[..end]);
     copy[end..end + HASH].copy_from_slice(hash.as_ref());
     let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
@@ -1307,8 +1317,41 @@ fn open_refuses_what_it_cannot_trust() {
     drop(file);
     assert!(matches!(
         open(&sim),
-        Err(StateError::NewerFormat { version: 2 })
+        Err(StateError::NewerFormat { version: 3 })
     ));
+}
+
+/// A copy of version 1, before the cut count, is read with a cut count of
+/// 0, and the next update writes version 2.
+#[test]
+fn a_version_1_copy_is_read_with_no_cuts() {
+    let sim = Sim::new(12);
+    let fs = sim.fs();
+    let state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    let values = *state.values();
+    drop(state);
+    // Version 1: the same fields without the cut count.
+    let mut copy = encode(5, &values);
+    copy.truncate(HEADER + BODY_V1);
+    copy[8..10].copy_from_slice(&1u16.to_le_bytes());
+    copy[12..16].copy_from_slice(&(BODY_V1 as u32).to_le_bytes());
+    let hash = digest::digest(&digest::SHA256, &copy);
+    copy.extend_from_slice(hash.as_ref());
+    let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+    file.write_at(0, &copy).unwrap();
+    file.write_at(SLOT as u64, &copy).unwrap();
+    drop(file);
+    let mut state = open(&sim).unwrap();
+    assert_eq!(state.values().cut_count, 0);
+    assert_eq!(state.values().server_id, values.server_id);
+    state.update(|v| v.cut_count = 1).unwrap();
+    assert!(matches!(
+        state.update(|v| v.cut_count = 0),
+        Err(StateError::Refused(_))
+    ));
+    drop(state);
+    let state = open(&sim).unwrap();
+    assert_eq!(state.values().cut_count, 1);
 }
 
 #[test]
@@ -1534,6 +1577,7 @@ fn state_values() -> &'static Values {
             hash: [0; 32],
             committed: 0,
         },
+        cut_count: 0,
         repair: None,
     };
     &VALUES
