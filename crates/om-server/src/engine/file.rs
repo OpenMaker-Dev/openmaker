@@ -4,7 +4,10 @@
 use log::{info, warn};
 
 use super::transaction::{Hold, Locks, Transaction};
-use super::{run, Environment, HostEnvironment, Operation, Outcome, Reply};
+use super::{
+    run, ChangeSchema, Draft, Environment, HostEnvironment, Operation, Outcome, Reply,
+    StoreIndexes, Submitted,
+};
 use crate::hosting::Hosted;
 use crate::store::Store;
 
@@ -82,6 +85,44 @@ fn save(operation: &Operation) -> Save {
     }
 }
 
+/// Complete `draft` with what reads left waiting in `store`, which the
+/// engine holds for writing (the module doc of [`super`], "Drafts"): all of
+/// it, as the first write to hold the store took it before the engine
+/// interface, and only what the run will store. Writes refused on a
+/// read-only file take nothing, and member keys stay waiting on a
+/// read-only file.
+fn complete(draft: Draft, store: &mut Store) -> Operation {
+    match draft {
+        Draft::ChangeSchema { writes } => {
+            if store.is_read_only() && !writes.is_empty() {
+                return Operation::ChangeSchema(ChangeSchema {
+                    writes,
+                    member_keys: Vec::new(),
+                    indexes: Vec::new(),
+                });
+            }
+            let indexes = store.take_indexes_on_demand();
+            let member_keys = if store.is_read_only() {
+                Vec::new()
+            } else {
+                store.take_issued_member_keys()
+            };
+            if writes.is_empty() && member_keys.is_empty() {
+                Operation::StoreIndexes(StoreIndexes { indexes })
+            } else {
+                Operation::ChangeSchema(ChangeSchema {
+                    writes,
+                    member_keys,
+                    indexes,
+                })
+            }
+        }
+        Draft::StoreIndexes => Operation::StoreIndexes(StoreIndexes {
+            indexes: store.take_indexes_on_demand(),
+        }),
+    }
+}
+
 /// Save the file if it changed, as `Hosted::save` does: not a read-only
 /// one, and a failed save is not reported.
 fn save_unchecked(file: &Hosted, store: &mut Store) {
@@ -134,13 +175,32 @@ impl FileEngine {
                 locks.keep();
                 outcome
             }
-            Needs::Transaction => self.submit_write(file, operation),
+            Needs::Transaction => self.submit_write(file, |_| (operation, ())).1,
         }
     }
 
-    fn submit_write(&self, file: &Hosted, operation: Operation) -> Outcome {
-        let save = save(&operation);
+    /// Complete `draft` with what reads left waiting in `file`, under the
+    /// store's write lock, and run the operation it becomes as
+    /// [`Self::submit`] does, in the same hold. The completed operation
+    /// comes back with the outcome: [`Self::submit`] replays it.
+    pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Submitted {
+        let (operation, outcome) = self.submit_write(file, |store| {
+            let operation = complete(draft, store);
+            (operation.clone(), operation)
+        });
+        Submitted { operation, outcome }
+    }
+
+    /// Run the operation `operation` gives for the store, which it is
+    /// given under the write lock, and keep what it returns besides.
+    fn submit_write<T>(
+        &self,
+        file: &Hosted,
+        operation: impl FnOnce(&mut Store) -> (Operation, T),
+    ) -> (T, Outcome) {
         let mut store = file.write_store();
+        let (operation, kept) = operation(&mut store);
+        let save = save(&operation);
         let mut locks = Locks::new(&file.locks);
         let mut tx = Transaction::new(&mut store);
         let outcome = run(
@@ -178,7 +238,7 @@ impl FileEngine {
             }
             _ => Ok(()),
         };
-        match saved {
+        let outcome = match saved {
             Ok(()) => {
                 locks.keep();
                 for line in stored_lines {
@@ -202,6 +262,7 @@ impl FileEngine {
                 }
                 outcome.not_stored(&error)
             }
-        }
+        };
+        (kept, outcome)
     }
 }
