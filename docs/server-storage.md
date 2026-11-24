@@ -201,7 +201,8 @@ and its time budget from the process
 the transaction and the lock table, which keep what the engine needs to
 take them back. An operation that does not change the tree gets less than
 a transaction (`engine::Hold`): op60 a view, op61, op62 and op65 nothing of
-the tree, so that they wait for no writer, as before. In the file engine
+the tree, so that these three do not wait for the store, as before. In the
+file engine
 the transaction (`engine::Transaction`) is still a thin wrapper of the
 store and its journal: it exposes the store's methods the operations use,
 and the store itself as the view that derived state is computed from. The
@@ -270,10 +271,13 @@ uses it, holds both while it saves, and lets go of the lock table first;
 the caller then delivers the notices, taking the file's registrations and
 then the mailboxes (the order is in the module doc of `engine`).
 
-Operations that change the tree therefore run one at a time. A lock
-request runs under the lock table alone: it waits for an op70 or op71 that
-holds the lock table while it saves, and can run beside an op72, which
-holds only the store.
+Operations that change the tree therefore run one at a time. op61, op62
+and op65 run under the lock table alone: they wait for an op70 or op71
+that holds the lock table while it saves, and can run beside an op72,
+which holds only the store. op60 also reads the store, so it waits for
+each of the three while it holds the store for writing. A request that
+takes a lock first counts the locks its connection holds in every file it
+has open, so it can also wait for such a save of another of those files.
 
 op71 now holds the lock table while it saves, as op70 always did, because
 the locks it took must be released again if the save fails. That changes
