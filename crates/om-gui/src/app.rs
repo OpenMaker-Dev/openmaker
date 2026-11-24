@@ -5089,6 +5089,9 @@ impl OpenMakerApp {
                     // Quit: a veto or refused save still stops it. One left
                     // with nothing to wait for is over, and Quit begins.
                     closing.quit = true;
+                } else if self.quit_after_script_close() {
+                    // A script's Close File closes first, when the script
+                    // has ended.
                 } else if !self.script.busy() {
                     self.quit_next(ctx);
                 }

@@ -1949,10 +1949,7 @@ impl OpenMakerApp {
                 }
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
-                let resumed = self.close_after_script(ctx);
-                if std::mem::take(&mut self.script.quit) && !resumed {
-                    self.apply(ctx, Action::Quit);
-                }
+                self.close_or_quit_after_script(ctx);
                 self.start_queued(ctx);
             }
             ScriptEvent::Action {
@@ -2016,8 +2013,9 @@ impl OpenMakerApp {
                 self.script.quit = true;
             }
             ScriptEvent::SchemaChanged => self.request(ctx, Request::CalcSchema),
+            // The script stays busy until it ends (Finished), when the
+            // worker has sent every window's last state.
             ScriptEvent::CloseFile => {
-                self.script.running = false;
                 // A close trigger's own Close File takes over its close;
                 // any other script's closes the file. Either goes on when
                 // the script has ended.
@@ -2036,7 +2034,7 @@ impl OpenMakerApp {
                 // waiting behind the script run now.
                 self.saved_on_worker(ctx);
                 self.resume_triggered(ctx);
-                self.close_after_script(ctx);
+                self.close_or_quit_after_script(ctx);
                 self.start_queued(ctx);
             }
         }
@@ -2090,25 +2088,55 @@ impl OpenMakerApp {
     /// took over ([`Self::take_over_close`]), goes on now that the script
     /// has ended: the worker has sent the windows' last states first, a
     /// frozen window's edits included, so each window commits what the
-    /// script left. Whether it went on.
-    fn close_after_script(&mut self, ctx: &egui::Context) -> bool {
+    /// script left. With `quit` (Exit Application, or Quit chosen
+    /// meanwhile), the close is a Quit's. Whether it went on.
+    fn close_after_script(&mut self, ctx: &egui::Context, quit: bool) -> bool {
         if let Some(file) = self.script.close_file.take() {
             let window = self
                 .docs()
                 .find(|doc| doc.file_id == file && doc.session.is_some())
                 .map(|doc| doc.id);
             if let Some(window) = window {
-                self.with_window(window, |app| app.apply(ctx, Action::CloseFile));
+                self.with_window(window, |app| {
+                    if quit {
+                        // Close File keeps a Quit under way.
+                        app.closing = Some(app.closing_front(true));
+                    }
+                    app.apply(ctx, Action::CloseFile);
+                });
                 return true;
             }
         }
         if !std::mem::take(&mut self.script.taken_over) {
             return false;
         }
+        if let Some(closing) = self.closing.as_mut().filter(|_| quit) {
+            closing.quit = true;
+        }
         let Some(next) = self.next_to_close() else {
             return false;
         };
         self.with_window(next, |app| app.close_window(ctx));
+        true
+    }
+
+    /// A script ended: a close its Close File asked for, or its trigger
+    /// took over, goes on, and Exit Application (or Quit chosen while the
+    /// close waited) quits after it, or at once with none.
+    pub(super) fn close_or_quit_after_script(&mut self, ctx: &egui::Context) {
+        let quit = std::mem::take(&mut self.script.quit);
+        if !self.close_after_script(ctx, quit) && quit {
+            self.apply(ctx, Action::Quit);
+        }
+    }
+
+    /// Quit chosen while a script's Close File waits for its script to end
+    /// quits after that close. Whether one was waiting.
+    pub(super) fn quit_after_script_close(&mut self) -> bool {
+        if self.script.close_file.is_none() {
+            return false;
+        }
+        self.script.quit = true;
         true
     }
 
@@ -3670,6 +3698,56 @@ mod queued_window_tests {
             !after.is_current(&app),
             "the target row changed while the current record did not"
         );
+    }
+
+    /// A script's Close File closes the file once the script has ended,
+    /// when the worker has sent every window's last state: the script
+    /// stays busy until then, and a Quit chosen meanwhile, or the script's
+    /// own Exit Application, quits after the close.
+    #[test]
+    fn a_script_close_file_waits_for_the_script_and_quits_after() {
+        for exit_application in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = crate::app::tests::two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.script.running = true;
+            app.on_script_event(&ctx, ScriptEvent::CloseFile);
+            if exit_application {
+                app.on_script_event(&ctx, ScriptEvent::Quit);
+            } else {
+                app.apply(&ctx, Action::Quit);
+            }
+            assert_eq!(app.window_ids(), [FIRST, 2], "{exit_application}");
+            assert!(app.script.busy(), "{exit_application}");
+            let update = WindowUpdate {
+                file: 0,
+                state: app.window_state(),
+                data_changed: false,
+                refreshed: false,
+                objects: Vec::new(),
+                scroll: Vec::new(),
+                fronted: Vec::new(),
+                originals: Default::default(),
+                found_set: None,
+                background: false,
+            };
+            app.on_script_event(
+                &ctx,
+                ScriptEvent::Finished {
+                    window: Box::new(update),
+                    globals: Box::default(),
+                    message: None,
+                },
+            );
+            assert!(
+                app.docs().all(|doc| doc.session.is_none()),
+                "{exit_application}"
+            );
+            assert!(
+                app.quit_ready || app.quit_waiting.is_some(),
+                "{exit_application}"
+            );
+        }
     }
 
     /// A close trigger's Close File or Exit Application takes over the close

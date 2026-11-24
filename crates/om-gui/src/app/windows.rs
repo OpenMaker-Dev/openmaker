@@ -752,6 +752,8 @@ impl OpenMakerApp {
                     self.script.paused = None;
                     self.script.prompt = None;
                     self.presentation = None;
+                    // A close or Quit the script asked for still goes on.
+                    self.close_or_quit_after_script(ctx);
                     return;
                 }
                 if !self.has_window(id) && self.w.connection_lost.is_none() {
