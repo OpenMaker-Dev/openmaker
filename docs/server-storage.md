@@ -8,8 +8,10 @@ OpenMaker's own design. FileMaker Server works differently inside
 it except the contract in section 2.
 
 **Status: design.** Only the file engine exists
-(`crates/om-server/src/store.rs`). The engine interface, the store engine
-and everything in sections 5 to 12 are specified here and not built.
+(`crates/om-server/src/store.rs`), and of the engine interface the write
+operations of record writes and locks (section 5 says which). The rest of
+the interface, the store engine and everything in sections 6 to 12 are
+specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -146,6 +148,17 @@ belongs to the file as a whole: it is exported, and never deployed.
 The rest of the server reaches a file's contents only through this
 interface. It has three parts.
 
+**Status.** Write operations are built for record writes and locks, with
+the file engine behind them (`crates/om-server/src/engine/`): op70, op71,
+op72, op60, op61, op62 and op65 from clients, and the same operations of
+server scripts (reserving a record id, advancing a serial, releasing a
+transaction's or a session's locks). Everything else still changes a file
+from its request handler: op13, op73, op86's uploads and stored indexes,
+op87, op88, op240, account edits, a server script's commit and its record
+and account locks, the release of a closed session's locks, and the
+desktop's saved found sets. Views, `export`, `import` and `capabilities`
+are not built.
+
 **Views.** A view is one fixed version of one file's tree. It answers a
 node's kind and value, its children in key order from a given segment in
 either direction, and a depth-first walk of a subtree. Nothing a view
@@ -159,16 +172,36 @@ read lock that waits (schema-path.md 4.5), is how OpenMaker Server works
 today and is not part of this design.
 
 **Write operations.** Every change the server makes is a value of one
-type, a write operation: commit records (op70), reserve record ids (op71),
-advance a serial (op72), upload to a catalog (op13 and op86's
+type, a write operation (`engine::Operation`): commit records (op70,
+`CommitRecords`), reserve record ids (op71, `ReserveRecordIds`), advance a
+serial (op72, `AdvanceSerial`), upload to a catalog (op13 and op86's
 UploadMultiple and DeleteTable), update a table (op73), store an index
 built for a find, store or release container data (op88, op87), an
 authoring edit (op240), a deploy (section 9), and taking, upgrading and
-releasing locks (op60, op61, op62, op65). One function runs an operation
-against a transaction (a view plus put, delete and replace-subtree) and the
-file's lock table. It returns three things: the **reply**, the **effects**
-(edits to the tree and to the lock table) and the **notices** for other
-clients. Operations on one file run one at a time, in one order.
+releasing locks (op60, op61, op62, op65: `TakeLock`, `UpgradeLock`,
+`ReleaseLock`, `ReleaseLocks`). An operation owns its data and names who
+asks: the lock user (connection and transaction), the name other users see
+for it, and for op70 the account, its privilege set at login and those of
+the listed records the session was served without their values. op70's
+staged records travel in it: the session's temporary area lends them
+(`writes::TempArea::lend`) and takes back those the commit did not write.
+
+One function, `engine::run`, runs an operation against a transaction (a
+view plus put, delete and replace-subtree), the file's lock table
+(`engine::Locks`) and an environment (`engine::Environment`), the only
+place an operation reads the clock or randomness from. It returns the
+**reply** and the **notices** for other clients (`engine::Outcome`); the
+**effects** (edits to the tree and to the lock table) are what it did to
+the transaction and the lock table, which keep what the engine needs to
+take them back. An operation that does not change the tree gets less than
+a transaction (`engine::Hold`): op60 a view, op61, op62 and op65 nothing of
+the tree, so that they wait for no writer, as before. In the file engine
+the transaction (`engine::Transaction`) is still a thin wrapper of the
+store and its journal: it exposes the store's methods the operations use,
+and the store itself as the view that derived state is computed from. The
+reply is typed, one shape per operation (`engine::Reply`); the caller
+encodes it for the wire. Operations on one file run one at a time, in one
+order.
 
 Reply and effects are separate, because the protocol separates them. A
 refusal can keep effects: op71 refused for a lock another user holds on a
@@ -184,9 +217,18 @@ reserved id has still used up the ids, as on FileMaker Server
   exception: on a single server, an operation whose only effects are edits
   to the lock table is answered before they are durable (section 7.3).
 
+Of the lock table's edits, a lock an operation took is released again when
+its other effects are not stored, and a commit's release of the records it
+wrote waits until they are: a commit that is not stored leaves its records
+locked. The edits of an operation that only edits the lock table are made
+at once.
+
 Writes are values, and not closures over the store, so that they can be
 sent to another server (section 7.2), recorded with their result
-(section 7.3) and replayed in tests (section 12).
+(section 7.3) and replayed in tests (section 12). A test records a
+sequence of operations with their outcomes and replays it against a fresh
+load of the same file, to the same replies, notices and tree
+(`engine::tests`).
 
 **The engine.** An engine gives views, submits write operations, exports
 and imports, and says what else it can do:
@@ -199,21 +241,44 @@ import(reader, name)    -> file
 capabilities()          -> clones, history, replication, point-in-time restore
 ```
 
-The names are settled in code. A feature that needs a capability the
-running engine lacks answers a typed "unavailable".
+`submit` is `engine::FileEngine::submit(file, operation) -> Outcome`; the
+caller encodes the reply and delivers the notices only after it returns.
+There is no engine trait while there is one engine. The other names are
+settled when they are built. A feature that needs a capability the running
+engine lacks answers a typed "unavailable".
 
 **Derived state.** The decoded catalog, the accounts, the basis of stored
 calculations and the verified-index marks are computed from a view and
 cached by the version they were computed from. They are not part of an
 engine.
 
-**The file engine behind it.** `submit` takes the write lock, runs the
-operation with today's journal (`Store::save_commit`) and saves the file
-before it returns. This changes what the file engine does when a save
-fails, on purpose. Today op72, op86's stored indexes, op87, op88 and
-server scripts call `Hosted::save`, which returns nothing, and op13 and
-op73 drop the result of `save_held`, so a client can be told a serial,
-catalog or container is stored when it is not. Behind the interface:
+**The file engine behind it.** `FileEngine::submit` takes what each
+request took before the interface: the store's write lock for op70, op71
+and op72, its read lock for op60, and for op61, op62 and op65 only the lock
+table. It takes the store first and the lock table when the operation first
+uses it, holds both while it saves, and lets go of the lock table first;
+the caller then delivers the notices, taking the file's registrations and
+then the mailboxes (the order is in the module doc of `engine`). op71 now
+holds the lock table while it saves, as op70 always did. `submit` saves as
+each request saved before:
+
+- op70: the commit's journal (`Hosted::save_commit`). A failed save takes
+  the commit back, its records stay locked, and the reply is the storage
+  error;
+- a client's op71: the new last issued id before the ids are answered
+  (`Hosted::save_held`, #927). A failed save takes back the reservation and
+  the locks it took, and the reply is the save's error. A server script's
+  op71 is saved by the script's commit;
+- op72: the file is saved if it changed, and a failed save leaves the
+  change in memory and is not reported, as `Hosted::save` does;
+- the lock requests save nothing.
+
+The follow-up of #673's step 1, once every write goes through `submit`,
+changes what the file engine does when a save fails, on purpose. Today
+op72, op86's stored indexes, op87, op88 and server scripts call
+`Hosted::save` or its rule, which reports nothing, and op13 and op73 drop
+the result of `save_held`, so a client can be told a serial, catalog or
+container is stored when it is not. Behind the interface:
 
 - a save that fails before the rename takes the operation's effects back,
   and the reply is the storage error;

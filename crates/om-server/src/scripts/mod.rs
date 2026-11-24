@@ -773,6 +773,7 @@ mod tests {
             connection_ids: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
+            engine: Default::default(),
             scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
             refused_downloads: Default::default(),
             omitted_list_paths: Default::default(),

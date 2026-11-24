@@ -32,7 +32,6 @@ use om_calc::CalcError;
 use om_data::rules::Entry;
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, DataType, FieldKind, OwnedNode};
-use om_protocol::write::CreateRecord;
 use om_scripts::runtime::{
     ErrorCode, HostError, HostResult, Records, TransactionOptions, TransferCall,
 };
@@ -48,7 +47,7 @@ use om_transfer::{
 };
 
 use super::{cell_id, Change, OpenRecord, Ruled, ServerHost, Transaction, Window};
-use crate::{modcount, writes};
+use crate::modcount;
 
 /// FileMaker errors of the folders.
 const FILE_MISSING: i32 = 100;
@@ -650,18 +649,7 @@ impl ImportTarget for ServerImport<'_> {
     ) -> om_transfer::Result<u64> {
         let table = self.table(occurrence)?;
         self.host.plan(table).map_err(transfer_error)?;
-        let reply = writes::create_record(
-            &self.host.hosted,
-            self.host.user,
-            &self.host.holder,
-            &CreateRecord {
-                table: vec![uint_segment(table)],
-                count: 1,
-                txn: self.host.user.txn,
-            },
-            writes::UNCAPPED,
-            false,
-        );
+        let reply = self.host.reserve_record_id(table);
         let id = match reply.status {
             0 => reply
                 .record

@@ -61,7 +61,9 @@ use om_hbam::{
     serial, Catalog, DataType, Field, FieldKind, FieldOptions, KeyTree, OwnedNode, RidList,
     SlotReader,
 };
-use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_INCREMENT};
+use om_protocol::write::{
+    CreateRecord, CreateRecordReply, GetSerial, KeyPath, KillAllLocks, LOCK_WRITE, SERIAL_INCREMENT,
+};
 use om_query::keys::TextKeys;
 use om_scripts::runtime::serial_text;
 use om_scripts::runtime::Fields as FieldSteps;
@@ -79,6 +81,7 @@ use super::find::{self, FindError, Request};
 use super::{values, Control};
 use crate::config::{Privileges, SCRIPT_CALC_LIMITS};
 use crate::connection::Shared;
+use crate::engine::{AdvanceSerial, Operation, ReleaseLocks, Reply, ReserveRecordIds};
 use crate::hosting::Hosted;
 use crate::locks::LockUser;
 use crate::modcount;
@@ -1010,11 +1013,53 @@ impl ServerHost {
     }
 
     /// Release every lock of the session (also those of a transaction or
-    /// record it did not end).
+    /// record it did not end): op65 for all of its connection's.
     fn release_locks(&self) {
-        self.hosted
-            .lock_table()
-            .release_connection(self.user.connection);
+        self.release_locks_of(true);
+    }
+
+    /// op65 for the session: release the locks of its transaction, or with
+    /// `all` every lock of its connection.
+    fn release_locks_of(&self, all: bool) {
+        let release = ReleaseLocks {
+            connection: self.user.connection,
+            request: KillAllLocks {
+                host_file: 0,
+                txn: self.user.txn,
+                all,
+            },
+        };
+        self.shared
+            .engine
+            .submit(&self.hosted, Operation::ReleaseLocks(release));
+    }
+
+    /// op71 for the session: reserve one record id of `table` and lock it
+    /// for the session's transaction ([`writes::create_record`]). The file
+    /// is saved with the script's commit.
+    fn reserve_record_id(&self, table: u64) -> CreateRecordReply {
+        let reserve = ReserveRecordIds {
+            user: self.user,
+            holder: self.holder.clone(),
+            request: CreateRecord {
+                table: vec![uint_segment(table)],
+                count: 1,
+                txn: self.user.txn,
+            },
+            room: writes::UNCAPPED,
+            durable: false,
+        };
+        let operation = Operation::ReserveRecordIds(reserve);
+        match self.shared.engine.submit(&self.hosted, operation).reply {
+            Reply::ReserveRecordIds(reply) => reply,
+            other => {
+                warn!(
+                    "{:?}: the engine answered op71 with {other:?}",
+                    self.hosted.name
+                );
+                writes::refused_ids(writes::UNAVAILABLE)
+            }
+        }
     }
 
     /// Whether the session has full access: an account with [Full
@@ -2016,17 +2061,24 @@ impl ServerHost {
             field, increment, ..
         } in serials
         {
-            let reply = writes::get_serial(
-                &self.hosted,
-                &GetSerial {
-                    table: vec![uint_segment(table)],
-                    field: vec![uint_segment(field)],
-                    value: String::new(),
-                    increment,
-                    flags: SERIAL_INCREMENT,
-                },
-            );
-            self.hosted.save();
+            let request = GetSerial {
+                table: vec![uint_segment(table)],
+                field: vec![uint_segment(field)],
+                value: String::new(),
+                increment,
+                flags: SERIAL_INCREMENT,
+            };
+            let operation = Operation::AdvanceSerial(AdvanceSerial { request });
+            let reply = match self.shared.engine.submit(&self.hosted, operation).reply {
+                Reply::AdvanceSerial(reply) => reply,
+                other => {
+                    warn!(
+                        "{:?}: the engine answered op72 with {other:?}",
+                        self.hosted.name
+                    );
+                    return Err(ErrorCode::UNAVAILABLE.into());
+                }
+            };
             if reply.status != 0 {
                 info!(
                     "{:?}: no serial number for field {field} of table {table:#x}: error {}",
@@ -2281,7 +2333,7 @@ impl ServerHost {
     /// records leave its found set, `deleted` ones return; the
     /// transaction's locks are released.
     fn undo(&mut self, created: Vec<(u64, u64)>, deleted: Vec<(u64, u64)>) {
-        self.hosted.lock_table().release_txn(self.user);
+        self.release_locks_of(false);
         if let Some(window) = self.window.as_mut() {
             // The restored records go back in creation order (a sorted
             // found set is then partly sorted, which is not tracked).
@@ -3981,18 +4033,7 @@ impl Records for ServerHost {
         // Rules the server cannot enforce refuse the record before an id
         // is reserved.
         let plan = self.plan(table)?;
-        let reply = writes::create_record(
-            &self.hosted,
-            self.user,
-            &self.holder,
-            &CreateRecord {
-                table: vec![uint_segment(table)],
-                count: 1,
-                txn: self.user.txn,
-            },
-            writes::UNCAPPED,
-            false,
-        );
+        let reply = self.reserve_record_id(table);
         let id = match reply.status {
             0 => reply
                 .record
@@ -4302,7 +4343,7 @@ impl Records for ServerHost {
             self.undo(created, deleted);
             return result;
         }
-        self.hosted.lock_table().release_txn(self.user);
+        self.release_locks_of(false);
         Ok(())
     }
 

@@ -305,7 +305,11 @@ pub(crate) fn texts(record: &OwnedNode) -> BTreeMap<u64, String> {
 /// the operation's to say ([`rules::WriteContext`]), so a formula reading
 /// it is refused unless the caller sets it.
 pub fn record_environment(account: &str, uuid: String) -> RecordEnvironment {
-    let now = jiff::Zoned::now();
+    record_environment_at(account, uuid, &jiff::Zoned::now())
+}
+
+/// [`record_environment`] at the time `now` (`crate::engine::Environment`).
+pub fn record_environment_at(account: &str, uuid: String, now: &jiff::Zoned) -> RecordEnvironment {
     let date = format!("{}/{}/{}", now.month(), now.day(), now.year());
     let hour = match now.hour() % 12 {
         0 => 12,

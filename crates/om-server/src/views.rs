@@ -94,13 +94,32 @@ pub(crate) fn keep_hidden(record: &mut OwnedNode, stored: &OwnedNode, hidden: &B
 /// them (#670). A record stays in until the session's account changes or
 /// it closes the file: a later read does not show the client replaced its
 /// empty copy (it may ask for some fields, or never fetch a page).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Withheld(BTreeSet<(Vec<u8>, Vec<u8>)>);
 
 impl Withheld {
     /// Add what `view` withheld.
     pub(crate) fn note(&mut self, view: &ViewFilter) {
         self.0.extend(view.withheld.take());
+    }
+
+    /// Those of the records an op70 commit list names (`[T, 05, R]`), all
+    /// that the commit asks of it (`writes::refused_action`): what an
+    /// operation carries ([`crate::engine::CommitRecords`]).
+    pub(crate) fn named_in(&self, list: &OwnedNode) -> Withheld {
+        let mut named = BTreeSet::new();
+        for table in &list.children {
+            let Some(records) = table.child(&[0x05]) else {
+                continue;
+            };
+            for entry in &records.children {
+                let key = (table.segment.clone(), entry.segment.clone());
+                if self.0.contains(&key) {
+                    named.insert(key);
+                }
+            }
+        }
+        Withheld(named)
     }
 
     pub(crate) fn clear(&mut self) {

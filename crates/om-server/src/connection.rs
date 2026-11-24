@@ -51,6 +51,10 @@ use crate::admin::{Clients, Control, Farewell, FileStatus};
 use crate::authoring;
 use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
+use crate::engine::{
+    AdvanceSerial, CommitRecords, FileEngine, Operation, ReleaseLock, ReleaseLocks, Reply,
+    ReserveRecordIds, TakeLock, UpgradeLock,
+};
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
 use crate::locks::LockUser;
@@ -162,6 +166,8 @@ pub(crate) struct Shared {
     pub recordings: Option<Recordings>,
     /// Change notifications waiting for each connection.
     pub mailboxes: Mailboxes,
+    /// Runs the operations that change hosted files ([`crate::engine`]).
+    pub engine: FileEngine,
     /// Perform Script on Server (script-runtime.md 11).
     pub scripts: ScriptEngine,
     /// Key paths no download may read after Login, with what is under them
@@ -1368,10 +1374,12 @@ impl Connection {
                     }
                     .to_result())
                 } else {
-                    create_record(peer, session, &header, txn)
+                    create_record(shared, peer, session, &header, txn)
                 }
             }
-            code if code == Opcode::HostGetSerial as u8 => get_serial(session, &header, txn),
+            code if code == Opcode::HostGetSerial as u8 => {
+                get_serial(shared, session, &header, txn)
+            }
             code if code == Opcode::UploadListToHostTempLocation as u8 => {
                 upload(shared, peer, session, &header, txn, perform.max_return)
             }
@@ -1398,7 +1406,7 @@ impl Connection {
                         .push_u32(write::TRANSACT_INFO_REPLY)
                         .finish()
                 }),
-            code if code == Opcode::Lock as u8 => lock(session, &header, txn),
+            code if code == Opcode::Lock as u8 => lock(shared, session, &header, txn),
             // FileMaker Server answers Unlock and KillAllLocks with the
             // request's own header (idletime zeroed), so the status a client
             // pops is 0 (spec 5.6.10, write-path.md 4.3-4.4).
@@ -1411,17 +1419,19 @@ impl Connection {
                         .get(&header.file_id)
                         .filter(|f| f.account.is_some())
                     {
-                        writes::unlock(
-                            &file.hosted,
-                            &shared.mailboxes,
-                            session.connection_id,
-                            &request,
-                        );
+                        let release = ReleaseLock {
+                            connection: session.connection_id,
+                            request,
+                        };
+                        let outcome = shared
+                            .engine
+                            .submit(&file.hosted, Operation::ReleaseLock(release));
+                        outcome.notices.deliver(&file.hosted, &shared.mailboxes);
                     }
                     write::echo_header(&header)
                 })
             }
-            code if code == Opcode::Upgrade as u8 => upgrade(session, &header, txn),
+            code if code == Opcode::Upgrade as u8 => upgrade(shared, session, &header, txn),
             // The host's clock, in its local time (schema-path.md 3.1).
             code if code == Opcode::HostTimeStamp as u8 => {
                 #[cfg(debug_assertions)]
@@ -1463,7 +1473,12 @@ impl Connection {
             code if code == Opcode::KillAllLocks as u8 => write::parse_kill_all_locks_request(txn)
                 .map(|request| {
                     if let Some(file) = session.open.get(&header.file_id) {
-                        writes::kill_all_locks(&file.hosted, session.connection_id, &request);
+                        let release = ReleaseLocks {
+                            connection: session.connection_id,
+                            request,
+                        };
+                        let operation = Operation::ReleaseLocks(release);
+                        shared.engine.submit(&file.hosted, operation);
                     }
                     write::echo_header(&header)
                 }),
@@ -2850,8 +2865,10 @@ fn create_refused_for_test(_: &Shared) -> bool {
 }
 
 /// op71 HostCreateRecord: reserve record ids (write-path.md 3.1). The new
-/// last issued id waits for the file's next save ([`writes::create_record`]).
+/// last issued id is saved before the ids are answered
+/// ([`writes::create_record`]).
 fn create_record(
+    shared: &Shared,
     peer: &str,
     session: &Session,
     header: &Header,
@@ -2879,11 +2896,37 @@ fn create_record(
     let (user, holder) = lock_user(session, file, request.txn);
     let room = lock_room(session);
     // A client's reservation is on disk before it is answered (#927).
-    Ok(writes::create_record(&file.hosted, user, &holder, &request, room, true).to_result())
+    let reserve = ReserveRecordIds {
+        user,
+        holder,
+        request,
+        room,
+        durable: true,
+    };
+    let outcome = shared
+        .engine
+        .submit(&file.hosted, Operation::ReserveRecordIds(reserve));
+    match outcome.reply {
+        Reply::ReserveRecordIds(reply) => Ok(reply.to_result()),
+        other => Err(mismatched(&other)),
+    }
+}
+
+/// An engine's reply of another operation than the one submitted, which
+/// the engine never gives.
+fn mismatched(reply: &Reply) -> PerformError {
+    PerformError::Status(format!(
+        "the engine answered with another operation's reply: {reply:?}"
+    ))
 }
 
 /// op72 HostGetSerial: a field's next serial value (write-path.md 3.2).
-fn get_serial(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>, PerformError> {
+fn get_serial(
+    shared: &Shared,
+    session: &Session,
+    header: &Header,
+    txn: &[u8],
+) -> Result<Vec<u8>, PerformError> {
     let request = write::parse_get_serial_request(txn)?;
     let reply = match session
         .open
@@ -2900,9 +2943,14 @@ fn get_serial(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>,
             )
         }) {
         Some(file) => {
-            let reply = writes::get_serial(&file.hosted, &request);
-            file.hosted.save();
-            reply
+            let advance = AdvanceSerial { request };
+            let outcome = shared
+                .engine
+                .submit(&file.hosted, Operation::AdvanceSerial(advance));
+            match outcome.reply {
+                Reply::AdvanceSerial(reply) => reply,
+                other => return Err(mismatched(&other)),
+            }
         }
         None => write::GetSerialReply {
             conflict: None,
@@ -3096,7 +3144,12 @@ fn update_table(
 
 /// op61 Upgrade: change a lock's type (schema-path.md 4.2); answered like
 /// op60.
-fn upgrade(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>, PerformError> {
+fn upgrade(
+    shared: &Shared,
+    session: &Session,
+    header: &Header,
+    txn: &[u8],
+) -> Result<Vec<u8>, PerformError> {
     let request = schema::parse_upgrade_request(txn)?;
     let Some(file) = session
         .open
@@ -3114,7 +3167,19 @@ fn upgrade(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>, Pe
     };
     let (user, holder) = lock_user(session, file, request.txn);
     let room = lock_room(session);
-    Ok(writes::upgrade(&file.hosted, user, &holder, &request, room).to_result()?)
+    let upgrade = UpgradeLock {
+        user,
+        holder,
+        request,
+        room,
+    };
+    let outcome = shared
+        .engine
+        .submit(&file.hosted, Operation::UpgradeLock(upgrade));
+    match outcome.reply {
+        Reply::UpgradeLock(reply) => Ok(reply.to_result()?),
+        other => Err(mismatched(&other)),
+    }
 }
 
 /// The host's local date and time as FileMaker's date-time key: the date
@@ -3177,28 +3242,59 @@ fn commit(
             return Err(Refused.into());
         }
     };
+    // `writable` admits only a session with a set.
+    let Some(access) = account.access.clone() else {
+        warn!("{peer}: commit refused: the account has no privilege set");
+        return Ok(done);
+    };
+    // The records of the list this session was served without their values
+    // (`writes::refused_action`).
+    let withheld = session
+        .open
+        .get(&header.file_id)
+        .map(|file| {
+            file.withheld
+                .lock()
+                .expect("withheld records lock")
+                .named_in(&list)
+        })
+        .unwrap_or_default();
     let client = session.client;
     let temp = session
         .temp
         .entry(header.file_id)
         .or_insert_with(|| writes::TempArea::new(Charge::none(&shared.upload_memory, client)));
+    let (staged, lent) = temp.lend(&list);
     // The account's set decides each record's action under the write lock
     // (`writes::refused_action`); a refused commit writes nothing and the
     // reply cannot say so (the client checks first and reports 200).
-    // Saved by the commit itself; a commit that could not be saved was taken
-    // back and fails with a system exception (MARSHAL, COMPLETED_NO) rather
-    // than the page that says it was done: op70's reply has no status
+    // Saved by the engine; a commit that could not be saved was taken back
+    // and fails with a system exception (MARSHAL, COMPLETED_NO) rather than
+    // the page that says it was done: op70's reply has no status
     // (write-path.md 3.4). OpenMaker's choice; FileMaker Server's answer is
     // unobserved.
-    let withheld = session
-        .open
-        .get(&header.file_id)
-        .map(|file| file.withheld.lock().expect("withheld records lock"));
-    let none = crate::views::Withheld::default();
-    let withheld = withheld.as_deref().unwrap_or(&none);
-    let reply = match writes::commit(&hosted, user, temp, &list, &account, withheld) {
-        Ok(changes) => {
-            writes::notify(&hosted, &shared.mailboxes, session.connection_id, &changes);
+    let commit = CommitRecords {
+        user,
+        account: account.name.clone(),
+        access,
+        list,
+        staged,
+        withheld,
+    };
+    let outcome = shared
+        .engine
+        .submit(&hosted, Operation::CommitRecords(commit));
+    let committed = match outcome.reply {
+        Reply::CommitRecords(committed) => committed,
+        other => {
+            temp.settle(lent, Default::default());
+            return Err(mismatched(&other));
+        }
+    };
+    temp.settle(lent, committed.unused);
+    let reply = match committed.result {
+        Ok(()) => {
+            outcome.notices.deliver(&hosted, &shared.mailboxes);
             Ok(done)
         }
         Err(writes::CommitError::Refused(e)) => {
@@ -3210,7 +3306,7 @@ fn commit(
             Err(PerformError::Status("commit not saved".into()))
         }
     };
-    drop((list, reading, held));
+    drop((reading, held));
     reply
 }
 
@@ -3407,7 +3503,12 @@ fn thumbnail(
 }
 
 /// op60 Lock: take a record lock without waiting (write-path.md 4.2).
-fn lock(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>, PerformError> {
+fn lock(
+    shared: &Shared,
+    session: &Session,
+    header: &Header,
+    txn: &[u8],
+) -> Result<Vec<u8>, PerformError> {
     let request = write::parse_lock_request(txn)?;
     let Some(file) = session
         .open
@@ -3425,7 +3526,19 @@ fn lock(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>, Perfo
     };
     let (user, holder) = lock_user(session, file, request.txn);
     let room = lock_room(session);
-    Ok(writes::lock(&file.hosted, user, &holder, &request, room)?)
+    let lock = TakeLock {
+        user,
+        holder,
+        request,
+        room,
+    };
+    let outcome = shared
+        .engine
+        .submit(&file.hosted, Operation::TakeLock(lock));
+    match outcome.reply {
+        Reply::TakeLock(reply) => Ok(reply.to_result()?),
+        other => Err(mismatched(&other)),
+    }
 }
 
 /// A CORBA system exception reply (`IDL:omg.org/CORBA/<name>:1.0`).

@@ -1281,7 +1281,7 @@ impl Store {
     }
 
     /// Put back everything a commit changed, newest first.
-    fn roll_back(&mut self, journal: Journal) {
+    pub(crate) fn roll_back(&mut self, journal: Journal) {
         // The record lists and counts are nodes the journal kept; a
         // record's own undo only moves it back in the indexes.
         for undo in journal.undo.into_iter().rev() {

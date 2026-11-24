@@ -119,6 +119,7 @@ pub mod console;
 mod containers;
 pub mod database_folders;
 pub mod default_identity;
+mod engine;
 mod eventlog;
 mod filelock;
 pub mod hosting;
