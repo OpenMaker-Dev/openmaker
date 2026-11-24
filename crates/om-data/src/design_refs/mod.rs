@@ -9,8 +9,9 @@
 //! from a version of a file it hosts. Every reference comes from a decoder
 //! OpenMaker already has: script steps through their parameter schema
 //! (`om_scripts`), layouts and their objects (`om_layout`), formulas
-//! (`om_formula`), field options, relationships, value lists, custom
-//! functions and file options (`crate::meta`, `crate::field_options`).
+//! (`om_formula`), import and export orders (`om_transfer::spec`), field
+//! options, relationships, value lists, custom functions and file options
+//! (`crate::meta`, `crate::field_options`).
 //! Nothing is inferred from bytes those decoders do not read: such places
 //! are listed in [`Coverage::unread`], and references made by a name that
 //! is only looked up when the file runs (a script performed by a

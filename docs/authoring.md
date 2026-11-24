@@ -1110,7 +1110,7 @@ another, read by the decoder OpenMaker already has for it:
 
 | Holder | References | Read by |
 |---|---|---|
-| Script step | each parameter of the step's schema: a field or a variable's target, a layout, a script (also another file's, through its data source), a table occurrence or base table, a data source, calculations, find request fields, a sort order's fields, summary fields and value lists | `om_scripts` (script-steps.md 4, 5) |
+| Script step | each parameter of the step's schema: a field or a variable's target, a layout, a script (also another file's, through its data source), a table occurrence or base table, a data source, calculations, find request fields, a sort order's fields, summary fields and value lists; an import order's target occurrence and fields and an export order's fields | `om_scripts` (script-steps.md 4, 5), `om_transfer::spec` (11.3, 11.4) |
 | Layout | its table occurrence, sub-summary parts' break fields, script triggers and their parameters | `om_layout` |
 | Layout object | a field object's field and value list; a portal's occurrence, filter and stored sort; a button's or group's step, read as a script step; script triggers; merge fields; its label, tooltip, placeholder, hide condition, conditional formatting, active segment, web address, calculated icon and item calculations | `om_layout` (layout-model.md, calc-encoding.md 8) |
 | Field | its calculation, auto-enter, validation, validation message and external storage path calculations; a lookup's occurrences and copied field; the value list it validates by; its furigana field; a summary's summarized and additional fields | `om_data::field_options`, `om_data::meta` (schema-path.md 5.5, 5.13; file-metadata.md 5) |
@@ -1154,9 +1154,9 @@ given. Not read:
 - custom menus `[65, 5, M]`, whose items run steps: each is listed;
 - privilege sets' record access calculations: the security catalog is not
   read;
-- a step's import or export order, a list of several table occurrences, a
-  step id without a parameter schema, and stored step data the schema does
-  not explain;
+- a step's list of several table occurrences or scripts, a step id
+  without a parameter schema, and stored step data the schema does not
+  explain;
 - a chart's or plug-in object's setup;
 - whatever does not decode, and a script's steps past the 20,000th.
 

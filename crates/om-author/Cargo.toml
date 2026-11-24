@@ -30,6 +30,7 @@ om-formula = { path = "../om-formula" }
 om-giop = { path = "../om-giop" }
 om-server = { path = "../om-server" }
 om-session = { path = "../om-session" }
+om-transfer = { path = "../om-transfer" }
 rcgen = "0.14"
 
 [lints]

@@ -1,14 +1,15 @@
 //! The references in one script step, read through the step's parameter
 //! schema (`om_scripts::schema`, script-steps.md 4 and 5): field, layout,
 //! script, table occurrence and data source operands, calculations, find
-//! requests and sort orders. Parameters the schema keeps as stored bytes
-//! (import and export orders) and stored data no parameter explains are
+//! requests, sort orders, and import and export orders (`om_transfer::spec`,
+//! script-steps.md 11.3, 11.4). Stored data no parameter explains is
 //! reported unread. A layout object's single step (a button) is read the
 //! same way.
 
 use om_hbam::slot::be_uint;
 use om_scripts::specs::{self, SortSpec, SpecField};
 use om_scripts::{flag, Item, Location, ParamKind, ScriptStep, StepData, Unclassified};
+use om_transfer::spec::{ExportOptions, FieldFlags, FieldSpec, ImportOptions, Mapping};
 
 use super::read::Builder;
 use super::{Kind, NameUse, ObjectId, Place, StepPlace, Target, UnreadReason};
@@ -31,8 +32,14 @@ const OBJECT_NAME_STEPS: [u16; 5] = [145, 146, 167, 175, 180];
 /// calculation in slot 5 with this flag (script-steps.md 12.1).
 const CALLBACK_IN_FILE: u32 = 0x400;
 
-/// What an import or export order could name.
-const ORDER_KINDS: [Kind; 4] = [Kind::Field, Kind::Occurrence, Kind::Table, Kind::DataSource];
+/// The keys of an import or export step's specs (script-steps.md 11.3 to
+/// 11.5): the import order `84`, the export order `85`, the file type `86`,
+/// the import profile extension `87` and the per-field import options
+/// `f0`, read together by [`transfer`].
+const IMPORT_ORDER: u8 = 0x84;
+const EXPORT_ORDER: u8 = 0x85;
+const IMPORT_FLAGS: u8 = 0xf0;
+const TRANSFER_KEYS: [u8; 5] = [IMPORT_ORDER, EXPORT_ORDER, 0x86, 0x87, IMPORT_FLAGS];
 
 /// Read `step`, held by `holder` (a script, or a layout object for a
 /// button), into `b`. Each place is `prefix` and the parameter's name.
@@ -238,6 +245,8 @@ pub(super) fn read(
                     ),
                 },
                 Item::Node(node) => match (kind, location) {
+                    // Read together by `transfer`, below.
+                    (_, Location::Key(key)) if TRANSFER_KEYS.contains(key) => {}
                     (ParamKind::TableOccurrence, _) => match aliases(node) {
                         Some(occurrence) => b.reference(
                             holder,
@@ -288,13 +297,6 @@ pub(super) fn read(
                             vec![Kind::Field, Kind::Occurrence, Kind::ValueList],
                         ),
                     },
-                    (ParamKind::ImportOrder | ParamKind::ExportOrder, _) => b.unread(
-                        holder,
-                        at,
-                        UnreadReason::NotDecoded,
-                        format!("the {name}, kept as stored"),
-                        ORDER_KINDS.to_vec(),
-                    ),
                     _ => b.unread(
                         holder,
                         at,
@@ -326,10 +328,12 @@ pub(super) fn read(
             script(b, holder, place("Script"), Some(script_id), external);
         }
     }
+    transfer(b, holder, &place, step);
     let unexplained: Vec<String> = step
         .unclassified()
         .into_iter()
         .filter(|u| !matches!(u, Unclassified::Flag(_) | Unclassified::Value(_)))
+        .filter(|u| !matches!(u, Unclassified::Key(key) if TRANSFER_KEYS.contains(key)))
         .map(|u| u.to_string())
         .collect();
     if !unexplained.is_empty() {
@@ -343,6 +347,110 @@ pub(super) fn read(
             ),
             Kind::REFERABLE.to_vec(),
         );
+    }
+}
+
+/// An import or export step's orders (script-steps.md 11.3, 11.4): the
+/// import's target occurrence and each column's target field, its
+/// per-field options, and the export's fields, summary break fields and
+/// group-by fields. The file type and profile name no object.
+fn transfer(b: &mut Builder, holder: ObjectId, place: &dyn Fn(&str) -> Place, step: &ScriptStep) {
+    let bytes = |key: u8| {
+        step.data_leaf(key)
+            .and_then(om_scripts::node_bytes)
+            .map(|b| b.into_owned())
+    };
+    let mut target = None;
+    if let Some(order) = bytes(IMPORT_ORDER) {
+        match ImportOptions::decode(&order).map(|o| (o.table.id(), o)) {
+            Ok((Some(occurrence), options)) => {
+                target = Some(occurrence);
+                b.reference(
+                    holder,
+                    place("Import order: target table"),
+                    Target::Object(ObjectId::Occurrence(occurrence)),
+                );
+                for entry in &options.map {
+                    let Some(field) = entry.field.id() else {
+                        continue;
+                    };
+                    let part = if entry.mapping == Mapping::DontImport {
+                        "Import order (not imported)"
+                    } else {
+                        "Import order"
+                    };
+                    b.reference(holder, place(part), Target::Field { occurrence, field });
+                }
+            }
+            Ok((None, _)) | Err(_) => b.unread(
+                holder,
+                place("Import order"),
+                UnreadReason::Malformed,
+                "an import order that does not read".into(),
+                vec![Kind::Field, Kind::Occurrence],
+            ),
+        }
+    }
+    if let Some(flags) = bytes(IMPORT_FLAGS) {
+        match (FieldFlags::decode(&flags), target) {
+            (Ok(flags), Some(occurrence)) => {
+                for (key, _) in &flags.fields {
+                    if let Some(field) = key.id() {
+                        b.reference(
+                            holder,
+                            place("Import field options"),
+                            Target::Field { occurrence, field },
+                        );
+                    }
+                }
+            }
+            (Ok(flags), None) if flags.fields.iter().all(|(key, _)| key.id().is_none()) => {}
+            _ => b.unread(
+                holder,
+                place("Import field options"),
+                UnreadReason::Malformed,
+                "per-field import options that do not read".into(),
+                vec![Kind::Field],
+            ),
+        }
+    }
+    if let Some(order) = bytes(EXPORT_ORDER) {
+        match ExportOptions::decode(&order) {
+            Ok(options) => {
+                let at = place("Export order");
+                for field in &options.fields {
+                    transfer_field(b, holder, &at, &field.field);
+                    transfer_field(b, holder, &at, &field.sum_by);
+                }
+                for (field, _) in &options.group_by {
+                    transfer_field(b, holder, &place("Export order: group by"), field);
+                }
+            }
+            Err(_) => b.unread(
+                holder,
+                place("Export order"),
+                UnreadReason::Malformed,
+                "an export order that does not read".into(),
+                vec![Kind::Field, Kind::Occurrence],
+            ),
+        }
+    }
+}
+
+/// A field of an import or export spec; an empty spec names none.
+fn transfer_field(b: &mut Builder, holder: ObjectId, at: &Place, spec: &FieldSpec) {
+    match (spec.table.id(), spec.field.id()) {
+        (Some(occurrence), Some(field)) => {
+            b.reference(holder, at.clone(), Target::Field { occurrence, field })
+        }
+        (None, None) => {}
+        _ => b.unread(
+            holder,
+            at.clone(),
+            UnreadReason::Malformed,
+            "a field spec whose keys do not read".into(),
+            vec![Kind::Field, Kind::Occurrence],
+        ),
     }
 }
 

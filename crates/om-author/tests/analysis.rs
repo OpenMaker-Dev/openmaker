@@ -12,7 +12,11 @@ use om_author::{Command, Service};
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode};
 use om_layout::encode;
-use om_scripts::{flag, StoredKey};
+use om_scripts::{flag, ScriptStep, StoredKey};
+use om_transfer::spec::{
+    ExportField, ExportOptions, FieldSpec, ImportAction, ImportOptions, Key, MapEntry, Mapping,
+};
+use om_transfer::{ExportCharset, ImportCharset};
 use serde_json::{json, Value};
 
 const CALLER: u64 = 1;
@@ -23,6 +27,48 @@ const DELETED: u64 = 99;
 /// Layout Tasks' objects: Count's edit box and Caller's button.
 const COUNT_BOX: u64 = 1;
 const BUTTON: u64 = 2;
+
+/// Export Records of `field` of Tasks: its export order `85`
+/// (script-steps.md 11.4).
+fn export_records(field: u64) -> ScriptStep {
+    let none = FieldSpec {
+        table: Key::none(),
+        field: Key::none(),
+        repetition: 1,
+    };
+    let order = ExportOptions {
+        fields: vec![ExportField {
+            field: FieldSpec::new(fixture::OCCURRENCE, field),
+            sum_by: none,
+        }],
+        group_by: Vec::new(),
+        formatting: false,
+        charset: ExportCharset::Windows,
+        use_name_alias: None,
+        field_names: None,
+    };
+    let mut step = ScriptStep::new(36);
+    step.set_data_leaf(0x85, Some(om_scripts::bytes_node(&[0x85], &order.encode())));
+    step
+}
+
+/// Import Records into `field` of Tasks: its import order `84`
+/// (script-steps.md 11.3).
+fn import_records(field: u64) -> ScriptStep {
+    let order = ImportOptions {
+        table: Key::from_id(fixture::OCCURRENCE),
+        action: ImportAction::Add,
+        flags: 0,
+        charset: ImportCharset::Windows,
+        map: vec![MapEntry {
+            field: Key::from_id(field),
+            mapping: Mapping::Import,
+        }],
+    };
+    let mut step = ScriptStep::new(35);
+    step.set_data_leaf(0x84, Some(om_scripts::bytes_node(&[0x84], &order.encode())));
+    step
+}
 
 fn analysis_tree() -> OwnedNode {
     let scripts = vec![
@@ -39,6 +85,8 @@ fn analysis_tree() -> OwnedNode {
             "Callee",
             vec![
                 fixture::set_field(DELETED, "\"x\""),
+                export_records(fixture::NAME),
+                import_records(fixture::SETTING),
                 fixture::exit_with("\"done\""),
             ],
         ),
@@ -197,6 +245,24 @@ fn each_analysis_returns_exactly_the_files_references_with_its_coverage() {
     );
     assert_eq!(deleted["object"]["exists"], false);
     assert_eq!(holders(&deleted["uses"]), holders(&broken["broken"]));
+
+    // Import and export orders name their fields (script-steps.md 11.3,
+    // 11.4).
+    for (field, part, step) in [
+        (fixture::NAME, "Export order", 2),
+        (fixture::SETTING, "Import order", 3),
+    ] {
+        let found = run(
+            &mut service,
+            "find_uses",
+            json!({"object": r("field", &format!("32769.{field}"))}),
+        );
+        assert_eq!(
+            holders(&found["uses"]),
+            [(r("script", "2"), part.into(), Some((step, step)))],
+            "{found:#}"
+        );
+    }
 
     // Caller is performed by the layout's button.
     let caller = run(&mut service, "find_uses", json!({"script_name": "Caller"}));
