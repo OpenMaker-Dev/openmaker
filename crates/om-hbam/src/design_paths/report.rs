@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use super::rules::{hex, Group, Rule, Seg, CATALOGS};
-use super::{instances, rules, step};
+use super::{instances, member_of, rules, secrets, step, Path};
 use crate::tree::OwnedNode;
 
 /// What a report found.
@@ -37,7 +37,7 @@ pub struct Report {
 pub struct Member {
     /// The catalog's name, or `unknown catalog` and its path.
     pub catalog: String,
-    pub path: super::Path,
+    pub path: Path,
     pub is: MemberIs,
 }
 
@@ -101,11 +101,44 @@ fn shape(path: &[&[u8]], known: usize, cands: &[&'static Rule], deeper: bool) ->
     text
 }
 
+/// The Secret paths of the member a walk is in: the member's depth and
+/// the paths, relative to it.
+struct Secrets {
+    depth: usize,
+    paths: Vec<Path>,
+}
+
+impl Secrets {
+    fn at(path: &[&[u8]], member: &OwnedNode) -> Option<Self> {
+        let (kind, depth) = member_of(path).filter(|&(_, depth)| depth == path.len())?;
+        let paths = secrets::of(kind, member)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        Some(Secrets { depth, paths })
+    }
+
+    fn is(&self, path: &[&[u8]]) -> bool {
+        let below = &path[self.depth..];
+        self.paths
+            .iter()
+            .any(|s| s.len() == below.len() && s.iter().zip(below).all(|(a, b)| a == b))
+    }
+
+    fn below(&self, path: &[&[u8]]) -> bool {
+        let below = &path[self.depth..];
+        self.paths
+            .iter()
+            .any(|s| s.len() > below.len() && s.iter().zip(below).all(|(a, b)| a == b))
+    }
+}
+
 /// Count `node`'s children, at `path`, into `report`.
 pub(super) fn count_under(node: &OwnedNode, path: &[&[u8]], report: &mut Report) {
     let (cands, best) = super::candidates(path);
+    let secrets = Secrets::at(path, node);
     let mut at: Vec<&[u8]> = path.to_vec();
-    walk(node, &mut at, &cands, best, report);
+    walk(node, &mut at, &cands, best, secrets.as_ref(), report);
 }
 
 fn walk<'t>(
@@ -113,13 +146,23 @@ fn walk<'t>(
     path: &mut Vec<&'t [u8]>,
     cands: &[&'static Rule],
     best: Option<&'static Rule>,
+    secrets: Option<&Secrets>,
     report: &mut Report,
 ) {
     let depth = path.len();
     for child in &node.children {
         let (deeper, rule) = step(cands, depth, &child.segment, best);
         path.push(&child.segment);
-        if deeper.is_empty() || child.children.is_empty() {
+        let entered = match secrets {
+            None => Secrets::at(path, child),
+            Some(_) => None,
+        };
+        let secrets = secrets.or(entered.as_ref());
+        if secrets.is_some_and(|s| s.is(path)) {
+            *report.groups.entry(Group::Secret).or_default() += terminals(child);
+        } else if (deeper.is_empty() && !secrets.is_some_and(|s| s.below(path)))
+            || child.children.is_empty()
+        {
             match rule {
                 Some(rule) => report.add(rule, terminals(child)),
                 None if !deeper.is_empty() && child.value.is_none() => report.structure += 1,
@@ -129,7 +172,7 @@ fn walk<'t>(
                 }
             }
         } else {
-            walk(child, path, &deeper, rule, report);
+            walk(child, path, &deeper, rule, secrets, report);
         }
         path.pop();
     }

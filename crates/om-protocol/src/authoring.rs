@@ -173,14 +173,25 @@ pub const MAX_LABEL_CHARS: usize = 1_000;
 pub const MAX_LAYOUT_NAME_CHARS: usize = 100;
 
 /// Revisions and the keys of a modification stamp (schema-path.md 8.1)
-/// are defined once, in `om_hbam::design_paths`: [`content_revision`] is a
-/// script's, [`catalog_revision`] every other object's and a whole
-/// catalog's. The host checks and reports them with the same functions as
-/// its clients.
+/// are defined once, in `om_hbam::design_paths`, and the host checks and
+/// reports them with the same functions as its clients: a script's
+/// ([`content_revision`]) and a layout's ([`layout_revision`]) are their
+/// object revisions, without Data paths and with stored credentials
+/// hidden; [`catalog_revision`] is the general form over a whole subtree,
+/// a table's field catalog, a catalog index or a value list member.
 pub use om_hbam::design_paths::{
-    catalog_revision, content_revision, is_stamp, Revision, MOD_ACCOUNT, MOD_COUNT, MOD_TIME,
-    MOD_USER,
+    catalog_revision, is_stamp, Revision, MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER,
 };
+
+/// A script member's `[17, 5, S]` revision (`om_hbam::design_paths`).
+pub fn content_revision(member: &OwnedNode) -> Revision {
+    om_hbam::design_paths::revision_of(om_hbam::design_paths::Kind::Script, None, member)
+}
+
+/// A layout member's `[4, 5, L]` revision (`om_hbam::design_paths`).
+pub fn layout_revision(member: &OwnedNode) -> Revision {
+    om_hbam::design_paths::revision_of(om_hbam::design_paths::Kind::Layout, None, member)
+}
 
 /// A request.
 #[derive(Clone, Debug, PartialEq)]

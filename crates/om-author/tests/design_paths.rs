@@ -49,9 +49,15 @@ fn at(path: &[Vec<u8>]) -> Vec<&[u8]> {
 
 /// The Tasks file with its Form layout's objects, Count made an
 /// auto-enter serial field with its next value `0c` and data version `fb`
-/// (schema-path.md 5.5, write-path.md 3.2).
+/// (schema-path.md 5.5, write-path.md 3.2), and a file library item whose
+/// picture, 1,001 bytes, is held inline as no file stores it: the writer
+/// splits it into a header and pieces (file-format.md 3.6).
 fn tree() -> OwnedNode {
     let mut root = common::form_tree();
+    root.put(
+        &[&[0x1f], &[5], &[1], b"PNGf"],
+        OwnedNode::leaf(Vec::new(), vec![0x89; 1001]),
+    );
     let count = field_path(fixture::COUNT);
     let mut put = |key: u8, node: OwnedNode| {
         let mut path = count.to_vec();
@@ -157,6 +163,11 @@ fn a_file_written_and_read_back_keeps_every_revision() {
     let bytes = om_hbam::writer::rebuild(&root, &superblock).expect("a file");
     let file = HbamFile::from_bytes(bytes).expect("the file read back");
     let reread = file.key_tree().expect("its keys").root.to_owned_node();
+    let picture: [&[u8]; 4] = [&[0x1f], &[5], &[1], b"PNGf"];
+    assert!(
+        reread.at(&picture).is_some_and(|n| n.value.is_none()),
+        "split on write"
+    );
     assert_eq!(revisions(&reread), before);
     // The report sees the keys the fixture adds that FileMaker does not
     // define, and nothing else outside the rules.

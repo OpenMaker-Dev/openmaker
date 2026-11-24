@@ -262,15 +262,22 @@ below are from Contacts/en unless noted; text is XOR-0x5A decoded (3.5).
 | 17 | scripts & script steps (names "Sort by Name", etc.) | High [O] (KScriptDefs) |
 | 23 | security: `23/1` accounts ("Admin"; members `23/1/5/<id>`), `23/2` privilege sets ("[Full Access]","[Data Entry Only]"), `23/3` extended privileges ("fmapp","fmxdbc","fmwebdirect","fmodata","fmxml","fmreauthenticate10") | High [O] |
 | 25 | fonts ("arial,sans-serif") | High [O] (KFontList) |
-| 26 (`1a`) | the file's own icon image, a binary data tree (`MAIN`, `PNGf`, `SIZE` streams; containers.md 2.3) | Med [O] (KOrigThumbImg) |
-| 31 (`1f`) | the file library: layout graphics, icons and button glyphs, `31/5/<id>/<4cc>` (containers.md 1.1, library-images.md). An earlier reading took it for custom menus | High [O] (KLibrary) |
-| 32 (`20`) | external data sources, `32/5/<id>` (file-metadata.md 1.1) | High [O] (KFileReferences) |
+| 26 (`1a`) | the file's own icon image, a binary data tree (`MAIN`, `PNGf`, `SIZE` streams; containers.md 2.3) | Med: [O] the stream tree in every starter file and the test project; [I] that it is the icon, from the constant `KOrigThumbImg` = `1a` (catalogs/hbkey-constants.csv) |
+| 31 (`1f`) | the file library: layout graphics, icons and button glyphs, `31/5/<id>/<4cc>` | High [O]: the members' SVG and PNG streams in every starter file (library-images.md); the path from `DBLibrary::GetCatalogKeyPath` with `KLibrary` = `1f` (containers.md 1.1) |
+| 32 (`20`) | external data sources, `32/5/<id>`, `10` the name, `82` the file reference | High [O]: a hosted multi-file solution's catalogs (file-metadata.md 1.1); `KFileReferences` = `20`. No starter file has one |
 | 33 | value lists ("Phone Type"; `KValueLists`, file-metadata.md 6) | High [O] |
-| 38 (`26`) | base directories of external container storage; every starter file has one, named after the file ("Contact/", "Tasks/") (containers.md 8.1); **not** the base-table list, which is `3/16` (3.6) | High [O] (KBaseDirectories) |
-| 64 (`40`) | custom menu sets: one member in every starter file | Med [O that it exists; I: by its constant's value] (KCustomMenuSets) |
-| 65 (`41`) | custom menus, `65/5/<M>/37` the install-when calculation (calc-encoding.md 8) | High [O] (KCustomMenus) |
-| `>= 0x8000` (32770, 32771, ...) | **per-table record data and field value indexes**; one high key per table/occurrence, with field-value collation-key index entries and record field values | High [O] |
-| `d0 00 01`... (13631490 = `0xD00002`, ...) | a table occurrence's key: its saved found set, sort, current record and last find `[O, 07]` (file-metadata.md 11) | High [O] |
+| 38 (`26`) | base directories of external container storage: one in every starter file, named after the file ("Contact/", "Tasks/"); **not** the base-table list, which is `3/16` (3.6) | High [O]: every starter file; `DBBaseDirectoryCatalog` with `KBaseDirectories` = `26` (containers.md 8.1) |
+| 64 (`40`) | custom menu sets: an index and one member in every starter file | Med: [O] the catalog in every starter file; [I] what it holds, from the constant `KCustomMenuSets` = `40` (catalogs/hbkey-constants.csv) |
+| 65 (`41`) | custom menus, `65/5/<M>/37` the install-when calculation | High [O]: the calculations in the corpus (calc-encoding.md 8); `KCustomMenus` = `41` |
+| two- and three-byte serial keys `80 01`... (32769 = `0x8001`, ...) | a base table's data: records, field value indexes and its field catalog `<T>/3` (3.6); the table's key is its member key in `3/16` | High [O]: every starter file's tables (schema-path.md 5.2) |
+| `d0 00 01`... (13631489 = `0xD00001`, ...) | a table occurrence's key: its saved found set, sort, current record and last find `<O>/7` | High [O]: the starter files and FileMaker Pro 26's saves (file-metadata.md 11) |
+
+Tables are numbered from the serial key `80 01` and occurrences from
+`d0 00 01` (schema-path.md 5.1-5.3; file-metadata.md 1); `om_hbam::design_paths`
+takes a top-level serial key with an id from 128 up to 1,065,088
+(`d0 00 00`) for a table and one from there on for an occurrence. That
+the two never meet is inferred from those first ids: no file with
+anywhere near 1,065,088 tables was seen [I].
 
 Sub-key convention within a catalog [O, pattern]: `.../1/...` is typically the
 name/ID index (entries keyed by collated name, value = entry id) and `.../5/...`
@@ -335,26 +342,34 @@ the only shipped files with records) and enforced by
 
 `om_hbam::design_paths` puts a path in a group only where a spec says what
 it holds (docs/server-storage.md section 4). In the 66 FileMaker Pro 26
-starter files (six solutions in 11 languages,
+starter files (six solutions in 11 languages, read by
 `crates/om-hbam/tests/design_paths.rs`), these keys of catalogs it
-otherwise covers are explained by no spec and are in no group [O: read
-from the files; counts are terminal keys over all 66]:
+otherwise covers are explained by no spec. Every row is observed in those
+files [O], counts being terminal keys over all 66; the last column says
+what is known or inferred.
 
-| Path (hex) | Observed | What is known |
+| Path (hex) | Observed [O] | What is known |
 |---|---|---|
-| `[4, 5, L, 16]` | `00 00` on 11 layouts | unexplained (layout-model.md 10.15) |
-| `[6, 1, 20]` | `01` in the 11 Contacts files | named only (layout-model.md 7.5) |
-| `[11, 5, S, 13]` | u32 0 on all 330 scripts | meaning unknown (script-steps.md 1) |
-| `[17, 2, 1, 07, P]`, `[17, 3, 1, 07, E]`, `[19, 1, 07, F]`, `[21, 1, 07, V]`, `[40, 1, 07, M]`, `[41, 1, 07, M]` | an empty leaf per member, keyed by the member's key, in every file (198, 660, 139, 264, 66 and 264 leaves) | a member list as the file library's `07` (containers.md 1.2) and the themes' entries (layout-model.md 7.5) [I] |
-| `[19, 5, F, 02]` | `01 00` on all 139 fonts | |
-| `[19, 5, F, 03]` | text on 73 of 139 fonts: Tasks' `.SF NS Text` has `.SFNSText`, its name without spaces | another form of the font's name [I] |
-| `[21, 1, 06, <key>]` | one leaf per value list: `00 00` or `00 01`, the name's key, `00 00`, holding the list's key string. In Tasks the one list whose definition starts `01` has `00 01`, the custom lists `00 00` | a second name list, as the field catalog's by type (schema-path.md 5.5) [I]; that the two bytes give the list's type, inferred from one file |
-| `[40, 1, 18]` | `01 01`, naming the one menu set, in every file | as the themes' index `18` (layout-model.md 7.5) [I] |
-| `[40, 1, 20]` | `01` in every file | |
-| `[41, 5, M, 02]` | on all 264 custom menus | calc-encoding.md 8 places menu item calculations under the member, at a position not given [U] |
+| `[4, 5, L, 16]` | `00 00` on 11 layouts | unexplained (layout-model.md 10.15); in no group |
+| `[11, 5, S, 13]` | u32 0 on all 330 scripts | meaning unknown (script-steps.md 1); in no group |
+| `[17, 2, 1, 07, P]`, `[17, 3, 1, 07, E]`, `[19, 1, 07, F]`, `[21, 1, 07, V]`, `[40, 1, 07, M]`, `[41, 1, 07, M]` | an empty leaf per member, keyed by the member's key, in every file (198, 660, 139, 264, 66 and 264 leaves) | [I] a member list, as the file library's `07` (containers.md 1.2) and the themes' entries (layout-model.md 7.5); in no group |
+| `[19, 5, F, 02]` | `01 00` on all 139 fonts | in no group |
+| `[19, 5, F, 03]` | text on 73 of 139 fonts: Tasks' `.SF NS Text` has `.SFNSText`, its name without spaces | [I] another form of the font's name; in no group |
+| `[21, 1, 06, <key>]` | one leaf per value list: `00 00` or `00 01`, the name's key, `00 00`, holding the list's key string. In Tasks the one list whose definition starts `01` has `00 01`, the custom lists `00 00` | [I] a second name list, as the field catalog's by type (schema-path.md 5.5); [I] that the two bytes give the list's type, from one file; in no group |
+| `[41, 5, M, 02]` | on all 264 custom menus | [U] calc-encoding.md 8 places menu item calculations under the member, at a position not given; in no group |
+
+Three index keys have the same form and value as keys a spec names, and
+take their rule by that inference: `[6, 1, 20]` (`01` in the 11 Contacts
+files) and `[40, 1, 20]` (`01` in every file) as the `20` scripts.md
+reads as the Manage dialogs' last view order (`KLastViewOrdering` = `20`)
+for scripts, layouts and value lists [I]; `[40, 1, 18]` (`01 01`, naming
+the one menu set, in every file) as the themes' index `18`, which names a
+theme (layout-model.md 7.5) [I]. The themes' member keys `18` and `19`
+are named by the constants `KBaseThemeName` and `KBaseThemeVersion`
+(layout-model.md 7.5), whose stored values are [U].
 
 The report (`cargo run -p om-hbam --example design_paths -- <file>...`)
-lists these and any new ones by shape.
+lists the keys in no group, and any new ones, by shape.
 
 ---
 
@@ -596,7 +611,9 @@ one.
 1. Exact numeric values of the `Draco::K*` catalog keys (they live in `.bss`, set
    by a runtime initializer). Content-based identities in 3.4 are solid for the
    major catalogs; a full table would come from executing/tracing the initializer
-   or from the schema worker. [U for the minor catalogs 26/32/64/65/0xD00002]
+   or from the schema worker. The catalogs 26, 31, 32, 38, 64 and 65 and the
+   occurrence keys are identified in 3.4, 26 and 64 by their constants' values
+   [I]; the keys 3.7 lists are [U].
 2. ~~The full index-page chunk grammar~~ Resolved (2026-10-28): prefix trie
    with `0xC0` last-of-level flags and fence keys; byte-exact on all 72 corpus
    index pages (2.3, hbam-writer.md 3).

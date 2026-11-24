@@ -103,7 +103,6 @@ mod oracle {
 /// `docs/re/` explains (file-format.md 3.7).
 const UNCLASSIFIED: &[&str] = &[
     "[04, 05, *, 16]",
-    "[06, 01, 20]",
     "[11, 05, *, 13]",
     "[17, 02, 01, 07, …]",
     "[17, 03, 01, 07, …]",
@@ -113,14 +112,53 @@ const UNCLASSIFIED: &[&str] = &[
     "[21, 01, 06, …]",
     "[21, 01, 07, …]",
     "[40, 01, 07, …]",
-    "[40, 01, 18]",
-    "[40, 01, 20]",
     "[41, 01, 07, …]",
     "[41, 05, *, 02]",
 ];
 
+/// Whether `node` holds a value stored as a header and pieces
+/// (file-format.md 3.6), which revisions now hash as the value it
+/// assembles to.
+fn holds_split_value(node: &OwnedNode) -> bool {
+    node.children.iter().any(|c| {
+        (c.value.is_none() && !c.children.is_empty() && c.assembled().is_some())
+            || holds_split_value(c)
+    })
+}
+
+/// How an object's revision compares with the old code's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Old {
+    Equal,
+    /// It holds a Secret path, whose value no longer enters it.
+    Secret,
+    /// It holds a split value, now hashed as its assembled value.
+    Split,
+}
+
+/// Compare a script's, layout's or value list's revision with the old
+/// code's: equal unless a Secret path or a split value explains the
+/// difference.
+fn against_oracle(object: &design_paths::Object<'_>) -> Old {
+    let old = match object.kind {
+        Kind::Script => oracle::script(object.node),
+        _ => oracle::catalog(object.node),
+    };
+    let revision = object.revision();
+    if !object.secrets().is_empty() {
+        assert_ne!(revision, old);
+        Old::Secret
+    } else if holds_split_value(object.node) {
+        assert_ne!(revision, old);
+        Old::Split
+    } else {
+        assert_eq!(revision, old, "{:?} {:02x?}", object.kind, object.key);
+        Old::Equal
+    }
+}
+
 #[test]
-fn scripts_layouts_and_value_lists_keep_the_revisions_the_old_code_gave() {
+fn scripts_layouts_and_value_lists_keep_the_old_revisions_but_for_secrets_and_split_values() {
     let leaf = |key: &[u8], value: &[u8]| OwnedNode::leaf(key.to_vec(), value.to_vec());
     let stamp = || {
         vec![
@@ -129,9 +167,10 @@ fn scripts_layouts_and_value_lists_keep_the_revisions_the_old_code_gave() {
             leaf(&[0xfc, 0x03], &[8; 9]),
         ]
     };
-    // A script whose step data holds a stamp-like key and an empty list,
-    // a layout with a chunked object store and a stamp on an attribute
-    // record, a value list.
+    // A script whose step data holds a stamp-like key and an empty list; a
+    // script with Re-Login (step 138, data key 1) and its password in slot
+    // 1; a layout with a stamp on an attribute record, and one with a
+    // chunked object store; a value list.
     let mut script = vec![
         leaf(&[0x04], &[1; 28]),
         OwnedNode::list(
@@ -145,6 +184,22 @@ fn scripts_layouts_and_value_lists_keep_the_revisions_the_old_code_gave() {
         leaf(&[0x13], &[0; 4]),
     ];
     script.extend(stamp());
+    let mut relogin = vec![0x02, 0x01, 0x01, 0, 0, 0];
+    relogin.extend([0; 14]);
+    relogin.extend(138i16.to_be_bytes());
+    relogin.extend([0; 6]);
+    let mut signing_in = vec![
+        leaf(&[0x04], &relogin),
+        OwnedNode::list(
+            vec![0x05],
+            vec![OwnedNode::list(
+                vec![0x01],
+                vec![OwnedNode::list(vec![0, 1], vec![leaf(&[0x05], b"pw")])],
+            )],
+        ),
+        leaf(&[0x10], b"Sign in"),
+    ];
+    signing_in.extend(stamp());
     let mut layout = vec![
         leaf(&[0x02], &[0x10, 0x82]),
         OwnedNode::list(
@@ -154,38 +209,49 @@ fn scripts_layouts_and_value_lists_keep_the_revisions_the_old_code_gave() {
                 vec![leaf(&[0x10], b""), leaf(&[0xfc, 0x02], b"Admin")],
             )],
         ),
-        OwnedNode::list(
-            vec![0x07],
-            vec![
-                leaf(&[0x00], &1500u32.to_be_bytes()),
-                leaf(&[0x01], &[7; 1000]),
-                leaf(&[0x02], &[7; 500]),
-            ],
-        ),
+        leaf(&[0x07], &[7; 900]),
         leaf(&[0x10], b"Form"),
         leaf(&[0x16], &[0, 0]),
     ];
     layout.extend(stamp());
+    let mut large = layout.clone();
+    large[2] = OwnedNode::list(
+        vec![0x07],
+        vec![
+            leaf(&[0x00], &1500u32.to_be_bytes()),
+            leaf(&[0x01], &[7; 1000]),
+            leaf(&[0x02], &[7; 500]),
+        ],
+    );
     let mut list = vec![leaf(&[0x03], b"A\rB"), leaf(&[0x10], b"Kinds")];
     list.extend(stamp());
     let mut root = OwnedNode::default();
     root.put(&[&[0x11], &[5], &[3]], OwnedNode::list(vec![], script));
+    root.put(&[&[0x11], &[5], &[4]], OwnedNode::list(vec![], signing_in));
     root.put(&[&[0x04], &[5], &[2]], OwnedNode::list(vec![], layout));
+    root.put(&[&[0x04], &[5], &[3]], OwnedNode::list(vec![], large));
     root.put(&[&[0x21], &[5], &[1]], OwnedNode::list(vec![], list));
 
-    let objects = design_paths::objects(&root);
-    assert_eq!(objects.len(), 3);
-    for object in &objects {
-        let old = match object.kind {
-            Kind::Script => oracle::script(object.member),
-            _ => oracle::catalog(object.member),
-        };
-        assert_eq!(object.revision(), old, "{:?}", object.kind);
-        assert_eq!(
-            design_paths::revision_of(object.kind, None, object.member),
-            old
-        );
-    }
+    let compared: Vec<(Kind, Old)> = design_paths::objects(&root)
+        .iter()
+        .map(|object| {
+            assert_eq!(
+                design_paths::revision_of(object.kind, None, object.node),
+                object.revision()
+            );
+            (object.kind, against_oracle(object))
+        })
+        .collect();
+    assert_eq!(
+        compared,
+        [
+            (Kind::Layout, Old::Equal),
+            (Kind::Layout, Old::Split),
+            (Kind::Script, Old::Equal),
+            (Kind::Script, Old::Secret),
+            (Kind::ValueList, Old::Equal),
+        ]
+    );
 }
 
 fn tree(path: &Path) -> (HbamFile, OwnedNode) {
@@ -194,15 +260,33 @@ fn tree(path: &Path) -> (HbamFile, OwnedNode) {
     (file, root)
 }
 
+type Id = (Kind, bool, Option<Vec<u8>>, Vec<u8>);
+
+fn revisions(root: &OwnedNode) -> BTreeMap<Id, [u8; 32]> {
+    design_paths::objects(root)
+        .iter()
+        .map(|o| {
+            (
+                (o.kind, o.catalog, o.table.clone(), o.key.clone()),
+                o.revision(),
+            )
+        })
+        .collect()
+}
+
 #[test]
 #[ignore = "requires the git-ignored extracted templates in re/extracted"]
 fn every_path_is_grouped_every_member_accounted_for_and_revisions_kept() {
     let files = files();
     assert!(!files.is_empty(), "no template folder under re/extracted");
     let mut total = Report::default();
-    let mut objects: BTreeMap<Kind, usize> = BTreeMap::new();
+    let mut objects: BTreeMap<(Kind, bool), usize> = BTreeMap::new();
     let mut members: BTreeMap<(String, MemberIs), usize> = BTreeMap::new();
-    let mut compared = (0usize, 0usize);
+    let mut compared: BTreeMap<(Kind, Old), usize> = BTreeMap::new();
+    let mut with_secrets: BTreeMap<Kind, usize> = BTreeMap::new();
+    // Raw tokens over whole subtrees: fields_revision, the layout and
+    // script catalogs' indexes, as before and as now.
+    let mut raw = (0usize, 0usize);
     for path in &files {
         let ctx = path.display();
         let (file, root) = tree(path);
@@ -248,7 +332,8 @@ fn every_path_is_grouped_every_member_accounted_for_and_revisions_kept() {
                 };
                 for member in list.children.iter().filter(|m| !m.children.is_empty()) {
                     assert!(
-                        listed.iter().any(|o| o.kind == catalog.kind.unwrap()
+                        listed.iter().any(|o| !o.catalog
+                            && o.kind == catalog.kind.unwrap()
                             && o.key == member.segment
                             && o.table == table),
                         "{ctx}: {} member {:02x?} is no object",
@@ -280,52 +365,62 @@ fn every_path_is_grouped_every_member_accounted_for_and_revisions_kept() {
             }
         }
 
-        // Scripts and layouts keep the revisions the old code gave them.
-        let mut revisions = BTreeMap::new();
+        // Scripts, layouts and value lists keep the revisions the old code
+        // gave them, but where a Secret path or a split value explains the
+        // difference.
         for object in &listed {
-            *objects.entry(object.kind).or_default() += 1;
-            let revision = object.revision();
-            match object.kind {
-                Kind::Script => {
-                    assert_eq!(revision, oracle::script(object.member), "{ctx}");
-                    compared.0 += 1;
-                }
-                Kind::Layout | Kind::ValueList => {
-                    assert_eq!(revision, oracle::catalog(object.member), "{ctx}");
-                    compared.1 += 1;
-                }
-                _ => {}
+            *objects.entry((object.kind, object.catalog)).or_default() += 1;
+            if !object.secrets().is_empty() {
+                *with_secrets.entry(object.kind).or_default() += 1;
             }
-            revisions.insert(
-                (object.kind, object.table.clone(), object.key.clone()),
-                revision,
-            );
+            if !object.catalog
+                && matches!(object.kind, Kind::Script | Kind::Layout | Kind::ValueList)
+            {
+                *compared
+                    .entry((object.kind, against_oracle(object)))
+                    .or_default() += 1;
+            }
+        }
+        let mut tokens: Vec<&OwnedNode> = root
+            .children
+            .iter()
+            .filter(|t| Seg::Table.matches(&t.segment))
+            .filter_map(|t| t.child(&[3]))
+            .collect();
+        tokens.extend(root.at(&[&[4], &[1]]));
+        tokens.extend(root.at(&[&[0x11], &[1]]));
+        for node in tokens {
+            raw.0 += 1;
+            if design_paths::catalog_revision(node) != oracle::catalog(node) {
+                assert!(holds_split_value(node), "{ctx}");
+                raw.1 += 1;
+            }
         }
 
         // A rebuilt file, read back, has the same revisions.
+        let revisions_before = revisions(&root);
         let bytes = om_hbam::writer::rebuild(&root, file.superblock().raw).expect("a rebuild");
         let reread = HbamFile::from_bytes(bytes).expect("a rebuilt file");
         let again = reread.key_tree().expect("a key tree").root.to_owned_node();
-        let after: BTreeMap<_, _> = design_paths::objects(&again)
-            .iter()
-            .map(|o| ((o.kind, o.table.clone(), o.key.clone()), o.revision()))
-            .collect();
-        assert_eq!(after, revisions, "{ctx}");
+        assert_eq!(revisions(&again), revisions_before, "{ctx}");
     }
 
     println!("{} files", files.len());
     print!("{total}");
-    println!("objects by kind:");
-    for (kind, count) in &objects {
-        println!("  {count:>9}  {}", kind.name());
+    println!("objects by kind (catalogs as a whole separately):");
+    for ((kind, catalog), count) in &objects {
+        let what = if *catalog { " catalog" } else { "" };
+        println!("  {count:>9}  {}{what}", kind.name());
     }
+    println!("objects holding a Secret path: {with_secrets:?}");
     println!("catalog members that are no object:");
     for ((catalog, is), count) in &members {
         println!("  {count:>9}  {catalog}: {is:?}");
     }
+    println!("revisions against the old code's: {compared:?}");
     println!(
-        "revisions equal to the old code's: {} scripts, {} layouts and value lists",
-        compared.0, compared.1
+        "fields_revision, layouts_revision and the script index: {} tokens, {} changed (split values)",
+        raw.0, raw.1
     );
     let rules = design_paths::rules();
     let unhit: Vec<String> = (0..rules.len())
@@ -344,10 +439,15 @@ fn every_path_is_grouped_every_member_accounted_for_and_revisions_kept() {
 }
 
 #[test]
-fn the_storage_design_shows_the_rule_table() {
+fn the_storage_design_shows_the_rule_tables() {
     let doc = std::fs::read_to_string("../../docs/server-storage.md").expect("the storage design");
-    assert!(
-        doc.contains(&design_paths::markdown_table()),
-        "docs/server-storage.md section 4 must show design_paths::markdown_table() as it is"
-    );
+    for (name, table) in [
+        ("markdown_table", design_paths::markdown_table()),
+        ("markdown_secrets", design_paths::markdown_secrets()),
+    ] {
+        assert!(
+            doc.contains(&table),
+            "docs/server-storage.md section 4 must show design_paths::{name}() as it is"
+        );
+    }
 }

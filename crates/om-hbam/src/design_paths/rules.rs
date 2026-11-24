@@ -1,19 +1,27 @@
-//! The rule table: which paths are Design, Data, Access or in no group.
+//! The rule tables: which paths are Design, Data, Access, Secret, Derived
+//! or in no group.
 //!
-//! Rules are prefix rules: a rule covers the node its pattern names and
-//! everything below it, and of the rules that match a path the longest
-//! wins. They are written per catalog ([`CATALOGS`]): every catalog of a
-//! group as a whole (accounts are Access, a table's container library is
-//! Data) is one rule; a Design catalog gets one rule per key of its index
-//! `[cat, 1]` and per first-level key of its members `[cat, 5, id]`, each
-//! as its spec names it, with the keys every catalog shares
-//! ([`COMMON_INDEX`], [`COMMON_MEMBER`]). A key the specs do not name is
-//! matched by no rule, so it is in no group and shows in the report
-//! ([`super::report`]).
+//! **Path rules** ([`rules`]) are prefix rules: a rule covers the node its
+//! pattern names and everything below it, and of the rules that match a
+//! path the longest wins. They are written per catalog ([`CATALOGS`]):
+//! every catalog of a group as a whole (accounts are Access, a table's
+//! container library is Data) is one rule; a Design catalog gets one rule
+//! per key of its index `[cat, 1]` and per first-level key of its members
+//! `[cat, 5, id]`, each as its spec names it, with the keys every catalog
+//! shares ([`COMMON_INDEX`], [`COMMON_MEMBER`]). A key the specs do not
+//! name is matched by no rule, so it is in no group and shows in the
+//! report ([`super::report`]).
+//!
+//! **Step rules** ([`STEP_SECRETS`], [`is_odbc_profile`]) find the
+//! credentials a script step stores in its data. Which slot of a step's
+//! data holds a password depends on the step, which the path does not
+//! show: the step's id is in the script's step list or the button's
+//! object, so these rules need the member ([`super::secrets`]).
 
 use std::sync::OnceLock;
 
 use super::Kind;
+use crate::serial;
 
 /// What a path is, for history and deploys (`docs/server-storage.md`
 /// section 4).
@@ -21,13 +29,22 @@ use super::Kind;
 pub enum Group {
     /// Tables, occurrences, relationships, fields, layouts, themes,
     /// scripts, custom functions, custom menus, value lists, privilege
-    /// sets and the other catalogs developers change.
+    /// sets, the catalogs' order and the other content developers change.
     Design,
     /// Records, indexes, record lists and counters, container data, and
     /// the data keys inside design members (a serial field's next value).
     Data,
     /// Accounts and file access authorizations.
     Access,
+    /// A credential stored inside a design member: a password, a private
+    /// key, a client secret or an API key a step keeps, and the account
+    /// name stored beside it in a step that signs in.
+    Secret,
+    /// A value FileMaker computes from other paths of the file, and some
+    /// from the file's creation stamp: a checksum, a digest, a name list,
+    /// a member cache, a count. Whoever writes the paths it comes from
+    /// recomputes it.
+    Derived,
     /// The file as a whole, or a path no rule names.
     None,
 }
@@ -38,10 +55,30 @@ impl Group {
             Group::Design => "Design",
             Group::Data => "Data",
             Group::Access => "Access",
+            Group::Secret => "Secret",
+            Group::Derived => "Derived",
             Group::None => "none",
         }
     }
+
+    /// Whether the group's paths are left out of an object's content:
+    /// Data, Access and Derived paths. A Secret path stays, without its
+    /// value.
+    pub fn left_out(self) -> bool {
+        matches!(self, Group::Data | Group::Access | Group::Derived)
+    }
 }
+
+/// The first occurrence id's base: occurrences are numbered from serial
+/// key `d0 00 01` (1,065,089; schema-path.md 5.3, file-metadata.md 1), and
+/// every id from `d0 00 00` on is taken for one [I: from the first ids the
+/// files hold].
+pub const OCCURRENCE_BASE: u64 = 0x10_4080;
+
+/// The first table id: tables are numbered from serial key `80 01` (129;
+/// schema-path.md 5.2, file-metadata.md 1), above the one-byte keys of the
+/// top-level catalogs (file-format.md 3.4).
+pub const TABLE_BASE: u64 = 0x80;
 
 /// One segment of a rule's pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,13 +87,16 @@ pub enum Seg {
     Key(&'static [u8]),
     /// Any one segment: a member's key, a name key, a position.
     Any,
-    /// A base table's data key: two bytes from `80 00` to `bf ff`, a
-    /// two-byte serial key (file-format.md 3.6: the table id, `>= 0x8000`,
-    /// is also its top-level data key; schema-path.md 5.2).
+    /// A base table's data key: a serial key (query-program.md 2.6) of any
+    /// length whose id is from [`TABLE_BASE`] up to [`OCCURRENCE_BASE`].
+    /// The table id is also its top-level data key (file-format.md 3.6;
+    /// schema-path.md 5.2); a new table takes the key after the last one
+    /// issued, `[3, 10, 1, 00]` (schema-path.md 5.1), so past `bf ff`
+    /// (16,511) table keys have three bytes.
     Table,
-    /// A table occurrence's key: three bytes from `c0 00 00` to `df ff ff`,
-    /// a three-byte serial key (occurrences are `d0 00 01`...,
-    /// schema-path.md 5.3; file-metadata.md 1, 11).
+    /// A table occurrence's key: a serial key whose id is
+    /// [`OCCURRENCE_BASE`] or more (schema-path.md 5.3; file-metadata.md
+    /// 1, 11).
     Occurrence,
     /// A stream of a binary data value: a four-byte type such as `PNGf`
     /// or `SVG ` (containers.md 2.3).
@@ -69,8 +109,9 @@ impl Seg {
         match self {
             Seg::Key(key) => segment == key,
             Seg::Any => true,
-            Seg::Table => segment.len() == 2 && (0x80..=0xbf).contains(&segment[0]),
-            Seg::Occurrence => segment.len() == 3 && (0xc0..=0xdf).contains(&segment[0]),
+            Seg::Table => serial::decode(segment)
+                .is_some_and(|id| (TABLE_BASE..OCCURRENCE_BASE).contains(&id)),
+            Seg::Occurrence => serial::decode(segment).is_some_and(|id| id >= OCCURRENCE_BASE),
             Seg::Stream => segment.len() == 4,
         }
     }
@@ -92,8 +133,8 @@ impl Seg {
         match self {
             Seg::Key(key) => key.to_vec(),
             Seg::Any => vec![0x01],
-            Seg::Table => vec![0x80, 0x01],
-            Seg::Occurrence => vec![0xd0, 0x00, 0x01],
+            Seg::Table => serial::encode(TABLE_BASE + 1),
+            Seg::Occurrence => serial::encode(OCCURRENCE_BASE + 1),
             Seg::Stream => b"PNGf".to_vec(),
         }
     }
@@ -144,22 +185,25 @@ pub struct Key {
     pub spec: &'static str,
 }
 
-const fn design(key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
+const fn keyed(group: Group, key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
     Key {
         key: Seg::Key(key),
-        group: Group::Design,
+        group,
         holds,
         spec,
     }
 }
 
+const fn design(key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
+    keyed(Group::Design, key, holds, spec)
+}
+
 const fn data(key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
-    Key {
-        key: Seg::Key(key),
-        group: Group::Data,
-        holds,
-        spec,
-    }
+    keyed(Group::Data, key, holds, spec)
+}
+
+const fn derived(key: &'static [u8], holds: &'static str, spec: &'static str) -> Key {
+    keyed(Group::Derived, key, holds, spec)
 }
 
 /// A catalog: a node with an index `01` and members `05` (file-format.md
@@ -181,15 +225,22 @@ pub struct Catalog {
 }
 
 /// The keys of every catalog's index `[cat, 1]` (schema-path.md 5.1, 8.1).
+/// The display order is design (scripts.md: folders are spans of it); the
+/// last issued id is a counter, kept by the file that issues ids; the name
+/// list and the count follow from the members.
 pub const COMMON_INDEX: &[Key] = &[
-    design(&[0x00], "the last issued member id", "schema-path.md 5.1"),
-    design(&[0x01], "the name list", "schema-path.md 5.1, 5.6"),
+    data(&[0x00], "the last issued member id", "schema-path.md 5.1"),
+    derived(
+        &[0x01],
+        "the name list, keyed by the members' names",
+        "schema-path.md 5.1, 5.6",
+    ),
     design(
         &[0x03],
-        "the display order",
-        "schema-path.md 5.1; file-metadata.md 1",
+        "the display order, and so the folders",
+        "schema-path.md 5.1; file-metadata.md 1; scripts.md",
     ),
-    design(&[0x04], "the member count", "schema-path.md 5.1"),
+    derived(&[0x04], "the member count", "schema-path.md 5.1"),
     design(&[0xd8], "the catalog's UUID", "schema-path.md 5.1"),
     design(&[0xfc], "the modification count", "schema-path.md 8.1"),
     design(&[0xfc, 0x01], "the modifying user", "schema-path.md 8.1"),
@@ -255,14 +306,14 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Occurrence),
         spec: "schema-path.md 5.3",
         index: &[
-            design(
+            derived(
                 &[0x08],
-                "the routes between occurrences",
+                "the routes between occurrences, computed by the client",
                 "schema-path.md 5.3",
             ),
-            design(
+            derived(
                 &[0x0e],
-                "the fields' dependencies through relationships",
+                "the fields' dependencies through relationships (DBDepend)",
                 "schema-path.md 5.3",
             ),
         ],
@@ -306,9 +357,9 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Layout),
         spec: "layout-model.md 10.5, 10.6",
         index: &[
-            design(
+            derived(
                 &[0x07],
-                "each layout's entry: definition, name, flags",
+                "each layout's entry: its occurrence, menu set, name and flags",
                 "layout-model.md 10.6",
             ),
             design(
@@ -331,8 +382,8 @@ pub const CATALOGS: &[Catalog] = &[
             ),
             design(
                 &[0x05],
-                "the objects' attribute records",
-                "layout-model.md 5.5, 10.5",
+                "the objects' attribute records, a button's step data",
+                "layout-model.md 5.3.3, 5.5, 10.5",
             ),
             design(&[0x07], "the object store", "layout-model.md 5.1, 10.1"),
             design(&[0x08], "the named objects", "layout-model.md 10.5"),
@@ -366,11 +417,20 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Theme),
         spec: "layout-model.md 7.5",
         index: &[
-            design(&[0x07], "an entry for each theme", "layout-model.md 7.5"),
+            derived(
+                &[0x07],
+                "an empty entry for each theme",
+                "layout-model.md 7.5",
+            ),
             design(
                 &[0x18],
                 "the theme a new layout gets [I]",
                 "layout-model.md 7.5",
+            ),
+            design(
+                &[0x20],
+                "the Manage dialog's view order [I]",
+                "layout-model.md 7.5; scripts.md, \"The catalog index\"",
             ),
         ],
         member: &[
@@ -392,12 +452,12 @@ pub const CATALOGS: &[Catalog] = &[
             ),
             design(
                 &[0x18],
-                "the base theme's name (KBaseThemeName)",
+                "the base theme's name (KBaseThemeName) [I]",
                 "layout-model.md 7.5",
             ),
             design(
                 &[0x19],
-                "the base theme's version (KBaseThemeVersion)",
+                "the base theme's version (KBaseThemeVersion) [I]",
                 "layout-model.md 7.5",
             ),
         ],
@@ -423,14 +483,14 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Script),
         spec: "scripts.md; script-steps.md 1",
         index: &[
-            design(
+            derived(
                 &[0x07],
                 "each member's name and flags",
                 "scripts.md, \"The catalog index\"",
             ),
-            design(
+            derived(
                 &[0x08],
-                "the catalog's digest",
+                "the digest of the member cache",
                 "scripts.md, \"The catalog index\"",
             ),
             design(
@@ -441,7 +501,7 @@ pub const CATALOGS: &[Catalog] = &[
         ],
         member: &[
             design(&[0x04], "the step list", "script-steps.md 1"),
-            design(&[0x05], "the steps' data", "script-steps.md 1"),
+            design(&[0x05], "the steps' data", "script-steps.md 1, 4.2"),
             design(&[0xf0], "the member flags", "script-steps.md 1"),
             design(&[0xf1], "the private member flags", "script-steps.md 1"),
         ],
@@ -458,7 +518,7 @@ pub const CATALOGS: &[Catalog] = &[
         group: Group::Design,
         kind: Some(Kind::PrivilegeSet),
         spec: "session-identity.md 2",
-        index: &[design(
+        index: &[derived(
             &[0x08],
             "the sets by checksum",
             "session-identity.md 4.1",
@@ -470,7 +530,11 @@ pub const CATALOGS: &[Catalog] = &[
                 "session-identity.md 2.1",
             ),
             design(&[0x03], "the description", "session-identity.md 2"),
-            design(&[0x04], "the checksum", "session-identity.md 4.1"),
+            derived(
+                &[0x04],
+                "the checksum, over the set and the file's creation stamp",
+                "session-identity.md 4.1, 4.4",
+            ),
             design(
                 &[0x05],
                 "each table's record and field access",
@@ -504,7 +568,7 @@ pub const CATALOGS: &[Catalog] = &[
         member: &[
             design(&[0x02], "the sharing state", "session-identity.md 4.2"),
             design(&[0x03], "the description", "session-identity.md 4.2"),
-            design(&[0x04], "the checksum", "session-identity.md 4.2"),
+            derived(&[0x04], "the checksum", "session-identity.md 4.2, 4.4"),
             design(
                 &[0x05],
                 "the privilege sets that have it",
@@ -534,13 +598,13 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::LibraryItem),
         spec: "containers.md 1",
         index: &[
-            design(&[0x06], "the glyph index", "containers.md 1.2"),
-            design(&[0x07], "the member list", "containers.md 1.2"),
-            design(&[0x08], "the MD5 index", "containers.md 1.2"),
+            derived(&[0x06], "the glyph index", "containers.md 1.2"),
+            derived(&[0x07], "the member list", "containers.md 1.2"),
+            derived(&[0x08], "the MD5 index", "containers.md 1.2"),
         ],
         member: &[
             design(&[0x02], "the stream directory", "containers.md 1.3, 2.1"),
-            design(&[0x04], "the MD5 of the data", "containers.md 1.3, 2.2"),
+            derived(&[0x04], "the MD5 of the data", "containers.md 1.3, 2.2"),
             data(&[0x12], "the reference count", "containers.md 1.3, 5"),
             design(
                 &[0xf1],
@@ -603,8 +667,15 @@ pub const CATALOGS: &[Catalog] = &[
         path: &[Seg::Key(&[0x40])],
         group: Group::Design,
         kind: Some(Kind::CustomMenuSet),
-        spec: "catalogs/hbkey-constants.csv (KCustomMenuSets) [I]",
-        index: &[],
+        spec: "file-format.md 3.4 [I]",
+        index: &[
+            design(&[0x18], "the default menu set [I]", "file-format.md 3.7"),
+            design(
+                &[0x20],
+                "the Manage dialog's view order [I]",
+                "file-format.md 3.7; scripts.md, \"The catalog index\"",
+            ),
+        ],
         member: &[],
     },
     Catalog {
@@ -627,8 +698,8 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Field),
         spec: "schema-path.md 5.5",
         index: &[
-            design(&[0x06], "the name list by type", "schema-path.md 5.5"),
-            design(
+            derived(&[0x06], "the name list by type", "schema-path.md 5.5"),
+            derived(
                 &[0x0e],
                 "the fields' triggers and dependencies",
                 "schema-path.md 5.5, 5.10",
@@ -740,7 +811,7 @@ const TOP: &[(&[Seg], Group, &str, &str)] = &[
         &[Seg::Key(&[0x1a])],
         Group::None,
         "the file's own icon image (KOrigThumbImg)",
-        "containers.md 2.3; catalogs/hbkey-constants.csv",
+        "file-format.md 3.4; containers.md 2.3",
     ),
     (
         &[Seg::Table, Seg::Key(&[0x00])],
@@ -761,6 +832,12 @@ const TOP: &[(&[Seg], Group, &str, &str)] = &[
         "write-path.md 5.2, 5.4",
     ),
     (
+        &[Seg::Table, Seg::Key(&[0x08])],
+        Group::Data,
+        "the global fields' stored values",
+        "calc-values.md, \"Global values\"; script-runtime.md, \"Globals\"",
+    ),
+    (
         &[Seg::Table, Seg::Key(&[0x0d])],
         Group::Data,
         "the record list",
@@ -773,6 +850,122 @@ const TOP: &[(&[Seg], Group, &str, &str)] = &[
         "file-metadata.md 11",
     ),
 ];
+
+/// A step whose data holds credentials, and which slots
+/// (`[00 n]`, script-steps.md 4.2) hold them.
+#[derive(Clone, Copy, Debug)]
+pub struct StepSecret {
+    /// The step's id (`mStepID`, script-steps.md 2).
+    pub step: u16,
+    pub name: &'static str,
+    /// Each slot and what it holds.
+    pub slots: &'static [(u16, &'static str)],
+    pub spec: &'static str,
+}
+
+/// The steps whose data the specs show holding credentials. A step keeps
+/// its data at `[17, 5, S, 5, K]` in a script and at `[4, 5, L, 5, O, 11]`
+/// on a button (script-steps.md 4.2; layout-model.md 5.3.3); each slot
+/// here is Secret with everything below it (its calculation or text).
+pub const STEP_SECRETS: &[StepSecret] = &[
+    StepSecret {
+        step: 63,
+        name: "Send Mail",
+        slots: &[
+            (10, "the SMTP user name"),
+            (11, "the SMTP password"),
+            (16, "the Google OAuth service account"),
+            (17, "the Google OAuth private key"),
+            (20, "the Microsoft OAuth client id"),
+            (21, "the Microsoft OAuth client secret"),
+        ],
+        spec: "script-steps.md 12.3; catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 83,
+        name: "Change Password",
+        slots: &[(0, "the old password"), (1, "the new password")],
+        spec: "catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 134,
+        name: "Add Account",
+        slots: &[(1, "the password")],
+        spec: "catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 136,
+        name: "Reset Account Password",
+        slots: &[(1, "the new password")],
+        spec: "catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 138,
+        name: "Re-Login",
+        slots: &[(0, "the account name"), (1, "the password")],
+        spec: "catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 144,
+        name: "Save Records as PDF",
+        slots: &[(7, "the password to open"), (8, "the password to control")],
+        spec: "script-steps.md 11.7, 12.2",
+    },
+    StepSecret {
+        step: 211,
+        name: "Trigger Claris Connect Flow",
+        slots: &[(3, "the authentication")],
+        spec: "catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 212,
+        name: "Configure AI Account",
+        slots: &[(3, "the API key")],
+        spec: "script-steps.md 12.2; catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 227,
+        name: "Configure RAG Account",
+        slots: &[(3, "the API key")],
+        spec: "script-steps.md 12.2; catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 242,
+        name: "Print PDF",
+        slots: &[(1, "the password")],
+        spec: "catalogs/script-step-params.csv",
+    },
+    StepSecret {
+        step: 243,
+        name: "Create PDF",
+        slots: &[(7, "the password to open"), (8, "the password to control")],
+        spec: "script-steps.md 12.2",
+    },
+    StepSecret {
+        step: 244,
+        name: "Append PDF",
+        slots: &[(7, "the PDF's password")],
+        spec: "script-steps.md 12.2",
+    },
+    StepSecret {
+        step: 246,
+        name: "Open PDF",
+        slots: &[(7, "the PDF's password")],
+        spec: "script-steps.md 12.2",
+    },
+];
+
+/// The step key holding an import or export profile (`KProfile`,
+/// script-steps.md 4.2).
+pub const PROFILE: &[u8] = &[0x86];
+
+/// Whether a step's profile `86` is an ODBC connection profile: its value
+/// starts with the type `ODBC` and holds the data source name, the user
+/// name and the password (script-steps.md 11.5). The whole profile is
+/// Secret.
+pub fn is_odbc_profile(value: &[u8]) -> bool {
+    value.starts_with(b"ODBC")
+}
 
 impl Catalog {
     /// The rules this catalog contributes.
@@ -830,8 +1023,8 @@ impl Catalog {
     }
 }
 
-/// Every rule, the catalogs' first, each catalog's in the order it lists
-/// them.
+/// Every path rule, the catalogs' first, each catalog's in the order it
+/// lists them.
 pub fn rules() -> &'static [Rule] {
     static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -851,7 +1044,7 @@ pub fn rules() -> &'static [Rule] {
     })
 }
 
-/// The rules at catalog level as a Markdown table, as
+/// The path rules at catalog level as a Markdown table, as
 /// `docs/server-storage.md` section 4 shows them (a test keeps the two
 /// equal): each catalog with its group and the kind of its members, the
 /// keys of Design catalogs that are another group, and the paths outside
@@ -859,6 +1052,16 @@ pub fn rules() -> &'static [Rule] {
 pub fn markdown_table() -> String {
     let mut out =
         String::from("| Paths | Holds | Group | Objects | Spec |\n|---|---|---|---|---|\n");
+    // The common index keys that are not Design, once for every catalog.
+    for key in COMMON_INDEX.iter().filter(|k| k.group != Group::Design) {
+        out.push_str(&format!(
+            "| `[cat, 01, {}]` | {}, in every catalog's index | {} |  | {} |\n",
+            key.key.text(),
+            key.holds,
+            key.group.name(),
+            key.spec
+        ));
+    }
     let mut row = |pattern: &[Seg], holds: &str, group: Group, kind: Option<Kind>, spec: &str| {
         out.push_str(&format!(
             "| `{}` | {holds} | {} | {} | {spec} |\n",
@@ -901,7 +1104,32 @@ pub fn markdown_table() -> String {
     out
 }
 
-/// The rule for `path`: the longest of those that cover it.
+/// The step rules as a Markdown table, as `docs/server-storage.md`
+/// section 4 shows them (a test keeps the two equal).
+pub fn markdown_secrets() -> String {
+    let mut out = String::from("| Step | Secret slots | Spec |\n|---|---|---|\n");
+    for step in STEP_SECRETS {
+        let slots: Vec<String> = step
+            .slots
+            .iter()
+            .map(|(slot, holds)| format!("{slot} {holds}"))
+            .collect();
+        out.push_str(&format!(
+            "| {} {} | {} | {} |\n",
+            step.step,
+            step.name,
+            slots.join("; "),
+            step.spec
+        ));
+    }
+    out.push_str(
+        "| any step | its profile `86` when it is an ODBC connection profile, whole | \
+         script-steps.md 11.5 |\n",
+    );
+    out
+}
+
+/// The path rule for `path`: the longest of those that cover it.
 pub fn rule_for(path: &[&[u8]]) -> Option<&'static Rule> {
     rules()
         .iter()
@@ -909,8 +1137,10 @@ pub fn rule_for(path: &[&[u8]]) -> Option<&'static Rule> {
         .max_by_key(|r| r.pattern.len())
 }
 
-/// The group of `path`. A path no rule covers is in no group, as is the
-/// file as a whole; that is never an error.
+/// The group of `path` by the path rules alone. It cannot see a Secret
+/// path, which needs the step the path's data belongs to: use
+/// [`super::group_in`] with the tree. A path no rule covers is in no
+/// group, as is the file as a whole; that is never an error.
 pub fn group_of(path: &[&[u8]]) -> Group {
     rule_for(path).map_or(Group::None, |r| r.group)
 }

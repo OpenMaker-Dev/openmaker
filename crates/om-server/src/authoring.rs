@@ -63,16 +63,16 @@ use om_hbam::slot::uint_segment;
 use om_hbam::tree::memory;
 use om_hbam::{serial, KeySegment, OwnedNode};
 use om_protocol::authoring::{
-    self, catalog_revision, content_revision, status, ChangeParts, CreateField, CreateLayout,
-    Created, DeleteLayout, DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame,
-    Framed, LayoutCreated, LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton,
-    PlaceButtonStep, PlaceField, PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced,
-    Reply, Request, Revision, SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES,
-    MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT,
-    OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT,
-    OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON,
-    OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    self, catalog_revision, content_revision, layout_revision, status, ChangeParts, CreateField,
+    CreateLayout, Created, DeleteLayout, DeleteObjects, Deleted, Described, DuplicateLayout,
+    FieldControl, Frame, Framed, LayoutCreated, LayoutSetup, LayoutWidth, Operation, PartOptions,
+    PlaceButton, PlaceButtonStep, PlaceField, PlacePortal, PlaceText, Placed, ReplaceScriptSteps,
+    Replaced, Reply, Request, Revision, SetObjectFrames, SetText, ValueListValues,
+    MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS,
+    OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY,
+    OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS,
+    OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT,
+    OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
@@ -1072,7 +1072,7 @@ fn field_control(
         };
         // At another revision, `edit_objects` answers: already applied, or
         // a conflict (306), even when the object is gone since.
-        if catalog_revision(member) == request.expected {
+        if layout_revision(member) == request.expected {
             if let Err((status, why)) = control_facts(&store, member, request) {
                 return refused(status, why);
             }
@@ -1407,7 +1407,7 @@ where
             format!("The file has no layout {id}."),
         ));
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
     if current_revision != edit.expected {
         if (edit.already)(&current, &store) {
             return Ok((false, current_revision));
@@ -1433,7 +1433,7 @@ where
     }
     let time = host_time_key();
     let member = stamped(planned.member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = layout_revision(&member);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -1503,7 +1503,7 @@ fn layout_setup(
                 format!("The file has no layout {id}."),
             );
         };
-        let current = catalog_revision(member);
+        let current = layout_revision(member);
         let planned =
             layout_catalog::plan_setup(layouts, id, &request.name, request.flags, request.hidden);
         // A layout that holds the setup already answers it unchanged: an
@@ -1565,7 +1565,7 @@ fn layout_setup(
     let time = host_time_key();
     let member = stamped(planned.member, caller.session_name, account, &time);
     let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = layout_revision(&member);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path, member);
     store.replace_schema_in(&mut journal, index_path, index);
@@ -1777,7 +1777,7 @@ fn place_field(
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
     // The field: one of the layout's occurrence's table with a value
     // Browse edits as text in an edit box.
     let catalog = store.catalog();
@@ -1872,7 +1872,7 @@ fn place_field(
         }
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = layout_revision(&member);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -2337,7 +2337,7 @@ fn place_text(
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
     if current_revision != request.expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(text_object) = layout_placement::already_placed_text(&current, &text) {
@@ -2392,7 +2392,7 @@ fn place_text(
         ));
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = layout_revision(&member);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -2501,7 +2501,7 @@ fn place_portal(
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
     // The fields: of the occurrence's table, with values Browse edits as
     // text in an edit box.
     let catalog = store.catalog();
@@ -2612,7 +2612,7 @@ fn place_portal(
         }
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = layout_revision(&member);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);
@@ -2809,7 +2809,7 @@ fn place_planned_button(
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
     // A script the step names: one of the file's, not a folder or
     // separator.
     if let Some(key) = step.script_key() {
@@ -2881,7 +2881,7 @@ fn place_planned_button(
         ));
     }
     let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
+    let revision = layout_revision(&member);
     let mut journal = store.begin_commit();
     store.replace_schema_in(&mut journal, member_path.clone(), member);
     let saved = hosted.save_commit(&mut store, journal);

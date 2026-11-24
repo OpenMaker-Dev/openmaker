@@ -398,7 +398,7 @@ impl NativeProvider {
     }
 
     /// Place a field on a layout if the layout is still at revision
-    /// `expected` (`om_protocol::authoring::catalog_revision` of its member).
+    /// `expected` (`om_protocol::authoring::layout_revision` of its member).
     /// The host checks the account, the layout's lock, the revision, the
     /// field and the frames, allocates the objects' keys and saves the file
     /// before it answers.
@@ -532,7 +532,7 @@ impl NativeProvider {
     }
 
     /// Move or resize objects of a layout if the layout is still at
-    /// revision `expected` (`om_protocol::authoring::catalog_revision` of its
+    /// revision `expected` (`om_protocol::authoring::layout_revision` of its
     /// member). The host checks the account, the layout's lock, the
     /// revision and the frames and saves the file before it answers.
     pub fn set_object_frames(
@@ -931,7 +931,7 @@ impl NativeProvider {
     }
 
     /// Delete objects of a layout if the layout is still at revision
-    /// `expected` (`om_protocol::authoring::catalog_revision` of its
+    /// `expected` (`om_protocol::authoring::layout_revision` of its
     /// member). The host checks the account, the layout's lock, the
     /// revision and the objects and saves the file before it answers.
     pub fn delete_objects(

@@ -3,22 +3,29 @@
 //!
 //! The canonical form walks a subtree in key order, its top node first.
 //! Each node is written as its segment (a `u64` big-endian length, then
-//! the bytes), whether it holds a value (`1` and the value framed the same
-//! way, or `0`), and its number of children (`u64` big-endian), then each
-//! child the same way. Every part is framed by a length or a count, so two
-//! different subtrees never give the same bytes. The top node's segment is
-//! written too: a member's revision includes its key, its id.
+//! the bytes), a tag and what it holds, and its number of children (`u64`
+//! big-endian), then each child the same way. The tag is `0` for no value,
+//! `1` for a value (framed as the segment is) and `2` for a Secret path,
+//! whose value and children are not written. Every part is framed by a
+//! length, a tag or a count, so two different subtrees never give the same
+//! bytes. The top node's segment is written too: a member's revision
+//! includes its key, its id.
 //!
-//! There are two forms, both kept byte for byte from before this module
-//! existed so that revisions clients hold stay valid:
+//! A value is written as its bytes, however the tree holds it: a value too
+//! large for one chunk, or non-ASCII text, is stored as a node with a
+//! header `0` and pieces `1..n` (file-format.md 3.6), and such a node is
+//! written as the value it assembles to ([`OwnedNode::assembled`]), with no
+//! children and as a leaf. So a value kept inline in memory and the same
+//! value split by the writer have one revision.
 //!
-//! - [`catalog_revision`], the general form: stamps are left out wherever
-//!   they occur, and whether a node is stored as a list is not written, so
-//!   reading a subtree back from the file keeps its revision. Every object
-//!   but a script uses it, as do a table's `fields_revision` and a
-//!   catalog's index.
-//! - [`content_revision`], the script form: only the member's own stamp is
-//!   left out, and each node's list flag (`1` a list, `0` a leaf) is
+//! There are two forms:
+//!
+//! - the general form ([`catalog_revision`]): stamps are left out wherever
+//!   they occur, and whether a node is stored as a list is not written.
+//!   Every object but a script uses it, as do a table's `fields_revision`
+//!   and the layout catalog's `layouts_revision`.
+//! - the script form ([`script_form_revision`]): only the top node's stamp
+//!   is left out, and each node's list flag (`1` a list, `0` a leaf) is
 //!   written after its segment. Scripts used it first; it stays theirs.
 
 use crate::tree::OwnedNode;
@@ -39,22 +46,40 @@ pub fn is_stamp(segment: &[u8]) -> bool {
     [MOD_COUNT, MOD_USER, MOD_ACCOUNT, MOD_TIME].contains(&segment)
 }
 
-/// The script form: the SHA-256 of a member's key, values and children in
-/// key order, leaving out its own modification stamp, so a save that
-/// stores the same content does not count as a change.
-pub fn content_revision(member: &OwnedNode) -> Revision {
-    let mut bytes = Vec::new();
-    canonical(member, Stamps::Own, &mut bytes);
-    om_crypto::sha256(&bytes)
+/// The script form over a whole subtree, nothing left out but its own
+/// stamp and nothing hidden. A script's revision is
+/// [`super::revision_of`], which hides its Secret paths; this is the raw
+/// form, for hashing a node that is no object.
+pub fn script_form_revision(node: &OwnedNode) -> Revision {
+    digest(node, Form::Script, &[])
 }
 
-/// The general form: the SHA-256 of a subtree's keys and values in key
-/// order, leaving out every modification stamp in it (the catalog index's
-/// and each member's) and whether a key is stored as a list, so saving the
-/// same content, or reading it back from the file, keeps the revision.
+/// The general form over a whole subtree, every path in it, Data
+/// included: a table's `fields_revision` over its field catalog `[T, 3]`
+/// and `layouts_revision` over the layout catalog's index `[4, 1]`. An
+/// object's revision is [`super::revision_of`], which leaves its Data
+/// paths out.
 pub fn catalog_revision(node: &OwnedNode) -> Revision {
+    digest(node, Form::General, &[])
+}
+
+/// The two canonical forms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Form {
+    General,
+    Script,
+}
+
+/// The revision of `node` in `form`, each path of `secret` (relative to
+/// `node`) written as a Secret.
+pub(crate) fn digest(node: &OwnedNode, form: Form, secret: &[super::Path]) -> Revision {
     let mut bytes = Vec::new();
-    canonical(node, Stamps::Everywhere, &mut bytes);
+    let stamps = match form {
+        Form::General => Stamps::Everywhere,
+        Form::Script => Stamps::Own,
+    };
+    let mut at = Vec::new();
+    canonical(node, stamps, secret, &mut at, &mut bytes);
     om_crypto::sha256(&bytes)
 }
 
@@ -87,12 +112,40 @@ enum Stamps {
     Everywhere,
 }
 
-fn canonical(node: &OwnedNode, stamps: Stamps, out: &mut Vec<u8>) {
+fn canonical(
+    node: &OwnedNode,
+    stamps: Stamps,
+    secret: &[super::Path],
+    at: &mut Vec<Vec<u8>>,
+    out: &mut Vec<u8>,
+) {
     fn bytes(out: &mut Vec<u8>, b: &[u8]) {
         out.extend_from_slice(&(b.len() as u64).to_be_bytes());
         out.extend_from_slice(b);
     }
     bytes(out, &node.segment);
+    if !at.is_empty() && secret.iter().any(|s| s == at) {
+        if stamps != Stamps::Everywhere {
+            out.push(0);
+        }
+        out.push(2);
+        out.extend_from_slice(&0u64.to_be_bytes());
+        return;
+    }
+    // A chunked value is written as the value it assembles to.
+    let assembled = match &node.value {
+        None if !node.children.is_empty() => node.assembled(),
+        _ => None,
+    };
+    if let Some(value) = assembled {
+        if stamps != Stamps::Everywhere {
+            out.push(0);
+        }
+        out.push(1);
+        bytes(out, &value);
+        out.extend_from_slice(&0u64.to_be_bytes());
+        return;
+    }
     if stamps != Stamps::Everywhere {
         out.push(u8::from(node.push));
     }
@@ -114,7 +167,9 @@ fn canonical(node: &OwnedNode, stamps: Stamps, out: &mut Vec<u8>) {
         Stamps::Everywhere => Stamps::Everywhere,
     };
     for child in children {
-        canonical(child, below, out);
+        at.push(child.segment.clone());
+        canonical(child, below, secret, at, out);
+        at.pop();
     }
 }
 
@@ -139,14 +194,14 @@ mod tests {
         let mut stamped = a.clone();
         stamped.children[2].value = Some(vec![1, 2]);
         stamped.set_child(OwnedNode::leaf(MOD_USER.to_vec(), b"x".to_vec()));
-        assert_eq!(content_revision(&a), content_revision(&stamped));
+        assert_eq!(script_form_revision(&a), script_form_revision(&stamped));
         assert_ne!(
-            content_revision(&a),
-            content_revision(&definition(&[2; 28]))
+            script_form_revision(&a),
+            script_form_revision(&definition(&[2; 28]))
         );
         let mut renamed = a.clone();
         renamed.children[1].value = Some(b"other".to_vec());
-        assert_ne!(content_revision(&a), content_revision(&renamed));
+        assert_ne!(script_form_revision(&a), script_form_revision(&renamed));
         // A stamp below the member's own is content in the script form.
         let mut nested = a.clone();
         nested.children[0] = OwnedNode::list(
@@ -155,7 +210,10 @@ mod tests {
         );
         let mut renested = nested.clone();
         renested.children[0].children[0].value = Some(vec![1, 2]);
-        assert_ne!(content_revision(&nested), content_revision(&renested));
+        assert_ne!(
+            script_form_revision(&nested),
+            script_form_revision(&renested)
+        );
     }
 
     #[test]
@@ -190,7 +248,7 @@ mod tests {
             catalog_revision(&catalog(b"Other", &[1]))
         );
         // The script form keeps the stamps below the member's own.
-        assert_ne!(content_revision(&a), content_revision(&restamped));
+        assert_ne!(script_form_revision(&a), script_form_revision(&restamped));
     }
 
     #[test]

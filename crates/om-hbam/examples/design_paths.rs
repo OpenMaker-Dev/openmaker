@@ -2,8 +2,9 @@
 //! of `om_hbam::design_paths` (`docs/server-storage.md` section 4): the
 //! terminal paths per group, the paths no rule covers by shape, and the
 //! catalog members that are no design object. With `--objects`, also each
-//! design object with its kind, key, name and revision. Several files give
-//! one report over all of them.
+//! design object (each catalog as a whole, then its members) with its
+//! kind, key, name, revision and how many Secret paths it holds. Several
+//! files give one report over all of them.
 //!
 //! `cargo run -p om-hbam --example design_paths -- [--objects] <file.fmp12>...`
 use om_hbam::design_paths::{self, hex, revision_text, Report};
@@ -47,12 +48,22 @@ fn main() {
                     .as_ref()
                     .map(|t| format!("{}.", hex(t)))
                     .unwrap_or_default();
+                let key = if object.catalog {
+                    "catalog".to_string()
+                } else {
+                    hex(&object.key)
+                };
+                let secrets = object.secrets().len();
                 println!(
-                    "  {:<18} {table}{:<8} {:<40} {}",
+                    "  {:<18} {table}{key:<8} {:<40} {}{}",
                     object.kind.name(),
-                    hex(&object.key),
                     object.name.as_deref().unwrap_or("-"),
-                    revision_text(&object.revision())
+                    revision_text(&object.revision()),
+                    if secrets > 0 {
+                        format!(" ({secrets} Secret)")
+                    } else {
+                        String::new()
+                    }
                 );
             }
         }

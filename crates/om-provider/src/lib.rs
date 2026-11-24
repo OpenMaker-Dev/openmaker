@@ -886,7 +886,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutFieldPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutField, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutField, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -894,7 +894,7 @@ impl NativeProvider {
                 format!("The host has no layout {layout}."),
             )
         })?;
-        let current = catalog_revision(&member);
+        let current = layout_revision(&member);
         let expected = place.expected;
         if expected != current {
             // A lost answer's objects may already be there; only the host
@@ -1054,14 +1054,14 @@ impl NativeProvider {
         again: &str,
     ) -> Result<(), DataError> {
         use om_data::layout_placement::{self, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
                 i32::from(status::LAYOUT_MISSING),
                 format!("The host has no layout {layout}."),
             )
         })?;
-        if catalog_revision(&member) != *expected {
+        if layout_revision(&member) != *expected {
             if !already(&member) {
                 return Err(DataError::with_code(
                     layout_placement::CONFLICT,
@@ -1300,7 +1300,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutButtonPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutButton, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutButton, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -1309,7 +1309,7 @@ impl NativeProvider {
             )
         })?;
         let expected = place.expected;
-        if expected != catalog_revision(&member) {
+        if expected != layout_revision(&member) {
             // A lost answer's button may already be there; only the host
             // can tell, so the request goes with the expected revision.
             if layout_placement::already_placed_button(&member, &place.placement).is_none() {
@@ -1398,7 +1398,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutTextPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutText, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutText, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -1406,7 +1406,7 @@ impl NativeProvider {
                 format!("The host has no layout {layout}."),
             )
         })?;
-        if place.expected != catalog_revision(&member) {
+        if place.expected != layout_revision(&member) {
             // A lost answer's text may already be there; only the host
             // can tell, so the request goes with the expected revision.
             if layout_placement::already_placed_text(&member, &place.text).is_none() {
@@ -1447,7 +1447,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutPortalPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutPortal, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutPortal, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -1455,7 +1455,7 @@ impl NativeProvider {
                 format!("The host has no layout {layout}."),
             )
         })?;
-        if place.expected != catalog_revision(&member) {
+        if place.expected != layout_revision(&member) {
             // A lost answer's portal may already be there; only the host
             // can tell, so the request goes with the expected revision.
             if layout_placement::already_placed_portal(&member, &place.portal).is_none() {
@@ -5441,7 +5441,7 @@ impl DataProvider for NativeProvider {
         // layouts read when the file opened, or since a placement).
         let revision = download_tree(&self.layout_downloads)?
             .at(&[4, 5, u64::from(layout_id)])
-            .map(|member| om_protocol::authoring::catalog_revision(&member.to_owned_node()));
+            .map(|member| om_protocol::authoring::layout_revision(&member.to_owned_node()));
         Ok(Some(LayoutGeometry {
             revision,
             width: layout.width(),

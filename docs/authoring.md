@@ -201,20 +201,39 @@ revision covers the member without its Data and Access paths (a serial
 field's next value, a field's data version) and without modification
 stamps (`fc`, `fc 01` to `fc 03`), so a save that stores the same
 content, or a new record taking a serial number, keeps it; keys OpenMaker
-does not understand stay in. A script's revision leaves out the member's
-own stamp only and counts whether each key is stored as a list, the form
+does not understand stay in. A credential a step stores (Send Mail's
+SMTP password, Re-Login's account and password, an ODBC profile and the
+others server-storage.md section 4 lists, in a script or on a button)
+counts only as being there: its value is written as a fixed marker, so
+changing it keeps the revision and adding or removing it changes it. A
+revision is shown and logged, and a hash over a short password and
+content anyone can read would let a reader test guesses. A value is
+hashed as the bytes it holds, the same whether the file keeps it whole
+or split into a header and 1,000-byte pieces (a value over 1,000 bytes,
+non-ASCII text; file-format.md 3.6), so a file written and read back
+keeps every revision. A script's revision leaves out the member's own
+stamp only and counts whether each key is stored as a list, the form
 scripts always had; every other object's leaves out every stamp in it
-and does not count list flags. Both forms are byte for byte what `om-author`
-reported before the module existed, so no revision a client holds became
-stale. A table's `fields_revision` (`inspect`) is the second form over
-its whole field catalog `[T, 3]`, the catalog's index and every field's
-Data paths included: any field added, renamed, changed or deleted, by
-anyone, changes it, and so does a serial number taken by a new record.
-Each table's listed fields and revision come from the same downloaded
+and does not count list flags. A table's `fields_revision` (`inspect`)
+is the second form over its whole field catalog `[T, 3]`, the catalog's
+index and every field's Data paths included: any field added, renamed,
+changed or deleted, by anyone, changes it, and so does a serial number
+taken by a new record
+([#717](https://github.com/OpenMaker-Dev/openmaker/issues/717)). Each
+table's listed fields and revision come from the same downloaded
 catalog. A concurrent edit leaves that observation stale together, so its
 token detects the change. This is not a transaction covering all
 metadata in the inspection. The file's `layouts_revision` is the second
 form over the layout catalog's index `[4, 1]`.
+
+Two changes to the definition gave some revisions new strings once,
+so a cached `expected_revision` for such an object is refused as a
+`conflict` the first time and is read again: a script or layout that
+stores a credential (none of FileMaker Pro 26's 66 starter files has
+one), and an object or token whose content holds a split value. In the
+starter files the second is 75 of 330 scripts, 245 of 418 layouts, 72 of
+264 value lists and 94 of 341 `fields_revision`, `layouts_revision` and
+script catalog index tokens; every other revision is the string it was.
 
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,

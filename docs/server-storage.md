@@ -125,14 +125,16 @@ and SQL types are views computed from the tree (section 10), never the
 stored form.
 
 **Path groups.** For history and deploys (section 9) the paths of a file
-are sorted into three groups. The grouping is OpenMaker's and changes
-nothing about how a file is stored.
+are sorted into groups. The grouping is OpenMaker's and changes nothing
+about how a file is stored.
 
 | Group | Holds | Changed by |
 |---|---|---|
-| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus and menu sets, value lists, privilege sets, extended privileges, fonts, the file library, data sources, base directories | developers |
-| Data | each table's records, indexes, record list and counters; container data and library reference counts; the data keys inside design members: a serial field's next value, a table's and a field's data version, pending field work; an occurrence's saved found set | users, and the host for them |
+| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus and menu sets, value lists, privilege sets, extended privileges, fonts, the file library, data sources, base directories; each catalog's display order and settings | developers |
+| Data | each table's records, indexes, record list, counters and global values; container data and library reference counts; the data keys inside design members: a serial field's next value, a table's and a field's data version, pending field work; each catalog's last issued id; an occurrence's saved found set | users, and the host for them |
 | Access | accounts, file access authorizations | administrators |
+| Secret | a credential stored inside a design member: a password, a private key, a client secret or an API key a script step or a button's step keeps, and the account name beside it in a step that signs in | developers |
+| Derived | what FileMaker computes from other paths: checksums (a privilege set's also covers the file's creation stamp), digests, name lists, member caches, counts, routes and dependency lists | whoever writes what they come from |
 
 The rules are one table in code, `om_hbam::design_paths::rules()`, each
 with what its paths hold and the `docs/re/` section that says so. They
@@ -140,57 +142,124 @@ are by path, not by catalog member, because a member can hold both: a
 serial field's next value is a key inside its field definition
 ([write-path.md](re/write-path.md) 3.2) and is Data. A rule covers its
 path and everything below it, and the longest rule that matches a path
-decides. A catalog that is one group as a whole has one rule. A Design
-catalog has one rule per key of its index `[cat, 1]` and per first-level
-key of its members `[cat, 5, id]`, those every catalog shares
+decides. Paths are written with hex segments, as schema-path.md writes
+them (scripts are `[11]`, the security catalogs `[17]`). A catalog that
+is one group as a whole has one rule. A Design catalog has one rule per
+key of its index `[cat, 1]` and per first-level key of its members
+`[cat, 5, id]`, those every catalog shares
 ([schema-path.md](re/schema-path.md) 5.1, 8.1) and those its spec names.
-At catalog level, with the keys of Design catalogs that are another group
-(`T` a table's data key, `O` an occurrence's, `*` a member's id; a test
-keeps this table equal to the code's):
+A table's data key `T` is a serial key ([query-program.md](re/query-program.md)
+2.6) of any length with an id from 128 up to 1,065,088 (`d0 00 00`), an
+occurrence's `O` one from 1,065,088 on: tables are numbered from `80 01`
+and occurrences from `d0 00 01` (schema-path.md 5.2, 5.3), and the
+boundary between them is inferred from those first ids. At catalog
+level, with the keys of Design catalogs that are another group (`*` a
+member's id; a test keeps this table equal to the code's):
 
 | Paths | Holds | Group | Objects | Spec |
 |---|---|---|---|---|
+| `[cat, 01, 00]` | the last issued member id, in every catalog's index | Data |  | schema-path.md 5.1 |
+| `[cat, 01, 01]` | the name list, keyed by the members' names, in every catalog's index | Derived |  | schema-path.md 5.1, 5.6 |
+| `[cat, 01, 04]` | the member count, in every catalog's index | Derived |  | schema-path.md 5.1 |
 | `[03, 10]` | base tables | Design | table | schema-path.md 5.2 |
 | `[03, 10, 05, *, fb]` | the table's data version, raised when a change affects stored values | Data |  | schema-path.md 5.8 |
 | `[03, 11]` | table occurrences | Design | occurrence | schema-path.md 5.3 |
+| `[03, 11, 01, 08]` | the routes between occurrences, computed by the client | Derived |  | schema-path.md 5.3 |
+| `[03, 11, 01, 0e]` | the fields' dependencies through relationships (DBDepend) | Derived |  | schema-path.md 5.3 |
 | `[03, fb]` | relationships | Design | relationship | schema-path.md 5.4 |
 | `[04]` | layouts | Design | layout | layout-model.md 10.5, 10.6 |
+| `[04, 01, 07]` | each layout's entry: its occurrence, menu set, name and flags | Derived |  | layout-model.md 10.6 |
 | `[06]` | themes | Design | theme | layout-model.md 7.5 |
+| `[06, 01, 07]` | an empty entry for each theme | Derived |  | layout-model.md 7.5 |
 | `[10]` | custom functions | Design | custom_function | calc-encoding.md 8 |
 | `[11]` | scripts | Design | script | scripts.md; script-steps.md 1 |
+| `[11, 01, 07]` | each member's name and flags | Derived |  | scripts.md, "The catalog index" |
+| `[11, 01, 08]` | the digest of the member cache | Derived |  | scripts.md, "The catalog index" |
 | `[17, 01]` | accounts | Access |  | session-identity.md 1, 3; local-files.md 3 |
 | `[17, 02]` | privilege sets | Design | privilege_set | session-identity.md 2 |
+| `[17, 02, 01, 08]` | the sets by checksum | Derived |  | session-identity.md 4.1 |
+| `[17, 02, 05, *, 04]` | the checksum, over the set and the file's creation stamp | Derived |  | session-identity.md 4.1, 4.4 |
 | `[17, 03]` | extended privileges | Design | extended_privilege | session-identity.md 4.2 |
+| `[17, 03, 05, *, 04]` | the checksum | Derived |  | session-identity.md 4.2, 4.4 |
 | `[17, 04]` | file access | Access |  | session-identity.md 4.3 |
 | `[19]` | fonts | Design | font | layout-model.md 8 |
 | `[1f]` | file library | Design | library_item | containers.md 1 |
+| `[1f, 01, 06]` | the glyph index | Derived |  | containers.md 1.2 |
+| `[1f, 01, 07]` | the member list | Derived |  | containers.md 1.2 |
+| `[1f, 01, 08]` | the MD5 index | Derived |  | containers.md 1.2 |
+| `[1f, 05, *, 04]` | the MD5 of the data | Derived |  | containers.md 1.3, 2.2 |
 | `[1f, 05, *, 12]` | the reference count | Data |  | containers.md 1.3, 5 |
 | `[20]` | data sources | Design | data_source | file-metadata.md 1.1 |
 | `[21]` | value lists | Design | value_list | file-metadata.md 6 |
 | `[26]` | base directories | Design | base_directory | containers.md 8.1 |
-| `[40]` | custom menu sets | Design | custom_menu_set | catalogs/hbkey-constants.csv (KCustomMenuSets) [I] |
+| `[40]` | custom menu sets | Design | custom_menu_set | file-format.md 3.4 [I] |
 | `[41]` | custom menus | Design | custom_menu | calc-encoding.md 8 |
 | `[T, 03]` | fields | Design | field | schema-path.md 5.5 |
+| `[T, 03, 01, 06]` | the name list by type | Derived |  | schema-path.md 5.5 |
+| `[T, 03, 01, 0e]` | the fields' triggers and dependencies | Derived |  | schema-path.md 5.5, 5.10 |
 | `[T, 03, 01, fd]` | work pending on the table's records, which the host does and deletes | Data |  | schema-path.md 7.2 |
 | `[T, 03, 05, *, 0c]` | the next serial number | Data |  | schema-path.md 5.5; write-path.md 3.2 |
 | `[T, 03, 05, *, fb]` | the field's data version, raised when a change affects stored values | Data |  | schema-path.md 5.5, 5.8 |
 | `[T, 1f]` | table libraries | Data |  | containers.md 1.1 |
 | `[02]` | the file's status: format, version, history, locale, File Options, icons, page setup, creation stamp | none |  | file-format.md 3.4; file-metadata.md 2, 3 |
-| `[1a]` | the file's own icon image (KOrigThumbImg) | none |  | containers.md 2.3; catalogs/hbkey-constants.csv |
+| `[1a]` | the file's own icon image (KOrigThumbImg) | none |  | file-format.md 3.4; containers.md 2.3 |
 | `[T, 00]` | the table's last issued record id | Data |  | write-path.md 5.1 |
 | `[T, 01]` | the field value indexes | Data |  | write-path.md 5.5 |
 | `[T, 05]` | the records | Data |  | write-path.md 5.2, 5.4 |
+| `[T, 08]` | the global fields' stored values | Data |  | calc-values.md, "Global values"; script-runtime.md, "Globals" |
 | `[T, 0d]` | the record list | Data |  | write-path.md 5.3 |
 | `[O, 07]` | the saved found set, sort, current record and last find | Data |  | file-metadata.md 11 |
 
+A step's credentials are found by step rules, which need the member: the
+slot `[00 n]` (script-steps.md 4.2) of a step's data that holds a
+password depends on the step, whose id is in the script's step list
+`[11, 5, S, 04]` or the button's object in the layout's object store
+`[4, 5, L, 07]` (layout-model.md 5.3.3). A step keeps its data at
+`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. These slots,
+with everything below them, are Secret (`om_hbam::design_paths::STEP_SECRETS`;
+a test keeps this table equal to the code's):
+
+| Step | Secret slots | Spec |
+|---|---|---|
+| 63 Send Mail | 10 the SMTP user name; 11 the SMTP password; 16 the Google OAuth service account; 17 the Google OAuth private key; 20 the Microsoft OAuth client id; 21 the Microsoft OAuth client secret | script-steps.md 12.3; catalogs/script-step-params.csv |
+| 83 Change Password | 0 the old password; 1 the new password | catalogs/script-step-params.csv |
+| 134 Add Account | 1 the password | catalogs/script-step-params.csv |
+| 136 Reset Account Password | 1 the new password | catalogs/script-step-params.csv |
+| 138 Re-Login | 0 the account name; 1 the password | catalogs/script-step-params.csv |
+| 144 Save Records as PDF | 7 the password to open; 8 the password to control | script-steps.md 11.7, 12.2 |
+| 211 Trigger Claris Connect Flow | 3 the authentication | catalogs/script-step-params.csv |
+| 212 Configure AI Account | 3 the API key | script-steps.md 12.2; catalogs/script-step-params.csv |
+| 227 Configure RAG Account | 3 the API key | script-steps.md 12.2; catalogs/script-step-params.csv |
+| 242 Print PDF | 1 the password | catalogs/script-step-params.csv |
+| 243 Create PDF | 7 the password to open; 8 the password to control | script-steps.md 12.2 |
+| 244 Append PDF | 7 the PDF's password | script-steps.md 12.2 |
+| 246 Open PDF | 7 the PDF's password | script-steps.md 12.2 |
+| any step | its profile `86` when it is an ODBC connection profile, whole | script-steps.md 11.5 |
+
+What the rules cannot see is not Secret. The rules reach the first-level
+keys of members and catalog indexes and the slots above; below them
+everything is that rule's. A password typed into a calculation, a URL
+with credentials in Insert from URL's options or a cURL option, or a key
+in a custom function is ordinary formula text and Design. A credential
+under a key no spec names (a data source's connection settings, if a
+file has them) is in no group, and like every path in no group it stays
+in its object's revision. A custom menu item that runs a step, and a
+button in a table view `[4, 5, L, 0d]`, are not looked into.
+
 A path in no group is the file as a whole (`[2]`, `[1a]`), or a key no
 rule names: no spec says what it is, so it is not guessed. Neither is an
-error. A path in no group is exported, and never deployed; a member that
-holds one is not deployed over an existing one (section 9). The report
-(`cargo run -p om-hbam --example design_paths -- <file>`) lists such
-paths by shape, and the catalog members that are no design object; the
-keys of FileMaker Pro 26's starter files that no spec explains are listed
-in [file-format.md](re/file-format.md) 3.7.
+error. `[2, 18]`, File Options, holds file-level design (the layout and
+the script triggers a file opens with) beside local preferences; it is
+left with the file as a whole on purpose, so history does not record it
+and deploys do not carry it. A path in no group is exported, and never
+deployed; a member that holds one is not deployed over an existing one
+(section 9). A path above the rules (a catalog, a member, a table's data
+key) holds paths of several groups and has no group of its own: a write
+that replaces one is classified by the paths below it. The report
+(`cargo run -p om-hbam --example design_paths -- <file>`) lists the
+paths no rule covers by shape, and the catalog members that are no
+design object; the keys of FileMaker Pro 26's starter files that no spec
+explains are listed in [file-format.md](re/file-format.md) 3.7.
 
 ## 5. The engine interface
 
@@ -987,16 +1056,25 @@ a Design catalog (section 4), decoded by OpenMaker or not: a table, a
 table occurrence, a relationship, a field, a layout, a theme, a custom
 function, a script, a privilege set, an extended privilege, a font, a
 file library item, a data source, a value list, a base directory, a
-custom menu set or a custom menu (`om_hbam::design_paths::objects`). It
-is identified by its kind and its key (and a field by its table's key).
-An object is its member alone. What a catalog's index `[cat, 1]` holds
-(name lists, the display order, member caches and digests, a field
-catalog's lists by type and dependencies) belongs to the catalog as a
-whole: it is derived from the members or orders them. An emptied member,
-a deletion, is no object. Its revision is the `sha256:` of its member
-without its Data and Access paths and without modification stamps, in
-the canonical form `om-author` uses ([authoring.md](authoring.md),
-"Revisions"); paths in no group stay in it.
+custom menu set or a custom menu; and each Design catalog as a whole
+(`om_hbam::design_paths::objects`). A member is identified by its kind
+and its key (and a field by its table's key), a catalog by its kind (and
+a field catalog by its table). A member object is its member alone. A
+catalog object is its index `[cat, 1]`: its Design paths are the display
+order, and so the order of scripts and their folders, and the catalog's
+settings; the name lists, member caches, digests, counts and dependency
+lists there are Derived, and the last issued id is Data. So a change
+that only moves a script is a change of the script catalog's object,
+recorded and compared like any other. An emptied member, a deletion, is
+no object. An object's revision is the `sha256:` of its member or index
+without its Data, Access and Derived paths and without modification
+stamps, each Secret path written as a marker without its value, in the
+canonical form `om-author` uses ([authoring.md](authoring.md),
+"Revisions"); paths in no group stay in it. Derived paths are recomputed
+by whoever writes the paths they come from, a deploy too: a privilege
+set's checksum covers the file's creation stamp, so one copied from
+another file would fail FileMaker's check at open (session-identity.md
+4.4).
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the
@@ -1013,7 +1091,8 @@ content at any revision.
 decodes the object (scripts in the form `get_script` returns), the rest as
 hex under its path, stamps left out. Text must read back to the same
 revision; an object for which it does not is written as hex only. Access
-paths and Data paths inside a member are never written. The text form is
+paths and Data paths inside a member are never written. Secret paths are
+never written either. The text form is
 for diffs, review and an optional mirror that writes each revision into a
 folder for git. The store's history is the master copy, since live edits
 arrive there.
@@ -1055,7 +1134,9 @@ file without closing it:
    what it needs and refused if it would leave a reference broken. Access
    paths are never deployed. A member is written path by path: its Design
    paths from the source, its Data paths kept from the target (a serial
-   field keeps its next value). A member holding a path that is in no
+   field keeps its next value). A member's Secret paths are kept from the
+   target, like its Data paths, unless the administrator chooses to bring
+   them from the source. A member holding a path that is in no
    group is not deployed over an existing one. A changed privilege set is
    shown with the accounts it affects, and one that accounts use cannot be
    deleted.

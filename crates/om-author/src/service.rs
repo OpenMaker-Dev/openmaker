@@ -4661,7 +4661,7 @@ fn layout_request_uuid(expected: &Revision, occurrence: u64, like: u64, name: &s
             OwnedNode::leaf(vec![4], name.as_bytes().to_vec()),
         ],
     );
-    let hash = design_paths::content_revision(&request);
+    let hash = design_paths::script_form_revision(&request);
     let mut uuid: [u8; 16] = hash[..16].try_into().expect("16 bytes");
     uuid[6] = (uuid[6] & 0x0f) | 0x50;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
@@ -4678,7 +4678,7 @@ fn duplicate_request_uuid(expected: &Revision, layout: u64) -> [u8; 16] {
             OwnedNode::leaf(vec![2], layout.to_be_bytes().to_vec()),
         ],
     );
-    let hash = design_paths::content_revision(&request);
+    let hash = design_paths::script_form_revision(&request);
     let mut uuid: [u8; 16] = hash[..16].try_into().expect("16 bytes");
     uuid[6] = (uuid[6] & 0x0f) | 0x50;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
