@@ -653,7 +653,8 @@ impl Service {
             "total": total,
             "truncated": truncated,
             "nothing_known_unread": nothing_known_unread,
-            "meaning": "Objects for which no reference was found in what was read: \
+            "meaning": "Objects for which no reference from another object was found in \
+                        what was read (a reference an object holds to itself does not count): \
                         candidates to check before acting on them, never objects known to be \
                         unused. How far to trust them is in coverage (read_cleanly, consistent, \
                         anomalies, unread places, references by name).",
