@@ -3,10 +3,12 @@
 OpenMaker is a clean-room, open-source replacement for Claris FileMaker,
 written in Rust: a desktop client compatible with FileMaker Pro 26 (its
 application chrome, the Browse/Find/Layout/Preview modes, the developer
-tools, local `.fmp12` files and files hosted by FileMaker Server) and
-OpenMaker Server, which hosts `.fmp12` files for FileMaker Pro clients. The
-goal is 1:1 compatibility. The project is **pre-alpha**; Linux (Ubuntu)
-comes first, then macOS and Windows.
+tools, local `.fmp12` files and files hosted by FileMaker Server),
+OpenMaker Go, a mobile client for iPhone, iPad and Android in the manner
+of FileMaker Go, and OpenMaker Server, which hosts `.fmp12` files for
+FileMaker Pro clients. The goal is 1:1 compatibility. The project is
+**pre-alpha**; on the desktop Linux (Ubuntu) comes first, then macOS and
+Windows, and OpenMaker Go runs on iOS, iPadOS and Android.
 
 Read this file first, then the documents it points to.
 
@@ -41,6 +43,8 @@ docs/*.md     OpenMaker behavior per feature, with its limits; architecture; dev
 docs/performance/   measurements and their method
 tools/        reverse-engineering and oracle tooling (not product code)
 re/           research data; its captures/, extracted/ and work/ are git-ignored
+mobile/       OpenMaker Go (mobile/README.md): its Rust engine (core/, in the
+              workspace), UniFFI bindings, the SwiftUI and Jetpack Compose apps
 website/      openmaker.dev, a static page (website/README.md)
 ```
 
@@ -127,6 +131,9 @@ xvfb-run -a cargo test --locked --workspace --no-fail-fast # before a pull reque
 
 - **UI changes:** look at the screens and keep before/after images for the
   pull request.
+- **OpenMaker Go:** the apps draw `om-gui`'s window, so a change there can
+  change them too. Build and try a change under `mobile/` on a simulator
+  or device ([mobile/README.md](mobile/README.md)).
 - **Docs:** update the `docs/re/` spec when you learned something about
   FileMaker, the feature note's limits when OpenMaker's behavior changed,
   and ROADMAP.md only when an area's status changed. Rewrite stale text in
