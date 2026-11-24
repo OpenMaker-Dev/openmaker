@@ -2241,11 +2241,12 @@ fn a_store_of_many_trees_opens_under_a_small_cache() {
 #[test]
 fn trees_made_until_reservations_are_refused_still_leave_room_to_checkpoint() {
     let sim = Sim::new(41);
-    sim.set_capacity(4 << 20);
+    sim.set_capacity(24 << 20);
     let disk = Disk::Sim(sim.clone());
     let config = Config {
         growth: 1,
         reserve: 0,
+        dirty_budget: 1 << 20,
         ..config()
     };
     let proc = create_proc(&disk, config);
@@ -2266,9 +2267,9 @@ fn trees_made_until_reservations_are_refused_still_leave_room_to_checkpoint() {
         }
         index += 1;
     }
-    assert!(trees.len() > 100, "{} trees", trees.len());
+    assert!(trees.len() > 1_000, "{} trees", trees.len());
     let done = pf.checkpoint(entry_id(index - 1), &trees, None).unwrap();
-    assert!(done.meta_pages >= 3, "the table spans pages: {done:?}");
+    assert!(done.meta_pages >= 20, "the table spans pages: {done:?}");
     // And again, with every tree's name in the table.
     pf.checkpoint(entry_id(index - 1), &trees, None).unwrap();
 }
