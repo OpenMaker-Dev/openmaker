@@ -11,30 +11,39 @@
 //! advance a serial (op72), take, upgrade and release locks (op60, op61,
 //! op62, op65), upload to a catalog (op13), store what an op86 program's
 //! schema instructions changed (UploadMultiple, GenerateMemberKey,
-//! DeleteTable), store the indexes a find built on demand, and update a
-//! table (op73). The other writes (op87, op88, op240, accounts, a server
-//! script's commit) still change the file from their handlers (#673).
+//! DeleteTable), store the indexes a find built on demand, update a table
+//! (op73), store container data and adjust a library member's reference
+//! count (op88, op87), an authoring edit and the authoring extension's
+//! save (op240). The other writes (accounts, a server script's commit)
+//! still change the file from their handlers (#673).
 //!
 //! # Lock order
 //!
 //! [`FileEngine::submit`] takes, in this order and only what the operation
 //! needs: the file's store (`Hosted::read_store` for op60,
-//! `Hosted::write_store` for op70, op71, op72 and the schema operations),
-//! then its lock table (`Hosted::locks`, when the operation first uses it,
-//! [`Locks`]; the schema operations never do). It holds both while it
-//! saves, and lets go of the lock table first; dropping the store's write
-//! guard takes the file's accounts while it still holds the store
+//! `Hosted::write_store` for op70, op71, op72, the schema operations,
+//! op87, op88 and op240), then its lock table (`Hosted::locks`, when the
+//! operation first uses it, [`Locks`]; the schema operations, op87, op88
+//! and op240's save never do). It holds both while it saves, and lets go
+//! of the lock table first; dropping the store's write guard takes the
+//! file's accounts while it still holds the store
 //! (`hosting::StoreWriteGuard`). op61, op62 and op65 take only the lock
-//! table, as before. The one other lock taken inside `submit` is the
+//! table, as before. An authoring edit (op240) takes the lock table only
+//! while it takes its locks, and again while it releases them when it is
+//! refused after taking them; it saves under the store alone, and its
+//! locks are released after the engine lets go of the store, the lock
+//! table taken on its own for that ([`Locks::lock_while_stored`]), as
+//! op240 always held them. The one other lock taken inside `submit` is the
 //! file's thumbnail cache (`Hosted::thumbnails`), under the store, when
 //! op86's DeleteTable took a table's container library: store, then
 //! thumbnails, as a server script's commit and op96 take them. Nothing
 //! else: the caller delivers notices after it returns, taking the file's
 //! registrations and then the mailboxes (`writes::notify`), and a
 //! session's own state (its temporary area, the records it was served
-//! withheld) is read before and settled after. This is the order the write
-//! path has always used (store, lock table, registrations, mailboxes),
-//! with the last two no longer inside the first two.
+//! withheld, the memory its uploads are charged) is read before and
+//! settled after. This is the order the write path has always used
+//! (store, lock table, registrations, mailboxes), with the last two no
+//! longer inside the first two.
 //!
 //! A find and an op86 program run under the store's read lock before
 //! their operation is submitted, as reads; what they leave waiting in the
@@ -53,6 +62,8 @@ use std::collections::BTreeMap;
 use log::error;
 use om_data::host::security::SetAccess;
 use om_hbam::OwnedNode;
+use om_protocol::authoring as design;
+use om_protocol::container::{AdjustReferenceCount, UploadBinaryReply, COUNT_FAILED};
 use om_protocol::schema::Upgrade;
 use om_protocol::write::{
     Conflict, CreateRecord, CreateRecordReply, GetSerial, GetSerialReply, KeyPath, KillAllLocks,
@@ -60,6 +71,7 @@ use om_protocol::write::{
 };
 
 use crate::hosting::Hosted;
+use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::store::{IndexId, MemberKey};
 use crate::views::Withheld;
@@ -71,10 +83,11 @@ pub(crate) use transaction::{Hold, Locks, Transaction};
 /// A change the server makes to a hosted file: one request's work, as a
 /// value. Who asks is part of it (the lock user, the name other users see
 /// for it, the account and privilege set a commit is checked against, the
-/// account op73's calculations see), so that it can be run by another
-/// engine, recorded with its outcome and replayed (docs/server-storage.md
-/// 5, 7.2, 7.3, 12).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// account op73's calculations see, the session and account an authoring
+/// edit's locks and stamps name), so that it can be run by another engine,
+/// recorded with its outcome and replayed (docs/server-storage.md 5, 7.2,
+/// 7.3, 12).
+#[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     /// op71 HostCreateRecord.
     ReserveRecordIds(ReserveRecordIds),
@@ -100,6 +113,17 @@ pub enum Operation {
     StoreIndexes(StoreIndexes),
     /// op73 HostUpdateTable.
     UpdateTable(UpdateTable),
+    /// op88 UploadBinaryData.
+    StoreContainerData(StoreContainerData),
+    /// op87 AdjustReferenceCount.
+    AdjustContainerCount(AdjustContainerCount),
+    /// op240, OpenMaker's authoring extension: an edit of the file's
+    /// design.
+    EditDesign(EditDesign),
+    /// op240's Save: write the file now if it holds changes the disk lacks,
+    /// such as a client's op13 uploads, and answer whether the disk holds
+    /// them all.
+    SaveFile,
 }
 
 /// op71: reserve record ids and lock them for a transaction
@@ -242,6 +266,75 @@ pub struct UpdateTable {
     pub account: String,
 }
 
+/// op88: store uploaded container data in a table's library, or in the
+/// file's own (containers.md 3.4; `containers::store_upload`). The caller
+/// checked the session's privileges and read the upload within the memory
+/// the client may hold; the data travels here, and the charge for it is
+/// given back once the operation's outcome is returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreContainerData {
+    /// The table key `[T]` naming the library, none for the file's own.
+    pub table: KeyPath,
+    /// The data read from the upload, or why it is not valid binary data,
+    /// which is answered without touching the tree; the file is saved
+    /// after it all the same, as after every op88 that was read.
+    pub data: Result<BinaryData, String>,
+    /// The upload's size in bytes, for the log.
+    pub bytes: usize,
+}
+
+/// op87: add a delta to a library member's reference count, deleting the
+/// member at 0 (containers.md 5.3; `containers::adjust_reference_count`).
+/// The caller checked the session's privileges.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdjustContainerCount {
+    pub request: AdjustReferenceCount,
+}
+
+/// op240: one edit of the file's design (docs/authoring.md, "How writes
+/// reach the file"; `authoring::edit`). The caller checked that the
+/// session's account may author; the edit checks the file, holds the locks
+/// FileMaker Pro holds for the same change while it is stored, stamps what
+/// it changes with the environment's time and gives new objects UUIDs from
+/// its random source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditDesign {
+    /// The connection asking: the edit's locks are its own, under the
+    /// authoring extension's transaction, and its client is not told of
+    /// the change.
+    pub connection: u32,
+    /// The client's session name: the holder other users see while the
+    /// edit holds its locks, and the stamp's user name.
+    pub session_name: String,
+    /// The account the session logged in as: the stamp's account.
+    pub account: String,
+    pub edit: DesignEdit,
+}
+
+/// An authoring edit's request as decoded (`om_protocol::authoring`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DesignEdit {
+    ReplaceScriptSteps(design::ReplaceScriptSteps),
+    CreateField(design::CreateField),
+    PlaceField(design::PlaceField),
+    PlaceText(design::PlaceText),
+    PlacePortal(design::PlacePortal),
+    PlaceButton(design::PlaceButton),
+    PlaceButtonStep(design::PlaceButtonStep),
+    SetObjectFrames(design::SetObjectFrames),
+    DeleteObjects(design::DeleteObjects),
+    SetText(design::SetText),
+    FieldControl(design::FieldControl),
+    PartOptions(design::PartOptions),
+    ChangeParts(design::ChangeParts),
+    LayoutWidth(design::LayoutWidth),
+    LayoutSetup(design::LayoutSetup),
+    CreateLayout(design::CreateLayout),
+    DuplicateLayout(design::DuplicateLayout),
+    DeleteLayout(design::DeleteLayout),
+    ValueListValues(design::ValueListValues),
+}
+
 /// What an operation answers, one shape per operation; the caller encodes
 /// it for the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,6 +361,40 @@ pub enum Reply {
     /// Whether the work changed the file, or why it was refused, which
     /// leaves the file hosted read-only (`Store::update_table`).
     UpdateTable(Result<bool, &'static str>),
+    /// op88's reply as the wire has it (containers.md 3.2).
+    StoreContainerData(UploadBinaryReply),
+    /// The member's count after the change, or `COUNT_FAILED`.
+    AdjustContainerCount(u32),
+    EditDesign(Edited),
+    /// Whether the disk holds every change the file holds.
+    SaveFile(Result<(), FileNotSaved>),
+}
+
+/// op240's reply: the edit's answer, and for an edit that changed the file,
+/// what the storage error says when the change cannot be stored
+/// ([`Outcome::not_stored`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edited {
+    pub reply: design::Reply,
+    pub not_stored: Option<NotStored>,
+}
+
+/// What an edit's storage error says: what was not done, for the log
+/// ("script 3 not saved"), and what the file keeps, for the reply
+/// ("script 3 is unchanged").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotStored {
+    pub not_done: String,
+    pub kept: String,
+}
+
+/// Why op240's Save leaves changes off the disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileNotSaved {
+    /// The file is hosted read-only: nothing is written to it.
+    ReadOnly,
+    /// The save failed: the changes wait in memory for the next one.
+    Failed,
 }
 
 /// op70's reply: whether the commit was written, and the staged records it
@@ -315,10 +442,25 @@ impl Outcome {
     /// The outcome when what the operation did could not be stored: the
     /// storage error in place of its reply, and no notices
     /// (docs/server-storage.md 5). op70 fails with the save's message
-    /// (`writes::CommitError::NotSaved`), op71 with the save's FileMaker
-    /// error ([`crate::hosting::save_error`]).
+    /// (`writes::CommitError::NotSaved`), op71 and an authoring edit with
+    /// the save's FileMaker error ([`crate::hosting::save_error`]), the
+    /// edit's message saying what the file keeps.
     fn not_stored(self, error: &std::io::Error) -> Outcome {
         let reply = match self.reply {
+            Reply::EditDesign(Edited {
+                not_stored: Some(not_stored),
+                ..
+            }) => Reply::EditDesign(Edited {
+                reply: design::Reply::Refused {
+                    status: crate::hosting::save_error(error),
+                    message: format!(
+                        "The file could not be saved ({error}); {}.",
+                        not_stored.kept
+                    ),
+                    current: None,
+                },
+                not_stored: None,
+            }),
             Reply::ReserveRecordIds(_) => Reply::ReserveRecordIds(writes::refused_ids(u32::from(
                 crate::hosting::save_error(error),
             ))),
@@ -344,8 +486,9 @@ impl Outcome {
 /// What an operation may read of the world besides the file: the clock and
 /// a random source, so that two engines can be given the same seeded source
 /// (docs/server-storage.md 12). [`run`] itself reads them only through
-/// this: the time and the UUID of a write's record environment, and the
-/// unique ids of container data op73's recalculation stores. The
+/// this: the time and the UUID of a write's record environment, an
+/// authoring edit's stamps and the UUIDs of what it adds, and the unique
+/// ids of container data op73's recalculation and op88 store. The
 /// calculation engine below it does not yet: a formula an operation
 /// evaluates (a privilege set's record limit, `writes::refused_action`;
 /// the stored calculations op73 recomputes, `Store::update_table`) takes
@@ -450,6 +593,30 @@ pub fn run(
         (Operation::UpdateTable(op), Hold::Transaction(tx)) => Outcome::new(Reply::UpdateTable(
             schema::update_table(op, tx, environment),
         )),
+        (Operation::StoreContainerData(op), Hold::Transaction(tx)) => Outcome::new(
+            Reply::StoreContainerData(crate::containers::store_upload(op, file, tx, environment)),
+        ),
+        (Operation::AdjustContainerCount(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::AdjustContainerCount(
+                crate::containers::adjust_reference_count(&op.request, file, tx),
+            ))
+        }
+        (Operation::EditDesign(op), Hold::Transaction(tx)) => {
+            let from = op.connection;
+            let (reply, changes) = crate::authoring::edit(op, file, tx, locks, environment);
+            Outcome {
+                reply: Reply::EditDesign(reply),
+                notices: Notices { from, changes },
+            }
+        }
+        // The engine saves the file (`FileEngine::submit`).
+        (Operation::SaveFile, Hold::Transaction(tx)) => {
+            Outcome::new(Reply::SaveFile(if tx.is_read_only() {
+                Err(FileNotSaved::ReadOnly)
+            } else {
+                Ok(())
+            }))
+        }
         (operation, _) => not_held(operation, file),
     }
 }
@@ -488,6 +655,23 @@ fn not_held(operation: Operation, file: &str) -> Outcome {
         Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(NOT_HELD)),
         Operation::StoreIndexes(_) => Reply::StoreIndexes,
         Operation::UpdateTable(_) => Reply::UpdateTable(Err(NOT_HELD)),
+        Operation::StoreContainerData(_) => {
+            Reply::StoreContainerData(crate::containers::upload_reply(
+                writes::UNAVAILABLE as u16,
+                Vec::new(),
+                NOT_HELD.into(),
+            ))
+        }
+        Operation::AdjustContainerCount(_) => Reply::AdjustContainerCount(COUNT_FAILED),
+        Operation::EditDesign(_) => Reply::EditDesign(Edited {
+            reply: design::Reply::Refused {
+                status: design::status::UNSUPPORTED,
+                message: NOT_HELD.into(),
+                current: None,
+            },
+            not_stored: None,
+        }),
+        Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed)),
     })
 }
 

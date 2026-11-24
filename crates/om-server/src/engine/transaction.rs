@@ -9,6 +9,7 @@ use om_data::rules::RecordEnvironment;
 use om_hbam::OwnedNode;
 use om_protocol::write::{Conflict, KeyPath};
 
+use crate::library::{BinaryData, Stored};
 use crate::locks::{LockTable, LockUser};
 use crate::store::{IndexId, Journal, MemberKey, Store};
 
@@ -20,7 +21,7 @@ pub enum Hold<'h, 'a> {
     /// The tree, for reading (op60).
     View(&'h Store),
     /// A transaction on the tree (op70, op71, op72, op13, op73, op86's
-    /// writes and a find's indexes).
+    /// writes and a find's indexes, op87, op88 and op240).
     Transaction(&'h mut Transaction<'a>),
 }
 
@@ -30,10 +31,12 @@ pub enum Hold<'h, 'a> {
 ///
 /// It exposes the `Store` methods the operations use, and `view` for the
 /// state derived from the tree (a privilege set's hidden fields and record
-/// limits). The changes are a commit's record writes (`Journal`), op71's
-/// reservation and op72's serial value, and the schema changes of op13,
-/// op73 and op86 with a find's stored indexes, which are made in place and
-/// not taken back (their saves are not checked yet).
+/// limits, the decoded catalog an authoring edit checks). The changes are
+/// a commit's record writes and an authoring edit's catalog members
+/// (`Journal`), op71's reservation and op72's serial value, and the schema
+/// changes of op13, op73 and op86 with a find's stored indexes and op87's
+/// and op88's container data, which are made in place and not taken back
+/// (their saves are not checked yet).
 pub struct Transaction<'a> {
     pub(super) store: &'a mut Store,
     /// The commit the record writes go into ([`Self::begin_commit`]).
@@ -45,6 +48,9 @@ pub struct Transaction<'a> {
     /// The container libraries deleted tables took with them
     /// ([`Self::apply`]), whose thumbnails the engine forgets.
     pub(super) released_libraries: Vec<Vec<Vec<u8>>>,
+    /// Fields an authoring edit added, counted as computed once the edit
+    /// is stored ([`Self::add_field_basis_once_stored`]).
+    pub(super) field_bases: Vec<(Vec<u8>, u64)>,
 }
 
 /// The last issued id of `table` as it was before a reservation
@@ -63,6 +69,7 @@ impl<'a> Transaction<'a> {
             reservation: None,
             stored_lines: Vec::new(),
             released_libraries: Vec::new(),
+            field_bases: Vec::new(),
         }
     }
 
@@ -183,6 +190,63 @@ impl<'a> Transaction<'a> {
         self.store.store_indexes(indexes);
     }
 
+    /// Replace catalog members the schema does not hold, such as a script
+    /// and the script catalog's index, within the commit
+    /// (`Store::replace_members_in`).
+    pub fn replace_members(&mut self, members: Vec<(Vec<Vec<u8>>, OwnedNode)>) {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store.replace_members_in(journal, members);
+    }
+
+    /// Replace the schema node at `path` within the commit, the schema read
+    /// again (`Store::replace_schema_in`).
+    pub fn replace_schema(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store.replace_schema_in(journal, path, node);
+    }
+
+    /// Remove the schema node at `path` within the commit
+    /// (`Store::remove_schema_in`).
+    pub fn remove_schema(&mut self, path: Vec<Vec<u8>>) {
+        let journal = self
+            .journal
+            .get_or_insert_with(|| self.store.begin_commit());
+        self.store.remove_schema_in(journal, path);
+    }
+
+    /// Count field `field` of `table`, which the commit adds, as computed
+    /// once the commit is stored (`Store::add_field_basis`), and not if it
+    /// is not.
+    pub fn add_field_basis_once_stored(&mut self, table: Vec<u8>, field: u64) {
+        self.field_bases.push((table, field));
+    }
+
+    /// op88: store container data in the library at `path`
+    /// (`Store::store_binary`).
+    pub fn store_binary(
+        &mut self,
+        path: &[&[u8]],
+        data: BinaryData,
+        unique_id: impl FnMut() -> [u8; 16],
+    ) -> Option<Stored> {
+        self.store.store_binary(path, data, unique_id)
+    }
+
+    /// op87: add `delta` to a library member's reference count
+    /// (`Store::adjust_reference_count`).
+    pub fn adjust_reference_count(
+        &mut self,
+        path: &[&[u8]],
+        member: &[u8],
+        delta: i32,
+    ) -> Option<u32> {
+        self.store.adjust_reference_count(path, member, delta)
+    }
+
     /// op73: a table's deferred field work (`Store::update_table`), each
     /// record's environment for a recalculation from `environment`, and
     /// the unique ids of container data it stores from `unique_id`.
@@ -206,7 +270,9 @@ impl<'a> Transaction<'a> {
 /// ([`Self::release_once_stored`]) wait until they are. The other edits
 /// are made at once and kept: they are those of operations that store
 /// nothing but lock-table edits, which are answered before they are
-/// durable (docs/server-storage.md 5).
+/// durable (docs/server-storage.md 5). An authoring edit's locks
+/// ([`Self::lock_while_stored`]) are held while its changes are stored,
+/// without the table's mutex, and released after, stored or not.
 pub struct Locks<'a> {
     table: &'a Mutex<LockTable>,
     held: Option<MutexGuard<'a, LockTable>>,
@@ -214,6 +280,9 @@ pub struct Locks<'a> {
     taken: Vec<(KeyPath, LockUser, u16)>,
     /// Paths whose locks a user releases once the operation is stored.
     releases: Vec<(KeyPath, LockUser)>,
+    /// Locks held while the operation's changes are stored, released
+    /// after ([`Self::lock_while_stored`]).
+    while_stored: Vec<(KeyPath, LockUser, u16)>,
 }
 
 impl<'a> Locks<'a> {
@@ -223,6 +292,7 @@ impl<'a> Locks<'a> {
             held: None,
             taken: Vec::new(),
             releases: Vec::new(),
+            while_stored: Vec::new(),
         }
     }
 
@@ -284,6 +354,56 @@ impl<'a> Locks<'a> {
         self.table().release_connection(connection);
     }
 
+    /// Take `locks` (path, type) in order for `user`, or none of them, and
+    /// let go of the table again: the holders of the first that conflicts.
+    /// They keep other users from what the operation changes while it is
+    /// stored, and are released after the engine lets go of the store,
+    /// whether it was stored or not ([`Self::after_stored`]): an authoring
+    /// edit's locks, which op240 has always held this way, the table's
+    /// mutex taken only while it takes and releases them. An operation that
+    /// takes these uses the table for nothing else.
+    pub fn lock_while_stored(
+        &mut self,
+        user: LockUser,
+        holder: &str,
+        locks: &[(KeyPath, u16)],
+    ) -> Result<(), String> {
+        let table = self.table();
+        let mut refused = None;
+        for (n, (path, lock_type)) in locks.iter().enumerate() {
+            if let Err(conflict) = table.lock(path, user, *lock_type, holder) {
+                for (path, lock_type) in &locks[..n] {
+                    table.unlock(path, user, *lock_type);
+                }
+                refused = Some(conflict.users);
+                break;
+            }
+        }
+        if refused.is_none() {
+            let held = locks.iter().map(|(path, t)| (path.clone(), user, *t));
+            self.while_stored.extend(held);
+        }
+        self.held = None;
+        refused.map_or(Ok(()), Err)
+    }
+
+    /// Release the locks [`Self::lock_while_stored`] took, now: the
+    /// operation was refused after it took them.
+    pub fn release_while_stored(&mut self) {
+        let held = std::mem::take(&mut self.while_stored);
+        let table = self.table();
+        for (path, user, lock_type) in &held {
+            table.unlock(path, *user, *lock_type);
+        }
+        self.held = None;
+    }
+
+    /// The locks held while the operation was stored, which the engine
+    /// releases once it lets go of the store ([`release`]).
+    pub(super) fn after_stored(&mut self) -> Vec<(KeyPath, LockUser, u16)> {
+        std::mem::take(&mut self.while_stored)
+    }
+
     /// `LockTable::release_path` once the operation is stored: a commit
     /// releases the records it wrote, and keeps them locked when its save
     /// fails.
@@ -316,5 +436,17 @@ impl<'a> Locks<'a> {
         for (path, user, lock_type) in taken.into_iter().rev() {
             table.unlock(&path, user, lock_type);
         }
+    }
+}
+
+/// Release `locks` of `table` ([`Locks::after_stored`]), taking the table's
+/// mutex for it.
+pub(super) fn release(table: &Mutex<LockTable>, locks: Vec<(KeyPath, LockUser, u16)>) {
+    if locks.is_empty() {
+        return;
+    }
+    let mut table = table.lock().unwrap_or_else(PoisonError::into_inner);
+    for (path, user, lock_type) in &locks {
+        table.unlock(path, *user, *lock_type);
     }
 }

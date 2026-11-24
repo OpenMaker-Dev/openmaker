@@ -52,8 +52,9 @@ use crate::authoring;
 use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
-    AdvanceSerial, ChangeSchema, CommitRecords, FileEngine, Operation, ReleaseLock, ReleaseLocks,
-    Reply, ReserveRecordIds, StoreIndexes, TakeLock, UpdateTable, UpgradeLock, UploadToCatalog,
+    AdjustContainerCount, AdvanceSerial, ChangeSchema, CommitRecords, FileEngine, Operation,
+    ReleaseLock, ReleaseLocks, Reply, ReserveRecordIds, StoreContainerData, StoreIndexes, TakeLock,
+    UpdateTable, UpgradeLock, UploadToCatalog,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
@@ -1386,7 +1387,7 @@ impl Connection {
                 upload_binary(shared, peer, session, &header, txn)
             }
             code if code == Opcode::AdjustReferenceCount as u8 => {
-                adjust_reference_count(peer, session, &header, txn)
+                adjust_reference_count(shared, peer, session, &header, txn)
             }
             code if code == Opcode::DownloadThumbnail as u8 => {
                 thumbnail(session, &header, txn, perform.max_return)
@@ -2910,7 +2911,7 @@ fn create_record(
 
 /// An engine's reply of another operation than the one submitted, which
 /// the engine never gives.
-fn mismatched(reply: &Reply) -> PerformError {
+pub(crate) fn mismatched(reply: &Reply) -> PerformError {
     PerformError::Status(format!(
         "the engine answered with another operation's reply: {reply:?}"
     ))
@@ -3190,7 +3191,11 @@ fn upgrade(
 /// The host's local date and time as FileMaker's date-time key: the date
 /// and time keys of a timestamp index (schema-path.md 3.1).
 pub(crate) fn host_time_key() -> Vec<u8> {
-    let now = jiff::Zoned::now();
+    host_time_key_at(&jiff::Zoned::now())
+}
+
+/// [`host_time_key`] for the host time `now`.
+pub(crate) fn host_time_key_at(now: &jiff::Zoned) -> Vec<u8> {
     date_time_key(
         now.year(),
         now.month(),
@@ -3431,22 +3436,32 @@ fn upload_binary(
     // a reservation the client's share cut short is refused as over the
     // budget, never as bad data.
     let reading = reserve_up_to(shared, session, crate::library::tree_limit(payload.len()));
-    let reply =
-        containers::upload_binary(&hosted, &request.table, &payload, reading.bytes(), || {
-            shared.random()
-        });
-    drop((reading, payload, held));
-    let Some(reply) = reply else {
+    let Some(data) = containers::read_upload(&hosted.name, &payload, reading.bytes()) else {
+        drop((reading, payload, held));
         warn!("{peer}: refusing container data past what the client may hold");
         return Err(Refused.into());
     };
-    hosted.save();
-    Ok(reply.to_result())
+    // The data travels in the operation; what it and the payload are
+    // charged is given back once the engine has stored and saved it.
+    let store = StoreContainerData {
+        table: request.table,
+        data,
+        bytes: payload.len(),
+    };
+    let outcome = shared
+        .engine
+        .submit(&hosted, Operation::StoreContainerData(store));
+    drop((reading, payload, held));
+    match outcome.reply {
+        Reply::StoreContainerData(reply) => Ok(reply.to_result()),
+        other => Err(mismatched(&other)),
+    }
 }
 
 /// op87 AdjustReferenceCount: change a container member's reference count
 /// (containers.md 5.3).
 fn adjust_reference_count(
+    shared: &Shared,
     peer: &str,
     session: &Session,
     header: &Header,
@@ -3461,9 +3476,14 @@ fn adjust_reference_count(
             container::COUNT_FAILED
         }
         Some(file) => {
-            let count = containers::adjust_reference_count(&file.hosted, &request);
-            file.hosted.save();
-            count
+            let adjust = AdjustContainerCount { request };
+            let outcome = shared
+                .engine
+                .submit(&file.hosted, Operation::AdjustContainerCount(adjust));
+            match outcome.reply {
+                Reply::AdjustContainerCount(count) => count,
+                other => return Err(mismatched(&other)),
+            }
         }
         None => container::COUNT_FAILED,
     };

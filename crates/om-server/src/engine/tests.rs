@@ -418,3 +418,462 @@ fn a_recorded_sequence_of_schema_operations_replays_to_the_same_replies_and_tree
         before = now;
     }
 }
+
+/// `table`'s field catalog `[T, 03]` given the index `[T, 03, 01]` every
+/// file FileMaker made has (schema-path.md 5.1, 5.5): the last issued id,
+/// the name list, the name list by type, the display order and the count,
+/// so that a field can be added to it.
+fn index_fields(root: &mut OwnedNode, table: u64) {
+    use om_data::field_catalog;
+    let key_string = |key: &[u8]| [&[key.len() as u8][..], key].concat();
+    let t = uint_segment(table);
+    let catalog = root.at(&[&t, &[3]]).cloned().expect("a field catalog");
+    let members = field_catalog::members(&catalog);
+    let mut index = OwnedNode::list(vec![1], Vec::new());
+    let mut last = 0;
+    for (n, member) in members.iter().enumerate() {
+        last = last.max(serial::decode(&member.segment).expect("a serial key"));
+        let name = field_catalog::member_name(member).expect("a name");
+        let definition = field_catalog::member_definition(member).expect("a definition");
+        let key = field_catalog::name_key(&name);
+        let id = key_string(&member.segment);
+        let listed = [&key[..], &[0, 0, 0]].concat();
+        let typed = [&[definition[0], definition[1] << 2][..], &key, &[0, 0]].concat();
+        index.put(&[&[1], &listed], OwnedNode::leaf(Vec::new(), id.clone()));
+        index.put(&[&[6], &typed], OwnedNode::leaf(Vec::new(), id.clone()));
+        let position = (n as u32 + 1).to_be_bytes();
+        index.put(&[&[3], &position], OwnedNode::leaf(Vec::new(), id));
+    }
+    let count = (members.len() as u32).to_be_bytes().to_vec();
+    index.set_child(OwnedNode::leaf(vec![0], key_string(&serial::encode(last))));
+    index.set_child(OwnedNode::leaf(vec![4], count));
+    root.put(&[&t, &[3], &[1]], index);
+}
+
+/// Container data holding `bytes` as its one stream, `FILE`
+/// (containers.md 2).
+fn file_data(bytes: &[u8]) -> crate::library::BinaryData {
+    use om_data::containers::{md5, stream_node};
+    let mut directory = 1u16.to_be_bytes().to_vec();
+    directory.extend(b"FILE");
+    directory.extend((bytes.len() as u32).to_be_bytes());
+    let md5 = md5([(&b"FILE"[..], bytes)]);
+    let keys = vec![
+        OwnedNode::leaf(vec![2], directory),
+        OwnedNode::leaf(vec![4], md5.to_vec()),
+        stream_node(b"FILE", bytes),
+    ];
+    crate::library::BinaryData::from_tree(keys, md5)
+}
+
+/// docs/server-storage.md 5: an authoring edit takes the time of its
+/// stamps and the UUIDs of what it adds from the engine's environment, so
+/// a recorded sequence of edits and container operations replays against a
+/// fresh load to the same replies, notices and tree. Each edit carries the
+/// revision the file had after the edits before it, so a replay that went
+/// differently would be refused as a conflict. The sequence: one edit of
+/// each kind (a script's steps, a new field, a new layout and on it a field
+/// with its label, a text, a portal, a button, a button step, a move, new
+/// words, a control, a deletion, a new part, part options, a width and
+/// Layout Setup; the layout duplicated and the copy deleted; a value list's
+/// values), a server script's reservation that the authoring extension's
+/// Save writes to disk, container data stored and a library member
+/// released. Every step but the Save must change the tree, and the Save
+/// must save the file, so an operation that did nothing fails here; every
+/// edit's locks are released after it.
+#[test]
+fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_replies_and_tree() {
+    use om_protocol::authoring::{self as design, catalog_revision, content_revision};
+    use om_protocol::container::AdjustReferenceCount as Adjust;
+
+    use crate::library::LIBRARY;
+    const SCRIPT: u64 = 5;
+    const DESIGNER: u32 = 3;
+    let script = fixture::script(SCRIPT, "Greeting", vec![fixture::exit_with("1")]);
+    let mut tree = fixture::tree(std::slice::from_ref(&script), true);
+    fixture::index_scripts(&mut tree);
+    fixture::index_layouts(&mut tree);
+    fixture::add_themes(&mut tree, &[1]);
+    fixture::add_photo(&mut tree);
+    fixture::add_relationship(
+        &mut tree,
+        1,
+        (fixture::OCCURRENCE, fixture::NAME),
+        0,
+        (fixture::NOTES_OCCURRENCE, fixture::BODY),
+    );
+    index_fields(&mut tree, fixture::TABLE);
+    // A list of custom values (file-metadata.md 6.1) and the value-list
+    // catalog's index.
+    tree.put(
+        &[&[0x21], &[5], &[1]],
+        OwnedNode::list(
+            vec![1],
+            vec![
+                text_node(&[3], "Open\rDone"),
+                text_node(&[0x10], "Statuses"),
+            ],
+        ),
+    );
+    tree.put(&[&[0x21], &[1], &[0]], OwnedNode::leaf(vec![0], vec![1, 1]));
+    let (_first, file) = host("engine-design-recorded", &tree);
+    let edit = |edit: DesignEdit| {
+        Operation::EditDesign(EditDesign {
+            connection: DESIGNER,
+            session_name: "Designer".into(),
+            account: fixture::ACCOUNT.into(),
+            edit,
+        })
+    };
+    let node = |path: &[Vec<u8>]| {
+        let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        file.read_store().node(&path).cloned()
+    };
+    let revision = |path: &[Vec<u8>]| catalog_revision(&node(path).expect("a catalog member"));
+    let recording = engine();
+    let mut recorded: Vec<(Operation, Outcome, OwnedNode, u64)> = Vec::new();
+    let mut submit = |operation: Operation| {
+        let outcome = recording.submit(&file, operation.clone());
+        let store = file.read_store();
+        let after = store.node(&[]).unwrap().clone();
+        recorded.push((operation, outcome.clone(), after, store.saves()));
+        outcome
+    };
+    let answer = |outcome: Outcome| match outcome.reply {
+        Reply::EditDesign(edited) => edited.reply,
+        other => panic!("not an edit's reply: {other:?}"),
+    };
+    let changed = |reply: &design::Reply| match reply {
+        design::Reply::Replaced(r) => r.changed,
+        design::Reply::Created(r) => r.changed,
+        design::Reply::Placed(r) => r.changed,
+        design::Reply::LayoutCreated(r) => r.changed,
+        design::Reply::Framed(r) => r.changed,
+        design::Reply::Deleted(r) => r.changed,
+        _ => false,
+    };
+    let frame =
+        |top: f64, left: f64, height: f64, width: f64| [top, left, top + height, left + width];
+    let layout_path = |layout: u64| vec![vec![4], vec![5], uint_segment(layout)];
+
+    // The script's steps.
+    let definition = vec![vec![17], vec![5], serial::encode(SCRIPT)];
+    let steps = fixture::script(SCRIPT, "Greeting", vec![fixture::exit_with("2")]).encode();
+    let replace = design::ReplaceScriptSteps {
+        script: SCRIPT,
+        expected: content_revision(&node(&definition).unwrap()),
+        definition: steps.clone(),
+    };
+    let outcome = submit(edit(DesignEdit::ReplaceScriptSteps(replace)));
+    assert_eq!(
+        outcome.notices,
+        Notices {
+            from: DESIGNER,
+            changes: vec![
+                Change {
+                    path: definition.clone(),
+                    code: 2
+                },
+                Change {
+                    path: vec![vec![17], vec![1]],
+                    code: 2
+                },
+            ],
+        }
+    );
+    assert!(changed(&answer(outcome)));
+    assert_eq!(
+        content_revision(&node(&definition).unwrap()),
+        content_revision(&steps)
+    );
+
+    // A new field.
+    let fields = vec![uint_segment(fixture::TABLE), vec![3]];
+    let create = design::CreateField {
+        table: fixture::TABLE,
+        expected: revision(&fields),
+        data_type: 1,
+        name: "Priority".into(),
+        comment: String::new(),
+    };
+    let design::Reply::Created(created) = answer(submit(edit(DesignEdit::CreateField(create))))
+    else {
+        panic!("no field created");
+    };
+    assert!(created.changed);
+
+    // A new layout, and edits of it.
+    let layouts_index = vec![vec![4], vec![1]];
+    let create = design::CreateLayout {
+        expected: revision(&layouts_index),
+        occurrence: fixture::OCCURRENCE,
+        like: fixture::LAYOUT,
+        name: "Entry".into(),
+        uuid: [9; 16],
+    };
+    let reply = answer(submit(edit(DesignEdit::CreateLayout(create))));
+    let design::Reply::LayoutCreated(design::LayoutCreated { layout, .. }) = reply else {
+        panic!("no layout created: {reply:?}");
+    };
+    let member = layout_path(layout);
+    let place = design::PlaceField {
+        layout,
+        expected: revision(&member),
+        table: fixture::TABLE,
+        occurrence: fixture::OCCURRENCE,
+        field: fixture::NAME,
+        frame: frame(80.0, 110.0, 20.0, 200.0),
+        label: Some(("Name".into(), frame(80.0, 20.0, 20.0, 80.0))),
+    };
+    let reply = answer(submit(edit(DesignEdit::PlaceField(place))));
+    let design::Reply::Placed(field) = reply else {
+        panic!("no field placed: {reply:?}");
+    };
+    let text = design::PlaceText {
+        layout,
+        expected: revision(&member),
+        frame: frame(10.0, 20.0, 20.0, 120.0),
+        text: "Entry".into(),
+    };
+    let reply = answer(submit(edit(DesignEdit::PlaceText(text))));
+    let design::Reply::Placed(text) = reply else {
+        panic!("no text placed: {reply:?}");
+    };
+    let portal = design::PlacePortal {
+        layout,
+        expected: revision(&member),
+        table: fixture::NOTES,
+        occurrence: fixture::NOTES_OCCURRENCE,
+        frame: frame(120.0, 20.0, 90.0, 300.0),
+        rows: 3,
+        fields: vec![fixture::BODY],
+    };
+    assert!(changed(&answer(submit(edit(DesignEdit::PlacePortal(
+        portal
+    ))))));
+    let button = design::PlaceButton {
+        layout,
+        expected: revision(&member),
+        script: SCRIPT,
+        frame: frame(240.0, 20.0, 20.0, 80.0),
+        label: "Greet".into(),
+        parameter: None,
+    };
+    assert!(changed(&answer(submit(edit(DesignEdit::PlaceButton(
+        button
+    ))))));
+    let step = fixture::go_to_record(1);
+    let button = design::PlaceButtonStep {
+        layout,
+        expected: revision(&member),
+        frame: frame(240.0, 120.0, 20.0, 80.0),
+        label: "First".into(),
+        id: step.id(),
+        value: step.value,
+        flags: step.flags,
+        reserved: step.reserved,
+        data: step
+            .data
+            .as_ref()
+            .filter(|data| !data.is_empty())
+            .map(|data| data.encode(&[om_data::layout_placement::STEP_DATA])),
+    };
+    let reply = answer(submit(edit(DesignEdit::PlaceButtonStep(button))));
+    assert!(changed(&reply), "{reply:?}");
+    let moved = design::SetObjectFrames {
+        layout,
+        expected: revision(&member),
+        frames: vec![(text.field_object, frame(10.0, 40.0, 20.0, 120.0))],
+    };
+    let reply = answer(submit(edit(DesignEdit::SetObjectFrames(moved))));
+    assert!(changed(&reply), "{reply:?}");
+    let words = design::SetText {
+        expected: revision(&member),
+        layout,
+        object: field.label_object,
+        text: "Task".into(),
+    };
+    let reply = answer(submit(edit(DesignEdit::SetText(words))));
+    assert!(changed(&reply), "{reply:?}");
+    let control = design::FieldControl {
+        expected: revision(&member),
+        layout,
+        object: field.field_object,
+        // A pop-up menu (`layout_objects::FIELD_CONTROLS`).
+        control: 2,
+        value_list: Some(1),
+    };
+    let reply = answer(submit(edit(DesignEdit::FieldControl(control))));
+    assert!(changed(&reply), "{reply:?}");
+    let deleted = design::DeleteObjects {
+        layout,
+        expected: revision(&member),
+        objects: vec![text.field_object],
+    };
+    let reply = answer(submit(edit(DesignEdit::DeleteObjects(deleted))));
+    assert!(changed(&reply), "{reply:?}");
+    let parts = |path: &[Vec<u8>]| -> Vec<u64> {
+        let mut parts = path.to_vec();
+        parts.push(vec![3]);
+        node(&parts)
+            .map(|parts| {
+                // Each part `[L, 03, P]` holds its definition `02`.
+                parts
+                    .children
+                    .iter()
+                    .filter(|p| p.child(&[2]).is_some())
+                    .filter_map(|p| om_hbam::slot::be_uint(&p.segment))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let body = parts(&member);
+    let header = design::ChangeParts {
+        expected: revision(&member),
+        layout,
+        action: design::PARTS_ADD,
+        part: 0,
+        part_type: 1,
+        size: 40.0,
+    };
+    let reply = answer(submit(edit(DesignEdit::ChangeParts(header))));
+    assert!(changed(&reply), "{reply:?}");
+    assert_eq!(parts(&member).len(), body.len() + 1);
+    let options = design::PartOptions {
+        expected: revision(&member),
+        layout,
+        part: body[0],
+        flags: 0,
+        page_break_after: 3,
+        break_field: None,
+    };
+    let reply = answer(submit(edit(DesignEdit::PartOptions(options))));
+    assert!(changed(&reply), "{reply:?}");
+    let width = design::LayoutWidth {
+        expected: revision(&member),
+        layout,
+        width: 640.0,
+    };
+    let reply = answer(submit(edit(DesignEdit::LayoutWidth(width))));
+    assert!(changed(&reply), "{reply:?}");
+    let views = {
+        let mut flags = member.clone();
+        flags.push(vec![0xf1]);
+        node(&flags)
+            .and_then(|n| n.value)
+            .and_then(|v| om_hbam::slot::be_uint(&v))
+            .unwrap_or(0)
+    };
+    let setup = design::LayoutSetup {
+        expected: revision(&member),
+        layout,
+        name: "Task entry".into(),
+        flags: views,
+        hidden: false,
+    };
+    let reply = answer(submit(edit(DesignEdit::LayoutSetup(setup))));
+    assert!(changed(&reply), "{reply:?}");
+    let copy = design::DuplicateLayout {
+        expected: revision(&layouts_index),
+        layout,
+        uuid: [10; 16],
+    };
+    let reply = answer(submit(edit(DesignEdit::DuplicateLayout(copy))));
+    let design::Reply::LayoutCreated(copy) = reply else {
+        panic!("no copy: {reply:?}");
+    };
+    assert!(node(&layout_path(copy.layout)).is_some());
+    let delete = design::DeleteLayout {
+        expected: revision(&layouts_index),
+        layout: copy.layout,
+    };
+    let reply = answer(submit(edit(DesignEdit::DeleteLayout(delete))));
+    assert!(changed(&reply), "{reply:?}");
+    assert!(node(&layout_path(copy.layout)).is_none());
+
+    // A value list's values.
+    let list = vec![vec![0x21], vec![5], vec![1]];
+    let values = design::ValueListValues {
+        expected: revision(&list),
+        list: 1,
+        values: vec!["Open".into(), "Done".into(), "Later".into()],
+    };
+    let reply = answer(submit(edit(DesignEdit::ValueListValues(values))));
+    assert!(changed(&reply), "{reply:?}");
+
+    // A server script's reservation waits for its commit to be saved; the
+    // extension's Save writes it.
+    let reserve = ReserveRecordIds {
+        user: LockUser {
+            connection: 4,
+            txn: 1,
+        },
+        holder: "Script (Admin)".into(),
+        request: CreateRecord {
+            table: vec![uint_segment(fixture::TABLE)],
+            count: 1,
+            txn: 1,
+        },
+        room: writes::UNCAPPED,
+        durable: false,
+    };
+    let outcome = submit(Operation::ReserveRecordIds(reserve));
+    assert!(matches!(outcome.reply, Reply::ReserveRecordIds(r) if r.status == 0));
+    assert!(file.read_store().has_unsaved_changes());
+    let outcome = submit(Operation::SaveFile);
+    assert_eq!(outcome.reply, Reply::SaveFile(Ok(())));
+    assert!(!file.read_store().has_unsaved_changes());
+
+    // Container data stored in Tasks' library, and Photo's member released.
+    let tasks = uint_segment(fixture::TABLE);
+    let store = StoreContainerData {
+        table: vec![tasks.clone()],
+        data: Ok(file_data(b"a stored file")),
+        bytes: 64,
+    };
+    let outcome = submit(Operation::StoreContainerData(store));
+    let Reply::StoreContainerData(stored) = outcome.reply else {
+        panic!("not op88's reply: {:?}", outcome.reply);
+    };
+    assert_eq!(stored.status, 0);
+    let photo = vec![
+        tasks.clone(),
+        vec![LIBRARY],
+        vec![5],
+        serial::encode(fixture::PHOTO_MEMBER),
+    ];
+    assert!(node(&photo).is_some());
+    let release = AdjustContainerCount {
+        request: Adjust {
+            path: photo.clone(),
+            delta: -1,
+        },
+    };
+    let outcome = submit(Operation::AdjustContainerCount(release));
+    assert_eq!(outcome.reply, Reply::AdjustContainerCount(0));
+    assert!(node(&photo).is_none(), "the released member is deleted");
+    assert_eq!(file.lock_table().held_by(DESIGNER), 0);
+
+    let (_second, again) = host("engine-design-replayed", &tree);
+    let replaying = engine();
+    let mut before = again.read_store().node(&[]).unwrap().clone();
+    for (operation, outcome, after, saves) in &recorded {
+        let saved = again.read_store().saves();
+        assert_eq!(
+            &replaying.submit(&again, operation.clone()),
+            outcome,
+            "{operation:?}"
+        );
+        let store = again.read_store();
+        let now = store.node(&[]).unwrap().clone();
+        assert_eq!(&now, after, "the tree after {operation:?}");
+        assert_eq!(store.saves(), *saves, "the saves after {operation:?}");
+        if *operation == Operation::SaveFile {
+            assert!(store.saves() > saved, "the Save saved nothing");
+        } else {
+            assert_ne!(now, before, "{operation:?} changed nothing");
+        }
+        before = now;
+    }
+    assert_eq!(again.lock_table().held_by(DESIGNER), 0);
+}

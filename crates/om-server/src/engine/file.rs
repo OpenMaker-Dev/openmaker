@@ -3,8 +3,8 @@
 
 use log::{info, warn};
 
-use super::transaction::{Hold, Locks, Transaction};
-use super::{run, Environment, HostEnvironment, Operation, Outcome, Reply};
+use super::transaction::{self, Hold, Locks, Transaction};
+use super::{run, Edited, Environment, FileNotSaved, HostEnvironment, Operation, Outcome, Reply};
 use crate::hosting::Hosted;
 use crate::store::Store;
 
@@ -22,9 +22,11 @@ impl Default for FileEngine {
 
 /// What of the file the engine holds for an operation: what today's code
 /// took for each request. op61, op62 and op65 never took the store, and
-/// op60 only read it. op13, op73, op86's writes and a find's indexes took
-/// the store for writing and never the lock table, which their runs do not
-/// use.
+/// op60 only read it. op13, op73, op86's writes, a find's indexes, op87,
+/// op88 and op240's save took the store for writing and never the lock
+/// table, which their runs do not use; an authoring edit took the store
+/// for writing and the lock table only while it took and released its
+/// locks.
 enum Needs {
     LockTable,
     View,
@@ -44,13 +46,18 @@ enum Save {
     /// A client's op71: its reservation is saved before the ids are
     /// answered (`Hosted::save_held`); a failed save takes it back.
     Reservation,
-    /// op72, op13, op86's writes and a find's indexes: the file saved if it
-    /// changed, and a failed save not reported, as `Hosted::save` does and
-    /// as op13 dropped the result of `Hosted::save_held`.
+    /// op72, op13, op86's writes, a find's indexes, op87 and op88: the file
+    /// saved if it changed, and a failed save not reported, as
+    /// `Hosted::save` does and as op13 dropped the result of
+    /// `Hosted::save_held`.
     Unchecked,
     /// op73: [`Save::Unchecked`] when its work changed the file, which is
     /// otherwise not saved.
     UncheckedIfChanged,
+    /// op240's save: [`Save::Unchecked`] when the file may be written, the
+    /// reply then saying whether it holds changes the disk lacks
+    /// (`Store::has_unsaved_changes`), as op240 always answered it.
+    Requested,
 }
 
 fn needs(operation: &Operation) -> Needs {
@@ -61,7 +68,11 @@ fn needs(operation: &Operation) -> Needs {
         | Operation::UploadToCatalog(_)
         | Operation::ChangeSchema(_)
         | Operation::StoreIndexes(_)
-        | Operation::UpdateTable(_) => Needs::Transaction,
+        | Operation::UpdateTable(_)
+        | Operation::StoreContainerData(_)
+        | Operation::AdjustContainerCount(_)
+        | Operation::EditDesign(_)
+        | Operation::SaveFile => Needs::Transaction,
         Operation::TakeLock(_) => Needs::View,
         Operation::UpgradeLock(_) | Operation::ReleaseLock(_) | Operation::ReleaseLocks(_) => {
             Needs::LockTable
@@ -72,12 +83,16 @@ fn needs(operation: &Operation) -> Needs {
 fn save(operation: &Operation) -> Save {
     match operation {
         Operation::ReserveRecordIds(op) if op.durable => Save::Reservation,
-        Operation::CommitRecords(_) => Save::Commit,
+        // An authoring edit that changed the file did it in a commit.
+        Operation::CommitRecords(_) | Operation::EditDesign(_) => Save::Commit,
         Operation::AdvanceSerial(_)
         | Operation::UploadToCatalog(_)
         | Operation::ChangeSchema(_)
-        | Operation::StoreIndexes(_) => Save::Unchecked,
+        | Operation::StoreIndexes(_)
+        | Operation::StoreContainerData(_)
+        | Operation::AdjustContainerCount(_) => Save::Unchecked,
         Operation::UpdateTable(_) => Save::UncheckedIfChanged,
+        Operation::SaveFile => Save::Requested,
         _ => Save::Nothing,
     }
 }
@@ -102,10 +117,11 @@ impl FileEngine {
     /// encoded, the notices delivered. Operations on one file run one at a
     /// time under the store's write lock, or the lock table's mutex for
     /// those that only edit it (lock order: the module doc of
-    /// [`super`]). When what op70 or a client's op71 changed cannot be
-    /// saved, it is taken back, locks it took included, and the outcome is
-    /// the storage error with no notices; the other operations' failed
-    /// saves are not reported yet ([`Save`]).
+    /// [`super`]). When what op70, a client's op71 or an authoring edit
+    /// changed cannot be saved, it is taken back, locks it took included,
+    /// and the outcome is the storage error with no notices; the other
+    /// operations' failed saves are not reported yet ([`Save`]), op240's
+    /// save excepted, whose reply is whether the file was saved.
     pub fn submit(&self, file: &Hosted, operation: Operation) -> Outcome {
         let environment = &*self.environment;
         match needs(&operation) {
@@ -143,18 +159,21 @@ impl FileEngine {
         let mut store = file.write_store();
         let mut locks = Locks::new(&file.locks);
         let mut tx = Transaction::new(&mut store);
-        let outcome = run(
+        let mut outcome = run(
             operation,
             &file.name,
             Hold::Transaction(&mut tx),
             &mut locks,
             &*self.environment,
         );
+        // An authoring edit's locks, released once the store is let go.
+        let held = locks.after_stored();
         let Transaction {
             journal,
             reservation,
             stored_lines,
             released_libraries,
+            field_bases,
             ..
         } = tx;
         if !released_libraries.is_empty() {
@@ -176,11 +195,21 @@ impl FileEngine {
                 save_unchecked(file, &mut store);
                 Ok(())
             }
+            (None, Save::Requested) if outcome.reply == Reply::SaveFile(Ok(())) => {
+                save_unchecked(file, &mut store);
+                if store.has_unsaved_changes() {
+                    outcome.reply = Reply::SaveFile(Err(FileNotSaved::Failed));
+                }
+                Ok(())
+            }
             _ => Ok(()),
         };
-        match saved {
+        let outcome = match saved {
             Ok(()) => {
                 locks.keep();
+                for (table, field) in field_bases {
+                    store.add_field_basis(&table, field);
+                }
                 for line in stored_lines {
                     info!("{line}");
                 }
@@ -188,6 +217,13 @@ impl FileEngine {
             }
             Err(error) => {
                 locks.take_back();
+                if let Reply::EditDesign(Edited {
+                    not_stored: Some(not_stored),
+                    ..
+                }) = &outcome.reply
+                {
+                    warn!("{:?}: {}: {error}", file.name, not_stored.not_done);
+                }
                 if let Some(reservation) = reservation {
                     store.take_back_record_ids(
                         &reservation.table,
@@ -202,6 +238,9 @@ impl FileEngine {
                 }
                 outcome.not_stored(&error)
             }
-        }
+        };
+        drop(store);
+        transaction::release(&file.locks, held);
+        outcome
     }
 }
