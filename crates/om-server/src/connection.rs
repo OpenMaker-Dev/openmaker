@@ -2556,12 +2556,7 @@ fn query(
                 let draft = Draft::ChangeSchema {
                     writes: outcome.writes,
                 };
-                match shared
-                    .engine
-                    .submit_draft(&file.hosted, draft)
-                    .outcome
-                    .reply
-                {
+                match shared.engine.submit_draft(&file.hosted, draft).reply {
                     Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes => {}
                     Reply::ChangeSchema(Err(_)) => return Err(Refused.into()),
                     other => return Err(mismatched(&other)),

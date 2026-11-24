@@ -201,11 +201,13 @@ store until a write stores them. Whichever write first holds the store
 stores all that waits then, whoever left it. So the request that stores
 them submits a draft (`engine::Draft`) that names none of them, and the
 file engine completes it under the store's write lock, taking what waits
-into the operation it runs (`ChangeSchema`, `StoreIndexes`). The completed
-operation comes back with the outcome (`engine::Submitted`); it is what a
-recording holds, and a replay submits it as it is. The store engine will
-have to make issuing a member key and building an index operations of
-their own.
+into the operation it runs (`ChangeSchema`, `StoreIndexes`). A recording is
+offered each operation by reference, completed and before it runs; that is
+what it holds, and a replay submits it as it is. The running server records
+nothing, so no operation's data is copied. Member keys a draft took go back
+to waiting if its run is left by a panic before it writes them, as they
+stayed waiting before. The store engine will have to make issuing a member
+key and building an index operations of their own.
 
 One function, `engine::run`, runs an operation against a transaction (a
 view plus put, delete and replace-subtree), the file's lock table

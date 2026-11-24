@@ -45,6 +45,9 @@ pub struct Transaction<'a> {
     /// The container libraries deleted tables took with them
     /// ([`Self::apply`]), whose thumbnails the engine forgets.
     pub(super) released_libraries: Vec<Vec<Vec<u8>>>,
+    /// Whether the run began writing member keys
+    /// ([`Self::write_member_keys`]).
+    pub(super) wrote_member_keys: bool,
 }
 
 /// The last issued id of `table` as it was before a reservation
@@ -63,6 +66,7 @@ impl<'a> Transaction<'a> {
             reservation: None,
             stored_lines: Vec::new(),
             released_libraries: Vec::new(),
+            wrote_member_keys: false,
         }
     }
 
@@ -175,11 +179,16 @@ impl<'a> Transaction<'a> {
 
     /// GenerateMemberKey's issued keys (`Store::write_member_keys`).
     pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
+        self.wrote_member_keys = true;
         self.store.write_member_keys(keys);
     }
 
     /// Indexes finds built on demand (`Store::store_indexes`).
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
+        #[cfg(test)]
+        if PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
+            panic!("a test's panic while storing indexes");
+        }
         self.store.store_indexes(indexes);
     }
 
@@ -194,6 +203,14 @@ impl<'a> Transaction<'a> {
     ) -> Result<bool, &'static str> {
         self.store.update_table(table, environment, unique_id)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes [`Transaction::store_indexes`] panic on this thread
+    /// (`engine::tests`).
+    pub(super) static PANIC_STORING_INDEXES: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 /// A file's lock table as an operation uses it ([`super::run`]). It takes

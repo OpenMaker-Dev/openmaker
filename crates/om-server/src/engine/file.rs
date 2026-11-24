@@ -5,17 +5,22 @@ use log::{info, warn};
 
 use super::transaction::{Hold, Locks, Transaction};
 use super::{
-    run, ChangeSchema, Draft, Environment, HostEnvironment, Operation, Outcome, Reply,
-    StoreIndexes, Submitted,
+    run, ChangeSchema, Draft, Environment, HostEnvironment, Operation, Outcome, Reply, StoreIndexes,
 };
 use crate::hosting::Hosted;
-use crate::store::Store;
+use crate::store::{MemberKey, Store};
 
 /// The file engine. Its environment is the one operations read the clock
 /// and randomness from ([`Environment`]).
 pub struct FileEngine {
     environment: Box<dyn Environment>,
+    recorder: Option<Recorder>,
 }
+
+/// What the engine offers each operation to, by reference, completed and
+/// before it runs it: a recording (`engine::tests`). The running server
+/// installs none, so the engine keeps no copy of what an operation owns.
+type Recorder = Box<dyn Fn(&Operation) + Send + Sync>;
 
 impl Default for FileEngine {
     fn default() -> Self {
@@ -90,16 +95,19 @@ fn save(operation: &Operation) -> Save {
 /// it, as the first write to hold the store took it before the engine
 /// interface, and only what the run will store. Writes refused on a
 /// read-only file take nothing, and member keys stay waiting on a
-/// read-only file.
-fn complete(draft: Draft, store: &mut Store) -> Operation {
+/// read-only file. Also returns the member keys taken, which go back to
+/// waiting if the run is left by a panic before it writes them, as they
+/// stayed waiting before when storing the indexes panicked.
+fn complete(draft: Draft, store: &mut Store) -> (Operation, Vec<MemberKey>) {
     match draft {
         Draft::ChangeSchema { writes } => {
             if store.is_read_only() && !writes.is_empty() {
-                return Operation::ChangeSchema(ChangeSchema {
+                let refused = Operation::ChangeSchema(ChangeSchema {
                     writes,
                     member_keys: Vec::new(),
                     indexes: Vec::new(),
                 });
+                return (refused, Vec::new());
             }
             let indexes = store.take_indexes_on_demand();
             let member_keys = if store.is_read_only() {
@@ -107,7 +115,8 @@ fn complete(draft: Draft, store: &mut Store) -> Operation {
             } else {
                 store.take_issued_member_keys()
             };
-            if writes.is_empty() && member_keys.is_empty() {
+            let taken = member_keys.clone();
+            let operation = if writes.is_empty() && member_keys.is_empty() {
                 Operation::StoreIndexes(StoreIndexes { indexes })
             } else {
                 Operation::ChangeSchema(ChangeSchema {
@@ -115,11 +124,16 @@ fn complete(draft: Draft, store: &mut Store) -> Operation {
                     member_keys,
                     indexes,
                 })
-            }
+            };
+            (operation, taken)
         }
-        Draft::StoreIndexes => Operation::StoreIndexes(StoreIndexes {
-            indexes: store.take_indexes_on_demand(),
-        }),
+        Draft::StoreIndexes => {
+            let indexes = store.take_indexes_on_demand();
+            (
+                Operation::StoreIndexes(StoreIndexes { indexes }),
+                Vec::new(),
+            )
+        }
     }
 }
 
@@ -135,7 +149,24 @@ fn save_unchecked(file: &Hosted, store: &mut Store) {
 
 impl FileEngine {
     pub fn new(environment: Box<dyn Environment>) -> Self {
-        FileEngine { environment }
+        FileEngine {
+            environment,
+            recorder: None,
+        }
+    }
+
+    /// This engine, offering each operation it runs to `recorder` first
+    /// ([`Recorder`]).
+    #[cfg(test)]
+    pub fn recording(mut self, recorder: impl Fn(&Operation) + Send + Sync + 'static) -> Self {
+        self.recorder = Some(Box::new(recorder));
+        self
+    }
+
+    fn record(&self, operation: &Operation) {
+        if let Some(recorder) = &self.recorder {
+            recorder(operation);
+        }
     }
 
     /// Run `operation` on `file` and store what it changed before
@@ -151,6 +182,7 @@ impl FileEngine {
         let environment = &*self.environment;
         match needs(&operation) {
             Needs::LockTable => {
+                self.record(&operation);
                 let mut locks = Locks::new(&file.locks);
                 let outcome = run(
                     operation,
@@ -164,6 +196,7 @@ impl FileEngine {
             }
             Needs::View => {
                 let store = file.read_store();
+                self.record(&operation);
                 let mut locks = Locks::new(&file.locks);
                 let outcome = run(
                     operation,
@@ -175,41 +208,54 @@ impl FileEngine {
                 locks.keep();
                 outcome
             }
-            Needs::Transaction => self.submit_write(file, |_| (operation, ())).1,
+            Needs::Transaction => self.submit_write(file, |_| (operation, Vec::new())),
         }
     }
 
     /// Complete `draft` with what reads left waiting in `file`, under the
     /// store's write lock, and run the operation it becomes as
-    /// [`Self::submit`] does, in the same hold. The completed operation
-    /// comes back with the outcome: [`Self::submit`] replays it.
-    pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Submitted {
-        let (operation, outcome) = self.submit_write(file, |store| {
-            let operation = complete(draft, store);
-            (operation.clone(), operation)
-        });
-        Submitted { operation, outcome }
+    /// [`Self::submit`] does, in the same hold. A recording gets the
+    /// completed operation ([`Self::recording`]), which [`Self::submit`]
+    /// replays.
+    pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Outcome {
+        self.submit_write(file, |store| complete(draft, store))
     }
 
     /// Run the operation `operation` gives for the store, which it is
-    /// given under the write lock, and keep what it returns besides.
-    fn submit_write<T>(
+    /// given under the write lock, with the member keys it took from the
+    /// waiting ones ([`complete`]): if the run is left by a panic before it
+    /// writes them, they wait again.
+    fn submit_write(
         &self,
         file: &Hosted,
-        operation: impl FnOnce(&mut Store) -> (Operation, T),
-    ) -> (T, Outcome) {
+        operation: impl FnOnce(&mut Store) -> (Operation, Vec<MemberKey>),
+    ) -> Outcome {
         let mut store = file.write_store();
-        let (operation, kept) = operation(&mut store);
+        let (operation, taken) = operation(&mut store);
+        self.record(&operation);
         let save = save(&operation);
         let mut locks = Locks::new(&file.locks);
         let mut tx = Transaction::new(&mut store);
-        let outcome = run(
-            operation,
-            &file.name,
-            Hold::Transaction(&mut tx),
-            &mut locks,
-            &*self.environment,
-        );
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(
+                operation,
+                &file.name,
+                Hold::Transaction(&mut tx),
+                &mut locks,
+                &*self.environment,
+            )
+        }));
+        let outcome = match ran {
+            Ok(outcome) => outcome,
+            Err(panic) => {
+                let wrote = tx.wrote_member_keys;
+                drop(tx);
+                if !wrote {
+                    store.put_back_member_keys(taken);
+                }
+                std::panic::resume_unwind(panic)
+            }
+        };
         let Transaction {
             journal,
             reservation,
@@ -238,7 +284,7 @@ impl FileEngine {
             }
             _ => Ok(()),
         };
-        let outcome = match saved {
+        match saved {
             Ok(()) => {
                 locks.keep();
                 for line in stored_lines {
@@ -262,7 +308,6 @@ impl FileEngine {
                 }
                 outcome.not_stored(&error)
             }
-        };
-        (kept, outcome)
+        }
     }
 }
