@@ -359,9 +359,11 @@ learn of a schema change when the client releases its lock
 its locks would raise.
 
 Operations that change the tree therefore run one at a time. op61, op62
-and op65 run under the lock table alone: they wait for an op70 or op71
-that holds the lock table while it saves, and can run beside an op72 or
-any other operation that holds only the store. Beside an authoring edit's
+and op65, a server script's locks and their releases, and the release of
+a session's locks run under the lock table alone: they wait for an op70,
+an op71 or a server script's commit that holds the lock table while it
+saves, and can run beside an op72 or any other operation that holds only
+the store. Beside an authoring edit's
 save they see the edit's locks, so a lock request on what the edit
 changes is refused with the conflict, as it was before. op60 also reads
 the store, so it waits for every operation that holds the store for
