@@ -51,6 +51,15 @@ impl SavedFile {
             Self::Hosted { host, port, .. } => format!("{host}:{port}"),
         }
     }
+
+    /// Whether the settings file can keep it: JSON keeps text, so a local
+    /// path that is not valid Unicode cannot be.
+    fn storable(&self) -> bool {
+        match self {
+            Self::Local { path } => path.to_str().is_some(),
+            Self::Hosted { .. } => true,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +140,16 @@ impl History {
     /// this list; it is saved with the next change that can be, or shows
     /// until the app quits.
     pub fn change(&mut self, path: Option<&Path>, change: Change) -> Result<(), DataError> {
+        // Refused, not queued: it could never be saved, and would hold back
+        // every change after it.
+        if let Change::Opened(file) | Change::SetFavorite(file, true) = &change {
+            if !file.storable() {
+                return Err(DataError::new(format!(
+                    "{} can't be kept in Recent or Favorites: its location is not valid Unicode.",
+                    file.name()
+                )));
+            }
+        }
         let Some(path) = path else {
             self.apply(change);
             return Ok(());
@@ -181,6 +200,32 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file whose path the settings file cannot keep is refused rather
+    /// than queued, so the changes after it still save.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_unicode_does_not_hold_back_later_saves() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut history = History::default();
+        let odd = SavedFile::local(
+            dir.path()
+                .join(std::ffi::OsStr::from_bytes(b"Bad\xff.fmp12")),
+        );
+        assert!(history
+            .change(Some(&path), Change::Opened(odd.clone()))
+            .is_err());
+        assert!(history
+            .change(Some(&path), Change::SetFavorite(odd, true))
+            .is_err());
+        let tasks = SavedFile::local(dir.path().join("Tasks.fmp12"));
+        history
+            .change(Some(&path), Change::Opened(tasks.clone()))
+            .unwrap();
+        assert_eq!(History::load(&path).unwrap().files(Tab::Recent), [tasks]);
+    }
 
     #[test]
     fn reopening_and_pinning_merge_into_the_latest_settings() {
