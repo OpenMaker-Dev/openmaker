@@ -421,15 +421,24 @@ has the same root hashes at the same entry. Every page an entry writes
 carries the entry's index, and an entry that changes a tree writes its
 root. A tree is never rebuilt in another shape except by an entry.
 
-The page cache is keyed by page number and hash, so a page number that is
-reused never returns the page that was there before.
+The trees keep their pages in the **page file** (`om_store::pagefile`;
+[server-storage-format.md](server-storage-format.md) section 4). Pages
+committed and not yet written by a checkpoint are held in memory apart
+from the **page cache**, which cannot evict them. The cache holds pages
+read from disk, up to a configured size, least recently used first out.
+It is keyed by page number and hash, so a page number that is reused
+never returns the page that was there before, and it never invalidates.
 
 The **superblock** names, for a checkpoint (section 6.7), the entry it
-covers, the roots of the state's trees and of the server's own map of free
-pages, and the restore points that are kept, with their roots. It carries
-a number and its own hash, and is written twice. There are four slots: a
-new checkpoint's two copies overwrite those of the older of the two
-checkpoints on disk.
+covers, the tree format version and the first page of the checkpoint's
+**meta stream**, by number and hash. The meta stream holds the roots of
+the state's trees by name, the restore points that are kept (each with
+its own meta stream) and the server's own map of free pages, and every
+page of it is checked by the hash that names it, so a copy of the
+superblock has a fixed size however many files the server hosts. A copy
+carries the checkpoint's number and its own hash, and is written twice.
+There are four slots in two pairs: a new checkpoint's two copies
+overwrite those of the checkpoint on disk that is not the newest.
 
 ### 6.5 Writing
 
@@ -472,32 +481,59 @@ large find or a SQL query sees one version while writes go on.
 A **checkpoint** writes the pages of the published state that are not on
 disk yet and the server's map of free pages, flushes them, then writes
 and flushes its superblock copies. Only published entries are ever
-checkpointed.
+checkpointed: the page file checkpoints its newest version, so the
+engine applies an entry to the trees when it publishes it, or pins the
+published version while it applies ahead and checkpoints only once
+everything applied is published. The order of the writes and flushes,
+and what a crash at each step leaves, are in server-storage-format.md
+4.6.
 
 **What is kept.** The two newest checkpoints are kept whole, and so is
 every checkpoint held as a restore point (section 11), which each
 superblock lists. A checkpoint is retired when its superblock copies are
-overwritten, and a restore point when no superblock on disk lists it. A
-page is reused only when no superblock on disk names a checkpoint or
-restore point that uses it, and no clone, no state copy in progress and no
-view open in the process refers to it. The log is kept from the oldest
+overwritten, and a restore point when no superblock on disk lists it (a
+dropped restore point is no longer listed by the next checkpoint, and is
+retired by the one after it). A page is reused only when no superblock on
+disk names a checkpoint or restore point that uses it, and no clone, no
+state copy in progress and no view open in the process refers to it:
+every page that leaves the newest version is recorded with the version
+that wrote it and the one that released it, and is reused only when no
+checkpoint on disk, restore point listed, checkpoint being written or
+**pin** lies between the two. The engine pins the entry of a view, a
+state copy or a restore point it reads, for as long as it uses it. Pins
+are in memory, so after a restart only what the superblocks on disk name
+is kept. The log is kept from the oldest
 kept checkpoint, and further back while another server needs it
 (section 7.5). So when the newest checkpoint cannot be used, the one
 before it still has every page it names and every entry after it. The
 page file keeps a reserve that only recovery, checkpoints and the discard
 of a group may use, so that a store whose writes have run out of space can
-still start, checkpoint and free space.
+still start, checkpoint and free space; the room a checkpoint's meta
+stream needs is set aside beyond it. A reservation the disk cannot hold
+is refused before anything is written.
 
-The **map of free pages** records which pages are free and how many trees
-share each page (section 6.8). It is each server's own. Changes to it
-since a checkpoint are rebuilt by applying the log.
+The **map of free pages** records which pages are free, which are dying
+and from when to when they were reached, and how many trees share each
+page (section 6.8). It is each server's own, and is written whole in
+each checkpoint's meta stream, as of that checkpoint. A subtree dropped
+whole is released by its root and taken down lazily, a page at a time.
+Changes to the map since a checkpoint are rebuilt by applying the log:
+the same entries applied from the same checkpoint, with the same
+checkpoints, pins and reclaims between them, give the same map, page
+numbers included. A dying page that a map on disk still records as
+needing its bytes keeps them until every checkpoint on disk records it
+settled (server-storage-format.md 4.5).
 
 **Starting up.**
 
 1. Read `state`. With no valid copy the server does not start.
 2. Of the two checkpoints on disk, newest first, take the first whose
-   superblock copy is valid and whose tree roots read back with the hashes
-   it names. Deeper damage is page damage (section 6.12), found when a
+   superblock copy is valid, whose meta stream reads back and agrees with
+   it, and whose tree roots read back with the hashes it names; a read
+   the device fails counts as not reading back. Its copy is written into
+   both of its slots, and the other pair keeps only its predecessor's
+   copy: a checkpoint passed over is cleared before any of its pages can
+   be written over. Deeper damage is page damage (section 6.12), found when a
    page is read, and does not send the server back to an older checkpoint.
 3. Read the log from that checkpoint and check it against the marker: the
    entry at the marker's index must be there, whole, with the marker's
@@ -640,9 +676,10 @@ store take unbounded memory or disk:
   (section 6.5). A server that applies another's entries and runs out of
   space cannot refuse them: it stops and reports, and is in repair until
   it has space;
-- pages waiting for a checkpoint have a budget. Past it a checkpoint is
-  forced and operations wait. Pages a group's last entry creates may be
-  written before the checkpoint that names them;
+- pages waiting for a checkpoint have a budget. Past it the page file
+  refuses reservations as "checkpoint needed", a checkpoint is forced and
+  operations wait. Pages a group's last entry creates may be written
+  before the checkpoint that names them;
 - views have a limit in number, and one held longer than a configured
   time by a SQL query is ended, so that old pages can be reused;
 - a server too far behind for the log to be worth sending gets the state

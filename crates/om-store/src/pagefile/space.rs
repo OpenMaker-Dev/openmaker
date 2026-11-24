@@ -43,12 +43,13 @@ fn item_pages(key_len: usize, value_len: usize) -> u64 {
 /// - one page per level added (the new roots).
 ///
 /// Pages are counted once per primitive even when several primitives
-/// touch the same page, so the bound is loose for large entries; an entry
-/// of one put into a tree of height 3 is bounded by 25 pages and writes 3.
-/// The exact count is a function of the tree and the edits alone (section
-/// 2.7's one shape per sequence of edits), so a leader that applies an
-/// entry before appending it can record the exact count with the entry
-/// instead.
+/// touch the same page, so the bound is loose, and the looser the larger
+/// the entry: one put of a node at depth 1 into a tree of height 3 is
+/// bounded by 45 pages, one at depth 3 by 82, and either writes 3. The
+/// exact count is a function of the tree and the edits alone (section
+/// 2.7's one shape per sequence of edits): `Reservation::taken` reports it
+/// once the entry is applied, so an entry can carry it and recovery and
+/// followers reserve exactly that.
 pub fn entry_bound(edits: &[Edit], height: usize) -> u64 {
     let mut sets = 0u64;
     let mut deletes = 0u64;

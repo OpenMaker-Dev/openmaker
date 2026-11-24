@@ -891,6 +891,7 @@ impl<'r> Run<'r> {
             );
         }
         assert_eq!(proc.pf.checkpoint_trees(), model.roots());
+        self.check_slots(&opened);
         self.confirmed = number;
         self.seen.insert((number, model.entry.index));
         self.restore.retain(|_, at| *at <= number);
@@ -959,6 +960,49 @@ impl<'r> Run<'r> {
         }
         self.proc.as_ref().unwrap().pf.end_recovery();
         self.check(false);
+    }
+
+    /// After an open, the pair of the checkpoint used holds its copy in both
+    /// slots, and the other pair holds its predecessor's copy in both slots,
+    /// or nothing valid: the open wrote what the device may not have held,
+    /// and cleared what must never be taken again. (Skipped when a slot
+    /// cannot be read, and on a lying disk.)
+    fn check_slots(&mut self, opened: &Opened) {
+        if self.device == Device::Lying {
+            // The device may have dropped what the open wrote.
+            return;
+        }
+        let fs = self.disk.fs();
+        let Ok(file) = fs.open(FILE, FileOptions::PLAIN) else {
+            return;
+        };
+        let mut numbers = [None; SLOTS];
+        for (slot, number) in numbers.iter_mut().enumerate() {
+            let mut buf = vec![0u8; COPY];
+            if file.read_at((slot * SLOT) as u64, &mut buf).is_err() {
+                return;
+            }
+            if let Ok(superblock::Decoded::Valid(sb)) = superblock::decode(&buf) {
+                *number = Some(sb.number);
+            }
+        }
+        let pair = (0..SLOTS)
+            .find(|&s| numbers[s] == Some(opened.checkpoint))
+            .map(superblock::pair_of)
+            .expect("the checkpoint used is on disk");
+        for slot in pair_slots(pair) {
+            assert_eq!(
+                numbers[slot],
+                Some(opened.checkpoint),
+                "slot {slot}: {numbers:?}"
+            );
+        }
+        for slot in pair_slots(1 - pair) {
+            assert_eq!(
+                numbers[slot], opened.predecessor,
+                "slot {slot}: {numbers:?}"
+            );
+        }
     }
 
     /// Checks one version's trees against the model, adding the pages they
@@ -1878,4 +1922,70 @@ fn a_checkpoint_is_needed_past_the_budget_of_pages_in_memory() {
     pf.checkpoint(model.entry, &model.roots(), None).unwrap();
     pf.reclaim(10_000);
     assert_eq!(pf.space().dirty, 0);
+}
+
+/// A unit dropped without a commit, or whose commit is refused, has had
+/// no effect: the map is as it was, byte for byte, and every page it
+/// released still reads.
+#[test]
+fn a_unit_dropped_or_refused_changes_nothing() {
+    let mut reached = Reached::default();
+    let (_sim, mut run) = quiet_run(22, &mut reached);
+    for _ in 0..6 {
+        run.entry_all();
+    }
+    run.checkpoint(false);
+    let pf = run.pf();
+    let (root, _) = run.newest.trees[&tree_name(0)].clone();
+    let pages = tree::check(pf, root).unwrap().pages;
+    assert!(pages.len() >= 2, "tree 0 has pages below its root");
+    let (child, child_hash) = pages[1];
+    let before = (pf.map_image(), pf.space());
+    let index = run.next_index();
+    let unit_page = |n: PageNo| {
+        let mut b = crate::page::Builder::new(PageKind::Leaf, 0, index);
+        b.item(crate::page::KIND_LIST, 3, 0, b"a\x00\x01", &[]);
+        Arc::new(b.finish(n).unwrap())
+    };
+    {
+        let res = pf.reserve(index, 4, Purpose::Entry).unwrap();
+        // Dropped after allocating, writing and releasing.
+        let mut unit = res.begin().unwrap();
+        let n = unit.allocate().unwrap();
+        unit.write(unit_page(n)).unwrap();
+        unit.release(root.page, &root.hash, Release::Copied)
+            .unwrap();
+        unit.release(child, &child_hash, Release::Dropped).unwrap();
+        drop(unit);
+        assert_eq!(res.remaining(), 4);
+        // Refused at commit: a page released twice.
+        let mut unit = res.begin().unwrap();
+        let n = unit.allocate().unwrap();
+        unit.write(unit_page(n)).unwrap();
+        unit.release(root.page, &root.hash, Release::Copied)
+            .unwrap();
+        unit.release(root.page, &root.hash, Release::Copied)
+            .unwrap();
+        assert!(unit.commit().is_err());
+        assert_eq!(res.remaining(), 4);
+    }
+    assert!(
+        (pf.map_image(), pf.space()) == before,
+        "a unit that did not commit changed the map"
+    );
+    // Refused at commit: a checkpoint at the entry came in between.
+    let res = pf.reserve(index, 4, Purpose::Entry).unwrap();
+    let mut unit = res.begin().unwrap();
+    unit.release(child, &child_hash, Release::Dropped).unwrap();
+    let late = entry_id(index);
+    let trees = run.newest.roots();
+    let done = pf.checkpoint(late, &trees, None).unwrap();
+    assert!(unit.commit().is_err());
+    drop(res);
+    let dying = pf.dying_pages();
+    assert!(!dying.contains(&root.page) && !dying.contains(&child));
+    run.newest.entry = late;
+    run.checkpoints.insert(done.number, run.newest.clone());
+    run.confirmed = done.number;
+    run.check(true);
 }
