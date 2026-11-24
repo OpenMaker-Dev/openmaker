@@ -85,6 +85,8 @@ pub(crate) struct Step {
     /// When the window asks to be drawn again; `None` for not until input.
     pub repaint_after: Option<Duration>,
     pub closed: bool,
+    /// A window, shown or hidden, holds changes not saved to the host
+    /// ([`OpenMakerApp::unsaved_anywhere`]).
     pub unsaved: bool,
     /// A save or close the app asked for is under way.
     pub saving: bool,
@@ -275,6 +277,11 @@ impl Surface {
         }
         let mut took = false;
         while let Some(input) = inputs.front() {
+            // A deletion around the selection reads the field's selection
+            // as the last pass left it: it waits for a pass of its own.
+            if took && matches!(input, Input::DeleteAround { .. }) {
+                break;
+            }
             if matches!(input, Input::Run { .. } | Input::Menu { .. }) {
                 if !took {
                     if let Some(text) = self.preedit.take() {
@@ -351,7 +358,8 @@ impl Surface {
             || copied.is_some()
             || !open_urls.is_empty();
         let closed = state.closed;
-        let unsaved = state.unsaved;
+        // Every window's, not only the front one's that the state shows.
+        let unsaved = !closed && self.app.unsaved_anywhere();
         // A closed file has nothing left to save.
         let saving = self.intent.is_some() && !closed;
         if !changed {
@@ -399,7 +407,74 @@ impl Surface {
         }
     }
 
-    /// Turn one input into egui's events, or hand it to the window.
+    /// Delete `before` characters before the field's selection and `after`
+    /// after it, keeping the selection, as Android's input connection
+    /// does. Backspace and Delete would take a selection instead, so it is
+    /// collapsed to the side being deleted and selected again after. An
+    /// input method's composition is the field's selection while it shows:
+    /// it is taken out for the deletion and shown again.
+    fn delete_around(&mut self, before: u32, after: u32, events: &mut Vec<Event>) {
+        const MOST: u32 = 64;
+        let composed = self.preedit.clone();
+        let selected = if composed.is_some() {
+            0
+        } else {
+            self.ctx
+                .memory(|memory| memory.focused())
+                .and_then(|id| egui::text_edit::TextEditState::load(&self.ctx, id))
+                .and_then(|state| state.cursor.char_range())
+                .map_or(0, |range| {
+                    range.primary.index.0.abs_diff(range.secondary.index.0)
+                })
+        };
+        let press = |events: &mut Vec<Event>, key: egui::Key, shift: bool, times: usize| {
+            for _ in 0..times {
+                for pressed in [true, false] {
+                    events.push(Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: input::modifiers(shift, false),
+                    });
+                }
+            }
+        };
+        let compose = |events: &mut Vec<Event>, text: String| {
+            events.push(Event::Ime(egui::ImeEvent::Preedit {
+                text,
+                active_range_chars: None,
+            }));
+        };
+        if composed.is_some() {
+            compose(events, String::new());
+        }
+        let (before, after) = (before.min(MOST) as usize, after.min(MOST) as usize);
+        if before > 0 {
+            press(
+                events,
+                egui::Key::ArrowLeft,
+                false,
+                usize::from(selected > 0),
+            );
+            press(events, egui::Key::Backspace, false, before);
+            press(events, egui::Key::ArrowRight, true, selected);
+        }
+        if after > 0 {
+            press(
+                events,
+                egui::Key::ArrowRight,
+                false,
+                usize::from(selected > 0),
+            );
+            press(events, egui::Key::Delete, false, after);
+            press(events, egui::Key::ArrowLeft, true, selected);
+        }
+        if let Some(text) = composed {
+            compose(events, text);
+        }
+    }
+
     fn take(&mut self, input: Input, events: &mut Vec<Event>) {
         match input {
             Input::Resize { viewport } => match viewport.check() {
@@ -478,6 +553,7 @@ impl Surface {
                 }
             }
             Input::Paste { text } => events.push(Event::Paste(text)),
+            Input::DeleteAround { before, after } => self.delete_around(before, after, events),
             Input::Activate { id } => {
                 let Some(element) = self.elements.iter().find(|e| e.id == id && e.enabled) else {
                     return;

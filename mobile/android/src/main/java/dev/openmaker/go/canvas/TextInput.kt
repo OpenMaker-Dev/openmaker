@@ -5,7 +5,6 @@ import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.InputConnection
 import dev.openmaker.go.DocumentSession
 import dev.openmaker.go.engine.Input
-import dev.openmaker.go.engine.Key
 
 /**
  * The keyboard's connection to the field being edited. The field's text is
@@ -50,15 +49,12 @@ internal class TextInput(private val canvas: CanvasView, private val session: Do
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
         // This editor holds only the composition, which the deletion leaves
-        // alone (as BaseInputConnection's does): what the keyboard deletes
-        // is the field's text around it. The field shows the composition as
-        // its selection, which Backspace would delete, so it is taken out
-        // for the deletion and shown again after.
-        val composed = composing()
-        if (composed != null) session.send(Input.Compose(""))
-        repeat(beforeLength.coerceIn(0, MAX_DELETE)) { session.send(Input.Press(Key.BACKSPACE, false, false)) }
-        repeat(afterLength.coerceIn(0, MAX_DELETE)) { session.send(Input.Press(Key.DELETE, false, false)) }
-        if (composed != null) session.send(Input.Compose(composed))
+        // alone, as BaseInputConnection's does: what the keyboard deletes is
+        // the field's text around its selection (or composition), which the
+        // engine keeps (Surface::delete_around).
+        val before = beforeLength.coerceIn(0, MAX_DELETE)
+        val after = afterLength.coerceIn(0, MAX_DELETE)
+        if (before > 0 || after > 0) session.send(Input.DeleteAround(before.toUInt(), after.toUInt()))
         return true
     }
 

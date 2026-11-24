@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use om_server::{HostedFile, Identity, Server, ServerConfig, ServerIdentity};
 use openmaker_go::{
     hosted_files, Command, Document, DocumentMode, DocumentObserver, DocumentState, Element,
-    ElementKind, Host, Input, Menu, SignIn, Source, Viewport,
+    ElementKind, Host, Input, Key, Menu, SignIn, Source, Viewport,
 };
 
 struct Headless;
@@ -109,7 +109,23 @@ fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
     local.doc.send(Input::Tap { x: 80., y: 42. });
     local.until("the keyboard", |state, _| state.keyboard);
     local.doc.send(Input::Text {
-        text: "Verified".into(),
+        text: "VeriXfied".into(),
+    });
+    // An input method's delete around the selection (Android's
+    // deleteSurroundingText) takes the X before the selected "f" and keeps
+    // the selection; Backspace would have taken the "f".
+    let press = |key, shift| Input::Press {
+        key,
+        shift,
+        command: false,
+    };
+    for _ in 0..4 {
+        local.doc.send(press(Key::ArrowLeft, false));
+    }
+    local.doc.send(press(Key::ArrowRight, true));
+    local.doc.send(Input::DeleteAround {
+        before: 1,
+        after: 0,
     });
     // No Done, and no wait for the text to show: closing the file saves
     // what was typed, the keys the field had not read yet included.

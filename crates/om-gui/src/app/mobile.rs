@@ -164,6 +164,26 @@ impl OpenMakerApp {
         })
     }
 
+    /// Whether any window, shown or hidden, holds changes not saved to the
+    /// host: a record's changes or their save on its way
+    /// ([`Self::draft_state`]), what was typed waiting for its record, or
+    /// changes held for the user ([`Self::changes_held`]). A window behind
+    /// the front one can keep a draft whose save the host refused.
+    pub fn unsaved_anywhere(&mut self) -> bool {
+        if self.changes_held() {
+            return true;
+        }
+        let ids: Vec<u32> = std::iter::once(self.w.id)
+            .chain(self.windows.iter().map(|window| window.id))
+            .collect();
+        ids.into_iter().any(|id| {
+            self.with_window(id, |app| {
+                app.draft_state().is_some() || app.w.document.preparing_edit()
+            })
+            .unwrap_or(false)
+        })
+    }
+
     /// The file the front window shows, by its id in this app.
     pub fn front_file(&self) -> u64 {
         self.front_doc().file_id

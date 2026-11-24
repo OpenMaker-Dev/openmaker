@@ -135,6 +135,9 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         // entered for. The form shows the one saved for them, so a field
         // the user cleared removes it.
         val certificate = form.certificate.trim()
+        // A cleared one is removed now: a browse that fails without it
+        // must not leave the host trusted through it.
+        if (certificate.isEmpty()) library.trust(address, port, "")
         val remember = {
             library.lastHost = address
             library.lastPort = port

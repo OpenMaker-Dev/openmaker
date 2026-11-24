@@ -31,6 +31,10 @@ pub enum Input {
     },
     /// Text pasted into the field being edited.
     Paste { text: String },
+    /// An input method deletes characters before and after the field's
+    /// selection and keeps the selection (Android's
+    /// `deleteSurroundingText`), at most 64 each way.
+    DeleteAround { before: u32, after: u32 },
     /// An accessibility element's action ([`crate::Element::id`]).
     Activate { id: u64 },
     /// A menu row chosen ([`crate::MenuRow::id`]).

@@ -98,8 +98,13 @@ fn main() {
         y: height / 2.0,
     });
     // A frame the pan's start made, if it made one, answers no move: each
-    // move below waits for its own.
-    while next_frame(&doc, Duration::from_millis(200)).is_some() {}
+    // move below waits for its own. A layout that keeps drawing (a timer
+    // script) is waited for no longer than a second; frames carry no input
+    // id, so a frame it draws can still be counted as a move's.
+    let drain = Instant::now();
+    while drain.elapsed() < Duration::from_secs(1)
+        && next_frame(&doc, Duration::from_millis(200)).is_some()
+    {}
     let (mut pass, mut tessellate, mut pack, mut latency) = (vec![], vec![], vec![], vec![]);
     let (mut vertices, mut bytes) = (0, vec![]);
     for i in 0..frames {

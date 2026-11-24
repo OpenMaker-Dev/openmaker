@@ -174,9 +174,9 @@ impl Document {
         frame
     }
 
-    /// Whether the record has changes not yet saved (or whose save is on its
-    /// way), as of the window's last pass: an app leaving the foreground
-    /// keeps running until they are saved.
+    /// Whether any of the file's windows has changes not yet saved (or
+    /// whose save is on its way), as of the last pass: an app leaving the
+    /// foreground keeps running until they are saved.
     pub fn has_unsaved_changes(&self) -> bool {
         self.shared.lock().unsaved
     }
@@ -193,10 +193,11 @@ impl Document {
     }
 
     /// Close the file in front as Close File does, waiting up to
-    /// `timeout_ms` for it to close. False when it is still open: a dialog
-    /// the close raised (a validation failure) waits for the user, or the
-    /// close was refused (a trigger, or changes only the user can let go
-    /// of).
+    /// `timeout_ms` for it to close. False when this call's close did not
+    /// close it: a dialog the close raised (a validation failure) waits for
+    /// the user, or the close was refused (a trigger, or changes only the
+    /// user can let go of). A later call that closed the file meanwhile
+    /// does not change this call's answer.
     pub fn close(&self, timeout_ms: u32) -> bool {
         let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
         let mut queue = self.shared.lock();
@@ -230,9 +231,12 @@ impl Document {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
-        // Another file a script opened may still be open: the close asked
-        // for is of the file in front.
-        let closed = queue.closed || answered(&queue) == Some(true);
+        // This call's own answer first: another file a script opened may
+        // still be open (the close asked for is of the file in front), and a
+        // later call may have closed the file after this one was refused.
+        // With no answer (the wait ran out, or the document stopped), the
+        // file's state is the answer.
+        let closed = answered(&queue).unwrap_or(queue.closed);
         queue.close_waiting.remove(&asked);
         let oldest = queue.close_waiting.first().copied();
         queue

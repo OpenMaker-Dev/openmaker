@@ -341,6 +341,9 @@ struct LaunchCenter: View {
       error = "Enter a port from 1 to 65535."
       return
     }
+    // A cleared certificate authority is removed now: a browse that fails
+    // without it must not leave the host trusted through it.
+    if certificate.isEmpty { saveCertificate(name, number) }
     let fileName = namedFile.trimmingCharacters(in: .whitespacesAndNewlines)
     if !fileName.isEmpty {
       saveCertificate(name, number)
