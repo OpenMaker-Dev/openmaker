@@ -256,13 +256,17 @@ class CanvasView(context: Context, private val session: DocumentSession) : GLSur
 
     /** The clipboard's text into the field being edited. */
     internal fun paste() {
-        if (copyAsked) session.send(Input.PasteCopied) else readClipboard()
+        val text = clipboardText()
+        if (copyAsked) {
+            session.send(Input.PasteCopied(text))
+        } else if (text.isNotEmpty()) {
+            session.send(Input.Paste(text))
+        }
     }
 
-    private fun readClipboard() {
+    private fun clipboardText(): String {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
-        val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
-        if (!text.isNullOrEmpty()) session.send(Input.Paste(text.toString()))
+        return clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
     }
 
     /** An edit command of the input method (its own Select All, Copy, Cut, Paste). */

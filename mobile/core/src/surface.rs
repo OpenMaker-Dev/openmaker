@@ -320,8 +320,10 @@ impl Surface {
             // its own, and while a Tab or Return still moves the focus to
             // another field (om-gui gives it in a later pass), so that it
             // counts against the field it will delete in.
-            // A paste of the last copy waits for the pass that copied it.
-            if took && matches!(input, Input::PasteCopied) {
+            // A paste of the last copy waits for the pass that copied it. A
+            // pan's end waits for a pass after its last move: egui drops the
+            // scroll a pass has gathered when the same pass ends it.
+            if took && matches!(input, Input::PasteCopied { .. } | Input::PanEnded { .. }) {
                 break;
             }
             let deletes = matches!(input, Input::DeleteAround { .. });
@@ -646,9 +648,12 @@ impl Surface {
                 }
             }
             Input::Paste { text } => events.push(Event::Paste(text)),
-            Input::PasteCopied => {
-                if let Some(text) = &self.last_copy {
-                    events.push(Event::Paste(text.clone()));
+            Input::PasteCopied { clipboard } => {
+                // A copy of nothing copied nothing: the clipboard's text, as
+                // it was when the paste was asked for, is pasted then.
+                let text = self.last_copy.clone().unwrap_or(clipboard);
+                if !text.is_empty() {
+                    events.push(Event::Paste(text));
                 }
             }
             Input::DeleteAround {

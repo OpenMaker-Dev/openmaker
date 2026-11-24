@@ -175,6 +175,23 @@ final class DocumentCanvas: MTKView {
 
   // MARK: Accessibility
 
+  /// VoiceOver's three-finger scroll pages the layout, most of a screen at a
+  /// time, as a pan does: a swipe up brings what is below into view.
+  override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+    let page = bounds.height * 0.8
+    let dy: CGFloat
+    switch direction {
+    case .up: dy = -page
+    case .down: dy = page
+    default: return false
+    }
+    document.send(input: .panBegan(x: Float(bounds.midX), y: Float(bounds.midY)))
+    document.send(input: .panMoved(dx: 0, dy: Float(dy)))
+    document.send(input: .panEnded(vx: 0, vy: 0))
+    UIAccessibility.post(notification: .pageScrolled, argument: nil)
+    return true
+  }
+
   /// VoiceOver's elements: the layout's visible fields, labels and buttons.
   func present(_ elements: [Element]) {
     guard elements != presented else { return }

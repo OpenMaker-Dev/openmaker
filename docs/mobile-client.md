@@ -70,8 +70,8 @@ drags. Typing goes through the platform keyboard and its input methods
 (marked text included) to the field. Select All, Copy and Cut, from a
 hardware keyboard (Command, or Ctrl on Android), the edit menu or the
 keyboard's own commands, and Undo and Redo from a hardware keyboard, act
-on the field's text. With TalkBack, its scroll gestures move the layout
-most of a screen at a time. The editing
+on the field's text. TalkBack's and VoiceOver's scroll gestures move the
+layout most of a screen at a time. The editing
 bar above the keyboard has the previous and next field and Done, which
 saves the record as a tap outside every field does. In Find mode the
 keyboard's Search key performs the find. Hardware keyboards' Tab, arrow,
