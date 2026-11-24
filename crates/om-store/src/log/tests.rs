@@ -1071,8 +1071,12 @@ impl<'a> Run<'a> {
 
     fn flush(&mut self, with_committed: bool) {
         let seed = self.seed;
-        let committed =
-            with_committed.then(|| self.model.appended.index.saturating_sub(self.plan.below(4)));
+        // A leader gives at least the commit index it gave before: never
+        // less than the scenario has given, in calls that succeeded or not.
+        let committed = with_committed.then(|| {
+            let heard = self.model.appended.index.saturating_sub(self.plan.below(4));
+            heard.max(self.model.committed)
+        });
         let log = self.log.as_mut().expect("open");
         let segments = log.segments().count;
         let flushed = log.flush_batch(committed);
@@ -1119,7 +1123,7 @@ impl<'a> Run<'a> {
 
     fn set_committed(&mut self) {
         let seed = self.seed;
-        let committed = self.model.durable;
+        let committed = self.model.durable.max(self.model.committed);
         let log = self.log.as_mut().expect("open");
         let set = log.set_committed(committed);
         self.trace.push(stamp(
