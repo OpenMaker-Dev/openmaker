@@ -925,8 +925,11 @@ rebuilt for them when those entries are applied again (4.7).
   whatever is applied meanwhile; it is about 1% of the file. An ordinary
   entry also leaves the **reserve** (256 pages by default), which
   recovery, a follower's entries and the discard of a group may take.
-  Making a tree takes its root page and its name's room in the tables,
-  3 pages to reserve. When the file cannot grow enough, the reservation
+  Making a tree takes its root page and a fixed 4 pages of room for its
+  record in the tables (one more record adds at most a data page and a
+  directory page to each of the two meta streams), 5 pages to reserve; a
+  rename takes 4. The charge is fixed so that an entry takes the same
+  pages each time it is applied (`Reservation::taken` counts it). When the file cannot grow enough, the reservation
   is refused with "full" and nothing is reserved: the store keeps reading
   and can checkpoint.
 - **Recovery fits.** Applying the entries after a checkpoint again frees

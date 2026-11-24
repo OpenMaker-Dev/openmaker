@@ -89,6 +89,11 @@ const PAGE: u64 = PAGE_SIZE as u64;
 /// The most pages one write of a checkpoint carries.
 const RUN: usize = 64;
 
+/// The pages a tree made or renamed takes from its reservation for its
+/// record in the tables of trees: at most a data page and a directory page
+/// more in each of the two meta streams the floor keeps room for.
+pub const TABLE_ROOM: u64 = 4;
+
 /// An entry of the log, as a checkpoint names the last one it includes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct EntryId {
@@ -2139,10 +2144,11 @@ impl Reservation<'_> {
         self.remaining.load(Ordering::Relaxed)
     }
 
-    /// The pages the units committed so far wrote. Applying an entry to the
-    /// same trees writes the same number of pages on every server and on
-    /// every replay (tree format version 1 gives one shape per sequence of
-    /// edits), so an entry can carry this count and recovery reserve
+    /// The pages the entry took so far: those its units wrote, and the
+    /// fixed room its trees made and renamed take in the tables. Applying
+    /// an entry to the same trees takes the same number on every server and
+    /// on every replay (tree format version 1 gives one shape per sequence
+    /// of edits), so an entry can carry this count and recovery reserve
     /// exactly it.
     pub fn taken(&self) -> u64 {
         self.taken.load(Ordering::Relaxed)
@@ -2165,9 +2171,10 @@ impl Reservation<'_> {
 
     /// Makes tree `name`, empty, at this entry ([`tree::create`]), and adds
     /// it to the trees that exist, which the next checkpoint must name.
-    /// Making a tree takes its root page and the room its name takes in
-    /// the tables of the two checkpoints the floor keeps room for, both
-    /// from this reservation: reserve 3 pages for each. Refused, with
+    /// Making a tree takes its root page and [`TABLE_ROOM`] pages of room
+    /// for its record in the tables of the two checkpoints the floor keeps
+    /// room for, both from this reservation and both counted in
+    /// [`Reservation::taken`]: reserve 5 pages for each. Refused, with
     /// nothing done, when a tree of that name exists or the reservation is
     /// short.
     pub fn create_tree(&self, name: &TreeName) -> Result<Root, tree::Error> {
@@ -2199,7 +2206,8 @@ impl Reservation<'_> {
     }
 
     /// Gives tree `from` the name `to` at this entry; its pages stay as they
-    /// are. A longer name's room in the table comes from this reservation.
+    /// are. Takes [`TABLE_ROOM`] pages of this reservation, as making a
+    /// tree does.
     pub fn rename_tree(&self, from: &TreeName, to: &TreeName) -> Result<(), StoreError> {
         if !self.file.lock().trees.contains(from) {
             return Err(store_failed(format!("no tree {from} exists")));
@@ -2236,14 +2244,23 @@ impl Reservation<'_> {
             ))));
         }
         let names = inner.names - len(from) + len(to);
-        let before = 2 * inner.meta_room(inner.trees.len(), inner.names);
-        let room = (2 * inner.meta_room(count, names)).saturating_sub(before);
+        // A fixed charge, the same in every run, so that an entry takes the
+        // same pages when it is applied again (`Reservation::taken`). One
+        // more record in the table can add at most a data page and a
+        // directory page to each of the two meta streams the floor keeps
+        // room for.
+        let room = TABLE_ROOM;
+        debug_assert!(
+            2 * inner.meta_room(count, names)
+                <= 2 * inner.meta_room(inner.trees.len(), inner.names) + room
+        );
         // A tree made needs its root page from the reservation as well.
         let needed = room + u64::from(to.is_some() && from.is_none());
         if self.remaining.load(Ordering::Relaxed) < needed {
             return Err(tree::Error::Store(StoreError::Full));
         }
         self.remaining.fetch_sub(room, Ordering::Relaxed);
+        self.taken.fetch_add(room, Ordering::Relaxed);
         inner.promised -= room;
         if let Some(f) = from {
             inner.trees.remove(f);
@@ -2267,6 +2284,7 @@ impl Reservation<'_> {
         }
         inner.names = inner.names - len(to) + len(from);
         self.remaining.fetch_add(room, Ordering::Relaxed);
+        self.taken.fetch_sub(room, Ordering::Relaxed);
         inner.promised += room;
     }
 }

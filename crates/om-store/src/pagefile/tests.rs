@@ -195,8 +195,8 @@ fn bound(store: &impl PageStore, model: &Model, ops: &[(TreeName, Op)]) -> Resul
                     .height();
                 entry_bound(edits, height)
             }
-            // A root page, and room for the name in two checkpoints' tables.
-            Op::Create | Op::Recreate => 3,
+            // A root page, and room for the name in the tables.
+            Op::Create | Op::Recreate => 1 + TABLE_ROOM,
         };
     }
     Ok(total)
@@ -343,6 +343,10 @@ struct Reached {
 
 impl Reached {
     fn assert_fired(&self, rates: &Rates) {
+        if std::env::var("OM_STORE_SEED").is_ok() {
+            // One seed replayed need not reach every fault.
+            return;
+        }
         let drawn = [
             (SimFault::Crash, rates.crash),
             (SimFault::FailFlush, rates.fail_flush),
@@ -2202,7 +2206,7 @@ fn a_store_of_many_trees_opens_under_a_small_cache() {
     };
     let proc = create_proc(&disk, config);
     let n = 3_000u64;
-    let res = proc.pf.reserve(1, 3 * n, Purpose::Entry).unwrap();
+    let res = proc.pf.reserve(1, 5 * n, Purpose::Entry).unwrap();
     let mut trees: Vec<(TreeName, Root)> = (0..n)
         .map(|i| {
             let name = TreeName::new(format!("file/{i:05}")).unwrap();
@@ -2249,7 +2253,7 @@ fn trees_made_until_reservations_are_refused_still_leave_room_to_checkpoint() {
     let mut trees = Vec::new();
     let mut index = 1;
     loop {
-        let res = match pf.reserve(index, 3, Purpose::Entry) {
+        let res = match pf.reserve(index, 5, Purpose::Entry) {
             Ok(res) => res,
             Err(SpaceError::Full { .. }) => break,
             Err(e) => panic!("{e}"),
@@ -2397,7 +2401,7 @@ fn a_restore_point_dropped_during_a_checkpoint_stays_dropped() {
     let lock = fs.lock().unwrap();
     let pf = PageFile::create(&fs, &lock, config()).unwrap();
     let name = tree_name(0);
-    let res = pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
     let root = res.create_tree(&name).unwrap();
     drop(res);
     let trees = vec![(name, root)];
@@ -2445,7 +2449,7 @@ fn a_checkpoint_number_at_its_limit_refuses_the_open() {
     let sim = Sim::new(43);
     let disk = Disk::Sim(sim.clone());
     let proc = create_proc(&disk, config());
-    let res = proc.pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let res = proc.pf.reserve(1, 5, Purpose::Entry).unwrap();
     let root = res.create_tree(&tree_name(0)).unwrap();
     drop(res);
     proc.pf
@@ -2489,7 +2493,7 @@ fn a_failed_growth_latches_the_failure() {
     let disk = Disk::Sim(sim.clone());
     let proc = create_proc(&disk, config());
     let pf = &proc.pf;
-    let res = pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
     let root = res.create_tree(&tree_name(0)).unwrap();
     drop(res);
     let trees = [(tree_name(0), root)];

@@ -93,7 +93,7 @@ fn trees(mode: &str, folder: &str) {
         for chunk in (0..n).collect::<Vec<_>>().chunks(4_096) {
             index += 1;
             let res = pf
-                .reserve(index, 3 * chunk.len() as u64, Purpose::Entry)
+                .reserve(index, 5 * chunk.len() as u64, Purpose::Entry)
                 .unwrap();
             for &i in chunk {
                 let name = TreeName::new(format!("file/{i:08}")).unwrap();
@@ -162,7 +162,7 @@ fn main() {
     // The tree: `items` records of 16 bytes, 1,000 puts an entry, in key
     // order.
     let start = Instant::now();
-    let res = pf.reserve(1, 3, Purpose::Entry).unwrap();
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
     let mut root = res.create_tree(&name).unwrap();
     drop(res);
     let mut index = 1;
