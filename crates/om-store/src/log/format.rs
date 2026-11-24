@@ -30,10 +30,12 @@ pub const MIN_SEGMENT: u64 = 512;
 /// The largest segment, which bounds what one read of the log can ask for.
 pub const MAX_SEGMENT: u64 = 1 << 30;
 
-/// The bytes zeroed where a cut ends the log: as many as a batch's header,
-/// which is longer than any entry's fixed part, so that neither a batch nor
-/// an entry can be read there afterwards.
-pub const CUT_MARK: u64 = BATCH_HEADER;
+/// The bytes zeroed where a cut ends the log: a batch's header and the fixed
+/// part and hash of the entry after it, so that neither a batch nor an entry
+/// can be read there afterwards, nor the first entry of a batch whose header
+/// was zeroed, even under a new batch's header whose own entries a later
+/// crash lost.
+pub const CUT_MARK: u64 = BATCH_HEADER + ENTRY_OVERHEAD;
 
 const SEGMENT_MAGIC: [u8; 8] = *b"OMLOGSG\0";
 const BATCH_MAGIC: [u8; 8] = *b"OMBATCH\0";

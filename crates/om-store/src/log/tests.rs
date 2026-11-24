@@ -1075,6 +1075,20 @@ impl<'a> Run<'a> {
 
     fn cut(&mut self, back: u64) {
         let seed = self.seed;
+        // A cut at or before the committed position is refused, with
+        // nothing changed (section 7.1).
+        if self.model.committed > 0 && self.plan.below(3) == 0 {
+            let from = 1 + self.plan.below(self.model.committed);
+            let log = self.log.as_mut().expect("open");
+            let refused = log.cut(self.state.as_mut().expect("open"), from);
+            assert!(
+                matches!(refused, Err(LogError::Refused(_))),
+                "seed {seed}: a cut from {from} at or before committed {} gave {refused:?}",
+                self.model.committed
+            );
+            assert_eq!(log.appended(), self.model.appended, "seed {seed}");
+            assert!(!log.is_poisoned(), "seed {seed}");
+        }
         let last = self.model.appended.index;
         let from = last.saturating_sub(back).max(1);
         if from <= self.model.committed {
