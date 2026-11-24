@@ -529,13 +529,13 @@ fn empty(ui: &mut Ui, tab: Tab) {
     });
 }
 
-/// The keyboard focus ring just outside `rect`, as push buttons draw it
-/// (`widgets.rs`).
+/// The keyboard focus ring just outside `rect`: `FOCUS`, opaque, which
+/// keeps 3:1 on Home's white.
 fn focus_ring(painter: &egui::Painter, rect: Rect, radius: f32) {
     painter.rect_stroke(
         rect.expand(2.0),
         CornerRadius::same((radius + 2.0) as u8),
-        Stroke::new(2.0, theme::FOCUS.gamma_multiply(0.6)),
+        Stroke::new(2.0, theme::FOCUS),
         StrokeKind::Outside,
     );
 }
