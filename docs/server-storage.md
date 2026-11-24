@@ -199,14 +199,16 @@ privilege set at login and those of the listed records the session was
 served without their values, for op73 the account its calculations see,
 for an authoring edit the connection, session name and account its locks
 and stamps name, and for an account edit whether it may manage the
-account and the connection and names its stamps carry. An account edit
-carries the passwords it was given, in memory only: the old one is
-checked and the new one hashed in `run`, with a salt from the
-environment, and its `Debug` output and log lines leave them out. An
-operation is never written down, so a log will keep an account edit's
-effects (the account member as rewritten, with its salted verifier, as
-the file holds it) and its history only the fact of the change
-(section 9). op70's
+account and the connection and names its stamps carry. The passwords an
+account edit was given are not part of its operation: they travel beside
+it to `run` alone (`engine::Credentials`, `FileEngine::submit_with`), are
+never copied, are wiped once checked or hashed, and appear in no log
+line or `Debug` output. So whatever keeps operations (a recording, a
+log, another server) never has them, and a replay supplies them again.
+A log will keep an account edit's effects (the account member as
+rewritten, with its salted verifier, as the file holds it) and its
+history only the fact of the change (section 9). A salt the random
+source cannot give refuses the edit as unwritten, as before. op70's
 staged records travel in it: the session's temporary area lends them
 (`writes::TempArea::lend`) and takes back those the commit did not take.
 A commit that was not stored has still taken the records it reached, as

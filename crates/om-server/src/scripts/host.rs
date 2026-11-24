@@ -82,8 +82,8 @@ use super::{values, Control};
 use crate::config::{Privileges, SCRIPT_CALC_LIMITS};
 use crate::connection::Shared;
 use crate::engine::{
-    AccountStamp, AdvanceSerial, ChangePassword, DeleteAccount, Draft, EnableAccount, Operation,
-    Password, ReleaseLocks, Reply, ReserveRecordIds, ResetPassword,
+    AccountStamp, AdvanceSerial, ChangePassword, Credentials, DeleteAccount, Draft, EnableAccount,
+    Operation, Password, ReleaseLocks, Reply, ReserveRecordIds, ResetPassword,
 };
 use crate::hosting::Hosted;
 use crate::locks::LockUser;
@@ -5520,7 +5520,8 @@ fn utf16_prefix(text: &str, units: usize) -> &str {
 }
 
 impl ServerHost {
-    /// Submit the account edit `edit` makes for the session's stamp while
+    /// Submit the account edit `edit` makes for the session's stamp, with
+    /// the passwords it was given beside it, while
     /// the session holds the write lock FileMaker Pro's Manage Security
     /// takes on the account catalog `[23, 1]` (local-files.md 2.4), so
     /// that a client saving accounts and a script do not change them at
@@ -5533,7 +5534,7 @@ impl ServerHost {
     fn edit_accounts(
         &self,
         step: &str,
-        edit: impl FnOnce(AccountStamp) -> Operation,
+        edit: impl FnOnce(AccountStamp) -> (Operation, Credentials),
     ) -> HostResult<Reply> {
         if self.hosted.is_read_only() {
             info!(
@@ -5559,7 +5560,11 @@ impl ServerHost {
             user: self.account.clone(),
             account: self.account.clone(),
         };
-        let outcome = self.shared.engine.submit(&self.hosted, edit(stamp));
+        let (operation, credentials) = edit(stamp);
+        let outcome = self
+            .shared
+            .engine
+            .submit_with(&self.hosted, operation, credentials);
         self.hosted.lock_table().release_path(&catalog, self.user);
         outcome
             .notices
@@ -5598,13 +5603,16 @@ impl Accounts for ServerHost {
         let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
         let manager = self.privileged();
         let reply = self.edit_accounts("Change Password", |stamp| {
-            Operation::ChangePassword(ChangePassword {
+            let change = ChangePassword {
                 account: crate::hosting::AccountRef::Key(key),
-                old: Password::new(old),
-                new: Password::new(new),
                 manager,
                 stamp: Some(stamp),
-            })
+            };
+            let passwords = Credentials::Change {
+                old: Password::new(old),
+                new: Password::new(new),
+            };
+            (Operation::ChangePassword(change), passwords)
         })?;
         match reply {
             Reply::ChangePassword(Ok(())) => Ok(()),
@@ -5638,12 +5646,13 @@ impl Accounts for ServerHost {
             return Err(HostError::Unsupported);
         }
         let reply = self.edit_accounts("Reset Account Password", |stamp| {
-            Operation::ResetPassword(ResetPassword {
+            let reset = ResetPassword {
                 account: name.to_owned(),
-                new: Password::new(password),
                 expire: false,
                 stamp: Some(stamp),
-            })
+            };
+            let new = Password::new(password);
+            (Operation::ResetPassword(reset), Credentials::Reset { new })
         })?;
         match reply {
             Reply::ResetPassword(result) => {
@@ -5659,10 +5668,11 @@ impl Accounts for ServerHost {
     fn delete_account(&mut self, name: &str) -> HostResult {
         self.require_full_access()?;
         let reply = self.edit_accounts("Delete Account", |stamp| {
-            Operation::DeleteAccount(DeleteAccount {
+            let delete = DeleteAccount {
                 account: name.to_owned(),
                 stamp: Some(stamp),
-            })
+            };
+            (Operation::DeleteAccount(delete), Credentials::None)
         })?;
         match reply {
             Reply::DeleteAccount(result) => {
@@ -5678,11 +5688,12 @@ impl Accounts for ServerHost {
     fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
         self.require_full_access()?;
         let reply = self.edit_accounts("Enable Account", |stamp| {
-            Operation::EnableAccount(EnableAccount {
+            let enable = EnableAccount {
                 account: name.to_owned(),
                 active,
                 stamp: Some(stamp),
-            })
+            };
+            (Operation::EnableAccount(enable), Credentials::None)
         })?;
         match reply {
             Reply::EnableAccount(result) => result

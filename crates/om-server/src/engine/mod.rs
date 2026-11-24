@@ -23,18 +23,19 @@
 //!
 //! # Credentials
 //!
-//! An account operation carries the passwords it was given as typed
-//! ([`Password`]), in memory only: the old one is checked against the
-//! stored verifier and the new one against the privilege set's rules under
-//! the store, and the new one is hashed in [`run`] with a salt from the
-//! [`Environment`]. Neither is ever shown: [`Password`] and the operations
-//! that hold one have a `Debug` that leaves it out, no log line names it,
-//! and a recording holds the operation as the engine offered it, which
-//! prints no password either. An operation is never written down: a
-//! durable log keeps an account edit's effects (the account member as
-//! rewritten, with its salted verifier, as the file holds it), and its
-//! history only the fact that Access paths changed
-//! (docs/server-storage.md 9).
+//! The passwords an account edit was given are not part of its operation:
+//! they travel beside it, as typed, to [`run`] alone ([`Credentials`],
+//! [`FileEngine::submit_with`]). So whatever keeps an operation, a
+//! recording now and a log or another server later, has the operation
+//! without them, and a replay supplies them again. [`Password`] is held in
+//! memory only, is not `Clone`, is wiped when dropped, and prints only a
+//! placeholder; the run checks the old one against the stored verifier and
+//! drops it, checks the new one against the privilege set's rules, hashes
+//! it with a salt from the [`Environment`] and drops it, all under the
+//! store. No log line names a password. A durable log keeps an account
+//! edit's effects (the account member as rewritten, with its salted
+//! verifier, as the file holds it), and its history only the fact that
+//! Access paths changed (docs/server-storage.md 9).
 //!
 //! # Lock order
 //!
@@ -190,10 +191,9 @@ pub enum Operation {
     SaveFoundSet(SaveFoundSet),
 }
 
-/// A password an account operation carries, as it was typed: held in
-/// memory only, wiped when dropped, and never shown: its `Debug` is a
-/// placeholder (the module doc's "Credentials").
-#[derive(Clone, PartialEq, Eq)]
+/// A password an account edit was given, as it was typed: held in memory
+/// only, never copied (not `Clone`), wiped when dropped, and never shown:
+/// its `Debug` is a placeholder (the module doc's "Credentials").
 pub struct Password(zeroize::Zeroizing<String>);
 
 impl Password {
@@ -213,6 +213,32 @@ impl std::fmt::Debug for Password {
     }
 }
 
+/// The passwords that travel beside an operation to [`run`], never in it
+/// (the module doc's "Credentials"): none for every operation but Change
+/// Password and Reset Account Password.
+pub enum Credentials {
+    None,
+    /// [`Operation::ChangePassword`]'s old and new password.
+    Change {
+        old: Password,
+        new: Password,
+    },
+    /// [`Operation::ResetPassword`]'s new password.
+    Reset {
+        new: Password,
+    },
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Credentials::None => "Credentials::None",
+            Credentials::Change { .. } => "Credentials::Change(..)",
+            Credentials::Reset { .. } => "Credentials::Reset(..)",
+        })
+    }
+}
+
 /// Who makes an account edit that stamps the account catalog as a
 /// catalog commit does (schema-path.md 8.1): the connection whose
 /// session it is, which is not told of the change, and the user and
@@ -225,15 +251,14 @@ pub struct AccountStamp {
     pub account: String,
 }
 
-/// Change Password: set an account's password from `old` to `new`, as
+/// Change Password: set an account's password from the old one to a new
+/// one, which travel beside the operation ([`Credentials::Change`]), as
 /// FileMaker's `SetPassword` sets the signed-in account's own
 /// (local-files.md 2.4; `hosting::change_password`). The caller cut the
 /// passwords as the step cuts them and checked who may ask.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangePassword {
     pub account: AccountRef,
-    pub old: Password,
-    pub new: Password,
     /// The caller may manage the account (a script with full access): the
     /// privilege set's rules on changing, length and reuse are skipped.
     pub manager: bool,
@@ -241,36 +266,16 @@ pub struct ChangePassword {
     pub stamp: Option<AccountStamp>,
 }
 
-impl std::fmt::Debug for ChangePassword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChangePassword")
-            .field("account", &self.account)
-            .field("manager", &self.manager)
-            .field("stamp", &self.stamp)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Reset Account Password (136): the account named `account` given the
-/// password `new` (local-files.md 2.4; `hosting::reset_account_password`).
-/// The caller checked that the session may manage accounts.
-#[derive(Clone, PartialEq, Eq)]
+/// password that travels beside the operation ([`Credentials::Reset`])
+/// (local-files.md 2.4; `hosting::reset_account_password`). The caller
+/// checked that the session may manage accounts.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResetPassword {
     pub account: String,
-    pub new: Password,
     /// A change is due at the account's next login.
     pub expire: bool,
     pub stamp: Option<AccountStamp>,
-}
-
-impl std::fmt::Debug for ResetPassword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResetPassword")
-            .field("account", &self.account)
-            .field("expire", &self.expire)
-            .field("stamp", &self.stamp)
-            .finish_non_exhaustive()
-    }
 }
 
 /// Enable Account (137): the account named `account` made active or
@@ -726,9 +731,20 @@ impl Outcome {
 pub trait Environment: Send + Sync {
     /// The host's time now, in its time zone.
     fn now(&self) -> jiff::Zoned;
-    /// Fill `bytes` from the random source.
+    /// Fill `bytes` from the random source, which does not fail.
     fn fill_random(&self, bytes: &mut [u8]);
+    /// Fill `bytes` from the random source, or say that it failed: for a
+    /// draw whose failure is a reply, as a password's salt is ("no random
+    /// salt"). By default [`Self::fill_random`].
+    fn try_fill_random(&self, bytes: &mut [u8]) -> Result<(), NoRandom> {
+        self.fill_random(bytes);
+        Ok(())
+    }
 }
+
+/// The random source gave no bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoRandom;
 
 /// The host's clock and the system's random source.
 #[derive(Debug, Default)]
@@ -740,10 +756,15 @@ impl Environment for HostEnvironment {
     }
 
     fn fill_random(&self, bytes: &mut [u8]) {
+        self.try_fill_random(bytes)
+            .expect("the system random source is available");
+    }
+
+    fn try_fill_random(&self, bytes: &mut [u8]) -> Result<(), NoRandom> {
         use ring::rand::SecureRandom as _;
         ring::rand::SystemRandom::new()
             .fill(bytes)
-            .expect("the system random source is available");
+            .map_err(|_| NoRandom)
     }
 }
 
@@ -754,21 +775,31 @@ pub fn uuid(environment: &dyn Environment) -> String {
     crate::recalc::uuid_text(bytes)
 }
 
-/// Run `operation` on the file named `file` (for log lines), against what
-/// the engine holds of it (`hold`) and its lock table (`locks`), taking
-/// the clock and randomness from `environment` (formulas it evaluates
-/// excepted, [`Environment`]). It sends nothing,
+/// Run `operation` on the file named `file` (for log lines), with the
+/// passwords it was given beside it (`credentials`, the module doc's
+/// "Credentials"), against what the engine holds of it (`hold`) and its
+/// lock table (`locks`), taking the clock and randomness from
+/// `environment` (formulas it evaluates excepted, [`Environment`]). It
+/// sends nothing,
 /// saves nothing and takes no lock of its own: the effects are what it did
 /// to the transaction and the lock table, and the engine stores them
 /// before the outcome may go out. A refusal can keep effects: op71 refused
 /// for a lock another user holds has used up its ids (write-path.md 3.1).
 pub fn run(
     operation: Operation,
+    credentials: Credentials,
     file: &str,
     hold: Hold<'_, '_>,
     locks: &mut Locks<'_>,
     environment: &dyn Environment,
 ) -> Outcome {
+    let takes_credentials = matches!(
+        operation,
+        Operation::ChangePassword(_) | Operation::ResetPassword(_)
+    );
+    if !takes_credentials && !matches!(credentials, Credentials::None) {
+        return unfit(operation, file);
+    }
     match (operation, hold) {
         (Operation::ReserveRecordIds(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::ReserveRecordIds(writes::create_record(op, file, tx, locks)),
@@ -845,13 +876,19 @@ pub fn run(
             }))
         }
         (Operation::ChangePassword(op), Hold::Transaction(tx)) => {
+            let Credentials::Change { old, new } = credentials else {
+                return unfit(Operation::ChangePassword(op), file);
+            };
             let from = op.stamp.as_ref().map(|stamp| stamp.connection);
-            let reply = crate::hosting::change_password(op, tx, environment);
+            let reply = crate::hosting::change_password(op, old, new, tx, environment);
             account_edited(from, reply.is_ok(), Reply::ChangePassword(reply))
         }
         (Operation::ResetPassword(op), Hold::Transaction(tx)) => {
+            let Credentials::Reset { new } = credentials else {
+                return unfit(Operation::ResetPassword(op), file);
+            };
             let from = op.stamp.as_ref().map(|stamp| stamp.connection);
-            let reply = crate::hosting::reset_account_password(op, tx, environment);
+            let reply = crate::hosting::reset_account_password(op, new, tx, environment);
             account_edited(from, reply.is_ok(), Reply::ResetPassword(reply))
         }
         (Operation::EnableAccount(op), Hold::Transaction(tx)) => {
@@ -947,6 +984,20 @@ fn save_found_set(op: SaveFoundSet, file: &str, tx: &mut Transaction<'_>) -> boo
 /// an engine's mistake, refused with FileMaker error 3 and logged.
 fn not_held(operation: Operation, file: &str) -> Outcome {
     error!("{file:?}: an operation ran without the hold of the file it needs: {operation:?}");
+    refusal(operation, NOT_HELD)
+}
+
+/// The refusal of an operation submitted without the passwords it takes,
+/// or with passwords it does not take: a caller's mistake, refused as
+/// [`not_held`] is and logged (without the passwords).
+fn unfit(operation: Operation, file: &str) -> Outcome {
+    error!("{file:?}: an operation came without the passwords it takes, or with some it does not: {operation:?}");
+    refusal(operation, UNFIT)
+}
+
+/// `operation`'s refusal, with FileMaker error 3 where its reply has one
+/// and `why` where it has a message.
+fn refusal(operation: Operation, why: &'static str) -> Outcome {
     let refused_lock = LockReply::Refused {
         status: writes::LOCK_UNAVAILABLE,
         conflict: Conflict {
@@ -974,37 +1025,33 @@ fn not_held(operation: Operation, file: &str) -> Outcome {
         Operation::ReleaseLock(_) => Reply::ReleaseLock,
         Operation::ReleaseLocks(_) => Reply::ReleaseLocks,
         Operation::UploadToCatalog(_) => Reply::UploadToCatalog(false),
-        Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(NOT_HELD)),
+        Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(why)),
         Operation::StoreIndexes(_) => Reply::StoreIndexes,
-        Operation::UpdateTable(_) => Reply::UpdateTable(Err(NOT_HELD)),
-        Operation::StoreContainerData(_) => {
-            Reply::StoreContainerData(crate::containers::upload_reply(
-                writes::UNAVAILABLE as u16,
-                Vec::new(),
-                NOT_HELD.into(),
-            ))
-        }
+        Operation::UpdateTable(_) => Reply::UpdateTable(Err(why)),
+        Operation::StoreContainerData(_) => Reply::StoreContainerData(
+            crate::containers::upload_reply(writes::UNAVAILABLE as u16, Vec::new(), why.into()),
+        ),
         Operation::AdjustContainerCount(_) => Reply::AdjustContainerCount(COUNT_FAILED),
         Operation::EditDesign(_) => Reply::EditDesign(Edited {
             reply: design::Reply::Refused {
                 status: design::status::UNSUPPORTED,
-                message: NOT_HELD.into(),
+                message: why.into(),
                 current: None,
             },
             not_stored: None,
         }),
         Operation::SaveFile => Reply::SaveFile(Err(FileNotSaved::Failed)),
         Operation::ChangePassword(_) => {
-            Reply::ChangePassword(Err(PasswordChangeError::Unwritten(NOT_HELD.into())))
+            Reply::ChangePassword(Err(PasswordChangeError::Unwritten(why.into())))
         }
         Operation::ResetPassword(_) => {
-            Reply::ResetPassword(Err(AccountEditError::Unwritten(NOT_HELD.into())))
+            Reply::ResetPassword(Err(AccountEditError::Unwritten(why.into())))
         }
         Operation::EnableAccount(_) => {
-            Reply::EnableAccount(Err(AccountEditError::Unwritten(NOT_HELD.into())))
+            Reply::EnableAccount(Err(AccountEditError::Unwritten(why.into())))
         }
         Operation::DeleteAccount(_) => {
-            Reply::DeleteAccount(Err(AccountEditError::Unwritten(NOT_HELD.into())))
+            Reply::DeleteAccount(Err(AccountEditError::Unwritten(why.into())))
         }
         Operation::FinishDeferredWork => Reply::FinishDeferredWork(false),
         Operation::SaveFoundSet(_) => Reply::SaveFoundSet(false),
@@ -1012,3 +1059,4 @@ fn not_held(operation: Operation, file: &str) -> Outcome {
 }
 
 const NOT_HELD: &str = "the engine did not hold the file";
+const UNFIT: &str = "the operation came without the passwords it takes";

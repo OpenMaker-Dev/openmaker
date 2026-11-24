@@ -18,7 +18,7 @@ use crate::config::{HostedFile, Privileges};
 use crate::connection::host_time_key_at;
 use crate::engine::{
     AccountStamp, ChangePassword, DeleteAccount, EnableAccount, Environment, FileEngine, Operation,
-    Reply, ResetPassword, Transaction,
+    Password, Reply, ResetPassword, Transaction,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -641,10 +641,10 @@ pub fn save_error(error: &std::io::Error) -> u16 {
     }
 }
 
-/// Change Password: set the password of `op.account` from `op.old` to
-/// `op.new`, as FileMaker's `SetPassword` sets the signed-in account's own
+/// Change Password: set the password of `op.account` from `old` to `new`,
+/// as FileMaker's `SetPassword` sets the signed-in account's own
 /// (local-files.md 2.4): the stored password `06` with a new salt from
-/// `environment`, the status `0a` stamped with the environment's time to
+/// `environment` (none: "no random salt", and nothing changes), the status `0a` stamped with the environment's time to
 /// the second with its other flags kept and no change due, and the
 /// checksum `04` again; the member's other keys are kept. The new one must
 /// have at most 100 characters; an account that may not manage itself
@@ -653,24 +653,25 @@ pub fn save_error(error: &std::io::Error) -> u16 {
 /// password, and the new one must have at least the set's minimum length
 /// (`0d`) and differ from the old one. A `manager` caller (a script
 /// running with full access) skips those checks as one that may manage
-/// the account does. One commit in `tx`, which the engine saves or takes
-/// back. With a stamp the account and the catalog's index get FileMaker's
+/// the account does. Each password is dropped, and so wiped, once it is
+/// no longer needed: the old one once it is checked, the new one once it
+/// is hashed. One commit in `tx`, which the engine saves or takes back.
+/// With a stamp the account and the catalog's index get FileMaker's
 /// modification stamps ([`rewrite_account`]).
 pub(crate) fn change_password(
     op: ChangePassword,
+    old: Password,
+    new: Password,
     tx: &mut Transaction<'_>,
     environment: &dyn Environment,
 ) -> Result<(), PasswordChangeError> {
     use om_data::host::privilege_set::Options;
     let ChangePassword {
         account,
-        old,
-        new,
         manager,
         stamp,
     } = op;
-    let (old, new) = (old.text(), new.text());
-    if new.chars().count() > 100 {
+    if new.text().chars().count() > 100 {
         return Err(PasswordChangeError::TooLong);
     }
     let now = environment.now();
@@ -694,10 +695,11 @@ pub(crate) fn change_password(
     let Some(stored) = stored
         .as_deref()
         .and_then(|bytes| StoredPassword::parse(bytes).ok())
-        .filter(|password| password.verify(old))
+        .filter(|password| password.verify(old.text()))
     else {
         return Err(PasswordChangeError::Refused);
     };
+    drop(old);
     let set_ref = member_owned(&view, ACCOUNT_PRIVILEGES);
     let set = set_ref
         .as_deref()
@@ -731,18 +733,20 @@ pub(crate) fn change_password(
             Some(&[high, low]) => u16::from_be_bytes([high, low]),
             _ => 0,
         };
-        if new.chars().count() < usize::from(minimum) {
+        if new.text().chars().count() < usize::from(minimum) {
             return Err(PasswordChangeError::TooShort(minimum));
         }
         // Unchanged when it hashes as the current one: a text that only
         // decomposes alike (`é`, `e` U+0301) is the same password.
-        if stored.verify(new) {
+        if stored.verify(new.text()) {
             return Err(PasswordChangeError::Unchanged);
         }
     }
     let civil = now.datetime();
     let status = current.password_set(civil.date(), seconds(civil)).encode();
-    let password = StoredPassword::encode(new, salt(environment));
+    let salt = salt(environment).map_err(PasswordChangeError::Unwritten)?;
+    let password = StoredPassword::encode(new.text(), salt);
+    drop(new);
     let time = stamp.as_ref().map(|_| host_time_key_at(&now));
     let stamp = mod_stamp(stamp.as_ref(), time.as_deref());
     rewrite_account(tx, &record, Some(password), status, stamp.as_ref())
@@ -751,26 +755,27 @@ pub(crate) fn change_password(
 
 /// Reset Account Password (136) for the account named `op.account`, as
 /// FileMaker's `DoResetAccount` writes it (local-files.md 2.4): the stored
-/// password `06` with a new salt from `environment`, the status `0a`
+/// password `06`, `new`, with a new salt from `environment` (none: "no
+/// random salt", and nothing changes), the status `0a`
 /// stamped with the environment's time to the second with its other flags
 /// kept and a change due at the next login when `op.expire`, and the
 /// checksum `04` ([`rewrite_account`], with the stamp). Only a
 /// FileMaker-file account has a password to reset (206, as `SetPassword`
-/// refuses another kind); more than 100 characters is 11. The caller has
-/// checked that the session may manage accounts.
+/// refuses another kind); more than 100 characters is 11. `new` is
+/// dropped, and so wiped, once it is hashed. The caller has checked that
+/// the session may manage accounts.
 pub(crate) fn reset_account_password(
     op: ResetPassword,
+    new: Password,
     tx: &mut Transaction<'_>,
     environment: &dyn Environment,
 ) -> Result<(), AccountEditError> {
     let ResetPassword {
         account,
-        new,
         expire,
         stamp,
     } = op;
-    let new = new.text();
-    if new.chars().count() > 100 {
+    if new.text().chars().count() > 100 {
         return Err(AccountEditError::TooLong);
     }
     let now = environment.now();
@@ -785,7 +790,9 @@ pub(crate) fn reset_account_password(
     let civil = now.datetime();
     let status = encoded(current.password_reset(civil.date(), seconds(civil), expire))
         .map_err(AccountEditError::Unwritten)?;
-    let password = StoredPassword::encode(new, salt(environment));
+    let salt = salt(environment).map_err(AccountEditError::Unwritten)?;
+    let password = StoredPassword::encode(new.text(), salt);
+    drop(new);
     let time = stamp.as_ref().map(|_| host_time_key_at(&now));
     let stamp = mod_stamp(stamp.as_ref(), time.as_deref());
     rewrite_account(tx, &record, Some(password), status, stamp.as_ref())
@@ -1263,11 +1270,15 @@ fn seconds(now: jiff::civil::DateTime) -> u32 {
     time.hour() as u32 * 3600 + time.minute() as u32 * 60 + time.second() as u32
 }
 
-/// A new salt for a stored password, from `environment`'s random source.
-fn salt(environment: &dyn Environment) -> [u8; om_crypto::account::SALT_LEN] {
+/// A new salt for a stored password, from `environment`'s random source,
+/// or why there is none: a source that fails refuses the edit, which
+/// changes nothing ([`Environment::try_fill_random`]).
+fn salt(environment: &dyn Environment) -> Result<[u8; om_crypto::account::SALT_LEN], String> {
     let mut salt = [0u8; om_crypto::account::SALT_LEN];
-    environment.fill_random(&mut salt);
-    salt
+    environment
+        .try_fill_random(&mut salt)
+        .map_err(|_| "no random salt".to_string())?;
+    Ok(salt)
 }
 
 /// The value of `record`'s member `key`: `None` when it has none, and an

@@ -51,7 +51,9 @@ use rustls::pki_types::CertificateDer;
 
 use crate::config::{ConnectionLimits, HostedFile, ServerConfig, ServerIdentity};
 use crate::connection::Shared;
-use crate::engine::{ChangePassword, FileEngine, Operation, Password, Reply, SaveFoundSet};
+use crate::engine::{
+    ChangePassword, Credentials, FileEngine, Operation, Password, Reply, SaveFoundSet,
+};
 use crate::filelock::{link_count, same_file, FileLock, LockKind};
 use crate::hosting::Hosting;
 use crate::server::{Server, ServerHandle};
@@ -434,14 +436,16 @@ impl LocalHost {
         }
         let change = ChangePassword {
             account: crate::hosting::AccountRef::Name(name.to_owned()),
-            old: Password::new(old),
-            new: Password::new(new),
             manager: false,
             stamp: None,
         };
+        let passwords = Credentials::Change {
+            old: Password::new(old),
+            new: Password::new(new),
+        };
         match shared
             .engine
-            .submit(&file, Operation::ChangePassword(change))
+            .submit_with(&file, Operation::ChangePassword(change), passwords)
             .reply
         {
             Reply::ChangePassword(changed) => changed,

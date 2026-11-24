@@ -1396,26 +1396,76 @@ fn a_new_stored_calculation_is_computed_when_the_file_is_loaded_between_op13_and
     );
 }
 
+/// The passwords a test step submits beside its operation
+/// ([`Credentials`]), kept as fixture text so that a replay can supply them
+/// again: a recording holds the operation alone.
+#[derive(Clone, Copy)]
+enum Given {
+    Nothing,
+    Change(&'static str, &'static str),
+    Reset(&'static str),
+}
+
+impl Given {
+    fn credentials(self) -> Credentials {
+        match self {
+            Given::Nothing => Credentials::None,
+            Given::Change(old, new) => Credentials::Change {
+                old: Password::new(old),
+                new: Password::new(new),
+            },
+            Given::Reset(new) => Credentials::Reset {
+                new: Password::new(new),
+            },
+        }
+    }
+}
+
+/// The salt and the verifier digest of every account's stored password
+/// in `file` (`[23, 1, 5, A, 06]`: the version, a 10-byte salt, the
+/// 20-byte digest, check bytes; om_crypto::account).
+fn verifier_parts(file: &Hosted) -> Vec<Vec<u8>> {
+    let accounts = node_at(file, &[vec![23], vec![1], vec![5]]).expect("accounts");
+    accounts
+        .children
+        .iter()
+        .filter_map(|account| account.child(&[6]).and_then(|n| n.value.clone()))
+        .flat_map(|stored| [stored[1..11].to_vec(), stored[11..31].to_vec()])
+        .collect()
+}
+
 /// docs/server-storage.md 5 and 9: the account edits, the deferred field
 /// work a file is opened with and a window's saved found set replay the
-/// same way, and a recording of them shows no password. The sequence: the
-/// desktop's Change Password of Admin (no stamp); a script's Change
-/// Password of Clerk, whose set does not let it (206); a script's Reset
-/// Account Password of Clerk, Enable Account of Former twice (the second
-/// changes nothing) and Delete Account of Clerk; a reset of an account the
-/// file lacks (213); the deferred work an op13 upload left (Count's
-/// dependents recomputed), finished; and Tasks' found set kept for a
-/// window. Each effect is checked against the fixture, and each step that
-/// is not refused must change the tree. A file opened with deferred work
-/// pending has it finished and saved by the engine that loads it.
+/// same way, and neither a recording of them nor their outcomes shows a
+/// password or a stored verifier. The sequence: the desktop's Change
+/// Password of Admin (no stamp) and of Newcomer, whose change is due;
+/// a script's Change Password of Clerk, whose set does not let it (206);
+/// a script's Reset Account Password of Clerk, Enable Account of Former
+/// twice (the second changes nothing) and Delete Account of Clerk; a reset
+/// of an account the file lacks (213); the deferred work an op13 upload
+/// left (Count's dependents recomputed), finished; and Tasks' found set
+/// kept for a window. The passwords travel beside the operations, and the
+/// replay supplies them again from the fixture. Each effect is checked
+/// against the fixture, the salts are the environment's, and each step
+/// that is not refused must change the tree. A file opened with deferred
+/// work pending has it finished and saved by the engine that loads it.
 #[test]
 fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays() {
     use om_protocol::authoring::{MOD_COUNT as STAMP_COUNT, MOD_USER as STAMP_USER};
 
     use crate::accounts::AccountStatus;
     const ADMIN_NEW: &str = "a new horse";
+    const NEWCOMER_NEW: &str = "settled in";
     const CLERK_NEW: &str = "clerk's new secret";
     const SCRIPT: u32 = 4;
+    let passwords = [
+        fixture::PASSWORD,
+        ADMIN_NEW,
+        fixture::NEWCOMER_PASSWORD,
+        NEWCOMER_NEW,
+        fixture::CLERK_PASSWORD,
+        CLERK_NEW,
+    ];
     let table = uint_segment(fixture::TABLE);
     let occurrence = uint_segment(fixture::OCCURRENCE);
     let doubled = vec![
@@ -1468,15 +1518,33 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     let (_first, file) = host("engine-accounts-recorded", &tree);
     let (recorder, log) = recording();
     let tree_of = |file: &Hosted| file.read_store().node(&[]).unwrap().clone();
-    let mut recorded: Vec<(Operation, Outcome, OwnedNode, bool)> = Vec::new();
-    // Submit `operation`, which must change the tree when `changes`.
-    let mut submit = |operation: Operation, changes: bool| {
+    // What a step shows (its operation as recorded and its outcome) holds
+    // no password, and no salt or digest of a stored verifier, in any form
+    // a debug print gives: decimal, hex list, hex text.
+    let assert_hidden = |shown: &str, parts: &[Vec<u8>]| {
+        for password in passwords {
+            assert!(!shown.contains(password), "a password is shown: {shown}");
+        }
+        for part in parts {
+            let hex: String = part.iter().map(|b| format!("{b:02x}")).collect();
+            for form in [format!("{part:?}"), format!("{part:02x?}"), hex] {
+                assert!(!shown.contains(&form), "a verifier is shown: {shown}");
+            }
+        }
+    };
+    let mut recorded: Vec<(Operation, Given, Outcome, OwnedNode, bool)> = Vec::new();
+    // Submit `operation` with the passwords `given`; it must change the
+    // tree when `changes`.
+    let mut submit = |operation: Operation, given: Given, changes: bool| {
         let before = tree_of(&file);
-        let outcome = recorder.submit(&file, operation);
+        let mut parts = verifier_parts(&file);
+        let outcome = recorder.submit_with(&file, operation, given.credentials());
         let operation = last(&log);
+        parts.extend(verifier_parts(&file));
+        assert_hidden(&format!("{:?}", (&operation, &outcome)), &parts);
         let after = tree_of(&file);
         assert_eq!(after != before, changes, "{operation:?}");
-        recorded.push((operation, outcome.clone(), after, changes));
+        recorded.push((operation, given, outcome.clone(), after, changes));
         outcome
     };
     let account = |key: u8| node_at(&file, &[vec![23], vec![1], vec![5], vec![key]]);
@@ -1485,10 +1553,14 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
         AccountStatus::decode(account.child(&[0x0a]).and_then(|n| n.value.as_deref()))
             .expect("a status")
     };
-    let stored_password = |key: u8| {
+    // The salt of an account's stored password, which the environment's
+    // random source drew (`Seeded`: 0, 1, 2, ... from the engine's start).
+    let salt = |key: u8| {
         let account = account(key).expect("the account");
-        account.child(&[6]).and_then(|n| n.value.clone()).unwrap()
+        let stored = account.child(&[6]).and_then(|n| n.value.clone()).unwrap();
+        stored[1..11].to_vec()
     };
+    let drawn = |from: u8| (from..from + 10).collect::<Vec<u8>>();
     let stamp = AccountStamp {
         connection: SCRIPT,
         user: fixture::ACCOUNT.into(),
@@ -1509,18 +1581,21 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
         node.and_then(|n| n.child(STAMP_COUNT).and_then(|c| c.value.clone()))
     };
     let index = vec![vec![23], vec![1], vec![1]];
+    let change = |account: AccountRef, stamp: Option<AccountStamp>| {
+        Operation::ChangePassword(ChangePassword {
+            account,
+            manager: false,
+            stamp,
+        })
+    };
 
     // The desktop's own Change Password: the next login needs the new
     // password; the status is set at the environment's time (12:00:00,
-    // 43,200 s) with no change due, and nothing is stamped.
+    // 43,200 s) with no change due, the salt is the first the
+    // environment drew, and nothing is stamped.
     let outcome = submit(
-        Operation::ChangePassword(ChangePassword {
-            account: AccountRef::Name(fixture::ACCOUNT.into()),
-            old: Password::new(fixture::PASSWORD),
-            new: Password::new(ADMIN_NEW),
-            manager: false,
-            stamp: None,
-        }),
+        change(AccountRef::Name(fixture::ACCOUNT.into()), None),
+        Given::Change(fixture::PASSWORD, ADMIN_NEW),
         true,
     );
     assert_eq!(outcome.reply, Reply::ChangePassword(Ok(())));
@@ -1535,19 +1610,29 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
         (jiff::civil::date(2026, 11, 24), 43_200)
     );
     assert!(admin.is_active() && !admin.must_change_password());
+    assert_eq!(salt(2), drawn(0));
     assert_eq!(stamp_count(account(2)), None);
     assert_eq!(stamp_count(node_at(&file, &index)), None);
-    let admin_hash = stored_password(2);
+
+    // Newcomer's change was due: a new password clears it.
+    assert!(status(5).must_change_password());
+    let outcome = submit(
+        change(AccountRef::Name(fixture::NEWCOMER.into()), None),
+        Given::Change(fixture::NEWCOMER_PASSWORD, NEWCOMER_NEW),
+        true,
+    );
+    assert_eq!(outcome.reply, Reply::ChangePassword(Ok(())));
+    assert!(!status(5).must_change_password(), "no change is due");
+    assert!(status(5).is_active());
+    assert_eq!(salt(5), drawn(10));
+    assert!(file
+        .verify_password(fixture::NEWCOMER, NEWCOMER_NEW)
+        .is_some());
 
     // Clerk's set does not let it change its own password.
     let outcome = submit(
-        Operation::ChangePassword(ChangePassword {
-            account: AccountRef::Key(vec![3]),
-            old: Password::new(fixture::CLERK_PASSWORD),
-            new: Password::new(CLERK_NEW),
-            manager: false,
-            stamp: Some(stamp.clone()),
-        }),
+        change(AccountRef::Key(vec![3]), Some(stamp.clone())),
+        Given::Change(fixture::CLERK_PASSWORD, CLERK_NEW),
         false,
     );
     assert_eq!(
@@ -1558,15 +1643,14 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
 
     // A script resets Clerk's password: stamped by its account, the index
     // too, and the other clients told the catalog changed.
-    let outcome = submit(
+    let reset = |account: &str| {
         Operation::ResetPassword(ResetPassword {
-            account: fixture::CLERK.into(),
-            new: Password::new(CLERK_NEW),
+            account: account.into(),
             expire: false,
             stamp: Some(stamp.clone()),
-        }),
-        true,
-    );
+        })
+    };
+    let outcome = submit(reset(fixture::CLERK), Given::Reset(CLERK_NEW), true);
     assert_eq!(outcome.reply, Reply::ResetPassword(Ok(())));
     assert_eq!(outcome.notices, catalog_changed);
     assert!(file.verify_password(fixture::CLERK, CLERK_NEW).is_some());
@@ -1583,7 +1667,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
         "the account catalog's index is stamped"
     );
     assert!(!status(3).must_change_password());
-    let clerk_hash = stored_password(3);
+    assert_eq!(salt(3), drawn(20));
 
     // Former made active, then again, which changes nothing.
     assert!(!status(4).is_active());
@@ -1592,12 +1676,12 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
         active: true,
         stamp: Some(stamp.clone()),
     });
-    let outcome = submit(enable.clone(), true);
+    let outcome = submit(enable.clone(), Given::Nothing, true);
     assert_eq!(outcome.reply, Reply::EnableAccount(Ok(true)));
     assert_eq!(outcome.notices, catalog_changed);
     assert!(status(4).is_active());
     assert_ne!(stamp_count(node_at(&file, &index)), index_stamp);
-    let outcome = submit(enable, false);
+    let outcome = submit(enable, Given::Nothing, false);
     assert_eq!(outcome.reply, Reply::EnableAccount(Ok(false)));
     assert_eq!(outcome.notices, nothing_told);
 
@@ -1607,6 +1691,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
             account: fixture::CLERK.into(),
             stamp: Some(stamp.clone()),
         }),
+        Given::Nothing,
         true,
     );
     assert_eq!(outcome.reply, Reply::DeleteAccount(Ok(())));
@@ -1620,15 +1705,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     );
 
     // An account the file lacks.
-    let outcome = submit(
-        Operation::ResetPassword(ResetPassword {
-            account: "Nobody".into(),
-            new: Password::new(CLERK_NEW),
-            expire: false,
-            stamp: Some(stamp.clone()),
-        }),
-        false,
-    );
+    let outcome = submit(reset("Nobody"), Given::Reset(CLERK_NEW), false);
     assert_eq!(
         outcome.reply,
         Reply::ResetPassword(Err(AccountEditError::Missing))
@@ -1640,9 +1717,9 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
         path: deferred.clone(),
         node: work.clone(),
     };
-    let outcome = submit(Operation::UploadToCatalog(upload), true);
+    let outcome = submit(Operation::UploadToCatalog(upload), Given::Nothing, true);
     assert_eq!(outcome.reply, Reply::UploadToCatalog(true));
-    let outcome = submit(Operation::FinishDeferredWork, true);
+    let outcome = submit(Operation::FinishDeferredWork, Given::Nothing, true);
     assert_eq!(outcome.reply, Reply::FinishDeferredWork(true));
     assert!(node_at(&file, &deferred).is_none(), "the work list is done");
     assert_eq!(
@@ -1661,6 +1738,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
             records: Some(found.clone()),
             current: Some(3),
         }),
+        Given::Nothing,
         true,
     );
     assert_eq!(outcome.reply, Reply::SaveFoundSet(true));
@@ -1671,40 +1749,21 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     assert_eq!(version, Some(7u32.to_be_bytes().to_vec()));
     assert!(state(vec![3]).is_some(), "the current record");
 
-    // No password, old or new, and no stored verifier in what was
-    // recorded and answered.
-    let shown = format!(
-        "{:?}",
-        recorded
-            .iter()
-            .map(|(operation, outcome, _, _)| (operation, outcome))
-            .collect::<Vec<_>>()
-    );
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    for secret in [
-        fixture::PASSWORD,
-        ADMIN_NEW,
-        fixture::CLERK_PASSWORD,
-        CLERK_NEW,
-    ] {
-        assert!(!shown.contains(secret), "a password is shown");
-        let password = format!("{:?}", Password::new(secret));
-        assert!(!password.contains(secret), "a password is shown");
-    }
-    for hash in [&admin_hash, &clerk_hash] {
-        assert!(!shown.contains(&format!("{hash:?}")), "a verifier is shown");
-        assert!(!shown.contains(&hex(hash)), "a verifier is shown");
+    // Nothing the recorder kept, nor the passwords' own debug form, shows
+    // a password or a verifier.
+    let parts = verifier_parts(&file);
+    assert_hidden(&format!("{:?}", log.lock().unwrap()), &parts);
+    for password in passwords {
+        let given = Given::Change(password, password).credentials();
+        assert_hidden(&format!("{:?}", (Password::new(password), given)), &parts);
     }
 
     let (_second, again) = host("engine-accounts-replayed", &tree);
     let replaying = engine();
-    for (operation, outcome, after, changes) in &recorded {
+    for (operation, given, outcome, after, changes) in &recorded {
         let before = tree_of(&again);
-        assert_eq!(
-            &replaying.submit(&again, operation.clone()),
-            outcome,
-            "{operation:?}"
-        );
+        let replayed = replaying.submit_with(&again, operation.clone(), given.credentials());
+        assert_eq!(&replayed, outcome, "{operation:?}");
         let now = tree_of(&again);
         assert_eq!(&now, after, "the tree after {operation:?}");
         assert_eq!(now != before, *changes, "{operation:?}");
@@ -1725,4 +1784,54 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     assert!(node_at(&file, &deferred).is_none());
     let on_disk = om_hbam::HbamFile::open(&saved.0).unwrap();
     assert!(on_disk.subtree(&path).unwrap().is_none(), "saved");
+}
+
+/// An environment whose random source fails ([`Environment::try_fill_random`]).
+struct NoRandomSource;
+
+impl Environment for NoRandomSource {
+    fn now(&self) -> jiff::Zoned {
+        "2026-11-24T12:00:00[UTC]".parse().unwrap()
+    }
+
+    fn fill_random(&self, _: &mut [u8]) {
+        panic!("a test's random source that fails");
+    }
+
+    fn try_fill_random(&self, _: &mut [u8]) -> Result<(), NoRandom> {
+        Err(NoRandom)
+    }
+}
+
+/// A password's salt that cannot be drawn refuses Change Password and Reset
+/// Account Password as unwritten ("no random salt", a script step's 3),
+/// with the file unchanged, as before the engine interface: it neither
+/// panics nor drops the connection that asked.
+#[test]
+fn an_account_edit_whose_salt_cannot_be_drawn_is_refused_and_changes_nothing() {
+    let (_file, file) = host("engine-no-random", &fixture::tree(&[], true));
+    let engine = FileEngine::new(Box::new(NoRandomSource));
+    let before = file.read_store().node(&[]).unwrap().clone();
+    let change = ChangePassword {
+        account: AccountRef::Name(fixture::ACCOUNT.into()),
+        manager: false,
+        stamp: None,
+    };
+    let given = Given::Change(fixture::PASSWORD, "a new horse").credentials();
+    let outcome = engine.submit_with(&file, Operation::ChangePassword(change), given);
+    let unwritten = PasswordChangeError::Unwritten("no random salt".into());
+    assert_eq!(outcome.reply, Reply::ChangePassword(Err(unwritten)));
+    let reset = ResetPassword {
+        account: fixture::CLERK.into(),
+        expire: false,
+        stamp: None,
+    };
+    let given = Given::Reset("clerk's new secret").credentials();
+    let outcome = engine.submit_with(&file, Operation::ResetPassword(reset), given);
+    let unwritten = AccountEditError::Unwritten("no random salt".into());
+    assert_eq!(outcome.reply, Reply::ResetPassword(Err(unwritten)));
+    assert_eq!(file.read_store().node(&[]).unwrap(), &before);
+    assert!(file
+        .verify_password(fixture::ACCOUNT, fixture::PASSWORD)
+        .is_some());
 }

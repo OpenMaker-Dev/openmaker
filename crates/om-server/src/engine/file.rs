@@ -5,8 +5,8 @@ use log::{info, warn};
 
 use super::transaction::{self, Hold, Locks, Transaction};
 use super::{
-    run, ChangeSchema, Draft, Edited, Environment, FileNotSaved, HostEnvironment, Operation,
-    Outcome, Reply, StoreIndexes,
+    run, ChangeSchema, Credentials, Draft, Edited, Environment, FileNotSaved, HostEnvironment,
+    Operation, Outcome, Reply, StoreIndexes,
 };
 use crate::hosting::{Hosted, StoreWriteGuard};
 use crate::store::{MemberKey, Store};
@@ -21,6 +21,8 @@ pub struct FileEngine {
 /// What the engine offers each operation to, by reference, completed and
 /// before it runs it: a recording (`engine::tests`). The running server
 /// installs none, so the engine keeps no copy of what an operation owns.
+/// An account edit's passwords are not part of its operation
+/// ([`Credentials`]), so a recording never gets them.
 type Recorder = Box<dyn Fn(&Operation) + Send + Sync>;
 
 impl Default for FileEngine {
@@ -218,6 +220,19 @@ impl FileEngine {
     /// operations' failed saves are not reported yet ([`Save`]), op240's
     /// save excepted, whose reply is whether the file was saved.
     pub fn submit(&self, file: &Hosted, operation: Operation) -> Outcome {
+        self.submit_with(file, operation, Credentials::None)
+    }
+
+    /// [`Self::submit`] of an account edit, with the passwords it was given
+    /// beside it: Change Password's and Reset Account Password's
+    /// ([`Credentials`]). They reach the run and nothing else: not the
+    /// recording, which gets the operation alone.
+    pub fn submit_with(
+        &self,
+        file: &Hosted,
+        operation: Operation,
+        credentials: Credentials,
+    ) -> Outcome {
         let environment = &*self.environment;
         match needs(&operation) {
             Needs::LockTable => {
@@ -225,6 +240,7 @@ impl FileEngine {
                 let mut locks = Locks::new(&file.locks);
                 let outcome = run(
                     operation,
+                    credentials,
                     &file.name,
                     Hold::LockTable,
                     &mut locks,
@@ -239,6 +255,7 @@ impl FileEngine {
                 let mut locks = Locks::new(&file.locks);
                 let outcome = run(
                     operation,
+                    credentials,
                     &file.name,
                     Hold::View(&store),
                     &mut locks,
@@ -247,9 +264,9 @@ impl FileEngine {
                 locks.keep();
                 outcome
             }
-            Needs::Transaction => {
-                self.submit_write(file, file.write_store(), |_| (operation, Vec::new()))
-            }
+            Needs::Transaction => self.submit_write(file, file.write_store(), credentials, |_| {
+                (operation, Vec::new())
+            }),
         }
     }
 
@@ -263,7 +280,7 @@ impl FileEngine {
         match needs(&operation) {
             Needs::Transaction => {
                 let store = file.try_write_store()?;
-                Some(self.submit_write(file, store, |_| (operation, Vec::new())))
+                Some(self.submit_write(file, store, Credentials::None, |_| (operation, Vec::new())))
             }
             Needs::LockTable | Needs::View => Some(self.submit(file, operation)),
         }
@@ -275,7 +292,9 @@ impl FileEngine {
     /// completed operation ([`Self::recording`]), which [`Self::submit`]
     /// replays.
     pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Outcome {
-        self.submit_write(file, file.write_store(), |store| complete(draft, store))
+        self.submit_write(file, file.write_store(), Credentials::None, |store| {
+            complete(draft, store)
+        })
     }
 
     /// Run the operation `operation` gives for `store`, `file`'s, which
@@ -286,6 +305,7 @@ impl FileEngine {
         &self,
         file: &Hosted,
         mut store: StoreWriteGuard<'_>,
+        credentials: Credentials,
         operation: impl FnOnce(&mut Store) -> (Operation, Vec<MemberKey>),
     ) -> Outcome {
         let (operation, taken) = operation(&mut store);
@@ -296,6 +316,7 @@ impl FileEngine {
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(
                 operation,
+                credentials,
                 &file.name,
                 Hold::Transaction(&mut tx),
                 &mut locks,
