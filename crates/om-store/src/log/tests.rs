@@ -1644,6 +1644,7 @@ fn what_follows_the_marker_is_kept_when_whole_and_cut_when_not() {
         sim.set_crash_fates(Fates::LoseAll);
         sim.place(sim.steps() + 2, Fault::Crash);
         assert!(log.flush_batch(&mut state, None).is_err());
+        assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
         assert!(log.is_poisoned());
         drop((log, state));
         sim.restart();
@@ -1732,6 +1733,7 @@ fn a_failed_write_or_flush_stops_the_log() {
         log.append(1, 0, 0, b"x").unwrap();
         sim.place(sim.steps() + 1, fault);
         assert!(log.flush_batch(&mut state, None).is_err(), "{fault:?}");
+        assert_eq!(sim.fired().get(&fault), Some(&1));
         assert!(log.is_poisoned());
         assert!(matches!(log.append(1, 0, 0, b""), Err(LogError::Poisoned)));
         assert!(matches!(
@@ -1797,6 +1799,7 @@ fn an_open_that_repairs_its_tail_survives_a_crash_at_every_step() {
                     sim.set_crash_fates(fates);
                     sim.place(sim.steps() + step, Fault::Crash);
                     assert!(open_store(&sim, Position::START).is_err());
+                    assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
                     sim.restart();
                     let (_, log, opened) = open_store(&sim, Position::START)
                         .unwrap_or_else(|e| panic!("seed {seed}, step {step}, {fates:?}: {e}"));

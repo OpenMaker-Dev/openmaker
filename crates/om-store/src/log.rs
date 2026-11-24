@@ -559,8 +559,9 @@ impl Log {
             last = before;
             end = Some((from, SEGMENT_HEADER));
             let mut scanner = Scanner::new(&segs, from, false);
-            // Entries after `firm` wait for their batch to prove whole.
-            let mut tail: Vec<Found> = Vec::new();
+            // Entries after `firm` wait for their batch to prove whole: how
+            // many, and the last (a batch is in one segment).
+            let mut tail: Option<(u64, Found)> = None;
             let stop = loop {
                 match scanner.next_event().map_err(|f| unreadable(&segs, f))? {
                     Event::Batch => {}
@@ -573,16 +574,19 @@ impl Log {
                         end = Some((found.seg, found.offset + found.size));
                         last = position(&found);
                     }
-                    Event::Entry(found) => tail.push(found),
+                    Event::Entry(found) => {
+                        let count = tail.as_ref().map_or(0, |(n, _)| *n);
+                        tail = Some((count + 1, found));
+                    }
                     Event::BatchEnd { whole: true } => {
-                        for found in tail.drain(..) {
+                        if let Some((count, found)) = tail.take() {
                             tail_segs.insert(found.seg);
-                            kept += 1;
+                            kept += count;
                             end = Some((found.seg, found.offset + found.size));
                             last = position(&found);
                         }
                     }
-                    Event::BatchEnd { whole: false } if !tail.is_empty() => {
+                    Event::BatchEnd { whole: false } if tail.is_some() => {
                         let (seg, offset) = end.expect("set before the walk");
                         break (seg, offset);
                     }
