@@ -219,6 +219,11 @@ documented, so reconnecting by itself is OpenMaker Go's own choice.
   the host may disconnect an idle client: coming back reconnects (above),
   which takes longer than a connection kept would: related records came
   back about 18 seconds later ([#657](https://github.com/OpenMaker-Dev/openmaker/issues/657)).
+- **Records a close trigger changed.** A close that stops at a window or
+  card an OnWindowClose trigger opened is taken for a refused close: when
+  the app lets go of the file, a record the trigger changed there is not
+  saved ([#682](https://github.com/OpenMaker-Dev/openmaker/issues/682)); nor is one it changed while the app left the
+  foreground during the close ([#683](https://github.com/OpenMaker-Dev/openmaker/issues/683)).
 - **An app ended while the save is held** (a validation failure shown
   when the app left the foreground, a trigger that kept the record, or a
   lost connection, then iOS or Android ending it) loses the record's
