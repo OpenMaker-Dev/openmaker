@@ -189,7 +189,10 @@ impl File for RecordedFile {
 
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
         assert!(
-            offset as usize % SLOT == 0 && (data.len() == COPY || data.len() % SLOT == 0),
+            offset as usize % SLOT == 0
+                && (data.len() == COPY
+                    || data.len() == HEADER + BODY_V1 + HASH
+                    || data.len() % SLOT == 0),
             "state writes copies at the start of slots"
         );
         let slots = data
@@ -197,7 +200,7 @@ impl File for RecordedFile {
             .enumerate()
             .map(|(i, bytes)| {
                 let copy = match decode(bytes) {
-                    Ok(Decoded::Valid(number, values)) => Some(Written { number, values }),
+                    Ok(Decoded::Valid(number, values, _)) => Some(Written { number, values }),
                     _ => None,
                 };
                 (offset as usize / SLOT + i, copy)
@@ -1296,8 +1299,9 @@ fn open_refuses_what_it_cannot_trust() {
     let fs = sim.fs();
     drop(State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap());
     let at = sim.steps() + 1;
-    sim.place(at, Fault::FailRead);
-    sim.place(at, Fault::FailRead);
+    for _ in 0..2 * READ_ATTEMPTS {
+        sim.place(at, Fault::FailRead);
+    }
     assert!(matches!(
         open(&sim),
         Err(StateError::Unreadable {
@@ -1331,12 +1335,7 @@ fn a_version_1_copy_is_read_with_no_cuts() {
     let values = *state.values();
     drop(state);
     // Version 1: the same fields without the cut count.
-    let mut copy = encode(5, &values);
-    copy.truncate(HEADER + BODY_V1);
-    copy[8..10].copy_from_slice(&1u16.to_le_bytes());
-    copy[12..16].copy_from_slice(&(BODY_V1 as u32).to_le_bytes());
-    let hash = digest::digest(&digest::SHA256, &copy);
-    copy.extend_from_slice(hash.as_ref());
+    let copy = copy_v1(5, &values);
     let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
     file.write_at(0, &copy).unwrap();
     file.write_at(SLOT as u64, &copy).unwrap();
@@ -1352,6 +1351,83 @@ fn a_version_1_copy_is_read_with_no_cuts() {
     drop(state);
     let state = open(&sim).unwrap();
     assert_eq!(state.values().cut_count, 1);
+}
+
+/// A copy of version 1, as the device holds it: `values`, numbered
+/// `number`, without the cut count.
+fn copy_v1(number: u64, values: &Values) -> Vec<u8> {
+    let mut copy = encode(number, values);
+    copy.truncate(HEADER + BODY_V1);
+    copy[8..10].copy_from_slice(&1u16.to_le_bytes());
+    copy[12..16].copy_from_slice(&(BODY_V1 as u32).to_le_bytes());
+    let hash = digest::digest(&digest::SHA256, &copy);
+    copy.extend_from_slice(hash.as_ref());
+    copy
+}
+
+/// The second review's second finding: the first open of a version 1
+/// `state` by this code writes the copy it chose back as the bytes it
+/// read, and version 2 only as new copies, so that a crash at any step of
+/// it leaves a valid copy and loses nothing.
+#[test]
+fn a_version_1_state_survives_a_crash_at_every_step_of_its_first_open() {
+    // Two valid copies: the newer recording committed position 4, the
+    // older 1.
+    let build = |seed: u64| {
+        let sim = Sim::new(seed);
+        let fs = sim.fs();
+        let state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        let mut older = *state.values();
+        drop(state);
+        older.term = 2;
+        older.marker = Marker {
+            index: 10,
+            hash: [5; 32],
+            committed: 1,
+        };
+        let newer = Values {
+            marker: Marker {
+                committed: 4,
+                ..older.marker
+            },
+            ..older
+        };
+        let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+        file.write_at(0, &copy_v1(5, &older)).unwrap();
+        file.write_at(SLOT as u64, &copy_v1(6, &newer)).unwrap();
+        file.flush().unwrap();
+        drop(file);
+        sim.restart();
+        (sim, newer)
+    };
+    let steps = {
+        let (sim, _) = build(0);
+        let begin = sim.steps();
+        open(&sim).unwrap();
+        sim.steps() - begin
+    };
+    for seed in 0..6 {
+        for step in 1..=steps {
+            for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+                let (sim, newer) = build(seed);
+                sim.set_crash_fates(fates);
+                sim.place(sim.steps() + step, Fault::Crash);
+                assert!(open(&sim).is_err());
+                assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
+                sim.restart();
+                let state = open(&sim)
+                    .unwrap_or_else(|e| panic!("seed {seed}, step {step}, {fates:?}: {e}"));
+                let values = state.values();
+                assert_eq!(
+                    values.marker, newer.marker,
+                    "seed {seed}, step {step}, {fates:?}: the newest copy was lost"
+                );
+                assert_eq!(values.term, newer.term);
+                assert_eq!(values.cut_count, 0);
+                assert!(values.start_count > newer.start_count);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1399,14 +1475,23 @@ fn one_lost_slot_costs_at_most_one_marker_advance() {
     assert_eq!(state.values().marker.index, 10);
     drop(state);
 
-    // One slot unreadable: the other is used.
+    // A read that fails is tried again: both slots are read.
     sim.place(sim.steps() + 1, Fault::FailRead);
+    let state = open(&sim).unwrap();
+    assert!(state.opened().unwrap().other.is_ok());
+    assert_eq!(state.values().start_count, 5);
+    drop(state);
+
+    // One slot that fails every read: the other is used.
+    for _ in 0..READ_ATTEMPTS {
+        sim.place(sim.steps() + 1, Fault::FailRead);
+    }
     let state = open(&sim).unwrap();
     assert!(matches!(
         state.opened().unwrap().other,
         Err(SlotFault::Unreadable(ErrorKind::Read))
     ));
-    assert_eq!(state.values().start_count, 5);
+    assert_eq!(state.values().start_count, 6);
 }
 
 /// The sequence the first review found (seed 5): an update cut short by a

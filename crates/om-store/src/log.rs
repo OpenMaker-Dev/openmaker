@@ -172,8 +172,7 @@ pub struct Opened {
 }
 
 /// Where an open cut the log (section 6.12: "cut from the first bad entry,
-/// and log the cut"): a batch after the durable entry that was not whole,
-/// or written before the last cut, or listed segments past the end.
+/// and log the cut").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cut {
     /// The first index no longer in the log.
@@ -183,6 +182,21 @@ pub struct Cut {
     pub offset: u64,
     /// Listed segments after it that were dropped.
     pub dropped: u64,
+    pub why: CutWhy,
+}
+
+/// Why an open cut the log after its durable entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CutWhy {
+    /// A batch was not whole: a write cut short, or damage.
+    NotWhole,
+    /// A batch was written before the last cut.
+    OlderCut,
+    /// A read failed. The open raised the cut count, so that what it cut
+    /// is not read again should it become readable.
+    Unreadable,
+    /// Only listed segments past the end were dropped.
+    Segments,
 }
 
 /// What is wrong with a damaged log (section 6.12).
@@ -418,8 +432,9 @@ fn position(found: &Found) -> Position {
     }
 }
 
-/// A batch as written under `cut_count`: its header, then its entries.
-fn batch_bytes(entries: &[Pending], cut_count: u64) -> Vec<u8> {
+/// A batch as written under `cut_count`, after the entry whose hash is
+/// `prev`: its header, then its entries.
+fn batch_bytes(entries: &[Pending], prev: [u8; 32], cut_count: u64) -> Vec<u8> {
     let length: u64 = entries.iter().map(|e| e.bytes.len() as u64).sum();
     let first = entries.first().expect("a batch has entries").position.index;
     let last = entries.last().expect("a batch has entries").position.hash;
@@ -428,6 +443,7 @@ fn batch_bytes(entries: &[Pending], cut_count: u64) -> Vec<u8> {
         first,
         length,
         cut_count,
+        prev,
         last,
     };
     let mut out = Vec::with_capacity((BATCH_HEADER + length) as usize);
@@ -591,7 +607,7 @@ impl Log {
         let mut end: Option<(usize, u64)> = None;
         let mut tail_segs = BTreeSet::new();
         let mut kept = 0u64;
-        let mut rejected = false;
+        let mut why: Option<CutWhy> = None;
         if let Some(first) = segs.first() {
             if first.header.first > after_start {
                 return Err(damage(
@@ -637,10 +653,39 @@ impl Log {
             let mut batch_cut_count = cut_count;
             let mut incomplete = false;
             let stop = loop {
-                let event = scanner.next_event().map_err(|f| unreadable(&segs, f))?;
+                let event = match scanner.next_event() {
+                    Ok(event) => event,
+                    // After the firm position a read that fails ends the
+                    // log, as any incomplete tail does (section 6.12):
+                    // nothing there was acknowledged. At or before it, the
+                    // caller tells it apart from damage.
+                    Err(fault)
+                        if fault.error.kind() == ErrorKind::Read && scanner.position().0 > firm =>
+                    {
+                        why = Some(CutWhy::Unreadable);
+                        break end.expect("set before the walk");
+                    }
+                    Err(fault) => return Err(unreadable(&segs, fault)),
+                };
                 let was_incomplete = std::mem::replace(&mut incomplete, false);
+                let stale = |batch: u64| {
+                    if batch == cut_count {
+                        CutWhy::NotWhole
+                    } else {
+                        CutWhy::OlderCut
+                    }
+                };
                 match event {
-                    Event::Batch { cut_count } => batch_cut_count = cut_count,
+                    Event::Batch { cut_count: written } => {
+                        batch_cut_count = written;
+                        // A batch written before the last cut counts only
+                        // up to the firm position: nothing past it is read,
+                        // so what follows the firm position is judged by
+                        // the batch's header alone.
+                        if written != cut_count {
+                            scanner.read_no_further_than(firm);
+                        }
+                    }
                     Event::Entry(found) if found.index <= firm => {
                         check(&position(&found), found.seg, found.offset)?;
                         if found.index > marker.index {
@@ -664,7 +709,7 @@ impl Log {
                             last = position(&found);
                         }
                         Some(_) => {
-                            rejected = true;
+                            why = Some(stale(batch_cut_count));
                             break end.expect("set before the walk");
                         }
                         None => incomplete = !whole,
@@ -672,7 +717,9 @@ impl Log {
                     Event::Segment { seg } => end = Some((seg, SEGMENT_HEADER)),
                     Event::End { seg, offset } => {
                         // An entry that broke a batch off ends the walk.
-                        rejected |= was_incomplete;
+                        if was_incomplete {
+                            why = Some(stale(batch_cut_count));
+                        }
                         break (seg, offset);
                     }
                 }
@@ -697,28 +744,40 @@ impl Log {
             return Err(damage(DamageKind::EndsEarly, run.first, 0, after_start));
         }
 
-        // The log holds what it must. Make what it keeps durable, then
-        // record it.
+        // The log holds what it must. Make its folder's name durable, and
+        // what it keeps, then record it. The store folder is flushed on
+        // every open, whether this open made `log/` or found it: an earlier
+        // open may have made it and failed to flush (format section 3.6).
         if no_folder {
             fs.create_folder(FOLDER).map_err(LogError::Disk)?;
-            fs.flush_folder("").map_err(LogError::Disk)?;
         }
+        fs.flush_folder("").map_err(LogError::Disk)?;
         for &seg in &tail_segs {
             segs[seg].file.flush().map_err(LogError::Disk)?;
         }
         let mut cut = None;
         if let Some((seg, offset)) = end {
             let dropped = (segs.len() - seg - 1) as u64;
-            if rejected || dropped > 0 {
+            if why.is_some() || dropped > 0 {
                 cut = Some(Cut {
                     index: last.index + 1,
                     segment: segs[seg].number,
                     offset,
                     dropped,
+                    why: why.unwrap_or(CutWhy::Segments),
                 });
             }
             segs.truncate(seg + 1);
         }
+        // What a read failure cut may become readable again, whole: a
+        // raised cut count keeps it out of the log for good.
+        let new_cut_count = if why == Some(CutWhy::Unreadable) {
+            cut_count
+                .checked_add(1)
+                .ok_or(LogError::Refused("the cut count is at its limit"))?
+        } else {
+            cut_count
+        };
         let listed = Segments {
             first: run.first,
             count: segs.len() as u64,
@@ -732,6 +791,7 @@ impl Log {
             .update(|v| {
                 v.marker = new_marker;
                 v.segments = listed;
+                v.cut_count = new_cut_count;
             })
             .map_err(LogError::State)?;
 
@@ -751,9 +811,9 @@ impl Log {
                 Err(e) => return Err(LogError::Disk(e)),
             }
         }
-        if !removed.is_empty() {
-            fs.flush_folder(FOLDER).map_err(LogError::Disk)?;
-        }
+        // Flushed on every open too: an earlier one may have made or
+        // removed a file in it and failed to flush.
+        fs.flush_folder(FOLDER).map_err(LogError::Disk)?;
 
         Ok(Recovered {
             write: end.map(|(_, offset)| offset),
@@ -762,7 +822,7 @@ impl Log {
             opened: Opened {
                 durable: last,
                 recorded_committed: marker.committed,
-                cut_count,
+                cut_count: new_cut_count,
                 kept,
                 cut,
                 removed,
@@ -1039,7 +1099,7 @@ impl Log {
         let mut write = self.write;
         if !here.is_empty() {
             let offset = write.expect("entries are placed in a segment only when there is one");
-            let bytes = batch_bytes(here, values.cut_count);
+            let bytes = batch_bytes(here, self.durable.hash, values.cut_count);
             let seg = self.segs.last().expect("a segment to write in");
             if let Err(e) = seg.file.write_at(offset, &bytes) {
                 return Err(self.failed(e));
@@ -1063,7 +1123,7 @@ impl Log {
                 prev_hash: before.hash,
             };
             let mut bytes = header.encode().to_vec();
-            bytes.extend_from_slice(&batch_bytes(there, values.cut_count));
+            bytes.extend_from_slice(&batch_bytes(there, before.hash, values.cut_count));
             if let Err(e) = file.write_at(0, &bytes) {
                 return Err(self.failed(e));
             }

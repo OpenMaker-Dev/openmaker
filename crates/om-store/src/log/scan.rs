@@ -147,6 +147,9 @@ pub(crate) struct Scanner<'a> {
     /// A batch header found where an entry was expected, to begin once the
     /// batch it ends is reported.
     pending: Option<(BatchHeader, u64)>,
+    /// No entry of the current batch past this index is read: the batch
+    /// ends there, as if the entry were missing.
+    read_no_further_than: Option<u64>,
     /// The walk ends once the batch it is in is reported.
     ending: Option<(usize, u64)>,
     ended: bool,
@@ -167,11 +170,20 @@ impl<'a> Scanner<'a> {
             prev_term: header.prev_term,
             batch: None,
             pending: None,
+            read_no_further_than: None,
             ending: None,
             ended: false,
             cursor: Cursor::new(),
             keep_payload,
         }
+    }
+
+    /// Read no entry of the current batch past `index`: the batch, and the
+    /// walk, end before it, and nothing is read for it. The next batch is
+    /// read in full again. The open sets it for a batch written before the
+    /// last cut, which counts only up to the firm position.
+    pub fn read_no_further_than(&mut self, index: u64) {
+        self.read_no_further_than = Some(index);
     }
 
     /// The index the next entry would have, and the hash and term of the
@@ -194,13 +206,16 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// A valid batch header at `offset` whose first entry is the next one.
+    /// A valid batch header at `offset` whose first entry is the next one
+    /// and chains from the entry just read.
     fn header_at(&mut self, offset: u64) -> Result<Option<BatchHeader>, ReadFault> {
         let size = self.segs[self.seg].header.size;
         let next = self.next;
+        let prev = self.prev;
         let bytes = self.bytes(offset, BATCH_HEADER)?;
         Ok(BatchHeader::decode(bytes).filter(|h| {
             h.first == next
+                && h.prev == prev
                 && offset
                     .checked_add(BATCH_HEADER)
                     .and_then(|o| o.checked_add(h.length))
@@ -337,6 +352,14 @@ impl<'a> Scanner<'a> {
                 self.pending = Some((header, offset));
                 return Ok(Event::BatchEnd { whole: false });
             }
+            if self
+                .read_no_further_than
+                .is_some_and(|last| self.next > last)
+            {
+                self.batch = None;
+                self.ending = Some((self.seg, offset));
+                return Ok(Event::BatchEnd { whole: false });
+            }
             let limit = batch_offset + BATCH_HEADER + length;
             match self.entry_at(offset, limit)? {
                 Some(found) => {
@@ -378,6 +401,7 @@ impl<'a> Scanner<'a> {
         };
         match begin {
             Some((header, offset)) => {
+                self.read_no_further_than = None;
                 self.batch = Some(OpenBatch {
                     header,
                     offset,

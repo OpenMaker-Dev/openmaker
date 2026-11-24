@@ -33,8 +33,11 @@
 //! fail, and the system's cache then shows bytes the device may not hold
 //! (section 6.12). So it flushes the store folder (for `state`'s own name)
 //! and writes the copy it read back into its slot and flushes it before it
-//! writes anything over the other slot. It reads the slots one at a time:
-//! one that cannot be read does not keep it from the other.
+//! writes anything over the other slot. It writes it back as the very
+//! bytes it read, so that a write cut short leaves it as it was, and a copy
+//! of an older version reaches the newer form only as new copies. It reads
+//! the slots one at a time, each up to [`READ_ATTEMPTS`] times: one that
+//! cannot be read does not keep it from the other.
 //!
 //! A [`State`] holds the store folder's lock for as long as it lives, so
 //! that one lock makes one writer. After a write or flush of `state` fails
@@ -399,14 +402,14 @@ impl State {
                 return Err(StateError::NewerFormat { version: *version });
             }
         }
-        let fault = |i: usize| match slots[i] {
-            Err(Ok(fault)) => fault,
+        let fault = |i: usize| match &slots[i] {
+            Err(Ok(fault)) => *fault,
             _ => SlotFault::Invalid(Invalid::Short),
         };
         let number = |i: usize| {
             slots[i]
                 .as_ref()
-                .map(|(number, _)| *number)
+                .map(|(number, _, _)| *number)
                 .map_err(|_| fault(i))
         };
         // The highest number; between equal ones, the first slot.
@@ -423,16 +426,20 @@ impl State {
                 })
             }
         };
-        let Ok((read_number, values)) = slots[chosen] else {
+        let Ok((read_number, values, read_bytes)) = &slots[chosen] else {
             unreachable!("chosen among the valid copies");
         };
+        let (read_number, values) = (*read_number, *values);
         let other = number(1 - chosen);
         let start_count = values
             .start_count
             .checked_add(1)
             .ok_or(StateError::Refused("the start count is at its limit"))?;
-        // The copy read, back into its slot and onto the device.
-        file.write_at((chosen * SLOT) as u64, &encode(read_number, &values))?;
+        // The copy read, back into its slot and onto the device, as the very
+        // bytes that were read: a write cut short then leaves the copy as it
+        // was, whatever version it is of. A copy of an older version reaches
+        // the newer form only as new copies, in the two writes below.
+        file.write_at((chosen * SLOT) as u64, read_bytes)?;
         file.flush()?;
         let mut state = Self {
             file,
@@ -533,22 +540,34 @@ impl State {
 
 /// What a slot holds: a valid copy, or why it gave none, or (as the inner
 /// error) a copy of a newer format.
-type SlotRead = Result<(u64, Values), Result<SlotFault, u16>>;
+/// The copy's bytes are those its hash covers, and the hash.
+type SlotRead = Result<(u64, Values, Vec<u8>), Result<SlotFault, u16>>;
 
-/// Read slot `slot` of `file`. A slot the device fails to read is a fault
-/// of that slot; an error of anything else (the process stopping) is the
-/// open's.
+/// How many times a slot is read before the device's failures to read it
+/// count as the slot's fault: a read that fails once may succeed again, and
+/// a slot passed over loses its copy (it is written over before the open
+/// returns).
+pub const READ_ATTEMPTS: usize = 3;
+
+/// Read slot `slot` of `file`. A slot the device fails to read
+/// [`READ_ATTEMPTS`] times is a fault of that slot; an error of anything
+/// else (the process stopping) is the open's.
 fn read_slot(file: &dyn File, slot: usize) -> Result<SlotRead, StateError> {
     let mut bytes = vec![0u8; SLOT];
-    let n = match file.read_at((slot * SLOT) as u64, &mut bytes) {
-        Ok(n) => n,
-        Err(e) if e.kind() == ErrorKind::Read => {
-            return Ok(Err(Ok(SlotFault::Unreadable(e.kind()))))
+    let mut attempt = 0;
+    let n = loop {
+        attempt += 1;
+        match file.read_at((slot * SLOT) as u64, &mut bytes) {
+            Ok(n) => break n,
+            Err(e) if e.kind() == ErrorKind::Read && attempt < READ_ATTEMPTS => {}
+            Err(e) if e.kind() == ErrorKind::Read => {
+                return Ok(Err(Ok(SlotFault::Unreadable(e.kind()))))
+            }
+            Err(e) => return Err(e.into()),
         }
-        Err(e) => return Err(e.into()),
     };
     Ok(match decode(&bytes[..n]) {
-        Ok(Decoded::Valid(number, values)) => Ok((number, values)),
+        Ok(Decoded::Valid(number, values, len)) => Ok((number, values, bytes[..len].to_vec())),
         Ok(Decoded::Newer(version)) => Err(Err(version)),
         Err(invalid) => Err(Ok(SlotFault::Invalid(invalid))),
     })
@@ -594,7 +613,9 @@ fn check(before: &Values, after: &Values) -> Result<(), StateError> {
 /// A copy, or a copy of a newer format.
 #[derive(Debug)]
 enum Decoded {
-    Valid(u64, Values),
+    /// The copy's number, its values, and how many bytes it takes with its
+    /// hash.
+    Valid(u64, Values, usize),
     Newer(u16),
 }
 
@@ -707,7 +728,7 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
     {
         return Err(Invalid::Malformed);
     }
-    Ok(Decoded::Valid(number, values))
+    Ok(Decoded::Valid(number, values, end + HASH))
 }
 
 #[cfg(test)]

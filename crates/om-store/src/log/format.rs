@@ -12,7 +12,7 @@ pub const VERSION: u16 = 1;
 pub const SEGMENT_HEADER: u64 = 128;
 
 /// The bytes a batch's header takes; its entries follow it.
-pub const BATCH_HEADER: u64 = 104;
+pub const BATCH_HEADER: u64 = 136;
 
 /// An entry's fixed fields, before its payload.
 pub const ENTRY_FIXED: u64 = 32;
@@ -168,6 +168,9 @@ pub struct BatchHeader {
     pub length: u64,
     /// The cut count `state` held when the batch was written.
     pub cut_count: u64,
+    /// The hash of the entry before its first, which its first entry
+    /// chains from.
+    pub prev: [u8; 32],
     /// The hash of its last entry.
     pub last: [u8; 32],
 }
@@ -181,9 +184,10 @@ impl BatchHeader {
         out[16..24].copy_from_slice(&self.first.to_le_bytes());
         out[24..32].copy_from_slice(&self.length.to_le_bytes());
         out[32..40].copy_from_slice(&self.cut_count.to_le_bytes());
-        out[40..72].copy_from_slice(&self.last);
-        let hash = sha256(&[&out[..72]]);
-        out[72..104].copy_from_slice(&hash);
+        out[40..72].copy_from_slice(&self.prev);
+        out[72..104].copy_from_slice(&self.last);
+        let hash = sha256(&[&out[..104]]);
+        out[104..136].copy_from_slice(&hash);
         out
     }
 
@@ -194,7 +198,7 @@ impl BatchHeader {
         if bytes.len() < BATCH_HEADER as usize || bytes[..BATCH_MAGIC.len()] != BATCH_MAGIC {
             return None;
         }
-        if sha256(&[&bytes[..72]]) != hash_at(bytes, 72) {
+        if sha256(&[&bytes[..104]]) != hash_at(bytes, 104) {
             return None;
         }
         let header = BatchHeader {
@@ -202,7 +206,8 @@ impl BatchHeader {
             first: u64_at(bytes, 16),
             length: u64_at(bytes, 24),
             cut_count: u64_at(bytes, 32),
-            last: hash_at(bytes, 40),
+            prev: hash_at(bytes, 40),
+            last: hash_at(bytes, 72),
         };
         let valid = u16_at(bytes, 8) == VERSION
             && bytes[10..12] == [0; 2]

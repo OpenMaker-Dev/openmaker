@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ring::digest;
 
@@ -80,13 +80,18 @@ struct Watched {
     changes: Arc<AtomicU64>,
     /// The largest read any of its files was asked for.
     largest_read: Arc<AtomicU64>,
+    /// Places the device cannot read: a read of the file that covers the
+    /// offset fails, every time.
+    bad: Arc<Mutex<Vec<(String, u64)>>>,
 }
 
 struct WatchedFile {
     inner: Box<dyn File>,
+    path: String,
     counted: bool,
     changes: Arc<AtomicU64>,
     largest_read: Arc<AtomicU64>,
+    bad: Arc<Mutex<Vec<(String, u64)>>>,
 }
 
 impl Watched {
@@ -95,6 +100,7 @@ impl Watched {
             inner,
             changes: Arc::default(),
             largest_read: Arc::default(),
+            bad: Arc::default(),
         }
     }
 
@@ -107,9 +113,11 @@ impl Watched {
     fn file(&self, path: &str, inner: Box<dyn File>) -> Box<dyn File> {
         Box::new(WatchedFile {
             inner,
+            path: path.to_owned(),
             counted: path.starts_with(FOLDER),
             changes: self.changes.clone(),
             largest_read: self.largest_read.clone(),
+            bad: self.bad.clone(),
         })
     }
 }
@@ -167,6 +175,16 @@ impl File for WatchedFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
         self.largest_read
             .fetch_max(buf.len() as u64, Ordering::Relaxed);
+        let end = offset + buf.len() as u64;
+        let bad = self
+            .bad
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(path, at)| *path == self.path && (offset..end).contains(at));
+        if bad {
+            return Err(sys::Error::new(ErrorKind::Read, sys::Op::Read, &self.path));
+        }
         self.inner.read_at(offset, buf)
     }
 
@@ -382,6 +400,7 @@ struct Reached {
     no_space: u64,
     batch_full: u64,
     poisoned: u64,
+    retried_opens: u64,
     unconfirmed: u64,
     reappended: u64,
     damaged: u64,
@@ -730,38 +749,65 @@ impl<'a> Run<'a> {
         };
         self.model.state_made = true;
         let before = self.machine.changes();
-        let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
-        self.trace.push(stamp(
-            &*self.machine,
-            match &opened {
-                Ok((_, opened)) => format!("open from {}: {opened:?}", self.model.start.index),
-                Err(e) => format!("open from {}: {e}", self.model.start.index),
-            },
-        ));
-        match opened {
-            Ok((log, opened)) => {
-                self.log = Some(log);
-                return self.check_open(&opened);
-            }
-            Err(failed) => {
-                // The log hands `state` back; the process ends with it.
-                let OpenFailed { error, state } = *failed;
-                drop(state);
-                match error {
-                    LogError::Damaged(damage) => {
-                        self.check_damage(&damage, before);
-                        return Some(End::Damaged);
+        let mut state = state;
+        let mut tries = 0;
+        loop {
+            let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
+            self.trace.push(stamp(
+                &*self.machine,
+                match &opened {
+                    Ok((_, opened)) => format!("open from {}: {opened:?}", self.model.start.index),
+                    Err(e) => format!("open from {}: {e}", self.model.start.index),
+                },
+            ));
+            match opened {
+                Ok((log, opened)) => {
+                    self.log = Some(log);
+                    let end = self.check_open(&opened);
+                    if end.is_none() && tries > 0 && self.log.is_some() && self.plan.below(2) == 0 {
+                        // What a retried open relied on must hold across a
+                        // power loss: append, flush, and lose the power.
+                        self.perform(Action::Append { n: 2, big: false });
+                        if self.log.is_some() {
+                            self.flush(false);
+                        }
+                        self.stop(true);
                     }
-                    LogError::Unreadable { .. } => {
-                        self.reached.unreadable += 1;
-                        self.fail();
+                    return end;
+                }
+                Err(failed) => {
+                    // The log hands `state` back.
+                    let OpenFailed { error, state: back } = *failed;
+                    let retryable = matches!(
+                        error,
+                        LogError::Unreadable { .. } | LogError::Disk(_) | LogError::State(_)
+                    );
+                    let running = self.machine.sim().is_none_or(|sim| !sim.halted());
+                    if retryable && running && tries < 2 && self.plan.below(2) == 0 {
+                        // Tried again with the same state, in the same
+                        // process.
+                        tries += 1;
+                        self.reached.retried_opens += 1;
+                        state = back;
+                        continue;
                     }
-                    LogError::Disk(_) | LogError::State(_) => self.fail(),
-                    e => panic!("seed {seed}: open: {e}"),
+                    drop(back);
+                    match error {
+                        LogError::Damaged(damage) => {
+                            self.check_damage(&damage, before);
+                            return Some(End::Damaged);
+                        }
+                        LogError::Unreadable { .. } => {
+                            self.reached.unreadable += 1;
+                            self.fail();
+                        }
+                        LogError::Disk(_) | LogError::State(_) => self.fail(),
+                        e => panic!("seed {seed}: open: {e}"),
+                    }
+                    return None;
                 }
             }
         }
-        None
     }
 
     /// Damage is reported only where the device damaged a segment, and the
@@ -1413,6 +1459,7 @@ fn the_log_survives_drawn_crashes_and_faults() {
             ("full batches", reached.batch_full),
             ("poisoned logs", reached.poisoned),
             ("cuts refused as unconfirmed", reached.unconfirmed),
+            ("opens tried again with their state", reached.retried_opens),
             ("cut entries appended again", reached.reappended),
             ("damage reports", reached.damaged),
         ] {
@@ -1572,7 +1619,7 @@ fn fill(log: &mut Log, batches: usize, per: usize, len: usize) {
 /// Where a segment file's entries are, by the format's description
 /// (`docs/server-storage-format.md` section 3) rather than the log's code:
 /// the header's first index at bytes 48 to 56 of 128; batches from byte
-/// 128, each a 104-byte header beginning `OMBATCH\0` with its entry count
+/// 128, each a 136-byte header beginning `OMBATCH\0` with its entry count
 /// at 12 to 16 and its first index at 16 to 24; entries of 64 bytes and
 /// their payload, whose length is at 28 to 32. Returns, for each entry, its
 /// index, offset and size, and for each batch its offset.
@@ -1584,10 +1631,10 @@ fn layout(bytes: &[u8]) -> (Vec<(u64, u64, u64)>, Vec<u64>) {
     let mut next = u64_at(48);
     let (mut entries, mut batches) = (Vec::new(), Vec::new());
     let mut at = 128usize;
-    while at + 104 <= bytes.len() && &bytes[at..at + 8] == b"OMBATCH\0" && u64_at(at + 16) == next {
+    while at + 136 <= bytes.len() && &bytes[at..at + 8] == b"OMBATCH\0" && u64_at(at + 16) == next {
         batches.push(at as u64);
         let count = u32_at(at + 12);
-        at += 104;
+        at += 136;
         for _ in 0..count {
             let size = 64 + u64::from(u32_at(at + 28));
             entries.push((next, at as u64, size));
@@ -1770,8 +1817,12 @@ fn damage_through_the_marker_is_reported_where_it_is_and_nothing_is_cut() {
     // The same damage before the entry a checkpoint covers is still found
     // when the walk passes it, and not when it does not.
     let (sim, last) = build();
-    sim.damage(&format::segment_path(1), 128 + 104 + 70, 1)
-        .unwrap();
+    sim.damage(
+        &format::segment_path(1),
+        SEGMENT_HEADER + BATCH_HEADER + 70,
+        1,
+    )
+    .unwrap();
     let (log, opened) = open_store(&sim, last).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(opened.durable, last);
     drop(log);
@@ -2243,6 +2294,7 @@ fn an_entry_declaring_a_huge_payload_is_refused_before_anything_is_read_for_it()
         first: 2,
         length: ENTRY_OVERHEAD + payload,
         cut_count: 0,
+        prev: one.hash,
         last: [0; 32],
     };
     let mut fixed = [0u8; 32];
@@ -2296,4 +2348,141 @@ fn indexes_at_the_top_of_the_range() {
         ..start
     };
     assert!(matches!(open_store(&sim, past), Err(LogError::Refused(_))));
+}
+
+/// The second review's first finding: an open whose flush of the store
+/// folder fails can leave `log/` made only in the system's cache. An open
+/// tried again with the `state` handed back, in the same process, finds the
+/// folder; it must make its name durable all the same before a segment is
+/// listed in it.
+#[test]
+fn an_open_tried_again_after_its_folder_flush_failed_makes_log_durable() {
+    let mut tried = 0;
+    for seed in 0..200 {
+        let sim = Sim::new(seed);
+        let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+        let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        // The open lists `log/`, makes it, then flushes the store folder.
+        sim.place(sim.steps() + 1, Fault::FailFlush);
+        let failed = *Log::open(fs.clone(), state, CONFIG, Position::START).unwrap_err();
+        assert!(
+            matches!(failed.error, LogError::Disk(_)),
+            "{}",
+            failed.error
+        );
+        let left = sim.events().iter().rev().find_map(|e| match e {
+            sim::Event::FlushFailed { path, settled, .. } if path.is_empty() => {
+                Some(settled.pending)
+            }
+            _ => None,
+        });
+        if left != Some(1) {
+            continue;
+        }
+        tried += 1;
+        let (mut log, _) = Log::open(fs.clone(), failed.state, CONFIG, Position::START)
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        let one = log.append(1, 0, 0, b"one").unwrap();
+        log.flush_batch(None).unwrap();
+        drop(log);
+        sim.crash(Fates::LoseAll);
+        sim.restart();
+        let (_, opened) =
+            open_store(&sim, Position::START).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        assert_eq!(opened.durable, one, "seed {seed}");
+        if tried == 3 {
+            break;
+        }
+    }
+    assert!(tried > 0, "no failed flush left `log/` unflushed");
+}
+
+/// The second review's third finding: what follows the firm position is
+/// judged before anything is read for it where its batch header settles
+/// it, and a read that fails there ends the log; at or before the firm
+/// position a read that fails is the caller's to see.
+#[test]
+fn an_unreadable_place_after_the_firm_position_ends_the_log() {
+    let sim = Sim::new(15);
+    let watched = Arc::new(Watched::new(Arc::new(sim.fs())));
+    let fs: Arc<dyn Fs> = watched.clone();
+    let big = Config {
+        segment_size: 1 << 20,
+        max_payload: 300 << 10,
+    };
+    let open = || {
+        let lock = fs.lock().unwrap();
+        let state = match State::open(&*fs, lock) {
+            Ok(state) => state,
+            Err(StateError::Missing) => {
+                State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap()
+            }
+            Err(e) => panic!("{e}"),
+        };
+        Log::open(fs.clone(), state, big, Position::START)
+    };
+    let (mut log, _) = open().unwrap();
+    let one = log.append(1, 0, 0, b"one").unwrap();
+    log.flush_batch(None).unwrap();
+    log.append(1, 0, 0, &vec![2; 256 << 10]).unwrap();
+    log.flush_batch(None).unwrap();
+    log.set_committed(1).unwrap();
+    assert_eq!(log.cut(2).unwrap(), one);
+    drop(log);
+    sim.restart();
+    // A place deep inside entry 2's payload, past what a read of its
+    // header brings in, cannot be read.
+    let second = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 3;
+    let bad = second + BATCH_HEADER + format::ENTRY_FIXED + 200_000;
+    let seg1 = format::segment_path(1);
+    watched.bad.lock().unwrap().push((seg1.clone(), bad));
+
+    // The batch written before the cut is judged by its header alone.
+    watched.largest_read.store(0, Ordering::Relaxed);
+    let (mut log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::OlderCut));
+    assert!(watched.largest_read.load(Ordering::Relaxed) <= 64 * 1024);
+
+    // A batch of the current count whose payload cannot be read, its marker
+    // never recorded, ends the log there; the cut count rises, so that it is
+    // not read again once it can be.
+    log.append(2, 0, 0, &vec![3; 256 << 10]).unwrap();
+    sim.set_crash_fates(Fates::LoseAll);
+    sim.place(sim.steps() + 2, Fault::Crash);
+    assert!(log.flush_batch(None).is_err());
+    assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
+    drop(log);
+    sim.restart();
+    let (log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::Unreadable));
+    assert_eq!(opened.cut_count, 2);
+    drop(log);
+    sim.restart();
+    watched.bad.lock().unwrap().clear();
+    let (mut log, opened) = open().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::OlderCut));
+
+    // At or before the firm position, the open fails and says so.
+    let two = log.append(2, 0, 0, b"two").unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    sim.restart();
+    watched.bad.lock().unwrap().push((
+        seg1,
+        SEGMENT_HEADER + BATCH_HEADER + format::ENTRY_FIXED + 1,
+    ));
+    match open() {
+        Err(failed) => assert!(
+            matches!(failed.error, LogError::Unreadable { segment: 1, .. }),
+            "{}",
+            failed.error
+        ),
+        Ok((_, opened)) => panic!("{opened:?}"),
+    }
+    watched.bad.lock().unwrap().clear();
+    let (_, opened) = open().unwrap();
+    assert_eq!(opened.durable, two);
 }
