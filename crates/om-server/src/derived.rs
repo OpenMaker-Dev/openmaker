@@ -3,13 +3,14 @@
 //! ([`crate::engine::View`]) and kept by the version it was computed from.
 //!
 //! [`Derived`] holds the decoded schema catalog, the file's locale and the
-//! order of its stored dates, and two facts about the file that are not in
-//! its tree but that compiling its calculations needs: its name and
-//! whether it is served to a desktop client. How each engine keeps it is
-//! its own: the file engine computes it when it loads a file and reads the
-//! catalog again after each change of the schema, as its store always did
-//! (`Store::load`, `Store::reread_catalog`), and hands the same value to
-//! every reader until then.
+//! order of its stored dates, two facts about the file that are not in
+//! its tree but that compiling its calculations needs, its name and
+//! whether it is served to a desktop client, and one that an export needs,
+//! the file's page 0 as it was loaded (`engine::export`). How each engine
+//! keeps it is its own: the file engine computes it when it loads a file
+//! and reads the catalog again after each change of the schema, as its
+//! store always did (`Store::load`, `Store::reread_catalog`), and hands the
+//! same value to every reader until then.
 //!
 //! The functions below read a file through a view and derived state: the
 //! schema catalogs, the keys an index on demand holds, the next member key
@@ -20,6 +21,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
+use std::sync::Arc;
 
 use log::warn;
 use om_calc::Locale;
@@ -79,6 +81,9 @@ pub struct Derived {
     /// calculations are FileMaker Pro's, which has the location functions
     /// FileMaker Server's engine lacks (`om_data::host::device`).
     desktop: bool,
+    /// The file's page 0 as it was loaded ([`Derived::page_zero`]); empty
+    /// until the engine sets it.
+    page_zero: Arc<[u8]>,
 }
 
 impl Derived {
@@ -108,6 +113,7 @@ impl Derived {
             date_order,
             name: name.to_string(),
             desktop: false,
+            page_zero: Arc::from(&[][..]),
         })
     }
 
@@ -125,6 +131,20 @@ impl Derived {
     /// The file is served privately to a desktop client.
     pub(crate) fn serve_desktop(&mut self) {
         self.desktop = true;
+    }
+
+    /// The file's page 0 as it was loaded is `page`.
+    pub(crate) fn set_page_zero(&mut self, page: &[u8]) {
+        self.page_zero = Arc::from(page);
+    }
+
+    /// The file's page 0 as it was loaded: its header, which no write of
+    /// the tree changes, with the clean-close flag and the change number it
+    /// was loaded with (hbam-writer.md 5.1). An export writes it with the
+    /// fields a writer maintains set as a save sets them
+    /// (`engine::export`); empty for a store made without a file.
+    pub fn page_zero(&self) -> &[u8] {
+        &self.page_zero
     }
 
     /// The version of the view this state was computed from.
@@ -321,6 +341,7 @@ impl Derived {
             && self.date_order == other.date_order
             && self.name == other.name
             && self.desktop == other.desktop
+            && self.page_zero == other.page_zero
     }
 }
 

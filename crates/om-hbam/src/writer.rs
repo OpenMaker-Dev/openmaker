@@ -32,8 +32,10 @@ pub use node_writer::NodeWriter;
 const PAGE_SIZE: usize = 4096;
 /// Usable body bytes per page.
 const BODY: usize = PAGE_SIZE - PAGE_HEADER_LEN;
-/// The longest value stored inline; longer ones are chunked (2.3).
-const MAX_INLINE_VALUE: usize = 1000;
+/// The longest value stored inline; longer ones are chunked (2.3): a
+/// list of the value's length (key `00`, a u32 big-endian) and its pieces
+/// of this many bytes, keyed 1, 2, ... as serial keys.
+pub const MAX_INLINE_VALUE: usize = 1000;
 /// The longest key segment a file can hold (a length byte below `0xDC`,
 /// 2.2). Segments are at least one byte long.
 pub const MAX_SEGMENT: usize = 219;
@@ -42,6 +44,37 @@ pub const MAX_SEGMENT: usize = 219;
 /// one definition of this limit: [`unwritable`] and `om-query`'s program
 /// bounds use it too.
 pub const MAX_DEPTH: usize = 16;
+
+/// The change number (SCN) page 0 holds (5.1): where a writer of the
+/// file starts numbering its pages, and what it leaves there when it
+/// finishes. `None` for a page too short to hold one.
+pub fn change_number(page_zero: &[u8]) -> Option<u64> {
+    let bytes = page_zero.get(node_writer::SCN..node_writer::SCN + 8)?;
+    Some(u64::from_be_bytes(bytes.try_into().ok()?))
+}
+
+/// `page_zero` with change number `scn` (5.1); a page too short to hold
+/// one is left as it is, for the writer to refuse.
+pub fn with_change_number(page_zero: &[u8], scn: u64) -> Vec<u8> {
+    let mut page = page_zero.to_vec();
+    if let Some(bytes) = page.get_mut(node_writer::SCN..node_writer::SCN + 8) {
+        bytes.copy_from_slice(&scn.to_be_bytes());
+    }
+    page
+}
+
+/// `page_zero` as [`NodeWriter`] leaves it in a complete file whose last
+/// page took change number `scn`: the clean-close flag set and the change
+/// number stored (5.1), every other byte as given. `None` for a page that
+/// is not one 4,096-byte page, which the writer refuses.
+pub fn closed_page_zero(page_zero: &[u8], scn: u64) -> Option<Vec<u8>> {
+    if page_zero.len() != PAGE_SIZE {
+        return None;
+    }
+    let mut page = page_zero.to_vec();
+    node_writer::close_page_zero(&mut page, scn);
+    Some(page)
+}
 
 /// Why the writer cannot write node `n` itself at `depth` (1 for a child
 /// of the root), its open key path taking `open` bytes when a page re-pushes

@@ -166,6 +166,7 @@
 
 #[cfg(debug_assertions)]
 mod copies;
+pub(crate) mod export;
 mod file;
 mod reading;
 mod schema;
@@ -195,6 +196,7 @@ use crate::store::{IndexId, MemberKey};
 use crate::views::Withheld;
 use crate::writes::{self, Change, CommitError, Mailboxes, RecordWrite};
 
+pub(crate) use export::{Destination, ExportError, Progress, Source};
 pub(crate) use file::FileEngine;
 pub(crate) use reading::{Read, Waiting};
 pub(crate) use transaction::{Hold, Locks, Transaction};

@@ -200,6 +200,15 @@ fn shown<S: AsRef<[u8]>>(path: &[S]) -> String {
     out
 }
 
+/// Page 0 as a complete file holds it (5.1): the clean-close flag set and
+/// the change number `scn`, the last one a page took. `page` is one whole
+/// page.
+pub(super) fn close_page_zero(page: &mut [u8], scn: u64) {
+    page[CLEAN_CLOSE] = CLEAN;
+    page[CLEAN_CLOSE + 1] = 0;
+    page[SCN..SCN + 8].copy_from_slice(&scn.to_be_bytes());
+}
+
 /// A push chunk of `segment`, without its begin.
 pub(super) fn put_push(segment: &[u8], out: &mut Vec<u8>) {
     let code = minimal_code(true, segment.len(), None).expect("segment length checked");
@@ -453,9 +462,7 @@ impl<W: Read + Write + Seek> NodeWriter<W> {
         self.leaf(true)?;
         self.index()?;
         let mut page = std::mem::take(&mut self.superblock);
-        page[CLEAN_CLOSE] = CLEAN;
-        page[CLEAN_CLOSE + 1] = 0;
-        page[SCN..SCN + 8].copy_from_slice(&self.out.scn.to_be_bytes());
+        close_page_zero(&mut page, self.out.scn);
         self.out.write_at(0, &page)?;
         self.out.target.flush()?;
         Ok(self.out.target)

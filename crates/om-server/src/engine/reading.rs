@@ -194,7 +194,6 @@ impl View for FileView<'_> {
 
 /// A reader's hold on one version of a hosted file ([`FileEngine::read`]).
 pub struct Reading<'h> {
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     file: &'h Hosted,
     view: FileView<'h>,
     derived: Arc<Derived>,
@@ -271,6 +270,26 @@ impl<'h> Reading<'h> {
             return copies.serve_once(self, read);
         }
         read(self.read())
+    }
+
+    /// How an export writes this version (`super::export`): the file
+    /// engine's choice, `Store::export_source`. An image is opened here,
+    /// under the store's read lock.
+    pub fn export_source(&self) -> std::io::Result<super::export::Source> {
+        self.view.store.export_source(&self.file.at)
+    }
+
+    /// How many saves wrote the file since it was loaded, when this version
+    /// is the file on disk; `None` while it has changes the disk lacks
+    /// (`Store::saved_version`).
+    pub fn saved_version(&self) -> Option<u64> {
+        self.view.store.saved_version()
+    }
+
+    /// The file on disk the store read or last saved, opened to read, while
+    /// its path still leads to it (`Store::open_saved`).
+    pub fn open_saved(&self) -> std::io::Result<std::fs::File> {
+        self.view.store.open_saved(&self.file.at)
     }
 
     /// Whether [`Self::serve`] runs its read twice.

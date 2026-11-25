@@ -87,7 +87,7 @@ mod fs;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::{File, Permissions};
+use std::fs::Permissions;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
@@ -99,6 +99,7 @@ use log::{debug, error, info, warn};
 
 use crate::anchored::{FileAt, FileId};
 use crate::connection::Shared;
+use crate::engine::{Destination, ExportError, Progress};
 use crate::hosting::{save_error, Hosted};
 use crate::schedules::{BackupFiles, BackupTask};
 use crate::scripts::AbortReason;
@@ -286,8 +287,10 @@ struct Run {
 /// A copy a backup made of a hosted file.
 #[derive(Clone, Debug)]
 struct Made {
-    /// The file's [`crate::store::Store::saves`] when it was copied.
-    saves: u64,
+    /// The file's [`crate::store::Store::saves`] when it was exported, if
+    /// the version exported was the file on disk; `None` when it held
+    /// changes the disk lacked, which a later backup never links.
+    saves: Option<u64>,
     /// The finished backup's folder name in its target folder.
     backup: String,
     /// The copy's folder below the backup's `Databases`, and its name.
@@ -366,6 +369,32 @@ impl Failure {
                 Failure::Cancelled(ticket.cancelled().unwrap_or(AbortReason::Admin))
             }
             CopyError::Io(e) => Failure::io(what, &e),
+        }
+    }
+
+    /// A file's export to `what` failed: stopped, as a copy is; the file
+    /// not read, as a file that cannot be opened (802); the copy not
+    /// written, with a save's codes; or not written as the file holds it
+    /// (800).
+    fn export(
+        what: &dyn std::fmt::Display,
+        hosted: &Hosted,
+        e: ExportError,
+        ticket: &Ticket,
+    ) -> Self {
+        match e {
+            ExportError::Stopped => {
+                Failure::Cancelled(ticket.cancelled().unwrap_or(AbortReason::Admin))
+            }
+            ExportError::Io(e) => Failure::io(what, &e),
+            e @ (ExportError::Read(_) | ExportError::Image(_)) => Failure::Failed {
+                code: UNOPENABLE,
+                message: format!("{}: {e}", hosted.path.display()),
+            },
+            e => Failure::Failed {
+                code: CANNOT_WRITE,
+                message: format!("{what}: {e}"),
+            },
         }
     }
 }
@@ -1050,43 +1079,29 @@ fn database_root(shared: &Shared) -> PathBuf {
     root.unwrap_or_default()
 }
 
-/// What a run read of a hosted file while it held its store.
-struct Source {
-    file: File,
-    size: u64,
+/// What a run reads of a hosted file before it backs it up, under one
+/// reading of it ([`crate::engine::FileEngine::read`], the store's read
+/// lock): which saved version it holds ([`Made::saves`]), and the
+/// permissions of the file on disk, which its copy gets. The file is opened
+/// only while the path leads to the one the server read or last saved
+/// there (#468), as its copy was.
+struct Saved {
+    saves: Option<u64>,
     permissions: Permissions,
-    saves: u64,
-    unsaved: bool,
 }
 
-/// Open `hosted`'s file while holding its store for reading: no save is
-/// under way, and the descriptor keeps naming this version of the file
-/// whatever later saves rename over it. The store is held for the `open`
-/// only.
-fn open_source(hosted: &Hosted) -> io::Result<Source> {
-    let (file, saves, unsaved) = {
-        let store = hosted.read_store();
-        // Only the file the server read or last saved there (#468).
-        let file = hosted.at.folder_now()?.open_regular(hosted.at.name())?;
-        if let Some(expected) = store.file() {
-            if crate::anchored::file_identity(&file)? != Some(expected) {
-                return Err(io::Error::other(
-                    "the path no longer leads to the file this server read or last saved",
-                ));
-            }
-        }
-        (file, store.saves(), store.has_unsaved_changes())
+fn saved_state(shared: &Shared, hosted: &Hosted) -> io::Result<Saved> {
+    let (file, saves) = {
+        let reading = shared.engine.read(hosted);
+        (reading.open_saved()?, reading.saved_version())
     };
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(io::Error::other("not a regular file"));
     }
-    Ok(Source {
-        file,
-        size: metadata.len(),
-        permissions: metadata.permissions(),
+    Ok(Saved {
         saves,
-        unsaved,
+        permissions: metadata.permissions(),
     })
 }
 
@@ -1298,7 +1313,7 @@ fn write_backup(
         .unwrap_or_default();
     let mut made = HashMap::new();
     let stop = || ticket.cancelled().is_some();
-    let mut copied = |n: u64| backups.update(ticket, |run| run.bytes_copied += n);
+    let copied = |n: u64| backups.update(ticket, |run| run.bytes_copied += n);
     for hosted in files {
         if let Some(reason) = ticket.cancelled() {
             return Err(Failure::Cancelled(reason));
@@ -1322,54 +1337,65 @@ fn write_backup(
         let dest_path = temporary_path.join(DATABASES).join(&relative);
         let into = folder_below(&databases, &relative, &mut folders)
             .map_err(|e| Failure::io(&dest_path.display(), &e))?;
-        let source = open_source(hosted).map_err(|e| unreadable(&e))?;
-        if source.unsaved {
-            warn!(
-                "{:?}: the backup holds the file as last saved: changes the server could not \
-                 save are not in it",
-                hosted.name
-            );
-        }
+        let source = saved_state(shared, hosted).map_err(|e| unreadable(&e))?;
         let shown = shown_name(hosted);
-        let previous = last.get(&hosted.id).filter(|p| p.saves == source.saves);
+        let previous = last
+            .get(&hosted.id)
+            .filter(|p| source.saves.is_some() && p.saves == source.saves);
         let linked = match previous {
             Some(previous) => link_previous(&target.folder, previous, &into, file_name)
                 .map_err(|e| Failure::io(&dest_path.display(), &e))?,
             None => false,
         };
-        let identity = if let (true, Some(previous)) = (linked, previous) {
+        let (saves, identity) = if let (true, Some(previous)) = (linked, previous) {
             info!(
                 "Backup of {shown:?} skipped because no changes were made since last backup; \
                  created hard link to last backup file \"{}\".",
                 target.path.join(previous.path()).display()
             );
-            previous.identity
+            (previous.saves, previous.identity)
         } else {
             info!("Starting to back up database {shown:?}, current status: Normal");
-            let identity = fs::copy_file(
-                &source.file,
-                source.size,
-                &into,
-                file_name,
-                source.permissions,
-                &stop,
-                &mut copied,
-            )
-            .map_err(|e| Failure::copy(&dest_path.join(file_name).display(), e, ticket))?;
+            let to = Destination {
+                folder: &into,
+                name: file_name,
+                permissions: Some(source.permissions),
+            };
+            let progress = Progress {
+                stop: &stop,
+                written: &copied,
+            };
+            let exported = shared.engine.export(hosted, &to, progress).map_err(|e| {
+                Failure::export(&dest_path.join(file_name).display(), hosted, e, ticket)
+            })?;
+            if !exported.current {
+                warn!(
+                    "{:?}: the backup holds the file as last saved: changes the server could \
+                     not save are not in it",
+                    hosted.name
+                );
+            }
+            let id = exported.id.ok_or_else(|| Failure::Failed {
+                code: CANNOT_WRITE,
+                message: format!(
+                    "{}: the copy has no device and inode numbers to link it by",
+                    dest_path.join(file_name).display()
+                ),
+            })?;
             info!("Backup of {shown:?} completed, current status: Normal");
-            identity
+            (exported.saves, Identity::exported(id, exported.size))
         };
         made.insert(
             hosted.id,
             Made {
-                saves: source.saves,
+                saves,
                 backup: name.clone(),
                 relative: relative.clone(),
                 file: file_name.to_os_string(),
                 identity,
             },
         );
-        back_up_container_data(hosted, &into, &stop, &mut copied)
+        back_up_container_data(hosted, &into, &stop, &mut |n| copied(n))
             .map_err(|e| Failure::copy(&hosted.path.display(), e, ticket))?;
         backups.update(ticket, |run| run.files_done += 1);
     }

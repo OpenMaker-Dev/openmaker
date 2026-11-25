@@ -372,6 +372,8 @@ impl Switch {
                 if current.desktop() {
                     mine.serve_desktop();
                 }
+                // Not in the tree: what the engine loaded, as the name is.
+                mine.set_page_zero(current.page_zero());
                 Ok(Arc::new(mine))
             }),
         };
