@@ -544,6 +544,37 @@ impl Pin {
     }
 }
 
+/// Why a pin was not taken.
+#[derive(Debug)]
+pub enum PinError {
+    /// The page file does not have the version, or cannot hand over its
+    /// roots now (the version a checkpoint is still writing).
+    Refused(&'static str),
+    /// The meta stream that holds the roots of an older checkpoint or a
+    /// restore point could not be used: one of its pages the device failed
+    /// to read, or whose bytes do not check ([`MetaFault::Page`], with the
+    /// page's own fault), or a stream that reads and breaks the format or a
+    /// rule of the reader's ([`MetaFault::Malformed`]).
+    Meta(MetaFault),
+}
+
+impl fmt::Display for PinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PinError::Refused(why) => write!(f, "refused: {why}"),
+            PinError::Meta(fault) => write!(f, "the version's meta stream: {fault}"),
+        }
+    }
+}
+
+impl std::error::Error for PinError {}
+
+impl From<&'static str> for PinError {
+    fn from(why: &'static str) -> Self {
+        PinError::Refused(why)
+    }
+}
+
 /// Where the roots of a version to pin come from.
 enum Source {
     /// Memory.
@@ -1627,11 +1658,11 @@ impl PageFile {
     /// ([`Pin::entry`]): the last entry whose unit committed, or the newest
     /// checkpoint's when it is later. An entry that changed nothing has no
     /// version of its own: its reader pins this one.
-    pub fn pin_newest(&self) -> Result<Pin, &'static str> {
+    pub fn pin_newest(&self) -> Result<Pin, PinError> {
         let inner = self.lock();
         let entry = newest_entry(&inner);
         let roots = inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect();
-        self.register(entry, Arc::new(roots))
+        Ok(self.register(entry, Arc::new(roots))?)
     }
 
     /// Keep entry `entry`'s version from reuse while the pin lives, and
@@ -1644,13 +1675,16 @@ impl PageFile {
     /// committed yet ([`PageFile::pin_newest`] pins the newest without
     /// naming it). The roots come from memory, or, for an older checkpoint
     /// or a restore point, from its meta stream, read as part of taking the
-    /// pin. A pin whose roots cannot be had (the version a checkpoint is
-    /// still writing, a meta stream that does not read back) is refused.
-    pub fn pin(&self, entry: u64) -> Result<Pin, &'static str> {
+    /// pin. A pin whose roots cannot be had is refused: the version a
+    /// checkpoint is still writing ([`PinError::Refused`]), or a meta
+    /// stream that does not read back or does not decode, with the cause
+    /// ([`PinError::Meta`]). A table that names one root page for more
+    /// trees than its map counts reaching it is refused as open refuses it.
+    pub fn pin(&self, entry: u64) -> Result<Pin, PinError> {
         {
             let inner = self.lock();
             if let Source::Roots(roots) = self.pin_source(&inner, entry)? {
-                return self.register(entry, roots);
+                return Ok(self.register(entry, roots)?);
             }
         }
         // An older checkpoint or a restore point: its table is read from
@@ -1659,17 +1693,20 @@ impl PageFile {
         // reuse or retire those pages before the pin keeps the version.
         let _io = lock(&self.io);
         let meta = match self.pin_source(&self.lock(), entry)? {
-            Source::Roots(roots) => return self.register(entry, roots),
+            Source::Roots(roots) => return Ok(self.register(entry, roots)?),
             Source::Meta(meta) => meta,
         };
-        let (stream, _) = self
-            .read_meta(meta)
-            .map_err(|_| "the version's meta stream does not read back")?;
-        let trees = Meta::decode(&stream)
-            .map_err(|_| "the version's meta stream is malformed")?
-            .trees;
+        let (stream, _) = self.read_meta(meta).map_err(PinError::Meta)?;
+        let meta =
+            Meta::decode(&stream).map_err(|why| PinError::Meta(MetaFault::Malformed(why)))?;
+        let shares: BTreeMap<PageNo, u32> =
+            meta.map.shares.iter().map(|(n, s)| (*n, s.count)).collect();
+        let count = |n| shares.get(&n).copied().unwrap_or(1);
+        if root_named_past_its_count(meta.trees.iter().map(|(_, r)| r), count) {
+            return Err(PinError::Meta(MetaFault::Malformed(SHARED_ROOT)));
+        }
         let _inner = self.lock();
-        self.register(entry, Arc::new(trees))
+        Ok(self.register(entry, Arc::new(meta.trees))?)
     }
 
     /// Where the roots of entry `entry`'s version come from, if it may be
@@ -2323,14 +2360,8 @@ impl Loaded {
         // write such a table from roots its caller gave, and dropping one
         // of the names would mark the page dying while another still names
         // it.
-        let mut names_on: BTreeMap<PageNo, u32> = BTreeMap::new();
-        for (_, root) in &meta.trees {
-            *names_on.entry(root.page).or_default() += 1;
-        }
-        if names_on.iter().any(|(n, trees)| *trees > map.count(*n)) {
-            return reject(Rejection::Mismatch(
-                "two trees name one root page, which the map does not record as shared",
-            ));
+        if root_named_past_its_count(meta.trees.iter().map(|(_, r)| r), |n| map.count(n)) {
+            return reject(Rejection::Mismatch(SHARED_ROOT));
         }
         // Each root is read, checked and let go: nothing here holds memory
         // in proportion to the trees beyond the table itself.
@@ -2595,9 +2626,87 @@ fn refusal(inner: &Inner, entry: EntryId, keep_as: Option<&str>) -> Result<(), C
         .iter()
         .any(|(n, trees)| *trees > inner.map.count(*n))
     {
-        return refuse("two trees name one root page, which the map does not record as shared");
+        return refuse(SHARED_ROOT);
+    }
+    // The plan marks the newest checkpoint's meta pages dying. They are in
+    // use unless a table #719 wrote aliased a page that was then freed and
+    // taken for them, and the tree that still referred to it was taken
+    // down (the map takes a child down by its number): refused here rather
+    // than failing in the plan.
+    if inner.newest_meta.iter().any(|n| !inner.map.in_use(*n)) {
+        return refuse("a page of the newest checkpoint's meta stream is not in use");
     }
     Ok(())
+}
+
+/// Why a table is refused that names one root page for more trees than its
+/// map counts reaching it.
+const SHARED_ROOT: &str = "two trees name one root page, which the map does not record as shared";
+
+/// Whether `roots` name one page for more trees than `count` says reach it
+/// (a clone shares its root, with a share the map records; nothing writes
+/// clones yet).
+fn root_named_past_its_count<'r>(
+    roots: impl Iterator<Item = &'r Root>,
+    count: impl Fn(PageNo) -> u32,
+) -> bool {
+    let mut names_on: BTreeMap<PageNo, u32> = BTreeMap::new();
+    for root in roots {
+        *names_on.entry(root.page).or_default() += 1;
+    }
+    names_on.iter().any(|(n, names)| *names > count(*n))
+}
+
+/// Why a unit may not commit the pages it wrote, if it may not: one of
+/// them refers to a page that is a tree's root once the unit takes effect
+/// (a root the unit gives, or the root of a tree it leaves alone), and the
+/// trees naming that page and the references to it are more than the map
+/// counts reaching it. Dropping either tree would then free the page while
+/// the other still reached it. Sharing a page between trees is what clones
+/// will do, with a share the map records; nothing records one yet. The
+/// other way round cannot happen: a root the unit gives is a page it wrote
+/// under a number it allocated, which was free, and a page is freed only
+/// once no version reaches it and what referred to it was taken down, so
+/// no page that any version reaches refers to that number.
+fn root_referred_to<'p>(
+    inner: &Inner,
+    view: &BTreeMap<TreeName, Option<Root>>,
+    pages: impl Iterator<Item = &'p Arc<Page>>,
+) -> Option<String> {
+    // The trees naming each page once the unit takes effect: those named
+    // now, less the old roots the unit replaces, drops or renames away,
+    // plus the roots it gives.
+    let mut change: BTreeMap<PageNo, i64> = BTreeMap::new();
+    for (name, now) in view {
+        if let Some(old) = inner.trees.get(name) {
+            *change.entry(old.page).or_default() -= 1;
+        }
+        if let Some(root) = now {
+            *change.entry(root.page).or_default() += 1;
+        }
+    }
+    let names = |n: PageNo| {
+        i64::from(inner.root_pages.get(&n).copied().unwrap_or(0))
+            + change.get(&n).copied().unwrap_or(0)
+    };
+    // The references to such a page from the pages the unit writes.
+    let mut referred: BTreeMap<PageNo, (i64, PageNo)> = BTreeMap::new();
+    for page in pages {
+        for (n, _) in page.references() {
+            if names(n) > 0 {
+                referred.entry(n).or_insert((0, page.number())).0 += 1;
+            }
+        }
+    }
+    referred
+        .into_iter()
+        .find(|(n, (refs, _))| names(*n) + refs > i64::from(inner.map.count(*n)))
+        .map(|(n, (_, from))| {
+            format!(
+                "page {from} refers to page {n}, a tree's root, which the map does not record \
+                 as shared"
+            )
+        })
 }
 
 /// The entry of the newest version: the last entry whose unit committed,
@@ -2703,7 +2812,8 @@ impl EntryPages for Unit<'_> {
         // the page file holds them (no other unit can change them while
         // this one is open). A root given must be a tree's page this unit
         // wrote; a tree given a new root must have had its old root
-        // released by this unit; a dropped tree's root is released here.
+        // released by this unit; a dropped tree's root is released here;
+        // no page this unit writes refers to a tree's root.
         let mut view: BTreeMap<TreeName, Option<Root>> = BTreeMap::new();
         let mut count = inner.trees.len();
         let mut room = 0u64;
@@ -2800,6 +2910,9 @@ impl EntryPages for Unit<'_> {
             return Err(store_failed(format!(
                 "page {old}, a tree's root, replaced but not released"
             )));
+        }
+        if let Some(why) = root_referred_to(&inner, &view, self.pages.values()) {
+            return Err(store_failed(why));
         }
         // The releases, the dropped trees' roots last, are checked in order
         // against the counts they will meet, so that a page copied while
