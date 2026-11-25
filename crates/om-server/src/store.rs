@@ -171,9 +171,11 @@ pub struct Store {
     /// keeps the change is unknown ([`SaveError::Unknown`]). Every later
     /// save is refused; hosting the file again clears it.
     unknown: Option<String>,
-    /// Counts the schema changes (catalogs replaced, op73's field work):
-    /// what was read from the schema before a change is stale after it
-    /// ([`Store::schema_generation`]).
+    /// Counts the changes of what the derived state reads (a write the
+    /// derived state reads, op73's field work, a roll-back): the
+    /// verified-index marks ([`Store::index_agrees`]) and the accounts
+    /// ([`Store::follow_accounts`]) read before a change are stale after
+    /// it.
     generation: u64,
     /// The schema generation the derived state's accounts were decoded at
     /// ([`Store::follow_accounts`]).
@@ -2105,17 +2107,12 @@ impl Store {
         self.waiting.put_back_member_keys(keys);
     }
 
-    /// Why putting `node` at `path` would change a value it does not name
-    /// or leave what the file cannot hold, in the tree as it is
-    /// (`put_refusals`), for a log line.
-    fn replacement_refusal(&self, path: &[Vec<u8>], node: &OwnedNode) -> Option<String> {
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let (last, parents) = segments.split_last()?;
-        let placed = OwnedNode {
-            segment: last.to_vec(),
-            ..node.clone()
-        };
-        let refused = put_refusals(&self.root, parents, &placed, 3);
+    /// Why putting `placed` (named by its own segment) beneath `parents`
+    /// would change a value it does not name or leave what the file cannot
+    /// hold, in the tree as it is (`put_refusals`), for a log line. The node
+    /// is checked where it is, not copied.
+    fn put_refusal(&self, parents: &[&[u8]], placed: &OwnedNode) -> Option<String> {
+        let refused = put_refusals(&self.root, parents, placed, 3);
         (!refused.is_empty()).then(|| describe(&refused))
     }
 
@@ -2125,19 +2122,25 @@ impl Store {
     /// `path` and everything under it removed. What it replaces, and the
     /// parents a put creates, go into `journal`. A put the file cannot hold
     /// there (`put_refusals`) is refused, for a log line, and changes
-    /// nothing; so is a write at the empty path. The tree then has changes
-    /// the file on disk lacks. Returns whether the write reaches what the
-    /// derived state reads ([`feeds_derived`]), which the caller then reads
-    /// again ([`Store::schema_changed_in`]).
+    /// nothing; so is a write at the empty path. A write that would leave
+    /// the tree as it is (the same node put where it is, a missing node
+    /// removed) is no change: nothing goes into `journal`, and the tree
+    /// does not count as changed for it. Otherwise the tree then has
+    /// changes the file on disk lacks, the verified-index marks the write
+    /// can affect are forgotten ([`Store::forget_verified`]), and the
+    /// result says whether the write reaches what the derived state reads
+    /// ([`feeds_derived`]), which the caller then reads again
+    /// ([`Store::schema_changed_in`]); `None` for no change.
     pub(crate) fn write_in(
         &mut self,
         journal: &mut Journal,
         path: &[Vec<u8>],
         node: Option<OwnedNode>,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<bool>, String> {
         let Some(last) = path.last() else {
             return Err("a write at the root".into());
         };
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         let mut feeds = feeds_derived(path);
         match node {
             Some(node) => {
@@ -2145,43 +2148,84 @@ impl Store {
                     segment: last.clone(),
                     ..node
                 };
-                if let Some(reason) = self.replacement_refusal(path, &placed) {
+                if let Some(reason) = self.put_refusal(&segments[..segments.len() - 1], &placed) {
                     return Err(reason);
+                }
+                // The same node where it is, with every parent a list
+                // already (the root becomes one only for a put beneath it).
+                let ancestor = self.changed_ancestor(path);
+                if ancestor.is_none()
+                    && (self.root.push || path.len() > 1)
+                    && self.root.at(&segments) == Some(&placed)
+                {
+                    return Ok(None);
                 }
                 // A put below what the derived state leaves out (a field's
                 // deferred work) still changes what it reads when it
-                // creates a parent, or turns one that holds a value into a
-                // list.
-                feeds |= self
-                    .changed_ancestor(path)
-                    .is_some_and(|depth| feeds_derived(&path[..depth]));
+                // creates a parent, or turns one into a list.
+                feeds |= ancestor.is_some_and(|depth| feeds_derived(&path[..depth]));
                 journal.replace(&mut self.root, path.to_vec(), placed);
             }
             None => {
+                if self.root.at(&segments).is_none() {
+                    return Ok(None);
+                }
                 journal.take(&mut self.root, path.to_vec());
             }
         }
         self.dirty = true;
+        self.forget_verified(path);
         if feeds {
             // Who read what the schema derives from reads it again: the
-            // verified index marks and the accounts follow the count.
+            // verified-index marks and the accounts follow the count.
             self.generation += 1;
         }
-        Ok(feeds)
+        Ok(Some(feeds))
     }
 
     /// The length of the shortest proper prefix of `path` whose node a put
-    /// at `path` creates or changes (`OwnedNode::put`: a missing parent is
-    /// created, one that holds a value becomes a list), if any.
+    /// at `path` creates or changes, if any: as `OwnedNode::ensure` passes
+    /// through, a missing parent is created and one that is not a list yet
+    /// becomes one (as [`Journal`]'s `save_parents` keeps them).
     fn changed_ancestor(&self, path: &[Vec<u8>]) -> Option<usize> {
         let mut node = &self.root;
         for (depth, segment) in path.iter().enumerate().take(path.len().saturating_sub(1)) {
             match node.child(segment) {
-                Some(child) if child.value.is_none() => node = child,
+                Some(child) if child.push => node = child,
                 _ => return Some(depth + 1),
             }
         }
         None
+    }
+
+    /// Forget the verified-index marks ([`Store::index_agrees`]) a write at
+    /// `path` that is not a commit's own upkeep can make wrong: at, above or
+    /// below a table's records `[T, 05]`, its record list `[T, 0d]` or its
+    /// indexes `[T, 01]`, a mark of that table, of that field, or of that
+    /// index. A commit keeps its marks itself, and a change of the schema
+    /// forgets them all through the generation.
+    fn forget_verified(&mut self, path: &[Vec<u8>]) {
+        let Some((table, rest)) = path.split_first() else {
+            self.verified.1.clear();
+            return;
+        };
+        let affects = |(t, f, kind): &IndexId| -> bool {
+            if t != table {
+                return false;
+            }
+            match rest {
+                [] => true,
+                [list, ..] if list.as_slice() == [keys::RECORDS] => true,
+                [list, ..] if list.as_slice() == [keys::RECORD_IDS] => true,
+                [indexes] if indexes.as_slice() == [keys::INDEXES] => true,
+                [indexes, field] if indexes.as_slice() == [keys::INDEXES] => f == field,
+                [indexes, field, index, ..] if indexes.as_slice() == [keys::INDEXES] => {
+                    f == field && index.as_slice() == [*kind]
+                }
+                _ => false,
+            }
+        };
+        self.verified.1.retain(|id, _| !affects(id));
     }
 
     /// The derived state read again after writes that reach it
@@ -2257,15 +2301,6 @@ impl Store {
         let accounts = derived::read_accounts(&self.tree_view());
         self.derived = Arc::new(self.derived.with_accounts(self.version, accounts));
         self.accounts_at = self.generation;
-    }
-
-    /// How many times the schema changed while the file was hosted: a
-    /// server script session that read the schema (record rules, the SQL
-    /// catalog, layouts, scripts) at another count reads it again before
-    /// it uses it. op73's field work counts too, since it changes stored
-    /// values and indexes under records a session may hold.
-    pub fn schema_generation(&self) -> u64 {
-        self.generation
     }
 
     /// op73: do the field work the client listed in `[T, 03, 01, fd]` and

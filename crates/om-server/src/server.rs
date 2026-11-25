@@ -506,7 +506,7 @@ impl Server {
     /// (docs/server-storage.md 5, "Views"; `engine::copies`): a test
     /// fixture that shows readers do not lean on the file engine's view.
     /// Every operation's reads and writes through its transaction are
-    /// checked too, against its starting tree with its writes laid over it
+    /// checked too, against its starting tree with its writes applied in order
     /// ("The operations' transaction"; `engine::checking`), which shows
     /// each moved operation's writes say all it changed. Only in debug
     /// builds.

@@ -6,14 +6,11 @@
 //! back (`FileEngine::submit`).
 
 use std::borrow::Cow;
-use std::ops::Bound;
 
 use log::warn;
 use om_query::Write;
 
-use super::{
-    ChangeSchema, Direction, Environment, Transaction, UpdateTable, UploadToCatalog, View, NO_LIMIT,
-};
+use super::{ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog, View, NO_LIMIT};
 use crate::derived::{CATALOG_INDEX, LAST_MEMBER_ID};
 use crate::library::LIBRARY;
 use crate::modcount::{self, MOD_COUNT};
@@ -134,16 +131,16 @@ fn apply(writes: Vec<Write>, file: &str, tx: &mut Transaction<'_>) {
                         &[LIBRARY],
                         &[om_data::containers::keys::MEMBERS],
                     ];
-                    let view: &dyn View = tx;
-                    let count = view
-                        .children(&members, Bound::Unbounded, Direction::Forward)
-                        .take_while(Result::is_ok)
-                        .count();
-                    if count > 0 {
-                        tx.once_stored(format!(
+                    match View::count_children(&*tx, &members) {
+                        Ok(0) => {}
+                        Ok(count) => tx.once_stored(format!(
                             "{file}: table {table:02x?} deleted with its {count} container \
                              library member(s)"
-                        ));
+                        )),
+                        Err(error) => warn!(
+                            "{file}: the container library of table {table:02x?}, deleted, \
+                             could not be counted: {error}"
+                        ),
                     }
                     tx.release_library(vec![table.clone(), vec![LIBRARY]]);
                 }

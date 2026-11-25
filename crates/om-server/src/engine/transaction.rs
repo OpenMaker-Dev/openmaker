@@ -45,6 +45,17 @@ pub enum Hold<'h, 'a> {
 /// ([`Self::remove`]), replace a subtree ([`Self::replace`]). An operation
 /// moved onto it reads and changes the tree through these alone.
 ///
+/// What it answers about its own writes, the contract every engine's
+/// transaction keeps: every read gives the tree as written so far; a write
+/// that leaves the tree as it was is no change (nothing to store or take
+/// back, the tree not counted as changed); [`Self::derived`] is the state
+/// of the tree as written, its catalog and its accounts both;
+/// [`View::changed_since`] is true for a path at, above or below one the
+/// transaction changed, and for every path once a store helper changed
+/// the tree (it may be true where nothing changed, never false where
+/// something did); [`View::version`] stays the version the operation
+/// started on.
+///
 /// The operations not moved yet use the `Store` methods it still exposes,
 /// and `view` for the state derived from the tree (a privilege set's
 /// hidden fields and record limits). Every change goes
@@ -86,6 +97,12 @@ pub struct Transaction<'a> {
     /// again before the derived state is next used ([`Self::derived`]) or
     /// the operation ends ([`Self::settle`]).
     schema_pending: bool,
+    /// The paths the transaction's writes changed, for
+    /// [`View::changed_since`].
+    written: Vec<Vec<Vec<u8>>>,
+    /// Whether a store helper changed the tree ([`Self::by_store`]), which
+    /// says nothing of where.
+    by_helpers: bool,
     /// The check of its writes, in tests (`super::checking`).
     #[cfg(debug_assertions)]
     pub(super) check: Option<Box<super::checking::Check>>,
@@ -125,6 +142,8 @@ impl<'a> Transaction<'a> {
             field_bases: Vec::new(),
             wrote_member_keys: false,
             schema_pending: false,
+            written: Vec::new(),
+            by_helpers: false,
             #[cfg(debug_assertions)]
             check: None,
         }
@@ -136,11 +155,16 @@ impl<'a> Transaction<'a> {
         self.check = Some(Box::new(super::checking::Check::new(self.store)));
     }
 
-    /// The operation changed the tree through the store's own helpers.
+    /// The operation is about to change the tree through one of the
+    /// store's own helpers (an operation not moved onto the transaction's
+    /// writes): what it changes is not recorded, so the check skips it
+    /// alone (`super::checking::Check::before_store`), and
+    /// [`View::changed_since`] answers true from now on.
     fn by_store(&mut self) {
+        self.by_helpers = true;
         #[cfg(debug_assertions)]
         if let Some(check) = &mut self.check {
-            check.by_store = true;
+            check.before_store(self.store);
         }
     }
 
@@ -153,13 +177,19 @@ impl<'a> Transaction<'a> {
     /// changes nothing.
     pub fn replace(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) -> Result<(), String> {
         #[cfg(debug_assertions)]
-        let recorded = self.check.as_ref().map(|_| node.clone());
-        let feeds = self.store.write_in(&mut self.journal, &path, Some(node))?;
+        let recorded = self.check.as_ref().map(|check| {
+            check.fresh(self.store);
+            node.clone()
+        });
+        let Some(feeds) = self.store.write_in(&mut self.journal, &path, Some(node))? else {
+            return Ok(());
+        };
         self.schema_pending |= feeds;
         #[cfg(debug_assertions)]
         if let (Some(check), Some(node)) = (&mut self.check, recorded) {
             check.wrote(&path, Some(&node));
         }
+        self.written.push(path);
         Ok(())
     }
 
@@ -175,29 +205,38 @@ impl<'a> Transaction<'a> {
     /// Remove the node at `path` and everything under it
     /// (`om_store::tree::Edit::Delete`).
     pub fn remove(&mut self, path: Vec<Vec<u8>>) -> Result<(), String> {
-        let feeds = self.store.write_in(&mut self.journal, &path, None)?;
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            check.fresh(self.store);
+        }
+        let Some(feeds) = self.store.write_in(&mut self.journal, &path, None)? else {
+            return Ok(());
+        };
         self.schema_pending |= feeds;
         #[cfg(debug_assertions)]
         if let Some(check) = &mut self.check {
             check.wrote(&path, None);
         }
+        self.written.push(path);
         Ok(())
     }
 
     /// The state derived from the tree as the transaction has it (the
     /// catalog, the accounts, the locale), read again after writes that
-    /// reach it.
+    /// reach it: an account the operation wrote reads as written.
     pub fn derived(&mut self) -> Arc<Derived> {
         self.settle();
         self.store.derived().clone()
     }
 
     /// Read the derived state again after writes that reached it, the
-    /// state before them kept to take back: before the derived state is
-    /// used, and when the operation ends (`FileEngine::submit`).
+    /// accounts with it, the state before them kept to take back: before
+    /// the derived state is used, and when the operation ends
+    /// (`FileEngine::submit`).
     pub(super) fn settle(&mut self) {
         if std::mem::take(&mut self.schema_pending) {
             self.store.schema_changed_in(&mut self.journal);
+            self.store.follow_accounts(Some(&mut self.journal));
         }
     }
 
@@ -412,7 +451,7 @@ impl<'a> Transaction<'a> {
 
 /// The transaction's reads: the tree as the operation's writes left it,
 /// at the version it started on. In tests each answer is checked against
-/// the starting tree with the writes laid over it (`super::checking`).
+/// the starting tree with the writes applied in order (`super::checking`).
 impl View for Transaction<'_> {
     fn version(&self) -> Version {
         self.store.version()
@@ -423,7 +462,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = ours.clone().map(Head::into_owned);
-            check.read("node", path, &owned, |view| {
+            check.read(self.store, "node", path, &owned, |view| {
                 view.node(path).ok().flatten().map(Head::into_owned)
             });
         }
@@ -439,7 +478,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = ours.clone().map(|node| node.cloned());
-            check.read("subtree", path, &owned, |view| {
+            check.read(self.store, "subtree", path, &owned, |view| {
                 view.subtree(path, limit)
                     .map(|node| node.map(Cow::into_owned))
             });
@@ -463,7 +502,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = (owned_children(&out[given..]), more);
-            check.read("listing", path, &owned, |view| {
+            check.read(self.store, "listing", path, &owned, |view| {
                 let mut page = Vec::new();
                 let more = view
                     .children_page(path, from, direction, max, &mut page)
@@ -499,7 +538,7 @@ impl View for Transaction<'_> {
                     .collect();
                 (page, more)
             });
-            check.read("subtrees", path, &owned, |view| {
+            check.read(self.store, "subtrees", path, &owned, |view| {
                 let mut page = Vec::new();
                 view.subtrees_page(path, from, direction, max, limit, &mut page)
                     .map(|more| (page.into_iter().map(Cow::into_owned).collect(), more))
@@ -522,7 +561,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = (owned_steps(&out[given..]), resume.clone());
-            check.read("walk", path, &owned, |view| {
+            check.read(self.store, "walk", path, &owned, |view| {
                 let mut page = Vec::new();
                 let resume = view.walk_page(path, after, max, &mut page).ok().flatten();
                 (owned_steps(&page), resume)
@@ -533,15 +572,27 @@ impl View for Transaction<'_> {
         Ok(resume)
     }
 
+    /// True for a path at, above or below one the transaction's writes
+    /// changed, and for any path once a store helper changed the tree,
+    /// besides what changed between versions.
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
-        self.store.tree_view().changed_since(path, since)
+        let wrote = self.by_helpers
+            || self.written.iter().any(|written| {
+                written.len().min(path.len())
+                    == written
+                        .iter()
+                        .zip(path)
+                        .take_while(|(w, p)| w.as_slice() == **p)
+                        .count()
+            });
+        Ok(wrote || self.store.tree_view().changed_since(path, since)?)
     }
 
     fn count_children(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
         let ours = self.store.tree_view().count_children(path)?;
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
-            check.read("count", path, &ours, |view| {
+            check.read(self.store, "count", path, &ours, |view| {
                 view.count_children(path).unwrap_or(usize::MAX)
             });
         }

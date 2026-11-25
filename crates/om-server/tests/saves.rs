@@ -867,6 +867,32 @@ fn schema_program(
     program.to_wire().unwrap()
 }
 
+/// op72 that sets a field's next serial value to the one it holds changes
+/// nothing: with saves failing, it answers status 0 with the value, as a
+/// request with nothing to store does, and the file keeps it (review of
+/// #785, round 1: a write that leaves the tree as it was is no change,
+/// `Store::write_in`).
+#[test]
+fn a_serial_set_to_the_one_held_answers_with_it_while_saves_fail() {
+    let mut root = with_photo();
+    let (t, f) = (uint_segment(TABLE), uint_segment(COUNT));
+    root.put(
+        &[&t, &[3], &[5], &f, &[0x0c]],
+        OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu("7")),
+    );
+    let file = TempFile::from_tree("save-same-serial", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "same serial");
+    let blocked = BlockedSaves::new(&file);
+    let serial = client
+        .get_serial(&t, &f, "7", 0, write::SERIAL_REPLACE)
+        .unwrap();
+    assert_eq!((serial.status, serial.value.as_str()), (0, "7"));
+    drop(blocked);
+    assert_eq!(serial_of(&mut client).as_deref(), Some("7"));
+    client.disconnect().unwrap();
+}
+
 /// docs/server-storage.md 5, "not stored": a request whose save fails
 /// before its rename is answered with its storage error, as each reply can
 /// carry it (op72 and op88 in their status, 800 "Unable to create file on
