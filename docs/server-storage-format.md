@@ -1007,7 +1007,16 @@ rebuilt for them when those entries are applied again (4.7).
   meta stream's first page and hash, from its superblock copy. The hash
   covers the whole stream, so a checkpoint whose number comes again (the
   next checkpoint after one is given up takes the given-up one's number)
-  has another identity. Giving up is an explicit call
+  has another identity, unless its contents are the same in every byte, at
+  the same pages: then it describes the same loss and the same landing,
+  and nothing needs to tell them apart. The approval also carries what
+  goes with it: for each checkpoint it gives up, the restore points lost
+  with it (or that they cannot be known), and for each slot it writes over
+  unread, that anything kept after the landing may go with it. An
+  approval is offered only when its landing opens (the open reads the
+  checkpoint it would fall back to, on this error path only); otherwise
+  there is none, and the error says why that checkpoint cannot be used
+  either. Giving up is an explicit call
   (`PageFile::open_giving_up`) for damage and for a read that keeps
   failing alike, given such an approval; its caller records the error
   durably first. The call learns, writing nothing, what it would give up
@@ -1050,7 +1059,10 @@ rebuilt for them when those entries are applied again (4.7).
   checkpoint's two copies leaves in its second slot. Such an older
   checkpoint's pages may still check, and its table may list a restore
   point the opened one dropped; but the opened checkpoint no longer keeps
-  them and its map frees them, which is why it must never be taken later.
+  it. Its pages are retired with its last superblock copy and become
+  reusable under the ordinary rules (an old meta page may still be dying,
+  an unchanged tree page still in use), which is why it must never be
+  taken later.
   Every slot was read and no checkpoint with a valid copy is newer than
   the one opened, so nothing written over is newer than it. The explicit
   call writes over what it was approved to give up too: the slots of the

@@ -554,8 +554,10 @@ settled (server-storage-format.md 4.5).
    which a later read may return whole, so the server is started again
    later. Giving a checkpoint up and opening on the one before it is a
    separate, explicit call, given the approval the report carries: what
-   to give up and the checkpoint to land on, each named by an identity
-   that does not come again when a number does. The call does exactly
+   to give up, what goes with it, and the checkpoint to land on, each
+   checkpoint named by an identity that differs when a number comes again
+   (unless the contents are the same in every byte, and then so is the
+   loss). The call does exactly
    that or nothing, so the server records the report durably before it
    makes the call, and the loss it recorded is the loss that can happen. The server is to make that call by
    itself for damage, and leave it to an administrator for a read that
