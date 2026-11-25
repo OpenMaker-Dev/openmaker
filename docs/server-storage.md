@@ -1231,10 +1231,11 @@ levels, then the root, to a file it can seek in, with memory bounded by
 the tree's depth and not its size. It writes page 0 as imported, with the
 clean-close flag set and the change number advanced as the writer does
 (hbam-writer.md 5.1). The result is checked by reading it back and
-comparing it with the view node by node, kinds included. Both the reader
-and the writer of `om-hbam` work on a whole file in memory today
-(`HbamFile::open`, `writer::rebuild`); the streaming forms are part of
-this work.
+comparing it with the view node by node, kinds included. `om-hbam` reads
+a file a page at a time (`stream::NodeStream`, which gives its nodes in
+key order, kinds included) and writes one a page at a time
+(`writer::NodeWriter`, which takes its nodes in key order, kinds included,
+and writes the bytes of `writer::rebuild`).
 
 Export is offered:
 
