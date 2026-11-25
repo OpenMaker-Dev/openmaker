@@ -384,54 +384,98 @@ fn open_proc(disk: &Disk, config: Config) -> Result<(Process, Opened), OpenError
     open_proc_with(disk, config, None, None)
 }
 
-/// Opens with `PageFile::open`, or, given what to give up, with
+/// Opens with `PageFile::open`, or, given an approval, with
 /// `PageFile::open_giving_up`; on the simulator, every read of page
 /// `unreadable` fails as a device's would.
 fn open_proc_with(
     disk: &Disk,
     config: Config,
     unreadable: Option<PageNo>,
-    accept: Option<&[GiveUp]>,
+    accept: Option<&GiveUp>,
 ) -> Result<(Process, Opened), OpenError> {
+    open_proc_counting(disk, config, unreadable, accept).0
+}
+
+/// `open_proc_with`, and whether a write to a superblock slot reached the
+/// device (on the simulator).
+fn open_proc_counting(
+    disk: &Disk,
+    config: Config,
+    unreadable: Option<PageNo>,
+    accept: Option<&GiveUp>,
+) -> (Result<(Process, Opened), OpenError>, bool) {
     let (fs, trip) = disk.proc_fs();
     if let Some(trip) = &trip {
         trip.lock().unwrap().fail_read = unreadable;
     }
-    let lock = fs.lock().map_err(OpenError::Disk)?;
-    let (pf, opened) = match accept {
-        Some(accept) => PageFile::open_giving_up(&*fs, &lock, config, accept)?,
-        None => PageFile::open(&*fs, &lock, config)?,
+    let wrote = |trip: &Option<Arc<Mutex<Trip>>>| {
+        trip.as_ref()
+            .is_some_and(|t| t.lock().unwrap().slot_writes > 0)
     };
+    let lock = match fs.lock() {
+        Ok(lock) => lock,
+        Err(e) => return (Err(OpenError::Disk(e)), false),
+    };
+    let result = match accept {
+        Some(accept) => PageFile::open_giving_up(&*fs, &lock, config, accept),
+        None => PageFile::open(&*fs, &lock, config),
+    };
+    let (pf, opened) = match result {
+        Ok(opened) => opened,
+        Err(e) => return (Err(e), wrote(&trip)),
+    };
+    let wrote = wrote(&trip);
     if let Some(trip) = &trip {
-        trip.lock().unwrap().fail_read = None;
+        let mut t = trip.lock().unwrap();
+        t.fail_read = None;
+        t.slot_writes = 0;
     }
-    Ok((
-        Process {
-            pf,
-            _lock: lock,
-            _fs: fs,
-            trip,
-        },
-        opened,
-    ))
+    let process = Process {
+        pf,
+        _lock: lock,
+        _fs: fs,
+        trip,
+    };
+    (Ok((process, opened)), wrote)
 }
 
-/// A copy of an open error that names what to give up.
-fn clone_open_error(e: &OpenError) -> Option<OpenError> {
-    match e {
-        OpenError::Unreadable(f) => Some(OpenError::Unreadable(f.clone())),
-        OpenError::Damaged(p) => Some(OpenError::Damaged(p.clone())),
-        _ => None,
+/// What a report says may be gone: restore points kept after checkpoint
+/// `above` (the one opened, or to be opened) and at or before `upto` (the
+/// checkpoint given up; `None` for a slot, which names none), and of those
+/// the ones `lost` names (`None` for a slot: any).
+#[derive(Clone, Debug)]
+struct Credit {
+    above: u64,
+    upto: Option<u64>,
+    lost: Option<Lost>,
+}
+
+impl Credit {
+    fn names(&self, (name, at): &(String, u64)) -> bool {
+        *at > self.above
+            && self.upto.is_none_or(|n| *at <= n)
+            && match &self.lost {
+                None | Some(Lost::Unknown) => true,
+                Some(Lost::Points(points)) => points.contains(&(name.clone(), *at)),
+            }
     }
 }
 
-/// What an error from `PageFile::open` says giving up would lose (`None`
-/// for a slot, which names no checkpoint).
-fn what_is_lost(e: &OpenError) -> Option<Lost> {
+/// The checkpoint an error from an open names, and what it says giving it
+/// up loses (`None` for a slot).
+fn named_loss(e: &OpenError) -> Option<(u64, Lost)> {
     match e {
-        OpenError::Damaged(p) => Some(p.lost.clone()),
-        OpenError::Unreadable(ReadFailure::Root { lost, .. }) => Some(lost.clone()),
-        OpenError::Unreadable(ReadFailure::Meta { .. }) => Some(Lost::Unknown),
+        OpenError::Damaged { passed, .. } => Some((passed.number, passed.lost.clone())),
+        OpenError::Unreadable {
+            failure: ReadFailure::Root {
+                checkpoint, lost, ..
+            },
+            ..
+        } => Some((*checkpoint, lost.clone())),
+        OpenError::Unreadable {
+            failure: ReadFailure::Meta { checkpoint, .. },
+            ..
+        } => Some((*checkpoint, Lost::Unknown)),
         _ => None,
     }
 }
@@ -621,11 +665,15 @@ struct Run<'r> {
     unreadable: Option<PageNo>,
     /// The meta stream of each checkpoint confirmed or opened.
     metas: BTreeMap<u64, (PageNo, Hash)>,
-    /// A call that gives up stopped after it could have written, before it
-    /// returned its report: what the errors recorded before it said would
-    /// be lost (`None` for a slot, which names no checkpoint). The next
-    /// open may show those restore points gone without a report of its own.
-    interrupted: Vec<Option<Lost>>,
+    /// A call that gives up wrote to a slot and stopped before it returned
+    /// its report: what the errors recorded before it said would be lost.
+    /// The next open may show those restore points gone without a report
+    /// of its own.
+    interrupted: Vec<Credit>,
+    /// The count of the lying device's faults (damage, misplaced and lost
+    /// writes) when each restore point's keep returned: a point no such
+    /// fault could have touched since is checked on that device too.
+    restore_faults: BTreeMap<String, u64>,
     /// When the opens meet a read that keeps failing: a stream of its own,
     /// so that the rest of a schedule does not depend on it.
     open_faults: Rng,
@@ -697,6 +745,7 @@ impl<'r> Run<'r> {
             unreadable: None,
             metas: BTreeMap::new(),
             interrupted: Vec::new(),
+            restore_faults: BTreeMap::new(),
             open_faults: Rng::stream(seed, 17),
             reached,
             trace: Vec::new(),
@@ -1284,6 +1333,8 @@ impl<'r> Run<'r> {
                 self.seen.insert((number, self.newest.entry.index));
                 if let Some(name) = name {
                     self.reached.restore_points += 1;
+                    let faults = self.lying_faults();
+                    self.restore_faults.insert(name.clone(), faults);
                     self.restore.insert(name, number);
                 }
             }
@@ -1337,6 +1388,7 @@ impl<'r> Run<'r> {
         self.trace.push(format!("drop restore point {name}"));
         self.reached.restore_dropped += 1;
         self.restore.remove(name);
+        self.restore_faults.remove(name);
     }
 
     fn reclaim(&mut self) {
@@ -1406,17 +1458,30 @@ impl<'r> Run<'r> {
         Some(bytes)
     }
 
+    /// The lying device's faults fired so far: damage, misplaced and lost
+    /// writes.
+    fn lying_faults(&self) -> u64 {
+        self.disk.sim().map_or(0, |sim| {
+            let fired = sim.fired();
+            [SimFault::Damage, SimFault::Misplace, SimFault::LoseWrite]
+                .iter()
+                .map(|f| fired.get(f).copied().unwrap_or(0))
+                .sum()
+        })
+    }
+
     fn reopen(&mut self) {
         let honest = self.device != Device::Lying;
         let slots_before = if honest { self.slot_bytes() } else { None };
-        let mut result = open_proc_with(&self.disk, self.config, self.unreadable, None);
+        let (mut result, _) = open_proc_counting(&self.disk, self.config, self.unreadable, None);
         let mut gave_up = false;
         // The plain open gives nothing up: what stops it is returned with
-        // nothing written (#750, review of #752).
-        if let Err(e @ (OpenError::Unreadable(_) | OpenError::Damaged(_))) = &result {
+        // nothing written, with the approval that gets past it (#750, review
+        // of #752).
+        if let Err(e @ (OpenError::Unreadable { .. } | OpenError::Damaged { .. })) = &result {
             self.trace.push(format!("open refused: {e}"));
             match e {
-                OpenError::Damaged(_) => self.reached.open_damaged += 1,
+                OpenError::Damaged { .. } => self.reached.open_damaged += 1,
                 _ => self.reached.open_unreadable += 1,
             }
             if let (Some(before), Some(after)) = (&slots_before, self.slot_bytes()) {
@@ -1425,49 +1490,79 @@ impl<'r> Run<'r> {
                     "an open that gave nothing up wrote a slot"
                 );
             }
-            let transient = matches!(e, OpenError::Unreadable(_)) && self.unreadable.is_none();
+            let transient = matches!(e, OpenError::Unreadable { .. }) && self.unreadable.is_none();
             if transient && honest {
                 // A read that failed once: open again later.
                 let power_loss = self.plan.one_in(2);
                 return self.stop(power_loss);
             }
-            // The explicit call, given what the error named, recorded first.
-            let mut accept = Vec::new();
-            let mut recorded = Vec::new();
-            let mut error = result.as_ref().err().and_then(clone_open_error);
-            while let Some(e) = error.take() {
-                let (Some(what), true) = (e.give_up(), accept.len() < 6) else {
-                    break;
-                };
-                accept.push(what);
-                recorded.push(what_is_lost(&e));
-                result = open_proc_with(&self.disk, self.config, self.unreadable, Some(&accept));
-                match &result {
-                    // A lying device can damage the next checkpoint too:
-                    // that is accepted in its turn.
-                    Err(next @ OpenError::Damaged(_)) if !honest || self.allow_fallback => {
-                        self.trace.push(format!("giving up refused: {next}"));
-                        error = clone_open_error(next);
+            // The explicit call, given the approval the error carries, the
+            // error recorded first. When the call is refused with another
+            // approval (a lying device damaged the next checkpoint too, or
+            // the landing changed), that one is given in its turn.
+            let mut losses: BTreeMap<u64, Lost> = named_loss(e).into_iter().collect();
+            let mut next = e.give_up().cloned();
+            let mut approval = None;
+            let mut wrote = false;
+            let mut calls = 0;
+            while let Some(given) = next.take() {
+                calls += 1;
+                let (r, w) =
+                    open_proc_counting(&self.disk, self.config, self.unreadable, Some(&given));
+                result = r;
+                wrote = w;
+                approval = Some(given);
+                if let Err(e @ (OpenError::Unreadable { .. } | OpenError::Damaged { .. })) = &result
+                {
+                    self.trace.push(format!("giving up refused: {e}"));
+                    losses.extend(named_loss(e));
+                    if (!honest || self.allow_fallback) && calls < 6 {
+                        next = e.give_up().cloned();
                     }
-                    _ => {}
                 }
             }
             self.unreadable = None;
-            gave_up = true;
-            match &result {
-                Ok(_) => {}
-                Err(OpenError::Disk(_)) => {
-                    // It may have written before it stopped.
-                    self.reached.fallbacks_interrupted += 1;
-                    self.interrupted.extend(recorded);
-                    self.gave_up = true;
+            match (&result, &approval) {
+                (Ok(_), _) => gave_up = true,
+                (Err(OpenError::Disk(_)), Some(approval)) => {
+                    // Stopped part way: only a call that wrote a slot can
+                    // have given anything up.
+                    if wrote {
+                        self.reached.fallbacks_interrupted += 1;
+                        self.gave_up = true;
+                        let above = approval.onto.number;
+                        for c in &approval.checkpoints {
+                            let lost = losses.get(&c.number).cloned().unwrap_or(Lost::Unknown);
+                            self.interrupted.push(Credit {
+                                above,
+                                upto: Some(c.number),
+                                lost: Some(lost),
+                            });
+                        }
+                        for _ in &approval.slots {
+                            self.interrupted.push(Credit {
+                                above,
+                                upto: None,
+                                lost: None,
+                            });
+                        }
+                    }
                 }
-                Err(e) => {
+                (Err(OpenError::Disk(_)), None) => {}
+                (Err(e), _) => {
                     // Refused, writing nothing: the situation changed, or
-                    // there is nothing older to open.
-                    self.trace.push(format!("giving up refused: {e}"));
-                    self.reached.give_ups_refused += 1;
-                    if let OpenError::NoCheckpoint { .. } = e {
+                    // nothing older can be opened.
+                    if approval.is_some() {
+                        self.reached.give_ups_refused += 1;
+                    }
+                    let nothing_older = match e {
+                        OpenError::NoCheckpoint { .. } => true,
+                        OpenError::Unreadable { .. } | OpenError::Damaged { .. } => {
+                            e.give_up().is_none()
+                        }
+                        _ => false,
+                    };
+                    if nothing_older {
                         self.reached.no_checkpoint += 1;
                         if !honest {
                             self.dead = true;
@@ -1556,39 +1651,51 @@ impl<'r> Run<'r> {
         self.metas
             .insert(number, proc.pf.kept_checkpoints()[0].meta);
         // Every restore point whose keep returned is among the points the
-        // open returned, by identity, unless that open reported it given up,
-        // or a call that gave up stopped after it could have written and the
-        // error recorded before it named the point (#750).
+        // open returned, by identity, unless a report names it: this open's
+        // (a checkpoint passed over, for points kept after the one opened
+        // and at or before it; a slot written over unread, for points kept
+        // after the one opened), or the errors recorded before a call that
+        // gave up, wrote a slot and stopped (#750). On the lying device, only
+        // points that none of its lies could have touched since their keep.
         let gone: Vec<(String, u64)> = self
             .restore
             .iter()
             .map(|(name, at)| (name.clone(), *at))
             .filter(|point| !opened.restore_points.contains(point))
             .collect();
-        if honest {
-            let names = |lost: &Lost, point: &(String, u64)| match lost {
-                Lost::Unknown => true,
-                Lost::Points(points) => points.contains(point),
-            };
-            for point in &gone {
-                let reported = !opened.given_up_slots.is_empty()
-                    || opened.passed_over.iter().any(|p| names(&p.lost, point))
-                    || self.interrupted.iter().any(|lost| match lost {
-                        Some(lost) => names(lost, point),
-                        None => true,
-                    });
+        let mut credits = std::mem::take(&mut self.interrupted);
+        for p in &opened.passed_over {
+            credits.push(Credit {
+                above: number,
+                upto: Some(p.number),
+                lost: Some(p.lost.clone()),
+            });
+        }
+        for _ in &opened.given_up_slots {
+            credits.push(Credit {
+                above: number,
+                upto: None,
+                lost: None,
+            });
+        }
+        let faults = self.lying_faults();
+        for point in &gone {
+            let untouched = honest || self.restore_faults.get(&point.0) == Some(&faults);
+            if untouched {
                 assert!(
-                    reported,
-                    "restore point {point:?} is gone, and nothing said so: {opened:?}"
+                    credits.iter().any(|c| c.names(point)),
+                    "restore point {point:?} is gone, and nothing said so: {opened:?} {credits:?}"
                 );
             }
         }
         if gave_up {
             self.reached.points_given_up += gone.len() as u64;
         }
-        self.interrupted.clear();
         self.restore
             .retain(|name, at| !gone.contains(&(name.clone(), *at)));
+        let restore = &self.restore;
+        self.restore_faults
+            .retain(|name, _| restore.contains_key(name));
         self.newest = model;
         self.proc = Some(proc);
         // Recovery: every entry after the checkpoint, applied again.
@@ -3015,6 +3122,8 @@ struct Trip {
     panic_write: bool,
     /// Reads of this page fail, as a device's would.
     fail_read: Option<PageNo>,
+    /// Writes to the superblock slots that reached the device.
+    slot_writes: u64,
 }
 
 /// An `Fs` over the simulator whose `pages` file, once armed, stops at its
@@ -3130,6 +3239,9 @@ impl File for GatedFile {
         }
         if t.stop_after_slot && slot {
             t.slot_written = true;
+        }
+        if slot {
+            t.slot_writes += 1;
         }
         drop(t);
         self.inner.write_at(offset, data)
@@ -4028,9 +4140,9 @@ fn a_checkpoint_reads_the_roots_on_disk_back_before_it_writes() {
     sim.restart();
     let fs = sim.fs();
     let lock = fs.lock().unwrap();
-    let refused = PageFile::open(&fs, &lock, config());
-    let accept = [refused.err().and_then(|e| e.give_up()).expect("damage")];
-    let (pf, opened) = PageFile::open_giving_up(&fs, &lock, config(), &accept).unwrap();
+    let refused = PageFile::open(&fs, &lock, config()).expect_err("damage");
+    let approval = refused.give_up().expect("an older checkpoint").clone();
+    let (pf, opened) = PageFile::open_giving_up(&fs, &lock, config(), &approval).unwrap();
     assert_eq!(opened.entry, entry_id(1));
     assert_eq!(pf.trees(), trees);
 }
@@ -4473,12 +4585,17 @@ fn a_checkpoint_naming_one_root_for_two_trees_is_passed_over() {
         why: Rejection::Mismatch(SHARED_ROOT),
         lost: Lost::Points(Vec::new()),
     };
-    match open_proc(&disk, config()) {
-        Err(OpenError::Damaged(p)) => assert_eq!(*p, passed),
+    let approval = match open_proc(&disk, config()) {
+        Err(OpenError::Damaged {
+            passed: p,
+            give_up: Some(give_up),
+        }) => {
+            assert_eq!(*p, passed);
+            *give_up
+        }
         other => panic!("{:?}", other.map(|(_, o)| o)),
-    }
-    let accept = [GiveUp::Checkpoint(3)];
-    let (proc, opened) = open_proc_with(&disk, config(), None, Some(&accept)).unwrap();
+    };
+    let (proc, opened) = open_proc_with(&disk, config(), None, Some(&approval)).unwrap();
     assert_eq!(opened.checkpoint, 2);
     assert_eq!(opened.passed_over, vec![passed]);
     assert_eq!(proc.pf.trees(), vec![(t0, a)]);
@@ -4653,8 +4770,8 @@ fn slot_bytes(disk: &Disk) -> Vec<u8> {
 
 /// A store whose newest checkpoint (3, at entry 2) keeps restore point
 /// "point", which checkpoint 2 does not list; the process has stopped.
-/// Returns checkpoint 3's meta stream and its tree's root.
-fn a_point_only_the_newest_lists(sim: &Sim) -> (Disk, (PageNo, Hash), Root) {
+/// Returns checkpoints 3 and 2 as an open sees them, and 3's tree's root.
+fn a_point_only_the_newest_lists(sim: &Sim) -> (Disk, CheckpointId, CheckpointId, Root) {
     let disk = Disk::Sim(sim.clone());
     let proc = create_proc(&disk, config());
     let name = tree_name(0);
@@ -4666,10 +4783,20 @@ fn a_point_only_the_newest_lists(sim: &Sim) -> (Disk, (PageNo, Hash), Root) {
     drop(res);
     let done = proc.pf.checkpoint(entry_id(2), Some("point")).unwrap();
     assert_eq!(done.number, 3);
-    let meta = proc.pf.kept_checkpoints()[0].meta;
+    let [newest, older] = newest_two(&proc.pf);
     drop(proc);
     sim.restart();
-    (disk, meta, root)
+    (disk, newest, older, root)
+}
+
+/// The two checkpoints on disk as an open sees them, newest first.
+fn newest_two(pf: &PageFile) -> [CheckpointId; 2] {
+    let kept = pf.kept_checkpoints();
+    let id = |k: &KeptCheckpoint| CheckpointId {
+        number: k.number,
+        meta: k.meta,
+    };
+    [id(&kept[0]), id(&kept[1])]
 }
 
 fn has_point(proc: &Process) -> bool {
@@ -4679,27 +4806,49 @@ fn has_point(proc: &Process) -> bool {
         .any(|(rp, _)| rp.name == "point" && rp.checkpoint == 3)
 }
 
+/// The approval to give up `checkpoints` and open on `onto`.
+fn give_up(checkpoints: &[CheckpointId], onto: CheckpointId) -> GiveUp {
+    GiveUp {
+        checkpoints: checkpoints.to_vec(),
+        slots: Vec::new(),
+        onto,
+    }
+}
+
 /// #750, the issue's case: a read the device fails while an open chooses
 /// a checkpoint is not damage. The open fails, names the checkpoint and the
-/// page, and writes nothing; the open after it, the read succeeding, is on
-/// the newest checkpoint with its restore point.
+/// page, carries the approval to give it up, and writes nothing; the open
+/// after it, the read succeeding, is on the newest checkpoint with its
+/// restore point.
 #[test]
 fn a_read_the_device_fails_at_open_is_not_damage() {
     let sim = Sim::new(70);
-    let (disk, meta, _) = a_point_only_the_newest_lists(&sim);
+    let (disk, three, two, _) = a_point_only_the_newest_lists(&sim);
     let before = slot_bytes(&disk);
-    let refused = open_proc_with(&disk, config(), Some(meta.0), None);
-    match &refused {
-        Err(OpenError::Unreadable(ReadFailure::Meta { checkpoint, fault })) => {
-            assert_eq!((*checkpoint, fault.page), (3, meta.0));
-            assert!(matches!(fault.fault, Fault::Io(_)), "{fault:?}");
-        }
-        other => panic!("{:?}", other.as_ref().map(|(_, o)| o)),
-    }
-    assert_eq!(
-        refused.err().and_then(|e| e.give_up()),
-        Some(GiveUp::Checkpoint(3))
+    let refused = open_proc_with(&disk, config(), Some(three.meta.0), None);
+    // The text says all the structure holds: the loss is unknown, and the
+    // approval.
+    let text = refused
+        .as_ref()
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(text.contains("cannot be known"), "{text}");
+    assert!(
+        text.contains(&format!("give up {three}, and open on {two}")),
+        "{text}"
     );
+    match refused {
+        Err(OpenError::Unreadable {
+            failure: ReadFailure::Meta { checkpoint, fault },
+            give_up: Some(approval),
+        }) => {
+            assert_eq!((checkpoint, fault.page), (3, three.meta.0));
+            assert!(matches!(fault.fault, Fault::Io(_)), "{fault:?}");
+            assert_eq!(*approval, give_up(&[three], two));
+        }
+        other => panic!("{:?}", other.map(|(_, o)| o)),
+    }
     assert!(slot_bytes(&disk) == before, "the open wrote nothing");
     let (proc, opened) = open_proc(&disk, config()).unwrap();
     assert_eq!(opened.checkpoint, 3);
@@ -4709,52 +4858,56 @@ fn a_read_the_device_fails_at_open_is_not_damage() {
 
 /// #750: a read that keeps failing stops every open, which writes nothing
 /// and says what giving the checkpoint up would lose. The call that gives
-/// up is refused, writing nothing, when the read works again or when
-/// something it was not given stops it; given the checkpoint, it opens on
-/// the older one and reports what it gave up.
+/// up is refused, writing nothing, when the read works again or when what
+/// it was given is not what is so now; given the approval the error
+/// carries, it opens on the older checkpoint and reports what it gave up.
 #[test]
 fn a_read_that_keeps_failing_is_given_up_only_by_the_explicit_call() {
     let sim = Sim::new(71);
-    let (disk, _, root) = a_point_only_the_newest_lists(&sim);
+    let (disk, three, two, root) = a_point_only_the_newest_lists(&sim);
     let before = slot_bytes(&disk);
     let point = vec![("point".to_owned(), 3)];
+    let approval = give_up(&[three], two);
     for _ in 0..2 {
         match open_proc_with(&disk, config(), Some(root.page), None) {
-            Err(OpenError::Unreadable(ReadFailure::Root {
-                checkpoint,
-                fault,
-                lost,
-                ..
-            })) => {
+            Err(OpenError::Unreadable {
+                failure:
+                    ReadFailure::Root {
+                        checkpoint,
+                        fault,
+                        lost,
+                        ..
+                    },
+                give_up: Some(given),
+            }) => {
                 assert_eq!((checkpoint, fault.page), (3, root.page));
                 assert_eq!(lost, Lost::Points(point.clone()));
+                assert_eq!(*given, approval);
             }
             other => panic!("{:?}", other.map(|(_, o)| o)),
         }
         assert!(slot_bytes(&disk) == before, "the open wrote nothing");
     }
-    let accept = [GiveUp::Checkpoint(3)];
-    // The read works again: nothing named stops the open.
-    match open_proc_with(&disk, config(), None, Some(&accept)) {
+    // The read works again: nothing stops the open.
+    match open_proc_with(&disk, config(), None, Some(&approval)) {
         Err(OpenError::Refused(_)) => {}
         other => panic!("{:?}", other.map(|(_, o)| o)),
     }
-    // Given another checkpoint than the one that fails: refused with the
-    // error the open returns.
-    match open_proc_with(
-        &disk,
-        config(),
-        Some(root.page),
-        Some(&[GiveUp::Checkpoint(2)]),
-    ) {
-        Err(OpenError::Unreadable(ReadFailure::Root { checkpoint: 3, .. })) => {}
+    // Given another checkpoint than the one that fails: refused, carrying
+    // the approval for what is so now.
+    let wrong = give_up(&[two], three);
+    match open_proc_with(&disk, config(), Some(root.page), Some(&wrong)) {
+        Err(OpenError::Unreadable {
+            failure: ReadFailure::Root { checkpoint: 3, .. },
+            give_up: Some(given),
+        }) => assert_eq!(*given, approval),
         other => panic!("{:?}", other.map(|(_, o)| o)),
     }
     assert!(
         slot_bytes(&disk) == before,
         "the refused calls wrote nothing"
     );
-    let (proc, opened) = open_proc_with(&disk, config(), Some(root.page), Some(&accept)).unwrap();
+    let (proc, opened) = open_proc_with(&disk, config(), Some(root.page), Some(&approval)).unwrap();
     assert_eq!(opened.checkpoint, 2);
     assert_eq!(opened.passed_over.len(), 1, "{opened:?}");
     let passed = &opened.passed_over[0];
@@ -4771,8 +4924,9 @@ fn a_read_that_keeps_failing_is_given_up_only_by_the_explicit_call() {
 
     // Its meta stream unreadable: the points it would lose are unknown.
     let sim = Sim::new(72);
-    let (disk, meta, _) = a_point_only_the_newest_lists(&sim);
-    let (_, opened) = open_proc_with(&disk, config(), Some(meta.0), Some(&accept)).unwrap();
+    let (disk, three, two, _) = a_point_only_the_newest_lists(&sim);
+    let approval = give_up(&[three], two);
+    let (_, opened) = open_proc_with(&disk, config(), Some(three.meta.0), Some(&approval)).unwrap();
     assert_eq!(opened.checkpoint, 2);
     assert_eq!(opened.passed_over.len(), 1, "{opened:?}");
     assert_eq!(opened.passed_over[0].lost, Lost::Unknown);
@@ -4781,27 +4935,31 @@ fn a_read_that_keeps_failing_is_given_up_only_by_the_explicit_call() {
 /// #750, review of #752: bytes that do not check stop the open too, which
 /// writes nothing and reports what giving the checkpoint up would lose: the
 /// restore points it lists that were kept after the one it falls back to,
-/// or, its meta stream damaged, that they are unknown. The call that gives
-/// it up clears it, as an open did before.
+/// or, its meta stream damaged, that they are unknown. The call given that
+/// approval clears it, as an open did before.
 #[test]
 fn bytes_that_do_not_check_are_given_up_only_by_the_explicit_call() {
     let sim = Sim::new(73);
-    let (disk, _, root) = a_point_only_the_newest_lists(&sim);
+    let (disk, three, two, root) = a_point_only_the_newest_lists(&sim);
     sim.damage(FILE, root.page * PAGE + 300, 4).unwrap();
     sim.restart();
     let before = slot_bytes(&disk);
     let point = Lost::Points(vec![("point".to_owned(), 3)]);
     match open_proc(&disk, config()) {
-        Err(OpenError::Damaged(p)) => {
-            assert_eq!(p.number, 3);
-            assert!(matches!(p.why, Rejection::Root { .. }), "{p:?}");
-            assert_eq!(p.lost, point);
+        Err(OpenError::Damaged {
+            passed,
+            give_up: Some(given),
+        }) => {
+            assert_eq!(passed.number, 3);
+            assert!(matches!(passed.why, Rejection::Root { .. }), "{passed:?}");
+            assert_eq!(passed.lost, point);
+            assert_eq!(*given, give_up(&[three], two));
         }
         other => panic!("{:?}", other.map(|(_, o)| o)),
     }
     assert!(slot_bytes(&disk) == before, "the open wrote nothing");
-    let accept = [GiveUp::Checkpoint(3)];
-    let (proc, opened) = open_proc_with(&disk, config(), None, Some(&accept)).unwrap();
+    let approval = give_up(&[three], two);
+    let (proc, opened) = open_proc_with(&disk, config(), None, Some(&approval)).unwrap();
     assert_eq!(opened.checkpoint, 2);
     assert_eq!(opened.passed_over.len(), 1, "{opened:?}");
     assert_eq!(opened.passed_over[0].lost, point);
@@ -4809,11 +4967,13 @@ fn bytes_that_do_not_check_are_given_up_only_by_the_explicit_call() {
     assert!(!has_point(&proc));
 
     let sim = Sim::new(74);
-    let (disk, meta, _) = a_point_only_the_newest_lists(&sim);
-    sim.damage(FILE, meta.0 * PAGE + 300, 4).unwrap();
+    let (disk, three, _, _) = a_point_only_the_newest_lists(&sim);
+    sim.damage(FILE, three.meta.0 * PAGE + 300, 4).unwrap();
     sim.restart();
     match open_proc(&disk, config()) {
-        Err(OpenError::Damaged(p)) => assert_eq!((p.number, p.lost), (3, Lost::Unknown)),
+        Err(OpenError::Damaged { passed, .. }) => {
+            assert_eq!((passed.number, &passed.lost), (3, &Lost::Unknown))
+        }
         other => panic!("{:?}", other.map(|(_, o)| o)),
     }
 }
@@ -4821,12 +4981,12 @@ fn bytes_that_do_not_check_are_given_up_only_by_the_explicit_call() {
 /// #750, review of #752: a slot the device fails to read stops the open
 /// whatever the other slot of its pair holds (a newer checkpoint can have
 /// its only copy there when the one between lost both of its); the call
-/// given the slot writes over it and reports it. Only slot 0 holds a page's
-/// first byte, where the test's device fails reads.
+/// given the approval writes over it and reports it. Only slot 0 holds a
+/// page's first byte, where the test's device fails reads.
 #[test]
 fn a_slot_the_device_fails_to_read() {
     let sim = Sim::new(75);
-    let (disk, _, _) = a_point_only_the_newest_lists(&sim);
+    let (disk, _, _, _) = a_point_only_the_newest_lists(&sim);
     for _ in 0..2 {
         let newest = slot_numbers(&slot_bytes(&disk))
             .iter()
@@ -4834,13 +4994,19 @@ fn a_slot_the_device_fails_to_read() {
             .copied()
             .max();
         let before = slot_bytes(&disk);
-        match open_proc_with(&disk, config(), Some(0), None) {
-            Err(OpenError::Unreadable(ReadFailure::Slot { slot: 0, .. })) => {}
+        let approval = match open_proc_with(&disk, config(), Some(0), None) {
+            Err(OpenError::Unreadable {
+                failure: ReadFailure::Slot { slot: 0, .. },
+                give_up: Some(approval),
+            }) => *approval,
             other => panic!("{:?}", other.map(|(_, o)| o)),
-        }
+        };
+        assert_eq!(
+            (approval.slots.clone(), Some(approval.onto.number)),
+            (vec![0], newest)
+        );
         assert!(slot_bytes(&disk) == before, "the open wrote nothing");
-        let accept = [GiveUp::Slot(0)];
-        let (proc, opened) = open_proc_with(&disk, config(), Some(0), Some(&accept)).unwrap();
+        let (proc, opened) = open_proc_with(&disk, config(), Some(0), Some(&approval)).unwrap();
         assert_eq!(Some(opened.checkpoint), newest);
         assert_eq!(opened.given_up_slots, vec![0]);
         // The next checkpoint goes to the other pair: slot 0 then holds the
@@ -4851,11 +5017,11 @@ fn a_slot_the_device_fails_to_read() {
     }
 }
 
-/// Review of #752, Sol's first sequence: checkpoint 1 in slots 0 and 2, 2
-/// in slots 1 and 3, 3 written to slot 0 and stopped before slot 2, both
-/// copies of 2 damaged. A read of slot 0 that fails stops the open with
-/// nothing written (the other slot of its pair shows 1, which checks and is
-/// not the newest); the next open is on 3.
+/// Review of #752, Sol's first sequence of round 1: checkpoint 1 in slots
+/// 0 and 2, 2 in slots 1 and 3, 3 written to slot 0 and stopped before
+/// slot 2, both copies of 2 damaged. A read of slot 0 that fails stops the
+/// open with nothing written (the other slot of its pair shows 1, which
+/// checks and is not the newest); the next open is on 3.
 #[test]
 fn an_unreadable_slot_beside_an_older_copy_stops_the_open() {
     let sim = Sim::new(76);
@@ -4886,7 +5052,10 @@ fn an_unreadable_slot_beside_an_older_copy_stops_the_open() {
     );
     let before = slot_bytes(&disk);
     match open_proc_with(&disk, config(), Some(0), None) {
-        Err(OpenError::Unreadable(ReadFailure::Slot { slot: 0, .. })) => {}
+        Err(OpenError::Unreadable {
+            failure: ReadFailure::Slot { slot: 0, .. },
+            ..
+        }) => {}
         other => panic!("{:?}", other.map(|(_, o)| o)),
     }
     assert!(slot_bytes(&disk) == before, "the open wrote nothing");
@@ -4894,14 +5063,10 @@ fn an_unreadable_slot_beside_an_older_copy_stops_the_open() {
     assert_eq!(opened.checkpoint, 3);
 }
 
-/// Review of #752, Sol's second sequence: checkpoints 2 and 3 finished, a
-/// restore point kept at 3; 4 written to its first slot and stopped; both
-/// copies of 3 and 4's root damaged. The open writes nothing and its error
-/// carries what giving 4 up loses: the point, which 2 does not list. The
-/// call given 4 opens on 2 and reports the point.
-#[test]
-fn a_damaged_newest_checkpoint_stops_the_open_with_its_report() {
-    let sim = Sim::new(77);
+/// Slots `[3, 4, 3, 2]`: checkpoints 2 and 3 finished, a restore point kept
+/// at 3; 4 written to its first slot and stopped; 4's root damaged. Returns
+/// the disk, checkpoints 4, 3 and 2 as an open sees them.
+fn four_beside_two(sim: &Sim) -> (Disk, [CheckpointId; 3]) {
     let disk = Disk::Sim(sim.clone());
     let proc = create_proc(&disk, config());
     let name = tree_name(0);
@@ -4918,6 +5083,7 @@ fn a_damaged_newest_checkpoint_stops_the_open_with_its_report() {
             .number,
         3
     );
+    let [three, two] = newest_two(&proc.pf);
     let res = proc.pf.reserve(3, 64, Purpose::Entry).unwrap();
     let root = edit_tree(&res, &name, &edits(3)).unwrap();
     drop(res);
@@ -4927,23 +5093,179 @@ fn a_damaged_newest_checkpoint_stops_the_open_with_its_report() {
     sim.restart();
     let copies = slot_numbers(&slot_bytes(&disk));
     assert_eq!(copies, [Some(3), Some(4), Some(3), Some(2)]);
+    let four = {
+        let bytes = slot_bytes(&disk);
+        match superblock::decode(&bytes[SLOT..SLOT + COPY]) {
+            Ok(superblock::Decoded::Valid(sb)) => CheckpointId {
+                number: sb.number,
+                meta: sb.meta,
+            },
+            other => panic!("{other:?}"),
+        }
+    };
+    sim.damage(FILE, root.page * PAGE + 300, 4).unwrap();
+    sim.restart();
+    (disk, [four, three, two])
+}
+
+/// Review of #752, Sol's second sequence of round 1: with both copies of 3
+/// damaged too, the open writes nothing and its error carries what giving
+/// 4 up loses: the point, which 2 does not list. The call given that
+/// approval opens on 2 and reports the point.
+#[test]
+fn a_damaged_newest_checkpoint_stops_the_open_with_its_report() {
+    let sim = Sim::new(77);
+    let (disk, [four, _, two]) = four_beside_two(&sim);
     for s in [0, 2] {
         sim.damage(FILE, (s * SLOT) as u64 + 40, 8).unwrap();
     }
-    sim.damage(FILE, root.page * PAGE + 300, 4).unwrap();
     sim.restart();
     let before = slot_bytes(&disk);
     let point = Lost::Points(vec![("point".to_owned(), 3)]);
     let refused = open_proc(&disk, config());
-    match &refused {
-        Err(OpenError::Damaged(p)) => assert_eq!((p.number, &p.lost), (4, &point)),
-        other => panic!("{:?}", other.as_ref().map(|(_, o)| o)),
-    }
+    // The text says all the structure holds: the point, and the approval.
+    let text = refused
+        .as_ref()
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(text.contains("\"point\" (kept at checkpoint 3)"), "{text}");
+    assert!(
+        text.contains(&format!("give up {four}, and open on {two}")),
+        "{text}"
+    );
+    let approval = match refused {
+        Err(OpenError::Damaged {
+            passed,
+            give_up: Some(approval),
+        }) => {
+            assert_eq!((passed.number, &passed.lost), (4, &point));
+            *approval
+        }
+        other => panic!("{:?}", other.map(|(_, o)| o)),
+    };
+    assert_eq!(approval, give_up(&[four], two));
     assert!(slot_bytes(&disk) == before, "the open wrote nothing");
-    let accept = [refused.err().and_then(|e| e.give_up()).unwrap()];
-    assert_eq!(accept, [GiveUp::Checkpoint(4)]);
-    let (_, opened) = open_proc_with(&disk, config(), None, Some(&accept)).unwrap();
+    let (_, opened) = open_proc_with(&disk, config(), None, Some(&approval)).unwrap();
     assert_eq!(opened.checkpoint, 2);
     assert_eq!(opened.passed_over.len(), 1, "{opened:?}");
     assert_eq!(opened.passed_over[0].lost, point);
+}
+
+/// Review of #752, round 2, Sol's first sequence: the approval recorded
+/// while 3 was whole says giving 4 up lands on 3 and loses nothing. Both
+/// copies of 3 are then damaged: the call given that approval would land
+/// on 2 and lose the point, so it is refused, writing nothing, with the
+/// approval for what is so now, which says so.
+#[test]
+fn an_approval_is_refused_when_the_landing_changed() {
+    let sim = Sim::new(78);
+    let (disk, [four, three, two]) = four_beside_two(&sim);
+    let recorded = match open_proc(&disk, config()) {
+        Err(OpenError::Damaged {
+            passed,
+            give_up: Some(approval),
+        }) => {
+            assert_eq!(
+                (passed.number, &passed.lost),
+                (4, &Lost::Points(Vec::new()))
+            );
+            *approval
+        }
+        other => panic!("{:?}", other.map(|(_, o)| o)),
+    };
+    assert_eq!(recorded, give_up(&[four], three));
+    for s in [0, 2] {
+        sim.damage(FILE, (s * SLOT) as u64 + 40, 8).unwrap();
+    }
+    sim.restart();
+    let before = slot_bytes(&disk);
+    let now = match open_proc_with(&disk, config(), None, Some(&recorded)) {
+        Err(OpenError::Damaged {
+            passed,
+            give_up: Some(approval),
+        }) => {
+            assert_eq!(passed.number, 4);
+            assert_eq!(passed.lost, Lost::Points(vec![("point".to_owned(), 3)]));
+            *approval
+        }
+        other => panic!("{:?}", other.map(|(_, o)| o)),
+    };
+    assert_eq!(now, give_up(&[four], two));
+    assert!(
+        slot_bytes(&disk) == before,
+        "the refused call wrote nothing"
+    );
+    let (_, opened) = open_proc_with(&disk, config(), None, Some(&now)).unwrap();
+    assert_eq!(opened.checkpoint, 2);
+}
+
+/// Review of #752, round 2, Sol's second sequence: checkpoint 3 (keeping
+/// nothing) is given up with an approval that names it. The next
+/// checkpoint is numbered 3 again and keeps a point; when a read of its
+/// root keeps failing, the old approval does not name it (its identity
+/// differs), so the call is refused, writing nothing, with the approval
+/// for the new 3 and the point it would lose.
+#[test]
+fn an_approval_is_refused_for_a_checkpoint_whose_number_came_again() {
+    let sim = Sim::new(79);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let name = tree_name(0);
+    let edits = |v: u8| [Edit::leaf(vec![b"k".to_vec()], vec![v; 10])];
+    make_tree(&proc.pf.reserve(1, 5, Purpose::Entry).unwrap(), &name).unwrap();
+    proc.pf.checkpoint(entry_id(1), None).unwrap();
+    let res = proc.pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let old_root = edit_tree(&res, &name, &edits(2)).unwrap();
+    drop(res);
+    assert_eq!(proc.pf.checkpoint(entry_id(2), None).unwrap().number, 3);
+    drop(proc);
+    sim.restart();
+    let recorded = match open_proc_with(&disk, config(), Some(old_root.page), None) {
+        Err(e) => e.give_up().expect("an older checkpoint").clone(),
+        Ok((_, o)) => panic!("{o:?}"),
+    };
+    assert_eq!(recorded.checkpoints[0].number, 3);
+    let (proc, opened) =
+        open_proc_with(&disk, config(), Some(old_root.page), Some(&recorded)).unwrap();
+    assert_eq!(opened.checkpoint, 2);
+    drop(proc);
+    sim.restart();
+    // After a restart the newest copy is 2's: the next checkpoint is 3
+    // again, at entry 3 this time, keeping a point.
+    let (proc, _) = open_proc(&disk, config()).unwrap();
+    let res = proc.pf.reserve(3, 64, Purpose::Entry).unwrap();
+    let new_root = edit_tree(&res, &name, &edits(3)).unwrap();
+    drop(res);
+    assert_eq!(
+        proc.pf
+            .checkpoint(entry_id(3), Some("point"))
+            .unwrap()
+            .number,
+        3
+    );
+    let [new_three, _] = newest_two(&proc.pf);
+    assert_ne!(new_three, recorded.checkpoints[0]);
+    drop(proc);
+    sim.restart();
+    let before = slot_bytes(&disk);
+    match open_proc_with(&disk, config(), Some(new_root.page), Some(&recorded)) {
+        Err(OpenError::Unreadable {
+            failure:
+                ReadFailure::Root {
+                    checkpoint: 3,
+                    lost,
+                    ..
+                },
+            give_up: Some(now),
+        }) => {
+            assert_eq!(lost, Lost::Points(vec![("point".to_owned(), 3)]));
+            assert_eq!(now.checkpoints, vec![new_three]);
+        }
+        other => panic!("{:?}", other.map(|(_, o)| o)),
+    }
+    assert!(
+        slot_bytes(&disk) == before,
+        "the refused call wrote nothing"
+    );
 }
