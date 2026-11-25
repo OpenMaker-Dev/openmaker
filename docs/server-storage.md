@@ -874,8 +874,10 @@ hosted on it, and nothing of its write side is built.
   further to say), and subtrees built with exactly as many places as
   they hold, so that a limit counts them as it counts the file engine's
   tree of the same file (`om_hbam::tree::memory` counts capacity). A
-  listing or walk that meets a page that fails partway gives what came
-  before it, and the next page fails. Its version is the index of the
+  listing or walk that meets a read that fails partway gives what came
+  before it with "more may follow", never "no more" (a failed look-ahead
+  past a full page answers "more" too), and the next call reaches the
+  failed read first and fails, or reads what is there. Its version is the index of the
   last entry that changed the tree, its root page's stamp, read when the
   view is made; `changed_since` is the tree's own
   ([server-storage-format.md](server-storage-format.md) 2.8). The `View`
@@ -883,22 +885,33 @@ hosted on it, and nothing of its write side is built.
 - **Import** (`paged::import`) reads an `.fmp12` with
   `stream::NodeStream` and puts every node, with its kind and value,
   empty lists included, into a new tree, in batches of at most 4,096
-  nodes and 4 MiB, each one unit of work of the page store committed on
-  its own (`paged::Units`), so that what it holds does not grow with the
-  file. It goes through no log and no entry: its caller gives the entry
-  indexes its batches take. When the store's write path takes it, its
-  batches become the parts of a group whose last entry adds the file
-  (sections 6.9, 6.10). It refuses, typed (`paged::ImportError`) and with
-  the tree it made dropped again: a file that does not read, an
-  encrypted one among them, whose pages do not decode; a file holding
-  what the file writer cannot write, or whose page 0 it does not write,
-  which the file engine hosts read-only and the store is to keep as its
-  original image (section 6.10, not built); and an item past the bounds
-  of section 6.11, which no file the reader reads holds. A list that
-  carries an empty value
-  ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)) is
-  kept as a node that is both, with an empty value, as the file engine's
-  tree keeps it, so both views read it alike.
+  nodes and 4 MiB (checked before a node joins a batch; a node larger
+  than the byte limit alone is a batch of its own), each one unit of work
+  of the page store committed on its own (`paged::Units`), so that what
+  it holds does not grow with the file. It goes through no log and no
+  entry: its caller gives the entry indexes its batches take, and before
+  it writes anything it works out from the file's length that they all
+  fit below the last index an entry can have. When the store's write
+  path takes it, its batches become the parts of a group whose last entry
+  adds the file (sections 6.9, 6.10). What it accepts, an export gives
+  back: an export imported again has the same root hash. So it refuses,
+  typed (`paged::ImportError`) and with the tree it made dropped again:
+  - a file that does not read, an encrypted one among them, whose pages
+    do not decode;
+  - a file holding what the file writer cannot write, or writes in
+    another shape: a list that carries an empty value
+    ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)),
+    which the file engine keeps in memory and its writer writes as a bare
+    list, and a value over 1,000 bytes held whole, which the writer writes
+    in pieces. The file engine hosts such a file, read-only where its
+    writer cannot write it, and the store is to keep it as its original
+    image (section 6.10, not built);
+  - a page 0 the writer does not write: not one 4,096-byte page, or a
+    change number with no room left for the pages an export numbers from
+    it. The file engine hosts such a file, and each of its saves fails
+    before it writes anything;
+  - an item past the bounds of section 6.11, which no file the reader
+    reads holds.
 - **Page 0** comes back with the import (`Imported::page_zero`), as read.
   The file engine keeps it in its derived state; the store keeps it in
   the file's row of its own tree (server-storage-format.md 5.3), which
@@ -909,10 +922,10 @@ hosted on it, and nothing of its write side is built.
   view and page 0): a walk into the streaming writer with the imported
   page 0 and the change number it holds, read back and compared with a
   second walk. It is the file engine's compacted copy of the same file,
-  byte for byte, and a read that fails leaves nothing under the export's
-  name. A list with an empty value is written as a bare list, as the
-  file engine writes it, so such a file imported again has another root
-  hash.
+  byte for byte. A read that fails fails it; what is then left under the
+  export's name is what every export leaves ("Where an export goes",
+  above): nothing where the file was made unnamed, what was written where
+  it was made under its name.
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
