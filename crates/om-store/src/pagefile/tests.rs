@@ -2510,12 +2510,13 @@ fn a_damaged_misplaced_or_missing_page_is_reported_by_the_read_that_reaches_it()
     ));
 }
 
-/// An open passes over a newest checkpoint whose root, meta stream or
-/// both superblock copies are damaged, says why, and uses the one before
-/// it, which is whole; the next checkpoint then takes the damaged one's
-/// slots.
+/// A newest checkpoint whose root or meta stream is damaged stops the open,
+/// which says why; the call that gives it up uses the one before it, which
+/// is whole. With both its superblock copies damaged, the open sees the one
+/// before it as the newest. Either way the next checkpoint then takes the
+/// damaged one's slots.
 #[test]
-fn an_open_passes_over_a_newest_checkpoint_it_cannot_check() {
+fn the_checkpoint_before_a_damaged_newest_one_is_opened() {
     for case in 0..3 {
         let mut reached = Reached::default();
         let (sim, mut run) = quiet_run(10 + case, &mut reached);
