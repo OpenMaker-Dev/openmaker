@@ -431,8 +431,11 @@ fn open() -> (common::App, Arc<Mutex<State>>) {
 fn open_state(state: State) -> (common::App, Arc<Mutex<State>>) {
     let state = Arc::new(Mutex::new(state));
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "scripts.example.invalid");
-    common::fill(&mut app, "File", "Scripts.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/scripts.example.invalid/Scripts.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "SCRIPTED ENTRY");
     // Menus become populated after the asynchronous script catalog read.

@@ -436,8 +436,8 @@ fn an_idle_window_learns_the_connection_was_lost_and_keeps_its_edits() {
 
     // Closing the file is still possible, and starts over.
     click(&mut app, "Close File");
-    wait_until(&mut app, "the Hosts dialog", |app| {
-        app.query_by_label("Hosts").is_some()
+    wait_until(&mut app, "Open Network File", |app| {
+        app.query_by_label("Open Network File").is_some()
     });
     assert!(!app.state().is_open());
     assert!(app.state().connection_lost().is_none());
@@ -573,8 +573,8 @@ fn close_file_skips_its_trigger_once_the_connection_is_lost() {
     // OnWindowClose's script cannot run: the first click closes the file.
     click(&mut app, "Close File");
     assert!(!app.state().script_running(), "a script that never runs");
-    wait_until(&mut app, "the Hosts dialog", |app| {
-        app.query_by_label("Hosts").is_some()
+    wait_until(&mut app, "Open Network File", |app| {
+        app.query_by_label("Open Network File").is_some()
     });
     assert!(!app.state().is_open());
 }
@@ -808,8 +808,8 @@ fn every_window_keeps_its_records_and_edits_when_the_connection_is_lost() {
         .next()
         .unwrap()
         .click_accesskit();
-    wait_until(&mut app, "the Hosts dialog", |app| {
-        app.query_by_label("Hosts").is_some()
+    wait_until(&mut app, "Open Network File", |app| {
+        app.query_by_label("Open Network File").is_some()
     });
     assert!(!app.state().is_open());
     assert!(app.state().connection_lost().is_none());

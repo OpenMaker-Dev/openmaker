@@ -732,8 +732,7 @@ fn browse_does_not_show_objects_in_the_layout_workspace() {
 fn open_provider(provider: DocumentProvider) -> common::App {
     let total = provider.rows.len().to_string();
     let mut app = common::harness(Box::new(provider));
-    common::fill(&mut app, "Host", "cards.example.invalid");
-    common::fill(&mut app, "File", "Cards.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/cards.example.invalid/Cards.fmp12");
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "CLIENT CARD");
     common::wait_until(&mut app, "record count", |app| {

@@ -181,11 +181,13 @@ fn root_script_elevation_does_not_change_related_account_or_current_answers() {
     ];
     let host = related::Host::new("gui-related-privileges", p::files(&scripts));
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", p::ROOT);
-    common::fill(&mut app, "Account", fixture::ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/{}", host.port, p::ROOT),
+    );
+    common::fill(&mut app, "Account Name", fixture::ACCOUNT);
     common::fill(&mut app, "Password", fixture::PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the synthetic file", |app| {
