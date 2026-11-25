@@ -821,9 +821,23 @@ need (a stale payload, the rest of a batch it has judged, the bytes past a
 whole batch that a header's mark already rules out) can fail a decision
 about the records before them.
 
+**Anchored walks.** A walk that begins before the entry the log was
+opened from (the start, a checkpoint's entry) reaches it by the framing
+alone: an entry's fixed fields (its index must be the one expected, its
+length within the batch), a batch header's start and its own hash, the
+lengths of entries and batches; not the chain, since nothing before the
+start is needed after it. The start's entry takes the start's hash and
+term, whatever its bytes say, and the entry after it is checked by the
+chain from that hash: a batch that begins there names the start's index
+and hash, which anchors it without the start's own bytes. The open, a
+read and a cut walk so; so does accepting a loss (6.2), which refuses when
+the framing breaks before the start, so that where the start's successor
+begins cannot be established (`LogError::FramingBroken`).
+
 **Reading** (`Log::read`) walks from the segment that holds the first
-entry asked for, through the entries before it in that segment, and returns
-the durable entries from it on; a walk that ends before the durable entry is
+entry asked for, through the entries before it in that segment (anchored
+at the start when the entry asked for comes after it), and returns the
+durable entries from it on; a walk that ends before the durable entry is
 damage, reported to the reader. An entry larger than 64 KiB is read into a
 buffer of its own, which becomes the payload returned, so a read holds at
 most one copy of a payload.
@@ -844,11 +858,13 @@ the marker.
    the marker's index, wherever the walk meets them (a segment header's
    previous hash counts), must have the hashes those name, or the log is
    damaged.
-3. Entries up to the firm position are taken one by one: each must be whole
-   and chained. A walk that ends before the marker's index, or before the
-   start's, is damage. Entries before the start in the first segment
-   walked are read through, since the log keeps no index of where entries
-   are; damage to them is reported too.
+3. Entries up to the firm position are taken one by one: each after the
+   start must be whole and chained. A walk that ends before the marker's
+   index, or before the start's, is damage. Entries before the start in
+   the first segment walked are read through by their framing alone, since
+   the log keeps no index of where entries are (3.5, "Anchored walks"):
+   the checkpoint covers them, and damage to them does not stop the open
+   unless it breaks the framing.
 4. After the firm position, an entry counts only once its whole batch has
    been read, found whole (3.3), and found to carry the cut count `state`
    holds. What its header settles is settled before anything else is
@@ -2208,6 +2224,7 @@ call the simulated disk can stop.
 
 ### 6.1 Creating
 
+0. the configuration is checked as an open checks it (6.2, step 0);
 1. the store folder's lock is taken; a folder with `state` holds a store
    already, and is refused. A folder without `state` that holds the log's
    folder `log/` (which only an open makes, once `state` exists), or a
@@ -2238,8 +2255,16 @@ store whose `state` is gone, reported for a restore (server-storage.md
 
 ### 6.2 Opening
 
+0. the configuration checked against what the store must write (the
+   log's and the page file's bounds, and this start's entry within the
+   largest payload): one that cannot hold it is refused
+   (`OpenError::Config`) before anything is opened, so no start is
+   counted;
 1. the lock, and `state` opened (1.3), which raises the start count in
-   both slots; a creation's marker left by step 5 of 6.1 is removed;
+   both slots; a creation's marker left by step 5 of 6.1 is removed. A
+   folder without `state` is looked at under the lock taken again: when
+   `state` has appeared (another process created the store meanwhile), it
+   is opened; otherwise the folder is told apart as 6.1 says;
 2. the page file opened (4.6): the newest checkpoint that reads back, or
    the one before it; its entry is the **start**;
 3. the log opened from the start (3.6), checked against the marker;
@@ -2265,7 +2290,9 @@ store whose `state` is gone, reported for a restore (server-storage.md
    first (6.6: the log retired and dying pages freed as far as the
    checkpoints and restore points on disk allow), and the entry is
    appended again, once. A disk that still has no room fails the open
-   with `OpenError::Start`, whose remedy is to free space.
+   with `OpenError::Start`, whose remedy is to free space; so does a write
+   of the entry, or of the marker, that the disk refuses for room, the
+   cause kept through the error.
 
 Steps 1 to 3 write what their own opens write. Step 4 writes nothing to
 disk but what a forced checkpoint writes. A crash at any step leaves what
@@ -2285,27 +2312,58 @@ check); no space to apply the log's entries, or for this start's own
 entry. Two calls go past two of them, and nothing else does:
 
 - `Store::accept_damage` (`Log::accept_damage`, server-storage.md 6.12)
-  decides from the start, the checkpoint the store opens on. Every
-  listed segment the folder holds is opened, and one that is missing or
-  whose header is not valid is passed over. The segment that holds the
-  entry after the start, with the listed segments that follow it without
-  a gap, holds the chain that is walked from the start, each entry whole
-  and chained, no further than the later of the marker and the start.
-  What is kept is that chain, through the last entry reached (`kept`),
-  and the segments before it that follow one another without a gap up to
-  it (they held only entries at or before the start: a checkpoint older
-  than the start can no longer be replayed once one of them is gone).
-  One `state` update, written to both slots, lists them, lowers the
-  marker to `kept`, and raises the cut count when anything after `kept`
-  is given up. A lost older segment so costs nothing the newest
-  checkpoint's chain still holds. It is refused, with nothing written,
-  when the log holds every entry through the marker and every listed
-  segment stays listed.
+  decides from the start, the checkpoint the store opens on. Every listed
+  segment the folder holds is opened; one that is missing or whose header
+  is not valid is passed over, and a file shorter than its header says is
+  read as far as it goes. The rule:
+  - **kept**: in the listed segment that holds the entry after the start,
+    the start reached by framing alone (3.5, "Anchored walks"), then the
+    chain checked forward from the start's hash through the listed
+    segments that follow without a gap, no further than the later of the
+    marker and the start; the last entry so reached is `kept`. With it, the
+    listed segments before that segment that follow one another without a
+    gap. A kept file that is short is lengthened to its header's size with
+    zeros, flushed, before `state` changes: past what is kept, which the
+    walk read, nothing in it is part of the log;
+  - **given up**: every other listed segment, and whatever follows `kept`.
+    Nothing is destroyed: every file given up is renamed, in `log/`, to
+    `given-up-<k>.<number>` (`k` the next number no name uses, one per
+    acceptance), a name no open removes, since an open removes only files
+    named as segments; the kept segment whose bytes after `kept` are given
+    up stays in use, and is copied to `given-up-<k>.<number>.tail`, a block
+    the device cannot read written as zeros and said so. The folder and the
+    copy are flushed before `state` changes. A rename is used, not a copy
+    into a folder of its own beside `log/`: the file system renames within
+    one folder only, and a file given up is often one the device cannot
+    read, which a rename keeps whole without reading it;
+  - **refused**, with nothing in the log changed: when the framing breaks
+    before the start in the segment that holds its successor
+    (`LogError::FramingBroken`); when nothing would change; on a segment
+    of a newer format; on a read the device fails.
+
+  Then one `state` update, written to both slots, lists the kept segments,
+  lowers the marker to `kept`, and raises the cut count when anything after
+  `kept` is given up. The report (`DamageAccepted`) says it all: `kept`,
+  the marker before, the cut count, the run before and after, every
+  segment given up with the entries it held as far as the headers say
+  (its first from its own header, its last from the next one's; unknown
+  where a header is missing or not valid; those numbered before the kept
+  run held what a checkpoint older than the start loses), the kept segment
+  whose tail is given up (and the places of it that could not be read),
+  the segments lengthened, and the names given.
+
+  | A crash | leaves |
+  |---|---|
+  | after some renames, before `state`'s update | `state` listing segments whose files were renamed: the open reports them missing, and accepting again finds them so and gives them up (under the earlier names) |
+  | while copying the tail, before `state`'s update | a partial copy under its new name, the log otherwise as the renames left it |
+  | after lengthening a kept file, before `state`'s update | that file at its header's size; nothing else changed |
+  | after `state`'s first slot is flushed | the decision, which stands |
 - `Store::give_up_unreadable_end` (`Log::give_up_unreadable_end`, 3.9).
 
 Each is done from the moment its `state` update's first slot is flushed,
 whether or not the open goes on to succeed. An open that fails after the
-decision says what was given up (`OpenError::AfterGivingUp`): with
+decision, an unreadable end the log's open then meets included, says what
+was given up (`OpenError::AfterGivingUp`): with
 `Recorded::Done` it stands, and the next open starts from it without
 reporting it again; with `Recorded::Unknown` the `state` update failed
 part way, and the next open shows which (it ends the log where the

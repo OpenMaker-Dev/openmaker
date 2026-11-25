@@ -810,11 +810,14 @@ impl Store {
 
     /// Opens a store whose log does not hold, whole, every entry through
     /// its marker, accepting the loss of what it no longer holds: the
-    /// administrator's command of section 6.12 on a single server
-    /// ([`Log::accept_damage`]), decided from the checkpoint the store
-    /// opens on. What was given up is in [`Opened::gave_up`], or, when the
-    /// open fails after deciding, in [`OpenError::AfterGivingUp`]. Refused
-    /// when there is no such loss.
+    /// administrator's command of section 6.12 on a single server, decided
+    /// from the checkpoint the store opens on by the rule of
+    /// [`Log::accept_damage`]: kept, the chain from that checkpoint through
+    /// every segment that still reads; given up, the rest, set aside in
+    /// `log/` and never removed; refused when the framing before the
+    /// checkpoint's entry is broken, or nothing would change. What was given
+    /// up is in [`Opened::gave_up`], or, when the open fails after deciding,
+    /// in [`OpenError::AfterGivingUp`].
     pub fn accept_damage(fs: Arc<dyn Fs>, config: Config) -> Result<(Store, Opened), OpenError> {
         Store::start(fs, config, How::AcceptDamage)
     }

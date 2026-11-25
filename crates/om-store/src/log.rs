@@ -238,20 +238,23 @@ pub struct DamageAccepted {
     pub listed_before: Segments,
     pub listed: Segments,
     /// Every listed segment no longer listed, with the entries it held as
-    /// far as the headers say. Those numbered before `listed.first` held
-    /// only entries before the start's successor: what a checkpoint older
-    /// than the start loses.
+    /// far as the headers say, and where its file went. Those numbered
+    /// before `listed.first` held only entries before the start's
+    /// successor: what a checkpoint older than the start loses.
     pub given_up: Vec<SegmentGivenUp>,
     /// The kept segment whose bytes after `kept` are given up (when the cut
-    /// count was raised): a copy of it is in `folder` too.
+    /// count was raised): copied, since it stays in use, to
+    /// `<prefix><number>.tail`; the places of it the device failed to
+    /// read are zeros there, listed in `tail_unreadable` (offset, length).
     pub tail_copied: Option<u64>,
+    pub tail_unreadable: Vec<(u64, u64)>,
     /// Kept segments whose files were shorter than their headers say,
     /// lengthened to that size with zeros (format section 3.2).
     pub lengthened: Vec<u64>,
-    /// The folder beside `log/`, of this acceptance alone, that holds a copy
-    /// of every file given up (and of `tail_copied`), made durable before
-    /// `state` changed; `None` when there was nothing to copy.
-    pub folder: Option<String>,
+    /// The names this acceptance gave what it gave up, in `log/`: a file
+    /// given up is renamed `<prefix><number>`, a name no open removes and
+    /// no other acceptance uses; `None` when nothing was moved or copied.
+    pub prefix: Option<String>,
 }
 
 /// A listed segment an acceptance gave up.
@@ -263,17 +266,16 @@ pub struct SegmentGivenUp {
     /// or not valid (unknown).
     pub first: Option<u64>,
     pub last: Option<u64>,
-    /// Its file was copied into the acceptance's folder; `false` when there
-    /// was no file.
-    pub copied: bool,
+    /// The path its file was renamed to; `None` when there was no file.
+    pub moved_to: Option<String>,
 }
 
 /// What [`Log::accept_damage`] decided, before anything is written.
 struct AcceptPlan {
     accepted: DamageAccepted,
     values: Values,
-    /// The segments whose files are copied first.
-    copy: Vec<u64>,
+    /// The segments whose files are renamed first.
+    moves: Vec<u64>,
     /// Kept segments to lengthen, and to what size.
     lengthen: Vec<(u64, u64)>,
 }
@@ -281,9 +283,10 @@ struct AcceptPlan {
 /// The most segments an acceptance looks at: far more than a log keeps.
 const MAX_RUN: u64 = 1 << 20;
 
-/// The prefix of the folders an acceptance copies what it gives up into,
-/// each followed by its number: `log-given-up-1`, `log-given-up-2`, ...
-pub const GIVEN_UP_PREFIX: &str = "log-given-up-";
+/// The start of the names an acceptance gives what it gives up, in
+/// `log/`: `given-up-<k>.` (the next `k` free), followed by the segment's
+/// number. No open removes them: it removes only files named as segments.
+pub const GIVEN_UP_PREFIX: &str = "given-up-";
 
 /// Whether `state` holds a decision a call made before it failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -652,42 +655,58 @@ fn batch_bytes(entries: &[Pending], prev: [u8; 32], cut_count: u64) -> Vec<u8> {
 }
 
 /// The last of `segs` whose first index is at or before `index`.
-/// Copies the files of segments `numbers` into a new folder beside `log/`
-/// (`log-given-up-<k>`, the next number free), each flushed, the folder's
-/// name and its entries made durable; returns the folder.
-fn copy_given_up(fs: &dyn Fs, numbers: &[u64]) -> Result<String, LogError> {
+/// Moves the files of segments `moves` aside in `log/`, renamed
+/// `given-up-<k>.<number>` (`k` the next number no name uses), and copies
+/// segment `tail` to `given-up-<k>.<number>.tail`: a rename reads nothing,
+/// so a file the device cannot read is kept whole; a copy writes zeros for
+/// a block it cannot read, and says where (offset, length). Everything is
+/// flushed, and the folder with it. Returns `given-up-<k>.` and those
+/// places.
+fn park(
+    fs: &dyn Fs,
+    moves: &[u64],
+    tail: Option<u64>,
+) -> Result<(String, Vec<(u64, u64)>), LogError> {
     let disk = |e: sys::Error| match e.kind() {
         ErrorKind::NoSpace => LogError::NoSpace(e),
         _ => LogError::Disk(e),
     };
     let taken = fs
-        .list("")
+        .list(FOLDER)
         .map_err(disk)?
         .iter()
-        .filter_map(|name| name.strip_prefix(GIVEN_UP_PREFIX)?.parse::<u64>().ok())
+        .filter_map(|name| {
+            let rest = name.strip_prefix(GIVEN_UP_PREFIX)?;
+            rest.split('.').next()?.parse::<u64>().ok()
+        })
         .max()
         .unwrap_or(0);
-    let folder = format!("{GIVEN_UP_PREFIX}{}", taken + 1);
-    fs.create_folder(&folder).map_err(disk)?;
-    fs.flush_folder("").map_err(disk)?;
-    let mut buf = vec![0u8; 1 << 20];
-    for &number in numbers {
-        let from = segment_path(number);
-        let to = format!("{folder}/{}", &from[FOLDER.len() + 1..]);
-        let source = fs.open(&from, FileOptions::PLAIN).map_err(disk)?;
+    let prefix = format!("{GIVEN_UP_PREFIX}{}.", taken + 1);
+    let named = |number: u64| format!("{FOLDER}/{prefix}{number:016x}");
+    for &number in moves {
+        fs.rename(&segment_path(number), &named(number))
+            .map_err(disk)?;
+    }
+    let mut unreadable = Vec::new();
+    if let Some(number) = tail {
+        let source = fs
+            .open(&segment_path(number), FileOptions::PLAIN)
+            .map_err(disk)?;
         let size = source.size().map_err(disk)?;
-        let copy = fs.create(&to, FileOptions::PLAIN).map_err(disk)?;
+        let copy = fs
+            .create(&format!("{}.tail", named(number)), FileOptions::PLAIN)
+            .map_err(disk)?;
+        let mut buf = vec![0u8; 64 << 10];
         let mut at = 0u64;
         while at < size {
             let want = ((size - at) as usize).min(buf.len());
             let n = match read_exact(&*source, at, &mut buf[..want]) {
                 Ok(n) => n,
                 Err(error) if error.kind() == ErrorKind::Read => {
-                    return Err(LogError::Unreadable {
-                        segment: number,
-                        offset: at,
-                        error,
-                    })
+                    // A block the device cannot read: zeros, and said so.
+                    buf[..want].fill(0);
+                    unreadable.push((at, want as u64));
+                    want
                 }
                 Err(e) => return Err(disk(e)),
             };
@@ -699,8 +718,8 @@ fn copy_given_up(fs: &dyn Fs, numbers: &[u64]) -> Result<String, LogError> {
         }
         copy.flush().map_err(disk)?;
     }
-    fs.flush_folder(&folder).map_err(disk)?;
-    Ok(folder)
+    fs.flush_folder(FOLDER).map_err(disk)?;
+    Ok((prefix, unreadable))
 }
 
 fn segment_for(segs: &[Seg], index: u64) -> Option<usize> {
@@ -1218,10 +1237,13 @@ impl Log {
     ///   shorter than its header says is read as far as it goes, and
     ///   lengthened with zeros;
     /// - **given up**: every listed segment not kept, and what follows the
-    ///   last entry so reached (`kept`); the marker is lowered to it. A copy
-    ///   of every file given up, and of the kept one whose tail is, goes
-    ///   into a folder of this acceptance's own beside `log/`, durable
-    ///   before `state` changes; nothing is removed but by the open after;
+    ///   last entry so reached (`kept`); the marker is lowered to it. Every
+    ///   file given up is renamed, in `log/`, to a name of this
+    ///   acceptance's own that no open removes, and the kept one whose tail
+    ///   is given up is copied there: durable before `state` changes. The
+    ///   file system renames within one folder only, and a rename reads
+    ///   nothing, so a file given up because the device cannot read it is
+    ///   kept whole;
     /// - **refused**, with nothing changed: when the framing before the
     ///   start breaks in the segment that holds the start's successor, so
     ///   that where it begins cannot be established; when nothing would
@@ -1255,14 +1277,24 @@ impl Log {
         let AcceptPlan {
             mut accepted,
             values,
-            copy,
+            moves,
             lengthen,
         } = plan;
-        // The copies first, durable: until `state` changes nothing in the
-        // log does, and a failure leaves only copies behind.
-        if !copy.is_empty() {
-            match copy_given_up(&*fs, &copy) {
-                Ok(folder) => accepted.folder = Some(folder),
+        // What is given up is moved aside first, under names no open
+        // removes, and the kept segment whose tail is given up copied: all
+        // durable before `state` changes.
+        if !moves.is_empty() || accepted.tail_copied.is_some() {
+            match park(&*fs, &moves, accepted.tail_copied) {
+                Ok((prefix, unreadable)) => {
+                    for given in &mut accepted.given_up {
+                        if moves.contains(&given.number) {
+                            given.moved_to =
+                                Some(format!("{FOLDER}/{prefix}{:016x}", given.number));
+                        }
+                    }
+                    accepted.prefix = Some(format!("{FOLDER}/{prefix}"));
+                    accepted.tail_unreadable = unreadable;
+                }
                 Err(error) => return Err(fail(error, state, None)),
             }
         }
@@ -1500,23 +1532,21 @@ impl Log {
             None
         };
         let mut given_up = Vec::new();
-        let mut copy = Vec::new();
+        let mut moves = Vec::new();
         for number in (run.first..run_end).filter(|n| !kept_numbers.contains(n)) {
-            let copied = present.contains(&number);
             given_up.push(SegmentGivenUp {
                 number,
                 first: first_of.get(&number).copied(),
                 last: (number + 1 < run_end)
                     .then(|| first_of.get(&(number + 1)).map(|f| f - 1))
                     .flatten(),
-                copied,
+                moved_to: None,
             });
-            if copied {
-                copy.push(number);
+            if present.contains(&number) {
+                moves.push(number);
             }
         }
         let tail_copied = (raise && listed.count > 0).then_some(listed_end - 1);
-        copy.extend(tail_copied);
         let lowered = if reached {
             marker
         } else {
@@ -1541,11 +1571,12 @@ impl Log {
                 listed,
                 given_up,
                 tail_copied,
+                tail_unreadable: Vec::new(),
                 lengthened: lengthen.iter().map(|(n, _)| *n).collect(),
-                folder: None,
+                prefix: None,
             },
             values: new,
-            copy,
+            moves,
             lengthen,
         })
     }

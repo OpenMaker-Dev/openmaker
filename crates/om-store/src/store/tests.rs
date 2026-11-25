@@ -2377,7 +2377,9 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     let again = Store::open(fs.clone(), CONFIG);
     assert!(matches!(again, Err(OpenError::LogDamaged(_))), "{again:?}");
     // `state` records it, and this start's entry then fails: it stands.
-    fail_writes("log/", 0);
+    // The segments only (named by their numbers), not what the acceptance
+    // sets aside.
+    fail_writes("log/0", 0);
     sim.restart();
     let failed = Store::accept_damage(fs.clone(), CONFIG);
     let Err(OpenError::AfterGivingUp(after)) = &failed else {
@@ -2877,23 +2879,33 @@ fn accepting_the_loss_over_every_shape_of_damage() {
                 let lengthened: Vec<u64> = lengthened.iter().map(|&a| s.number(a)).collect();
                 assert_eq!(d.lengthened, lengthened, "{name}: lengthened");
                 assert_eq!(d.tail_copied, tail.map(|a| s.number(a)), "{name}: tail");
-                // Every file given up, and the tail, copied byte for byte.
-                let copied: Vec<u64> = d
-                    .given_up
-                    .iter()
-                    .filter(|g| g.copied)
-                    .map(|g| g.number)
-                    .chain(d.tail_copied)
-                    .collect();
-                for number in copied {
-                    let original = before
+                // Every file given up is kept whole under its new name, and
+                // the segment whose tail is given up is copied byte for byte.
+                let original = |number: u64| {
+                    before
                         .iter()
                         .find(|(p, _)| *p == format!("{}/{number:016x}", log::FOLDER))
                         .and_then(|(_, b)| b.clone())
-                        .unwrap();
-                    let folder = d.folder.as_ref().expect("a folder for the copies");
-                    let copy = s.bytes(&format!("{folder}/{number:016x}"));
-                    assert!(copy == Some(original), "{name}: the copy of {number}");
+                };
+                for given in &d.given_up {
+                    match &given.moved_to {
+                        Some(path) => assert!(
+                            s.bytes(path) == original(given.number),
+                            "{name}: segment {} moved",
+                            given.number
+                        ),
+                        None => assert!(
+                            original(given.number).is_none(),
+                            "{name}: segment {} was there and not moved",
+                            given.number
+                        ),
+                    }
+                }
+                if let Some(number) = d.tail_copied {
+                    let prefix = d.prefix.as_ref().expect("names for what was given up");
+                    let copy = s.bytes(&format!("{prefix}{number:016x}.tail"));
+                    assert!(copy == original(number), "{name}: the tail's copy");
+                    assert!(d.tail_unreadable.is_empty(), "{name}");
                 }
                 // The entries kept read back; those given up do not.
                 let view = store.view().unwrap();
