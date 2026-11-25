@@ -1668,6 +1668,50 @@ mod tests {
         host.close();
     }
 
+    /// The Design functions read one version of the file
+    /// (docs/server-storage.md 5, "A script session's reads"): a field
+    /// another client adds after the step's schema was read is one
+    /// FieldType answers for, its definition and the catalog that lists it
+    /// read through the same reading.
+    #[test]
+    fn the_design_functions_read_one_version() {
+        let file = TempFile::new("design-one-version", &[], true);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        om_scripts::runtime::ScriptHost::before_step(&mut host);
+        let field_type = |host: &mut ServerHost| {
+            let context = host.calc_context_for_test();
+            let field_type = om_calc::eval::evaluate_text(
+                "FieldType ( Get ( FileName ) ; \"Tasks::Added\" )",
+                host,
+                &context,
+            );
+            assert_eq!(field_type.code(), 0, "{:?}", field_type.value);
+            text(host, &field_type.value)
+        };
+        assert_eq!(field_type(&mut host), "", "no such field yet");
+        let mut fields = om_hbam::OwnedNode::default();
+        fixture::add_field(&mut fields, fixture::TABLE, 40, "Added", 1, 1, 0, 0, 0);
+        let (t, f) = (uint_segment(fixture::TABLE), uint_segment(40));
+        let upload = crate::engine::UploadToCatalog {
+            path: vec![t.clone(), vec![3], vec![5], f.clone()],
+            node: fields.at(&[&t, &[3], &[5], &f]).unwrap().clone(),
+        };
+        let uploaded = shared.engine.submit(
+            &hosted(&shared),
+            crate::engine::Operation::UploadToCatalog(upload),
+        );
+        assert_eq!(
+            uploaded.reply,
+            crate::engine::Reply::UploadToCatalog(Ok(true))
+        );
+        assert!(
+            field_type(&mut host).contains("Text"),
+            "the added field, in the step that read the schema before it"
+        );
+        host.close();
+    }
+
     /// docs/server-storage.md 5, "A script session's reads": a read of the
     /// file that fails ends the run with 802, "Unable to open file", for
     /// each kind of read, and the session changes nothing in the file from
