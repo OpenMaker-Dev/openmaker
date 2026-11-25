@@ -750,8 +750,11 @@ fn state(exit: Exit) -> Arc<Mutex<State>> {
 /// A window on the file, its first record's sets drawn.
 fn open(state: &Arc<Mutex<State>>) -> common::App {
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "options.example.invalid");
-    common::fill(&mut app, "File", "Options.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/options.example.invalid/Options.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "OPTION SETS");
     common::wait_until(&mut app, "the value lists' items", |app| {
@@ -1779,8 +1782,11 @@ fn a_calculated_lists_build_and_the_frames_it_takes() {
         state.rows[0].values[3] = Some("Tint 7!".into());
     }
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "options.example.invalid");
-    common::fill(&mut app, "File", "Options.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/options.example.invalid/Options.fmp12",
+    );
     common::click(&mut app, "Open");
     // The closed menu of Label shows the name its value has.
     let shows = |app: &common::App| {
@@ -1824,8 +1830,11 @@ fn a_related_lists_build_and_the_frames_it_takes() {
         state.rows[0].values[3] = Some("Tint 7".into());
     }
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "options.example.invalid");
-    common::fill(&mut app, "File", "Options.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/options.example.invalid/Options.fmp12",
+    );
     common::click(&mut app, "Open");
     let shows = |app: &common::App| {
         app.query_by_role_and_label(Role::ComboBox, "Note")

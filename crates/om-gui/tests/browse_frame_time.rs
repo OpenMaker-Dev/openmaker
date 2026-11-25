@@ -471,8 +471,7 @@ fn milliseconds(times: &mut [Duration]) -> String {
 #[ignore = "manual measurement; run in release with --nocapture"]
 fn browse_frame_time_on_a_large_layout() {
     let mut app = common::harness(Box::new(Provider));
-    common::fill(&mut app, "Host", "large.example.invalid");
-    common::fill(&mut app, "File", "Large.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/large.example.invalid/Large.fmp12");
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "Card 0: Job 1");
     // Calculations have arrived once fields show their formatted values.

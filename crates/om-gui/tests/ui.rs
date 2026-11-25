@@ -19,16 +19,22 @@ fn is_on(app: &common::App, label: &str) -> bool {
     app.get_by_label(label).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
 }
 
+/// Without Home, the window opens on Open Network File, which reads the
+/// path as it is typed and opens only one naming a host and a file.
 #[test]
-fn launch_shows_the_hosts_dialog() {
-    let app = mock();
-    app.get_by_label("Hosts");
-    app.get_by_label("No Host Selected");
-    let port = app.get_by_role_and_label(egui::Role::TextInput, "Port");
-    assert_eq!(port.value().as_deref(), Some("5003"));
+fn launch_shows_open_network_file() {
+    let mut app = mock();
+    app.get_by_label("Open Network File");
+    app.get_by_label("A file on a host: fmnet:/host/File");
     assert!(is_disabled(&app, "Open"), "Open needs a host and file");
     // No document is open, so there is no status toolbar.
     assert!(app.query_by_label("Edit Layout").is_none());
+    fill(&mut app, "Path", "fmnet:/fms.example.com:5004");
+    app.get_by_label("Add the file’s name: fmnet:/host/File");
+    assert!(is_disabled(&app, "Open"));
+    fill(&mut app, "Path", "/Contacts");
+    app.get_by_label("File “Contacts” on fms.example.com, port 5004");
+    assert!(!is_disabled(&app, "Open"));
 }
 
 #[test]
@@ -487,14 +493,23 @@ fn tab_moves_across_the_row_in_table_view() {
 }
 
 #[test]
-fn file_close_returns_to_the_hosts_dialog() {
+fn file_close_returns_to_open_network_file() {
     let mut app = mock();
     connect_to_mock(&mut app);
     open_menu(&mut app, "File");
     click(&mut app, "Close");
     assert!(!app.state().is_open());
-    app.get_by_label("Hosts");
-    // The password is not kept once a file has opened.
+    // The file and account stay; the password is not kept once a file
+    // has opened.
+    wait_for_label(&mut app, "Open Network File");
+    assert_eq!(
+        text_field(&app, "Path").value().as_deref(),
+        Some("fmnet:/fms.example.com/Contacts")
+    );
+    assert_eq!(
+        text_field(&app, "Account Name").value().as_deref(),
+        Some("admin")
+    );
     let password = app.get_by_role_and_label(egui::Role::PasswordInput, "Password");
     assert_eq!(password.value().as_deref().unwrap_or_default(), "");
 }
@@ -502,8 +517,7 @@ fn file_close_returns_to_the_hosts_dialog() {
 #[test]
 fn open_errors_show_an_alert() {
     let mut app = harness(Box::new(common::FailingProvider));
-    fill(&mut app, "Host", "fms.example.com");
-    fill(&mut app, "File", "Contacts.fmp12");
+    fill(&mut app, "Path", "fmnet:/fms.example.com/Contacts.fmp12");
     click(&mut app, "Open");
     let message = "The account name and password you entered could not be authenticated.";
     wait_for_label(&mut app, message);
@@ -518,8 +532,7 @@ fn open_errors_show_an_alert() {
     // closes it (#981): it had grown past the window's bottom edge.
     let long = ["A line of a long message, wrapped in the alert."; 60].join("\n");
     let mut app = harness(Box::new(common::FailingWith(long)));
-    fill(&mut app, "Host", "fms.example.com");
-    fill(&mut app, "File", "Contacts.fmp12");
+    fill(&mut app, "Path", "fmnet:/fms.example.com/Contacts.fmp12");
     click(&mut app, "Open");
     wait_until(&mut app, "the alert", |app| app.state().error().is_some());
     // The modal takes a few frames to size its scrolled message.
@@ -528,21 +541,34 @@ fn open_errors_show_an_alert() {
     assert_eq!(app.state().error(), None);
 }
 
+/// A host's listing that fails shows on its page, which offers to open a
+/// file by its name instead.
 #[test]
-fn list_files_errors_show_in_the_file_list_for_their_host() {
-    let mut app = harness(Box::new(common::FailingProvider));
-    fill(&mut app, "Host", "fms.example.com");
-    click(&mut app, "List files");
-    wait_for_label(&mut app, "The files could not be listed.");
+fn list_files_errors_show_on_their_hosts_page() {
+    let settings = tempfile::tempdir().unwrap();
+    let path = settings.path().join("settings.json");
+    let mut app = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1060.0, 760.0))
+        .renderer(common::renderer())
+        .build_eframe(move |_| {
+            om_gui::OpenMakerApp::new(Box::new(common::FailingProvider))
+                .with_settings_file(path)
+                .with_home()
+        });
+    click(&mut app, "Add Host");
+    fill(&mut app, "Address", "fms.example.com");
+    click(&mut app, "Add");
+    wait_for_label(&mut app, "The files could not be listed");
     app.get_by_label("Connection refused (fms.example.com:5003)");
-    // A failed listing is the host's: no alert, the dialog stays usable.
+    // A failed listing is the host's: no alert, and it can be asked again.
     assert_eq!(app.state().error(), None);
-    assert!(!is_disabled(&app, "List files"));
-    // Not shown for another host.
-    fill(&mut app, "Host", "x");
-    assert!(app
-        .query_by_label("The files could not be listed.")
-        .is_none());
+    assert!(!is_disabled(&app, "List Files"));
+    click(&mut app, "Open Network File...");
+    common::wait_for_text_field(&mut app, "Path");
+    assert_eq!(
+        text_field(&app, "Path").value().as_deref(),
+        Some("fmnet:/fms.example.com/")
+    );
 }
 
 #[test]

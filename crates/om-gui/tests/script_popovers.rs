@@ -374,8 +374,11 @@ fn open_with(provider: Provider) -> common::App {
     connect(common::harness(Box::new(provider)))
 }
 fn connect(mut app: common::App) -> common::App {
-    common::fill(&mut app, "Host", "popovers.example.invalid");
-    common::fill(&mut app, "File", "Popovers.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/popovers.example.invalid/Popovers.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "SCRIPT POPOVER FIXTURE");
     common::loaded_record_number(&mut app);

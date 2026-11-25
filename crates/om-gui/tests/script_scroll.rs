@@ -369,8 +369,7 @@ fn open_parts(
         header,
         duplicate: false,
     }));
-    common::fill(&mut app, "Host", "scroll.invalid");
-    common::fill(&mut app, "File", "Scroll.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/scroll.invalid/Scroll.fmp12");
     common::click(&mut app, "Open");
     assert_eq!(common::loaded_record_number(&mut app), "1");
     common::click(&mut app, view);
@@ -699,8 +698,7 @@ fn scroll_window_selection_targets_the_focused_duplicate_object() {
             header: false,
             duplicate: true,
         }));
-        common::fill(&mut app, "Host", "scroll.invalid");
-        common::fill(&mut app, "File", "Scroll.fmp12");
+        common::fill(&mut app, "Path", "fmnet:/scroll.invalid/Scroll.fmp12");
         common::click(&mut app, "Open");
         assert_eq!(common::loaded_record_number(&mut app), "1");
         common::click(&mut app, "Form View");
@@ -804,8 +802,7 @@ fn open_header_duplicates(columns: usize) -> common::App {
         header: true,
         duplicate: true,
     }));
-    common::fill(&mut app, "Host", "scroll.invalid");
-    common::fill(&mut app, "File", "Scroll.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/scroll.invalid/Scroll.fmp12");
     common::click(&mut app, "Open");
     assert_eq!(common::loaded_record_number(&mut app), "1");
     common::click(&mut app, "List View");
