@@ -5260,3 +5260,39 @@ fn a_save_left_by_a_panic_after_its_rename_is_not_taken_back() {
     );
     assert_eq!(node_at(&file, &serial), advanced, "nothing changed");
 }
+
+/// The review of #751, round 3 (P1): op13's reply has no status, so a
+/// failed save fails it with a system exception, whose text the server
+/// logs (`connection::upload_not_stored`). One whose save renamed its copy
+/// over the file and could not flush the folder says the upload may or
+/// may not be stored, not that it was not: the file and memory hold it.
+/// One whose save stopped before its rename says it was not stored.
+#[test]
+fn an_upload_whose_outcome_is_unknown_is_not_said_to_be_unstored() {
+    let tree = fixture::tree(&[], true);
+    let dest = vec![vec![0x31], vec![1]];
+    let upload = || {
+        Operation::UploadToCatalog(UploadToCatalog {
+            path: dest.clone(),
+            node: OwnedNode::list(Vec::new(), vec![text_node(&[2], "uploaded")]),
+        })
+    };
+    for (fault, said) in [
+        (SaveFault::BeforeRename, "not stored"),
+        (SaveFault::FolderFlush, "may or may not be stored"),
+    ] {
+        let (_disk, file) = host(&format!("engine-upload-{fault:?}"), &tree);
+        file.fail_saves(Some(fault));
+        let reply = engine().submit(&file, upload()).reply;
+        file.fail_saves(None);
+        let Reply::UploadToCatalog(Err(error)) = reply else {
+            panic!("{fault:?}: {reply:?}");
+        };
+        let text = crate::connection::upload_not_stored(&dest, &error);
+        assert!(
+            text.starts_with(&format!("upload to {dest:02x?} {said}: ")),
+            "{text}"
+        );
+        assert_eq!(node_at(&file, &dest).is_some(), error.unknown, "{fault:?}");
+    }
+}

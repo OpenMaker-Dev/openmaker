@@ -3519,14 +3519,27 @@ fn upload_to_file(
             );
             Ok(())
         }
-        // op13's reply has no status: one that was not stored fails with a
-        // system exception, as op70's does (docs/server-storage.md 5).
-        Reply::UploadToCatalog(Err(error)) => Err(PerformError::Status(format!(
-            "upload to {:02x?} not stored: {error}",
-            request.dest
+        // op13's reply has no status: one that was not stored, or whose
+        // outcome is unknown, fails with a system exception, as op70's does
+        // (docs/server-storage.md 5).
+        Reply::UploadToCatalog(Err(error)) => Err(PerformError::Status(upload_not_stored(
+            &request.dest,
+            &error,
         ))),
         other => Err(mismatched(&other)),
     }
+}
+
+/// What the server logs of an op13 upload to `dest` that `error` kept from
+/// being stored: not stored, or, when the save renamed its copy over the
+/// file and could not confirm it, stored or not (as op70's reply says;
+/// the client gets the same system exception either way).
+pub(crate) fn upload_not_stored(dest: &[Vec<u8>], error: &crate::engine::StorageError) -> String {
+    let outcome = match error.unknown {
+        true => "may or may not be stored",
+        false => "not stored",
+    };
+    format!("upload to {dest:02x?} {outcome}: {error}")
 }
 
 /// op73 HostUpdateTable: do the field work the client listed for a table
