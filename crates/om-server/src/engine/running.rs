@@ -123,6 +123,16 @@ impl Engine {
         }
     }
 
+    /// Check each operation's writes through its transaction
+    /// (`Server::checking_reads`): the file engine's alone, as the store
+    /// engine writes nothing.
+    #[cfg(debug_assertions)]
+    pub(crate) fn check_writes(&self) {
+        if let Engine::File(engine) = self {
+            engine.check_writes();
+        }
+    }
+
     /// The reads the test view compared on a store copy, and those it did
     /// not (`ServerHandle::store_comparisons`): the file engine's alone.
     #[cfg(debug_assertions)]

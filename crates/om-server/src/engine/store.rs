@@ -1144,20 +1144,21 @@ impl StoreEngine {
                 outcome
             }
             Operation::TakeLock(op) => {
-                let mod_count = match op.request.want_mod_count {
-                    true => match self.mod_count(file, &op.request.path) {
-                        Ok(count) => Some(count),
-                        Err(error) => {
-                            warn!("{:?}: op60: {error}", file.name);
-                            return Outcome::new(
-                                Reply::TakeLock(crate::writes::lock_unavailable()),
-                            );
-                        }
-                    },
-                    false => None,
+                // op60 reads the node's modification count through the
+                // file's tree, as the file engine does through its view.
+                let stored = file.store_file();
+                let view = match stored.view() {
+                    Ok(view) => view,
+                    Err(error) => {
+                        warn!(
+                            "{:?}: op60: the file's tree cannot be read: {error}",
+                            file.name
+                        );
+                        return unavailable(Operation::TakeLock(op));
+                    }
                 };
                 let mut locks = Locks::new(file.locks(&WRITER));
-                let reply = crate::writes::lock_counted(op, &file.name, mod_count, &mut locks);
+                let reply = crate::writes::lock(op, &file.name, &view, &mut locks);
                 locks.keep();
                 Outcome::new(Reply::TakeLock(reply))
             }
@@ -1190,14 +1191,6 @@ impl StoreEngine {
             }
         };
         self.submit(file, operation)
-    }
-
-    /// The modification count of the node at `path`, as the file engine
-    /// gives it for op60 (`Store::mod_count`).
-    fn mod_count(&self, file: &Hosted, path: &[Vec<u8>]) -> Result<Vec<u8>, ReadError> {
-        let stored = file.store_file();
-        let view = stored.view()?;
-        crate::derived::mod_count(&view, path, &file.name)
     }
 
     /// Why `file` takes no changes: the store engine takes none yet.

@@ -2558,14 +2558,17 @@ removing any work or changing any values (inf: FileMaker Server's restart
 behavior is unmeasured).
 
 **What else read the schema (2026-10-29, review fix).** The store counts
-schema changes (`Store::schema_generation`: every catalog op13 or op86
-replaces, and op73 when its field work changed anything). The store's own
+schema changes (the store's generation: every write op13, op86 or
+op240 makes to what the derived state reads, and op73 when its field work
+changed anything; docs/server-storage.md 5, "The operations'
+transaction"). The store's own
 catalog is re-read at each change and the per-table basis at each op73;
 the recalculation reads the field catalog, custom functions and
 relationships afresh each time. A server script session caches the
 schema (record rules, the calculation schema with ExecuteSQL's catalog,
 summaries, layouts, scripts): it reads it again before a step when the
-count moved (script-runtime.md "Implementation notes (PSOS)"), and rebases
+derived state's version moved, which a change of what it reads moves
+(script-runtime.md "Implementation notes (PSOS)"), and rebases
 the records it holds on what op73 left, so a script running across a save
 writes with the new rules and does not write old stored values back.
 Before, a session kept the rules it started with until it ended. Value

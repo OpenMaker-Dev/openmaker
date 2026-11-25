@@ -258,6 +258,22 @@ fn the_cli_prints_one_json_response_and_takes_no_password_argument() {
     assert_eq!(ran["result"], "hello", "{ran:#}");
     assert_eq!(ran["last_error"], 0);
 
+    // Where a field is used, from the command line: the layout's edit box.
+    let uses = om_author(&host, &secrets)
+        .args(["find-uses", "--field-name", "Name", "--table-name", "Tasks"])
+        .output()
+        .unwrap();
+    assert!(uses.status.success(), "{uses:?}");
+    let uses = ok(serde_json::from_slice(&uses.stdout).unwrap());
+    assert!(
+        uses["uses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["holder"]["ref"] == "layout_object:1.2@Tasks.fmp12"),
+        "{uses:#}"
+    );
+
     // A placement planned from the command line: frames as numbers.
     let planned = om_author(&host, &secrets)
         .args([
@@ -481,6 +497,104 @@ fn mcp_discovers_commands_before_connection_settings_are_available() {
     )));
 }
 
+/// `compare_designs` from the CLI and as an MCP tool, with no host: two
+/// files on disk that differ in one script's name, with and without the
+/// base they were made from. The result never holds an edit token.
+#[test]
+fn designs_are_compared_from_the_cli_and_mcp_without_a_connection() {
+    let scratch = Secrets::scratch("compare-designs");
+    let base = form_tree();
+    let mut renamed = base.clone();
+    let greeting = om_hbam::design_paths::objects(&base)
+        .into_iter()
+        .find(|o| {
+            o.kind() == om_hbam::design_paths::Kind::Script
+                && o.name().as_deref() == Some("Greeting")
+        })
+        .expect("the Greeting script");
+    let mut name_path: Vec<&[u8]> = greeting.path().iter().map(Vec::as_slice).collect();
+    name_path.push(&[0x10]);
+    renamed.put(&name_path, om_scripts::text_node(&[], "Hello"));
+    let (a, b) = (scratch.dir.join("a.fmp12"), scratch.dir.join("b.fmp12"));
+    fixture::write_tree(&a, &base);
+    fixture::write_tree(&b, &renamed);
+    let path = |p: &PathBuf| p.display().to_string();
+
+    let output = scratch
+        .command()
+        .args([
+            "compare-designs",
+            "--source",
+            &path(&a),
+            "--target",
+            &path(&b),
+        ])
+        .args(["--base", &path(&a), "--include-same"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let result = ok(serde_json::from_str(&printed).unwrap());
+    assert_eq!(result["with_base"], true);
+    assert_eq!(result["counts"]["differences"]["design"], 1, "{result:#}");
+    let matched = result["matched"].as_array().unwrap();
+    assert_eq!(json!(matched.len()), result["counts"]["matched"]);
+    let changed = matched
+        .iter()
+        .find(|m| m["difference"] != json!([]))
+        .unwrap();
+    assert_eq!(changed["kind"], "script");
+    assert_eq!(
+        (&changed["name"], &changed["target_name"]),
+        (&json!("Greeting"), &json!("Hello"))
+    );
+    assert_eq!(changed["difference"], json!(["design"]));
+    assert_eq!(changed["changed_by"], "target");
+    assert_eq!(changed["conflict"], false);
+    // No edit token of either file is in what is printed; design
+    // revisions are, in their own text form.
+    for root in [&base, &renamed] {
+        for object in om_hbam::design_paths::objects(root) {
+            let token = om_hbam::design_paths::revision_text(&object.edit_token());
+            assert!(!printed.contains(&token[7..]), "{token}");
+        }
+    }
+    // Greeting holds a key no rule names (the fixture's `77`): it has no
+    // design revision, and is compared by its content all the same.
+    assert_eq!(changed["target_revision"], Value::Null);
+    let revisioned = matched
+        .iter()
+        .find(|m| !m["source_revision"].is_null())
+        .unwrap();
+    assert!(text(&revisioned["source_revision"]).starts_with("design-sha256:"));
+
+    // Without a base the renamed script agrees in id alone: a possible
+    // match, never matched.
+    let mut mcp = Mcp::from_command(scratch.command());
+    mcp.request(1, "server/discover", modern(json!({})));
+    let compared = ok(tool_result(&mcp.request(
+        2,
+        "tools/call",
+        modern(json!({
+            "name": "openmaker_compare_designs",
+            "arguments": { "source": path(&a), "target": path(&b) },
+        })),
+    )));
+    assert_eq!(compared["with_base"], false);
+    assert_eq!(compared["counts"]["possible_matches"], 1, "{compared:#}");
+    assert_eq!(compared["possible_matches"][0]["agrees"], "id");
+    assert_eq!(compared["possible_matches"][0]["target"]["name"], "Hello");
+    let missing = mcp.request(
+        3,
+        "tools/call",
+        modern(json!({
+            "name": "openmaker_compare_designs",
+            "arguments": { "source": path(&a), "target": path(&scratch.dir.join("none.fmp12")) },
+        })),
+    );
+    assert_eq!(tool_result(&missing)["error"]["kind"], "not_found");
+}
+
 #[test]
 fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
     let file = TempFile::from_tree("author-mcp", &form_tree());
@@ -542,6 +656,11 @@ fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
             "openmaker_get_value_lists",
             "openmaker_complete_calculation",
             "openmaker_create_file",
+            "openmaker_compare_designs",
+            "openmaker_find_uses",
+            "openmaker_broken_references",
+            "openmaker_unused_objects",
+            "openmaker_script_calls",
             "openmaker_commands",
         ]
     );
@@ -743,6 +862,15 @@ fn mcp_2025_11_25_initializes_and_calls_tools() {
         capabilities["operations"]["apply_script_steps"]["available"],
         true
     );
+    // A script's call chain, through its tool.
+    let chain = mcp.request(
+        3,
+        "tools/call",
+        json!({ "name": "openmaker_script_calls", "arguments": { "script_name": "Greeting" } }),
+    );
+    let chain = ok(tool_result(&chain));
+    assert_eq!(chain["script"]["ref"], "script:5@Tasks.fmp12", "{chain:#}");
+    assert_eq!(chain["calls"]["scripts"], json!([]));
     // A revision this server does not implement is refused, not guessed.
     let mut old = Mcp::start(&host, &secrets);
     let refused = old.request(
