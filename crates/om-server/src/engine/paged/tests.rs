@@ -1654,11 +1654,16 @@ fn filemakers_templates_through_the_store_engine() {
 /// ```
 ///
 /// The steps: `import`, the file into a new page file at `OM_PAGED_STORE`
-/// on the disk (a 64 MiB cache, at most 4,096 pages waiting for a
-/// checkpoint), checkpointed, with the page file's size; `export`, the
-/// page file opened, its checkpoint pinned and the tree exported beside the
-/// file; `reads`, the same opened view's walk of the table's records and
-/// 1,000 record subtrees read at seeded places; `file-reads`, the file
+/// on the disk (a cache of `OM_PAGED_CACHE_MIB`, 64 MiB unless set, at most
+/// 4,096 pages waiting for a checkpoint), checkpointed, with the page
+/// file's size; `export`, the page file opened, its checkpoint pinned and
+/// the tree exported beside the file; `reads`, the same opened view's walk
+/// of the table's records and 1,000 record subtrees read at seeded places,
+/// twice (the first pass reads the pages, the second finds what the cache
+/// kept); `mem-reads`, the file imported into a store in memory first,
+/// then the same reads twice, through `MemStore::new` (which checks each
+/// page's hash on its first read) or with `OM_PAGED_TRUSTING=1` through
+/// `MemStore::trusting` (which checks none); `file-reads`, the file
 /// engine's load and the same reads through its view; `file-export`, the
 /// file engine's load and its written export of the same file.
 #[cfg(target_os = "linux")]
@@ -1682,8 +1687,12 @@ fn paged_measurement() {
             .unwrap()
             / 1024.0
     }
+    let cache_mib: u64 = std::env::var("OM_PAGED_CACHE_MIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64);
     let config = Config {
-        cache_bytes: 64 << 20,
+        cache_bytes: cache_mib << 20,
         dirty_budget: 4096,
         reserve: 256,
         growth: 256,
@@ -1784,10 +1793,64 @@ fn paged_measurement() {
                 format!("{:.1} MB written and checked", exported.size as f64 / 1e6)
             } else {
                 let (walk, scattered, walked) = reads(&view, &table);
+                // More passes when asked (`OM_PAGED_PASSES`, 2 unless set),
+                // so that a profile of the step is mostly of warm reads.
+                let passes: usize = std::env::var("OM_PAGED_PASSES")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(2);
+                let mut warm = Vec::new();
+                for _ in 1..passes.max(2) {
+                    warm.push(reads(&view, &table));
+                }
+                let (again, again_scattered) = (
+                    warm.iter().map(|r| r.0).sum::<f64>() / warm.len() as f64,
+                    warm.iter().map(|r| r.1).sum::<f64>() / warm.len() as f64,
+                );
                 format!(
-                    "walk of the table {walk:.0} ms ({walked} nodes), 1,000 records {scattered:.1} ms"
+                    "cache {cache_mib} MiB: walk of the table {walk:.0} ms ({walked} nodes), 1,000 \
+                     records {scattered:.1} ms; again ({} passes) {again:.0} ms and \
+                     {again_scattered:.1} ms",
+                    warm.len()
                 )
             }
+        }
+        "decode" => {
+            // What import does before it writes: the stream read and each
+            // node's checks, with nothing applied.
+            let source = std::io::BufReader::with_capacity(64 << 10, File::open(&file).unwrap());
+            let mut stream = NodeStream::new(source).unwrap();
+            let mut nodes = 0u64;
+            while let Some(node) = stream.next_node().unwrap() {
+                let path = node.path.to_vec();
+                let kind = match (node.push, node.value) {
+                    (false, Some(v)) => Node::Value(v.to_vec()),
+                    (true, None) => Node::List,
+                    (true, Some(v)) => Node::Both(v.to_vec()),
+                    (false, None) => unreachable!(),
+                };
+                check(&path, &kind).unwrap();
+                nodes += 1;
+            }
+            format!("{nodes} nodes read and checked")
+        }
+        "mem-reads" => {
+            let trusting = std::env::var("OM_PAGED_TRUSTING").is_ok_and(|v| v == "1");
+            let mut store = if trusting {
+                MemStore::trusting(Numbering::Sequential)
+            } else {
+                MemStore::new(Numbering::Sequential)
+            };
+            let source = std::io::BufReader::with_capacity(64 << 10, File::open(&file).unwrap());
+            let imported = import(source, &mut store, &tree_name(), 1, Batch::default()).unwrap();
+            let view = PagedView::open(&store, imported.root).unwrap();
+            let (walk, scattered, walked) = reads(&view, &table);
+            let (again, again_scattered, _) = reads(&view, &table);
+            format!(
+                "{} store in memory: walk of the table {walk:.0} ms ({walked} nodes), 1,000 \
+                 records {scattered:.1} ms; again {again:.0} ms and {again_scattered:.1} ms",
+                if trusting { "trusting" } else { "checking" }
+            )
         }
         "file-reads" | "file-export" => {
             let hbam = HbamFile::open(&file).unwrap();
