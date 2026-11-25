@@ -252,7 +252,15 @@ impl ServerHost {
 
     /// A record's stored values for calculations, typed by its table's
     /// fields; repetition n of field F is the cell `F * 256 + n`.
+    ///
+    /// One read of a relationship's walk, a call of its own
+    /// ([`ServerHost::one_call`]): the walk reads records and indexes in
+    /// turn, each as the base read it under a guard of its own.
     pub(super) fn record_values(&self, table: u64, record: u64) -> Option<RecordValues> {
+        self.one_call(|| self.record_values_now(table, record))
+    }
+
+    fn record_values_now(&self, table: u64, record: u64) -> Option<RecordValues> {
         let definition = self.schema.catalog.table(table)?;
         let cx = self.cx();
         self.with_record(table, record, |node| {
@@ -288,6 +296,17 @@ impl ServerHost {
     /// this server does not key, `Store::index_on_demand`): a scan would
     /// compare in English, which the index would not.
     fn index_lookup(
+        &self,
+        table: u64,
+        field: u64,
+        value_type: ValueType,
+        texts: &[String],
+    ) -> Result<RidList, CalcError> {
+        self.one_call(|| self.index_lookup_now(table, field, value_type, texts))
+    }
+
+    /// [`Self::index_lookup`], one read of a relationship's walk.
+    fn index_lookup_now(
         &self,
         table: u64,
         field: u64,
@@ -345,10 +364,12 @@ impl ServerHost {
         let (found, built) = looked_up
             .map_err(|_| CalcError::from_code(802).expect("nonzero"))?
             .map_err(|()| CalcError::from_code(3).expect("nonzero"))?;
-        if built {
+        // Not after a read that failed: the session writes nothing more.
+        if built && !self.read_failed() {
             self.shared
                 .engine
                 .submit_draft(&self.hosted, Draft::StoreIndexes);
+            self.reads.wrote();
         }
         Ok(found)
     }

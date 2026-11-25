@@ -1669,10 +1669,11 @@ mod tests {
     }
 
     /// docs/server-storage.md 5, "A script session's reads": a read of the
-    /// file that fails is 802, "Unable to open file", for each kind of
-    /// read, and the session changes nothing in the file meanwhile. Each
-    /// case fails one path in the test view (`FileEngine::fail_reads`) and
-    /// runs a script, or a step, that reads it.
+    /// file that fails ends the run with 802, "Unable to open file", for
+    /// each kind of read, and the session changes nothing in the file from
+    /// then on; accounts the engine could not decode answer as before (3).
+    /// Each case fails one path in the test view (`FileEngine::fail_reads`)
+    /// and runs a script, or a step, that reads it.
     #[test]
     fn each_kind_of_read_that_fails_is_802() {
         use om_scripts::runtime::Accounts as _;
@@ -1867,7 +1868,9 @@ mod tests {
         );
         host.close();
 
-        // The accounts Change Password checks.
+        // The accounts Change Password checks, which the engine's derived
+        // state gives: accounts it could not read answer as before, with 3
+        // (docs/server-storage.md 5), and end nothing.
         let file = TempFile::new("fail-accounts", &[], true);
         let changing = shared(&file);
         let mut host = session(&changing);
@@ -1877,9 +1880,334 @@ mod tests {
             .fail_reads(fixture::FILE, vec![vec![23], vec![1], vec![5]]);
         assert_eq!(
             host.change_password(fixture::PASSWORD, "another", false),
-            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            Err(HostError::Unsupported),
             "the accounts"
         );
+        assert_eq!(
+            om_scripts::runtime::ScriptHost::take_step_error(&mut host),
+            None
+        );
         host.close();
+    }
+
+    /// The scripts of [`a_failed_read_ends_the_run_and_writes_nothing`]:
+    /// between them, every kind of step that reads the file.
+    fn read_fault_corpus() -> Vec<om_scripts::Script> {
+        use om_scripts::{FieldSpec, ScriptStep, StoredKey};
+        let replace = |text: &str| {
+            let mut step = ScriptStep::new(91);
+            step.set_field_spec(
+                0,
+                Some(FieldSpec::new(
+                    StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                    StoredKey::from_id(fixture::COUNT).unwrap(),
+                    1,
+                )),
+            );
+            step.set_number(1, Some(3));
+            step.set_calculation(0, Some(&fixture::calc(text)));
+            step
+        };
+        let reset = |account: &str| {
+            let mut step = ScriptStep::new(136);
+            step.set_calculation(0, Some(&fixture::calc(account)));
+            step.set_calculation(1, Some(&fixture::calc("\"a new secret\"")));
+            step
+        };
+        let report = || fixture::exit_with("Get ( LastError )");
+        let scripts: Vec<(&str, Vec<ScriptStep>)> = vec![
+            (
+                "Set Field from a field",
+                vec![
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "Set Field from a global",
+                vec![
+                    fixture::set_field(fixture::NAME, "Tasks::Setting"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "Set Field from a related value",
+                vec![
+                    fixture::set_field(fixture::NAME, "Notes::Body & \"!\""),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "If on a global, then Delete",
+                vec![
+                    fixture::with_calc(68, "IsEmpty ( Tasks::Setting )"),
+                    ScriptStep::new(9),
+                    ScriptStep::new(70),
+                    report(),
+                ],
+            ),
+            (
+                "Loop over the records",
+                vec![
+                    fixture::go_to_record(1),
+                    ScriptStep::new(71),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    fixture::with_calc(72, "Get ( RecordNumber ) >= Get ( FoundCount )"),
+                    fixture::go_to_record(4),
+                    ScriptStep::new(73),
+                    report(),
+                ],
+            ),
+            (
+                "Find",
+                vec![
+                    ScriptStep::new(22),
+                    fixture::set_field(fixture::NAME, "\"Task\""),
+                    ScriptStep::new(28),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count * 2"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "Find inside a transaction",
+                vec![
+                    ScriptStep::new(205),
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::NAME, "\"Changed\""),
+                    ScriptStep::new(75),
+                    ScriptStep::new(22),
+                    fixture::set_field(fixture::NAME, "\"Changed\""),
+                    ScriptStep::new(28),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 5"),
+                    ScriptStep::new(206),
+                    report(),
+                ],
+            ),
+            (
+                "Go to Record, Revert and Commit",
+                vec![
+                    fixture::go_to_record(2),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & \" reverted\""),
+                    ScriptStep::new(51),
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & \" kept\""),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "A transaction reverted on error",
+                vec![
+                    fixture::on(223, true),
+                    ScriptStep::new(205),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    ScriptStep::new(7),
+                    fixture::set_field(fixture::NAME, "Tasks::Setting"),
+                    ScriptStep::new(206),
+                    report(),
+                ],
+            ),
+            (
+                "A transaction not reverted on error",
+                vec![
+                    fixture::on(223, false),
+                    ScriptStep::new(205),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    fixture::go_to_record(2),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & Tasks::Setting"),
+                    ScriptStep::new(206),
+                    report(),
+                ],
+            ),
+            (
+                "Delete",
+                vec![fixture::go_to_record(2), ScriptStep::new(9), report()],
+            ),
+            (
+                "Replace Field Contents",
+                vec![replace("Tasks::Count + Length ( Tasks::Name )"), report()],
+            ),
+            (
+                "ExecuteSQL",
+                vec![
+                    fixture::set_field(
+                        fixture::NAME,
+                        "ExecuteSQL ( \"SELECT Name FROM Tasks\" ; \"\" ; \"\" )",
+                    ),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "The Design functions",
+                vec![
+                    fixture::set_field(
+                        fixture::NAME,
+                        "FieldNames ( Get ( FileName ) ; \"Tasks\" ) & \
+                         GetNextSerialValue ( Get ( FileName ) ; \"Tasks::Count\" )",
+                    ),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            ("An account step", vec![reset("Tasks::Name"), report()]),
+            (
+                "An edit held across an account edit",
+                vec![
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & \" held\""),
+                    reset("\"Clerk\""),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "A subscript",
+                vec![
+                    fixture::perform_script(1),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 10"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+        ];
+        scripts
+            .into_iter()
+            .zip(1u64..)
+            .map(|((name, mut steps), id)| {
+                steps.insert(0, fixture::on(86, true));
+                fixture::script(id, name, steps)
+            })
+            .collect()
+    }
+
+    /// The file the corpus runs on: Tasks with records 1 to 3 and a stored
+    /// global, Notes with records related to Tasks by name, the local
+    /// accounts.
+    fn read_fault_tree(scripts: &[om_scripts::Script]) -> om_hbam::OwnedNode {
+        let mut tree = fixture::tree(scripts, true);
+        fixture::add_tasks(&mut tree, 1..=3);
+        fixture::add_local_accounts(&mut tree);
+        // The account catalog's index, which every FileMaker file has.
+        tree.put(
+            &[&[23], &[1], &[1], &[4]],
+            om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+        );
+        fixture::add_relationship(
+            &mut tree,
+            1,
+            (fixture::OCCURRENCE, fixture::NAME),
+            0,
+            (fixture::NOTES_OCCURRENCE, fixture::BODY),
+        );
+        let t = uint_segment(fixture::TABLE);
+        tree.put(
+            &[&t, &[8], &uint_segment(fixture::SETTING)],
+            om_scripts::text_node(&[], "a setting"),
+        );
+        let notes = uint_segment(fixture::NOTES);
+        for (id, body) in [(1u64, "Task 1"), (2, "Task 2")] {
+            let path = [
+                &notes[..],
+                &[5],
+                &serial::encode(id),
+                &uint_segment(fixture::BODY),
+            ];
+            tree.put(&path, om_scripts::text_node(&[], body));
+        }
+        tree
+    }
+
+    /// Run script `script` of a fresh file holding `tree` with read `fail`
+    /// of the run failing (0: none): the run's error, the reads the run
+    /// made, and the file's tree when the session ended and when the read
+    /// failed.
+    fn run_with_failed_read(
+        tree: &om_hbam::OwnedNode,
+        script: u64,
+        fail: u64,
+        after: bool,
+    ) -> (
+        u16,
+        u64,
+        Option<om_hbam::OwnedNode>,
+        Option<om_hbam::OwnedNode>,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let file = TempFile::from_tree(&format!("read-fault-{script}-{fail}"), tree);
+        let shared = shared(&file);
+        let hosted = hosted(&shared);
+        hosted.read_fault.fail(fail, after);
+        let reply = perform(&shared, request(&shared, script, "", 0));
+        let reads = hosted.read_fault.reads.load(Relaxed);
+        let ended = hosted.read_store().node(&[]).cloned();
+        (
+            reply.error,
+            reads,
+            ended,
+            hosted.read_fault.tree_at_failure(),
+        )
+    }
+
+    /// docs/server-storage.md 5, "A script session's reads": a read of the
+    /// file that fails ends the run with 802, and nothing a step read as
+    /// missing reaches the file. For each script of a corpus that between
+    /// them make every kind of read (`read_fault_corpus`), the k-th read of
+    /// the run fails, for every k up to the run's number of reads, and with
+    /// `after` every read after it too: the run ends with 802, and the
+    /// file's whole tree when the session has ended is the tree when that
+    /// read failed. Returns the runs made.
+    fn every_failed_read_ends_the_run(after: bool) -> usize {
+        let scripts = read_fault_corpus();
+        let tree = read_fault_tree(&scripts);
+        let mut runs = 0;
+        let mut failures = Vec::new();
+        for script in &scripts {
+            let (error, reads, _, _) = run_with_failed_read(&tree, script.id, 0, false);
+            assert_ne!(error, 802, "{}: without a failed read", script.name);
+            assert!(reads > 1, "{}: {reads} reads", script.name);
+            for fail in 1..=reads {
+                let (error, _, ended, at_failure) =
+                    run_with_failed_read(&tree, script.id, fail, after);
+                let what = format!("{}: read {fail} of {reads} failing", script.name);
+                runs += 1;
+                let Some(at_failure) = at_failure else {
+                    failures.push(format!("{what}: no read failed"));
+                    continue;
+                };
+                if error != 802 {
+                    failures.push(format!("{what}: the run ended with {error}"));
+                }
+                if ended != Some(at_failure) {
+                    failures.push(format!("{what}: the file changed after the read failed"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        runs
+    }
+
+    /// [`every_failed_read_ends_the_run`] with one read failing: about
+    /// 400 runs, a few seconds.
+    #[test]
+    fn a_failed_read_ends_the_run_and_writes_nothing() {
+        let runs = every_failed_read_ends_the_run(false);
+        eprintln!("{runs} runs with a failed read");
+    }
+
+    /// [`every_failed_read_ends_the_run`] with every read failing from the
+    /// k-th on, storage that stays broken, after the default run.
+    #[test]
+    #[ignore = "runs the corpus twice, the second time with every read failing from the k-th on"]
+    fn a_failed_read_ends_the_run_and_writes_nothing_when_reads_keep_failing() {
+        let once = every_failed_read_ends_the_run(false);
+        let after = every_failed_read_ends_the_run(true);
+        eprintln!("{once} runs with a failed read, {after} with reads failing from it on");
     }
 }

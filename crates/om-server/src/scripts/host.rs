@@ -45,7 +45,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Bound;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -255,8 +255,9 @@ struct Schema {
     /// The definitions of summary fields, by (table, field).
     summaries: HashMap<(u64, u64), Summary>,
     /// The schema with layouts and scripts for the Design functions, read
-    /// when a calculation first asks ([`design`]).
-    design: std::sync::OnceLock<Option<Arc<CalcSchema>>>,
+    /// when a calculation first asks, and the version of the derived state
+    /// it was read at ([`design`]).
+    design: std::cell::RefCell<Option<(Version, Option<Arc<CalcSchema>>)>>,
 }
 
 /// What a session's schema is read from, all of one version
@@ -295,8 +296,13 @@ impl SchemaParts {
     }
 
     /// The parts the engine's derived state holds now, and its version: a
-    /// reading taken for this read alone.
-    fn read_now(shared: &Shared, hosted: &Hosted) -> Result<(Version, SchemaParts), ReadError> {
+    /// reading taken for this read alone, counted in `reads`.
+    fn read_now(
+        shared: &Shared,
+        hosted: &Hosted,
+        reads: &SessionReads,
+    ) -> Result<(Version, SchemaParts), ReadError> {
+        reads.begin(hosted)?;
         let reading = shared.engine.read(hosted);
         let version = reading.read().derived.version();
         let parts = reading.serve(SchemaParts::read)?;
@@ -318,7 +324,7 @@ impl Schema {
             full_access: BTreeSet::new(),
             rules: None,
             summaries: HashMap::new(),
-            design: std::sync::OnceLock::new(),
+            design: Default::default(),
         }
     }
 
@@ -384,7 +390,7 @@ impl Schema {
                 .into_iter()
                 .map(|(field, bytes)| (field, Summary::decode(&bytes)))
                 .collect(),
-            design: std::sync::OnceLock::new(),
+            design: Default::default(),
         }
     }
 
@@ -845,29 +851,100 @@ fn find_failure(error: om_query::QueryError) -> FindError {
     }
 }
 
+/// What a session knows of its reads of its file ([`ServerHost::read`]),
+/// shared with its record rules' container reader.
+#[derive(Debug)]
+pub(super) struct SessionReads {
+    /// A read failed: the run ends after the step it failed in, and the
+    /// session writes nothing more to the file (docs/server-storage.md 5,
+    /// "A script session's reads").
+    failed: AtomicBool,
+    /// Readings taken in the current call into the host
+    /// ([`ServerHost::one_call`]), [`NO_CALL`] outside one: debug builds check
+    /// that a call takes at most one, unless it wrote in between.
+    readings: AtomicU32,
+}
+
+/// [`SessionReads::readings`] outside a call into the host.
+const NO_CALL: u32 = u32::MAX;
+
+impl Default for SessionReads {
+    fn default() -> Self {
+        SessionReads {
+            failed: AtomicBool::new(false),
+            readings: AtomicU32::new(NO_CALL),
+        }
+    }
+}
+
+impl SessionReads {
+    /// A reading of `hosted` is about to be taken: counted against the
+    /// call it is taken in, and, in a test that asked for it, failed
+    /// (`Hosted::read_fault`).
+    fn begin(&self, hosted: &Hosted) -> Result<(), ReadError> {
+        let taken = self.readings.load(Ordering::Relaxed);
+        if taken != NO_CALL {
+            debug_assert!(
+                taken == 0,
+                "{:?}: a second reading in one call into a script session",
+                hosted.name
+            );
+            self.readings.store(taken + 1, Ordering::Relaxed);
+        }
+        #[cfg(test)]
+        hosted.script_read()?;
+        Ok(())
+    }
+
+    /// A read of `hosted` that failed: logged and kept.
+    fn failed(&self, hosted: &Hosted, error: &ReadError) {
+        warn!(
+            "{:?}: a script session's read of the file failed: {error}",
+            hosted.name
+        );
+        self.failed.store(true, Ordering::Relaxed);
+    }
+
+    fn has_failed(&self) -> bool {
+        self.failed.load(Ordering::Relaxed)
+    }
+
+    /// A call into the host begins: its readings count from none. Returns
+    /// the count of the call it is made in, for [`Self::leave`].
+    pub(super) fn enter(&self) -> u32 {
+        self.readings.swap(0, Ordering::Relaxed)
+    }
+
+    pub(super) fn leave(&self, outer: u32) {
+        self.readings.store(outer, Ordering::Relaxed);
+    }
+
+    /// The session submitted a write: a call may take a reading again, to
+    /// read what it wrote.
+    fn wrote(&self) {
+        let taken = self.readings.load(Ordering::Relaxed);
+        if taken != NO_CALL {
+            self.readings.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 /// `read` of `hosted` as the engine holds it now, through a reading taken
 /// for this read alone ([`ServerHost::read`]); a read that fails is logged
-/// and noted in `failed`.
+/// and kept in `reads`.
 fn read_file<T: PartialEq + std::fmt::Debug>(
     shared: &Shared,
     hosted: &Hosted,
-    failed: &AtomicBool,
+    reads: &SessionReads,
     read: impl FnMut(Read<'_>) -> Result<T, ReadError>,
 ) -> Result<T, ReadError> {
-    let result = shared.engine.read(hosted).serve(read);
+    let result = reads
+        .begin(hosted)
+        .and_then(|()| shared.engine.read(hosted).serve(read));
     if let Err(error) = &result {
-        note_failed_read(hosted, failed, error);
+        reads.failed(hosted, error);
     }
     result
-}
-
-/// A read of `hosted` that failed, noted in its session's `failed`.
-fn note_failed_read(hosted: &Hosted, failed: &AtomicBool, error: &ReadError) {
-    warn!(
-        "{:?}: a script session's read of the file failed: {error}",
-        hosted.name
-    );
-    failed.store(true, Ordering::Relaxed);
 }
 
 /// What an overlay lays over a version for a find inside a transaction
@@ -1030,11 +1107,11 @@ pub(crate) struct ServerHost {
     reading: Cell<u32>,
     /// Container data steps set that no commit stored yet ([`containers`]).
     pending: containers::Pending,
-    /// A read of the file failed since the step began ([`Self::read`]):
-    /// the session changes nothing in the file until the step ends, and
-    /// the step fails with 802 ([`ScriptHost::take_step_error`]). Shared
-    /// with the record rules' container reader.
-    failed_read: Arc<AtomicBool>,
+    /// Whether a read of the file failed, which ends the run and stops the
+    /// session's writes, and how many readings the current call into the
+    /// host took ([`SessionReads`]). Shared with the record rules'
+    /// container reader.
+    reads: Arc<SessionReads>,
     /// Why the session could not read the file's schema when it started,
     /// if it could not: it runs no script (802, `scripts::execute`).
     unread: Option<ReadError>,
@@ -1052,8 +1129,9 @@ impl ServerHost {
     ) -> Self {
         // The file's formats (file-metadata.md 2): FileMaker Server
         // evaluates with the file's locale record.
+        let reads = Arc::new(SessionReads::default());
         let (schema, locale, file_language, opening, unread) =
-            match SchemaParts::read_now(&shared, &hosted) {
+            match SchemaParts::read_now(&shared, &hosted, &reads) {
                 Ok((version, parts)) => {
                     let (locale, language) = (parts.locale.clone(), parts.file_language);
                     let opening = parts.opening;
@@ -1061,10 +1139,7 @@ impl ServerHost {
                     (schema, locale, language, opening, None)
                 }
                 Err(error) => {
-                    warn!(
-                        "{:?}: a script session could not read the file's schema: {error}",
-                        hosted.name
-                    );
+                    reads.failed(&hosted, &error);
                     (Schema::unread(), Locale::en_us(), None, None, Some(error))
                 }
             };
@@ -1108,7 +1183,7 @@ impl ServerHost {
             plans: HashMap::new(),
             reading: Cell::new(0),
             pending: containers::Pending::default(),
-            failed_read: Arc::default(),
+            reads,
             unread,
         };
         // The file's "switch to layout" layout, else its first layout,
@@ -1155,13 +1230,14 @@ impl ServerHost {
     /// (docs/server-storage.md 5, "A script session's reads"): never held
     /// across a write the session submits, so each read sees the session's
     /// own commits, and never taken while another is held on this thread
-    /// (`read` reads only through the [`Read`] it is given). A read that
-    /// fails is logged and noted ([`Self::failed_read`]).
+    /// (`read` reads only through the [`Read`] it is given). A call into
+    /// the host takes at most one ([`Self::call`]). A read that fails is
+    /// logged and kept ([`SessionReads`]): the run ends after the step.
     fn read<T: PartialEq + std::fmt::Debug>(
         &self,
         read: impl FnMut(Read<'_>) -> Result<T, ReadError>,
     ) -> Result<T, ReadError> {
-        read_file(&self.shared, &self.hosted, &self.failed_read, read)
+        read_file(&self.shared, &self.hosted, &self.reads, read)
     }
 
     /// [`Self::read`] for a read of the file's accounts
@@ -1170,28 +1246,62 @@ impl ServerHost {
         &self,
         read: impl FnMut(Read<'_>) -> Result<T, ReadError>,
     ) -> Result<T, ReadError> {
-        let result = self
-            .shared
-            .engine
-            .read(&self.hosted)
-            .serve_with_accounts(read);
+        let result = self.reads.begin(&self.hosted).and_then(|()| {
+            self.shared
+                .engine
+                .read(&self.hosted)
+                .serve_with_accounts(read)
+        });
         if let Err(error) = &result {
             self.note_failed_read(error);
         }
         result
     }
 
-    /// A read of the file failed: until the step ends the session changes
-    /// nothing in the file, and the step fails with 802.
-    fn note_failed_read(&self, error: &ReadError) {
-        note_failed_read(&self.hosted, &self.failed_read, error);
+    /// [`Self::read`], with the engine's derived state of the same reading,
+    /// for work done once the reading is let go.
+    fn read_with_derived<T: PartialEq + std::fmt::Debug>(
+        &self,
+        read: impl FnMut(Read<'_>) -> Result<T, ReadError>,
+    ) -> Result<(T, crate::derived::Derived), ReadError> {
+        let result = self.reads.begin(&self.hosted).and_then(|()| {
+            let reading = self.shared.engine.read(&self.hosted);
+            let derived = reading.read().derived.clone();
+            Ok((reading.serve(read)?, derived))
+        });
+        if let Err(error) = &result {
+            self.note_failed_read(error);
+        }
+        result
     }
 
-    /// 802 when a read of the file failed since the step began: the
-    /// session's changes to the file are refused, so that nothing read as
-    /// missing for it is written.
+    /// `call`, one call into the host from the calculation engine or the
+    /// record rules: everything it reads of the file comes from one reading
+    /// (debug builds check it, [`SessionReads::begin`]), unless it wrote in
+    /// between. A call made inside it counts its own.
+    pub(super) fn one_call<T>(&self, call: impl FnOnce() -> T) -> T {
+        let outer = self.reads.enter();
+        let result = call();
+        self.reads.leave(outer);
+        result
+    }
+
+    /// A read of the file failed: the run ends after the step, and the
+    /// session writes nothing more.
+    fn note_failed_read(&self, error: &ReadError) {
+        self.reads.failed(&self.hosted, error);
+    }
+
+    /// Whether a read of the file failed in this session.
+    fn read_failed(&self) -> bool {
+        self.reads.has_failed()
+    }
+
+    /// 802 when a read of the file failed in this session: no change to
+    /// the file, by any path, until the session ends, so that nothing read
+    /// as missing is written.
     fn refuse_after_failed_read(&self) -> HostResult {
-        match self.failed_read.load(Ordering::Relaxed) {
+        match self.read_failed() {
             true => Err(UNREADABLE.into()),
             false => Ok(()),
         }
@@ -1228,13 +1338,17 @@ impl ServerHost {
     /// aborted or the commit fails), release every lock and save what the
     /// session left unsaved. Returns the save's FileMaker error (800, 809
     /// or 810) when that save did not confirm that the file on disk holds
-    /// it, which the script's result reports (`scripts::run`).
+    /// it, or 802 when a read of the file failed (then nothing is committed
+    /// or saved), which the script's result reports (`scripts::run`).
     pub fn close(&mut self) -> Option<u16> {
         self.refresh_schema();
         if self.transaction.is_some() {
             let _ = Records::revert_transaction(self);
         }
-        if self.control.aborted().is_some() {
+        // After a read that failed, what the session has not committed is
+        // reverted, its open record too: nothing read as missing reaches
+        // the file (docs/server-storage.md 5, "A script session's reads").
+        if self.control.aborted().is_some() || self.read_failed() {
             self.drop_open();
         } else if let Err(e) = self.commit_open(Entry::script(false, false)) {
             warn!(
@@ -1247,13 +1361,15 @@ impl ServerHost {
         // The record ids the session reserved for records it did not
         // commit wait unsaved for a commit; with none left to come they are
         // saved now, with anything else the file holds unsaved, as op240's
-        // Save saves them (`engine::Save::Requested`).
-        let saved = match self
-            .shared
-            .engine
-            .submit(&self.hosted, Operation::SaveFile)
-            .reply
-        {
+        // Save saves them (`engine::Save::Requested`). Not after a read
+        // that failed: the session writes nothing more.
+        let save = (!self.read_failed()).then(|| {
+            self.shared
+                .engine
+                .submit(&self.hosted, Operation::SaveFile)
+                .reply
+        });
+        let saved = match save.unwrap_or(Reply::SaveFile(Ok(()))) {
             Reply::SaveFile(Err(FileNotSaved::Failed(error) | FileNotSaved::Unknown(error))) => {
                 warn!(
                     "{:?}: the save at the script's end failed: {error}",
@@ -1272,6 +1388,10 @@ impl ServerHost {
                 self.hosted.name,
                 self.log.total()
             );
+        }
+        // A read that failed, also one at the end, is the run's error.
+        if self.read_failed() {
+            return Some(UNREADABLE_CODE);
         }
         saved
     }
@@ -1308,7 +1428,7 @@ impl ServerHost {
     /// None, 802, after a read of the file failed in the step
     /// ([`Self::read`]).
     fn reserve_record_id(&self, table: u64) -> CreateRecordReply {
-        if self.failed_read.load(Ordering::Relaxed) {
+        if self.read_failed() {
             return CreateRecordReply {
                 conflict: None,
                 status: u32::from(UNREADABLE_CODE),
@@ -1421,7 +1541,15 @@ impl ServerHost {
     /// changed over what the file now stores: op73 may have recomputed
     /// their stored calculations or dropped a deleted field's values.
     pub fn refresh_schema(&mut self) {
+        if self.read_failed() {
+            // The run is ending: its schema is not read again.
+            return;
+        }
         let (schema, locale, file_language) = {
+            if let Err(error) = self.reads.begin(&self.hosted) {
+                self.note_failed_read(&error);
+                return;
+            }
             let reading = self.shared.engine.read(&self.hosted);
             let version = reading.read().derived.version();
             if version == self.schema.version {
@@ -3132,6 +3260,33 @@ impl ServerHost {
     /// ([`values::decode`]); for a container field the data of the library
     /// member it names (containers.md 1.4, [`Store::container`]): its file
     /// name as the text, its streams and whether they are intact.
+    /// The value of field `def` of `table` the file stores at `path` (a
+    /// record's cell or a global's), and for a container field the library
+    /// member its text names, through one reading; one that fails reads as
+    /// empty, and ends the run ([`Self::read`]).
+    fn committed_value(&self, table: u64, def: &Field, path: &[Vec<u8>]) -> Value {
+        let container = def.data_type == DataType::Container;
+        let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let read = self.read(|read| {
+            let Some(cell) = read.view.subtree(&path, NO_LIMIT)?.map(Cow::into_owned) else {
+                return Ok((None, None));
+            };
+            let text = values::cell_text(&cell).filter(|t| !t.is_empty());
+            let named = match text {
+                Some(text) if container && om_data::containers::reference(&text).is_some() => {
+                    Some(containers::stored_container(read.view, table, &text)?)
+                }
+                _ => None,
+            };
+            Ok((Some(cell), named))
+        });
+        match read {
+            Ok((_, Some(named))) => Value::Container(named),
+            Ok((cell, None)) => self.stored_value(table, def, cell.as_ref()),
+            Err(_) => Value::empty(values::value_type(def.data_type)),
+        }
+    }
+
     fn stored_value(&self, table: u64, def: &Field, cell: Option<&OwnedNode>) -> Value {
         if def.data_type != DataType::Container {
             return values::decode(values::value_type(def.data_type), cell, &self.cx());
@@ -3154,9 +3309,35 @@ impl ServerHost {
         let Some(def) = self.schema.catalog.table(table) else {
             return Arc::new(values);
         };
+        // The file's stored global values `[T, 08]` and the members their
+        // containers name, through one reading; one that fails reads as
+        // none, and ends the run ([`Self::read`]).
+        let t = uint_segment(table);
+        let stored = self
+            .read(|read| {
+                let Some(globals) = read
+                    .view
+                    .subtree(&[&t, &[GLOBALS]], NO_LIMIT)?
+                    .map(Cow::into_owned)
+                else {
+                    return Ok((None, Vec::new()));
+                };
+                let mut named = Vec::new();
+                for cell in &globals.children {
+                    let text = values::cell_text(cell).filter(|t| !t.is_empty());
+                    if let Some(text) = text.filter(|t| om_data::containers::reference(t).is_some())
+                    {
+                        let container = containers::stored_container(read.view, table, &text)?;
+                        named.push((text, container));
+                    }
+                }
+                Ok((Some(globals), named))
+            })
+            .unwrap_or_default();
+        let (globals, named) = stored;
         for f in def.fields.iter().filter(|f| ServerHost::is_global(f)) {
             for rep in 1..=ServerHost::repetitions(f).min(255) {
-                let value = self.global_value(table, f, rep);
+                let value = self.session_global(table, f, rep, globals.as_ref(), &named);
                 if f.data_type == DataType::Container {
                     if let Value::Container(c) = &value {
                         values.set(
@@ -3183,16 +3364,38 @@ impl ServerHost {
         let Some(cell) = cell_id(def.id, repetition) else {
             return Value::empty(values::value_type(def.data_type));
         };
-        // A read that fails reads as no stored value and fails the step
+        // The stored cell and the container it names, through one reading;
+        // one that fails reads as no stored value, and ends the run
         // ([`Self::read`]).
-        let (t, c) = (uint_segment(table), uint_segment(cell));
-        let stored = self
-            .read(|read| {
-                let path: [&[u8]; 3] = [&t, &[GLOBALS], &c];
-                Ok(read.view.subtree(&path, NO_LIMIT)?.map(Cow::into_owned))
-            })
-            .unwrap_or_default();
-        self.stored_value(table, def, stored.as_ref())
+        let path = vec![uint_segment(table), vec![GLOBALS], uint_segment(cell)];
+        self.committed_value(table, def, &path)
+    }
+
+    /// A global field's value in this session from `globals`, the file's
+    /// stored global values, and `named`, the containers their texts name,
+    /// read together ([`Self::session_globals`]).
+    fn session_global(
+        &self,
+        table: u64,
+        def: &Field,
+        repetition: u32,
+        globals: Option<&OwnedNode>,
+        named: &[(String, om_calc::Container)],
+    ) -> Value {
+        if let Some(value) = self.globals.get(&(table, def.id, repetition)) {
+            return value.clone();
+        }
+        let Some(cell) = cell_id(def.id, repetition) else {
+            return Value::empty(values::value_type(def.data_type));
+        };
+        let cell = globals.and_then(|g| g.child(&uint_segment(cell)));
+        if def.data_type == DataType::Container {
+            let text = cell.and_then(values::cell_text).filter(|t| !t.is_empty());
+            if let Some((_, container)) = text.and_then(|t| named.iter().find(|(n, _)| *n == t)) {
+                return Value::Container(container.clone());
+            }
+        }
+        self.stored_value(table, def, cell)
     }
 
     /// What a field reads on [`NO_RECORD`]: in Find mode the current
@@ -3229,7 +3432,6 @@ impl ServerHost {
     /// on their own, through an overlay of the version that holds them
     /// alone ([`transaction_cover`]).
     fn query(&self, table: u64, finders: &[Vec<u8>]) -> Result<RidList, FindError> {
-        let mut found = self.query_store(table, finders)?;
         let changed: Vec<(u64, Option<&OwnedNode>)> = self
             .pending_in(table)
             .map(|((_, id), change)| match change {
@@ -3237,34 +3439,68 @@ impl ServerHost {
                 Change::Delete => (*id, None),
             })
             .collect();
-        if changed.is_empty() {
-            return Ok(found);
-        }
-        found = found.and_not(&changed.iter().map(|(id, _)| *id).collect());
-        let records: Vec<(u64, &OwnedNode)> = changed
+        let written: Vec<(u64, &OwnedNode)> = changed
             .iter()
             .filter_map(|(id, node)| Some((*id, (*node)?)))
             .collect();
-        if records.is_empty() {
-            return Ok(found);
-        }
-        let covered = transaction_cover(table, &records);
         let program = find::program(self.hosted.id, table, finders, None);
         let context = om_query::Context {
             file_id: self.hosted.id,
             connection_key: None,
         };
-        let matched = self.read(|read| {
-            let overlay = Overlay::new(read.view, &covered);
-            // The indexes it builds from the transaction's records are the
-            // find's alone: none of them is stored.
-            let waiting = crate::engine::Waiting::default();
-            let source = FindSource::over(&overlay, read.derived, &waiting);
+        // One reading: the version's find, and what the find over the
+        // transaction's records needs of the version, the table's field
+        // catalog `[T, 03]` and its derived state.
+        let t = uint_segment(table);
+        let ran = self.read_with_derived(|read| {
+            let source = FindSource::new(read);
             let outcome = om_query::execute(&source, &program, &context);
             source.failed()?;
-            Ok(self.found(outcome))
+            let fields = match written.is_empty() {
+                true => None,
+                false => read
+                    .view
+                    .subtree(&[&t, &[3]], NO_LIMIT)?
+                    .map(Cow::into_owned),
+            };
+            Ok((self.found(outcome), read.waiting.has_indexes(), fields))
         });
-        let matched = matched.map_err(|_| FindError::Query(UNREADABLE_CODE))??;
+        let ((found, built, fields), derived) =
+            ran.map_err(|_| FindError::Query(UNREADABLE_CODE))?;
+        if built && !self.read_failed() {
+            // Indexes the find built on demand are stored (query-program.md
+            // 7.1), as for a client's find; not after a read that failed.
+            self.shared
+                .engine
+                .submit_draft(&self.hosted, Draft::StoreIndexes);
+            self.reads.wrote();
+        }
+        let mut found = found?;
+        if changed.is_empty() {
+            return Ok(found);
+        }
+        found = found.and_not(&changed.iter().map(|(id, _)| *id).collect());
+        if written.is_empty() {
+            return Ok(found);
+        }
+        // The records the transaction wrote, found with no reading held, in
+        // an overlay of a tree that holds the table's field catalog alone,
+        // as the store that held them did (`Store::scratch`): what the find
+        // reads is the covers, that catalog and the derived state.
+        crate::engine::assert_no_reading_held("a transaction's find");
+        let base = OwnedNode::list(
+            Vec::new(),
+            vec![OwnedNode::list(t.clone(), fields.into_iter().collect())],
+        );
+        let base = crate::engine::TreeView::new(&base, Version::default());
+        let covered = transaction_cover(table, &written);
+        let overlay = Overlay::new(&base, &covered);
+        // The indexes it builds from the transaction's records are the
+        // find's alone: none of them is stored.
+        let waiting = crate::engine::Waiting::default();
+        let source = FindSource::over(&overlay, &derived, &waiting);
+        let outcome = om_query::execute(&source, &program, &context);
+        let matched = self.found(outcome)?;
         Ok(found.or(&matched))
     }
 
@@ -3322,7 +3558,9 @@ impl ServerHost {
     }
 
     /// One SimpleFind on the file's own records and indexes, through a
-    /// reading taken for it ([`FindSource`]); a read that fails is 802.
+    /// reading taken for it ([`FindSource`]); a read that fails is 802. The
+    /// reference's ([`Self::query_by_scratch`]).
+    #[cfg(test)]
     fn query_store(&self, table: u64, finders: &[Vec<u8>]) -> Result<RidList, FindError> {
         let program = find::program(self.hosted.id, table, finders, None);
         let context = om_query::Context {
@@ -3336,12 +3574,13 @@ impl ServerHost {
             Ok((self.found(outcome), read.waiting.has_indexes()))
         });
         let (found, built) = ran.map_err(|_| FindError::Query(UNREADABLE_CODE))?;
-        if built {
+        if built && !self.read_failed() {
             // Indexes the find built on demand are stored (query-program.md
-            // 7.1), as for a client's find.
+            // 7.1), as for a client's find; not after a read that failed.
             self.shared
                 .engine
                 .submit_draft(&self.hosted, Draft::StoreIndexes);
+            self.reads.wrote();
         }
         found
     }
@@ -3490,19 +3729,18 @@ impl ServerHost {
     /// Facts about the session's account, the file's own, whose password
     /// authenticated it.
     ///
-    /// Read from the derived state of a reading taken for it
-    /// ([`Self::read_accounts`]); accounts that cannot be read give none,
-    /// and fail the step.
+    /// The account is looked up in the derived state of a reading taken for
+    /// it ([`Self::read_accounts`]) and its facts worked out once the
+    /// reading is let go (they check a password, which is no read). Accounts
+    /// the engine could not decode give none, as before.
     fn authenticated_account_info(&self) -> om_data::host::AccountInfo {
-        self.read_accounts(|read| {
-            Ok(read
-                .derived
-                .account(&self.account)?
-                .map(|account| account.authenticated_info()))
-        })
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+        let account = self
+            .read_accounts(|read| Ok(read.derived.account(&self.account).ok().flatten()))
+            .ok()
+            .flatten();
+        account
+            .map(|account| account.authenticated_info())
+            .unwrap_or_default()
     }
 
     fn file_stem(&self) -> &str {
@@ -3515,10 +3753,16 @@ impl ServerHost {
     /// What calculations a query computes are told by `Get`: the session's
     /// account and file, the server's clock.
     fn session_info(&self) -> SessionInfo {
+        self.session_info_with(self.authenticated_account_info())
+    }
+
+    /// [`Self::session_info`] with the account's facts `account_info`, read
+    /// already in the call's reading.
+    fn session_info_with(&self, account_info: om_data::host::AccountInfo) -> SessionInfo {
         SessionInfo {
             application_version: format!("Server {}", env!("CARGO_PKG_VERSION")),
             account_name: self.account.clone(),
-            account_info: self.authenticated_account_info(),
+            account_info,
             user_name: self.account.clone(),
             file_name: self.file_stem().to_owned(),
             file_path: format!("file:{}", self.hosted.path.display()),
@@ -3612,7 +3856,34 @@ impl<'h> SessionSource<'h> {
         }
     }
 
-    fn values(&self, table: u64, node: &OwnedNode) -> RecordValues {
+    /// The texts of `node`'s container cells that name a library member, a
+    /// record of `table`, whose file names its values show.
+    fn container_texts(&self, table: u64, node: &OwnedNode) -> Vec<String> {
+        let Some(def) = self.schema.table(table) else {
+            return Vec::new();
+        };
+        let mut texts = Vec::new();
+        for f in def.fields.values() {
+            if f.value_type != ValueType::Container || f.global {
+                continue;
+            }
+            for rep in 1..=f.repetitions.min(255) {
+                let text = cell_id(f.id, rep)
+                    .and_then(|key| node.child(&uint_segment(key)))
+                    .and_then(values::cell_text)
+                    .filter(|t| om_data::containers::reference(t).is_some());
+                texts.extend(text);
+            }
+        }
+        texts
+    }
+
+    fn values(
+        &self,
+        table: u64,
+        node: &OwnedNode,
+        names: &HashMap<String, String>,
+    ) -> RecordValues {
         let cx = self.host.cx();
         let mut values = RecordValues {
             mod_count: Some(modcount::serial_value(node.child(&[modcount::MOD_COUNT]))),
@@ -3634,7 +3905,7 @@ impl<'h> SessionSource<'h> {
                     continue;
                 };
                 if let Some(cell) = node.child(&uint_segment(key)) {
-                    values.set(f.id, rep, self.decode(table, f, cell, &cx));
+                    values.set(f.id, rep, self.decode(f, cell, &cx, names));
                 }
             }
         }
@@ -3643,19 +3914,23 @@ impl<'h> SessionSource<'h> {
 }
 
 impl SessionSource<'_> {
-    /// A stored cell of field `f` of `table` as a query reads it: a
-    /// container field as its file name alone (execute-sql.md 8.1, what
-    /// the column shows), without loading its data for every row. The name
-    /// is read through a reading of its own, the row's let go
-    /// ([`ServerHost::with_record`]); a name that cannot be read is the
-    /// stored text, and fails the step ([`ServerHost::read`]).
-    fn decode(&self, table: u64, f: &om_data::host::FieldDef, cell: &OwnedNode, cx: &Ctx) -> Value {
+    /// A stored cell of field `f` as a query reads it: a container field as
+    /// its file name alone (execute-sql.md 8.1, what the column shows),
+    /// without loading its data for every row: from `names`, read with the
+    /// row ([`CalcSource::record`]), or the text itself.
+    fn decode(
+        &self,
+        f: &om_data::host::FieldDef,
+        cell: &OwnedNode,
+        cx: &Ctx,
+        names: &HashMap<String, String>,
+    ) -> Value {
         if f.value_type != ValueType::Container {
             return values::decode(f.value_type, Some(cell), cx);
         }
         match values::cell_text(cell).filter(|t| !t.is_empty()) {
             Some(text) => {
-                let name = self.host.container_name(table, &text);
+                let name = names.get(&text).cloned().unwrap_or(text);
                 Value::Container(om_calc::Container {
                     text: om_calc::Text::plain(name),
                     ..Default::default()
@@ -3668,20 +3943,86 @@ impl SessionSource<'_> {
 
 impl CalcSource for SessionSource<'_> {
     fn record(&self, table: u64, record: u64) -> Result<Option<Arc<RecordValues>>, CalcError> {
+        self.host.one_call(|| self.record_values(table, record))
+    }
+
+    fn records(&self, table: u64) -> Result<Arc<[u64]>, CalcError> {
+        self.host.one_call(|| self.record_ids(table))
+    }
+
+    /// The session's global values (those a step set, the file's stored
+    /// ones otherwise).
+    fn globals(&self, table: u64) -> Result<Arc<RecordValues>, CalcError> {
+        self.host.one_call(|| Ok(self.host.session_globals(table)))
+    }
+
+    fn found_set(&self, occurrence: u64, table: u64) -> Result<Arc<[u64]>, CalcError> {
+        self.host.one_call(|| self.found_ids(occurrence, table))
+    }
+
+    fn lookup(&self, table: u64, field: u64, text: &str) -> Result<Option<Arc<[u64]>>, CalcError> {
+        self.host.one_call(|| self.lookup_ids(table, field, text))
+    }
+
+    /// A query stops when its script is aborted or runs out of time.
+    fn interrupted(&self) -> bool {
+        self.host.aborted()
+    }
+}
+
+/// [`CalcSource`]'s calls, each one call into the host
+/// ([`ServerHost::one_call`]).
+impl SessionSource<'_> {
+    fn record_values(
+        &self,
+        table: u64,
+        record: u64,
+    ) -> Result<Option<Arc<RecordValues>>, CalcError> {
         if let Some(values) = self.records.borrow().get(&(table, record)) {
             return Ok(values.clone());
         }
-        let values = self
-            .host
-            .with_record(table, record, |node| node.map(|n| self.values(table, n)))
-            .map(Arc::new);
+        let values = if self.host.holds_record(table, record) {
+            // The session's own: its containers' names through one reading.
+            self.host.with_record(table, record, |node| {
+                node.map(|node| {
+                    let texts = self.container_texts(table, node);
+                    let names = self.host.container_names(table, &texts);
+                    self.values(table, node, &names)
+                })
+            })
+        } else {
+            // The file's: the record and its containers' names through one
+            // reading, so that they are of one version.
+            let path = record_path(table, record);
+            let read = self.host.read(|read| {
+                let Some(node) = read
+                    .view
+                    .subtree(&segments(&path), NO_LIMIT)?
+                    .map(Cow::into_owned)
+                else {
+                    return Ok(None);
+                };
+                let texts = self.container_texts(table, &node);
+                let names = containers::container_names(read.view, table, &texts)?;
+                Ok(Some((node, texts, names)))
+            });
+            match read {
+                Ok(Some((node, texts, names))) => {
+                    let names = texts.into_iter().zip(names).collect();
+                    Some(self.values(table, &node, &names))
+                }
+                Ok(None) => None,
+                Err(_) => return Err(CalcError::from_code(802).expect("nonzero")),
+            }
+        }
+        .map(Arc::new);
         self.records
             .borrow_mut()
             .insert((table, record), values.clone());
         Ok(values)
     }
 
-    fn records(&self, table: u64) -> Result<Arc<[u64]>, CalcError> {
+    fn record_ids(&self, table: u64) -> Result<Arc<[u64]>, CalcError> {
         if let Some(ids) = self.tables.borrow().get(&table) {
             return Ok(Arc::clone(ids));
         }
@@ -3690,22 +4031,21 @@ impl CalcSource for SessionSource<'_> {
         Ok(ids)
     }
 
-    /// The session's global values (those a step set, the file's stored
-    /// ones otherwise).
-    fn globals(&self, table: u64) -> Result<Arc<RecordValues>, CalcError> {
-        Ok(self.host.session_globals(table))
-    }
-
-    fn found_set(&self, _occurrence: u64, table: u64) -> Result<Arc<[u64]>, CalcError> {
+    fn found_ids(&self, _occurrence: u64, table: u64) -> Result<Arc<[u64]>, CalcError> {
         match &self.host.window {
             Some(w) if w.table == table => Ok(w.found.iter().copied().collect()),
-            _ => self.records(table),
+            _ => self.record_ids(table),
         }
     }
 
     /// The finds of Find mode for the whole value, with the open record,
     /// whose edits the file's indexes do not hold yet.
-    fn lookup(&self, table: u64, field: u64, text: &str) -> Result<Option<Arc<[u64]>>, CalcError> {
+    fn lookup_ids(
+        &self,
+        table: u64,
+        field: u64,
+        text: &str,
+    ) -> Result<Option<Arc<[u64]>>, CalcError> {
         let Some((_, def)) = self
             .host
             .schema
@@ -3748,11 +4088,6 @@ impl CalcSource for SessionSource<'_> {
         }
         Ok(Some(ids.into()))
     }
-
-    /// A query stops when its script is aborted or runs out of time.
-    fn interrupted(&self) -> bool {
-        self.host.aborted()
-    }
 }
 
 impl CalcHost for ServerHost {
@@ -3775,7 +4110,7 @@ impl CalcHost for ServerHost {
         container: &om_calc::Container,
         _context: &Context,
     ) -> Result<om_calc::eval::StoredContainer, CalcError> {
-        self.load_container(container)
+        self.one_call(|| self.load_container(container))
     }
 
     fn today(&self) -> Date {
@@ -3806,39 +4141,7 @@ impl CalcHost for ServerHost {
         field: u64,
         repetition: u32,
     ) -> Result<Value, CalcError> {
-        let (table, def) = self
-            .schema
-            .field(occurrence, field)
-            .ok_or(CalcError::FIELD_MISSING)?;
-        if !self.may_view() {
-            // A custom set's field access is not applied: no field is
-            // readable (fail closed), not even as FileMaker's "<No
-            // Access>".
-            return Err(CalcError::from_code(NO_PRIVILEGES).expect("nonzero"));
-        }
-        let ty = values::value_type(def.data_type);
-        if def.kind == FieldKind::Calculation
-            && matches!(
-                self.field_info(occurrence, field).map(|i| i.storage),
-                Some(Storage::Unstored(_))
-            )
-        {
-            return self.read_field(occurrence, record, field, repetition);
-        }
-        if Self::is_global(def) {
-            return Ok(self.global_value(table, def, repetition));
-        }
-        if def.kind == FieldKind::Summary {
-            return self.summary_value(occurrence, table, def, record, repetition);
-        }
-        if record == NO_RECORD {
-            return Ok(self.request_value(occurrence, field, repetition, ty));
-        }
-        let Some(id) = cell_id(field, repetition) else {
-            return Ok(Value::empty(ty));
-        };
-        let cell = self.cell(table, record, id);
-        Ok(self.stored_value(table, def, cell.as_ref()))
+        self.one_call(|| self.stored_field_value(occurrence, record, field, repetition))
     }
 
     /// Through the file's relationships (file-metadata.md 4.3); nothing
@@ -3923,8 +4226,12 @@ impl CalcHost for ServerHost {
     /// The session's `Get` answers ([`get`]), as FileMaker Server's script
     /// engine gives them.
     fn get(&mut self, selector: u8, _context: &Context) -> Result<Value, CalcError> {
-        self.get_answer(selector)
-            .unwrap_or_else(|| Ok(self.get_value(selector)))
+        let outer = self.reads.enter();
+        let answer = self
+            .get_answer(selector)
+            .unwrap_or_else(|| Ok(self.get_value(selector)));
+        self.reads.leave(outer);
+        answer
     }
 
     fn variables(&mut self, scope: VarScope) -> &mut Variables {
@@ -3941,7 +4248,10 @@ impl CalcHost for ServerHost {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
-        self.host_call(function, args, context)
+        let outer = self.reads.enter();
+        let called = self.host_call(function, args, context);
+        self.reads.leave(outer);
+        called
     }
 
     fn call_reporting(
@@ -3951,7 +4261,10 @@ impl CalcHost for ServerHost {
         context: &Context,
     ) -> (Value, Option<CalcError>) {
         if let Some(variant) = Variant::of(&function) {
-            return self.execute_sql(variant, args);
+            let outer = self.reads.enter();
+            let answered = self.execute_sql(variant, args);
+            self.reads.leave(outer);
+            return answered;
         }
         match self.call(function, args, context) {
             Ok(v) => (v, None),
@@ -4103,6 +4416,58 @@ impl ServerHost {
     }
 }
 
+impl ServerHost {
+    /// [`CalcHost::field_value`], one call into the host.
+    fn stored_field_value(
+        &self,
+        occurrence: u64,
+        record: u64,
+        field: u64,
+        repetition: u32,
+    ) -> Result<Value, CalcError> {
+        let (table, def) = self
+            .schema
+            .field(occurrence, field)
+            .ok_or(CalcError::FIELD_MISSING)?;
+        if !self.may_view() {
+            // A custom set's field access is not applied: no field is
+            // readable (fail closed), not even as FileMaker's "<No
+            // Access>".
+            return Err(CalcError::from_code(NO_PRIVILEGES).expect("nonzero"));
+        }
+        let ty = values::value_type(def.data_type);
+        if def.kind == FieldKind::Calculation
+            && matches!(
+                self.field_info(occurrence, field).map(|i| i.storage),
+                Some(Storage::Unstored(_))
+            )
+        {
+            return self.read_field(occurrence, record, field, repetition);
+        }
+        if Self::is_global(def) {
+            return Ok(self.global_value(table, def, repetition));
+        }
+        if def.kind == FieldKind::Summary {
+            return self.summary_value(occurrence, table, def, record, repetition);
+        }
+        if record == NO_RECORD {
+            return Ok(self.request_value(occurrence, field, repetition, ty));
+        }
+        let Some(id) = cell_id(field, repetition) else {
+            return Ok(Value::empty(ty));
+        };
+        if self.holds_record(table, record) {
+            let cell = self.cell(table, record, id);
+            return Ok(self.stored_value(table, def, cell.as_ref()));
+        }
+        // The file's record: its cell and the member a container names,
+        // through one reading.
+        let mut path = record_path(table, record);
+        path.push(uint_segment(id));
+        Ok(self.committed_value(table, def, &path))
+    }
+}
+
 impl ScriptHost for ServerHost {
     /// The window's current record; in Find mode, or without a current
     /// record, [`NO_RECORD`].
@@ -4208,12 +4573,11 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// 802 when a read of the file failed while the step ran
-    /// ([`ServerHost::read`]), over any error of the step's own.
+    /// 802 once a read of the file failed ([`ServerHost::read`]): the run
+    /// ends after the step it failed in, or before the step whose schema it
+    /// could not read again (docs/server-storage.md 5).
     fn take_step_error(&mut self) -> Option<ErrorCode> {
-        self.failed_read
-            .swap(false, Ordering::Relaxed)
-            .then_some(UNREADABLE)
+        self.read_failed().then_some(UNREADABLE)
     }
 
     /// The scripts the account's set lets it run (session-identity.md
@@ -6098,16 +6462,18 @@ impl Accounts for ServerHost {
             return Err(HostError::Unsupported);
         };
         // The file's accounts as the engine holds them now (the derived
-        // state of a reading taken for it): those that cannot be read are
-        // 802, and nothing is changed.
+        // state of a reading taken for it). Accounts the engine could not
+        // decode are none, as before (3); a read that fails ends the run
+        // ([`Self::read`]).
         let is_file_account = self
             .read_accounts(|read| {
-                let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
-                Ok(accounts.iter().any(|a| {
-                    a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+                Ok(read.derived.accounts().as_ref().is_ok_and(|accounts| {
+                    accounts.iter().any(|a| {
+                        a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+                    })
                 }))
             })
-            .map_err(|_| UNREADABLE)?;
+            .unwrap_or(false);
         if key == [1] || !is_file_account {
             return Err(HostError::Unsupported);
         }

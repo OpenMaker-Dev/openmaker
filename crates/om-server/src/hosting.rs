@@ -250,6 +250,46 @@ pub struct Hosted {
     unknown: std::sync::OnceLock<String>,
     /// Where a failed save is recorded and raised as an alert.
     events: EventLog,
+    /// A test's switch that fails one of a script session's reads of the
+    /// file ([`ReadFault`]).
+    #[cfg(test)]
+    pub(crate) read_fault: ReadFault,
+}
+
+/// A test's switch that fails the n-th read a script session makes of the
+/// file (`scripts::host::SessionReads::begin`), counted from when it is
+/// set, or every read from the n-th on, and keeps the file's tree as it
+/// was when the first of them failed, for the test to compare with what
+/// the session left.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct ReadFault {
+    /// The read to fail, 0 for none.
+    pub fail_at: std::sync::atomic::AtomicU64,
+    /// Whether every read after it fails too, as storage that stays broken.
+    pub after: std::sync::atomic::AtomicBool,
+    /// The reads counted.
+    pub reads: std::sync::atomic::AtomicU64,
+    /// The file's tree when the read failed.
+    pub at_failure: Mutex<Option<om_hbam::OwnedNode>>,
+}
+
+#[cfg(test)]
+impl ReadFault {
+    /// Fail read `n` from now on (0 for none), counting from 0, and with
+    /// `after` every read after it too.
+    pub fn fail(&self, n: u64, after: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.reads.store(0, Relaxed);
+        self.fail_at.store(n, Relaxed);
+        self.after.store(after, Relaxed);
+        *self.at_failure.lock().unwrap() = None;
+    }
+
+    /// The tree kept when the read failed, if one did.
+    pub fn tree_at_failure(&self) -> Option<om_hbam::OwnedNode> {
+        self.at_failure.lock().unwrap().clone()
+    }
 }
 
 /// Where a file's deferred field work stands ([`Hosted::recover`]).
@@ -381,6 +421,8 @@ impl Hosted {
             recovery: Mutex::new(Recovery::Due),
             unknown: std::sync::OnceLock::new(),
             events: events.clone(),
+            #[cfg(test)]
+            read_fault: ReadFault::default(),
         })
     }
 
@@ -505,6 +547,28 @@ impl Hosted {
     #[cfg(debug_assertions)]
     pub(crate) fn fail_commit_saves(&self, fail: bool) {
         self.store_for_writing().fail_commit_saves = fail;
+    }
+
+    /// A script session's read of the file is about to be made: counted,
+    /// and failed when it is the one [`ReadFault`] was set to fail, the
+    /// file's tree kept as it is then.
+    #[cfg(test)]
+    pub(crate) fn script_read(&self) -> Result<(), ReadError> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let fault = &self.read_fault;
+        let n = fault.reads.fetch_add(1, Relaxed) + 1;
+        let at = fault.fail_at.load(Relaxed);
+        if at == 0 || n < at || (n > at && !fault.after.load(Relaxed)) {
+            return Ok(());
+        }
+        if n == at {
+            let tree = self.read_store().node(&[]).cloned();
+            *fault.at_failure.lock().unwrap() = tree;
+        }
+        Err(ReadError::Unreadable {
+            path: Vec::new(),
+            why: format!("a test failed read {n}"),
+        })
     }
 
     /// Make every save of this file fail at `fault`, or work again with

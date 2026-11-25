@@ -85,24 +85,77 @@ pub(super) fn opening_layout(view: &dyn View) -> Result<Option<u64>, ReadError> 
 }
 
 impl ServerHost {
-    /// The Design view of the file's schema, built when first needed from
-    /// the file as it is then. A read that fails builds none, and is read
-    /// again when next asked.
+    /// The Design view of the file's schema as the engine holds it now
+    /// ([`Self::with_design`]).
     pub(super) fn design(&self) -> Option<Arc<CalcSchema>> {
-        if let Some(design) = self.schema.design.get() {
-            return design.clone();
+        self.with_design(false, |_, _| Ok(()))
+            .and_then(|(design, ())| design)
+    }
+
+    /// The Design view of the file's schema as the engine holds it now, and
+    /// `then` of it, read through the same reading: one reading for one call
+    /// ([`ServerHost::one_call`]). It is compiled from the catalogs the Design
+    /// functions read and the catalog, locale and language of that
+    /// reading's derived state, all of one version, and kept by that
+    /// version, which a later call of the same version reuses. `then` reads
+    /// the accounts when `accounts` (`Reading::serve_with_accounts`). `None`
+    /// when the read fails, which ends the run ([`ServerHost::read`]).
+    fn with_design<T: PartialEq + std::fmt::Debug>(
+        &self,
+        accounts: bool,
+        mut then: impl FnMut(Option<&CalcSchema>, Read<'_>) -> Result<T, ReadError>,
+    ) -> Option<(Option<Arc<CalcSchema>>, T)> {
+        if let Err(error) = self.reads.begin(&self.hosted) {
+            self.note_failed_read(&error);
+            return None;
         }
-        let wire = self.read(design_catalogs).ok()?;
-        let design = wire.and_then(|wire| {
-            design_schema(
-                &wire,
-                &self.schema.catalog,
-                self.locale.clone(),
-                self.file_language,
-                &self.hosted.name,
-            )
-        });
-        self.schema.design.get_or_init(|| design).clone()
+        let reading = self.shared.engine.read(&self.hosted);
+        let version = reading.read().derived.version();
+        let cached = self
+            .schema
+            .design
+            .borrow()
+            .as_ref()
+            .filter(|(of, _)| *of == version)
+            .map(|(_, design)| design.clone());
+        let design = match cached {
+            Some(design) => design,
+            None => {
+                let parts = reading.serve(|read| {
+                    Ok::<_, ReadError>((
+                        design_catalogs(read)?,
+                        read.derived.shared_catalog(),
+                        read.derived.locale(),
+                        read.derived.file_language(),
+                    ))
+                });
+                let (wire, catalog, locale, language) = match parts {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        drop(reading);
+                        self.note_failed_read(&error);
+                        return None;
+                    }
+                };
+                let design = wire.and_then(|wire| {
+                    design_schema(&wire, &catalog, locale, language, &self.hosted.name)
+                });
+                *self.schema.design.borrow_mut() = Some((version, design.clone()));
+                design
+            }
+        };
+        let then = match accounts {
+            true => reading.serve_with_accounts(|read| then(design.as_deref(), read)),
+            false => reading.serve(|read| then(design.as_deref(), read)),
+        };
+        drop(reading);
+        match then {
+            Ok(then) => Some((design, then)),
+            Err(error) => {
+                self.note_failed_read(&error);
+                None
+            }
+        }
     }
 
     /// The window's layout in the Design view.
@@ -188,9 +241,25 @@ impl ServerHost {
         args: &[Value],
         context: &Context,
     ) -> Option<Result<Value, CalcError>> {
-        let schema = self.design()?;
+        // The Design schema and, for GetNextSerialValue, the field's next
+        // value, through one reading.
+        let serial = name.eq_ignore_ascii_case("GetNextSerialValue");
+        // The account the session's facts describe, from the same reading;
+        // its facts are worked out once the reading is let go.
+        let (schema, (next, account)) = self.with_design(true, |schema, read| {
+            let next = match (serial, schema) {
+                (true, Some(schema)) => self.next_serial_in(schema, read, args, context)?,
+                _ => None,
+            };
+            let account = read.derived.account(&self.account).ok().flatten();
+            Ok((next, account))
+        })?;
+        let schema = schema?;
         let source = SessionSource { host: self };
-        let mut session = self.session_info();
+        let account_info = account
+            .map(|account| account.authenticated_info())
+            .unwrap_or_default();
+        let mut session = self.session_info_with(account_info);
         session.window_name = self.window_name();
         session.windows = self
             .window_names()
@@ -201,56 +270,65 @@ impl ServerHost {
             session.layout_name = layout.name;
         }
         let file = FileCalc::new(&schema, &source, self.today).with_session(&session);
-        if name.eq_ignore_ascii_case("GetNextSerialValue") {
-            return Some(Ok(self.next_serial_value(&file, args, context)));
+        if serial {
+            let cx = self.cx();
+            let file_name = args
+                .first()
+                .map(|v| v.to_text(&cx).into_string())
+                .unwrap_or_default();
+            if !file.names_this_file(&file_name) {
+                return Some(Ok(Value::empty_text()));
+            }
+            return Some(Ok(next.map_or_else(Value::empty_text, Value::text)));
         }
         file.design(name, args, context)
     }
 
     /// `GetNextSerialValue`: the hosted file's current next value
     /// (`[T, 3, 5, F, 0c]`, advanced by every record the session creates),
-    /// empty for a field without a serial number.
-    fn next_serial_value(&self, file: &FileCalc<'_>, args: &[Value], context: &Context) -> Value {
+    /// read through `read`, the reading `schema` is of; `None` (empty) for a
+    /// field without a serial number. Whether its file argument names this
+    /// file is the caller's ([`Self::design_call`]).
+    fn next_serial_in(
+        &self,
+        schema: &CalcSchema,
+        read: Read<'_>,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Option<String>, ReadError> {
         let cx = self.cx();
         let text = |i: usize| {
             args.get(i)
                 .map(|v| v.to_text(&cx).into_string())
                 .unwrap_or_default()
         };
-        let schema = file.schema;
-        if !file.names_this_file(&text(0)) {
-            return Value::empty_text();
-        }
         let name = text(1);
         let (occurrence, field) = match name.split_once("::") {
             Some((occurrence, field)) => (schema.occurrence_named(occurrence).map(|o| o.id), field),
             None => (context.occurrence, name.as_str()),
         };
         let Some(table) = occurrence.and_then(|o| schema.table_of(o)) else {
-            return Value::empty_text();
+            return Ok(None);
         };
         let Some(def) = table
             .fields
             .values()
             .find(|f| f.name.to_lowercase() == field.to_lowercase())
         else {
-            return Value::empty_text();
+            return Ok(None);
         };
         if def.next_serial.is_none() {
-            return Value::empty_text();
+            return Ok(None);
         }
         let (t, f) = (uint_segment(table.id), uint_segment(def.id));
         let path: [&[u8]; 5] = [&t, &[3], &[5], &f, &[0x0c]];
-        // A read that fails reads the definition's value, and fails the
-        // step ([`ServerHost::read`]).
-        let live = self
-            .read(|read| {
-                let node = read.view.subtree(&path, NO_LIMIT)?;
-                Ok(node.and_then(|node| crate::scripts::values::cell_text(&node)))
-            })
-            .ok()
-            .flatten();
-        Value::text(live.or_else(|| def.next_serial.clone()).unwrap_or_default())
+        let live = read
+            .view
+            .subtree(&path, NO_LIMIT)?
+            .and_then(|node| crate::scripts::values::cell_text(&node));
+        Ok(Some(
+            live.or_else(|| def.next_serial.clone()).unwrap_or_default(),
+        ))
     }
 
     /// `GetLayoutObjectAttribute` on the window's layout, in layout

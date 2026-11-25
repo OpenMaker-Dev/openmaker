@@ -823,12 +823,13 @@ pub trait ScriptHost:
     /// server session's copy of a schema another client saved.
     fn before_step(&mut self) {}
 
-    /// An error the host met while the step that just ran was running,
-    /// which the step's own result does not report, taken: a server
-    /// session's read of its file that failed, read as missing where its
-    /// caller had no error to give. The step fails with it, also over an
-    /// error of its own, which may follow from what was read as missing (a
-    /// record that could not be read is not a missing record).
+    /// An error that ends the run, which the host met before or while the
+    /// last step ran, taken: a server session's read of its file that
+    /// failed (OpenMaker's rule for a storage failure). Asked after
+    /// [`Self::before_step`] and after each step; the runtime then halts the
+    /// script before any further step or trigger, reverting its transaction,
+    /// with the error as the run's and `Get ( LastError )`. `None` for a
+    /// host that never ends a run so.
     fn take_step_error(&mut self) -> Option<ErrorCode> {
         None
     }

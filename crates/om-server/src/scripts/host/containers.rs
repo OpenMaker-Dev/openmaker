@@ -21,7 +21,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use om_calc::eval::StoredContainer;
@@ -30,7 +29,7 @@ use om_data::containers::{self, MemberInfo};
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::OwnedNode;
 
-use super::{read_file, values, Change, ServerHost};
+use super::{read_file, values, Change, ServerHost, SessionReads};
 use crate::connection::Shared;
 use crate::engine::{ReadError, View, NO_LIMIT};
 use crate::library::{self, BinaryData};
@@ -52,7 +51,11 @@ fn library_member<'v>(
 /// the library member it names, the member referenced for its data, which
 /// is read only when a function needs it; text that names no member of the
 /// library is the reference alone, without data.
-fn stored_container(view: &dyn View, table: u64, text: &str) -> Result<Container, ReadError> {
+pub(super) fn stored_container(
+    view: &dyn View,
+    table: u64,
+    text: &str,
+) -> Result<Container, ReadError> {
     let named = match containers::reference(text) {
         Some(member) => library_member(view, table, &member)?.map(|node| (member, node)),
         None => None,
@@ -63,6 +66,31 @@ fn stored_container(view: &dyn View, table: u64, text: &str) -> Result<Container
             text: om_calc::Text::plain(text),
             ..Default::default()
         }))
+}
+
+/// The text form of each container cell of `table` holding one of
+/// `texts`: the file name of the member it names (execute-sql.md 8.1), or
+/// the text itself when it names none (`Store::container_name`), read
+/// through `view`.
+pub(super) fn container_names(
+    view: &dyn View,
+    table: u64,
+    texts: &[String],
+) -> Result<Vec<String>, ReadError> {
+    let mut names = Vec::with_capacity(texts.len());
+    for text in texts {
+        let named = match containers::reference(text) {
+            Some(member) => library_member(view, table, &member)?,
+            None => None,
+        };
+        names.push(match named {
+            Some(member) => MemberInfo::read(&member)
+                .map(|i| i.name)
+                .unwrap_or_default(),
+            None => text.clone(),
+        });
+    }
+    Ok(names)
 }
 
 /// A container's stored data as a reading gives it, compared as the test
@@ -183,7 +211,7 @@ fn reference_path(_reference: &[u8]) -> Option<Vec<std::ffi::OsString>> {
 struct SessionContainers {
     shared: Arc<Shared>,
     hosted: Arc<crate::hosting::Hosted>,
-    failed: Arc<AtomicBool>,
+    reads: Arc<SessionReads>,
     pending: HashMap<String, Container>,
 }
 
@@ -192,17 +220,21 @@ impl om_data::rules::ContainerReader for SessionContainers {
         if let Some(pending) = self.pending.get(text) {
             return Some(pending.clone());
         }
-        let stored = read_file(&self.shared, &self.hosted, &self.failed, |read| {
+        let outer = self.reads.enter();
+        let stored = read_file(&self.shared, &self.hosted, &self.reads, |read| {
             stored_container(read.view, table, text)
-        })
-        .ok()?;
+        });
+        self.reads.leave(outer);
+        let stored = stored.ok()?;
         stored.library.is_some().then_some(stored)
     }
 
     fn data(&self, table: u64, member: &[u8]) -> Option<StoredContainer> {
-        let loaded = read_file(&self.shared, &self.hosted, &self.failed, |read| {
+        let outer = self.reads.enter();
+        let loaded = read_file(&self.shared, &self.hosted, &self.reads, |read| {
             load_member(read.view, &self.hosted.path, table, member, None)
         });
+        self.reads.leave(outer);
         loaded.ok().flatten().map(|loaded| loaded.0)
     }
 }
@@ -227,7 +259,7 @@ impl ServerHost {
         Arc::new(SessionContainers {
             shared: Arc::clone(&self.shared),
             hosted: Arc::clone(&self.hosted),
-            failed: Arc::clone(&self.failed_read),
+            reads: Arc::clone(&self.reads),
             pending,
         })
     }
@@ -327,25 +359,17 @@ impl ServerHost {
         }))
     }
 
-    /// The text form of a container field's value of `table` whose cell
-    /// holds `text`: the file name of the member it names (execute-sql.md
-    /// 8.1), or the text itself when it names none (`Store::container_name`).
-    /// A read that fails reads as the text and fails the step
-    /// ([`ServerHost::read`]).
-    pub(super) fn container_name(&self, table: u64, text: &str) -> String {
-        let name = self.read(|read| {
-            let named = match containers::reference(text) {
-                Some(member) => library_member(read.view, table, &member)?,
-                None => None,
-            };
-            Ok(match named {
-                Some(member) => MemberInfo::read(&member)
-                    .map(|i| i.name)
-                    .unwrap_or_default(),
-                None => text.to_string(),
-            })
-        });
-        name.unwrap_or_else(|_| text.to_string())
+    /// The file names of the container cells of `table` holding `texts`,
+    /// by text, through one reading ([`container_names`]); one that fails
+    /// reads each as its text, and ends the run ([`ServerHost::read`]).
+    pub(super) fn container_names(&self, table: u64, texts: &[String]) -> HashMap<String, String> {
+        if texts.is_empty() {
+            return HashMap::new();
+        }
+        let names = self
+            .read(|read| container_names(read.view, table, texts))
+            .unwrap_or_else(|_| texts.to_vec());
+        texts.iter().cloned().zip(names).collect()
     }
 
     /// The container data the cells of a record of `table` hold for the

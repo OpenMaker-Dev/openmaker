@@ -1144,10 +1144,18 @@ impl Runtime {
                 return RunState::Debugger(stop);
             }
             host.before_step();
+            if let Some(code) = host.take_step_error() {
+                self.halt_on_host_error(host, code);
+                continue;
+            }
             let waiting = self.next_step(host);
             self.debug_stepped();
             if waiting {
                 return RunState::Waiting;
+            }
+            if let Some(code) = host.take_step_error() {
+                self.halt_on_host_error(host, code);
+                continue;
             }
             self.after_step(host);
         }
@@ -1327,11 +1335,7 @@ impl Runtime {
             host.active_script_files(&files);
         }
         let executing = self.stack.last().map(|f| f.id);
-        let mut exec = self.execute(host, &step);
-        if let Some(code) = host.take_step_error() {
-            exec.error = code;
-            exec.unsupported = false;
-        }
+        let exec = self.execute(host, &step);
         // A navigation step may change the caller's window. Keep that
         // window for restoration after an external script, not the one
         // captured when its frame first started.
@@ -1743,6 +1747,16 @@ impl Runtime {
                 let _ = host.use_window(caller_window);
             }
         }
+    }
+
+    /// The host met an error that ends the run ([`ScriptHost::take_step_error`]):
+    /// the script halts before any further step or trigger, its transaction
+    /// reverted, with `code` as the run's error and `Get ( LastError )`, as
+    /// an unknown step aborts it.
+    fn halt_on_host_error(&mut self, host: &mut dyn ScriptHost, code: ErrorCode) {
+        self.halt_script(host);
+        self.abort_error = Some(code);
+        self.set_last_error(code, true);
     }
 
     /// `HaltScript` (script-runtime.md 3.5): reset the runtime states,

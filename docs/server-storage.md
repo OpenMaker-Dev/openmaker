@@ -995,34 +995,56 @@ the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
 
 **A script session's reads.** A server script session reads its file
-through readings of its own (`ServerHost::read`), each taken for one read
-and let go when that read returns, at the points where it took the store's
-read lock before: the schema when the session starts and before a step
-when the derived state's version moved (`SchemaParts`), a record, a cell,
-a table's record ids, a global value, the entries of a value index a
-validation checks (unique, existing, a value list from a field), each
-batch of a find's finders (`FindSource`), the Design functions'
-catalogs, a field's next serial value, a container's library member, the
-privilege set, a related-record lookup, and the account facts. A read
-returns what it read, owned where the work after it needs it, and does
-that work after the reading is let go: a record's values for a
-calculation from a copy of the record, then each container's file name
-through a reading of its own, where before the store's lock was held
-across both and passed down so that it was not taken twice. It never
-holds a reading across a write it submits (every write is submitted with
-none held), so a read after the session's commit, reservation or account
-edit reads the version that write made: the session sees what it wrote
+through readings of its own (`ServerHost::read`), at the points where it
+took the store's read lock before: the schema when the session starts and
+before a step when the derived state's version moved (`SchemaParts`), a
+record, a cell, a table's record ids, a global value, the entries of a
+value index a validation checks (unique, existing, a value list from a
+field), each batch of a find's finders (`FindSource`), the Design
+functions' catalogs and a field's next serial value, a container's
+library member, the privilege set, a related-record lookup, and the
+account facts.
+
+What the store read under one guard is read under one reading. One call
+into the host from the calculation engine or the record rules (a field's
+value, a `Get` function, a Design function, ExecuteSQL, a container's
+data, a record's values or a table's ids for a query, a related lookup;
+`ServerHost::one_call`) takes at most one reading, and everything that
+call reads comes from it: a row's values and its containers' file names
+come from one version, and the Design functions compile from the wire,
+the catalogs, the locale and the file's language of one version, the
+compiled schema cached by that version. A call that submits a write lets
+its reading go first and may take a new one after. In debug builds a call
+that takes a second reading without a write in between panics
+(`SessionReads::begin`). A script step is not one call: it reads through
+a reading for each read the store made under a guard of its own (the
+record it opens, a table's record ids, each calculation it evaluates), as
+it did, and a walk through related records takes one for each record and
+each lookup.
+
+A reading is held only for the reads. A read returns what it read, owned
+where the work after it needs it, and that work is done once the reading
+is let go: the find over a transaction's own records ("The overlay
+view", below), building the Design functions' schema, and the account
+facts, which check an empty password against the account's verifier, as
+a login does. It never holds a reading across a write it submits (every
+write is submitted with none held), so a read after the session's
+commit, reservation or account edit reads the version that write made:
+the session sees what it wrote
 (`scripts::tests::a_session_reads_what_it_committed`). Its schema is
 cached by the version of the derived state it was read from, and read
 again before a step whenever the engine's is another (a schema change, a
 script or layout edit, a roll-back that put one back). The account facts
 and Change Password's check read the reading's accounts
-(`Reading::serve_with_accounts`). The privilege set is read through the
-security catalog's names and set references alone (each account's `10`
-and `0b`, a set's member, each extended privilege's `10` and its set
-keys); before, it borrowed the catalog `[23]` whole, the passwords' `06`
-with it. How long the store's lock is held, before and after, is in the
-pull request that moved them ([#755](https://github.com/OpenMaker-Dev/openmaker/issues/755)).
+(`Reading::serve_with_accounts`). Accounts the engine could not decode
+answer as before: Change Password is refused with 3 and the account
+facts read as none, what OpenMaker does for what it cannot do; 802 is
+for a read that failed. The privilege set is read through the security
+catalog's names and set references alone (each account's `10` and `0b`,
+a set's member, each extended privilege's `10` and its set keys); before,
+it borrowed the catalog `[23]` whole, the passwords' `06` with it. How
+long the store's lock is held, before and after, is in the pull request
+that moved them ([#755](https://github.com/OpenMaker-Dev/openmaker/issues/755)).
 
 Lock order: a reading holds the store's read lock, and a write the store's
 write lock, then the lock table. A thread that took a second reading while
@@ -1037,51 +1059,76 @@ store only when no one holds it, and never waits. Every test of
 `om-server` runs with the check, and the test view answers every read of
 the fixtures' servers and of the in-crate script sessions.
 
-A read that fails is 802, "Unable to open file", as a login, Describe
-Security and a schedule answer one; FileMaker's answer when it cannot
-read part of a file in a script is unmeasured. By the kind of read:
+**A read that fails ends the run.** A read of the file that fails is
+fatal to the script run. This is OpenMaker's own rule for a storage
+failure; what FileMaker does when it cannot read part of a file in a
+script is unmeasured. The file engine's reads are of memory and fail only
+in tests, so no user meets it today. From the moment a read fails:
 
-| Read | What the script gets |
-|---|---|
-| the schema when the session starts | it runs nothing; the request's error is 802 |
-| the schema before a step | the session keeps the schema it read, and the step fails with 802 |
-| a record, a cell, a table's record ids, a global value, the Design functions' catalogs and a next serial value, a container's file name, the privilege set, the account facts | read as missing; the step fails with 802 |
-| a container's data in a calculation, a related-record lookup | the calculation's error 802; the step fails with 802 |
-| a find | the find's error 802 |
-| a validation's index entries | the commit is refused with 802 |
-| the accounts Change Password checks | the step is refused with 802 before anything is changed |
+- The session writes nothing more to the file, by any path, until it
+  ends: a commit, a record id, a serial number, Set Next Serial Value and
+  an account edit are refused with 802
+  (`ServerHost::refuse_after_failed_read`), and an index a find built is
+  not stored.
+- The script halts after the step the read failed in, control steps
+  included, before any further step or trigger runs, so that a value
+  read as missing steers nothing. The run's error, `Get ( LastError )`
+  and what the caller of Perform Script on Server gets are 802, "Unable
+  to open file", as a login, Describe Security and a schedule answer one.
+  The host tells the runtime (`ScriptHost::take_step_error`, asked after
+  the schema is read again before a step and after each step); a host
+  that never fails a read, the desktop's among them, leaves it at
+  `None`. A failed read of the schema before a step halts the script
+  before that step; at the session's start, the request runs nothing.
+- What is uncommitted is reverted when the run ends: the drafts of the
+  records the session holds and an open transaction. The commit a
+  session's close makes otherwise does not happen.
 
-After a read failed in a step, the session submits no change to the file
-until the step ends (a commit, a serial number, a record id, Set Next
-Serial Value and the account edits are refused with 802), so nothing read
-as missing is written, and the step fails with 802, also over an error
-of its own, which may follow from what was read as missing (a record that
-could not be read is not a missing record, 101;
-`ScriptHost::take_step_error`). A step that reads nothing that fails is
-unchanged. Accounts the file engine could not
-decode are a read that failed too: Change Password was refused with 3 and
-the account facts read as none before; both are 802 now
-(`scripts::tests::each_kind_of_read_that_fails_is_802`).
+`scripts::tests::a_failed_read_ends_the_run_and_writes_nothing` runs a
+corpus of scripts that between them make every kind of read (Set Field
+from a field, a global and a related value; If and Loop conditions;
+finds, also in a transaction; Go to Record; Commit and Revert;
+transactions with and without Revert Transaction on Error; Delete;
+Replace Field Contents; ExecuteSQL; the Design functions; the account
+steps; an edit held across an account edit, which the schema read again
+rebases; a subscript). It fails the k-th read of each run, for every k up
+to the run's reads (`Hosted::read_fault`), and checks that the run ends
+with 802 and that the file's tree when the session has ended is the tree
+when that read failed; an ignored run repeats it with every read from
+the k-th on failing, as storage that stays broken.
+`scripts::tests::each_kind_of_read_that_fails_is_802` fails each kind of
+path through the test view.
 
 **The overlay view.** A view of one version with some subtrees covered
-(`engine::Overlay`): a covered path is read from the node laid over it,
-or as missing when nothing is, never from the version; a node above a
-covered path is the version's node with each covered child laid in its
-place, removed or added in key order (a list when the version lacks it
-and something is laid below it), and its subtree the version's with the
-covers applied; every other path is the version's. A walk across covered
-and uncovered nodes gives them in the key order of the tree the rule
-describes: the version's nodes up to a covered one, the covered node's
-subtree as laid, then the version's after it. It reads the version's
-version, and anything at, above or below a cover counts as changed since
-any other. It answers every view operation with the same paging and
-limits as the others, and is answered through the test view in tests.
+(`engine::Overlay`). A covered path is read from the node laid over it,
+or as missing when nothing is, never from the version; a path neither at
+nor above a cover is the version's. The tree it gives is the version's
+with each cover applied as `OwnedNode::put` and `OwnedNode::remove` apply
+it, and every read gives that tree's answer for a node: one with
+something laid below it is a list, with no value when the version lacks
+it, without the empty value of a leaf it was, with any other value it
+held; one with only removals below it is the version's. What a cover
+hides is never read: the children of a node above covers are the
+version's listing with each covered child in its place, and a covered
+child the version cannot read does not fail the listing; a subtree above
+covers is built from that listing a child at a time, and refused once it
+passes its limit, before the rest is read. A walk across covered and
+uncovered nodes gives them in the key order of that tree: the version's
+nodes up to a covered one, the covered node's subtree as laid, then the
+version's after it. It reads the version's version, and anything at,
+above or below a cover counts as changed since any other. It answers
+every view operation with the same paging and limits as the others;
+`engine::overlay::tests` compares each read with the reference tree,
+also through the test view failing what the covers hide.
 
 A server script's find inside an open transaction is two finds, as
 before: one over the reading's version for the records the transaction
 did not change, the records it changed or deleted taken out of its
-answer, and one over an overlay of that version for the records it wrote
-(`scripts::host::transaction_cover`). The overlay covers the table's
+answer, and one for the records it wrote, run once the reading is let
+go. The second needs nothing of the version but the table's field catalog
+`[T, 03]`, copied in the same reading, and the derived state: it runs
+over an overlay of a tree that holds that catalog alone, which takes no
+lock (`scripts::host::transaction_cover`). The overlay covers the table's
 record list `[T, 05]` with the transaction's records alone, its record-id
 list `[T, 0d]` with their ids, and its indexes `[T, 01]` with nothing, so
 that a find builds each index it reads from those records alone, into a
