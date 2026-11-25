@@ -335,16 +335,46 @@ pub struct PassedOver {
     pub lost: Lost,
 }
 
-/// The restore points given up with a checkpoint passed over.
+/// The restore points given up with a checkpoint passed over, or that
+/// would be: those it lists that were kept after the checkpoint the open
+/// falls back to, which cannot list them. Each checkpoint lists the points
+/// of the one before it that were not dropped, and the one it keeps, so
+/// that is exactly what it lists and the one fallen back to does not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lost {
-    /// Its table of restore points was read: the points it listed that the
-    /// checkpoint opened does not (name, and the number of the checkpoint
-    /// each was taken at). Often none.
+    /// Its table of restore points was read: those points (name, and the
+    /// number of the checkpoint each was kept at). Often none.
     Points(Vec<(String, u64)>),
-    /// Its table of restore points could not be read: points that only it
-    /// listed, if any, are lost.
+    /// Its table of restore points could not be read: points kept after
+    /// the checkpoint fallen back to, if any, are lost.
     Unknown,
+}
+
+/// What [`PageFile::open_giving_up`] may give up, named from an error
+/// [`PageFile::open`] returned ([`OpenError::give_up`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GiveUp {
+    /// The checkpoint of this number, which the device fails to read or
+    /// whose bytes do not check.
+    Checkpoint(u64),
+    /// A superblock slot the device fails to read.
+    Slot(usize),
+}
+
+/// The restore points lost with a checkpoint whose own table listed
+/// `points` (`None` when it could not be read) when the open falls back
+/// to checkpoint `below` (0 for none).
+fn lost_after(points: Option<Vec<RestorePoint>>, below: u64) -> Lost {
+    match points {
+        Some(points) => Lost::Points(
+            points
+                .into_iter()
+                .filter(|rp| rp.checkpoint > below)
+                .map(|rp| (rp.name, rp.checkpoint))
+                .collect(),
+        ),
+        None => Lost::Unknown,
+    }
 }
 
 /// A read the device failed while an open chose a checkpoint (section
@@ -355,12 +385,19 @@ pub enum ReadFailure {
     /// newer than any the open could read.
     Slot { slot: usize, error: String },
     /// A page of checkpoint `checkpoint`'s meta stream.
-    Meta { checkpoint: u64, fault: PageFault },
-    /// The root of tree `tree` of checkpoint `checkpoint`.
+    Meta {
+        checkpoint: u64,
+        fault: Box<PageFault>,
+    },
+    /// The root of tree `tree` of checkpoint `checkpoint`, with what
+    /// giving that checkpoint up would lose (its table was read). Giving up
+    /// a checkpoint whose meta stream the device fails to read loses
+    /// [`Lost::Unknown`].
     Root {
         checkpoint: u64,
         tree: TreeName,
-        fault: PageFault,
+        fault: Box<PageFault>,
+        lost: Lost,
     },
 }
 
@@ -375,6 +412,7 @@ impl fmt::Display for ReadFailure {
                 checkpoint,
                 tree,
                 fault,
+                ..
             } => write!(
                 f,
                 "the root of tree {tree} of checkpoint {checkpoint}: {fault}"
@@ -391,7 +429,8 @@ pub struct Opened {
     pub entry: EntryId,
     /// What each slot held.
     pub slots: [SlotSeen; SLOTS],
-    /// Newer checkpoints tried first, and why each was not used.
+    /// Newer checkpoints passed over, why, and what was lost with each:
+    /// only [`PageFile::open_giving_up`] passes one over.
     pub passed_over: Vec<PassedOver>,
     /// The checkpoint before it, still on disk and kept.
     pub predecessor: Option<u64>,
@@ -407,9 +446,9 @@ pub struct Opened {
     /// The file was shorter than the checkpoint's map says, and was
     /// extended.
     pub extended: bool,
-    /// Slots the device failed to read that the open overwrote although
+    /// Slots the device failed to read that the open wrote over although
     /// they could have held a checkpoint newer than the one opened (only
-    /// [`PageFile::open_falling_back`] does that): whatever they held is
+    /// [`PageFile::open_giving_up`] does that): whatever they held is
     /// given up, with any restore point only it listed.
     pub given_up_slots: Vec<usize>,
 }
@@ -421,8 +460,10 @@ pub enum OpenError {
     Missing,
     /// `pages` exists (creation).
     Exists,
-    /// No slot holds a checkpoint that can be used: what each slot held,
-    /// and why each checkpoint with a valid copy was passed over.
+    /// No slot holds a checkpoint that can be used (an open with no valid
+    /// copy, or a call that gave up every checkpoint it tried): what each
+    /// slot held, and why each checkpoint with a valid copy was passed
+    /// over. Nothing was written.
     NoCheckpoint {
         slots: [SlotSeen; SLOTS],
         passed_over: Vec<PassedOver>,
@@ -443,8 +484,12 @@ pub enum OpenError {
     /// Nothing was written and every slot is as it was: a read the device
     /// fails says nothing of the bytes, which a later read may return
     /// whole. Open again later; if the read keeps failing,
-    /// [`PageFile::open_falling_back`] gives up what cannot be read.
+    /// [`PageFile::open_giving_up`] gives up what cannot be read.
     Unreadable(ReadFailure),
+    /// The newest checkpoint with a valid copy does not check (its meta
+    /// stream or a root): which, why, and what giving it up would lose.
+    /// Nothing was written. [`PageFile::open_giving_up`] gives it up.
+    Damaged(Box<PassedOver>),
     Disk(sys::Error),
     Refused(&'static str),
 }
@@ -484,6 +529,11 @@ impl fmt::Display for OpenError {
                 f,
                 "the device failed a read the open needs, so nothing was written: {failure}"
             ),
+            OpenError::Damaged(p) => write!(
+                f,
+                "checkpoint {} does not check, so nothing was written: {}",
+                p.number, p.why
+            ),
             OpenError::Disk(e) => write!(f, "{e}"),
             OpenError::Refused(why) => write!(f, "refused: {why}"),
         }
@@ -491,6 +541,21 @@ impl fmt::Display for OpenError {
 }
 
 impl std::error::Error for OpenError {}
+
+impl OpenError {
+    /// What [`PageFile::open_giving_up`] would give up to get past this
+    /// error; `None` for an error that names nothing to give up.
+    pub fn give_up(&self) -> Option<GiveUp> {
+        match self {
+            OpenError::Unreadable(ReadFailure::Slot { slot, .. }) => Some(GiveUp::Slot(*slot)),
+            OpenError::Unreadable(
+                ReadFailure::Meta { checkpoint, .. } | ReadFailure::Root { checkpoint, .. },
+            ) => Some(GiveUp::Checkpoint(*checkpoint)),
+            OpenError::Damaged(p) => Some(GiveUp::Checkpoint(p.number)),
+            _ => None,
+        }
+    }
+}
 
 impl From<sys::Error> for OpenError {
     fn from(e: sys::Error) -> Self {
@@ -1155,74 +1220,86 @@ impl PageFile {
         }
     }
 
-    /// Open the page file (section 6.7, step 2): read the four slots one at
-    /// a time, and of the two newest checkpoints with a valid copy, newest
-    /// first, use the first whose meta stream reads back and agrees with it
-    /// and whose tree roots read back with the hashes it names. A
-    /// checkpoint whose bytes are not there or do not check is passed over,
-    /// and reported with the restore points given up with it
-    /// ([`PassedOver`]). A read the device fails is not taken for such
-    /// bytes: if the device fails a read of a checkpoint's meta stream or
-    /// roots, or of a slot that could hold a checkpoint newer than the
-    /// newest the open can read, the open fails with
-    /// [`OpenError::Unreadable`] and writes nothing (a slot whose pair's
-    /// other slot holds the newest checkpoint holds that one or an older
-    /// one, and does not stop it). Then, before returning:
+    /// Open the page file (section 6.7, step 2) on the newest checkpoint,
+    /// giving nothing up. It reads the four slots one at a time and opens
+    /// the checkpoint with the highest-numbered valid copy when its meta
+    /// stream reads back and agrees with it and its tree roots read back
+    /// with the hashes it names. Otherwise it writes nothing and fails:
     ///
-    /// 1. its copy is written into both slots of its pair, each flushed, so
-    ///    that the device holds it twice (an earlier process's failed write
-    ///    or flush can leave the system's cache showing a copy the device
-    ///    does not hold, and a crash between a checkpoint's two copies
-    ///    leaves an older checkpoint's copy in the second slot);
-    /// 2. in the other pair, the predecessor's copy is written into both
-    ///    slots, each flushed, when one of them holds it; otherwise both are
-    ///    cleared. Either way a slot that held anything else (a newer
-    ///    checkpoint passed over, whose pages the store will now reuse, a
-    ///    stale copy, or bytes that could not be read) is overwritten before
-    ///    any page is, so that such a checkpoint is never taken later. That
-    ///    gives up nothing exactly when the checkpoint's bytes do not check:
-    ///    bytes that do not check against the hashes the superblock and the
-    ///    parents name will not check on a later read either, so the
-    ///    checkpoint could never be used. A read the device failed says
-    ///    nothing of the bytes, which is why it stops the open instead.
+    /// - with [`OpenError::Unreadable`] when the device fails a read of a
+    ///   slot (which could hold a checkpoint newer than any read) or of
+    ///   that checkpoint's meta stream or roots: a read the device fails
+    ///   says nothing of the bytes, which a later read may return whole;
+    /// - with [`OpenError::Damaged`] when that checkpoint's bytes are not
+    ///   there or do not check, with what giving it up would lose.
     ///
-    /// The open itself frees nothing. Roots are read and checked one at a
-    /// time and let go: what an open holds in memory is the meta stream and
-    /// its table of trees, however many there are.
+    /// Either error names what [`PageFile::open_giving_up`] would give up
+    /// ([`OpenError::give_up`]); a caller records the error durably before
+    /// it makes that call. Having opened, it writes only what loses
+    /// nothing, each slot flushed:
+    ///
+    /// 1. the checkpoint's copy into both slots of its pair, so that the
+    ///    device holds it twice (an earlier process's failed write or flush
+    ///    can leave the system's cache showing a copy the device does not
+    ///    hold). The other slot holds that copy, nothing, bytes that do not
+    ///    check, or a copy of a checkpoint older than the predecessor, which
+    ///    is all a crash during the checkpoint's second slot leaves there
+    ///    (pairs take checkpoints in turn); a copy of the predecessor is
+    ///    never written over;
+    /// 2. in the other pair, the predecessor's copy into a slot that does
+    ///    not hold it, when one does; otherwise zeros over each slot that is
+    ///    not blank. Either way what is written over is bytes that do not
+    ///    check (taken as damage that stays: they will not check on a later
+    ///    read either) or a copy of a checkpoint other than the one opened
+    ///    and its predecessor, whose pages are free in the opened
+    ///    checkpoint's map and which must never be taken later.
+    ///
+    /// Every slot was read, and no checkpoint with a valid copy was passed
+    /// over, so none of these writes removes the last copy of a checkpoint
+    /// the page file keeps or that a later read could show whole. The open
+    /// itself frees nothing. Roots are read and checked one at a time and
+    /// let go: what an open holds in memory is the meta stream and its
+    /// table of trees, however many there are.
     pub fn open(
         fs: &dyn Fs,
         lock: &FolderLock,
         config: Config,
     ) -> Result<(PageFile, Opened), OpenError> {
-        PageFile::open_choosing(fs, lock, config, false)
+        PageFile::open_choosing(fs, lock, config, None)
     }
 
-    /// Open the page file giving up what the device fails to read: the
-    /// explicit call for a read that keeps failing ([`OpenError::Unreadable`]
-    /// from [`PageFile::open`]). It opens as `open` does, except that a
-    /// checkpoint the device fails to read is passed over like one whose
-    /// bytes do not check, and a slot it fails to read is overwritten. What
-    /// it gives up is reported: each checkpoint passed over with the
-    /// restore points only it listed, or that they are unknown
-    /// ([`PassedOver::lost`]), and each slot overwritten unread
-    /// ([`Opened::given_up_slots`]). Refused, with nothing written, when
-    /// the device fails no read that would stop `open`: then `open` opens
-    /// the newest checkpoint.
-    pub fn open_falling_back(
+    /// Open the page file giving up what `accept` names, and nothing else:
+    /// the explicit call, for damage and for a read that keeps failing
+    /// alike. `accept` comes from the errors [`PageFile::open`] returned
+    /// ([`OpenError::give_up`]); the caller records them durably first, so
+    /// that a stop during this call loses no report. It tries the two
+    /// newest checkpoints with a valid copy, newest first, passing over one
+    /// that `accept` names and that the device fails to read or whose bytes
+    /// do not check, and writes over a slot that `accept` names and the
+    /// device fails to read; then it writes as `open` does, over the slots
+    /// of what it gave up too. It reports what it gave up: each checkpoint
+    /// passed over with the restore points lost with it
+    /// ([`PassedOver::lost`]), and each slot written over unread
+    /// ([`Opened::given_up_slots`]). Refused, writing nothing, when the
+    /// situation is not the one accepted any more: with the error `open`
+    /// would return when something `accept` does not name stops it, and
+    /// with [`OpenError::Refused`] when nothing it names does (the read now
+    /// works: `open` opens).
+    pub fn open_giving_up(
         fs: &dyn Fs,
         lock: &FolderLock,
         config: Config,
+        accept: &[GiveUp],
     ) -> Result<(PageFile, Opened), OpenError> {
-        PageFile::open_choosing(fs, lock, config, true)
+        PageFile::open_choosing(fs, lock, config, Some(accept))
     }
 
-    /// [`PageFile::open`], or with `fall_back`
-    /// [`PageFile::open_falling_back`].
+    /// [`PageFile::open`], or with `accept` [`PageFile::open_giving_up`].
     fn open_choosing(
         fs: &dyn Fs,
         lock: &FolderLock,
         config: Config,
-        fall_back: bool,
+        accept: Option<&[GiveUp]>,
     ) -> Result<(PageFile, Opened), OpenError> {
         check_lock(fs, lock)?;
         config.check()?;
@@ -1278,30 +1355,30 @@ impl PageFile {
         let Some(next_number) = highest.checked_add(1) else {
             return Err(OpenError::NumbersExhausted);
         };
-        // A slot the device failed to read could hold a checkpoint newer
-        // than the newest copy read, which the rewriting below would give
-        // up, unless the other slot of its pair holds the newest: pairs
-        // take checkpoints in turn, so then it holds that one or an older
-        // one.
-        let mut gave_up = false;
+        // An open gives up only what `accept` names; the plain open names
+        // nothing. Whatever else stops it is returned before anything is
+        // written: a slot the device fails to read (it could hold a
+        // checkpoint newer than any read), and a checkpoint with a valid
+        // copy that the device fails to read or whose bytes do not check.
+        let gives_up = |what: GiveUp| accept.is_some_and(|a| a.contains(&what));
         let mut given_up_slots = Vec::new();
         for (s, error) in unread {
-            let mate = pair_slots(superblock::pair_of(s))
-                .into_iter()
-                .find(|&t| t != s)
-                .expect("a pair has two slots");
-            if highest != 0 && copies[mate].is_some_and(|sb| sb.number == highest) {
-                continue;
-            }
-            if !fall_back {
+            if !gives_up(GiveUp::Slot(s)) {
                 return Err(OpenError::Unreadable(ReadFailure::Slot { slot: s, error }));
             }
-            gave_up = true;
             given_up_slots.push(s);
         }
+        // The plain open tries the newest checkpoint alone.
+        let tried = if accept.is_some() {
+            numbers.len()
+        } else {
+            numbers.len().min(1)
+        };
         let mut passed = Vec::new();
         let mut chosen = None;
-        for number in numbers {
+        for (i, &number) in numbers.iter().enumerate().take(tried) {
+            // Giving this one up falls back to the next valid copy, if any.
+            let next = numbers.get(i + 1).copied().unwrap_or(0);
             let (slot, sb) = copies
                 .iter()
                 .enumerate()
@@ -1312,74 +1389,73 @@ impl PageFile {
                     chosen = Some((slot, sb, loaded));
                     break;
                 }
-                Err(NotLoaded::Rejected(why, points)) => passed.push((number, *why, points)),
-                Err(NotLoaded::Unreadable(unread, _)) if !fall_back => {
-                    return Err(OpenError::Unreadable(match *unread {
-                        Unread::Meta(fault) => ReadFailure::Meta {
-                            checkpoint: number,
-                            fault,
-                        },
-                        Unread::Root(tree, fault) => ReadFailure::Root {
-                            checkpoint: number,
-                            tree,
-                            fault,
-                        },
-                    }));
+                Err(NotLoaded::Stopped(e)) => return Err(e.into()),
+                Err(NotLoaded::Rejected(why, points)) => {
+                    if !gives_up(GiveUp::Checkpoint(number)) {
+                        return Err(OpenError::Damaged(Box::new(PassedOver {
+                            number,
+                            why: *why,
+                            lost: lost_after(points, next),
+                        })));
+                    }
+                    passed.push((number, *why, points));
                 }
                 Err(NotLoaded::Unreadable(unread, points)) => {
-                    gave_up = true;
+                    if !gives_up(GiveUp::Checkpoint(number)) {
+                        return Err(OpenError::Unreadable(match *unread {
+                            Unread::Meta(fault) => ReadFailure::Meta {
+                                checkpoint: number,
+                                fault: Box::new(fault),
+                            },
+                            Unread::Root(tree, fault) => ReadFailure::Root {
+                                checkpoint: number,
+                                tree,
+                                fault: Box::new(fault),
+                                lost: lost_after(points, next),
+                            },
+                        }));
+                    }
                     let why = match *unread {
                         Unread::Meta(fault) => Rejection::Meta(MetaFault::Page(fault)),
                         Unread::Root(tree, fault) => Rejection::Root { tree, fault },
                     };
                     passed.push((number, why, points));
                 }
-                Err(NotLoaded::Stopped(e)) => return Err(e.into()),
             }
         }
-        if fall_back && !gave_up {
+        if accept.is_some() && passed.is_empty() && given_up_slots.is_empty() {
             return Err(OpenError::Refused(
-                "the device failed no read the open needs: `PageFile::open` opens the newest \
+                "nothing named to give up stops the open: `PageFile::open` opens the newest \
                  checkpoint",
             ));
         }
-        // What each checkpoint passed over gives up: the restore points it
-        // listed that the one opened does not (by identity), or, when its
-        // table could not be read, an unknown set.
-        let kept: Vec<Version> = chosen.as_ref().map_or(Vec::new(), |(_, _, l)| {
-            let meta = &l.meta;
-            meta.restore_points
-                .iter()
-                .chain(&meta.retiring)
-                .map(|rp| rp.version)
-                .collect()
-        });
+        let below = chosen.as_ref().map_or(0, |(_, sb, _)| sb.number);
         let passed_over: Vec<PassedOver> = passed
             .into_iter()
             .map(|(number, why, points)| PassedOver {
                 number,
                 why,
-                lost: match points {
-                    Some(points) => Lost::Points(
-                        points
-                            .into_iter()
-                            .filter(|rp| !kept.contains(&rp.version))
-                            .map(|rp| (rp.name, rp.checkpoint))
-                            .collect(),
-                    ),
-                    None => Lost::Unknown,
-                },
+                lost: lost_after(points, below),
             })
             .collect();
         let Some((slot, sb, loaded)) = chosen else {
             return Err(OpenError::NoCheckpoint { slots, passed_over });
         };
 
-        // Its copy into both slots of its pair, each flushed.
+        let predecessor = loaded.meta.predecessor;
+        let is_predecessor =
+            |c: &Superblock| predecessor.is_some_and(|(n, _, m)| c.number == n && c.meta == m);
+        // Its copy into both slots of its pair, each flushed. A plain open
+        // never writes over a copy of the predecessor, which a file this
+        // code wrote never holds in this pair (pairs take checkpoints in
+        // turn).
         let pair = superblock::pair_of(slot);
         let copy = superblock::encode(&sb);
         let mut rewritten = Vec::new();
         for s in pair_slots(pair) {
+            if accept.is_none() && copies[s].as_ref().is_some_and(is_predecessor) {
+                continue;
+            }
             file.write_at((s * SLOT) as u64, &copy)?;
             file.flush()?;
             rewritten.push(s);
@@ -1392,10 +1468,9 @@ impl PageFile {
         // The predecessor is the checkpoint whose number and meta stream
         // the chosen one names: a number alone can belong to another
         // checkpoint that never reached the disk whole.
-        let predecessor = loaded.meta.predecessor;
-        let older_sb = pair_slots(1 - pair).into_iter().find_map(|s| {
-            copies[s].filter(|c| predecessor.is_some_and(|(n, _, m)| c.number == n && c.meta == m))
-        });
+        let older_sb = pair_slots(1 - pair)
+            .into_iter()
+            .find_map(|s| copies[s].filter(is_predecessor));
         let mut cleared = Vec::new();
         for s in pair_slots(1 - pair) {
             let other = !blank[s] && (copies[s].is_none() || copies[s] != older_sb);
