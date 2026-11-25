@@ -226,10 +226,6 @@ fn apply(writes: Vec<Write>, file: &str, tx: &mut Transaction<'_>) {
                         ),
                     }
                     tx.release_library(vec![table.clone(), vec![LIBRARY]]);
-                    // Its stored values go with it, and what they were
-                    // computed with: a table made later at the same key
-                    // starts without a basis.
-                    tx.set_basis(table, None);
                 }
                 if !path.is_empty() {
                     let _ = tx.remove(path);

@@ -548,6 +548,10 @@ impl FileEngine {
                 // The renamed file holds the change: the tree keeps it, as
                 // what was derived from it does, and the file takes no
                 // more changes (`Hosted::save_change`).
+                #[cfg(debug_assertions)]
+                if let Some(settled) = &settled {
+                    settled.after_stored(&store);
+                }
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
                 for line in stored_lines.into_iter().chain(lines) {
@@ -565,7 +569,13 @@ impl FileEngine {
                 if !effects {
                     // Nothing of its own to take back: what others left
                     // waiting waits on (`Hosted::save_change` alerted it),
-                    // and what it took waits again.
+                    // and what it took waits again. The store still took
+                    // back its (empty) journal and the indexes the file
+                    // cannot hold (`Store::save_commit`).
+                    #[cfg(debug_assertions)]
+                    if let Some(settled) = &settled {
+                        settled.after_roll_back(&store);
+                    }
                     taken.put_back(&mut store);
                     locks.keep();
                     if outcome.reply == Reply::SaveFile(Ok(())) {

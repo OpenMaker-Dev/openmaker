@@ -217,6 +217,7 @@ impl<'a> Transaction<'a> {
         if let (Some(check), Some(node)) = (&mut self.check, recorded) {
             check.wrote(&path, Some(&node));
         }
+        self.forget_table_basis(&path);
         self.wrote(path, written);
         Ok(())
     }
@@ -240,8 +241,22 @@ impl<'a> Transaction<'a> {
         if let Some(check) = &mut self.check {
             check.wrote(&path, None);
         }
+        self.forget_table_basis(&path);
         self.wrote(path, written);
         Ok(())
+    }
+
+    /// A write of a table's own node `[T]`, its delete or its subtree
+    /// replaced whole, takes the table's stored values with it, and what
+    /// they were computed with: the table is as one an upload makes,
+    /// without a basis of stored calculations until op73 or a load makes
+    /// one (docs/server-storage.md 5, "The basis of stored calculations").
+    /// Only a table has a basis, so a write of any other top node forgets
+    /// none.
+    fn forget_table_basis(&mut self, path: &[Vec<u8>]) {
+        if let [table] = path {
+            self.set_basis(table, None);
+        }
     }
 
     /// What a write at `path` changed: the derived state to read again, and

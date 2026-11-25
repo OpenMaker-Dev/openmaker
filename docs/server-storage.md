@@ -1234,12 +1234,19 @@ the check and a commit's plan of index moves take a record's keys from
 one rule (`derived::record_keys`), which also says whether the keys
 account for its value, and a commit of a value the rules key to nothing
 (a date that does not parse, a time past the hour's minutes) leaves the
-index without the record while the check would refuse it, so it forgets
-that index's mark. A roll-back puts back the marks from before the
-change, where the generation's advance forgot them all; nothing a client sees depends on a
-mark, only whether a commit checks an index whole, which it does once per
-index after a load, before and after this change
-([index-checks](performance/index-checks.md)). The store engine keeps
+index without the record, which the check would then find, so it marks
+that index as disagreeing; a later write that changes the value back
+leaves that mark stale, which costs only a sweep that changes nothing. A
+roll-back puts back the marks from before the change, where the
+generation's advance forgot them all. Nothing a client sees depends on a
+mark, only whether a commit checks an index whole: the first commit
+after a load that changes a record's value in an indexed field checks
+that index once, and a commit checks it again only after a write forgot
+its mark
+(a write the derived state reads, op73's field work, an upload into the
+index or the records, a failed save that took the index out), before and
+after this change ([index-checks](performance/index-checks.md)). The
+store engine keeps
 them the same way, as a cache each server holds for itself: they are not
 logged, a restart begins without them, and a version an entry makes
 carries them, forgotten by the entry's writes by the same rules.
@@ -1261,14 +1268,20 @@ named by nothing. So the bases are kept by version as state of their own
 writes: op73 and the deferred work set a table's when they finish its
 work (`Store::set_basis_in`, still on the store), Create Field adds a
 new field's (op240, `Transaction::add_field_basis` through
-`Transaction::set_basis`), and deleting a table deletes its basis
-(`DeleteTable`, through `Transaction::set_basis`), so that a table a later
-upload creates at the same key is not compared with the deleted one's
-storage. The journal keeps the bases from before the
-change's first write of them, so a roll-back puts them back; a write that
-sets a basis to what it is changes nothing. They are taken from the file
-when it is loaded, except for a table with deferred field work, which
-gets none and has every stored calculation recomputed (`Store::recover`).
+`Transaction::set_basis`), and a write of a table's own node `[T]`, its
+delete or an upload that replaces it whole, forgets the table's basis
+(`Transaction::replace` and `remove`), so the table is as one an upload
+makes, without a basis until op73 or a load makes one, and a table
+uploaded at a deleted one's key is not compared with the deleted one's
+storage. A basis is only ever of a table the version holds: a table the
+catalog names without its tree (FileMaker Pro's DeleteTable sends the
+physical delete before the catalog write, and a stop between them leaves
+the catalog's entry) gets none from a load or from op73. The journal
+keeps the bases from before the change's first write of them, so a
+roll-back puts them back; a write that sets a basis to what it is
+changes nothing. They are taken from the file when it is loaded, except
+for a table with deferred field work, which gets none and has every
+stored calculation recomputed (`Store::recover`).
 So an `UpdateTable` replays to the same result from the same bases, and
 the file engine, which keeps them in memory only, loses them when it
 stops between op13 and op73: deferred work names a formula change, which
@@ -1628,8 +1641,9 @@ F, 00]` or word `[T, 01, F, 01]`, that index's. The agreement check reads
 the postings and the records alone, so a field's counts `[T, 01, F, 10]`
 and `[T, 01, F, 11]` touch no mark, nor does a serial value, a library
 member or the rest of a table. A commit keeps its own marks as it keeps
-the indexes, but for a value the rules key to nothing, which forgets its
-index's; an upload into an index or a record does not keep them. Every write
+the indexes, but for a value the rules key to nothing, which marks its
+index as disagreeing; an upload into an index or a record does not keep
+them. Every write
 that changed the tree counts it as changed since its save.
 
 Before, each operation changed the tree through the store's own helpers,
@@ -1704,13 +1718,15 @@ verifier). It checks the version's own state and the marks too: the
 bases must be those the transaction's basis writes made; whatever of the
 bases and the verified-index marks changed, the journal must keep as it
 was, to put back; every mark that an index agrees must hold for the tree
-at the end, and again once the change is stored, after what the save
-writes last (a commit's record ids, its sweeps, its counts;
-`Settled::after_stored`); no basis may be of a table the tree does not
-hold; and after a roll-back the bases must be those the operation started
-with, and the marks exactly those it started with, less those of the
-indexes the failed save took out, which the store lists for it
-(`Store::dropped_indexes`, debug builds; `Settled::after_roll_back`). The server's,
+at the end, and again once the change is stored or kept with a save
+whose outcome is unknown, after what the save writes last (a commit's
+record ids, its sweeps, its counts; `Settled::after_stored`); no basis
+may be of a table the tree does not hold; and after a save that failed,
+whether or not the operation had anything of its own to take back, the
+bases must be those the operation started with, and the marks exactly
+those it started with, less those of the indexes the failed save took
+out, which the store lists for it (`Store::dropped_indexes`, debug
+builds; `Settled::after_roll_back`). The server's,
 `om-author`'s and `om-gui`'s tests run with it. An operation not moved at
 all (a commit's records, op73, the deferred work) has its tree writes
 left unchecked, since it changes the tree through the store's helpers

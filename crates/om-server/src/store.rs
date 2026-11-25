@@ -781,11 +781,14 @@ impl Store {
         }
         // Tables with deferred work pending (the server stopped between a
         // client's op13 and its op73) get no basis: [`Store::recover`]
-        // recomputes all their stored calculations.
+        // recomputes all their stored calculations. Nor does a table the
+        // catalog names whose tree `[T]` the file does not hold (a
+        // DeleteTable's physical delete saved before its catalog write): a
+        // basis is only ever of a table the version holds.
         let mut bases = Bases::new();
         for table in &store.derived.catalog().tables {
             let t = uint_segment(table.id);
-            if store.node(&Self::deferred_path(&t)).is_none() {
+            if store.node(&[&t]).is_some() && store.node(&Self::deferred_path(&t)).is_none() {
                 bases.insert(t, recalc::table_basis(&store.root, table));
             }
         }
@@ -2523,7 +2526,10 @@ impl Store {
         if journal.is_some() {
             entry();
         }
-        self.set_basis_in(journal.as_deref_mut(), table, Some(basis));
+        // A basis is only ever of a table the version holds: a table the
+        // catalog names without its tree `[T]` has none (`Store::load`).
+        let basis = self.node(&[table]).is_some().then_some(basis);
+        self.set_basis_in(journal.as_deref_mut(), table, basis);
         for field in &retyped {
             let journal = journal.as_deref_mut();
             changed |= self.drop_retyped_cells(journal, table, *field, &named);
@@ -3572,11 +3578,20 @@ impl Store {
             }
         }
         // A value the current rules key to nothing makes its index disagree
-        // with them (`derived::record_keys`): the index's mark is forgotten,
-        // whatever the check before this write found.
+        // with them (`derived::record_keys`): with the record holding it,
+        // the check would find so, whatever it found before this write, so
+        // the mark says so and the next edit sweeps without checking the
+        // index whole again. A later write that changes the value back
+        // leaves the mark stale, which costs only a sweep that changes
+        // nothing (the checking transaction checks only the marks that say
+        // an index agrees).
         for (field, index) in unaccounted {
-            let path = vec![table.to_vec(), vec![keys::INDEXES], field, vec![index]];
-            self.forget_verified(journal.as_deref_mut(), &path);
+            let id: IndexId = (table.to_vec(), field, index);
+            if self.derived.marks().get(&id) != Some(&false) {
+                let mut marks = self.derived.marks().clone();
+                marks.insert(id, false);
+                self.keep_marks(journal.as_deref_mut(), marks);
+            }
         }
         for (field, index, after) in sweeps {
             let records = BTreeMap::from([(id, after)]);
