@@ -509,8 +509,9 @@ error, never a panic. Each item decoded takes at least one byte of the
 payload, so the memory a payload decodes to is a fixed multiple of its
 size: at most about 28 times for edits that delete the root, about 12
 times for paths of empty segments, and close to the payload's size for
-values. Encoding is held to the same bounds, and what decodes encodes
-to the same bytes.
+values. Encoding is held to the same bounds, checks all of them and the
+payload's whole size before it writes anything, and what decodes
+encodes to the same bytes.
 
 ### 5.3 The state's trees
 
@@ -730,9 +731,11 @@ stands for everything under it, which the unit does not count.
 
 ### 5.8 What one entry costs
 
-What applying one entry reads and holds, at the bounds of 5.2. No
-listing reads a value it then deletes, so the memory of one entry does
-not grow with the size of the values it deletes.
+What applying one entry reads and holds, at the bounds of 5.2. A listing
+of rows takes them one at a time and holds one at once, so what an entry
+holds does not grow with the rows it looks through, and no listing reads
+a value it then deletes. `Applied::listed` reports the rows the listings
+visited and the most held at once.
 
 - **Decoding** holds the payload's items: at most about 28 times the
   payload's size (5.2), and the payload is at most 64 MiB.
@@ -746,15 +749,19 @@ not grow with the size of the values it deletes.
   Its tree edits cost what format section 2 says for each; a delete of
   any size is one range.
 - **A server's start** lists the server's open sessions from their lists,
-  with one seek per session and no value read, and holds 32 bytes per
-  session it closes. It then deletes the server's sessions and locks
-  with two edits, whatever their size. The number of sessions a server
-  has open is bounded by the server's own connection limits, not here.
-- **A file's removal** looks, for each session that holds a lock list
-  (for any file), for its list for the file: one lookup per such
-  session, reading lists only. It holds one delete edit (under 100
-  bytes) per session that has a list for the file, and releases the
-  file's tree with one release, whatever its size.
+  one at a time, with one seek per session and no value read. It keeps
+  the list of the sessions it closes, 32 bytes each, which
+  `Applied::closed` returns, and holds one listed row at once besides.
+  It then deletes the server's sessions and locks with two edits,
+  whatever their size. The number of sessions a server has open is
+  bounded by the server's own connection limits, not here.
+- **A file's removal** looks through the sessions that hold a lock list
+  (for any file) one at a time, a server and then its sessions, holding
+  two listed rows at once, and looks up each one's list for the file:
+  one lookup per such session, reading lists only. It keeps one delete
+  edit (under 100 bytes) for each session that has a list for the file
+  and nothing for the others, and releases the file's tree with one
+  release, whatever its size.
 - **A session's close, an opening, a rename, a mark, an empty or a
   members entry** read and write a fixed number of rows.
 
