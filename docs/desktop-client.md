@@ -37,8 +37,14 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
-- The app menu is named OpenMaker. Mode and other shortcuts use the
-  platform's command key: ⌘ on macOS, Ctrl on Linux and Windows.
+- The app menu is named OpenMaker. On macOS the client runs from the build
+  with no app bundle, so its executable carries an Info.plist (`build.rs`)
+  whose `CFBundleName` the menu bar shows; without it the menu bar would
+  show the executable's name. The Dock and Command-Tab still show `om-gui`:
+  LaunchServices names an unbundled process after its file
+  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Mode
+  and other shortcuts use the platform's command key: ⌘ on macOS, Ctrl on
+  Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
   system font with similar metrics. Layout text uses the fonts the host
   sends; on macOS, System Arial is used when the file asks for it and it is
