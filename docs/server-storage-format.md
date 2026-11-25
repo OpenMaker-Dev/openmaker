@@ -2387,8 +2387,9 @@ open succeeds and says that the last batch confirmed may be lost
 checkpoint's entry, in the segment that holds the one after it, stops
 checking (3.6, step 3), the open succeeds and says where
 (`Opened::before_start`), and whether the checkpoint on disk before the
-one it used comes before that place, so that an open falling back to it
-could not replay past it (`Opened::fallback_cannot_replay`).
+newest, once the open is done (it may have taken checkpoints of its own),
+comes before that place, so that an open falling back to it could not
+replay past it (`Opened::fallback_cannot_replay`).
 
 ### 6.3 Writing one entry
 

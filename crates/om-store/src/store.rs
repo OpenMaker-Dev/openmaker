@@ -489,9 +489,10 @@ pub struct Opened {
     /// ([`log::Opened::before_start`]): nothing was given up and the open
     /// went on, since this checkpoint does not need them.
     pub before_start: Option<log::ChainFault>,
-    /// The checkpoint on disk before the one used comes before that place:
-    /// an open that falls back to it (the newest not readable) could not
-    /// replay past it, which design 6.7 counts on.
+    /// The checkpoint on disk before the newest, once the open is done (it
+    /// may have taken checkpoints of its own), comes before that place: an
+    /// open that falls back to it, the newest not readable, could not replay
+    /// past it, which design 6.7 counts on.
     pub fallback_cannot_replay: bool,
 }
 
@@ -1057,14 +1058,7 @@ impl Store {
                 "the replay did not end at the durable entry",
             ));
         }
-        // What an open from the checkpoint before this one would meet.
         let before_start = log_opened.before_start;
-        let fallback_cannot_replay = before_start.is_some_and(|stop| {
-            pages
-                .kept_checkpoints()
-                .get(1)
-                .is_some_and(|older| older.entry.index < stop.index)
-        });
         // 5. The recovered version, pinned and published.
         let pin = pin_version(&pages, PinOf::Newest(last.index))
             .map_err(|e| OpenError::Disk(format!("the recovered version: {e}")))?;
@@ -1122,6 +1116,15 @@ impl Store {
         if let Err(error) = store.flush() {
             return Err(failed(Some((started, payload)), error));
         }
+        // What an open falling back from the newest checkpoint would meet:
+        // the checkpoints on disk now, after any this open took.
+        let fallback_cannot_replay = before_start.is_some_and(|stop| {
+            store
+                .pages
+                .kept_checkpoints()
+                .get(1)
+                .is_some_and(|older| older.entry.index < stop.index)
+        });
         Ok((
             store,
             Opened {
