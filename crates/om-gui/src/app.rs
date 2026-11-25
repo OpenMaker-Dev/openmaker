@@ -859,7 +859,12 @@ impl Launcher {
 /// menu's file commands. Each waits for the open file to close first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Launch {
-    OpenFile,
+    /// File > Open; `asking` when Shift or Option was held as it was
+    /// chosen, which asks for an account however the file opens: through a
+    /// panel or OpenMaker's own chooser, and after the front file closes.
+    OpenFile {
+        asking: bool,
+    },
     CreateNew,
     Home(crate::file_history::Tab),
     Hosts,
@@ -1030,6 +1035,9 @@ pub struct OpenMakerApp {
     /// place of `open_file` or `create_new`'s own chooser; with whether
     /// Shift or Option (Alt) was held as the command was chosen.
     file_panel: Option<(Launch, bool, crate::file_panel::FilePanel)>,
+    /// File > Open's own chooser asks for an account for the file chosen
+    /// in it: Shift or Option was held as File > Open was chosen.
+    open_file_asking: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -1148,6 +1156,7 @@ impl OpenMakerApp {
             system_menu: None,
             panel_parent: None,
             file_panel: None,
+            open_file_asking: false,
             viewport_windows: Default::default(),
             open_on_launch: false,
             reconnect: None,
@@ -2898,7 +2907,7 @@ impl OpenMakerApp {
             }
         }
         self.reconnect_dialog(&ctx);
-        self.local_dialogs(&ctx, actions);
+        self.local_dialogs(&ctx);
         self.change_password_dialog(&ctx);
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
@@ -2931,8 +2940,10 @@ impl OpenMakerApp {
         };
         // Shift or Option held as Open is chosen asks for an account too:
         // the window sees these keys on every platform, where the panel's
-        // own may not be seen (a Wayland session).
-        let asking = ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
+        // own may not be seen (a Wayland session). They were read as the
+        // command was chosen, before any close of the front file.
+        let asking = matches!(launch, Launch::OpenFile { asking: true })
+            || ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
         let wake = ctx.clone();
         let shown =
             crate::file_panel::FilePanel::show(request, parent, move || wake.request_repaint());
@@ -2965,11 +2976,12 @@ impl OpenMakerApp {
             return;
         }
         match (launch, answer) {
-            (Launch::OpenFile, Answer::Chosen { path, asking }) => {
+            (Launch::OpenFile { .. }, Answer::Chosen { path, asking }) => {
                 self.open_chosen(ctx, path, held || asking);
             }
-            (Launch::OpenFile, Answer::Unavailable) => {
+            (Launch::OpenFile { .. }, Answer::Unavailable) => {
                 self.open_file = Some(crate::open_file::OpenFileDialog::new());
+                self.open_file_asking = held;
             }
             (Launch::CreateNew, Answer::Chosen { path, .. }) => self.create_file(ctx, &path),
             (Launch::CreateNew, Answer::Unavailable) => {
@@ -3023,15 +3035,24 @@ impl OpenMakerApp {
     }
 
     /// File > Open's chooser and a local file's account dialog.
-    fn local_dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn local_dialogs(&mut self, ctx: &egui::Context) {
         use crate::open_file::{ChooserAction, LoginAction};
         self.file_panel_answered(ctx);
+        let mut chosen = None;
         if let Some(dialog) = &mut self.open_file {
             match dialog.show(ctx) {
-                Some(ChooserAction::Open(path)) => actions.push(Action::OpenLocal(path)),
-                Some(ChooserAction::Cancel) => self.open_file = None,
+                Some(ChooserAction::Open(path)) => chosen = Some(path),
+                Some(ChooserAction::Cancel) => {
+                    self.open_file = None;
+                    self.open_file_asking = false;
+                }
                 None => {}
             }
+        }
+        // The keys held as File > Open was chosen go with the file chosen.
+        if let Some(path) = chosen {
+            let asking = std::mem::take(&mut self.open_file_asking);
+            self.open_chosen(ctx, path, asking);
         }
         if let Some(dialog) = &mut self.create_new {
             use crate::create_new::CreateAction;
@@ -3508,10 +3529,11 @@ impl OpenMakerApp {
                 self.open_file = None;
                 self.create_new = Some(crate::create_new::CreateNewDialog::new());
             }
-            Launch::OpenFile => {
+            Launch::OpenFile { asking } => {
                 let request = crate::open_file::OpenFileDialog::panel_request();
-                if !self.show_file_panel(ctx, Launch::OpenFile, &request) {
+                if !self.show_file_panel(ctx, Launch::OpenFile { asking }, &request) {
                     self.open_file = Some(crate::open_file::OpenFileDialog::new());
+                    self.open_file_asking = asking;
                 }
             }
             Launch::Home(tab) => {
@@ -4925,7 +4947,12 @@ impl OpenMakerApp {
             Action::RecreateRecord => self.recreate(ctx, true),
             Action::DiscardNewRecord => self.recreate(ctx, false),
             Action::ShowCreateNew => self.launch(ctx, Launch::CreateNew),
-            Action::ShowOpenFile => self.launch(ctx, Launch::OpenFile),
+            Action::ShowOpenFile => {
+                // Read now: a close of the front file comes first, and the
+                // keys may be let go meanwhile.
+                let asking = ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
+                self.launch(ctx, Launch::OpenFile { asking });
+            }
             Action::ShowHome(tab) => self.launch(ctx, Launch::Home(tab)),
             Action::ShowHosts => self.launch(ctx, Launch::Hosts),
             Action::OpenNetworkFile(path) => self.launch(ctx, Launch::NetworkFile(path)),
@@ -8450,7 +8477,11 @@ mod tests {
             asking: false,
         };
         let tasks = std::path::PathBuf::from("/nowhere/Tasks.fmp12");
-        answer(&mut app, Launch::OpenFile, chosen(tasks.clone()));
+        answer(
+            &mut app,
+            Launch::OpenFile { asking: false },
+            chosen(tasks.clone()),
+        );
         assert_eq!(app.status, ConnectStatus::Connecting);
         let opening = app.opening.as_ref().and_then(|o| o.target.local.as_ref());
         assert_eq!(opening, Some(&tasks));
@@ -8467,10 +8498,27 @@ mod tests {
         app.status = ConnectStatus::Idle;
         app.opening = None;
 
-        answer(&mut app, Launch::OpenFile, Answer::Canceled);
+        answer(
+            &mut app,
+            Launch::OpenFile { asking: false },
+            Answer::Canceled,
+        );
         assert!(app.opening.is_none() && app.open_file.is_none() && app.create_new.is_none());
-        answer(&mut app, Launch::OpenFile, Answer::Unavailable);
+        answer(
+            &mut app,
+            Launch::OpenFile { asking: false },
+            Answer::Unavailable,
+        );
         assert!(app.open_file.take().is_some());
+        // Shift held as File > Open was chosen goes on to OpenMaker's own
+        // chooser when no panel can be shown.
+        app.file_panel = Some((
+            Launch::OpenFile { asking: true },
+            true,
+            FilePanel::answered(Answer::Unavailable),
+        ));
+        app.file_panel_answered(&ctx);
+        assert!(app.open_file.take().is_some() && std::mem::take(&mut app.open_file_asking));
         answer(&mut app, Launch::CreateNew, Answer::Unavailable);
         assert!(app.create_new.take().is_some());
 

@@ -548,18 +548,29 @@ mod portal {
     /// Shift or Alt is held now, as the X server sees it: the window's own
     /// input saw nothing while the chooser had the keyboard. Asked from a
     /// thread of its own, so an X server that does not answer within half a
-    /// second cannot hold the user's choice: then no key is held.
+    /// second cannot hold the user's choice: then no key is held. One
+    /// question at a time: while one waits on an X server that does not
+    /// answer, later answers ask none, so repeated Opens leave no more
+    /// waiting threads and connections behind than that one.
     fn x11_asking() -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static ASKING: AtomicBool = AtomicBool::new(false);
+        if ASKING.swap(true, Ordering::AcqRel) {
+            return false;
+        }
         let (send, held) = std::sync::mpsc::channel();
         let asked = std::thread::Builder::new()
             .name("file panel keys".into())
             .spawn(move || {
                 let _ = send.send(x11_held());
+                ASKING.store(false, Ordering::Release);
             });
-        asked.is_ok()
-            && held
-                .recv_timeout(std::time::Duration::from_millis(500))
-                .unwrap_or(false)
+        if asked.is_err() {
+            ASKING.store(false, Ordering::Release);
+            return false;
+        }
+        held.recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap_or(false)
     }
 
     fn x11_held() -> bool {
