@@ -1572,7 +1572,9 @@ fn a_new_script_saves_to_openmaker_server_and_runs() {
     assert_eq!(names, ["Hello Again", "Say Built"]);
 
     // A save the file on disk does not take is not reported as saved: the
-    // server's new copy of the file cannot be made where a folder stands.
+    // server's new copy of the file cannot be made where a folder stands,
+    // so the host answers the first upload with an error, which cannot say
+    // what it stored, and keeps nothing of it (docs/server-storage.md 5).
     let mut blocked = hosted.file().as_os_str().to_owned();
     blocked.push(".omsave");
     std::fs::create_dir(&blocked).unwrap();
@@ -1582,12 +1584,13 @@ fn a_new_script_saves_to_openmaker_server_and_runs() {
     let error = third.save_script_catalog(unsaved).unwrap_err();
     std::fs::remove_dir(&blocked).unwrap();
     assert!(
-        error
-            .message
-            .contains("did not confirm that the file on disk holds them"),
+        error.message.contains("saved only in part"),
         "{}",
         error.message
     );
+    let kept = hosted.opened().scripts().unwrap();
+    let names: Vec<&str> = kept.scripts.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Hello Again", "Say Built"], "the host kept nothing");
     assert_eq!(
         scripts_on_disk(hosted.file()).scripts[0].name,
         "Hello Again"

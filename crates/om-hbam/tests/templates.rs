@@ -3,6 +3,8 @@
 //! Ignored by default: the templates and the FileMaker Server sample are
 //! git-ignored extractions that exist only on the analysis host. Run with:
 //!   cargo test -p om-hbam --test templates -- --ignored
+mod reference;
+
 use std::path::{Path, PathBuf};
 
 use om_hbam::catalog::keys;
@@ -31,6 +33,11 @@ fn sample(lang: &str) -> HbamFile {
 }
 
 fn all_files() -> Vec<PathBuf> {
+    files_in(&[WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES])
+}
+
+/// The files under `dirs`, each of which must be present.
+fn files_in(dirs: &[&str]) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("directory present") {
             let path = entry.unwrap().path();
@@ -44,7 +51,7 @@ fn all_files() -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    for dir in [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES] {
+    for dir in dirs {
         walk(Path::new(dir), &mut out);
     }
     out.sort();
@@ -534,4 +541,176 @@ fn new_superblock_matches_every_template() {
         made[0x802..0x80a].copy_from_slice(&page[0x802..0x80a]);
         assert!(made == page, "{}", path.display());
     }
+}
+
+/// Every shipped file's tree, given node by node as a walk of the tree
+/// `HbamFile` reads, streams into a file (`writer::NodeWriter`) as exactly
+/// the bytes `rebuild` and the bulk writer before it (`reference`) write
+/// from the whole tree (hbam-writer.md 7.2, `docs/server-storage.md` 6.10).
+/// Reads whichever of the extractions this host has.
+#[test]
+#[ignore = "requires the git-ignored extracted templates or FileMaker Server samples"]
+fn streamed_files_match_rebuild() {
+    use om_hbam::writer::{self, NodeWriter};
+
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "fmp12")
+                || path.to_string_lossy().ends_with("FMServer_Sample")
+            {
+                out.push(path);
+            }
+        }
+    }
+    fn give<'a>(
+        node: &om_hbam::Node<'a>,
+        path: &mut Vec<&'a [u8]>,
+        writer: &mut NodeWriter<std::fs::File>,
+    ) -> om_hbam::Result<usize> {
+        path.push(node.segment.0);
+        writer.node(path, node.push || !node.children.is_empty(), node.value)?;
+        let mut given = 1;
+        for child in &node.children {
+            given += give(child, path, writer)?;
+        }
+        path.pop();
+        Ok(given)
+    }
+
+    let mut files = Vec::new();
+    for dir in [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES] {
+        if Path::new(dir).is_dir() {
+            walk(Path::new(dir), &mut files);
+        }
+    }
+    files.sort();
+    assert!(!files.is_empty(), "no extracted files");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("streamed.fmp12");
+    let mut nodes = 0;
+    for path in &files {
+        let ctx = path.display();
+        let file = HbamFile::open(path).unwrap();
+        let superblock = file.superblock().raw;
+        let tree = file.key_tree().unwrap();
+        let out = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&target)
+            .unwrap();
+        let mut writer = NodeWriter::new(out, superblock).unwrap();
+        let mut path = Vec::new();
+        for child in &tree.root.children {
+            nodes += give(child, &mut path, &mut writer).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+        }
+        writer.finish().unwrap();
+        let streamed = std::fs::read(&target).unwrap();
+        let owned = tree.root.to_owned_node();
+        assert!(
+            streamed == writer::rebuild(&owned, superblock).unwrap(),
+            "{ctx}"
+        );
+        assert!(
+            streamed == reference::rebuild(&owned, superblock).unwrap(),
+            "{ctx}"
+        );
+    }
+    std::fs::remove_file(&target).unwrap();
+    println!("{} files, {nodes} nodes", files.len());
+}
+
+/// The streaming reader gives every shipped file's nodes exactly as a
+/// depth-first walk of the tree `HbamFile` builds from it, kinds included
+/// (`docs/server-storage.md` 6.10), and the same page 0. Reads whichever of
+/// the extractions this host has.
+#[test]
+#[ignore = "requires the git-ignored extracted templates or FileMaker Server samples"]
+fn stream_matches_the_key_tree() {
+    let dirs: Vec<&str> = [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES]
+        .into_iter()
+        .filter(|dir| Path::new(dir).is_dir())
+        .collect();
+    let files = files_in(&dirs);
+    assert!(!files.is_empty(), "no extracted files");
+    let mut nodes = 0;
+    for path in &files {
+        let ctx = path.display();
+        let file = HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        let mut walked = Vec::new();
+        tree.root.walk(&mut |path, node| {
+            if !path.is_empty() {
+                walked.push((path.to_vec(), node.push, node.value));
+            }
+        });
+        let mut stream = om_hbam::NodeStream::open(path).unwrap();
+        assert_eq!(stream.superblock().raw, file.superblock().raw, "{ctx}");
+        let mut read = 0;
+        while let Some(node) = stream.next_node().unwrap_or_else(|e| panic!("{ctx}: {e}")) {
+            let (path, push, value) = walked
+                .get(read)
+                .unwrap_or_else(|| panic!("{ctx}: more nodes than the tree"));
+            assert!(
+                node.path
+                    .iter()
+                    .map(Vec::as_slice)
+                    .eq(path.iter().map(|s| s.0)),
+                "{ctx} node {read}"
+            );
+            assert_eq!(
+                (node.push, node.value),
+                (*push, *value),
+                "{ctx} node {read}"
+            );
+            read += 1;
+        }
+        assert_eq!(read, walked.len(), "{ctx}");
+        nodes += read;
+    }
+    println!("{} files, {nodes} nodes", files.len());
+}
+
+/// No shipped file holds a list that carries a value of its own: a push
+/// slot whose code has a value class (hbam-writer.md 2.2), which the reader
+/// gives as a value, empty or not, beside the list's children, and which
+/// the file writer writes as a bare push (`docs/server-storage.md` 5). The
+/// page format can say it; FileMaker's files are not seen to. Reads
+/// whichever of the extractions this host has, and prints what it counted.
+#[test]
+#[ignore = "requires the git-ignored extracted templates or FileMaker Server samples"]
+fn no_shipped_file_holds_a_list_with_a_value() {
+    let dirs: Vec<&str> = [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES]
+        .into_iter()
+        .filter(|dir| Path::new(dir).is_dir())
+        .collect();
+    let files = files_in(&dirs);
+    assert!(!files.is_empty(), "no extracted files");
+    let (mut nodes, mut lists, mut with_value) = (0usize, 0usize, Vec::new());
+    for path in &files {
+        let file = HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        tree.root.walk(&mut |at, node| {
+            if at.is_empty() {
+                return;
+            }
+            nodes += 1;
+            if node.push {
+                lists += 1;
+                if let Some(value) = node.value {
+                    with_value.push((path.display().to_string(), at.len(), value.len()));
+                }
+            }
+        });
+    }
+    println!(
+        "{} files ({}), {nodes} nodes, {lists} lists, {} with a value",
+        files.len(),
+        dirs.join(", "),
+        with_value.len()
+    );
+    assert!(with_value.is_empty(), "{with_value:?}");
 }

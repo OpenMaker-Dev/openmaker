@@ -119,6 +119,7 @@ pub mod console;
 mod containers;
 pub mod database_folders;
 pub mod default_identity;
+mod derived;
 mod engine;
 mod eventlog;
 mod filelock;
@@ -135,6 +136,7 @@ mod schedules;
 mod scripts;
 mod security;
 mod server;
+mod staged;
 mod store;
 mod thumbnail;
 pub mod tls;
@@ -157,7 +159,7 @@ pub use config::{
 pub use connection::ScriptGate;
 pub use connection::{
     LOGIN_INACTIVE_ACCOUNT, LOGIN_PASSWORD_CHANGE_DUE, LOGIN_UNREADABLE_ACCOUNT,
-    LOGIN_UNSUPPORTED_PRIVILEGES,
+    LOGIN_UNREADABLE_FILE, LOGIN_UNSUPPORTED_PRIVILEGES,
 };
 pub use eventlog::{
     Alert, Level, LogEntry, LogFileInfo, LogPage, LogReadError, MAX_ALERTS, MAX_LOG_LINE,
@@ -173,6 +175,9 @@ pub use schedules::{
 };
 pub use scripts::{AbortReason, RunningScript, DEFAULT_SCRIPT_LIMIT};
 pub use server::{Server, ServerHandle, StartError};
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use store::SaveFault;
 pub use tls::Identity;
 pub use writes::{MAX_LOCKS, MAX_QUEUED, MAX_QUEUED_BYTES};
 

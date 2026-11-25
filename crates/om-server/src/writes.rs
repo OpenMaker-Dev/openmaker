@@ -4,11 +4,12 @@
 //! `docs/re/schema-path.md` 4) and the change notifications other clients
 //! receive.
 //!
-//! op70, op71, op72 and the lock requests are operations of the engine
-//! interface ([`crate::engine`]): the functions here are their work, which
-//! [`crate::engine::run`] calls against a transaction and the lock table,
-//! and the engine saves. A server script's commit ([`commit_records`]) and
-//! staging still work on the file directly.
+//! op70, op71, op72, the lock requests, a server script's commit
+//! ([`commit_records`]) and its Set Next Serial Value are operations of the
+//! engine interface ([`crate::engine`]): the functions here are their work,
+//! which [`crate::engine::run`] calls against a transaction and the lock
+//! table, and the engine saves. Staging (op14) works on the session's
+//! temporary area, not on the file.
 //!
 //! Locks on shared state are always taken in one order: the file's store,
 //! then its lock table, then its registrations, then the mailboxes.
@@ -28,14 +29,16 @@ use om_protocol::write::{
 
 use crate::connection::ACCESS_DENIED;
 use crate::engine::{
-    self, CommitRecords, CommitReply, Environment, Locks, ReleaseLock, ReleaseLocks,
-    ReserveRecordIds, Staged, TakeLock, Transaction, UpgradeLock,
+    CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReadError, ReleaseLock,
+    ReleaseLocks, ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
+    View, NO_LIMIT,
 };
 use crate::hosting::Hosted;
 use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::modcount;
-use crate::store::{Journal, Store};
+use crate::store::keys::{FIELDS, FIELD_DEFINITIONS, LAST_RECORD_ID, SERIAL_VALUE};
+use crate::store::Store;
 use crate::uploads::Charge;
 
 /// Key of a table's records, `[T, 05]`.
@@ -304,8 +307,9 @@ pub(crate) fn refused_ids(status: u32) -> CreateRecordReply {
 /// and refused with the save's error ([`crate::hosting::save_error`]): no
 /// id is issued that a restart could hand out again. The server's own
 /// scripts and imports reserve without it: they end with the server, so no
-/// id of theirs outlives a restart, and their commit saves the file
-/// ([`Hosted::save`]) once rather than once per record.
+/// id of theirs outlives a restart, and their commit saves the file once
+/// rather than once per record; the script's end saves the ids of records
+/// it did not commit (`engine::Operation::SaveFile`).
 pub(crate) fn create_record(
     op: ReserveRecordIds,
     file: &str,
@@ -322,13 +326,13 @@ pub(crate) fn create_record(
     if tx.is_read_only() {
         return refused_ids(u32::from(ACCESS_DENIED));
     }
-    let Some(table) = single(&req.table).filter(|t| tx.has_table(t)) else {
+    let Some(table) = single(&req.table).filter(|t| tx.derived().has_table(t)) else {
         return refused_ids(TABLE_MISSING);
     };
     // Each refusal comes before anything changes, in this order: the count,
     // the connection's lock room, then the reservation's own (a count of 0,
     // ids past the largest, a table node the last issued id cannot go
-    // beneath; `Store::reserve_record_ids`), then (`durable`) the engine's
+    // beneath; `reserve_record_ids`), then (`durable`) the engine's
     // save of the new last issued id, which a refusal takes back. Only a
     // lock another user holds on a reserved id refuses after the ids are
     // reserved, as FileMaker Server does (write-path.md 3.1, step 4).
@@ -343,7 +347,7 @@ pub(crate) fn create_record(
         );
         return refused_ids(u32::from(LOCK_CONFLICT));
     }
-    let Some(first) = tx.reserve_record_ids(table, req.count) else {
+    let Some(first) = reserve_record_ids(tx, file, table, req.count) else {
         return refused_ids(UNAVAILABLE);
     };
     // Inclusive: the last id may be the largest a serial key holds.
@@ -366,7 +370,7 @@ pub(crate) fn create_record(
 
 /// op72: read a field's next serial value, replacing or advancing it as the
 /// flags ask (write-path.md 3.2).
-pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerialReply {
+pub(crate) fn get_serial(req: &GetSerial, file: &str, tx: &mut Transaction<'_>) -> GetSerialReply {
     if tx.is_read_only() {
         return GetSerialReply {
             conflict: None,
@@ -375,7 +379,9 @@ pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerial
         };
     }
     let value = match (single(&req.table), single(&req.field)) {
-        (Some(table), Some(field)) => tx.serial_value(
+        (Some(table), Some(field)) => serial_value(
+            tx,
+            file,
             table,
             field,
             (req.flags & SERIAL_REPLACE != 0).then_some(req.value.as_str()),
@@ -395,6 +401,126 @@ pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerial
             value: String::new(),
         },
     }
+}
+
+/// A server script's Set Next Serial Value
+/// ([`crate::engine::SetNextSerial`]): replace a field's next serial value
+/// within a commit, which the engine saves before it counts and takes back
+/// when it cannot, as a record commit. 102 for a table without the field,
+/// which changes nothing.
+pub(crate) fn set_next_serial(
+    op: SetNextSerial,
+    file: &str,
+    tx: &mut Transaction<'_>,
+) -> Result<(), u32> {
+    let SetNextSerial {
+        table,
+        field,
+        value,
+    } = op;
+    serial_value(tx, file, &table, &field, Some(&value), None).ok_or(FIELD_MISSING)?;
+    // Saved as a commit, as a record's is (`Save::Commit`).
+    tx.begin_commit();
+    Ok(())
+}
+
+/// The last record id issued in `table` (`[T, 00]`), 0 when none is.
+fn last_record_id(view: &dyn View, table: &[u8]) -> u64 {
+    view.node(&[table, &[LAST_RECORD_ID]])
+        .ok()
+        .flatten()
+        .and_then(|head| head.value)
+        .as_deref()
+        .and_then(<[u8]>::split_first)
+        .filter(|(&len, segment)| usize::from(len) == segment.len())
+        .and_then(|(_, segment)| serial::decode(segment))
+        .unwrap_or(0)
+}
+
+/// Reserve `count` record ids in `table` (op71): returns the first and
+/// stores the new last issued id. `None`, changing nothing, for a count of
+/// 0, when the ids would pass the largest a serial key holds (the last
+/// issued id comes from the file, and a catalog upload can set it: ids must
+/// not wrap around to those records have), and when the table's node holds
+/// a value, which the id cannot go beneath (the transaction refuses the
+/// write). The reservation is not a commit: the engine saves it before the
+/// ids are answered, or takes it back byte for byte when the save fails.
+fn reserve_record_ids(
+    tx: &mut Transaction<'_>,
+    file: &str,
+    table: &[u8],
+    count: u32,
+) -> Option<u64> {
+    if count == 0 {
+        return None;
+    }
+    let last = last_record_id(tx, table);
+    let Some(new_last) = last.checked_add(u64::from(count)) else {
+        warn!(
+            "{file}: no record ids reserved: {count} do not fit after the last issued id \
+             {last} of table {table:02x?}"
+        );
+        return None;
+    };
+    let segment = serial::encode(new_last);
+    let mut value = vec![segment.len() as u8];
+    value.extend(segment);
+    let path = vec![table.to_vec(), vec![LAST_RECORD_ID]];
+    if let Err(reason) = tx.put(path, OwnedNode::leaf(Vec::new(), value)) {
+        warn!("{file}: no record ids reserved: {reason}");
+        return None;
+    }
+    tx.reserved_ids();
+    // At most `new_last`, as `count` is at least 1.
+    Some(last + 1)
+}
+
+/// A field's next serial value (op72, Set Next Serial Value), read and
+/// possibly replaced or advanced; returns the value before the update.
+/// `None` when the field does not exist, or when the new value cannot go
+/// beneath its definition as the tree is (a definition that holds a
+/// value), which changes nothing. Only an existing field definition gets a
+/// serial node.
+fn serial_value(
+    tx: &mut Transaction<'_>,
+    file: &str,
+    table: &[u8],
+    field: &[u8],
+    replace: Option<&str>,
+    increment: Option<i32>,
+) -> Option<String> {
+    tx.derived().field_type(table, field)?;
+    let path: [&[u8]; 5] = [
+        table,
+        &[FIELDS],
+        &[FIELD_DEFINITIONS],
+        field,
+        &[SERIAL_VALUE],
+    ];
+    // The node whole, as the value may be stored in pieces: the file
+    // engine holds it in memory already.
+    let current = tx
+        .subtree(&path, NO_LIMIT)
+        .ok()
+        .flatten()
+        .and_then(|node| crate::derived::cell_text(&node))
+        .unwrap_or_else(|| "1".to_string());
+    let next = match (replace, increment) {
+        (Some(value), _) => Some(value.to_string()),
+        (None, Some(by)) => Some(crate::store::increment_serial(&current, by)),
+        (None, None) => None,
+    };
+    if let Some(next) = next {
+        if View::node(tx, &path[..4]).ok().flatten().is_some() {
+            let at = path.iter().map(|segment| segment.to_vec()).collect();
+            let leaf = OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(&next));
+            if let Err(reason) = tx.put(at, leaf) {
+                warn!("{file}: serial value not set: {reason}");
+                return None;
+            }
+        }
+    }
+    Some(current)
 }
 
 /// One file's temporary area on a connection (write-path.md 3.3): the
@@ -726,13 +852,7 @@ pub(crate) fn commit(
         mut staged,
         withheld,
     } = op;
-    let mut record_environment = || {
-        crate::recalc::record_environment_at(
-            &account,
-            engine::uuid(environment),
-            &environment.now(),
-        )
-    };
+    let mut record_environment = || crate::recalc::record_environment_in(&account, environment);
     if let Some((table, action)) = refused_action(
         tx.view(),
         &staged,
@@ -755,7 +875,7 @@ pub(crate) fn commit(
     }
     // A field without access keeps its stored value whatever an edit
     // uploads for it: the client never had it (`views::keep_hidden`).
-    let hidden = crate::views::hidden_fields(tx.view(), &access);
+    let hidden = crate::views::hidden_fields(tx.view().derived(), &access);
     tx.begin_commit();
     let changes = tx.guarded(|tx| commit_list(file, user, locks, &mut staged, &list, tx, &hidden));
     for change in &changes {
@@ -778,7 +898,8 @@ pub enum CommitError {
     /// written.
     Refused(String),
     /// The file could not be saved: the commit was taken back and its
-    /// records stay locked.
+    /// records stay locked; or the save could not be confirmed on disk,
+    /// and the file, which keeps the commit, takes no more changes.
     NotSaved(String),
 }
 
@@ -931,7 +1052,7 @@ fn commit_list(
                 }
                 let existed = tx.has_record(t, id);
                 let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-                if let (Some(fields), Some(stored)) = (hidden.get(t), tx.node(&segments)) {
+                if let (Some(fields), Some(stored)) = (hidden.get(t), tx.store_node(&segments)) {
                     let stored = stored.clone();
                     crate::views::keep_hidden(&mut record, &stored, fields);
                 }
@@ -968,13 +1089,8 @@ fn change_line(file: &str, by: &str, change: &Change) -> String {
     format!("{file:?}: {by}{done} record {id} of table {table:02x?}")
 }
 
-/// Log a committed change of a record (`by` names a script's).
-fn log_change(hosted: &Hosted, by: &str, change: &Change) {
-    info!("{}", change_line(&hosted.name, by, change));
-}
-
 /// One record of a server script's commit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordWrite {
     pub table: u64,
     pub id: u64,
@@ -988,24 +1104,32 @@ pub struct RecordWrite {
     pub uploads: Vec<(u64, BinaryData)>,
 }
 
-/// Write a server script's records as one commit (write-path.md 3.4, 5),
-/// under one hold of the store: every record is checked first (its table
-/// exists, no other lock user holds it, a new record's id was issued and
-/// is free, a changed or deleted record still exists, its modification
-/// count is a count, [`modcount::counted`]) and nothing is
-/// written unless all pass, then the file is saved. When it cannot be
-/// saved the records are put back and the commit fails with the save's
+/// A server script's commit ([`crate::engine::CommitScriptRecords`]), as
+/// one commit (write-path.md 3.4, 5) under one hold of the store and of the
+/// lock table, taken from its start: every record is checked first (its
+/// table exists, no other lock user holds it, a new record's id was issued
+/// and is free, a changed or deleted record still exists, its modification
+/// count is a count, [`modcount::counted`]) and nothing is written unless
+/// all pass. The engine saves the commit (`Hosted::save_change`); when it
+/// cannot, the records are put back and the commit fails with the save's
 /// FileMaker error ([`crate::hosting::save_error`]), the records still
-/// locked. Otherwise their locks are released, as op70 releases them.
-/// Returns the changes, or a FileMaker error and why.
-pub fn commit_records(
-    hosted: &Hosted,
-    user: LockUser,
-    records: Vec<RecordWrite>,
-    bulk_delete: bool,
-) -> Result<Vec<Change>, (u32, String)> {
-    let mut store = hosted.write_store();
-    let mut locks = hosted.lock_table();
+/// locked. Otherwise their locks are released, as op70 releases them. A
+/// new container member's unique id comes from `environment`. Returns the
+/// result, a FileMaker error and why, and the changes to tell the other
+/// clients of.
+pub(crate) fn commit_records(
+    op: CommitScriptRecords,
+    file: &str,
+    tx: &mut Transaction<'_>,
+    locks: &mut Locks<'_>,
+    environment: &dyn Environment,
+) -> (Result<(), (u32, String)>, Vec<Change>) {
+    let CommitScriptRecords {
+        user,
+        records,
+        bulk_delete,
+    } = op;
+    locks.hold();
     let path = |r: &RecordWrite| {
         vec![
             uint_segment(r.table),
@@ -1013,79 +1137,67 @@ pub fn commit_records(
             serial::encode(r.id),
         ]
     };
+    let refused = |code: u32, reason: String| (Err((code, reason)), Vec::new());
     for record in &records {
         let path = path(record);
         let table = &path[0];
-        if !store.has_table(table) {
-            return Err((TABLE_MISSING, format!("no table {table:02x?}")));
+        if !tx.has_table(table) {
+            return refused(TABLE_MISSING, format!("no table {table:02x?}"));
         }
         if locks.held_by_other(&path, user) {
-            return Err((
+            return refused(
                 u32::from(RECORD_IN_USE),
                 format!("another session holds record {}", record.id),
-            ));
+            );
         }
-        let exists = store.has_record(table, record.id);
-        if record.new && (exists || record.id > store.last_record_id(table)) {
-            return Err((
+        let exists = tx.has_record(table, record.id);
+        if record.new && (exists || record.id > tx.last_record_id(table)) {
+            return refused(
                 UNAVAILABLE,
                 format!("record {} was not reserved", record.id),
-            ));
+            );
         }
         if !record.new && !exists {
-            return Err((RECORD_MISSING, format!("record {} is gone", record.id)));
+            return refused(RECORD_MISSING, format!("record {} is gone", record.id));
         }
         if record
             .record
             .as_ref()
             .is_some_and(|r| !modcount::counted(r))
         {
-            return Err((
+            return refused(
                 UNAVAILABLE,
                 format!("record {}'s modification count is not one", record.id),
-            ));
+            );
         }
     }
     let tables: std::collections::BTreeSet<u64> = records.iter().map(|r| r.table).collect();
-    let mut journal = store.begin_commit();
-    let (changes, emptied) = store.guarded(&mut journal, |store, journal| {
-        let changes = write_records(store, journal, records);
-        store.release_deleted_record_containers(journal);
+    // The commit is saved even when it writes nothing, as it always was.
+    tx.begin_commit();
+    let changes = tx.guarded(|tx| {
+        let changes = write_records(tx, records, environment);
+        tx.release_deleted_record_containers();
         // Delete All Records and Truncate Table that leave a table empty
         // take its library with them (`Store::drop_emptied_library_in`).
-        let emptied: Vec<u64> = tables
-            .iter()
-            .copied()
-            .filter(|t| bulk_delete && store.drop_emptied_library_in(journal, &uint_segment(*t)))
-            .collect();
-        (changes, emptied)
-    });
-    if let Err(e) = hosted.save_commit(&mut store, journal) {
-        return Err((
-            u32::from(crate::hosting::save_error(&e)),
-            format!("the file could not be saved: {e}"),
-        ));
-    }
-    if !emptied.is_empty() {
-        // Member ids start again in a new library: no cached thumbnail of
-        // the old one may answer for them.
-        let mut thumbnails = hosted.thumbnails.lock().expect("thumbnail lock");
-        for table in emptied {
-            thumbnails.forget_library(&[uint_segment(table), vec![crate::library::LIBRARY]]);
+        if bulk_delete {
+            for table in &tables {
+                tx.drop_emptied_library(&uint_segment(*table));
+            }
         }
-    }
+        changes
+    });
     for change in &changes {
-        locks.release_path(&change.path, user);
-        log_change(hosted, "script ", change);
+        locks.release_once_stored(change.path.clone(), user);
+        tx.once_stored(change_line(file, "script ", change));
     }
-    Ok(changes)
+    (Ok(()), changes)
 }
 
 /// The writes of [`commit_records`], checked.
 fn write_records(
-    store: &mut Store,
-    journal: &mut Journal,
+    tx: &mut Transaction<'_>,
     records: Vec<RecordWrite>,
+    environment: &dyn Environment,
 ) -> Vec<Change> {
     let path = |r: &RecordWrite| {
         vec![
@@ -1093,6 +1205,11 @@ fn write_records(
             RECORDS.to_vec(),
             serial::encode(r.id),
         ]
+    };
+    let mut unique_id = || {
+        let mut id = [0u8; 16];
+        environment.fill_random(&mut id);
+        id
     };
     let mut changes = Vec::with_capacity(records.len());
     for mut record in records {
@@ -1108,7 +1225,7 @@ fn write_records(
         let mut counted = Vec::new();
         if let Some(node) = record.record.as_mut() {
             for (cell, data) in std::mem::take(&mut record.uploads) {
-                let member = store.store_container_in(journal, &path[0], data);
+                let member = tx.store_container(&path[0], data, &mut unique_id);
                 let reference = om_data::containers::reference_text(&member);
                 node.set_child(om_scripts::text_node(&uint_segment(cell), &reference));
                 counted.push(member);
@@ -1117,18 +1234,12 @@ fn write_records(
         // The record's container references, counted as FileMaker Pro's
         // op87 counts a client's: a deleted record releases its values, a
         // new one takes a reference to those it copied.
-        let old = store
-            .node(&[&path[0], RECORDS, &path[2]])
+        let old = tx
+            .store_node(&[&path[0], RECORDS, &path[2]])
             .cloned()
             .filter(|_| !record.new);
-        store.count_containers_in(
-            journal,
-            &path[0],
-            old.as_ref(),
-            record.record.as_ref(),
-            &counted,
-        );
-        store.write_record_in(journal, &path[0], record.id, record.record);
+        tx.count_containers(&path[0], old.as_ref(), record.record.as_ref(), &counted);
+        tx.write_record(&path[0], record.id, record.record);
         changes.push(Change {
             path,
             code: code | attention::RECORD,
@@ -1178,34 +1289,46 @@ fn over_cap(file: &str, holder: &str, path: &[Vec<u8>]) -> LockReply {
 }
 
 /// op60: take a lock without waiting, answering with the locked node's
-/// modification count in `store` when asked (write-path.md 4.2,
+/// modification count `view` reads when asked (write-path.md 4.2,
 /// schema-path.md 4.1). The grant is framed before the lock is taken, so a
 /// lock is only held by a client the reply tells of it: a grant that cannot
-/// be framed (a count longer than 255 bytes, which [`Store::mod_count`]
-/// does not return) is refused with error 3 and takes nothing. A new lock
+/// be framed (a count longer than 255 bytes, which [`mod_count`] does not
+/// return) is refused with error 3 and takes nothing. A new lock
 /// is refused when `room`, the locks the connection may still take
 /// ([`MAX_LOCKS`]), is 0.
-pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_>) -> LockReply {
+pub(crate) fn lock(op: TakeLock, file: &str, view: &dyn View, locks: &mut Locks<'_>) -> LockReply {
     let TakeLock {
         user,
         holder,
         request: req,
         room,
     } = op;
-    let mod_count = req.want_mod_count.then(|| store.mod_count(&req.path));
+    let unavailable = || LockReply::Refused {
+        status: LOCK_UNAVAILABLE,
+        conflict: Conflict {
+            self_conflict: false,
+            users: String::new(),
+        },
+    };
+    let mod_count = match req.want_mod_count.then(|| mod_count(view, file, &req.path)) {
+        None => None,
+        Some(Ok(count)) => Some(count),
+        Some(Err(error)) => {
+            warn!(
+                "{file:?}: lock of {:02x?} refused: its modification count cannot be read: \
+                 {error}",
+                req.path
+            );
+            return unavailable();
+        }
+    };
     let granted = LockReply::Granted { mod_count };
     if let Err(e) = granted.to_result() {
         warn!(
             "{file:?}: lock of {:02x?} refused: its modification count cannot be sent: {e}",
             req.path
         );
-        return LockReply::Refused {
-            status: LOCK_UNAVAILABLE,
-            conflict: Conflict {
-                self_conflict: false,
-                users: String::new(),
-            },
-        };
+        return unavailable();
     }
     if room == 0 && !locks.holds(&req.path, user, req.lock_type) {
         return over_cap(file, &holder, &req.path);
@@ -1216,6 +1339,34 @@ pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_
             status: LOCK_CONFLICT,
             conflict,
         },
+    }
+}
+
+/// The modification count of the node at `path` as op60 returns it: its
+/// `fc` child, `01 00` when it has none, empty when the node does not
+/// exist. A record (`[T, 05, R]`, write-path.md 4.2, 5.4), a layout or a
+/// catalog index alike (schema-path.md 4.1). An `fc` that is not a count
+/// (`modcount::is_count`: a file written before commits were checked, or
+/// by another program) is `01 00` too, the 0 the server's scripts read for
+/// it; so the value is at most 10 bytes and op60's reply can always carry
+/// it.
+fn mod_count(view: &dyn View, file: &str, path: &[Vec<u8>]) -> Result<Vec<u8>, ReadError> {
+    let mut segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    if view.node(&segments)?.is_none() {
+        return Ok(Vec::new());
+    }
+    segments.push(&[modcount::MOD_COUNT]);
+    let Some(count) = view.node(&segments)? else {
+        return Ok(modcount::key_string(0));
+    };
+    match count.value.filter(|_| !count.list) {
+        Some(value) if modcount::parse(&value).is_some() => Ok(value.into_owned()),
+        _ => {
+            warn!(
+                "{file}: {path:02x?} holds a modification count that is not one; reported as none"
+            );
+            Ok(modcount::key_string(0))
+        }
     }
 }
 

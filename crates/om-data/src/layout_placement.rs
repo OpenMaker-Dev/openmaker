@@ -167,9 +167,10 @@ pub struct Planned {
     pub changes: Vec<(String, String)>,
 }
 
-/// A layout's revision: the SHA-256 of its catalog member `[4, 5, L]` as
-/// stored, modification stamps included (`om_protocol::authoring::
-/// catalog_revision`). Any change to the layout changes it.
+/// A layout's revision: the SHA-256 of its catalog member `[4, 5, L]`
+/// without its modification stamps and with stored credentials hidden
+/// (`om_protocol::authoring::layout_revision`). Any other change to the
+/// layout changes it.
 pub type Revision = [u8; 32];
 
 /// A placement asked of the open file's provider

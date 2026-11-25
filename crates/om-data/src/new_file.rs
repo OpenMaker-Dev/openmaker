@@ -584,6 +584,7 @@ fn first_record(
         held: None,
         others_held: Default::default(),
         related_needs: None,
+        sources: None,
     };
     let values = plan.compute(
         crate::rules::WriteMode::Create,

@@ -675,6 +675,10 @@ fn a_local_files_script_saves_copies_of_it() {
     fixture::write_tree(&folder.file(), &root);
     let cert = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
     let host = om_server::LocalHost::open(&folder.file(), cert.cert.pem().as_bytes()).unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let host = host.checking_reads();
     let can_publish = match host.prepare_copy(&made("Copy"), om_data::CopyKind::Copy) {
         Ok(_) => true,
         Err(err)

@@ -90,6 +90,20 @@ pub enum Command {
     /// Make a new, blank file on this computer, as File > Create New...
     /// does (`om_data::new_file::create`). Needs no connection.
     CreateFile(CreateFileParams),
+    /// Compare the designs of two files on this computer, with or without
+    /// a base (`om_hbam::design_paths::compare_files`). Needs no
+    /// connection.
+    CompareDesigns(CompareDesignsParams),
+    /// Every decoded reference to a design object (`om_data::design_refs`).
+    FindUses(ObjectParams),
+    /// Every decoded reference whose target was not found among the
+    /// objects read.
+    BrokenReferences(AnalysisParams),
+    /// The objects no reference from another object was found for, in
+    /// what was read.
+    UnusedObjects(UnusedParams),
+    /// A script's performs and the scripts that perform it, transitively.
+    ScriptCalls(ScriptCallsParams),
 }
 
 impl Command {
@@ -132,6 +146,11 @@ impl Command {
             Command::GetValueLists(_) => &catalog::GET_VALUE_LISTS,
             Command::CompleteCalculation(_) => &catalog::COMPLETE_CALCULATION,
             Command::CreateFile(_) => &catalog::CREATE_FILE,
+            Command::CompareDesigns(_) => &catalog::COMPARE_DESIGNS,
+            Command::FindUses(_) => &catalog::FIND_USES,
+            Command::BrokenReferences(_) => &catalog::BROKEN_REFERENCES,
+            Command::UnusedObjects(_) => &catalog::UNUSED_OBJECTS,
+            Command::ScriptCalls(_) => &catalog::SCRIPT_CALLS,
         }
     }
 
@@ -202,6 +221,141 @@ pub struct CreateFileParams {
     /// file name without the extension names the file, its table and its
     /// layout. A file already there is never replaced.
     pub path: String,
+}
+
+/// The files `compare_designs` compares, each a path on this computer,
+/// relative to the working directory or absolute. Files are only read.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompareDesignsParams {
+    /// The source: the file whose design is compared with the target's.
+    pub source: String,
+    /// The target.
+    pub target: String,
+    /// The base: the copy the source and the target were both made from.
+    /// With it objects are matched by kind and id, and each side's
+    /// changes since it are reported; without it by kind and id when their
+    /// names agree, or when neither has a name and all their content is
+    /// equal.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Also list the matched objects that are the same; by default only
+    /// those that differ are listed, and every part is counted.
+    #[serde(default)]
+    pub include_same: bool,
+}
+
+/// A design object for the analysis commands: `object`, a reference of
+/// any kind `inspect`, `get_layout` or `get_value_lists` gives
+/// (`script:5@Tasks.fmp12`, `field:32769.2@Tasks.fmp12`, ...) or of a
+/// custom function, data source or relationship
+/// (`custom_function:1@Tasks.fmp12`), or exactly one name: a script's,
+/// table's, occurrence's, layout's, value list's, custom function's or
+/// data source's, or `field_name` with the field's table (`table` or
+/// `table_name`). A reference may name an object not found among the
+/// objects read: the references naming it are returned. A name not found
+/// is the error `not_found` (not among the objects read, in a file read
+/// cleanly) or `not_known` (the file was not read cleanly), each with its
+/// `coverage` in `details`.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectParams {
+    #[serde(default)]
+    pub object: Option<String>,
+    #[serde(default)]
+    pub script_name: Option<String>,
+    #[serde(default)]
+    pub table_name: Option<String>,
+    #[serde(default)]
+    pub occurrence_name: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    #[serde(default)]
+    pub value_list_name: Option<String>,
+    #[serde(default)]
+    pub custom_function_name: Option<String>,
+    #[serde(default)]
+    pub data_source_name: Option<String>,
+    /// A field by name, of the table `table` (a reference) or
+    /// `table_name` names.
+    #[serde(default)]
+    pub field_name: Option<String>,
+    #[serde(default)]
+    pub table: Option<String>,
+    /// The most references and coverage places listed (default 500, at
+    /// most 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// How much an analysis lists.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AnalysisParams {
+    /// The most references and coverage places listed (default 500, at
+    /// most 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// A kind of design object `unused_objects` looks for references to.
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectKind {
+    Table,
+    Field,
+    Occurrence,
+    Layout,
+    Script,
+    ValueList,
+    CustomFunction,
+    DataSource,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UnusedParams {
+    /// The kinds to look for objects of that no other object was found
+    /// to refer to; every one when absent.
+    #[serde(default)]
+    pub kinds: Option<Vec<ObjectKind>>,
+    /// The most objects and coverage places listed (default 500, at most
+    /// 100,000); totals are always given.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Which way a call chain goes: through performs (Perform Script,
+/// Perform Script on Server) only.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CallDirection {
+    /// The scripts it performs, transitively.
+    Calls,
+    /// The scripts that perform it, transitively.
+    Callers,
+    /// Both.
+    Both,
+}
+
+/// A script, as for `get_script`, and the direction of its chain.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptCallsParams {
+    #[serde(default)]
+    pub script: Option<String>,
+    #[serde(default)]
+    pub script_name: Option<String>,
+    /// `calls`, `callers` or `both` (the default).
+    #[serde(default)]
+    pub direction: Option<CallDirection>,
+    /// The most performs, other references between scripts and coverage
+    /// places listed (default 500, at most 100,000); totals are always
+    /// given.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 /// Metadata `inspect` can list.
@@ -901,8 +1055,15 @@ pub enum ErrorKind {
     InvalidRequest,
     /// The host could not be reached, or refused the login.
     Connection,
-    /// No such object in the file.
+    /// The object was not found. For the design analysis commands: not
+    /// among the objects read, in a file read cleanly, which is a finding,
+    /// not proof that the file lacks it (`details.coverage` says how far
+    /// to trust it).
     NotFound,
+    /// Whether the object is there is not known: the file was not read
+    /// cleanly (`details.reason` says what made it not clean,
+    /// `details.coverage` gives the rest). Never "does not exist".
+    NotKnown,
     /// The reference names another file than the one connected to.
     WrongFile,
     /// A name that several objects share.

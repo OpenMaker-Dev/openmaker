@@ -38,14 +38,21 @@
 //! complete new file renamed over the old one, and never writes a file in
 //! place (`crate::store::Store::save`). A run opens each file while it
 //! holds the file's store for reading, so that no save is half done, and
-//! lets go at once: the descriptor names that version of the file whatever
-//! later saves rename over it, so the copy made from it is a snapshot of
-//! one save. The store is held only for that open call, never while the
-//! file is copied. Clients see no pause (FileMaker Server pauses each file
-//! at the end of its copy, re 3): a client's write waits at most for one
-//! `open`, and a save in progress delays the backup, not the client.
-//! Changes a failed save left in memory are not in the copy; the run logs
-//! a warning.
+//! lets go at once ([`crate::engine::FileEngine::stored`]): the descriptor
+//! names that version of the file whatever later saves rename over it, so
+//! the copy made from it is a snapshot of one save. The copy is an export
+//! of that file (`crate::engine::export::copy`): copied by the kernel where
+//! the system can, as before, checked to be as long as the file was when it
+//! was opened, without a name and then linked to it where the folder's
+//! file system can, else under its name as before (`crate::staged`). It is
+//! not read back: that is FileMaker's Verify option
+//! ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)), which
+//! OpenMaker does not have. The store is held only for that open call,
+//! never while the file is copied. Clients see no pause (FileMaker Server
+//! pauses each file at the end of its copy, re 3): a client's write waits
+//! at most for one `open`, and a save in progress delays the backup, not
+//! the client. Changes a failed save left in memory are not in the copy;
+//! the run logs a warning.
 //!
 //! **Unchanged files are linked**, as FileMaker does (re 2.3): when the
 //! file has not been saved since this schedule's last complete backup made
@@ -87,7 +94,6 @@ mod fs;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::{File, Permissions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
@@ -99,6 +105,7 @@ use log::{debug, error, info, warn};
 
 use crate::anchored::{FileAt, FileId};
 use crate::connection::Shared;
+use crate::engine::{export, Destination, ExportError, Progress};
 use crate::hosting::{save_error, Hosted};
 use crate::schedules::{BackupFiles, BackupTask};
 use crate::scripts::AbortReason;
@@ -244,6 +251,10 @@ pub(crate) struct Backups {
     /// ([`crate::ServerHandle::failing_next_backup_flush`]).
     #[cfg(debug_assertions)]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// A test fixture: the backup folders act as on a file system without
+    /// hard links ([`crate::ServerHandle::backing_up_without_hard_links`]).
+    #[cfg(debug_assertions)]
+    no_hard_links: std::sync::atomic::AtomicBool,
     /// A test fixture: run before a checked backup folder is removed
     /// ([`crate::ServerHandle::before_backup_removal`]).
     #[cfg(debug_assertions)]
@@ -346,6 +357,21 @@ pub(crate) struct Outcome {
     pub cancelled: Option<AbortReason>,
 }
 
+/// A backup folder that refuses hard links, as some file systems do
+/// ([`Backups::refuse_hard_links`]).
+struct WithoutLinks<'a>(&'a fs::Folder);
+
+impl export::Folder for WithoutLinks<'_> {
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        export::Folder::descriptor(self.0)
+    }
+
+    fn links(&self) -> bool {
+        false
+    }
+}
+
 /// Why a run did not complete.
 enum Failure {
     Cancelled(AbortReason),
@@ -366,6 +392,22 @@ impl Failure {
                 Failure::Cancelled(ticket.cancelled().unwrap_or(AbortReason::Admin))
             }
             CopyError::Io(e) => Failure::io(what, &e),
+        }
+    }
+
+    /// A file's copy to `what` failed: stopped, or not read or written,
+    /// with a save's codes, as a copy failed before; or the file changed
+    /// length while it was copied (800).
+    fn export(what: &dyn std::fmt::Display, e: ExportError, ticket: &Ticket) -> Self {
+        match e {
+            ExportError::Stopped => {
+                Failure::Cancelled(ticket.cancelled().unwrap_or(AbortReason::Admin))
+            }
+            ExportError::Io(e) | ExportError::Source(e) => Failure::io(what, &e),
+            e => Failure::Failed {
+                code: CANNOT_WRITE,
+                message: format!("{what}: {e}"),
+            },
         }
     }
 }
@@ -399,6 +441,27 @@ impl Backups {
     pub fn fail_next_flush(&self) {
         self.fail_next_flush
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Make the backup folders act as on a file system without hard links
+    /// (tests): no copy is linked to an earlier backup's, and each copy is
+    /// made under its name, as a file system that refuses links makes it.
+    #[cfg(debug_assertions)]
+    pub fn refuse_hard_links(&self) {
+        self.no_hard_links
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the backup folders may be given hard links.
+    fn links(&self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            !self
+                .no_hard_links
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
+        #[cfg(not(debug_assertions))]
+        true
     }
 
     /// The failure [`Backups::fail_next_flush`] asked for, once.
@@ -889,7 +952,7 @@ fn protected(shared: &Shared) -> io::Result<Protected> {
             }
             // The last saved file may lie in a backup if its path no
             // longer leads to it, even while the slot is closed (#468).
-            if !leads_to_saved(at, slot.saved_file()) {
+            if !leads_to_saved(at, slot.saved_file(&shared.engine)) {
                 protected.add_unresolved(at.place());
             }
         }
@@ -1048,46 +1111,6 @@ fn database_root(shared: &Shared) -> PathBuf {
         });
     }
     root.unwrap_or_default()
-}
-
-/// What a run read of a hosted file while it held its store.
-struct Source {
-    file: File,
-    size: u64,
-    permissions: Permissions,
-    saves: u64,
-    unsaved: bool,
-}
-
-/// Open `hosted`'s file while holding its store for reading: no save is
-/// under way, and the descriptor keeps naming this version of the file
-/// whatever later saves rename over it. The store is held for the `open`
-/// only.
-fn open_source(hosted: &Hosted) -> io::Result<Source> {
-    let (file, saves, unsaved) = {
-        let store = hosted.read_store();
-        // Only the file the server read or last saved there (#468).
-        let file = hosted.at.folder_now()?.open_regular(hosted.at.name())?;
-        if let Some(expected) = store.file() {
-            if crate::anchored::file_identity(&file)? != Some(expected) {
-                return Err(io::Error::other(
-                    "the path no longer leads to the file this server read or last saved",
-                ));
-            }
-        }
-        (file, store.saves(), store.has_unsaved_changes())
-    };
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::other("not a regular file"));
-    }
-    Ok(Source {
-        file,
-        size: metadata.len(),
-        permissions: metadata.permissions(),
-        saves,
-        unsaved,
-    })
 }
 
 /// The name FileMaker's event log gives a file: without its extension.
@@ -1298,7 +1321,7 @@ fn write_backup(
         .unwrap_or_default();
     let mut made = HashMap::new();
     let stop = || ticket.cancelled().is_some();
-    let mut copied = |n: u64| backups.update(ticket, |run| run.bytes_copied += n);
+    let copied = |n: u64| backups.update(ticket, |run| run.bytes_copied += n);
     for hosted in files {
         if let Some(reason) = ticket.cancelled() {
             return Err(Failure::Cancelled(reason));
@@ -1322,7 +1345,9 @@ fn write_backup(
         let dest_path = temporary_path.join(DATABASES).join(&relative);
         let into = folder_below(&databases, &relative, &mut folders)
             .map_err(|e| Failure::io(&dest_path.display(), &e))?;
-        let source = open_source(hosted).map_err(|e| unreadable(&e))?;
+        // The file as its last save left it, opened under the store's read
+        // lock for that call alone, and copied after it.
+        let source = shared.engine.stored(hosted).map_err(|e| unreadable(&e))?;
         if source.unsaved {
             warn!(
                 "{:?}: the backup holds the file as last saved: changes the server could not \
@@ -1332,10 +1357,11 @@ fn write_backup(
         }
         let shown = shown_name(hosted);
         let previous = last.get(&hosted.id).filter(|p| p.saves == source.saves);
+        let links = backups.links();
         let linked = match previous {
-            Some(previous) => link_previous(&target.folder, previous, &into, file_name)
+            Some(previous) if links => link_previous(&target.folder, previous, &into, file_name)
                 .map_err(|e| Failure::io(&dest_path.display(), &e))?,
-            None => false,
+            _ => false,
         };
         let identity = if let (true, Some(previous)) = (linked, previous) {
             info!(
@@ -1346,18 +1372,45 @@ fn write_backup(
             previous.identity
         } else {
             info!("Starting to back up database {shown:?}, current status: Normal");
-            let identity = fs::copy_file(
-                &source.file,
-                source.size,
-                &into,
-                file_name,
-                source.permissions,
-                &stop,
-                &mut copied,
-            )
-            .map_err(|e| Failure::copy(&dest_path.join(file_name).display(), e, ticket))?;
+            let without_links = WithoutLinks(&into);
+            let to = Destination {
+                folder: if links { &into } else { &without_links },
+                name: file_name,
+                permissions: Some(source.permissions.clone()),
+            };
+            let progress = Progress {
+                stop: &stop,
+                written: &copied,
+            };
+            let exported = match export::copy(&source, &to, progress) {
+                Ok(exported) => exported,
+                // The copy is complete under its name. The run flushes every
+                // folder of the backup before the backup is named, and fails
+                // if one cannot be, as it always did.
+                Err(ExportError::NotFlushed { exported, error }) => {
+                    warn!(
+                        "{}: copied, but flushing its folder failed for now: {error}",
+                        dest_path.join(file_name).display()
+                    );
+                    exported
+                }
+                Err(e) => {
+                    return Err(Failure::export(
+                        &dest_path.join(file_name).display(),
+                        e,
+                        ticket,
+                    ))
+                }
+            };
+            let id = exported.id.ok_or_else(|| Failure::Failed {
+                code: CANNOT_WRITE,
+                message: format!(
+                    "{}: the copy has no device and inode numbers to link it by",
+                    dest_path.join(file_name).display()
+                ),
+            })?;
             info!("Backup of {shown:?} completed, current status: Normal");
-            identity
+            Identity::exported(id, exported.size)
         };
         made.insert(
             hosted.id,
@@ -1369,7 +1422,7 @@ fn write_backup(
                 identity,
             },
         );
-        back_up_container_data(hosted, &into, &stop, &mut copied)
+        back_up_container_data(hosted, &into, &stop, &mut |n| copied(n))
             .map_err(|e| Failure::copy(&hosted.path.display(), e, ticket))?;
         backups.update(ticket, |run| run.files_done += 1);
     }

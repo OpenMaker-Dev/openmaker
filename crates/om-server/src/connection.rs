@@ -16,6 +16,7 @@
 //! `docs/re/network-protocol.md` sections 3 and 5). Where FileMaker's choice is
 //! not observed (error codes for refusals), the choice is marked as OpenMaker's.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -28,7 +29,7 @@ use om_giop::{
     build_reply, build_system_exception_reply, parse_header, Completion, MessageReader, MsgType,
     ReadError, ReplyStatus, Request,
 };
-use om_hbam::OwnedNode;
+use om_hbam::{OwnedNode, RidList};
 use om_protocol::container::{self, UploadBinaryReply};
 use om_protocol::hosted_files;
 use om_protocol::notify;
@@ -52,14 +53,15 @@ use crate::authoring;
 use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
-    AdvanceSerial, CommitRecords, FileEngine, Operation, ReleaseLock, ReleaseLocks, Reply,
-    ReserveRecordIds, TakeLock, UpgradeLock,
+    AdjustContainerCount, AdvanceSerial, CommitRecords, Direction, Draft, FileEngine, Operation,
+    Read as FileRead, ReadError as ViewError, ReleaseLock, ReleaseLocks, ReleaseSessionLocks,
+    Reply, ReserveRecordIds, SchemaNotChanged, StoreContainerData, TakeLock, UpdateTable,
+    UpgradeLock, UploadToCatalog, NO_LIMIT,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
-use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
+use crate::hosting::{check_password, Eligibility, FileAccount, Hosted, Hosting, Registration};
 use crate::locks::LockUser;
 use crate::login_limits::{Attempt, LoginLimits, LOGIN_TOO_MANY_ATTEMPTS};
-use crate::recalc;
 use crate::record::{Recorder, Recordings};
 use crate::scripts::{self, ScriptEngine};
 use crate::transfer::{
@@ -120,11 +122,30 @@ pub const LOGIN_PASSWORD_CHANGE_DUE: u16 = 211;
 pub const LOGIN_UNREADABLE_ACCOUNT: u16 = 3;
 pub const LOGIN_UNSUPPORTED_PRIVILEGES: u16 = 9;
 
+/// Login error for a file whose accounts could not be read
+/// (`derived::Derived::accounts`; `engine::ReadError`): FileMaker's 802,
+/// "unable to open file". Neither a wrong password (212, which a client
+/// counts toward locking the account out and the server counts toward its
+/// login limits) nor a success: the password is not checked.
+/// OpenMaker's choice; what FileMaker Server answers when it cannot read
+/// its file is unmeasured.
+pub const LOGIN_UNREADABLE_FILE: u16 = 802;
+
 /// The CORBA system exception for a request refused at a limit on what one
 /// connection holds (transfer.rs): the client reports an error instead of
 /// reading a result. OpenMaker's choice; FileMaker Server's limits are
 /// unmeasured.
 const LIMIT_EXCEPTION: &str = "IMP_LIMIT";
+
+/// The CORBA system exception for a download (op90, op15, op92) or a
+/// thumbnail (op96) whose file could not be read (`engine::ReadError`:
+/// storage failed, or found what it read damaged, docs/server-storage.md
+/// 6.12). A download reply has no field that says so: its lock error is
+/// reported apart from its data, and a missing node tells the client the
+/// key does not exist; a thumbnail's status says only that there is no
+/// thumbnail (`THUMBNAIL_MISSING`). OpenMaker's choice; what FileMaker
+/// Server answers when its file cannot be read is unmeasured.
+const UNREADABLE_EXCEPTION: &str = "PERSIST_STORE";
 
 /// Download lock error for a key the session may not read yet (FileMaker
 /// error 200, "record access is denied"; OpenMaker's choice).
@@ -166,8 +187,9 @@ pub(crate) struct Shared {
     pub recordings: Option<Recordings>,
     /// Change notifications waiting for each connection.
     pub mailboxes: Mailboxes,
-    /// Runs the operations that change hosted files ([`crate::engine`]).
-    pub engine: FileEngine,
+    /// Runs the operations that change hosted files ([`crate::engine`]),
+    /// shared with what outlives a request (a desktop's prepared copy).
+    pub engine: Arc<FileEngine>,
     /// Perform Script on Server (script-runtime.md 11).
     pub scripts: ScriptEngine,
     /// Key paths no download may read after Login, with what is under them
@@ -1103,7 +1125,9 @@ impl Connection {
             let connection = session.connection_id;
             self.shared.scripts.forget(connection);
             for file in self.shared.hosting.files() {
-                file.lock_table().release_connection(connection);
+                let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks { connection });
+                let outcome = self.shared.engine.submit(&file, release);
+                outcome.notices.deliver(&file, &self.shared.mailboxes);
                 file.registrations().retain(|r| r.connection != connection);
             }
             self.shared.mailboxes.close(connection);
@@ -1387,10 +1411,10 @@ impl Connection {
                 upload_binary(shared, peer, session, &header, txn)
             }
             code if code == Opcode::AdjustReferenceCount as u8 => {
-                adjust_reference_count(peer, session, &header, txn)
+                adjust_reference_count(shared, peer, session, &header, txn)
             }
             code if code == Opcode::DownloadThumbnail as u8 => {
-                thumbnail(session, &header, txn, perform.max_return)
+                thumbnail(shared, peer, session, &header, txn, perform.max_return)
             }
             code if code == Opcode::HostCommit as u8 => {
                 commit(shared, peer, session, &header, txn, perform.max_return)
@@ -1514,6 +1538,9 @@ impl Connection {
             Err(PerformError::Status(status)) if status == LIMIT_EXCEPTION => {
                 warn!("{peer}: op{}: refused at a connection limit", header.opcode);
                 exception(id, LIMIT_EXCEPTION)
+            }
+            Err(PerformError::Status(status)) if status == UNREADABLE_EXCEPTION => {
+                exception(id, UNREADABLE_EXCEPTION)
             }
             Err(e) => {
                 warn!("{peer}: op{}: {e}", header.opcode);
@@ -1853,9 +1880,11 @@ fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
                 &account.name,
             ));
         }
-        file.hosted
-            .lock_table()
-            .release_connection(session.connection_id);
+        let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks {
+            connection: session.connection_id,
+        });
+        let outcome = shared.engine.submit(&file.hosted, release);
+        outcome.notices.deliver(&file.hosted, &shared.mailboxes);
         let mut registrations = file.hosted.registrations();
         registrations.retain(|r| r.connection != session.connection_id);
         shared
@@ -1928,8 +1957,24 @@ fn login(
             // the session's privileges from it). The file admits only
             // accounts it may (an active FileMaker-file account, no password
             // change due, in a set the host enforces), with a correct
-            // password, before any session exists.
-            let account = file.hosted.verify_password(&login.account, &login.password);
+            // password, before any session exists. The account is looked
+            // up in the accounts derived from the version read, and its
+            // password checked once the reading is let go.
+            let found = shared
+                .engine
+                .read(&file.hosted)
+                .serve_with_accounts(|read| read.derived.account(&login.account));
+            let found = match found {
+                Ok(found) => found,
+                Err(error) => {
+                    error!(
+                        "{peer}: login to {:?} as {:?}: its accounts could not be read: {error}",
+                        file.hosted.name, login.account
+                    );
+                    return Ok(unreadable_login(shared, attempt));
+                }
+            };
+            let account = check_password(&file.hosted.name, &login.account, found, &login.password);
             let checked = account.ok_or(LOGIN_REJECTED).and_then(|account| {
                 let today = jiff::Zoned::now().date();
                 let eligibility = if shared.local {
@@ -2038,9 +2083,9 @@ fn login(
             file.withheld.lock().expect("withheld records lock").clear();
             file.account = Some(account);
             if shared.local {
-                // Deferred work the local file's opening finished is saved
+                // Deferred work the local file holds is finished and saved
                 // now that an account it admits has logged in.
-                file.hosted.commit_recovery();
+                file.hosted.recover(&shared.engine);
             }
             LoginReply {
                 error_code: 0,
@@ -2051,6 +2096,18 @@ fn login(
         }
         Err(code) => rejected_login(code),
     })
+}
+
+/// The reply to a Login whose file's accounts could not be read
+/// ([`LOGIN_UNREADABLE_FILE`]): its attempt is not counted toward the
+/// login limits, as its password was not checked, and no failed login is
+/// recorded, as none was refused for its credentials (the read is logged
+/// as an error).
+fn unreadable_login(shared: &Shared, attempt: Option<Attempt>) -> Vec<u8> {
+    if let Some(attempt) = attempt {
+        shared.login_limits.passed(attempt, false);
+    }
+    rejected_login(LOGIN_UNREADABLE_FILE)
 }
 
 /// A refused Login's reply: the version and an empty key under the error,
@@ -2160,20 +2217,83 @@ fn filter_security_metadata(file: &OpenFile, path: &[Vec<u8>], node: &mut OwnedN
     }
 }
 
-/// A copy of the node at `path` in `file`, or `None` when it has no such key.
-fn read_node(file: &OpenFile, path: &[Vec<u8>]) -> Option<OwnedNode> {
+/// What a download (op90, op15) of a path reads (`downloaded`).
+#[derive(Debug, PartialEq, Eq)]
+enum Downloaded {
+    /// No such key, or none the session may read.
+    Missing,
+    /// A key that holds a value rather than a list: its value.
+    Value(Vec<u8>),
+    /// A list: its subtree in the wire form (`om_hbam::Node::to_wire`).
+    List(Vec<u8>),
+    /// A list a privilege filter applied to, as the session may read it:
+    /// written in the wire form once the view is let go.
+    Filtered(OwnedNode),
+}
+
+/// What a download of `path` in `file` gets from `read`: the node as the
+/// session may read it (`filter_security_metadata`, `views::ViewFilter`).
+/// A node no filter applies to is written in the wire form as the view
+/// walks it, never held as a tree; one a filter applies to is copied whole
+/// and filtered, as every download was before views, and written once the
+/// view is let go ([`Downloaded::Filtered`]).
+fn downloaded(
+    file: &OpenFile,
+    read: FileRead<'_>,
+    path: &[Vec<u8>],
+) -> Result<Downloaded, ViewError> {
     let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-    let store = file.hosted.read_store();
-    let mut node = store.node(&segments).cloned()?;
+    let limited = file
+        .account
+        .as_deref()
+        .and_then(|account| account.access.as_ref())
+        .is_some_and(SetAccess::limits_viewing);
+    let secured = own_account_member(file, path) && !full_access(file);
+    if !limited && !secured {
+        let Some(head) = read.view.node(&segments)? else {
+            return Ok(Downloaded::Missing);
+        };
+        if !head.list {
+            return Ok(Downloaded::Value(
+                head.value.map(Cow::into_owned).unwrap_or_default(),
+            ));
+        }
+        let stream = crate::engine::wire(read.view, &segments)?.unwrap_or_default();
+        return Ok(Downloaded::List(stream));
+    }
+    let Some(node) = read.view.subtree(&segments, NO_LIMIT)? else {
+        return Ok(Downloaded::Missing);
+    };
+    let mut node = node.into_owned();
     filter_security_metadata(file, path, &mut node);
-    match view_filter(file, &store) {
+    // The view limits are taken once the node is copied, as before views,
+    // so that a limit's formula reads the clock at the same point.
+    let node = match view_filter(file, read)? {
         Some(view) => {
-            let node = view.filter(&store, &segments, node);
+            let node = view.filter(read, &segments, node)?;
             note_withheld(file, &view);
             node
         }
         None => Some(node),
-    }
+    };
+    Ok(match node {
+        None => Downloaded::Missing,
+        // A key written as a leaf holds a value, not a list.
+        Some(node) if !node.push && node.children.is_empty() => {
+            Downloaded::Value(node.value.unwrap_or_default())
+        }
+        Some(node) => Downloaded::Filtered(node),
+    })
+}
+
+/// The request's answer when `file` could not be read at `path`: logged,
+/// and answered with [`UNREADABLE_EXCEPTION`].
+fn unreadable(peer: &str, file: &OpenFile, path: &[Vec<u8>], error: &ViewError) -> PerformError {
+    error!(
+        "{peer}: {:?}: a read of {path:02x?} failed: {error}",
+        file.hosted.name
+    );
+    PerformError::Status(UNREADABLE_EXCEPTION.to_owned())
 }
 
 /// Note in `file`'s session what `view` withheld (`views::Withheld`).
@@ -2186,42 +2306,58 @@ fn note_withheld(file: &OpenFile, view: &crate::views::ViewFilter) {
 
 /// The view limits of `file`'s account (`views::ViewFilter`), when its
 /// privilege set limits viewing any table's records by a calculation.
-fn view_filter(file: &OpenFile, store: &crate::store::Store) -> Option<crate::views::ViewFilter> {
-    let account = file.account.as_deref()?;
-    crate::views::ViewFilter::new(store, account.access.as_ref()?, &account.name)
+fn view_filter(
+    file: &OpenFile,
+    read: FileRead<'_>,
+) -> Result<Option<crate::views::ViewFilter>, ViewError> {
+    let Some(account) = file.account.as_deref() else {
+        return Ok(None);
+    };
+    let Some(access) = account.access.as_ref() else {
+        return Ok(None);
+    };
+    crate::views::ViewFilter::new(read, access, &account.name)
 }
 
-/// Snapshot only the requested children. The key list's keys and the
-/// parent's children are both in key order, so the two are walked side by
-/// side, the keys read from the list's bytes rather than collected (a list
-/// of short keys collected takes many times its size). Preserve the
-/// parent's order and release the store lock before encoding or paging the
-/// reply.
-fn read_selected_node(
+/// Copy only the requested children of the node at `path`, as the session
+/// may read them, from `read`; `None` when there is no such node. A key is
+/// taken when it is larger than every key before it in the list, so that
+/// a list out of order or repeating a key selects what walking it beside
+/// the children in key order selects: each such key is looked up, and the
+/// children between them are not read. The keys are read from the list's
+/// bytes rather than collected (a list of short keys collected takes many
+/// times its size). The reply is encoded and paged after the view is let
+/// go.
+fn selected(
     shared: &Shared,
     file: &OpenFile,
+    read: FileRead<'_>,
     path: &[Vec<u8>],
     keys: &KeyList<'_>,
-) -> Option<OwnedNode> {
+) -> Result<Option<OwnedNode>, ViewError> {
     let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-    let store = file.hosted.read_store();
-    let parent = store.node(&segments)?;
-    let mut keys = keys.keys().peekable();
-    let mut selected = OwnedNode {
-        segment: parent.segment.clone(),
-        value: parent.value.clone(),
-        push: parent.push,
-        children: parent
-            .children
-            .iter()
-            .filter(|child| {
-                let child = child.segment.as_slice();
-                while keys.next_if(|key| *key < child).is_some() {}
-                keys.next_if(|key| *key == child).is_some()
-            })
-            .cloned()
-            .collect(),
+    let Some(parent) = read.view.node(&segments)? else {
+        return Ok(None);
     };
+    let mut selected = OwnedNode {
+        segment: path.last().cloned().unwrap_or_default(),
+        value: parent.value.map(Cow::into_owned),
+        push: parent.list,
+        children: Vec::new(),
+    };
+    let mut last: Option<&[u8]> = None;
+    let mut child_path = segments.clone();
+    for key in keys.keys() {
+        if last.is_some_and(|last| key <= last) {
+            continue;
+        }
+        last = Some(key);
+        child_path.push(key);
+        if let Some(child) = read.view.subtree(&child_path, NO_LIMIT)? {
+            selected.children.push(child.into_owned());
+        }
+        child_path.pop();
+    }
     for omitted in shared
         .omitted_list_paths
         .read()
@@ -2238,13 +2374,13 @@ fn read_selected_node(
         }
     }
     filter_security_metadata(file, path, &mut selected);
-    match view_filter(file, &store) {
+    match view_filter(file, read)? {
         Some(view) => {
-            let node = view.filter(&store, &segments, selected);
+            let node = view.filter(read, &segments, selected)?;
             note_withheld(file, &view);
-            node
+            Ok(node)
         }
-        None => Some(selected),
+        None => Ok(Some(selected)),
     }
 }
 
@@ -2319,7 +2455,7 @@ fn download_reply(
     header: &Header,
     request: &ReceivedDownload,
     max_return: u32,
-) -> Result<DownloadReply, Refused> {
+) -> Result<DownloadReply, PerformError> {
     let limit = page_limit(max_return);
     let owner = Owner::of(header);
     Ok(if request.resume.has_more() {
@@ -2333,40 +2469,61 @@ fn download_reply(
     } else {
         match readable(shared, peer, session, header, &request.key_path) {
             None => DownloadReply::missing().with_lock_error(ACCESS_DENIED),
-            Some(file) => match read_node(file, &request.key_path) {
-                None => DownloadReply::missing(),
-                // A key written as a leaf holds a value, not a list.
-                Some(node) if !node.push && node.children.is_empty() => {
-                    let value = node.value.unwrap_or_default();
-                    if value.len() > i16::MAX as usize {
-                        warn!(
-                            "{peer}: value at {:02x?} too large to inline",
-                            request.key_path
-                        );
-                        DownloadReply::missing()
-                    } else {
-                        DownloadReply::terminal(value.to_vec())
+            Some(file) => {
+                // The store is held while the node is read, and let go
+                // before the reply is paged.
+                let downloaded = shared
+                    .engine
+                    .read(&file.hosted)
+                    .serve(|read| downloaded(file, read, &request.key_path));
+                match downloaded {
+                    Err(error) => return Err(unreadable(peer, file, &request.key_path, &error)),
+                    Ok(Downloaded::Missing) => DownloadReply::missing(),
+                    Ok(Downloaded::Value(value)) => {
+                        if value.len() > i16::MAX as usize {
+                            warn!(
+                                "{peer}: value at {:02x?} too large to inline",
+                                request.key_path
+                            );
+                            DownloadReply::missing()
+                        } else {
+                            DownloadReply::terminal(value)
+                        }
+                    }
+                    Ok(Downloaded::Filtered(node)) => {
+                        let stream = node.to_wire().unwrap_or_default();
+                        download_stream(shared, session, owner, request, stream, limit)
+                    }
+                    Ok(Downloaded::List(stream)) => {
+                        download_stream(shared, session, owner, request, stream, limit)
                     }
                 }
-                Some(node) => {
-                    let stream = shared
-                        .download_overrides
-                        .read()
-                        .expect("download overrides lock")
-                        .iter()
-                        .find(|reply| reply.path == request.key_path)
-                        .map_or_else(
-                            || node.to_wire().unwrap_or_default(),
-                            |reply| reply.slots.clone(),
-                        );
-                    let (page, resume) = session
-                        .transfers
-                        .start(owner, stream, limit, || shared.handle());
-                    DownloadReply::node(page, resume)
-                }
-            },
+            }
         }
     })
+}
+
+/// The first page of a download of a list, `stream` its wire form unless a
+/// test replaces it (`Server::overriding_download_slots`).
+fn download_stream(
+    shared: &Shared,
+    session: &mut Session,
+    owner: Owner,
+    request: &ReceivedDownload,
+    stream: Vec<u8>,
+    limit: usize,
+) -> DownloadReply {
+    let stream = shared
+        .download_overrides
+        .read()
+        .expect("download overrides lock")
+        .iter()
+        .find(|reply| reply.path == request.key_path)
+        .map_or(stream, |reply| reply.slots.clone());
+    let (page, resume) = session
+        .transfers
+        .start(owner, stream, limit, || shared.handle());
+    DownloadReply::node(page, resume)
 }
 
 /// op92 Download List: the parent node restricted to the requested children
@@ -2426,9 +2583,14 @@ fn download_list(
     // Checked before the store is held; read again from the bytes there.
     let keys = KeyList::parse(&payload)?;
     let file = readable(shared, peer, session, header, path).expect("checked above");
-    let stream = match read_selected_node(shared, file, path, &keys) {
-        Some(parent) => parent.to_wire().unwrap_or_default(),
-        None => vec![om_hbam::slot::BEGIN, om_hbam::slot::POP],
+    let parent = shared
+        .engine
+        .read(&file.hosted)
+        .serve(|read| selected(shared, file, read, path, &keys));
+    let stream = match parent {
+        Err(error) => return Err(unreadable(peer, file, path, &error)),
+        Ok(Some(parent)) => parent.to_wire().unwrap_or_default(),
+        Ok(None) => vec![om_hbam::slot::BEGIN, om_hbam::slot::POP],
     };
     let (page, resume) = session
         .transfers
@@ -2500,39 +2662,59 @@ fn query(
         (Some(file), Some(program))
             if file.account.is_some()
                 && !(query_changes_file(&program)
-                    && (file.hosted.is_read_only() || !full_access(file))) =>
+                    && (file_read_only(shared, file) || !full_access(file))) =>
         {
             let context = QueryContext {
                 file_id: file.hosted.id,
                 connection_key: Some(session.key),
             };
-            let outcome = {
-                let store = file.hosted.read_store();
-                if store.is_read_only() && query_changes_file(&program) {
-                    return Err(Refused.into());
-                }
-                let restricted = !full_access(file);
-                let source = QuerySource {
-                    store: &store,
-                    restricted,
-                    account_key: file
-                        .account
-                        .as_deref()
-                        .map(|account| account.key.as_slice()),
-                    late: shared.late_index_builds.load(Ordering::Relaxed),
-                    view: view_filter(file, &store),
-                    built: Default::default(),
+            // Whether the program itself changes the file: its schema
+            // instructions, a key it reserves. Only such a program fails
+            // when what it stores is not stored.
+            let changes = query_changes_file(&program);
+            let (outcome, issued) = {
+                let reading = shared.engine.read(&file.hosted);
+                let late = shared.late_index_builds.load(Ordering::Relaxed);
+                // A program runs once for each time the reading serves it
+                // (`Reading::serve`): a copy of it each time when that is
+                // twice, and once when it issues member keys, which a
+                // second run would issue again, or did not parse.
+                let repeatable = program.as_ref().is_ok_and(|program| {
+                    !program.instructions.iter().any(|instruction| {
+                        instruction.opcode == om_query::program::opcode::GENERATE_MEMBER_KEY
+                    })
+                });
+                let twice = repeatable && reading.runs_twice();
+                let mut program = Some(program);
+                let mut run = |read: FileRead<'_>| {
+                    let program = match &program {
+                        Some(Ok(parsed)) if twice => Ok(parsed.clone()),
+                        _ => program.take().expect("a program runs once"),
+                    };
+                    run_query(file, read, program, late, &context)
                 };
-                let outcome = om_query::execute_parsed(&source, program, &context);
-                // A query refused for an index this server cannot key
-                // (#572) keeps none of the indexes it built of other fields.
-                if matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex)) {
-                    store.forget_indexes_on_demand(&source.built.borrow());
+                let ran = if repeatable {
+                    reading.serve(&mut run)
+                } else {
+                    reading.serve_once(&mut run)
+                };
+                match ran {
+                    Ran::ReadOnly => return Err(Refused.into()),
+                    // A file that takes no more changes (a save's outcome
+                    // was unknown) refuses them before they run, so that no
+                    // key is reserved that could never be stored
+                    // (docs/server-storage.md 5).
+                    Ran::NoMoreChanges(why) => {
+                        warn!(
+                            "{peer}: {:?}: query program refused: {why}",
+                            file.hosted.name
+                        );
+                        let code = crate::hosting::save_error(&std::io::Error::other(why));
+                        return Ok(reply(error_slot(code), Resume::complete())
+                            .to_result_within(max_return as usize));
+                    }
+                    Ran::Answered(Queried(outcome), issued) => (outcome, issued),
                 }
-                if let Some(view) = &source.view {
-                    note_withheld(file, view);
-                }
-                outcome
             };
             if let Some(error) = &outcome.error {
                 info!("{peer}: query on {:?} failed: {error}", file.hosted.name);
@@ -2540,47 +2722,117 @@ fn query(
             // Manage Database's instructions change the file,
             // GenerateMemberKey's issued ids go into their catalogs
             // (schema-path.md 3.4), and indexes the query built on demand are
-            // stored (query-program.md 7.1).
+            // stored (query-program.md 7.1): those of other queries too, as
+            // the engine completes the draft (`engine`, "Drafts").
             let pending = {
-                let store = file.hosted.read_store();
-                store.has_issued_member_keys() || store.has_indexes_on_demand()
+                // What waits is the file's state, not its view's: read once,
+                // not through `Reading::serve`, which reads twice in a test
+                // while other readers may add to it.
+                let reading = shared.engine.read(&file.hosted);
+                let waiting = reading.read().waiting;
+                waiting.has_member_keys() || waiting.has_indexes()
             };
-            if pending || !outcome.writes.is_empty() {
-                for write in &outcome.writes {
-                    let (done, path) = match write {
-                        om_query::Write::Put { path, .. } => ("stored", path),
-                        om_query::Write::Remove { path } => ("removed", path),
-                    };
-                    info!("{peer}: {:?}: {done} {path:02x?}", file.hosted.name);
-                }
-                let released = {
-                    let mut store = file.hosted.write_store();
-                    if store.is_read_only() && !outcome.writes.is_empty() {
-                        return Err(Refused.into());
-                    }
-                    store.store_indexes_on_demand();
-                    if store.is_read_only() {
-                        Vec::new()
-                    } else {
-                        store.write_issued_member_keys();
-                        store.apply(outcome.writes)
-                    }
+            // Whether the program has catalog writes of its own, besides
+            // the keys it issued.
+            let own_writes = !outcome.writes.is_empty();
+            let answer = outcome.slots;
+            let mut slots = answer.clone();
+            // The FileMaker error of this request's own write, when it was
+            // not stored.
+            let mut not_stored = None;
+            if pending || own_writes {
+                let done: Vec<String> = outcome
+                    .writes
+                    .iter()
+                    .map(|write| match write {
+                        om_query::Write::Put { path, .. } => format!("stored {path:02x?}"),
+                        om_query::Write::Remove { path } => format!("removed {path:02x?}"),
+                    })
+                    .collect();
+                let draft = Draft::ChangeSchema {
+                    writes: outcome.writes,
                 };
-                // A deleted table's library is gone: so are its thumbnails.
-                let mut thumbnails = file.hosted.thumbnails.lock().expect("thumbnail lock");
-                for library in &released {
-                    thumbnails.forget_library(library);
+                match shared.engine.submit_draft(&file.hosted, draft).reply {
+                    Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes(Ok(())) => {
+                        for done in done {
+                            info!("{peer}: {:?}: {done}", file.hosted.name);
+                        }
+                    }
+                    // A find's answer stands: the indexes it built are a
+                    // cache of the records, which wait again for the next
+                    // write (docs/server-storage.md 5).
+                    Reply::StoreIndexes(Err(error)) => {
+                        warn!(
+                            "{peer}: {:?}: indexes built on demand not stored, waiting \
+                             again: {error}",
+                            file.hosted.name
+                        );
+                    }
+                    Reply::ChangeSchema(Err(SchemaNotChanged::Refused(_))) => {
+                        return Err(Refused.into())
+                    }
+                    // The program's writes were not stored: its reply is
+                    // the error slot with the save's FileMaker error
+                    // (query-program.md 11.2).
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) if changes => {
+                        warn!(
+                            "{peer}: {:?}: query program's writes not stored: {error}",
+                            file.hosted.name
+                        );
+                        not_stored = Some(error.code);
+                        slots = error_slot(error.code);
+                    }
+                    // What another request left waiting (a key it reserved)
+                    // was not stored: it waits again, and this program,
+                    // which changes nothing, keeps its answer.
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) => {
+                        warn!(
+                            "{peer}: {:?}: what other queries left waiting was not stored, \
+                             waiting again: {error}",
+                            file.hosted.name
+                        );
+                    }
+                    other => return Err(mismatched(&other)),
                 }
-                drop(thumbnails);
-                file.hosted.save();
             }
-            outcome.slots
+            // The keys this program issued were stored by its own write, or
+            // by another request's write that held the store first, or were
+            // not. One look, under one hold of the store, decides its answer
+            // (`IssuedKeysAre::error`; docs/server-storage.md 5, "Keys a
+            // request issued"): for a program whose only write is its keys,
+            // in both directions; one whose own catalog writes failed keeps
+            // that failure.
+            if !issued.is_empty() {
+                let looked = shared.engine.read(&file.hosted).serve(|read| {
+                    crate::derived::issued_keys(read.view, read.writes_refused, &issued)
+                        .map(|keys| (keys.error(not_stored, own_writes), format!("{keys:?}")))
+                });
+                match looked {
+                    Ok((Some(code), keys)) => {
+                        warn!(
+                            "{peer}: {:?}: the member keys this query reserved: {keys}",
+                            file.hosted.name
+                        );
+                        slots = error_slot(code);
+                    }
+                    Ok((None, _)) => slots = answer,
+                    // What became of them cannot be read: not answered as
+                    // stored, but as a program that cannot read the file
+                    // fails (`om_query::QueryError::File`).
+                    Err(error) => {
+                        error!(
+                            "{peer}: {:?}: the member keys this query reserved could not be \
+                             read: {error}",
+                            file.hosted.name
+                        );
+                        slots = error_slot(0xffff);
+                    }
+                }
+            }
+            slots
         }
         // Not open or not logged in: the error slot with "access denied".
-        _ => {
-            let code = ACCESS_DENIED.to_be_bytes();
-            vec![0x80, 0x06, 0x00, 0x03, 0x02, code[0], code[1], 0x40]
-        }
+        _ => error_slot(ACCESS_DENIED),
     };
     // The program's tree went with the query, and its charge goes now.
     drop(reading);
@@ -2592,6 +2844,19 @@ fn query(
         .transfers
         .start(owner, slots, limit, || shared.handle());
     Ok(reply(page, resume).to_result_within(max_return as usize))
+}
+
+/// Whether `file` is hosted read-only: the engine's state of the file, not
+/// a version's (`engine::state`), so read once and not through a view.
+fn file_read_only(shared: &Shared, file: &OpenFile) -> bool {
+    shared.engine.read_only(&file.hosted).is_some()
+}
+
+/// An op86 reply that is the error slot alone, `[00] = 02 <code>`
+/// (query-program.md 11.2).
+fn error_slot(code: u16) -> Vec<u8> {
+    let [high, low] = code.to_be_bytes();
+    vec![0x80, 0x06, 0x00, 0x03, 0x02, high, low, 0x40]
 }
 
 /// Reject schema writes before execution: member-key reservation changes the
@@ -2608,13 +2873,93 @@ fn query_changes_file<E>(program: &Result<om_query::Program, E>) -> bool {
     })
 }
 
-/// A hosted file as a query source. Restricted accounts see account-member
-/// parents, other whole members and the `04` and `06` children as missing;
-/// their own whole member is filtered to known metadata. The optional
-/// late-index behavior mirrors FileMaker Server's missing-index finder
-/// behavior (query-program.md 7.1).
+/// What running a query program against a reading gave (`run_query`).
+#[derive(Debug, PartialEq)]
+enum Ran {
+    /// The program changes the file, which is hosted read-only: refused.
+    ReadOnly,
+    /// The program changes the file, which takes no more changes, for this
+    /// reason (a save's outcome was unknown): refused before it runs.
+    NoMoreChanges(String),
+    /// Its outcome, with the member ids it issued and their catalogs.
+    Answered(Queried, Vec<(Vec<Vec<u8>>, u64)>),
+}
+
+/// A program's outcome, compared by its reply, its writes and its error's
+/// text (`om_query::Outcome`, whose error is not comparable).
+#[derive(Debug)]
+struct Queried(om_query::Outcome);
+
+impl PartialEq for Queried {
+    fn eq(&self, other: &Self) -> bool {
+        let error = |q: &Queried| q.0.error.as_ref().map(ToString::to_string);
+        self.0.slots == other.0.slots
+            && self.0.writes == other.0.writes
+            && error(self) == error(other)
+    }
+}
+
+/// Run `program` for `file`'s session against `read`, as the session may
+/// read the file ([`QuerySource`]). A read that fails fails the program as
+/// reading the file failing does (`om_query::QueryError::File`, the error
+/// slot's code `ffff`), and is logged.
+fn run_query(
+    file: &OpenFile,
+    read: FileRead<'_>,
+    program: Result<om_query::Program, om_query::QueryError>,
+    late: bool,
+    context: &QueryContext,
+) -> Ran {
+    let changes = query_changes_file(&program);
+    if read.read_only && changes {
+        return Ran::ReadOnly;
+    }
+    if let Some(why) = read.writes_refused.filter(|_| changes) {
+        return Ran::NoMoreChanges(why.to_owned());
+    }
+    let (view, program) = match view_filter(file, read) {
+        Ok(view) => (view, program),
+        Err(error) => (None, Err(om_query::QueryError::File(error.into()))),
+    };
+    let source = QuerySource {
+        read,
+        issued: Default::default(),
+        restricted: !full_access(file),
+        account_key: file
+            .account
+            .as_deref()
+            .map(|account| account.key.as_slice()),
+        late,
+        view,
+        built: Default::default(),
+        failed: Default::default(),
+    };
+    let outcome = om_query::execute_parsed(&source, program, context);
+    // A query refused for an index this server cannot key (#572) keeps
+    // none of the indexes it built of other fields.
+    if matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex)) {
+        read.waiting.forget_indexes(&source.built.borrow());
+    }
+    if let Some(view) = &source.view {
+        note_withheld(file, view);
+    }
+    if let Some(error) = source.failed.borrow().as_ref() {
+        error!("{:?}: a query's read failed: {error}", file.hosted.name);
+    }
+    Ran::Answered(Queried(outcome), source.issued.into_inner())
+}
+
+/// A hosted file as a query source, read through a view and its derived
+/// state. Restricted accounts see account-member parents, other whole
+/// members and the `04` and `06` children as missing; their own whole
+/// member is filtered to known metadata. The optional late-index behavior
+/// mirrors FileMaker Server's missing-index finder behavior
+/// (query-program.md 7.1).
 struct QuerySource<'s> {
-    store: &'s crate::store::Store,
+    read: FileRead<'s>,
+    /// The member ids GenerateMemberKey issued, with their catalogs, which
+    /// the request looks for when it ends ([`crate::derived::issued_keys`]).
+    issued: std::cell::RefCell<Vec<(Vec<Vec<u8>>, u64)>>,
     restricted: bool,
     account_key: Option<&'s [u8]>,
     late: bool,
@@ -2622,39 +2967,69 @@ struct QuerySource<'s> {
     /// their values, and a view-limited table has no index.
     view: Option<crate::views::ViewFilter>,
     /// The indexes this query had built on demand, which a refused query
-    /// takes back ([`crate::store::Store::forget_indexes_on_demand`]).
+    /// takes back ([`crate::engine::Waiting::forget_indexes`]).
     built: std::cell::RefCell<Vec<crate::store::IndexId>>,
+    /// A read that failed where the source cannot say so (GenerateMemberKey
+    /// answers only whether it issued a key), for the log.
+    failed: std::cell::RefCell<Option<ViewError>>,
 }
 
 impl om_query::Source for QuerySource<'_> {
     fn catalog(&self) -> om_hbam::Result<om_hbam::Catalog> {
-        om_query::Source::catalog(self.store)
+        Ok(self.read.derived.catalog().clone())
     }
 
-    fn node(&self, path: &[&[u8]]) -> om_hbam::Result<Option<std::borrow::Cow<'_, OwnedNode>>> {
+    fn node(&self, path: &[&[u8]]) -> om_hbam::Result<Option<Cow<'_, OwnedNode>>> {
         let own = self
             .account_key
             .is_some_and(|key| self.restricted && account_member_path(path.iter().copied(), key));
         if self.restricted && credential_path(path.iter().copied()) && !own {
             return Ok(None);
         }
-        let node = om_query::Source::node(self.store, path)?;
+        let node = self.read.view.subtree(path, NO_LIMIT)?;
         let node = if own {
             node.map(|node| {
                 let mut node = node.into_owned();
                 node.children
                     .retain(|child| account_metadata(&child.segment));
-                std::borrow::Cow::Owned(node)
+                Cow::Owned(node)
             })
         } else {
             node
         };
         Ok(match (&self.view, node) {
             (Some(view), Some(node)) => view
-                .filter(self.store, path, node.into_owned())
-                .map(std::borrow::Cow::Owned),
+                .filter(self.read, path, node.into_owned())?
+                .map(Cow::Owned),
             (_, node) => node,
         })
+    }
+
+    /// The record list's entries as the view lists them, never held as a
+    /// tree, when no view limit filters what the account reads; through
+    /// [`om_query::Source::node`] otherwise. No credential path is a
+    /// record list.
+    fn record_ids(&self, table: &[u8]) -> om_hbam::Result<RidList> {
+        let path: [&[u8]; 2] = [table, &[0x0d]];
+        if self.view.is_some() {
+            return Ok(match self.node(&path)? {
+                Some(node) => RidList::from_owned(&node)?,
+                None => RidList::new(),
+            });
+        }
+        let mut ids = RidList::new();
+        for entry in self
+            .read
+            .view
+            .children(&path, std::ops::Bound::Unbounded, Direction::Forward)
+        {
+            let entry = entry?;
+            ids.add_entry(
+                &entry.segment,
+                entry.head.value.as_deref().unwrap_or_default(),
+            )?;
+        }
+        Ok(ids)
     }
 
     fn index_on_demand(
@@ -2666,7 +3041,14 @@ impl om_query::Source for QuerySource<'_> {
         if self.view.as_ref().is_some_and(|view| view.limits(table)) {
             return Ok(None);
         }
-        let index = om_query::Source::index_on_demand(self.store, table, field, kind)?;
+        let index = crate::derived::index_on_demand(
+            self.read.view,
+            self.read.derived,
+            self.read.waiting,
+            table,
+            field,
+            kind,
+        )?;
         if index.is_some() {
             self.built
                 .borrow_mut()
@@ -2680,7 +3062,21 @@ impl om_query::Source for QuerySource<'_> {
     }
 
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
-        om_query::Source::generate_member_key(self.store, catalog)
+        let name = self.read.derived.name();
+        match crate::derived::issue_member_key(self.read.view, self.read.waiting, name, catalog) {
+            Ok(Some((id, count))) => {
+                self.issued.borrow_mut().push((catalog.to_vec(), id));
+                Some((
+                    crate::modcount::key_string(id),
+                    crate::modcount::key_string(count),
+                ))
+            }
+            Ok(None) => None,
+            Err(error) => {
+                *self.failed.borrow_mut() = Some(error);
+                None
+            }
+        }
     }
 }
 
@@ -2718,14 +3114,19 @@ fn request_notification(
 
 /// The open file a write names, if this session is logged in to it and
 /// the file may be written (a local file that cannot be is refused here,
-/// before the write changes anything, `Hosted::read_only`).
-fn writable<'s>(peer: &str, session: &'s Session, header: &Header) -> Option<&'s OpenFile> {
+/// before the write changes anything, [`file_read_only`]).
+fn writable<'s>(
+    shared: &Shared,
+    peer: &str,
+    session: &'s Session,
+    header: &Header,
+) -> Option<&'s OpenFile> {
     let file = session.open.get(&header.file_id)?;
     if set_access(file).is_none() {
         info!("{peer}: refusing a write before Login");
         return None;
     }
-    if file.hosted.is_read_only() {
+    if file_read_only(shared, file) {
         info!(
             "{peer}: refusing a write to read-only {:?}",
             file.hosted.name
@@ -2808,21 +3209,23 @@ fn container_member_editable(file: &OpenFile, path: &[Vec<u8>]) -> bool {
 /// its set denies is unmeasured; it is refused as op88's other privilege
 /// refusals are. A request that names no table library is refused by the
 /// upload itself.
-fn container_library_writable(file: &OpenFile, table: &[Vec<u8>]) -> bool {
+fn container_library_writable(shared: &Shared, file: &OpenFile, table: &[Vec<u8>]) -> bool {
     let Some(access) = set_access(file) else {
         return false;
     };
     let actions = [RecordAction::Create, RecordAction::Edit];
     match table {
         [] => {
-            let tables: Vec<Vec<u8>> = file
-                .hosted
-                .read_store()
-                .catalog()
-                .tables
-                .iter()
-                .map(|t| om_hbam::slot::uint_segment(t.id))
-                .collect();
+            // The base tables of the derived state's catalog, which no
+            // read of the view can fail.
+            let tables: Vec<Vec<u8>> = shared.engine.read(&file.hosted).serve(|read| {
+                read.derived
+                    .catalog()
+                    .tables
+                    .iter()
+                    .map(|t| om_hbam::slot::uint_segment(t.id))
+                    .collect()
+            });
             access.may_any_in_tables(tables.iter().map(Vec::as_slice), &actions)
         }
         [table] => actions.iter().any(|a| access.may(table, *a)),
@@ -2875,7 +3278,7 @@ fn create_record(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let request = write::parse_create_record_request(txn)?;
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         return Ok(write::CreateRecordReply {
             conflict: None,
             status: u32::from(ACCESS_DENIED),
@@ -2914,7 +3317,7 @@ fn create_record(
 
 /// An engine's reply of another operation than the one submitted, which
 /// the engine never gives.
-fn mismatched(reply: &Reply) -> PerformError {
+pub(crate) fn mismatched(reply: &Reply) -> PerformError {
     PerformError::Status(format!(
         "the engine answered with another operation's reply: {reply:?}"
     ))
@@ -2933,7 +3336,7 @@ fn get_serial(
         .get(&header.file_id)
         // Reserving a value and Set Next Serial Value both save the field:
         // a record write, refused to [Read-Only Access] as `writable` does.
-        .filter(|f| f.account.is_some() && !f.hosted.is_read_only() && !views_records_only(f))
+        .filter(|f| f.account.is_some() && !file_read_only(shared, f) && !views_records_only(f))
         // A serial is taken for a new record of its table.
         .filter(|f| {
             may_ever(
@@ -3003,7 +3406,7 @@ fn upload(
     // was dropped with its session in the file (closed, logged out of): it
     // fails, as a dropped transfer does, rather than answer that the upload
     // completed (the reply has no status to carry an error, spec 3.3).
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         if request.resume.has_more() {
             return Err(Refused.into());
         }
@@ -3026,7 +3429,7 @@ fn upload(
         };
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
-        upload_to_file(peer, &hosted, &request, &payload, reading.bytes())?;
+        upload_to_file(shared, peer, &hosted, &request, &payload, reading.bytes())?;
         return Ok(done);
     }
     let client = session.client;
@@ -3070,12 +3473,13 @@ fn reserve_up_to(shared: &Shared, session: &Session, most: usize) -> Charge {
 /// its destination, replacing what was there (schema-path.md 3.3). Manage
 /// Database saves each catalog's index this way.
 fn upload_to_file(
+    shared: &Shared,
     peer: &str,
     hosted: &Hosted,
     request: &write::Upload,
     payload: &[u8],
     room: usize,
-) -> Result<(), Refused> {
+) -> Result<(), PerformError> {
     if request.dest.is_empty() {
         warn!("{peer}: refusing an upload over the whole file");
         return Ok(());
@@ -3094,22 +3498,48 @@ fn upload_to_file(
             }
             Err(writes::StageError::Full) => {
                 warn!("{peer}: refusing to read an upload past the connection's limit");
-                return Err(Refused);
+                return Err(Refused.into());
             }
         }
     };
-    info!(
-        "{peer}: {:?}: stored {:02x?} ({} bytes)",
-        hosted.name,
-        request.dest,
-        payload.len().max(request.terminal.len())
-    );
-    let mut store = hosted.write_store();
-    if !store.is_read_only() {
-        store.put_subtree(&request.dest, node);
-        let _ = hosted.save_held(&mut store);
+    let bytes = payload.len().max(request.terminal.len());
+    let upload = UploadToCatalog {
+        path: request.dest.clone(),
+        node,
+    };
+    match shared
+        .engine
+        .submit(hosted, Operation::UploadToCatalog(upload))
+        .reply
+    {
+        Reply::UploadToCatalog(Ok(_)) => {
+            info!(
+                "{peer}: {:?}: stored {:02x?} ({bytes} bytes)",
+                hosted.name, request.dest
+            );
+            Ok(())
+        }
+        // op13's reply has no status: one that was not stored, or whose
+        // outcome is unknown, fails with a system exception, as op70's does
+        // (docs/server-storage.md 5).
+        Reply::UploadToCatalog(Err(error)) => Err(PerformError::Status(upload_not_stored(
+            &request.dest,
+            &error,
+        ))),
+        other => Err(mismatched(&other)),
     }
-    Ok(())
+}
+
+/// What the server logs of an op13 upload to `dest` that `error` kept from
+/// being stored: not stored, or, when the save renamed its copy over the
+/// file and could not confirm it, stored or not (as op70's reply says;
+/// the client gets the same system exception either way).
+pub(crate) fn upload_not_stored(dest: &[Vec<u8>], error: &crate::engine::StorageError) -> String {
+    let outcome = match error.unknown {
+        true => "may or may not be stored",
+        false => "not stored",
+    };
+    format!("upload to {dest:02x?} {outcome}: {error}")
 }
 
 /// op73 HostUpdateTable: do the field work the client listed for a table
@@ -3125,18 +3555,20 @@ fn update_table(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let table = schema::parse_update_table_request(txn)?;
-    if let (Some(file), [table]) = (writable(peer, session, header), table.as_slice()) {
-        // Calculations that read `Get ( AccountName )` see the account that
-        // saved the change.
+    if let (Some(file), [table]) = (writable(shared, peer, session, header), table.as_slice()) {
         let account = file.account.as_deref().map_or("", |account| &account.name);
-        let mut environment =
-            || recalc::record_environment(account, recalc::uuid_text(shared.random()));
-        let mut store = file.hosted.write_store();
-        let changed = store
-            .update_table(table, &mut environment)
-            .map_err(|reason| PerformError::Status(reason.into()))?;
-        if changed {
-            let _ = file.hosted.save_held(&mut store);
+        let update = UpdateTable {
+            table: table.clone(),
+            account: account.to_owned(),
+        };
+        match shared
+            .engine
+            .submit(&file.hosted, Operation::UpdateTable(update))
+            .reply
+        {
+            Reply::UpdateTable(Ok(_)) => {}
+            Reply::UpdateTable(Err(reason)) => return Err(PerformError::Status(reason)),
+            other => return Err(mismatched(&other)),
         }
     }
     Ok(schema::update_table_reply())
@@ -3185,7 +3617,11 @@ fn upgrade(
 /// The host's local date and time as FileMaker's date-time key: the date
 /// and time keys of a timestamp index (schema-path.md 3.1).
 pub(crate) fn host_time_key() -> Vec<u8> {
-    let now = jiff::Zoned::now();
+    host_time_key_at(&jiff::Zoned::now())
+}
+
+/// [`host_time_key`] for the host time `now`.
+pub(crate) fn host_time_key_at(now: &jiff::Zoned) -> Vec<u8> {
     date_time_key(
         now.year(),
         now.month(),
@@ -3215,7 +3651,7 @@ fn commit(
     let request = write::parse_commit_request(txn)?;
     let done = write::upload_reply(&Resume::no_stream(), max_return as usize);
     // Each part is held only for a request that may write.
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         return Ok(done);
     };
     let hosted = file.hosted.clone();
@@ -3392,14 +3828,14 @@ fn upload_binary(
     if !session.open.contains_key(&header.file_id) {
         return Ok(failed(FILE_NOT_OPEN));
     }
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         return Ok(failed(ACCESS_DENIED));
     };
     if !views_every_record(file) {
         info!("{peer}: refusing container data from an account with a view limit");
         return Ok(failed(ACCESS_DENIED));
     }
-    if !container_library_writable(file, &request.table) {
+    if !container_library_writable(shared, file, &request.table) {
         info!(
             "{peer}: refusing container data for a table its privilege set does not let it write"
         );
@@ -3426,29 +3862,42 @@ fn upload_binary(
     // a reservation the client's share cut short is refused as over the
     // budget, never as bad data.
     let reading = reserve_up_to(shared, session, crate::library::tree_limit(payload.len()));
-    let reply =
-        containers::upload_binary(&hosted, &request.table, &payload, reading.bytes(), || {
-            shared.random()
-        });
-    drop((reading, payload, held));
-    let Some(reply) = reply else {
+    let Some(data) = containers::read_upload(&hosted.name, &payload, reading.bytes()) else {
+        drop((reading, payload, held));
         warn!("{peer}: refusing container data past what the client may hold");
         return Err(Refused.into());
     };
-    hosted.save();
-    Ok(reply.to_result())
+    // The data travels in the operation. The encoded upload is not needed
+    // once it is read, so it is freed before the engine stores and saves
+    // the data; what the two are charged is given back once it has.
+    let bytes = payload.len();
+    drop(payload);
+    let store = StoreContainerData {
+        table: request.table,
+        data,
+        bytes,
+    };
+    let outcome = shared
+        .engine
+        .submit(&hosted, Operation::StoreContainerData(store));
+    drop((reading, held));
+    match outcome.reply {
+        Reply::StoreContainerData(reply) => Ok(reply.to_result()),
+        other => Err(mismatched(&other)),
+    }
 }
 
 /// op87 AdjustReferenceCount: change a container member's reference count
 /// (containers.md 5.3).
 fn adjust_reference_count(
+    shared: &Shared,
     peer: &str,
     session: &Session,
     header: &Header,
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let request = container::parse_adjust_reference_count_request(txn)?;
-    let count = match writable(peer, session, header) {
+    let count = match writable(shared, peer, session, header) {
         Some(file)
             if !views_every_record(file) || !container_member_editable(file, &request.path) =>
         {
@@ -3456,18 +3905,28 @@ fn adjust_reference_count(
             container::COUNT_FAILED
         }
         Some(file) => {
-            let count = containers::adjust_reference_count(&file.hosted, &request);
-            file.hosted.save();
-            count
+            let adjust = AdjustContainerCount { request };
+            let outcome = shared
+                .engine
+                .submit(&file.hosted, Operation::AdjustContainerCount(adjust));
+            match outcome.reply {
+                Reply::AdjustContainerCount(count) => count,
+                other => return Err(mismatched(&other)),
+            }
         }
         None => container::COUNT_FAILED,
     };
     Ok(container::adjust_reference_count_reply(count))
 }
 
-/// op96 DownloadThumbnail: a container image scaled to a box, in chunks
-/// (containers.md 6.3).
+/// op96 DownloadThumbnail: one chunk of a library member's image scaled
+/// to a box (containers.md 6.3), read through a view of one version of the
+/// file: whether the account's view limits withhold the table's container
+/// data, the member, and its image when no thumbnail of it in that box is
+/// cached. A read that fails is answered with [`UNREADABLE_EXCEPTION`].
 fn thumbnail(
+    shared: &Shared,
+    peer: &str,
     session: &Session,
     header: &Header,
     txn: &[u8],
@@ -3476,28 +3935,54 @@ fn thumbnail(
     /// Room for the reply's other fields.
     const REPLY_OVERHEAD: usize = 64;
     let request = container::parse_download_thumbnail_request(txn)?;
-    let reply = match session
+    let missing = container::ThumbnailReply::Status(container::THUMBNAIL_MISSING);
+    let Some(file) = session
         .open
         .get(&header.file_id)
         .filter(|f| f.account.is_some())
-    {
-        // A view-limited table's container data is withheld (its library
-        // is per table, not per record).
-        Some(file)
-            if {
-                let store = file.hosted.read_store();
-                view_filter(file, &store)
-                    .is_some_and(|view| request.table.last().is_none_or(|table| view.limits(table)))
-            } =>
-        {
-            container::ThumbnailReply::Status(container::THUMBNAIL_MISSING)
-        }
-        Some(file) => containers::thumbnail(
+    else {
+        return Ok(missing.to_result());
+    };
+    let read = {
+        let reading = shared.engine.read(&file.hosted);
+        let key = reading.serve(|read| {
+            // A view-limited table's container data is withheld (its
+            // library is per table, not per record).
+            let withheld = view_filter(file, read)?
+                .is_some_and(|view| request.table.last().is_none_or(|table| view.limits(table)));
+            if withheld {
+                return Ok(None);
+            }
+            containers::thumbnail_key(read, &request)
+        });
+        key.and_then(|key| {
+            let Some(key) = key else {
+                return Ok(None);
+            };
+            let cached = file
+                .hosted
+                .thumbnails
+                .lock()
+                .expect("thumbnail lock")
+                .get(&key);
+            let image = match cached {
+                Some(_) => None,
+                None => reading.serve(|read| containers::thumbnail_image(read, &key))?,
+            };
+            Ok(Some((key, cached, image)))
+        })
+    };
+    let reply = match read {
+        Ok(Some((key, cached, image))) => containers::thumbnail_reply(
             &file.hosted,
             &request,
+            key,
+            cached,
+            image,
             page_limit(max_return).saturating_sub(REPLY_OVERHEAD),
         ),
-        None => container::ThumbnailReply::Status(container::THUMBNAIL_MISSING),
+        Ok(None) => missing,
+        Err(error) => return Err(unreadable(peer, file, &request.table, &error)),
     };
     Ok(reply.to_result())
 }

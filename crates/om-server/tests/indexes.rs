@@ -91,6 +91,61 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     assert!(name_index_on_disk(&file).is_empty());
 }
 
+/// A read that fails, as reads that reach a damaged page fail
+/// (docs/server-storage.md 5, "Views", and 6.12), reaches the client as an
+/// error, never as a reply that looks whole: a download that reaches it
+/// (op90, op92) is answered with a CORBA system exception (`PERSIST_STORE`),
+/// a find that reads it fails with the error slot's code `ffff`, and what
+/// does not reach it is served as before, on the same connection.
+#[cfg(debug_assertions)]
+#[test]
+fn a_failed_read_reaches_the_client_as_an_error() {
+    use om_hbam::serial;
+    use om_hbam::slot::uint_segment;
+    let file = fixture::TempFile::new("failed-reads", &[], true);
+    let (port, handle) = server::start_configured_with_handle(&file, |server| server);
+    let table = uint_segment(fixture::TABLE);
+    let (one, ship) = (serial::encode(1), serial::encode(2));
+    // Record 2, "Ship", and what is below it cannot be read.
+    handle.failing_reads(fixture::FILE, &[&table, &[5], &ship]);
+    let (mut session, file_id) = server::logged_in(port, "failed-reads");
+    let first = session.download(&[&table, &[5], &one]).unwrap();
+    assert!(!first.slots.is_empty());
+    let paths: [&[&[u8]]; 3] = [&[&table, &[5]], &[&table, &[5], &ship], &[&table]];
+    for path in paths {
+        let error = session.download(path).unwrap_err();
+        assert!(error.to_string().contains("SystemException"), "{error}");
+    }
+    let keys: [&[u8]; 2] = [&one, &ship];
+    let error = session
+        .download_list(&[&table, &[5]], &keys, 0)
+        .unwrap_err();
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    let listed = session.download_list(&[&table, &[5]], &[&one], 0).unwrap();
+    assert!(!listed.slots.is_empty());
+    // A find on Name reads every record to build the index on demand.
+    let finders: Vec<Vec<u8>> = find::finders(
+        fixture::TABLE,
+        fixture::NAME,
+        DataType::Text,
+        "==Ship",
+        DateOrder::MonthDayYear,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|finder| finder.bytes)
+    .collect();
+    let program = find::program(file_id, fixture::TABLE, &finders, None);
+    let reply = session.query(&program).unwrap();
+    assert_eq!(
+        reply.slots,
+        [0x80, 0x06, 0x00, 0x03, 0x02, 0xff, 0xff, 0x40],
+        "the find fails"
+    );
+    assert!(session.download(&[&table, &[5], &one]).is_ok());
+    session.disconnect().unwrap();
+}
+
 /// Two finds of Tasks::Name `ship` (read from the word index) and Count
 /// `5` (the value index) in a row, each checking both indexes first
 /// (`find::checked_find_program`): which existed, and what the find found.
@@ -551,6 +606,53 @@ fn a_changed_record_leaves_entries_another_rule_wrote() {
             (vec![0xff, 0x80], vec![1]),
         ]
     );
+    session.disconnect().unwrap();
+}
+
+/// An upload (op13) into an index whose agreement with its records a
+/// commit has checked: the index is checked again at the next commit,
+/// which sweeps a posting the upload planted for a record under a key its
+/// value does not give (review of #785, round 1). The check is kept per
+/// index, and a write into the index or the records that is not a commit's
+/// own upkeep forgets it (`Store::forget_verified`).
+#[test]
+fn an_upload_into_an_index_has_it_checked_again() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{OwnedNode, RidList};
+    let written = om_collate::text_key("Write tests");
+    let ship = om_collate::text_key("Ship");
+    let entry = |key: &[u8], id: u64| [id].into_iter().collect::<RidList>().to_node(key.to_vec());
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let index: [&[u8]; 4] = [&table, &[1], &name, &[0]];
+    let mut root = fixture::tree(&[], true);
+    let mut entries = vec![entry(&written, 1), entry(&ship, 2)];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    root.put(&index, OwnedNode::list(vec![0], entries));
+    let file = fixture::TempFile::from_tree("upload-into-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "upload into index");
+
+    // An ordinary edit: the index agrees with its records, and the commit
+    // keeps it so.
+    commit_name(&mut session, 1, "Written");
+    let written = om_collate::text_key("Written");
+    // The index uploaded again with record 2 also under a key its value
+    // does not give.
+    let unrelated = om_collate::text_key("Unrelated");
+    let mut entries = vec![entry(&written, 1), entry(&ship, 2), entry(&unrelated, 2)];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    session
+        .upload_to_host(&index, &OwnedNode::list(vec![0], entries))
+        .unwrap();
+    // Record 2's edit finds the index disagreeing and sweeps the posting.
+    commit_name(&mut session, 2, "Shipped");
+    let mut expected = vec![
+        (written, vec![1]),
+        (om_collate::text_key("Shipped"), vec![2]),
+    ];
+    expected.sort();
+    assert_eq!(name_index_on_disk(&file), expected);
     session.disconnect().unwrap();
 }
 

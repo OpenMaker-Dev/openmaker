@@ -3,7 +3,10 @@
 
 use std::borrow::Cow;
 
-use om_hbam::{Catalog, HbamFile, OwnedNode};
+use om_hbam::{Catalog, HbamFile, OwnedNode, RidList};
+
+/// Key of a table's record-id list.
+const RECORD_IDS: u8 = 13;
 
 /// The data a program runs against.
 pub trait Source {
@@ -12,6 +15,18 @@ pub trait Source {
 
     /// The node at `path`, if present.
     fn node(&self, path: &[&[u8]]) -> om_hbam::Result<Option<Cow<'_, OwnedNode>>>;
+
+    /// Every record id of base table `table`: its record-id list `[T, 0d]`
+    /// decoded (query-program.md 7.1), empty when the table has none. A
+    /// source that can read the list's entries one at a time gives it
+    /// without the list as a tree; by default it is [`Source::node`]'s
+    /// node, decoded.
+    fn record_ids(&self, table: &[u8]) -> om_hbam::Result<RidList> {
+        match self.node(&[table, &[RECORD_IDS]])? {
+            Some(node) => RidList::from_owned(&node),
+            None => Ok(RidList::new()),
+        }
+    }
 
     /// The index `kind` (0 value, 1 word) of `field` in `table`, built from
     /// the stored records because a program reads it and the field has none

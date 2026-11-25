@@ -115,10 +115,11 @@ fn scripts() -> Vec<om_scripts::Script> {
                 on(86, true),
                 go_to_record(1),
                 ScriptStep::new(8),
+                set_variable("$duplicate", "Get ( LastError )"),
                 ScriptStep::new(75),
                 set_variable("$commit", "Get ( LastError )"),
                 ScriptStep::new(51),
-                exit_with("$commit & \"|\" & Get ( FoundCount )"),
+                exit_with("$duplicate & \"|\" & $commit & \"|\" & Get ( FoundCount )"),
             ],
         ),
         script(
@@ -131,6 +132,16 @@ fn scripts() -> Vec<om_scripts::Script> {
                 set_field(NAME, "\"copied:\" & Tasks::Count"),
                 ScriptStep::new(75),
                 exit_with("Get ( LastError ) & \"|\" & Tasks::Name & \"|\" & Tasks::Count"),
+            ],
+        ),
+        script(
+            8,
+            "Reverted",
+            vec![
+                on(86, true),
+                ScriptStep::new(7),
+                ScriptStep::new(51),
+                exit_with("Get ( LastError )"),
             ],
         ),
         script(
@@ -230,8 +241,9 @@ fn a_duplicate_holds_its_containers_and_a_failed_save_takes_it_back() {
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "duplicate");
     let blocked = BlockedSaves::new(&file);
-    // Set Next Serial Value and the duplicate's commit fail; the serial and
-    // the member's count are as they were.
+    // Set Next Serial Value fails, and so does Duplicate Record, whose
+    // serial number cannot be saved (docs/server-storage.md 5), so there is
+    // no commit; the serial and the member's count are as they were.
     let serial_value = |client: &mut om_session::Session| {
         let (t, f) = (uint_segment(TABLE), uint_segment(COUNT));
         let path: [&[u8]; 5] = [&t, &[3], &[5], &f, &[0x0c]];
@@ -246,7 +258,7 @@ fn a_duplicate_holds_its_containers_and_a_failed_save_takes_it_back() {
     };
     assert_eq!(run(&mut client, 5), CANNOT_WRITE.to_string());
     assert_eq!(serial_value(&mut client), None);
-    assert_eq!(run(&mut client, 6), format!("{CANNOT_WRITE}|2"));
+    assert_eq!(run(&mut client, 6), format!("{CANNOT_WRITE}|0|2"));
     assert_eq!(member_count(&mut client), Some(1));
     assert_eq!(records_of(&mut client, TABLE).len(), 2);
     drop(blocked);
@@ -254,9 +266,9 @@ fn a_duplicate_holds_its_containers_and_a_failed_save_takes_it_back() {
     // Saved: the copy holds the member too (op87 +1, containers.md 5.1).
     assert_eq!(run(&mut client, 5), "0");
     assert_eq!(serial_value(&mut client).as_deref(), Some("40"));
-    assert_eq!(run(&mut client, 6), "0|3");
+    assert_eq!(run(&mut client, 6), "0|0|3");
     assert_eq!(member_count(&mut client), Some(2));
-    // (Record 3's id went to the copy the failed save took back.)
+    // (Record 3's id went to the copy whose serial could not be saved.)
     let records = records_of(&mut client, TABLE);
     let ids: Vec<u64> = records.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids, [1, 2, 4]);
@@ -546,6 +558,27 @@ fn an_upload_the_file_cannot_hold_leaves_the_file_saveable() {
     root.put(&[&[0x41]], OwnedNode::leaf(Vec::new(), committed.clone()));
     let file = TempFile::from_tree("save-unwritable-upload", &root);
     let port = server::start(&file);
+
+    // An upload the file can hold that leaves a table's name undecodable
+    // (masked SCSU that ends inside a quote), before anything of this load
+    // is read: the store keeps the catalog it last decoded, and the first
+    // read, which a test server answers through both views and compares
+    // (`Server::checking_reads`), answers as the file engine does.
+    assert!(om_scsu::decode_scsu(&[0x5b]).is_err());
+    let (mut first, _) = server::logged_in_unread(port, "first");
+    let table = uint_segment(TABLE);
+    let entry: [&[u8]; 4] = [&[3], &[16], &[5], &table];
+    let named = |name: OwnedNode| OwnedNode::list(Vec::new(), vec![name]);
+    first
+        .upload_to_host(&entry, &named(OwnedNode::leaf(vec![16], vec![0x5b])))
+        .unwrap();
+    let reply = first.download(&[&[0x41]]).unwrap();
+    assert_eq!(reply.value, committed);
+    first
+        .upload_to_host(&entry, &named(om_scripts::text_node(&[16], "Tasks")))
+        .unwrap();
+    first.disconnect().unwrap();
+
     let (mut client, file_id) = server::logged_in(port, "uploads");
     let mut upload = |dest: Vec<Vec<u8>>, child: OwnedNode| {
         let upload = Upload {
@@ -773,5 +806,553 @@ fn an_issued_record_id_outlasts_a_restart_and_one_that_cannot_be_saved_is_refuse
         Some("Typed before the restart")
     );
     again.disconnect().unwrap();
+    client.disconnect().unwrap();
+}
+
+/// Tasks' next serial value of Count (`[T, 03, 05, F, 0c]`) as a client
+/// downloads it.
+fn serial_of(session: &mut om_session::Session) -> Option<String> {
+    let (t, f) = (uint_segment(TABLE), uint_segment(COUNT));
+    let path: [&[u8]; 5] = [&t, &[3], &[5], &f, &[0x0c]];
+    let reply = session.download(&path).unwrap();
+    (reply.node_state == om_protocol::NodeState::Terminal)
+        .then(|| om_scsu::decode_scsu(&reply.value).ok())
+        .flatten()
+}
+
+/// An op88 payload holding `bytes` as one stream, with its directory and
+/// MD5 (containers.md 2, 3.1).
+fn binary_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut directory = 1u16.to_be_bytes().to_vec();
+    directory.extend(b"FILE");
+    directory.extend((bytes.len() as u32).to_be_bytes());
+    let md5 = om_data::containers::md5([(&b"FILE"[..], bytes)]);
+    OwnedNode::list(
+        Vec::new(),
+        vec![
+            OwnedNode::leaf(vec![2], directory),
+            OwnedNode::leaf(vec![4], md5.to_vec()),
+            OwnedNode::leaf(b"FILE".to_vec(), bytes.to_vec()),
+        ],
+    )
+    .to_wire()
+    .unwrap()
+}
+
+/// An op86 program of one instruction, `opcode`, with `table` as its
+/// source, signed for `session` (query-program.md 2, 11.2): what Manage
+/// Database sends to delete a table.
+fn schema_program(
+    session: &om_session::Session,
+    file_id: u32,
+    opcode: u8,
+    table: &[u8],
+) -> Vec<u8> {
+    use om_query::program::leaf;
+    let mut program = OwnedNode::list(Vec::new(), Vec::new());
+    for (key, value) in [
+        (leaf::OPCODE, vec![opcode]),
+        (
+            leaf::SRC,
+            [vec![table.len() as u8], table.to_vec()].concat(),
+        ),
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+        (
+            leaf::ACCESS_KEY,
+            om_crypto::query_access_key(1, session.connection_key(), file_id).to_vec(),
+        ),
+    ] {
+        program.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    program.to_wire().unwrap()
+}
+
+/// op72 that sets a field's next serial value to the one it holds changes
+/// nothing: with saves failing, it answers status 0 with the value, as a
+/// request with nothing to store does, and the file keeps it (review of
+/// #785, round 1: a write that leaves the tree as it was is no change,
+/// `Store::write_in`).
+#[test]
+fn a_serial_set_to_the_one_held_answers_with_it_while_saves_fail() {
+    let mut root = with_photo();
+    let (t, f) = (uint_segment(TABLE), uint_segment(COUNT));
+    root.put(
+        &[&t, &[3], &[5], &f, &[0x0c]],
+        OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu("7")),
+    );
+    let file = TempFile::from_tree("save-same-serial", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "same serial");
+    let blocked = BlockedSaves::new(&file);
+    let serial = client
+        .get_serial(&t, &f, "7", 0, write::SERIAL_REPLACE)
+        .unwrap();
+    assert_eq!((serial.status, serial.value.as_str()), (0, "7"));
+    drop(blocked);
+    assert_eq!(serial_of(&mut client).as_deref(), Some("7"));
+    client.disconnect().unwrap();
+}
+
+/// op13 that uploads a top-level catalog as the file holds it, as the
+/// first write to a freshly hosted file, changes nothing: with saves
+/// failing it succeeds, and the file is not rewritten (review of #785,
+/// round 2: the root of a tree loaded from disk is not flagged a list, and
+/// that flag is no content, `Store::write_in`).
+#[test]
+fn an_upload_of_a_catalog_as_it_is_changes_nothing_while_saves_fail() {
+    let mut root = with_photo();
+    fixture::add_themes(&mut root, &[1]);
+    let file = TempFile::from_tree("save-same-catalog", &root);
+    let bytes = std::fs::read(&file.0).unwrap();
+    let themes = HbamFile::open(&file.0)
+        .unwrap()
+        .subtree(&[&[6]])
+        .unwrap()
+        .unwrap()
+        .to_owned_node();
+    assert!(!themes.children.is_empty());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "same catalog");
+    let blocked = BlockedSaves::new(&file);
+    client.upload_to_host(&[&[6]], &themes).unwrap();
+    drop(blocked);
+    assert!(
+        std::fs::read(&file.0).unwrap() == bytes,
+        "the file is rewritten"
+    );
+    client.disconnect().unwrap();
+}
+
+/// docs/server-storage.md 5, "not stored": a request whose save fails
+/// before its rename is answered with its storage error, as each reply can
+/// carry it (op72 and op88 in their status, 800 "Unable to create file on
+/// disk"; op86 in its error slot; op87 with its failure count; op13 and
+/// op73, whose replies have no status, with a system exception, as op70),
+/// and nothing of it is kept: another client reads the file as it was, the
+/// file on disk is unchanged, and no notice arrives. Once saves work, each
+/// request is done.
+#[test]
+fn each_request_answers_a_save_that_failed_with_its_storage_error_and_keeps_nothing() {
+    let file = TempFile::from_tree("save-requests", &with_photo());
+    let port = server::start(&file);
+    let (mut client, file_id) = server::logged_in(port, "requests");
+    let (mut other, _) = server::logged_in(port, "other");
+    let table = uint_segment(TABLE);
+    let deferred: [&[u8]; 4] = [&table, &[3], &[1], &[0xfd]];
+    let work = OwnedNode::list(
+        vec![0xfd],
+        vec![OwnedNode::leaf(
+            uint_segment(NAME),
+            0x10u32.to_be_bytes().to_vec(),
+        )],
+    );
+    let photo = vec![table.clone(), vec![0x1f], vec![5], serial::encode(1)];
+    let notes = uint_segment(fixture::NOTES);
+    let state = |session: &mut om_session::Session| {
+        (
+            serial_of(session),
+            session.download(&deferred).unwrap().node_state,
+            member_count(session),
+            session.download(&[&notes]).unwrap().node_state,
+        )
+    };
+    let before = state(&mut other);
+    let bytes = std::fs::read(&file.0).unwrap();
+
+    let blocked = BlockedSaves::new(&file);
+    let serial = client
+        .get_serial(&table, &uint_segment(COUNT), "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert_eq!(
+        (serial.status, serial.value.as_str()),
+        (u32::from(CANNOT_WRITE), "")
+    );
+    assert!(client.upload_to_host(&deferred, &work).is_err(), "op13");
+    let stored = client
+        .upload_binary(
+            &table,
+            &uint_segment(fixture::PHOTO),
+            binary_payload(b"not kept"),
+        )
+        .unwrap();
+    assert_eq!(
+        (stored.status, stored.member.len()),
+        (CANNOT_WRITE, 0),
+        "{stored:?}"
+    );
+    let count = client.adjust_reference_count(photo.clone(), 1).unwrap();
+    assert_eq!(count, om_protocol::container::COUNT_FAILED);
+    let program = schema_program(
+        &client,
+        file_id,
+        om_query::program::opcode::DELETE_TABLE,
+        &notes,
+    );
+    let reply = client.query(&program).unwrap();
+    assert_eq!(
+        reply.slots,
+        [0x80, 0x06, 0x00, 0x03, 0x02, 0x03, 0x20, 0x40]
+    );
+    assert_eq!(state(&mut other), before);
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes, "the file on disk");
+    assert!(other.take_notifications().is_empty());
+    drop(blocked);
+
+    // Saves work: each is done.
+    let serial = client
+        .get_serial(&table, &uint_segment(COUNT), "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert_eq!((serial.status, serial.value.as_str()), (0, "1"));
+    client.upload_to_host(&deferred, &work).unwrap();
+    // op73 does the work only now; it was not stored before.
+    let blocked = BlockedSaves::new(&file);
+    let bytes = std::fs::read(&file.0).unwrap();
+    assert!(client.update_table(&table).is_err(), "op73");
+    assert_eq!(
+        other.download(&deferred).unwrap().node_state,
+        om_protocol::NodeState::NonTerminal,
+        "the work waits"
+    );
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
+    drop(blocked);
+    client.update_table(&table).unwrap();
+    assert_eq!(
+        other.download(&deferred).unwrap().node_state,
+        om_protocol::NodeState::Missing
+    );
+    let stored = client
+        .upload_binary(
+            &table,
+            &uint_segment(fixture::PHOTO),
+            binary_payload(b"kept"),
+        )
+        .unwrap();
+    assert_eq!(stored.status, 0);
+    assert_eq!(client.adjust_reference_count(photo, 1).unwrap(), 2);
+    let reply = client.query(&program).unwrap();
+    assert!(
+        !reply.slots.starts_with(&[0x80, 0x06, 0x00]),
+        "{:02x?}",
+        reply.slots
+    );
+    assert_eq!(
+        other.download(&[&notes]).unwrap().node_state,
+        om_protocol::NodeState::Missing,
+        "Notes is deleted"
+    );
+    let notifications = other.take_notifications();
+    assert!(notifications.is_empty(), "{notifications:?}");
+    client.disconnect().unwrap();
+    other.disconnect().unwrap();
+}
+
+/// The status of hosted file `id`, waited for until it is `want`.
+fn wait_for(handle: &om_server::ServerHandle, id: u32, want: om_server::FileStatus) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if handle
+            .files()
+            .iter()
+            .any(|f| f.id == id && f.status == want)
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("file {id} not {want:?}");
+}
+
+/// docs/server-storage.md 5, "unknown": a save that renamed its new copy
+/// over the file and could not flush the folder is answered with the
+/// storage error; the file keeps the change, as the renamed file holds it,
+/// and takes no more: the next write is refused with an error, while reads
+/// and locks go on. One alert says so, and the administrator's list of
+/// files says why it takes no more changes. Closed and opened again, it
+/// takes changes again.
+#[test]
+fn a_save_whose_outcome_is_unknown_leaves_the_file_taking_no_more_changes_until_hosted_again() {
+    let file = TempFile::from_tree("save-unknown", &with_photo());
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let id = handle.files()[0].id;
+    let (mut client, _) = server::logged_in(port, "unknown");
+    let table = uint_segment(TABLE);
+    let count = uint_segment(COUNT);
+    let alerts = handle.alerts().len();
+    assert!(handle.failing_saves(id, Some(om_server::SaveFault::FolderFlush)));
+    let serial = client
+        .get_serial(&table, &count, "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert!(handle.failing_saves(id, None));
+    assert_eq!(
+        (serial.status, serial.value.as_str()),
+        (u32::from(CANNOT_WRITE), "")
+    );
+    // The file keeps the change, which the renamed file holds.
+    assert_eq!(serial_of(&mut client).as_deref(), Some("2"));
+    let hbam = HbamFile::open(&file.0).unwrap();
+    let on_disk = hbam
+        .subtree(&[&table, &[3], &[5], &count, &[0x0c]])
+        .unwrap();
+    assert!(on_disk.is_some());
+    let [info] = handle.files().try_into().unwrap();
+    assert_eq!(info.status, om_server::FileStatus::Open);
+    let why = info.error.expect("why it takes no more changes");
+    assert!(why.contains("takes no more changes"), "{why}");
+    let raised = handle.alerts();
+    assert_eq!(raised.len(), alerts + 1, "{raised:?}");
+    assert!(
+        raised[0].message.contains("takes no more changes"),
+        "{}",
+        raised[0].message
+    );
+
+    // The next write is refused; reads and locks go on.
+    let bytes = std::fs::read(&file.0).unwrap();
+    let serial = client
+        .get_serial(&table, &count, "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert_eq!(serial.status, u32::from(CANNOT_WRITE));
+    let request = write::CreateRecord {
+        table: vec![table.clone()],
+        count: 1,
+        txn: 0x71,
+    };
+    let reply = client
+        .perform(&write::build_create_record(1, 1, &request))
+        .unwrap();
+    let created = write::parse_create_record_reply(&reply).unwrap();
+    assert_eq!(created.status, u32::from(CANNOT_WRITE));
+    let path: [&[u8]; 3] = [&table, &[5], &serial::encode(1)];
+    assert!(matches!(
+        client.lock(&path, 0x72, false).unwrap(),
+        write::LockReply::Granted { .. }
+    ));
+    client.kill_all_locks(0x72).unwrap();
+    assert_eq!(records_of(&mut client, TABLE).len(), 2);
+    assert_eq!(serial_of(&mut client).as_deref(), Some("2"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes, "nothing written");
+    assert_eq!(handle.alerts().len(), alerts + 1, "one alert");
+    client.disconnect().unwrap();
+
+    // Hosted again, it takes changes.
+    handle
+        .close_file(id, &om_server::Notice::default())
+        .unwrap();
+    wait_for(&handle, id, om_server::FileStatus::Closed);
+    handle.open_file(id).unwrap();
+    wait_for(&handle, id, om_server::FileStatus::Open);
+    assert_eq!(handle.files()[0].error, None);
+    let (mut client, _) = server::logged_in(port, "unknown-again");
+    let serial = client
+        .get_serial(&table, &count, "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert_eq!((serial.status, serial.value.as_str()), (0, "2"));
+    client.disconnect().unwrap();
+}
+
+/// A save that stops part way leaves `<file>.omsave` beside the file,
+/// which stops every later save. Nothing removes it, nor anything else at
+/// that name: a file hosted with something there (a copy a save left, a
+/// folder, a link to another file) is hosted as any file is, with an alert
+/// that names the entry, which is left as it is, and each change fails at
+/// its save, taken back, with the storage error. Something put there while
+/// the file is hosted does the same, and the alert of the failed save says
+/// what is in the way. Once it is removed the file saves, without being
+/// opened again (docs/server-storage.md 5).
+#[cfg(unix)]
+#[test]
+fn anything_at_a_files_save_copy_name_is_left_and_its_changes_fail_until_it_is_removed() {
+    let table = uint_segment(TABLE);
+    let count = uint_segment(COUNT);
+    let advance = |client: &mut om_session::Session| {
+        client
+            .get_serial(&table, &count, "", 1, write::SERIAL_INCREMENT)
+            .unwrap()
+            .status
+    };
+    let copy_of = |file: &TempFile| {
+        let mut path = file.0.as_os_str().to_owned();
+        path.push(".omsave");
+        PathBuf::from(path)
+    };
+
+    for (tag, kind) in [
+        ("save-leftover", "copy"),
+        ("save-leftover-folder", "folder"),
+        ("save-leftover-link", "link"),
+    ] {
+        let file = TempFile::from_tree(tag, &with_photo());
+        let copy = copy_of(&file);
+        let victim = file.0.with_extension("victim");
+        std::fs::write(&victim, b"not to be removed").unwrap();
+        match kind {
+            "copy" => std::fs::write(&copy, b"half a save").unwrap(),
+            "folder" => std::fs::create_dir(&copy).unwrap(),
+            _ => std::os::unix::fs::symlink(&victim, &copy).unwrap(),
+        }
+        let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+        let [info] = handle.files().try_into().unwrap();
+        assert_eq!(info.status, om_server::FileStatus::Open, "{tag}: hosted");
+        let named = copy.display().to_string();
+        let alerts = handle.alerts();
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.message.contains(&named) && a.message.contains("not saved")),
+            "{tag}: {alerts:?}"
+        );
+        let bytes = std::fs::read(&file.0).unwrap();
+        let (mut client, _) = server::logged_in(port, tag);
+        assert_eq!(advance(&mut client), u32::from(CANNOT_WRITE), "{tag}");
+        assert_eq!(serial_of(&mut client), None, "{tag}: taken back");
+        assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
+        let kept = std::fs::symlink_metadata(&copy).unwrap();
+        assert_eq!(
+            (kept.is_file(), kept.is_dir(), kept.is_symlink()),
+            (kind == "copy", kind == "folder", kind == "link"),
+            "{tag}: left as it is"
+        );
+        if kind == "copy" {
+            assert_eq!(std::fs::read(&copy).unwrap(), b"half a save");
+        }
+        assert_eq!(std::fs::read(&victim).unwrap(), b"not to be removed");
+        // Removed, the next change is saved.
+        if kind == "folder" {
+            std::fs::remove_dir(&copy).unwrap();
+        } else {
+            std::fs::remove_file(&copy).unwrap();
+        }
+        assert_eq!(advance(&mut client), 0, "{tag}");
+        assert_eq!(serial_of(&mut client).as_deref(), Some("2"), "{tag}");
+        client.disconnect().unwrap();
+        let _ = std::fs::remove_file(&victim);
+    }
+
+    // Put there while the file is hosted: the next save is not stored, and
+    // its alert says why; the entry is left as it is.
+    let file = TempFile::from_tree("save-leftover-later", &with_photo());
+    let copy = copy_of(&file);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let (mut client, _) = server::logged_in(port, "leftover-later");
+    let bytes = std::fs::read(&file.0).unwrap();
+    std::fs::write(&copy, b"put there").unwrap();
+    assert_eq!(advance(&mut client), u32::from(CANNOT_WRITE));
+    assert_eq!(serial_of(&mut client), None, "taken back");
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
+    assert_eq!(std::fs::read(&copy).unwrap(), b"put there");
+    let alerts = handle.alerts();
+    assert!(
+        alerts
+            .iter()
+            .any(|a| a.message.contains("in the way")
+                && a.message.contains(&copy.display().to_string())),
+        "{alerts:?}"
+    );
+    std::fs::remove_file(&copy).unwrap();
+    assert_eq!(advance(&mut client), 0);
+    assert_eq!(serial_of(&mut client).as_deref(), Some("2"));
+    client.disconnect().unwrap();
+}
+
+/// A server script's end saves what it left unsaved (the record id New
+/// Record reserved for a record it reverted): a save that fails there is
+/// the script's error (docs/server-storage.md 5), not dropped.
+#[test]
+fn a_script_whose_end_save_fails_ends_with_the_save_error() {
+    let file = TempFile::from_tree("save-script-end", &with_photo());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "script-end");
+    let blocked = BlockedSaves::new(&file);
+    let reply = client.perform_script_on_server(8, "", true).unwrap();
+    assert_eq!((reply.error, reply.result.as_str()), (CANNOT_WRITE, "0"));
+    drop(blocked);
+    let reply = client.perform_script_on_server(8, "", true).unwrap();
+    assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
+    client.disconnect().unwrap();
+}
+
+/// An op86 program of one instruction with `operands` (leaf, value),
+/// signed for `session` (query-program.md 2).
+fn program(session: &om_session::Session, file_id: u32, operands: &[(u8, Vec<u8>)]) -> Vec<u8> {
+    use om_query::program::leaf;
+    let mut program = OwnedNode::list(Vec::new(), Vec::new());
+    let signed = [
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+        (
+            leaf::ACCESS_KEY,
+            om_crypto::query_access_key(1, session.connection_key(), file_id).to_vec(),
+        ),
+    ];
+    for (key, value) in operands.iter().cloned().chain(signed) {
+        program.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    program.to_wire().unwrap()
+}
+
+/// Whether op86's reply is the error slot with 800 alone
+/// (query-program.md 11.2).
+fn failed_to_store(slots: &[u8]) -> bool {
+    slots == [0x80, 0x06, 0x00, 0x03, 0x02, 0x03, 0x20, 0x40]
+}
+
+/// The review's P1 on op86: a program that reserves a member key whose
+/// storing fails answers its error slot, and the key waits for the next
+/// write; a program that only reads keeps its answer meanwhile, though the
+/// key it finds waiting cannot be stored either. On a file that takes no
+/// more changes a program that would change it is refused before it runs,
+/// so it reserves nothing, and programs that read go on answering.
+#[test]
+fn a_program_that_only_reads_keeps_its_answer_when_what_waits_cannot_be_stored() {
+    use om_query::program::{leaf, opcode};
+    let file = TempFile::from_tree("save-op86-waiting", &with_photo());
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let id = handle.files()[0].id;
+    let (mut client, file_id) = server::logged_in(port, "op86-waiting");
+    let table = uint_segment(TABLE);
+    let generate = program(
+        &client,
+        file_id,
+        &[
+            (leaf::OPCODE, vec![opcode::GENERATE_MEMBER_KEY]),
+            (leaf::OPERAND1, vec![1, 4]),
+        ],
+    );
+    let read = program(
+        &client,
+        file_id,
+        &[
+            (leaf::OPCODE, vec![opcode::GET_KEY]),
+            (leaf::SRC, [vec![table.len() as u8], table.clone()].concat()),
+        ],
+    );
+    let answer = client.query(&read).unwrap().slots;
+    assert!(!failed_to_store(&answer));
+
+    let blocked = BlockedSaves::new(&file);
+    let reply = client.query(&generate).unwrap();
+    assert!(failed_to_store(&reply.slots), "{:02x?}", reply.slots);
+    // The key waits, and cannot be stored: the read keeps its answer.
+    assert_eq!(client.query(&read).unwrap().slots, answer);
+    drop(blocked);
+    assert_eq!(client.query(&read).unwrap().slots, answer, "and stores it");
+
+    // A file that takes no more changes.
+    assert!(handle.failing_saves(id, Some(om_server::SaveFault::FolderFlush)));
+    let serial = client
+        .get_serial(&table, &uint_segment(COUNT), "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert!(handle.failing_saves(id, None));
+    assert_eq!(serial.status, u32::from(CANNOT_WRITE));
+    let layouts = [vec![4]];
+    let keys = handle.member_keys(id, &layouts).unwrap();
+    assert_eq!(keys.0, None, "nothing waits");
+    let reply = client.query(&generate).unwrap();
+    assert!(failed_to_store(&reply.slots), "{:02x?}", reply.slots);
+    assert_eq!(
+        handle.member_keys(id, &layouts).unwrap(),
+        keys,
+        "no key reserved: nothing waits, the next key is the same"
+    );
+    assert_eq!(client.query(&read).unwrap().slots, answer);
     client.disconnect().unwrap();
 }

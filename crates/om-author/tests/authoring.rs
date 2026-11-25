@@ -687,3 +687,152 @@ fn security_is_read_without_credentials_by_the_files_full_access_account() {
     assert_eq!(denied["kind"], "permission_denied", "{denied:#}");
     host.stop();
 }
+
+/// Re-Login (step 138) with the account "Admin" and `password`, both
+/// stored as calculations (slots 0 and 1).
+fn signing_in(password: &str) -> Script {
+    let mut step = om_scripts::ScriptStep::new(138);
+    step.set_calculation(0, Some(&fixture::calc("\"Admin\"")));
+    step.set_calculation(1, Some(&fixture::calc(&format!("\"{password}\""))));
+    fixture::script(8, "Sign in", vec![step])
+}
+
+/// A script of 40 steps: its step list, 1,120 bytes, is stored split into
+/// a header and pieces (file-format.md 3.6).
+fn long_script() -> Script {
+    let steps = (0..40)
+        .map(|n| fixture::exit_with(&n.to_string()))
+        .collect();
+    fixture::script(9, "Long", steps)
+}
+
+/// Script `id`'s member as the hosted file stores it.
+fn stored_script(file: &TempFile, id: u64) -> om_hbam::OwnedNode {
+    let file = om_hbam::HbamFile::open(&file.0).unwrap();
+    let tree = file.key_tree().unwrap().root.to_owned_node();
+    tree.at(&[&[17], &[5], &serial::encode(id)])
+        .cloned()
+        .expect("the script")
+}
+
+/// The edit token guards an edit over the whole member, stored passwords
+/// included (docs/authoring.md, "Revisions"): an edit that changes only a
+/// password is applied, and a client holding the token from before another
+/// client's password change is refused. A token as an older client computes
+/// it, which hashed a split value as its pieces, is accepted and answered
+/// in that form; any other stale token is not.
+#[test]
+fn password_edits_and_older_clients_tokens_are_guarded_by_the_whole_member() {
+    let mut all = scripts();
+    all.extend([signing_in("first"), long_script()]);
+    let file = TempFile::new("author-edit-tokens", &all, true);
+    let host = host(&file, "OpenMaker Server test");
+    let (mut session, file_id) = session(&host, "Desk", ACCOUNT, PASSWORD);
+    let mut replace = |script: u64, expected: [u8; 32], definition: om_hbam::OwnedNode| {
+        let request = Request::ReplaceScriptSteps(authoring::ReplaceScriptSteps {
+            script,
+            expected,
+            definition,
+        });
+        let reply = session
+            .perform(&authoring::build_request(9, file_id, &request).unwrap())
+            .unwrap();
+        authoring::parse_reply(&request, &reply).unwrap()
+    };
+    // The stored script with another password: its step data from the
+    // same steps encoded with it.
+    let stored = stored_script(&file, 8);
+    let with_password = |password: &str| {
+        let mut definition = stored.clone();
+        let data = signing_in(password).encode().child(&[5]).cloned().unwrap();
+        definition.set_child(data);
+        definition
+    };
+    let before = content_revision(&stored);
+
+    let changed = match replace(8, before, with_password("second")) {
+        Reply::Replaced(replaced) => replaced,
+        other => panic!("{other:?}"),
+    };
+    assert!(changed.changed, "a password-only edit is applied");
+    assert_ne!(changed.revision, before);
+    match replace(8, before, with_password("third")) {
+        Reply::Refused {
+            status: status::CONFLICT,
+            current,
+            ..
+        } => assert_eq!(current, Some(changed.revision)),
+        other => panic!("{other:?}"),
+    }
+
+    let long = stored_script(&file, 9);
+    let legacy = authoring::legacy_content_revision(&long);
+    assert_ne!(legacy, content_revision(&long), "the step list is split");
+    // One step fewer, the step list still split into a header and pieces,
+    // as an older client sends what it read.
+    let mut shorter = long.clone();
+    let steps = shorter
+        .child(&[4])
+        .unwrap()
+        .assembled()
+        .unwrap()
+        .into_owned();
+    let steps = &steps[..steps.len() - 28];
+    let mut split = om_hbam::OwnedNode::list(
+        vec![4],
+        vec![om_hbam::OwnedNode::leaf(
+            vec![0],
+            (steps.len() as u32).to_be_bytes().to_vec(),
+        )],
+    );
+    for (n, piece) in steps.chunks(1000).enumerate() {
+        split.children.push(om_hbam::OwnedNode::leaf(
+            serial::encode(n as u64 + 1),
+            piece.to_vec(),
+        ));
+    }
+    shorter.set_child(split);
+    match replace(9, [7; 32], shorter.clone()) {
+        Reply::Refused {
+            status: status::CONFLICT,
+            ..
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    let answered = match replace(9, legacy, shorter.clone()) {
+        Reply::Replaced(replaced) => {
+            assert!(replaced.changed);
+            replaced.revision
+        }
+        other => panic!("{other:?}"),
+    };
+    // Answered in the form it was asked in: what the older computation
+    // gives for the member as saved.
+    let saved = stored_script(&file, 9);
+    assert_eq!(answered, authoring::legacy_content_revision(&saved));
+    assert_ne!(answered, content_revision(&saved));
+    host.stop();
+}
+
+/// The security catalog is read through a reading of the file
+/// (docs/server-storage.md 5). With the test view failing the extended
+/// privileges `[23, 3, 5]`, as a damaged page would, Describe Security is
+/// refused with 802, "Unable to open file", never answered with a catalog
+/// that lacks them.
+#[cfg(debug_assertions)]
+#[test]
+fn security_that_cannot_be_read_is_refused() {
+    let file = TempFile::from_tree("author-security-unreadable", &indexed_tree());
+    let host = host(&file, "OpenMaker Server test");
+    // Logged in first: a login reads the accounts, not this.
+    let (mut session, file_id) = session(&host, "Admin desk", ACCOUNT, PASSWORD);
+    host.handle.failing_reads(FILE, &[&[23], &[3], &[5]]);
+    let reply = session
+        .perform(&authoring::build_request(9, file_id, &Request::DescribeSecurity).unwrap())
+        .unwrap();
+    match authoring::parse_reply(&Request::DescribeSecurity, &reply).unwrap() {
+        Reply::Refused { status, .. } => assert_eq!(status, authoring::status::UNREADABLE),
+        other => panic!("{other:?}"),
+    }
+    host.stop();
+}

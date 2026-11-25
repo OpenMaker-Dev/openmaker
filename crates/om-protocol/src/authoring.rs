@@ -45,10 +45,6 @@ pub const REPO_ID: &[u8] = b"IDL:OpenMaker/Authoring:1.0";
 /// The extension's version.
 pub const VERSION: u16 = 1;
 
-/// A content revision: the SHA-256 of a catalog member without its
-/// modification stamp ([`content_revision`]).
-pub type Revision = [u8; 32];
-
 /// The largest new definition one request carries, in its wire form: the
 /// request must fit the host's request limit (2 MiB) whole.
 pub const MAX_DEFINITION_BYTES: usize = 1 << 20;
@@ -79,6 +75,11 @@ pub mod status {
     /// create file on disk", 809 "Disk/volume is full", 810 "Disk/volume
     /// is locked").
     pub const SAVE_FAILED: [u16; 3] = [800, 809, 810];
+    /// The host wrote the change but could not confirm that the file on
+    /// disk keeps it: the change may or may not be in the file, which takes
+    /// no more changes until it is hosted again (FileMaker's -1, "Unknown
+    /// error"). A client reports it as an outcome it cannot know.
+    pub const OUTCOME_UNKNOWN: u16 = 0xffff;
     /// The table already has a field of that name ("Name already exists").
     pub const NAME_EXISTS: u16 = 12;
     /// No such table ("Table is missing").
@@ -97,6 +98,10 @@ pub mod status {
     pub const LAYOUT_IN_USE: u16 = 304;
     /// No such value list ("Value list is missing").
     pub const VALUE_LIST_MISSING: u16 = 108;
+    /// The host could not read the part of the file the request reads
+    /// ("Unable to open file"), as a login to a file whose accounts cannot
+    /// be read is answered.
+    pub const UNREADABLE: u16 = 802;
 }
 
 /// Operation numbers.
@@ -176,83 +181,29 @@ pub const MAX_LABEL_CHARS: usize = 1_000;
 /// limit for names).
 pub const MAX_LAYOUT_NAME_CHARS: usize = 100;
 
-/// The keys of a catalog member's modification stamp (schema-path.md 8.1):
-/// `fc` the modification count, `fc 01` the user name, `fc 02` the account,
-/// `fc 03` the host time.
-pub const MOD_COUNT: &[u8] = &[0xfc];
-pub const MOD_USER: &[u8] = &[0xfc, 0x01];
-pub const MOD_ACCOUNT: &[u8] = &[0xfc, 0x02];
-pub const MOD_TIME: &[u8] = &[0xfc, 0x03];
+/// Revisions and the keys of a modification stamp (schema-path.md 8.1)
+/// are defined once, in `om_hbam::design_paths`, and the host checks and
+/// reports them with the same functions as its clients. A revision here is
+/// an edit token: the whole member (or catalog), stored passwords
+/// included, without modification stamps ([`content_revision`] for a
+/// script, [`layout_revision`] for a layout, [`catalog_revision`] for
+/// anything else). [`legacy_content_revision`] and
+/// [`legacy_catalog_revision`] are the tokens an older client computes,
+/// which a host accepts and answers in.
+pub use om_hbam::design_paths::{
+    catalog_revision, is_stamp, legacy_catalog_revision,
+    legacy_script_form_revision as legacy_content_revision, Revision, MOD_ACCOUNT, MOD_COUNT,
+    MOD_TIME, MOD_USER,
+};
 
-/// Whether `segment` is a key of the modification stamp.
-pub fn is_stamp(segment: &[u8]) -> bool {
-    [MOD_COUNT, MOD_USER, MOD_ACCOUNT, MOD_TIME].contains(&segment)
-}
-
-/// A catalog member's content revision: the SHA-256 of its key, values and
-/// children in key order, leaving out its own modification stamp, so a save
-/// that stores the same content does not count as a change.
+/// A script member's `[17, 5, S]` edit token (`om_hbam::design_paths`).
 pub fn content_revision(member: &OwnedNode) -> Revision {
-    let mut bytes = Vec::new();
-    canonical(member, true, &mut bytes);
-    om_crypto::sha256(&bytes)
+    om_hbam::design_paths::script_form_revision(member)
 }
 
-/// A whole catalog's content revision, such as a table's fields `[T, 3]`:
-/// the SHA-256 of its keys and values in key order, leaving out every
-/// modification stamp in it (the catalog index's and each member's) and
-/// whether a key is stored as a list, so saving the same content, or
-/// reading it back from the file, keeps the revision.
-pub fn catalog_revision(catalog: &OwnedNode) -> Revision {
-    let mut bytes = Vec::new();
-    canonical_with(catalog, Stamps::Everywhere, &mut bytes);
-    om_crypto::sha256(&bytes)
-}
-
-/// Which modification stamps a canonical form leaves out.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Stamps {
-    /// The member's own (and its list flags are kept).
-    Own,
-    /// None below the member's own.
-    Kept,
-    /// Every one, at any depth (and no list flags).
-    Everywhere,
-}
-
-fn canonical(node: &OwnedNode, top: bool, out: &mut Vec<u8>) {
-    canonical_with(node, if top { Stamps::Own } else { Stamps::Kept }, out)
-}
-
-fn canonical_with(node: &OwnedNode, stamps: Stamps, out: &mut Vec<u8>) {
-    fn bytes(out: &mut Vec<u8>, b: &[u8]) {
-        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
-        out.extend_from_slice(b);
-    }
-    bytes(out, &node.segment);
-    if stamps != Stamps::Everywhere {
-        out.push(u8::from(node.push));
-    }
-    match &node.value {
-        Some(value) => {
-            out.push(1);
-            bytes(out, value);
-        }
-        None => out.push(0),
-    }
-    let children: Vec<&OwnedNode> = node
-        .children
-        .iter()
-        .filter(|c| stamps == Stamps::Kept || !is_stamp(&c.segment))
-        .collect();
-    out.extend_from_slice(&(children.len() as u64).to_be_bytes());
-    let below = match stamps {
-        Stamps::Own | Stamps::Kept => Stamps::Kept,
-        Stamps::Everywhere => Stamps::Everywhere,
-    };
-    for child in children {
-        canonical_with(child, below, out);
-    }
+/// A layout member's `[4, 5, L]` edit token (`om_hbam::design_paths`).
+pub fn layout_revision(member: &OwnedNode) -> Revision {
+    om_hbam::design_paths::catalog_revision(member)
 }
 
 /// A request.
@@ -2100,57 +2051,6 @@ mod tests {
             parse_reply(&Request::Describe, &legacy).unwrap(),
             Reply::NotSupported { status: 3 }
         );
-    }
-
-    #[test]
-    fn revisions_leave_out_the_stamp_only() {
-        let a = definition(&[1; 28]);
-        let mut stamped = a.clone();
-        stamped.children[2].value = Some(vec![1, 2]);
-        stamped.set_child(OwnedNode::leaf(MOD_USER.to_vec(), b"x".to_vec()));
-        assert_eq!(content_revision(&a), content_revision(&stamped));
-        assert_ne!(
-            content_revision(&a),
-            content_revision(&definition(&[2; 28]))
-        );
-        let mut renamed = a.clone();
-        renamed.children[1].value = Some(b"other".to_vec());
-        assert_ne!(content_revision(&a), content_revision(&renamed));
-    }
-
-    #[test]
-    fn catalog_revisions_leave_out_every_stamp_and_list_flag() {
-        let field = |name: &[u8], stamp: &[u8]| {
-            OwnedNode::list(
-                vec![1],
-                vec![
-                    OwnedNode::leaf(vec![0x10], name.to_vec()),
-                    OwnedNode::leaf(MOD_TIME.to_vec(), stamp.to_vec()),
-                ],
-            )
-        };
-        let catalog = |name: &[u8], stamp: &[u8]| {
-            OwnedNode::list(
-                vec![3],
-                vec![
-                    OwnedNode::list(
-                        vec![1],
-                        vec![OwnedNode::leaf(MOD_COUNT.to_vec(), stamp.to_vec())],
-                    ),
-                    OwnedNode::list(vec![5], vec![field(name, stamp)]),
-                ],
-            )
-        };
-        let a = catalog(b"Name", &[1]);
-        let mut restamped = catalog(b"Name", &[2]);
-        restamped.children[1].push = false;
-        assert_eq!(catalog_revision(&a), catalog_revision(&restamped));
-        assert_ne!(
-            catalog_revision(&a),
-            catalog_revision(&catalog(b"Other", &[1]))
-        );
-        // A member's own revision still keeps the stamps below its own.
-        assert_ne!(content_revision(&a), content_revision(&restamped));
     }
 
     #[test]

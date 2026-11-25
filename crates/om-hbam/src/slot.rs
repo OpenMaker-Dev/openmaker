@@ -52,10 +52,61 @@ pub struct Chunk<'a> {
     pub raw: &'a [u8],
 }
 
-impl Chunk<'_> {
+impl<'a> Chunk<'a> {
     /// Whether the code's value-size class carries a value (class != 0).
     pub fn has_value(&self) -> bool {
         matches!(self.kind, ChunkKind::Push | ChunkKind::Leaf) && self.code & 7 != 0
+    }
+
+    /// The value its slot gives its key: always one for a leaf (possibly
+    /// empty), for a push only when its code has a value class.
+    pub(crate) fn slot_value(&self) -> Option<&'a [u8]> {
+        (self.kind != ChunkKind::Push || self.has_value()).then_some(self.value)
+    }
+}
+
+/// What a chunk does to the key path of a slot stream (`S_SlotUnpack`,
+/// file-format.md 3.3 and 4.2): the one rule every reader of the stream
+/// applies ([`SlotReader`], [`crate::stream::NodeStream`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// `0x80`: nothing changes.
+    Begin,
+    /// `0x40` with a nonempty path: its last segment is removed.
+    Pop,
+    /// `0x40` with an empty path: the root list closes, and nothing may
+    /// follow it in the buffer.
+    CloseRoot,
+    /// A push: a slot at the path plus the chunk's key, which then stays
+    /// on the path.
+    Push,
+    /// A leaf: a slot at the path plus the chunk's key; the path is
+    /// unchanged.
+    Leaf,
+}
+
+/// The [`Step`] of the chunk of `kind` at `offset`, read with the key path
+/// `depth` segments deep, after a [`Step::CloseRoot`] when `root_closed`.
+/// A chunk after the root list closed and a slot deeper than [`MAX_DEPTH`]
+/// are errors.
+pub(crate) fn step(
+    kind: ChunkKind,
+    depth: usize,
+    root_closed: bool,
+    offset: usize,
+) -> Result<Step> {
+    if root_closed {
+        return Err(Error::PopUnderflow { offset });
+    }
+    match kind {
+        ChunkKind::Begin => Ok(Step::Begin),
+        ChunkKind::Pop if depth == 0 => Ok(Step::CloseRoot),
+        ChunkKind::Pop => Ok(Step::Pop),
+        ChunkKind::Push | ChunkKind::Leaf if depth + 1 > MAX_DEPTH => {
+            Err(Error::TooDeep { offset })
+        }
+        ChunkKind::Push => Ok(Step::Push),
+        ChunkKind::Leaf => Ok(Step::Leaf),
     }
 }
 
@@ -194,25 +245,56 @@ pub fn minimal_code(push: bool, key_len: usize, value: Option<usize>) -> Option<
 /// Encode a push or leaf chunk with an explicit code. Returns `None` when the
 /// code's size classes cannot carry this key and value.
 pub fn encode_chunk(code: u8, key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
+    // Checked before anything is reserved for the key and value.
+    let lengths = chunk_lengths(code, key, value)?;
+    let mut out = Vec::with_capacity(4 + key.len() + value.len());
+    write_chunk(&mut out, code, lengths, key, value);
+    Some(out)
+}
+
+/// [`encode_chunk`] appended to `out`, which is left as it was when the
+/// code's size classes cannot carry this key and value.
+pub fn encode_chunk_into(out: &mut Vec<u8>, code: u8, key: &[u8], value: &[u8]) -> Option<()> {
+    let lengths = chunk_lengths(code, key, value)?;
+    write_chunk(out, code, lengths, key, value);
+    Some(())
+}
+
+/// The length fields a chunk with `code` writes before its key and before
+/// its value: the key's length byte where the code has one, and the
+/// value's length in none, one or two bytes. `None` when the code is no
+/// push or leaf code, or its size classes cannot carry this key and value.
+fn chunk_lengths(code: u8, key: &[u8], value: &[u8]) -> Option<(Option<u8>, [u8; 2], usize)> {
     if !matches!(kind_of(code, 0).ok()?, ChunkKind::Push | ChunkKind::Leaf) {
         return None;
     }
-    let mut out = Vec::with_capacity(4 + key.len() + value.len());
+    let key_length = match ((code >> 3) & 3, key.len()) {
+        (0, 1) | (1, 2) | (2, 3) => None,
+        (3, n) if n <= 255 => Some(n as u8),
+        _ => return None,
+    };
+    let (length, length_bytes) = match (code & 7, value.len()) {
+        (0, 0) | (1, 1) | (2, 2) | (3, 4) | (4, 6) | (5, 8) => ([0, 0], 0),
+        (6, n) if n <= 255 => ([n as u8, 0], 1),
+        (7, n) if n <= 65535 => ((n as u16).to_be_bytes(), 2),
+        _ => return None,
+    };
+    Some((key_length, length, length_bytes))
+}
+
+/// A chunk whose lengths [`chunk_lengths`] gave, appended to `out`.
+fn write_chunk(
+    out: &mut Vec<u8>,
+    code: u8,
+    (key_length, length, length_bytes): (Option<u8>, [u8; 2], usize),
+    key: &[u8],
+    value: &[u8],
+) {
     out.push(code);
-    match ((code >> 3) & 3, key.len()) {
-        (0, 1) | (1, 2) | (2, 3) => {}
-        (3, n) if n <= 255 => out.push(n as u8),
-        _ => return None,
-    }
+    out.extend(key_length);
     out.extend_from_slice(key);
-    match (code & 7, value.len()) {
-        (0, 0) | (1, 1) | (2, 2) | (3, 4) | (4, 6) | (5, 8) => {}
-        (6, n) if n <= 255 => out.push(n as u8),
-        (7, n) if n <= 65535 => out.extend_from_slice(&(n as u16).to_be_bytes()),
-        _ => return None,
-    }
+    out.extend_from_slice(&length[..length_bytes]);
     out.extend_from_slice(value);
-    Some(out)
 }
 
 /// One segment of a hierarchical key, borrowed from the slot buffer.
@@ -228,6 +310,15 @@ impl<'a> KeySegment<'a> {
     /// ids, field ids, and record ids are stored this way.
     pub fn as_uint(self) -> Option<u64> {
         be_uint(self.0)
+    }
+}
+
+/// A path of segments, as a [`crate::SlotReader`] or [`crate::Node::walk`]
+/// gives it, can be passed where raw segment bytes are taken
+/// ([`crate::writer::NodeWriter::node`]).
+impl AsRef<[u8]> for KeySegment<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.0
     }
 }
 
@@ -340,26 +431,17 @@ impl<'a> SlotReader<'a> {
                 return Ok(());
             };
             let chunk = chunk?;
-            if self.root_closed {
-                return Err(Error::PopUnderflow { offset });
-            }
-            match chunk.kind {
-                ChunkKind::Begin => {}
-                ChunkKind::Pop => {
-                    if self.stack.pop().is_none() {
-                        self.root_closed = true;
-                    }
+            match step(chunk.kind, self.stack.len(), self.root_closed, offset)? {
+                Step::Begin => {}
+                Step::Pop => {
+                    self.stack.pop();
                 }
-                ChunkKind::Push | ChunkKind::Leaf => {
+                Step::CloseRoot => self.root_closed = true,
+                Step::Push | Step::Leaf => {
                     self.stack.push(KeySegment(chunk.key));
-                    if self.stack.len() > MAX_DEPTH {
-                        return Err(Error::TooDeep { offset });
-                    }
-                    let push = chunk.kind == ChunkKind::Push;
-                    let value = (!push || chunk.has_value()).then_some(chunk.value);
-                    f(&self.stack, chunk.kind, value)?;
+                    f(&self.stack, chunk.kind, chunk.slot_value())?;
                     // A leaf opens no level.
-                    if !push {
+                    if chunk.kind == ChunkKind::Leaf {
                         self.stack.pop();
                     }
                 }
@@ -378,33 +460,26 @@ impl<'a> Iterator for SlotReader<'a> {
                 Ok(c) => c,
                 Err(e) => return Some(Err(e)),
             };
-            if self.root_closed {
-                self.chunks.failed = true;
-                return Some(Err(Error::PopUnderflow { offset }));
-            }
-            match chunk.kind {
-                ChunkKind::Begin => continue,
-                ChunkKind::Pop => {
-                    if self.stack.pop().is_none() {
-                        self.root_closed = true;
-                    }
+            match step(chunk.kind, self.stack.len(), self.root_closed, offset) {
+                Err(e) => {
+                    self.chunks.failed = true;
+                    return Some(Err(e));
                 }
-                ChunkKind::Push | ChunkKind::Leaf => {
+                Ok(Step::Begin) => {}
+                Ok(Step::Pop) => {
+                    self.stack.pop();
+                }
+                Ok(Step::CloseRoot) => self.root_closed = true,
+                Ok(Step::Push | Step::Leaf) => {
                     let mut path = self.stack.clone();
                     path.push(KeySegment(chunk.key));
-                    if path.len() > MAX_DEPTH {
-                        self.chunks.failed = true;
-                        return Some(Err(Error::TooDeep { offset }));
-                    }
-                    let push = chunk.kind == ChunkKind::Push;
-                    if push {
+                    if chunk.kind == ChunkKind::Push {
                         self.stack.push(KeySegment(chunk.key));
                     }
-                    let value = (!push || chunk.has_value()).then_some(chunk.value);
                     return Some(Ok(Slot {
                         path,
                         kind: chunk.kind,
-                        value,
+                        value: chunk.slot_value(),
                         code: chunk.code,
                         offset,
                     }));
