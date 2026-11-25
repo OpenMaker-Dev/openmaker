@@ -1494,6 +1494,445 @@ fn a_late_refused_commit_leaves_the_staged_edit_as_an_early_one_does() {
     }
 }
 
+/// One entry of an op70 list of Tasks: an edit of Name, a new record or a
+/// deletion, by record id.
+#[derive(Clone, Copy)]
+enum Entry {
+    Edit(u64),
+    New(u64),
+    Delete(u64),
+}
+
+/// The op70 list of `entries` in table `table`.
+fn commit_list_of(table: &[u8], entries: &[Entry]) -> Vec<u8> {
+    let nodes = entries
+        .iter()
+        .map(|entry| match *entry {
+            Entry::Edit(id) => OwnedNode::list(
+                om_hbam::serial::encode(id),
+                vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+            ),
+            Entry::New(id) => OwnedNode::leaf(om_hbam::serial::encode(id), vec![write::COMMIT_NEW]),
+            Entry::Delete(id) => {
+                OwnedNode::leaf(om_hbam::serial::encode(id), vec![write::COMMIT_DELETED])
+            }
+        })
+        .collect();
+    write::commit_list_tables(vec![(table.to_vec(), nodes)]).unwrap()
+}
+
+/// Record `id` staged with Name `name`, and `extra` cells.
+fn staged_record(id: u64, name: &str, extra: Vec<OwnedNode>) -> OwnedNode {
+    let mut cells = vec![OwnedNode::leaf(
+        uint_segment(NAME),
+        om_scsu::encode_scsu(name),
+    )];
+    cells.extend(extra);
+    OwnedNode::list(om_hbam::serial::encode(id), cells)
+}
+
+/// Lock Tasks record `id` for `txn` (op60); granted.
+fn lock_record(session: &mut Session, id: u64, txn: u32) {
+    let (t, record) = (uint_segment(TABLE), om_hbam::serial::encode(id));
+    let path: [&[u8]; 3] = [&t, &[5], &record];
+    let reply = session.lock(&path, txn, true).unwrap();
+    assert!(
+        matches!(reply, write::LockReply::Granted { .. }),
+        "record {id}: {reply:?}"
+    );
+}
+
+/// op70 of `list` for `txn`, as one part.
+fn commit(session: &mut Session, id: u32, list: Vec<u8>, txn: u32) -> Answer {
+    let commit = write::Commit {
+        list,
+        resume: Resume::start(),
+        flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+        txn,
+    };
+    session
+        .perform(&write::build_commit(9, id, &commit))
+        .map_err(|e| e.to_string())
+}
+
+/// An op70 stores every record its list names or none
+/// (`writes::unstorable`): each case below, on a writable copy of its own,
+/// names a record the commit cannot store, alone or beside one it could,
+/// and the whole commit fails with a system exception. Read back over a new
+/// connection and from disk, nothing changed (the file's bytes are as they
+/// were), and what the committing connection B staged stays staged,
+/// charged as before. A holds the locks of another connection.
+#[test]
+fn a_commit_stores_every_record_it_names_or_none() {
+    /// What a case puts in place on A and B before B's op70.
+    type Prepare = fn(&mut Session, &mut Session);
+    /// A case: what it is, its preparation, and B's op70 (the table, its
+    /// entries, the transaction).
+    type Case<'t> = (&'static str, Prepare, &'t [u8], Vec<Entry>, u32);
+    let tasks = uint_segment(TABLE);
+    let missing = uint_segment(0x8099);
+    let cases: [Case; 8] = [
+        (
+            "record 1, which another connection holds, edited",
+            |a, b| {
+                lock_record(a, 1, 0x31);
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(1, "FromB", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1)],
+            0x31,
+        ),
+        (
+            "record 2, which another connection holds, deleted",
+            |a, _| lock_record(a, 2, 0x31),
+            &tasks,
+            vec![Entry::Delete(2)],
+            0x31,
+        ),
+        (
+            "record 1, locked by the session under another transaction",
+            |_, b| {
+                lock_record(b, 1, 0x31);
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(1, "Other txn", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1)],
+            0x32,
+        ),
+        (
+            "records 1, held by another connection, and 2, held by B",
+            |a, b| {
+                lock_record(a, 1, 0x31);
+                lock_record(b, 2, 0x31);
+                let t = uint_segment(TABLE);
+                b.upload_records(
+                    &t,
+                    vec![
+                        staged_record(1, "B1", Vec::new()),
+                        staged_record(2, "B2", Vec::new()),
+                    ],
+                )
+                .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1), Entry::Edit(2)],
+            0x31,
+        ),
+        (
+            "new record 99, an id never issued",
+            |_, b| {
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(99, "New", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::New(99)],
+            0x31,
+        ),
+        (
+            "new record 1, an id a record has",
+            |_, b| {
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(1, "Twice", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::New(1)],
+            0x31,
+        ),
+        (
+            "record 1 staged with fc ff ff ff, not a count",
+            |_, b| {
+                lock_record(b, 1, 0x31);
+                let t = uint_segment(TABLE);
+                let count = OwnedNode::leaf(vec![0xfc], vec![0xff, 0xff, 0xff]);
+                b.upload_records(&t, vec![staged_record(1, "Bad count", vec![count])])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1)],
+            0x31,
+        ),
+        (
+            "record 1 of table 80 99, which the file does not have",
+            |_, b| {
+                let t = uint_segment(0x8099);
+                b.upload_records(&t, vec![staged_record(1, "Nowhere", Vec::new())])
+                    .unwrap();
+            },
+            &missing,
+            vec![Entry::Edit(1)],
+            0x31,
+        ),
+    ];
+    let (writable, _) = tasks_for_writes("recalc-whole-commits", false);
+    for (n, (what, prepare, table, entries, txn)) in cases.into_iter().enumerate() {
+        let copy = TempFile(writable.0.with_extension(format!("{n}.fmp12")));
+        std::fs::copy(&writable.0, &copy.0).unwrap();
+        let before = std::fs::read(&copy.0).unwrap();
+        let (port, handle) = server::start_with_handle(&copy, om_server::ScriptLimits::DEFAULT);
+        let (mut a, _) = server::logged_in(port, "holder");
+        let (mut b, id) = server::logged_in(port, "committer");
+        let records = records_of(&mut b, TABLE);
+        prepare(&mut a, &mut b);
+        let staged = handle.upload_memory_in_use();
+        let answer = commit(&mut b, id, commit_list_of(table, &entries), txn);
+        assert!(answer.is_err(), "{what}: answered {answer:02x?}");
+        assert_eq!(handle.upload_memory_in_use(), staged, "{what}: staging");
+        // Nothing changed, read over a new connection and from disk.
+        let (mut reader, _) = server::logged_in(port, "reader");
+        assert_eq!(records_of(&mut reader, TABLE), records, "{what}");
+        assert_eq!(std::fs::read(&copy.0).unwrap(), before, "{what}");
+    }
+}
+
+/// A continuation whose cursor the connection does not hold answers as its
+/// request does. A part of an op86 program with a cursor never issued is
+/// not run and fails (Notes is still there), where a continuation of
+/// results with one gets the empty last page FileMaker Server's code
+/// gives. The last part of an upload completed in two parts, sent again,
+/// is answered as its upload was: done for op13, op70 and op14 into the
+/// temporary area, with nothing done again (the record stored once, the
+/// staged records and their charge as after the first); op88's member and
+/// a program's results are not answered twice, and fail; and a part of
+/// op13 with a cursor never issued fails.
+#[test]
+fn a_continuation_answers_as_its_request_does() {
+    use om_protocol::container;
+    let (writable, catalog) = tasks_for_writes("recalc-repeats", false);
+    let (port, handle) = server::start_with_handle(&writable, om_server::ScriptLimits::DEFAULT);
+    let (mut client, id) = server::logged_in(port, "repeater");
+    let never = Resume {
+        perform: 77,
+        cursor: 4242,
+        depth: -1,
+        copy_key: Vec::new(),
+    };
+    let query = |client: &mut Session, program: &[u8], resume: Resume| {
+        let txn = om_protocol::build_query(&om_protocol::QueryRequest {
+            transaction_id: 1,
+            file_id: id,
+            program,
+            resume,
+        });
+        client
+            .perform_with_max(&txn, om_protocol::QUERY_MAX_RETURN)
+            .map(|reply| om_protocol::parse_query_reply(&reply).unwrap())
+            .map_err(|e| e.to_string())
+    };
+    let notes = || [uint_segment(fixture::NOTES)];
+    let program = delete_notes_program(&client, id);
+    let (program_first, program_rest) = program.split_at(program.len() / 2);
+
+    // op86: the second half of a DeleteTable program, a cursor never issued.
+    assert!(query(&mut client, program_rest, never.clone()).is_err());
+    assert_ne!(
+        read_back(&mut client, &notes()).0,
+        om_protocol::NodeState::Missing
+    );
+    // A continuation of results with a cursor never issued.
+    let results = query(
+        &mut client,
+        &[],
+        Resume {
+            depth: 0,
+            ..never.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (results.slots.len(), results.resume),
+        (0, Resume::complete())
+    );
+
+    // op13 in two parts, then its last part again.
+    let whole = catalog.to_wire().unwrap();
+    let (first, rest) = whole.split_at(whole.len() / 2);
+    let to_catalog = |payload: &[u8], resume: Resume| Upload {
+        payload: payload.to_vec(),
+        resume,
+        terminal: Vec::new(),
+        flags: write::UPLOAD_NODE,
+        dest: vec![uint_segment(TABLE), vec![3]],
+    };
+    let reply = client
+        .perform(&write::build_upload_to_host(
+            1,
+            id,
+            &to_catalog(first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_upload_to_host(2, id, &to_catalog(rest, resume));
+    let done = client.perform(&last).unwrap();
+    assert_eq!(
+        client.perform(&last).unwrap(),
+        done,
+        "op13's last part again"
+    );
+    assert!(client
+        .perform(&write::build_upload_to_host(
+            3,
+            id,
+            &to_catalog(rest, never.clone())
+        ))
+        .is_err());
+
+    // op70 of 40 entries in two parts, record 1 staged, then its last part
+    // again.
+    lock_record_1(&mut client);
+    let t = uint_segment(TABLE);
+    client
+        .upload_records(&t, vec![staged_record(1, "Twice", Vec::new())])
+        .unwrap();
+    let entries: Vec<Entry> = (1..=40).map(Entry::Edit).collect();
+    let list = commit_list_of(&t, &entries);
+    let (list_first, list_rest) = list.split_at(list.len() / 2);
+    let part = |list: &[u8], resume: Resume| write::Commit {
+        list: list.to_vec(),
+        resume,
+        flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+        txn: 0x31,
+    };
+    let reply = client
+        .perform(&write::build_commit(
+            4,
+            id,
+            &part(list_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_commit(5, id, &part(list_rest, resume));
+    let done = client.perform(&last).unwrap();
+    assert_eq!(name_of_record_1(&mut client).as_deref(), Some("Twice"));
+    let held = handle.upload_memory_in_use();
+    assert_eq!(
+        client.perform(&last).unwrap(),
+        done,
+        "op70's last part again"
+    );
+    assert_eq!(handle.upload_memory_in_use(), held);
+
+    // op14 of 60 records into the temporary area in two parts, then its
+    // last part again.
+    let records: Vec<OwnedNode> = (1..=60)
+        .map(|n| staged_record(n, "Staged", Vec::new()))
+        .collect();
+    let staged = OwnedNode::list(Vec::new(), records).to_wire().unwrap();
+    let (staged_first, staged_rest) = staged.split_at(staged.len() / 2);
+    let to_temp = |payload: &[u8], resume: Resume| Upload {
+        payload: payload.to_vec(),
+        resume,
+        terminal: Vec::new(),
+        flags: write::UPLOAD_FLAGS,
+        dest: vec![uint_segment(TABLE), vec![5]],
+    };
+    let reply = client
+        .perform(&write::build_upload(
+            6,
+            id,
+            &to_temp(staged_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_upload(7, id, &to_temp(staged_rest, resume));
+    let done = client.perform(&last).unwrap();
+    let held = handle.upload_memory_in_use();
+    assert_eq!(
+        client.perform(&last).unwrap(),
+        done,
+        "op14's last part again"
+    );
+    assert_eq!(handle.upload_memory_in_use(), held);
+
+    // op88 in two parts, then its last part again.
+    let binary = binary_payload(&[7; 4096]);
+    let (binary_first, binary_rest) = binary.split_at(binary.len() / 2);
+    let binary_part = |payload: &[u8], resume: Resume| container::UploadBinary {
+        payload: payload.to_vec(),
+        resume,
+        table: vec![uint_segment(TABLE)],
+        field: vec![uint_segment(fixture::PHOTO)],
+        solved_path: String::new(),
+        reserved: [0; 16],
+    };
+    let reply = client
+        .perform(&container::build_upload_binary(
+            8,
+            id,
+            &binary_part(binary_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = container::parse_upload_binary_reply(&reply).unwrap().resume;
+    assert!(resume.has_more(), "op88's first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = container::build_upload_binary(9, id, &binary_part(binary_rest, resume));
+    let stored = container::parse_upload_binary_reply(&client.perform(&last).unwrap()).unwrap();
+    assert_eq!((stored.status, stored.member.len()), (0, 1));
+    assert!(client.perform(&last).is_err(), "op88's last part again");
+
+    // op86 in two parts, which deletes Notes, then its last part again.
+    let started = query(&mut client, program_first, Resume::start()).unwrap();
+    assert!(started.resume.has_more());
+    let resume = Resume {
+        depth: -1,
+        ..started.resume
+    };
+    query(&mut client, program_rest, resume.clone()).unwrap();
+    assert_eq!(
+        read_back(&mut client, &notes()).0,
+        om_protocol::NodeState::Missing
+    );
+    assert!(query(&mut client, program_rest, resume).is_err());
+}
+
+/// op73 names one table (`[T]`, schema-path.md 3.6): for any other path it
+/// fails, and the table's work stays listed; for the table it is done.
+#[test]
+fn a_table_update_for_a_path_that_is_no_table_fails() {
+    let (writable, _) = tasks_tree_for_writes("recalc-op73-paths", false);
+    let (mut client, id) = server::logged_in(server::start(&writable), "updater");
+    let dest = deferred_path();
+    let dest: Vec<&[u8]> = dest.iter().map(Vec::as_slice).collect();
+    client.upload_to_host(&dest, &count_work()).unwrap();
+    assert!(count_work_listed(&mut client));
+    for path in [Vec::new(), vec![uint_segment(TABLE), vec![3]]] {
+        let answer = client.perform(&schema::build_update_table(7, id, &path));
+        assert!(answer.is_err(), "{path:02x?}: {answer:02x?}");
+        assert!(count_work_listed(&mut client), "{path:02x?}");
+    }
+    client
+        .perform(&schema::build_update_table(
+            8,
+            id,
+            &vec![uint_segment(TABLE)],
+        ))
+        .unwrap();
+    assert!(!count_work_listed(&mut client));
+}
+
 /// A later part of an upload, refused because its file became read-only
 /// since its first part (op13 into the file, op70's list, op88's
 /// container data), ends the upload it belongs to: the parts held and what

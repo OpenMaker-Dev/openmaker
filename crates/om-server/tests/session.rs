@@ -322,8 +322,10 @@ fn holds_uploads_only_for_requests_that_may_run() {
             reply.resume
         })
         .collect();
-    // The least recently used was evicted: continuing it fails, where a
-    // cursor never issued gets the empty last page.
+    // The least recently used was evicted: continuing it fails. A part of
+    // a program with a cursor never issued fails too (the program cannot be
+    // run, and may write), where a continuation of results with one gets
+    // the empty last page.
     let closing = [0x40];
     assert!(query(&mut session, file_id, &closing, &started[0]).is_err());
     let never = Resume {
@@ -331,7 +333,9 @@ fn holds_uploads_only_for_requests_that_may_run() {
         cursor: 2,
         ..Resume::start()
     };
-    let reply = query(&mut session, file_id, &closing, &never).unwrap();
+    assert!(query(&mut session, file_id, &closing, &never).is_err());
+    let never_results = Resume { depth: 0, ..never };
+    let reply = query(&mut session, file_id, &[], &never_results).unwrap();
     assert_eq!((reply.slots.len(), reply.resume), (0, Resume::complete()));
     // Another operation cannot continue a cursor; its own finishes it.
     let reply = key_list(&mut session, file_id, &[&[2]], &[], &started[1]).unwrap();
