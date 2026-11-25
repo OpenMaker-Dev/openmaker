@@ -765,12 +765,14 @@ mod tests {
     const CLIENT: u32 = 0x77;
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
-        let engine = crate::engine::FileEngine::default();
-        // Every read answered through both views (`engine::copies`, in
-        // debug builds only).
+        let engine = crate::engine::Engine::default();
+        // Every read answered through both views (`engine::copies`) and
+        // every write checked (`engine::checking`), in debug builds only.
         #[cfg(debug_assertions)]
-        engine.check_reads();
-        engine.check_writes();
+        {
+            engine.check_reads();
+            engine.check_writes();
+        }
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),
@@ -1177,8 +1179,7 @@ mod tests {
         fixture::add_photo(&mut root);
         let file = TempFile::from_tree("refused-container", &root);
         let shared = shared(&file);
-        shared
-            .engine
+        crate::engine::Engine::as_ref(&shared.engine)
             .hold_read_only(&hosted(&shared), crate::store::ReadOnlyCause::DeferredWork);
         let mut host = session(&shared);
         host.go_to_record(om_scripts::runtime::RecordMove::First, false)

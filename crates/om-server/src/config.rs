@@ -1,6 +1,6 @@
 //! What a server hosts and how it identifies itself.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use om_calc::eval::CalcLimits;
@@ -235,6 +235,116 @@ pub const SCRIPT_CALC_LIMITS: CalcLimits = CalcLimits {
     ..CalcLimits::DEFAULT
 };
 
+/// The engine a server runs for all its files (docs/server-storage.md 5,
+/// 11; `--engine`): the file engine, each file one `.fmp12` loaded whole,
+/// or the store engine, each file a tree in the store folder's page file,
+/// imported from its `.fmp12` when the server starts and hosted read-only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum EngineSettings {
+    #[default]
+    File,
+    Store {
+        /// The store folder (`--store-dir`).
+        dir: PathBuf,
+        /// The page cache's size in bytes (`--store-cache-mib`).
+        cache_bytes: u64,
+        /// The database folders the store folder must not overlap
+        /// ([`check_store_folder`]).
+        database_folders: Vec<PathBuf>,
+    },
+}
+
+/// The store folder the server uses for `store` (`--store-dir`,
+/// docs/server-storage.md 11): its parent, which must exist, resolved
+/// (`canonicalize`, links in it followed), and its last name, which must be
+/// a plain one (a trailing separator is dropped). The server makes at most
+/// that one folder. Refused, with what to do, when the parent does not
+/// exist or is not a folder, when the last name is not plain, when the
+/// folder exists and is not a folder (a link, a file), and when it is a
+/// database folder, is inside one or holds one, compared resolved (the
+/// store's files would be searched as hosted files, or a hosted file's
+/// folder written in). Who may reach the folder the engine checks on the
+/// directory it opens (`engine::StoreFolder::open_dir`), which calls this
+/// too.
+pub fn check_store_folder(store: &Path, database_folders: &[PathBuf]) -> Result<PathBuf, String> {
+    let shown = store.display();
+    let absolute = std::path::absolute(store).map_err(|e| format!("--store-dir {shown}: {e}"))?;
+    let mut components = absolute.components();
+    let name = match components.next_back() {
+        Some(std::path::Component::Normal(name)) => name.to_owned(),
+        _ => {
+            return Err(format!(
+                "--store-dir {shown} does not end in a folder's name: name the store folder \
+                 itself"
+            ))
+        }
+    };
+    let parent = components.as_path();
+    let parent = match std::fs::canonicalize(parent) {
+        Ok(parent) if parent.is_dir() => parent,
+        Ok(_) => {
+            return Err(format!(
+                "--store-dir {shown}: {} is not a folder: give the store folder a parent folder",
+                parent.display()
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "--store-dir {shown}: its parent folder {} does not exist: make it first (the \
+                 server makes the store folder only)",
+                parent.display()
+            ))
+        }
+        Err(e) => return Err(format!("--store-dir {shown}: {}: {e}", parent.display())),
+    };
+    let store_at = parent.join(name);
+    for folder in database_folders {
+        let folder_at = resolved(folder);
+        let relation = if store_at == folder_at {
+            "is"
+        } else if store_at.starts_with(&folder_at) {
+            "is inside"
+        } else if folder_at.starts_with(&store_at) {
+            "holds"
+        } else {
+            continue;
+        };
+        return Err(format!(
+            "--store-dir {} {relation} the database folder {}: give the store a folder of its \
+             own, outside every database folder",
+            store_at.display(),
+            folder_at.display()
+        ));
+    }
+    if std::fs::symlink_metadata(&store_at).is_ok_and(|metadata| !metadata.is_dir()) {
+        return Err(format!(
+            "--store-dir {} is not a folder: give it a new or empty folder",
+            store_at.display()
+        ));
+    }
+    Ok(store_at)
+}
+
+/// `path` made absolute against the current folder, resolved as far as it
+/// exists, the rest appended as given.
+fn resolved(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut rest = Vec::new();
+    let mut at = absolute.clone();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&at) {
+            return rest.iter().rev().fold(real, |path, name| path.join(name));
+        }
+        match (at.file_name().map(ToOwned::to_owned), at.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                at = parent.to_path_buf();
+            }
+            _ => return absolute,
+        }
+    }
+}
+
 /// Everything a server needs to start. Its limits and script schedules are
 /// given to the [`crate::Server`] it starts (`with_script_limits`,
 /// `with_connection_limits`, `with_schedules`). Logins are checked against
@@ -253,4 +363,63 @@ pub struct ServerConfig {
     /// `record`), for protocol analysis. The recordings hold client license
     /// keys and obscured credentials; keep them out of version control.
     pub record_dir: Option<PathBuf>,
+}
+
+#[cfg(test)]
+mod store_folder_tests {
+    use super::check_store_folder;
+
+    /// docs/server-storage.md 11: a store folder that is a database folder,
+    /// is inside one or holds one is refused, also named relative to the
+    /// current folder (a new `Store` under `.`) or through `..`; so is one
+    /// whose parent does not exist, with nothing made; a folder of its own
+    /// is taken, by its parent resolved and its own name.
+    #[test]
+    fn a_store_folder_that_is_not_the_stores_own_is_refused() {
+        let base = std::env::temp_dir().join(format!(
+            "om-store-folder-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let databases = base.join("Databases");
+        std::fs::create_dir_all(databases.join("sub")).unwrap();
+        let folders = [databases.clone()];
+        for store in [
+            databases.clone(),
+            databases.join("Store"),
+            base.clone(),
+            databases.join("sub/../Store"),
+        ] {
+            let refused = check_store_folder(&store, &folders);
+            assert!(refused.is_err(), "{store:?}");
+        }
+        // A parent that does not exist: refused, and nothing is made,
+        // through `..` into the database folder too.
+        for store in [
+            base.join("new-parent/../Databases/Store"),
+            base.join("existing-not/new-parent/Store"),
+        ] {
+            let refused = check_store_folder(&store, &folders);
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|why| why.contains("make it first")),
+                "{store:?}: {refused:?}"
+            );
+        }
+        assert!(!base.join("new-parent").exists());
+        assert!(!base.join("existing-not").exists());
+        let own = base.join("Store/");
+        assert_eq!(check_store_folder(&own, &folders), Ok(base.join("Store")));
+        // Relative to the current folder: `--database-folder .` and a
+        // `--store-dir Store` that does not exist yet.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = [std::path::PathBuf::from(".")];
+        let new = std::path::Path::new("om-store-folder-not-made");
+        assert!(check_store_folder(new, &relative).is_err());
+        assert!(check_store_folder(&cwd.join(new), &relative).is_err());
+        assert!(check_store_folder(std::path::Path::new(".."), &[]).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

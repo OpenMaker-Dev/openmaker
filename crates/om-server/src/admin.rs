@@ -740,6 +740,17 @@ impl ServerHandle {
             .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
     }
 
+    /// How many reads the server answered a third time through a store
+    /// copy and compared, and how many it did not, by why: for a test that
+    /// claims its reads were compared on the store engine's view. None
+    /// when the server does not check reads (`Server::checking_reads`).
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn store_comparisons(&self) -> Option<crate::engine::Compared> {
+        self.shared.engine.store_comparisons()
+    }
+
     /// The bytes clients' uploads hold now (parts of uploads in progress,
     /// staged records), on the whole server: for tests that a refusal
     /// leaves what it should. Only in debug builds.
@@ -766,8 +777,8 @@ impl ServerHandle {
         else {
             return false;
         };
-        self.shared
-            .engine
+        // The store engine's files are read-only already.
+        crate::engine::Engine::as_ref(&self.shared.engine)
             .hold_read_only(&hosted, crate::store::ReadOnlyCause::DeferredWork);
         true
     }

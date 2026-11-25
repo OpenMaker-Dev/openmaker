@@ -184,20 +184,17 @@
 mod checking;
 #[cfg(debug_assertions)]
 mod copies;
+#[cfg(debug_assertions)]
+pub use copies::Compared;
 pub(crate) mod export;
 mod file;
 mod overlay;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the store engine's first code (docs/server-storage.md 5): no file is hosted on it yet"
-    )
-)]
 pub(crate) mod paged;
 mod reading;
+mod running;
 mod schema;
 mod state;
+pub(crate) mod store;
 mod transaction;
 mod view;
 
@@ -231,6 +228,8 @@ pub(crate) use export::{Destination, ExportError, OnDisk, Progress, Source};
 pub(crate) use file::FileEngine;
 pub(crate) use overlay::{Cover, Overlay};
 pub(crate) use reading::{assert_no_reading_held, Read, Waiting};
+pub(crate) use running::{AsEngine, Engine, EngineRef};
+pub(crate) use store::{StoreEngine, StoreFile, StoreFolder};
 #[cfg(test)]
 pub(crate) use transaction::written;
 pub(crate) use transaction::{Hold, Locks, Transaction};
