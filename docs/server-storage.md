@@ -182,20 +182,134 @@ only to read (`store::SavedFile`). The exceptions:
   the engine's saves. Nothing outside the engine's saves writes through
   either.
 
-Views, `export`, `import` and `capabilities` are not built, and nor are
-the failed-save fixes at the end of this section.
+Views are built, with the file engine's behind them, and the first
+readers read through them: downloads (op90, op15, op92) and finds (op86).
+The other readers still hold the store; "Moving the other readers" below
+is the plan for them. `export`, `import` and `capabilities` are not built,
+and nor are the failed-save fixes at the end of this section.
 
-**Views.** A view is one fixed version of one file's tree. It answers a
-node's kind and value, its children in key order from a given segment in
-either direction, and a depth-first walk of a subtree. Nothing a view
-returned changes later. `om_query::Source`, the download encoder
-(`om_hbam::Node::to_wire`), the calculation and script hosts and the
-`.fmp12` writer read through views. A view is cheap to take. On the store
-engine it never waits for a writer; on the file engine it holds the file's
-read lock, as readers do today. Downloads (op90) are plain reads of a view
-in both engines. That they take no lock, where FileMaker Server takes a
-read lock that waits (schema-path.md 4.5), is how OpenMaker Server works
-today and is not part of this design.
+**Views.** A view (`engine::View`) is one fixed version of one file's
+tree. Nothing a view returned changes later. It answers:
+
+- `node(path)`: one node without what is below it (`engine::Head`):
+  whether it opens a list (it was written as a push, or it has children)
+  and its own value. A node that opens a list and holds a value is both
+  (section 4);
+- `subtree(path, limit)`: a node and everything below it, as an owned
+  tree's form, refused (`ReadError::TooLarge`) when it would take more
+  than the limit its caller states, counted as `om_hbam::tree::memory`
+  counts an owned tree. `NO_LIMIT` says that the caller holds it whole
+  whatever its size;
+- `children_page` and `subtrees_page`: up to a number of the children of
+  a node, each alone or with its subtree, in key order or against it,
+  from a segment included or excluded (or from the first or the last),
+  and whether more may follow. A view may give fewer than asked;
+- `walk_page`: up to a number of the nodes of a depth-first walk of a
+  subtree, each with its depth below the walk's own node (`Step`), from
+  the start or after the node a page ended with, and that node's path
+  when more may follow;
+- `version()`, and `changed_since(path, version)`: whether anything at or
+  below the path changed after that version, never false when something
+  did.
+
+Readers use the iterators `children`, `subtrees` and `walk` (on
+`dyn View`), which ask the view for the next page when they reach the end
+of one: a call through the trait per page of 256, not per node, and no
+reader holds more of a list than a page. Every read returns a `Result`.
+`ReadError::Unreadable` names a part of the version the engine could not
+read (section 6.12); the file engine never answers it.
+
+What a read returns borrows the view (`Cow<'v, _>` for `&'v self`): it
+never outlives the view, and a reader that keeps something past the view
+copies it. The file engine lends its tree, so it copies nothing a reader
+does not ask to own; an engine that reads pages gives owned values and
+holds a page only while a call reads it, never for as long as the view
+lives.
+
+A reader takes a reading of a file (`FileEngine::read(file) ->
+engine::Reading`), which holds one version for as long as the reader
+keeps it, and reads through `engine::Read`: the view, the state derived
+from it (below), what reads leave waiting for a write (`engine::Waiting`:
+the member keys GenerateMemberKey issued and the indexes finds built on
+demand, which the file engine takes into a draft, module doc of `engine`,
+"Drafts"), and whether the file is hosted read-only. On the file engine
+the view (`engine::FileView`, over `engine::TreeView`) holds the store's
+read lock, as `Hosted::read_store` did, so a reading costs what that lock
+costs and lends the store's own tree. Its version counts the times the
+store was taken for writing, and it answers `changed_since` for the whole
+file. On the store engine a view will never wait for a writer. Downloads
+(op90) are plain reads of a view in both engines. That they take no
+lock, where FileMaker Server takes a read lock that waits (schema-path.md
+4.5), is how OpenMaker Server works today and is not part of this design.
+
+The readers that read through views:
+
+- op90 and op15 (`connection::downloaded`). A list no privilege filter
+  applies to is written in the wire form as the view walks it
+  (`engine::wire`, `om_hbam::tree::WireWriter`, which gives the bytes
+  `Node::to_wire` gives), never held as a tree. A node a filter applies to
+  (an account's view limits, `views::ViewFilter`; a restricted account's
+  own account member) is copied whole, filtered and written, as every
+  download was before. A key that holds a value is answered with it;
+- op92 (`connection::selected`): the parent's own node, and each key of
+  the list looked up and copied whole. A key no larger than one before it
+  in the list is passed over, so that a list out of order or repeating a
+  key selects what walking it beside the children did before;
+- op86 (`connection::run_query`, `QuerySource`): `om_query::Source` over
+  a read. Its catalog is the derived state's; a node is the view's
+  subtree, filtered as before; an index built on demand reads each record
+  as the view lists it (`derived::index_on_demand`); GenerateMemberKey
+  reads the catalog's index nodes (`derived::generate_member_key`).
+  `Source` gained `record_ids`, a table's record list read entry by entry
+  (`[T, 0d]`); its default, which the other sources (`HbamFile`, the
+  store's own for server scripts) keep, decodes `Source::node`'s node. What `om-query` still asks of `Source::node`
+  whole: a field's index (`Indexes::load`: `Index` finds keys by position,
+  checks their order once and reads entries by position, so it needs the
+  entries at hand), a record's cell (`Indexes::stored_text`), the node
+  NodeExists and GetKey name, of which only its own value is read
+  (`exec::file_node`), and each node on the destination of
+  UploadMultiple, which is measured whole as the program's work
+  (`exec::upload_multiple`). The view filter evaluates a view limit on
+  the record as stored (`ViewFilter::viewable`, a record whole).
+
+Every subtree these readers ask for whole is asked for with `NO_LIMIT`:
+each was read whole and without a limit before, and a limit would refuse
+what was served.
+
+A read that fails reaches the client as an error, never as a reply that
+looks whole. A download (op90, op15, op92) is answered with the CORBA
+system exception `PERSIST_STORE`: its reply has no field for it, since its
+lock error is reported apart from its data, and a missing node tells the
+client the key does not exist. A find fails as a program that cannot read
+the file fails (`om_query::QueryError::File`, the error slot's code
+`ffff`). The read is logged as an error. Both are OpenMaker's choice; what
+FileMaker Server answers when it cannot read its file is unmeasured.
+
+These readers hold the store's read lock as long as they did, with two
+differences, both shorter and both within one hold, so each still reads
+one version: a download no filter applies to is written in the wire form
+under the lock, where its subtree was copied under it and written after
+it, and op92 looks up each key it was asked for, where it walked every
+child of the parent. A find's check before it runs of whether the file
+is hosted read-only (for a program that changes the file), and its
+question afterwards of whether it left work waiting, each take a reading
+of their own, as each took the store before.
+
+A second view, for tests only (`engine::copies`, debug builds), shows
+that readers do not lean on the file engine's: it serves the same tree but
+hands out every node as an owned copy, gives children and walks three at
+a time, and fails every read that reaches a path it was told to fail (the
+node at the path and everything below it, as a damaged page fails the
+reads that reach it). A server switched to it (`Server::checking_reads`)
+answers each download and find through the file engine's view and then
+through this one, from the same version, and panics when the replies
+differ; it computes its derived state through this view and checks it
+against the file engine's. The servers of `om-server`'s end-to-end tests
+(`tests/fixtures/server.rs`) and of `om-provider`'s tests of a hosted
+file, its finds, its privileges and related files are switched to it. A
+read it was told to fail (`ServerHandle::failing_reads`) is answered
+through it alone, so that a test sees what the client gets
+(`tests/indexes.rs`, `a_failed_read_reaches_the_client_as_an_error`).
 
 **Write operations.** Every change the server makes is a value of one
 type, a write operation (`engine::Operation`):
@@ -420,13 +534,41 @@ capabilities()          -> clones, history, replication, point-in-time restore
 
 `submit` is `engine::FileEngine::submit(file, operation) -> Outcome`; the
 caller encodes the reply and delivers the notices only after it returns.
-There is no engine trait while there is one engine. The other names are
-settled when they are built. A feature that needs a capability the running
+`view` is `engine::FileEngine::read(file) -> Reading`, above. There is no
+engine trait while there is one engine. The other names are settled when
+they are built. A feature that needs a capability the running
 engine lacks answers a typed "unavailable".
 
-**Derived state.** The decoded catalog, the accounts and the
-verified-index marks are computed from a view and cached by the version
-they were computed from. They are not part of an engine.
+**Derived state.** What readers need of a file besides its tree is one
+value, `derived::Derived`: the decoded catalog, the file's locale and the
+order of its stored dates, and two facts not in the tree that compiling
+its calculations needs, the file's name and whether it is served to a
+desktop client. It is computed from a view (`Derived::new`,
+`derived::read_catalog`) and carries the version it was computed from. It
+is not part of an engine; an engine decides when to compute it. The file
+engine computes it when it loads a file and reads the catalog again after
+each change of the schema, at the moments the store always read its
+catalog again (`Store::reread_catalog`); the locale and the date order
+stay those the file was loaded with, as before. Every reading shares the
+store's current value (`Arc`). An engine with versions keeps it by
+version, and gives it to a later view when `changed_since` says no path it
+was computed from changed.
+
+The reads of a file through a view and derived state are functions beside
+it (`derived`): the catalogs, an index built on demand
+(`index_on_demand`, `written_form`, `index_entries`), the next member key
+of a catalog (`generate_member_key`, `member_key_refusal`), and the inputs
+of a calculation and a privilege set's record limit (`with_calc_inputs`,
+`record_limit`). The store's own work calls them with a view of its tree,
+so readers and operations share one implementation.
+
+Still kept by the store, outside derived state: the accounts
+(`hosting::Accounts`, decoded again at each schema generation), the basis
+of stored calculations (`Store::basis`, below), the verified-index marks
+(`Store::verified`), the schema generation (`Store::schema_generation`,
+which the accounts and server scripts cache by), the file's language as
+its locale record is now (`Store::file_language`), and the read-only flag
+and the file's identity on disk.
 
 The basis of stored calculations is not computed from the current view. It
 is what the stored values were last computed with, per table and field:
@@ -444,6 +586,86 @@ basis already holds what op13 changed. Deferred work names a formula change
 is named by nothing, and a server that stops between op13 and op73 never
 computes it
 ([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)).
+
+**Moving the other readers.** The readers below still hold the store
+(`Hosted::read_store`, or `Transaction::view() -> &Store` inside `run`).
+Each is listed with the `Store` helpers it reads through, what it reads
+(one node, a list a node's children make, or a subtree whole), and what it
+needs that views and derived state do not give yet. They move in this
+order, the smaller first, each with the test view's runs of its tests:
+
+1. Logins and the accounts cache. `hosting::Accounts::of` (accounts
+   decoded from `[23, 1, 5]` at each schema generation,
+   `hosting::file_accounts`), `security::catalog` (the security catalog
+   `[23]` whole), `local.rs`'s `LocalHost::suggested_account` and
+   `stored_login`, and `Hosted::verify_password` through the cache. Each
+   account is read whole, one child of `[23, 1, 5]` at a time (a
+   `subtrees` listing). Needs: the accounts in derived state, recomputed
+   when the access paths change, which on the file engine is when the
+   schema generation moves (`StoreWriteGuard`'s drop decodes them today).
+2. The connection's other reads. `connection::container_library_writable`
+   (`Store::catalog`), op96's view filter (`connection::thumbnail`, which
+   reads through `Store::with_read`, a read over the held store) and
+   `containers::thumbnail` (`Store::library_member`, `Store::member_data`:
+   one library member whole, `[T, 1f, 05, M]` or the file's own). Needs:
+   nothing new; the thumbnail cache keyed by the version the member was
+   read at.
+3. Server scripts and their host (`scripts/host.rs` and `scripts/host/`).
+   `Schema::load` and `refresh_schema` (`Store::catalog`, `locale`,
+   `file_language`, `schema_generation`, and the design catalogs `[3]`,
+   `[4]`, `[16]`, `[17]` whole, `design::design_catalogs`): derived state
+   plus a calculation schema, which should join it, cached by version.
+   `committed_records` (`[T, 0d]` decoded, else `[T, 05]` listed), and
+   `with_record_view` and `committed_node` (one record whole).
+   `field_holds` and `value_held_elsewhere` (`Store::value_keys`, then one
+   entry of a value index by key: `children` from that key). `global_value`
+   (`[T, 08, F]` whole). `query_store` (`om_query::Source for Store` and
+   `Store::has_indexes_on_demand`): the find path's source over a read, as
+   op86 has now. `query` (`Store::scratch`: a store holding the
+   transaction's records alone): needs a view that lays a script's
+   uncommitted records over a version, which no view gives yet.
+   `design::next_serial_value` (`Store::serial_value`'s node, one node),
+   `containers.rs`' `value`, `data` and `pending_tokens`
+   (`Store::container`, `member_data`: a library member whole), `get.rs`'
+   `privilege_set` (the security catalog's set `[23, 2, 5, P]` whole),
+   `related.rs`' `index_lookup` (an index entry by key). Needs: the
+   overlay view, the calculation schema in derived state, and the script
+   session's cache keyed by a design version rather than the store's
+   schema generation.
+4. Backups and exports. `backups::open_source` reads the store only for
+   the saved file it copies (`Store::saved_file`), and `LocalHost`'s
+   `prepare_copy` the same. Needs: `export(view, writer)`, a walk of a
+   whole version into an `.fmp12` (`om_hbam::writer` builds a file from a
+   whole tree today), so that a backup is taken from a view rather than
+   from the file the last save wrote.
+5. Admin commands and the hosting state. `Hosted::is_read_only`,
+   `Hosted::saved_file` (`Store::file`), `finish_close_if_drained` and
+   `hosting::hosted_as` read the store's flags and the file's identity on
+   disk, not its tree. Needs: those as the engine's state of a file, beside
+   its views; nothing of the view.
+6. The operations' own reads inside `engine::run`, through
+   `Transaction::view() -> &Store` and the transaction's delegates
+   (`has_table`, `has_record`, `last_record_id`, `node`): a commit's
+   records (one record whole each, `writes::commit`, with
+   `Store::record_limit` and `views::hidden_fields`), op71's and op72's
+   counters (one node), op13's and op86's refusals (`put_refusals` over
+   the tree: each node on a path, and a chunked value whole), op73's
+   recalculation (every record of a table, listed with each record whole,
+   and the basis), the stored indexes' upkeep (`Store::index_agrees`,
+   `reindex_plan`: index entries by key, and whole indexes for a check),
+   op87's and op88's library members, op240's catalog members and their
+   indexes (`authoring::edit`: one member whole, a catalog's index), and
+   the account edits (`[23, 1, 5]` listed, one account whole). Needs: a
+   transaction that is a view plus put, delete and replace-subtree, which
+   reads its own writes; the basis of stored calculations and the
+   verified-index marks in derived state, by version; and `om-query`'s
+   `Index` over a seekable listing instead of a whole index, which the
+   finds above need too before an engine with pages serves them.
+
+For finds, what `om-query` still asks whole (see "Views") moves with the
+store engine: a `Source` method for the head NodeExists and GetKey read,
+a measure of a subtree for UploadMultiple's work without holding it, and
+an index read by key and position over `children` listings.
 
 **The file engine behind it.** `FileEngine::submit` takes what each request
 took before the interface: the store's write lock for op70, op71, op72,

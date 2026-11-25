@@ -87,7 +87,13 @@ fn bind_files(files: &[(&str, &TempFile)]) -> Server {
         record_dir: None,
     };
     let identity = Identity::self_signed(vec!["localhost".into()]).unwrap();
-    Server::bind("127.0.0.1:0", config, identity).unwrap()
+    let server = Server::bind("127.0.0.1:0", config, identity).unwrap();
+    // Every download and find is answered through the test view too, and
+    // checked against the file engine's view (docs/server-storage.md 5,
+    // "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
+    server
 }
 
 /// Serve `server` on its own thread.

@@ -24,34 +24,36 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
 use log::{error, info, warn};
 use om_calc::Locale;
-use om_collate::{DateOrder, NumberFormat};
+use om_collate::DateOrder;
 use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
-use om_hbam::catalog::keys as catalog_keys;
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::writer::{
     holds_value, put_refusals, unwritable, unwritable_in_tree, value_on_path, Unwritable,
 };
-use om_hbam::{
-    serial, Catalog, Cell, DataType, FieldKind, HbamFile, KeyTree, OwnedNode, RidList, SlotReader,
-};
-use om_query::keys::{record_value_entries, value_keys, word_entries, Reading, TextKeys};
+use om_hbam::{serial, Catalog, DataType, HbamFile, KeyTree, OwnedNode, RidList};
+use om_query::keys::{record_value_entries, word_entries, Reading, TextKeys};
 use om_query::Write;
 
 use om_data::containers::{self, MemberInfo};
 
 use crate::anchored::{FileAt, FileId, Folder};
+use crate::derived::{
+    self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
+    LOCALE,
+};
+use crate::engine::{Read, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
 use crate::recalc::{self, TableBasis};
 
 /// Keys under a base table `T` (query-program.md 7.1, write-path.md 5).
-mod keys {
+pub(crate) mod keys {
     pub const LAST_RECORD_ID: u8 = 0x00;
     pub const INDEXES: u8 = 0x01;
     pub const FIELDS: u8 = 0x03;
@@ -111,32 +113,6 @@ mod deferred {
 const VALUE_INDEX_OPTION: u32 = 0x8000_0000;
 const WORD_INDEX_OPTION: u32 = 0x2000_0000;
 
-/// The counts leaf of an index: `10` for the value index, `11` for the word
-/// index (write-path.md 5.5).
-fn counts_key(index: u8) -> u8 {
-    if index == keys::VALUE_INDEX {
-        keys::VALUE_COUNTS
-    } else {
-        keys::WORD_COUNTS
-    }
-}
-
-/// The English text form (query-program.md 7.2): how this server reads an
-/// index whose language has no form in OpenMaker yet (the tailored
-/// languages, #1279), for a find or a lookup, and the form date-order
-/// detection compares under. It writes no key in it for such a language
-/// (#159).
-const ENGLISH: TextKeys = TextKeys::Collated;
-
-/// A catalog's index `[C, 01]` and, in it, the last issued member id
-/// (schema-path.md 5.1).
-const CATALOG_INDEX: u8 = 0x01;
-const LAST_MEMBER_ID: u8 = 0x00;
-
-/// The file's locale record `[2, 0d]` (file-metadata.md 2), decoded with
-/// the shared decoder every host uses.
-const LOCALE: [&[u8]; 2] = [&[2], &[0x0d]];
-
 /// `node` as a key tree [`om_hbam::Node`] borrowing its keys and values:
 /// what decoders that read a `Node` take (`Script::decode`, the security
 /// catalog's). It takes a place for each node and nothing for keys or
@@ -155,13 +131,17 @@ pub(crate) fn view(node: &OwnedNode) -> om_hbam::Node<'_> {
 /// A hosted file's key tree and schema.
 pub struct Store {
     root: OwnedNode,
-    catalog: Catalog,
+    /// The version of the tree: how many times the store was taken for
+    /// writing (`engine::View::version`).
+    version: Version,
+    /// The state readers need besides the tree: the decoded catalog, the
+    /// locale and date order, the file's name and whether it is served to a
+    /// desktop ([`Derived`]): computed when the file is loaded, and the
+    /// catalog again after each change of the schema
+    /// ([`Store::reread_catalog`]).
+    derived: Arc<Derived>,
     /// The file's name, as calculations see it (`Get ( FileName )`).
     name: String,
-    /// The file's locale and formats (`[2, 0d]`), when it decodes.
-    locale: Option<Locale>,
-    /// The order of the parts of the file's stored dates (om-collate).
-    date_order: DateOrder,
     /// Per table, the field definitions its stored values were computed
     /// with ([`recalc`]); a table without one has every stored calculation
     /// recomputed by its next op73.
@@ -183,15 +163,14 @@ pub struct Store {
     /// what was read from the schema before a change is stale after it
     /// ([`Store::schema_generation`]).
     generation: u64,
-    /// The member ids and modification counts GenerateMemberKey issued per
-    /// catalog while the tree was shared for reading, until
+    /// What reads left waiting for a write ([`Waiting`]): the member ids
+    /// and modification counts GenerateMemberKey issued per catalog while
+    /// the tree was shared for reading, until
     /// [`Store::take_issued_member_keys`] takes them to be written into the
-    /// catalogs (schema-path.md 3.4).
-    issued: Mutex<IssuedKeys>,
-    /// The indexes (table, field, kind) queries built on demand while the
-    /// tree was shared for reading, until [`Store::take_indexes_on_demand`]
+    /// catalogs (schema-path.md 3.4), and the indexes (table, field, kind)
+    /// queries built on demand, until [`Store::take_indexes_on_demand`]
     /// takes them to be stored.
-    on_demand: Mutex<BTreeSet<IndexId>>,
+    waiting: Waiting,
     /// Whether each index a write checked holds the keys the current rules
     /// give its records ([`Store::index_agrees`]), at schema generation
     /// `verified.0`: a rollback or a schema change, which raise the
@@ -208,10 +187,6 @@ pub struct Store {
     /// The file may not be written: saves fail, their changes stay in
     /// memory ([`Store::set_read_only`]).
     read_only: bool,
-    /// Served privately to a desktop client ([`crate::LocalHost`]): its
-    /// calculations are FileMaker Pro's, which has the location functions
-    /// FileMaker Server's engine lacks (`om_data::host::device`).
-    desktop: bool,
 }
 
 /// An index: its table, field and kind (value 0, word 1).
@@ -232,9 +207,6 @@ impl SavedFile {
         std::os::unix::fs::FileExt::read_at(&self.0, buf, offset)
     }
 }
-
-/// Per catalog path: the last member id and modification count issued.
-type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
 
 /// A catalog path with the last member id and modification count
 /// GenerateMemberKey issued for it (schema-path.md 3.4).
@@ -371,19 +343,20 @@ impl Store {
     /// The file is served privately to a desktop client
     /// ([`crate::LocalHost`]): its calculations compile as FileMaker Pro's.
     pub(crate) fn serve_desktop(&mut self) {
-        self.desktop = true;
+        Arc::make_mut(&mut self.derived).serve_desktop();
     }
 
     /// Load every key of `file` into memory.
     pub fn load(file: &HbamFile, name: &str) -> om_hbam::Result<Self> {
         let root = file.key_tree()?.root.to_owned_node();
         let catalog = file.catalog()?;
+        let derived = Derived::new(&TreeView::new(&root, 0), catalog, name)
+            .expect("the file engine's tree never fails a read");
         let mut store = Self {
             root,
-            catalog,
+            version: 0,
+            derived: Arc::new(derived),
             name: name.to_string(),
-            locale: None,
-            date_order: DateOrder::default(),
             basis: HashMap::new(),
             superblock: file.superblock().raw.to_vec(),
             dirty: false,
@@ -391,24 +364,11 @@ impl Store {
             #[cfg(debug_assertions)]
             fail_commit_saves: false,
             generation: 0,
-            issued: Mutex::new(HashMap::new()),
-            on_demand: Mutex::new(BTreeSet::new()),
+            waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: false,
-            desktop: false,
-        };
-        store.locale = store
-            .node(&LOCALE)
-            .and_then(|n| n.assembled())
-            .and_then(|record| Locale::from_record(&record));
-        store.date_order = match &store.locale {
-            Some(locale) => locale.date_order,
-            None => {
-                warn!("{name}: no file locale record [2, 0d] this server reads; assuming en-US formats");
-                store.detect_date_order(name)
-            }
         };
         // A file holding keys or values the writer cannot write (a reader
         // accepts longer key segments and one more level) is served but
@@ -426,7 +386,7 @@ impl Store {
         // Tables with deferred work pending (the server stopped between a
         // client's op13 and its op73) get no basis: [`Store::recover`]
         // recomputes all their stored calculations.
-        for table in &store.catalog.tables {
+        for table in &store.derived.catalog().tables {
             let t = uint_segment(table.id);
             if store.node(&Self::deferred_path(&t)).is_none() {
                 store
@@ -458,7 +418,8 @@ impl Store {
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
         let pending: Vec<Vec<u8>> = self
-            .catalog
+            .derived
+            .catalog()
             .tables
             .iter()
             .map(|t| uint_segment(t.id))
@@ -550,7 +511,7 @@ impl Store {
     /// not decode, rather than English, which would key a German file's `ä`
     /// as `a`.
     pub fn file_language(&self) -> Option<u32> {
-        if self.locale.is_none() && self.node(&LOCALE).is_some() {
+        if self.derived.decoded_locale().is_none() && self.node(&LOCALE).is_some() {
             return None;
         }
         Some(u32::from(self.locale().language.id()))
@@ -559,11 +520,7 @@ impl Store {
     /// The file's locale and formats: its record when it decodes, else
     /// en-US with the date order its stored dates use.
     pub fn locale(&self) -> Locale {
-        self.locale.clone().unwrap_or_else(|| {
-            let mut locale = Locale::en_us();
-            locale.date_order = self.date_order;
-            locale
-        })
+        self.derived.locale()
     }
 
     /// Hold `lock` on the file for as long as the store has it, moving it
@@ -1290,7 +1247,7 @@ impl Store {
             [table, indexes, field, ..] => {
                 indexes.as_slice() == [keys::INDEXES]
                     && be_uint(table)
-                        .and_then(|t| self.catalog.table(t))
+                        .and_then(|t| self.derived.catalog().table(t))
                         .is_some_and(|t| be_uint(field).and_then(|f| t.field(f)).is_some())
             }
             _ => false,
@@ -1365,30 +1322,52 @@ impl Store {
 
     /// The file's schema as last read.
     pub fn catalog(&self) -> &Catalog {
-        &self.catalog
+        self.derived.catalog()
+    }
+
+    /// The state readers need besides the tree ([`Derived`]).
+    pub(crate) fn derived(&self) -> &Arc<Derived> {
+        &self.derived
+    }
+
+    /// The tree as a view (`engine::TreeView`), at the store's version.
+    pub(crate) fn tree_view(&self) -> TreeView<'_> {
+        TreeView::new(&self.root, self.version)
+    }
+
+    /// What reads left waiting for a write ([`Waiting`]).
+    pub(crate) fn waiting(&self) -> &Waiting {
+        &self.waiting
+    }
+
+    /// `f` of a read of the store as it is, through its tree's view: for a
+    /// reader that holds the store and reads what views serve (a reader
+    /// not moved onto `engine::FileEngine::read` yet).
+    pub(crate) fn with_read<R>(&self, f: impl FnOnce(Read<'_>) -> R) -> R {
+        let tree = self.tree_view();
+        f(Read {
+            view: &tree,
+            derived: &self.derived,
+            waiting: &self.waiting,
+            read_only: self.read_only,
+        })
+    }
+
+    /// The store is being taken for writing: views from now on read a new
+    /// version.
+    pub(crate) fn begin_writing(&mut self) {
+        self.version += 1;
     }
 
     /// The order of the parts of the file's stored dates.
     pub fn date_order(&self) -> DateOrder {
-        self.date_order
+        self.derived.date_order()
     }
 
     /// How the file's stored numbers and dates are read for their index
-    /// keys (query-program.md 7.3): its date order, and its locale's decimal
-    /// and thousands separators (en-US when it records no locale).
+    /// keys ([`Derived::reading`]).
     fn reading(&self) -> Reading {
-        let numbers = self
-            .locale
-            .as_ref()
-            .map(|l| NumberFormat {
-                decimal: l.decimal_separator,
-                thousands: l.thousands_separator,
-            })
-            .unwrap_or_default();
-        Reading {
-            order: self.date_order,
-            numbers,
-        }
+        self.derived.reading()
     }
 
     /// The node at `path`, if present.
@@ -1398,33 +1377,27 @@ impl Store {
 
     /// Whether `table` (a one-segment key) is a base table of the file.
     pub fn has_table(&self, table: &[u8]) -> bool {
-        be_uint(table).is_some_and(|id| self.catalog.table(id).is_some())
+        self.derived.has_table(table)
     }
 
     /// The data type of `field` in `table`, if the field exists.
     pub fn field_type(&self, table: &[u8], field: &[u8]) -> Option<DataType> {
-        let table = self.catalog.table(be_uint(table)?)?;
-        Some(table.field(be_uint(field)?)?.data_type)
+        self.derived.field_type(table, field)
     }
 
     /// How many repetitions `field` of `table` has (1 when unknown).
     fn repetitions(&self, table: &[u8], field: &[u8]) -> u16 {
-        self.defined_repetitions(table, field)
-            .map_or(1, |n| n.max(1))
+        self.derived.repetitions(table, field)
     }
 
     /// The repetitions `field` of `table`'s definition gives, if it reads.
     fn defined_repetitions(&self, table: &[u8], field: &[u8]) -> Option<u16> {
-        be_uint(table)
-            .and_then(|t| self.catalog.table(t))
-            .and_then(|t| t.field(be_uint(field)?))
-            .and_then(|f| f.decoded_options())
-            .map(|o| o.max_repetitions)
+        self.derived.defined_repetitions(table, field)
     }
 
     /// The value-index keys of `text` in `field` of `table`, a field of
-    /// `data_type`, as this file's indexes hold them (query-program.md 7.2,
-    /// 7.3).
+    /// `data_type`, as this file's indexes hold them
+    /// ([`Derived::value_keys`]).
     pub fn value_keys(
         &self,
         table: &[u8],
@@ -1432,121 +1405,20 @@ impl Store {
         data_type: DataType,
         text: &str,
     ) -> Vec<Vec<u8>> {
-        value_keys(
-            data_type,
-            text,
-            self.reading(),
-            self.read_text_keys(table, field),
-        )
+        self.derived.value_keys(table, field, data_type, text)
     }
 
-    /// How `field` of `table` keys text in its indexes: the form of its
-    /// index language (query-program.md 7.2,
-    /// [`om_data::rules::written_text_keys`]), so that a Unicode raw index
-    /// keeps the code units FileMaker keys it with. Language 0 is the
-    /// file's own. `None` for a language with no form in OpenMaker yet,
-    /// whose keys this server does not write (#159, #1279).
+    /// How `field` of `table` keys text in its indexes
+    /// ([`Derived::text_keys`]).
     fn text_keys(&self, table: &[u8], field: &[u8]) -> Option<TextKeys> {
-        let file_language = self
-            .locale
-            .as_ref()
-            .map_or(21, |l| u32::from(l.language.id()));
-        let language = be_uint(table)
-            .and_then(|t| self.catalog.table(t))
-            .and_then(|t| t.field(be_uint(field)?))
-            .and_then(|f| f.decoded_options())
-            .map(|o| o.index_language())?;
-        om_data::rules::written_text_keys(language, file_language)
-    }
-
-    /// [`Self::text_keys`] for reading an index (a find, a lookup): a
-    /// language with no form is read in English, which keys most text as
-    /// the tailorings do; nothing read so is written.
-    fn read_text_keys(&self, table: &[u8], field: &[u8]) -> TextKeys {
-        self.text_keys(table, field).unwrap_or(ENGLISH)
+        self.derived.text_keys(table, field)
     }
 
     /// The form `field` of `table`, of `data_type`, is written in when its
-    /// index is built and stored: its language's ([`Self::text_keys`]), or
-    /// for a text field whose language has none, `None` while a record
-    /// holds text in it (no key would be FileMaker's) and any form while
-    /// none does (no key at all). The form keys only text.
+    /// index is built and stored ([`derived::written_form`]).
     fn written_form(&self, table: &[u8], field: &[u8], data_type: DataType) -> Option<TextKeys> {
-        if data_type != DataType::Text {
-            return Some(ENGLISH);
-        }
-        if let Some(form) = self.text_keys(table, field) {
-            return Some(form);
-        }
-        let repetitions = self.repetitions(table, field);
-        let holds_text = self
-            .node(&[table, &[keys::RECORDS]])
-            .is_some_and(|records| {
-                records.children.iter().any(|record| {
-                    field_texts(record, field, repetitions)
-                        .iter()
-                        .any(|text| !text.is_empty())
-                })
-            });
-        (!holds_text).then_some(ENGLISH)
-    }
-
-    /// The order the file stores dates in: the one whose keys match the
-    /// existing date and timestamp indexes, else month first.
-    fn detect_date_order(&self, name: &str) -> DateOrder {
-        let orders = [
-            DateOrder::MonthDayYear,
-            DateOrder::DayMonthYear,
-            DateOrder::YearMonthDay,
-        ];
-        let mut matches = [0usize; 3];
-        for table in &self.catalog.tables {
-            let t = uint_segment(table.id);
-            for field in &table.fields {
-                if !matches!(field.data_type, DataType::Date | DataType::Timestamp) {
-                    continue;
-                }
-                let f = uint_segment(field.id);
-                let Some(index) = self.node(&[&t, &[keys::INDEXES], &f, &[keys::VALUE_INDEX]])
-                else {
-                    continue;
-                };
-                for (i, order) in orders.iter().enumerate() {
-                    for key in &index.children {
-                        let Ok(records) = RidList::from_owned(key) else {
-                            continue;
-                        };
-                        let Some(id) = records.iter().next() else {
-                            continue;
-                        };
-                        let value = self.stored_text(&t, id, &f).unwrap_or_default();
-                        if value_keys(field.data_type, &value, *order, ENGLISH)
-                            .contains(&key.segment)
-                        {
-                            matches[i] += 1;
-                        }
-                    }
-                }
-            }
-        }
-        let best = (0..3).max_by_key(|&i| matches[i]).expect("three orders");
-        if matches[best] == 0 {
-            return DateOrder::default();
-        }
-        if matches.iter().filter(|&&m| m == matches[best]).count() > 1 {
-            warn!(
-                "{name}: stored date order is ambiguous; assuming {:?}",
-                orders[best]
-            );
-        }
-        orders[best]
-    }
-
-    /// A record's stored value of a field as text, if it stores one.
-    fn stored_text(&self, table: &[u8], record: u64, field: &[u8]) -> Option<String> {
-        let record = serial::encode(record);
-        let node = self.node(&[table, &[keys::RECORDS], &record, field])?;
-        cell_text(node)
+        derived::written_form(&self.tree_view(), &self.derived, table, field, data_type)
+            .expect("the file engine's tree never fails a read")
     }
 
     /// The last record id issued in `table` (`[T, 00]`, 0 when absent).
@@ -1822,48 +1694,23 @@ impl Store {
         }
     }
 
-    /// The member keys GenerateMemberKey issued, also after a request
-    /// panicked holding them. Every section that holds them reads, inserts
-    /// or drains whole entries (an entry is inserted only once both its
-    /// checked increments succeeded), so the map is whole even then. None
-    /// of them can panic today; this keeps one that someday does from
-    /// failing every later query on the file, each of which asks whether
-    /// keys are waiting.
-    fn issued(&self) -> MutexGuard<'_, IssuedKeys> {
-        self.issued.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Whether GenerateMemberKey issued ids not yet written.
     pub fn has_issued_member_keys(&self) -> bool {
-        !self.issued().is_empty()
+        self.waiting.has_member_keys()
     }
 
     /// Take the member ids and modification counts GenerateMemberKey
     /// issued and nobody wrote yet, by catalog, for
     /// [`Store::write_member_keys`]: they are no longer waiting.
     pub fn take_issued_member_keys(&mut self) -> Vec<MemberKey> {
-        let mut keys: Vec<MemberKey> = self
-            .issued
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drain()
-            .collect();
-        keys.sort();
-        keys
+        self.waiting.take_member_keys()
     }
 
     /// Put `keys`, taken by [`Store::take_issued_member_keys`] and not
     /// written, back among those waiting: a write that took them was left
     /// by a panic before it wrote them.
     pub fn put_back_member_keys(&mut self, keys: Vec<MemberKey>) {
-        let issued = self
-            .issued
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (catalog, (id, count)) in keys {
-            let waiting = issued.entry(catalog).or_default();
-            *waiting = (waiting.0.max(id), waiting.1.max(count));
-        }
+        self.waiting.put_back_member_keys(keys);
     }
 
     /// Write member ids and modification counts GenerateMemberKey issued
@@ -1911,11 +1758,8 @@ impl Store {
     /// member id and count, schema-path.md 3.4) cannot be written in the
     /// tree as it is (`put_refusals`), for a log line.
     fn member_key_refusal(&self, catalog: &[&[u8]]) -> Option<String> {
-        let mut parents = catalog.to_vec();
-        parents.push(&[CATALOG_INDEX]);
-        let leaf = OwnedNode::leaf(vec![MOD_COUNT], vec![0; 10]);
-        let refused = put_refusals(&self.root, &parents, &leaf, 3);
-        (!refused.is_empty()).then(|| describe(&refused))
+        derived::member_key_refusal(&self.tree_view(), catalog)
+            .expect("the file engine's tree never fails a read")
     }
 
     /// Apply the changes of an op86 program's schema instructions
@@ -2053,7 +1897,10 @@ impl Store {
     /// with its definition ([`recalc`]): a new field has no stored values
     /// to recompute.
     pub fn add_field_basis(&mut self, table: &[u8], field: u64) {
-        let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)).cloned() else {
+        let Some(definition) = be_uint(table)
+            .and_then(|t| self.derived.catalog().table(t))
+            .cloned()
+        else {
             return;
         };
         let Some(entry) = recalc::table_basis(&self.root, &definition).remove(&field) else {
@@ -2103,8 +1950,10 @@ impl Store {
     }
 
     fn reread_catalog(&mut self) {
-        match read_catalog(&self.root) {
-            Ok(catalog) => self.catalog = catalog,
+        match derived::read_catalog(&self.tree_view()) {
+            Ok(catalog) => {
+                self.derived = Arc::new(self.derived.with_catalog(self.version, catalog));
+            }
             Err(e) => warn!("re-reading the schema after a change: {e}"),
         }
     }
@@ -2139,7 +1988,10 @@ impl Store {
         if self.is_read_only() {
             return Err("the file is hosted read-only");
         }
-        let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)).cloned() else {
+        let Some(definition) = be_uint(table)
+            .and_then(|t| self.derived.catalog().table(t))
+            .cloned()
+        else {
             return Ok(false);
         };
         let preflight = (|| {
@@ -2289,56 +2141,27 @@ impl Store {
         Ok(changed)
     }
 
-    /// `f` of the catalogs a calculation of `table` reads, as a key tree
-    /// (occurrences and relationships `[3]`, custom functions `[16]`, the
-    /// table's fields `[T, 03]`), and of the file's calculation schema;
-    /// `None` when they cannot be read.
+    /// `f` of the catalogs a calculation of `table` reads and of the file's
+    /// calculation schema ([`derived::with_calc_inputs`]); `None` when they
+    /// cannot be read.
     fn with_calc_inputs<R>(
         &self,
         table: &[u8],
         f: impl FnOnce(&KeyTree<'_>, &om_data::host::CalcSchema) -> R,
     ) -> Option<R> {
-        let mut parts: Vec<OwnedNode> = [3u8, 16]
-            .iter()
-            .filter_map(|key| self.node(&[&[*key]]).cloned())
-            .collect();
-        if let Some(fields) = self.node(&[table, &[keys::FIELDS]]) {
-            parts.push(OwnedNode::list(table.to_vec(), vec![fields.clone()]));
-        }
-        let wire = OwnedNode::list(Vec::new(), parts).to_wire();
-        let tree = wire
-            .as_deref()
-            .and_then(|w| KeyTree::from_slots(SlotReader::new(w)).ok())?;
-        let stem = self
-            .name
-            .rsplit_once('.')
-            .map_or(self.name.as_str(), |(stem, _)| stem);
-        let mut calc = om_data::rules::schema::calc_schema(&tree, &self.catalog, stem);
-        calc.locale = self.locale();
-        if !self.desktop {
-            om_data::host::device::withhold_server_lacks(calc.names_mut());
-        }
-        Some(f(&tree, &calc))
+        derived::with_calc_inputs(&self.tree_view(), &self.derived, table, f)
+            .expect("the file engine's tree never fails a read")
     }
 
     /// The evaluator of a custom privilege set's formula `code` limiting a
-    /// record action on base table `table` (its key); why not, when the
-    /// table or its catalogs cannot be read or the formula cannot be
-    /// evaluated here (`RecordLimit::new`).
+    /// record action on base table `table` ([`derived::record_limit`]).
     pub(crate) fn record_limit(
         &self,
         table: &[u8],
         code: &[u8],
     ) -> Result<om_data::rules::recalc::RecordLimit, String> {
-        let id = be_uint(table).ok_or("the table key does not decode.")?;
-        let definition = self
-            .catalog
-            .table(id)
-            .ok_or("the table is not in the catalog.")?;
-        self.with_calc_inputs(table, |tree, calc| {
-            om_data::rules::recalc::RecordLimit::new(definition, tree, calc, code, None)
-        })
-        .ok_or("the field catalog could not be read.")?
+        derived::record_limit(&self.tree_view(), &self.derived, table, code)
+            .expect("the file engine's tree never fails a read")
     }
 
     /// Recompute the stored calculations of `table` that the fields in
@@ -2637,10 +2460,7 @@ impl Store {
         field: &[u8],
         others: &BTreeSet<Vec<u8>>,
     ) -> BTreeSet<Vec<u8>> {
-        (2u8..=255)
-            .map(|n| [field, &[n]].concat())
-            .filter(|cell| self.field_type(table, cell).is_none() && !others.contains(cell))
-            .collect()
+        self.derived.repetition_cells(table, field, others)
     }
 
     /// The cells holding `field`'s repetitions `from` and above: the field's
@@ -2931,58 +2751,23 @@ impl Store {
         form: TextKeys,
         accounted: bool,
     ) -> Option<BTreeMap<Vec<u8>, RidList>> {
-        let mut index: BTreeMap<Vec<u8>, RidList> = BTreeMap::new();
-        let Some(records) = self.node(&[table, &[keys::RECORDS]]) else {
-            return Some(index);
-        };
-        let repetitions = self.repetitions(table, field);
-        for record in &records.children {
-            let Some(id) = serial::decode(&record.segment) else {
-                continue;
-            };
-            let texts = field_texts(record, field, repetitions);
-            let keys: BTreeSet<Vec<u8>> = if kind == keys::VALUE_INDEX {
-                record_value_entries(data_type, &texts, self.reading(), form)
-            } else {
-                word_entries(&texts, form)
-            };
-            if accounted
-                && kind == keys::VALUE_INDEX
-                && keys.is_empty()
-                && texts.iter().any(|t| !t.trim().is_empty())
-            {
-                return None;
-            }
-            for key in keys {
-                index.entry(key).or_default().insert(id);
-            }
-        }
-        Some(index)
+        derived::index_entries(
+            &self.tree_view(),
+            &self.derived,
+            table,
+            field,
+            data_type,
+            kind,
+            form,
+            accounted,
+        )
+        .expect("the file engine's tree never fails a read")
     }
 
     /// The field `field` of `table` when its index `kind` can be built on
-    /// demand: a stored field that does not prohibit indexing, of a type
-    /// with that index (schema-path.md 5.5).
+    /// demand ([`Derived::indexable`]).
     fn indexable(&self, table: &[u8], field: &[u8], kind: u8) -> Option<DataType> {
-        const GLOBAL: u32 = 0x1_0000;
-        const UNSTORED: u32 = 0x2_0000;
-        const PREVENT_INDEX: u32 = 0x4000_0000;
-        let field = self
-            .catalog
-            .table(be_uint(table)?)?
-            .field(be_uint(field)?)?;
-        let options = u32::from_be_bytes(field.options.get(8..12)?.try_into().ok()?);
-        let stored = matches!(field.kind, FieldKind::Normal | FieldKind::Calculation)
-            && options & (GLOBAL | UNSTORED | PREVENT_INDEX) == 0;
-        let typed = match field.data_type {
-            DataType::Text => true,
-            DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp => {
-                kind == keys::VALUE_INDEX
-            }
-            DataType::Container | DataType::Unknown(_) => false,
-        };
-        (stored && typed && (kind == keys::VALUE_INDEX || kind == keys::WORD_INDEX))
-            .then_some(field.data_type)
+        self.derived.indexable(table, field, kind)
     }
 
     /// Note the device and inode of the file on disk the store was read
@@ -3004,24 +2789,19 @@ impl Store {
     /// the query found it, whichever query stores the due indexes first. A
     /// later query builds them again.
     pub fn forget_indexes_on_demand(&self, built: &[IndexId]) {
-        let mut due = self.on_demand.lock().expect("index lock");
-        for id in built {
-            due.remove(id);
-        }
+        self.waiting.forget_indexes(built);
     }
 
     /// Whether a query read indexes that were built on demand and are not
     /// yet stored.
     pub fn has_indexes_on_demand(&self) -> bool {
-        !self.on_demand.lock().expect("index lock").is_empty()
+        self.waiting.has_indexes()
     }
 
     /// Take the indexes queries built on demand and nobody stored yet, for
     /// [`Store::store_indexes`]: they are no longer waiting.
     pub fn take_indexes_on_demand(&mut self) -> Vec<IndexId> {
-        std::mem::take(self.on_demand.get_mut().expect("index lock"))
-            .into_iter()
-            .collect()
+        self.waiting.take_indexes()
     }
 
     /// Store `indexes`, which queries built on demand
@@ -3133,10 +2913,9 @@ impl Store {
         root.put(&[table, &[keys::RECORD_IDS]], ids.to_node(Vec::new()));
         Store {
             root,
-            catalog: self.catalog.clone(),
+            version: 0,
+            derived: self.derived.clone(),
             name: self.name.clone(),
-            locale: self.locale.clone(),
-            date_order: self.date_order,
             basis: HashMap::new(),
             superblock: Vec::new(),
             dirty: false,
@@ -3144,13 +2923,11 @@ impl Store {
             #[cfg(debug_assertions)]
             fail_commit_saves: false,
             generation: 0,
-            issued: Mutex::new(HashMap::new()),
-            on_demand: Mutex::new(BTreeSet::new()),
+            waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: false,
-            desktop: self.desktop,
         }
     }
 
@@ -3397,7 +3174,7 @@ impl Store {
         pending: &BTreeSet<Recount>,
     ) -> Result<Vec<Reindex>, String> {
         let mut plan = Vec::new();
-        let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)) else {
+        let Some(definition) = be_uint(table).and_then(|t| self.derived.catalog().table(t)) else {
             return Ok(plan);
         };
         // Per field: whether it has a value index and a word index.
@@ -3503,7 +3280,7 @@ impl Store {
 
     fn check_index(&self, table: &[u8], field: &[u8], kind: u8) -> bool {
         let Some(data_type) = be_uint(table)
-            .and_then(|t| self.catalog.table(t))
+            .and_then(|t| self.derived.catalog().table(t))
             .and_then(|t| be_uint(field).and_then(|f| t.field(f)))
             .map(|f| f.data_type)
         else {
@@ -3704,7 +3481,7 @@ impl Store {
 
 impl om_query::Source for Store {
     fn catalog(&self) -> om_hbam::Result<Catalog> {
-        Ok(self.catalog.clone())
+        Ok(self.derived.catalog().clone())
     }
 
     fn node(&self, path: &[&[u8]]) -> om_hbam::Result<Option<Cow<'_, OwnedNode>>> {
@@ -3712,104 +3489,31 @@ impl om_query::Source for Store {
     }
 
     /// Build a missing index from the stored records for a query that reads
-    /// it; [`Store::store_indexes`] stores it afterwards. A field
-    /// whose index exists but has no keys (only its counts) reads as empty.
+    /// it ([`derived::index_on_demand`]); [`Store::store_indexes`] stores it
+    /// afterwards.
     fn index_on_demand(
         &self,
         table: &[u8],
         field: &[u8],
         kind: u8,
     ) -> Result<Option<OwnedNode>, om_query::QueryError> {
-        let index: [&[u8]; 3] = [table, &[keys::INDEXES], field];
-        if self
-            .node(&[index[0], index[1], index[2], &[counts_key(kind)]])
-            .is_some()
-        {
-            return Ok(Some(OwnedNode::list(vec![kind], Vec::new())));
-        }
-        let Some(data_type) = self.indexable(table, field, kind) else {
-            return Ok(None);
-        };
-        // A text field in an index language whose keys this server does
-        // not build, holding text: its index would hold keys OpenMaker
-        // cannot make, and English ones would answer the query with
-        // another found set (a German `Äpfel` criterion missing records,
-        // French words broken at the wrong places). The query is refused,
-        // as the desktop refuses a find without the host's index (#572).
-        let Some(form) = self.written_form(table, field, data_type) else {
-            warn!(
-                "{}: a query needs an index this server cannot build in its field's language; \
-                 refused",
-                self.name
-            );
-            return Err(om_query::QueryError::UnkeyedIndex);
-        };
-        let index = self.index_keys(table, field, data_type, kind, form);
-        self.on_demand
-            .lock()
-            .expect("index lock")
-            .insert((table.to_vec(), field.to_vec(), kind));
-        let entries = index
-            .into_iter()
-            .map(|(key, ids)| ids.to_node(key))
-            .collect();
-        Ok(Some(OwnedNode::list(vec![kind], entries)))
+        derived::index_on_demand(
+            &self.tree_view(),
+            &self.derived,
+            &self.waiting,
+            table,
+            field,
+            kind,
+        )
     }
 
-    /// Issue the catalog's next member id and modification count: one more
-    /// than its last issued id `[C, 01, 00]` and count `[C, 01, fc]` (or than
-    /// what was issued since) (schema-path.md 3.4). The tree is only read
-    /// here; [`Store::write_member_keys`] stores them.
+    /// Issue the catalog's next member id and modification count
+    /// ([`derived::generate_member_key`]); [`Store::write_member_keys`]
+    /// stores them.
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
-        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
-        // [`Store::write_member_keys`] stores `[C, 01, 00]` and
-        // `[C, 01, fc]`: a catalog the tree cannot take them under as it is
-        // gets no key.
-        if self.member_key_refusal(&path).is_some() {
-            warn!(
-                "{}: no member key for the catalog {path:02x?}, which the file cannot hold",
-                self.name
-            );
-            return None;
-        }
-        let index = self.node(&path).and_then(|c| c.child(&[CATALOG_INDEX]));
-        let stored_id = modcount::serial_value(index.and_then(|i| i.child(&[LAST_MEMBER_ID])));
-        let stored_count = modcount::serial_value(index.and_then(|i| i.child(&[MOD_COUNT])));
-        let mut issued = self.issued();
-        let last = issued.get(catalog).copied().unwrap_or_default();
-        // The stored values come from the file: past the largest a serial
-        // key holds there is no next one to issue, and nothing is noted as
-        // issued.
-        let next = (
-            last.0.max(stored_id).checked_add(1)?,
-            last.1.max(stored_count).checked_add(1)?,
-        );
-        issued.insert(catalog.to_vec(), next);
-        Some((modcount::key_string(next.0), modcount::key_string(next.1)))
+        derived::generate_member_key(&self.tree_view(), &self.waiting, &self.name, catalog)
+            .expect("the file engine's tree never fails a read")
     }
-}
-
-/// The schema catalogs of a key tree: the catalogs `[3]` and layouts `[4]`,
-/// and each table's field catalog `[T, 03]`.
-fn read_catalog(root: &OwnedNode) -> om_hbam::Result<Catalog> {
-    let schema: Vec<OwnedNode> = root
-        .children
-        .iter()
-        .filter_map(|child| match be_uint(&child.segment)? {
-            catalog_keys::SCHEMA | catalog_keys::LAYOUTS => Some(child.clone()),
-            table if table >= 0x8000 => {
-                let fields = child.child(&[catalog_keys::TABLE_FIELDS as u8])?.clone();
-                Some(OwnedNode::list(child.segment.clone(), vec![fields]))
-            }
-            _ => None,
-        })
-        .collect();
-    let wire = OwnedNode::list(Vec::new(), schema)
-        .to_wire()
-        .ok_or(om_hbam::Error::Write(
-            "the schema has a key that cannot be written",
-        ))?;
-    Catalog::from_tree(&KeyTree::from_slots(SlotReader::new(&wire))?)
 }
 
 /// A table's library for the calculations of a recompute
@@ -3862,31 +3566,6 @@ fn plain_entry(entry: &OwnedNode) -> Option<RidList> {
 /// 1.4, [`containers::reference`]).
 fn member_key(value: &OwnedNode) -> Option<Vec<u8>> {
     containers::reference(&cell_text(value)?)
-}
-
-/// A stored value as text (XOR 0x5A + SCSU), if it is a single value.
-fn cell_text(node: &OwnedNode) -> Option<String> {
-    Cell::from_owned(node).text()?.ok()
-}
-
-/// The texts of `field`'s repetitions in a record: the first under the
-/// field's key, repetition n under `F * 256 + n` (execute-sql.md, reading
-/// `.fmp12` files); empty for a repetition the record does not store. The
-/// field id comes from the file: for one above `u64::MAX / 256` no
-/// repetition but the first has a cell key, so the others read as empty
-/// (#361).
-fn field_texts(record: &OwnedNode, field: &[u8], repetitions: u16) -> Vec<String> {
-    let text = |key: &[u8]| record.child(key).and_then(cell_text).unwrap_or_default();
-    let mut texts = vec![text(field)];
-    if let Some(id) = be_uint(field).filter(|_| repetitions > 1) {
-        let base = id.checked_mul(256);
-        for n in 2..=repetitions.min(255) {
-            // `base + n` cannot overflow: `base` is at most `u64::MAX - 255`.
-            let key = base.map(|base| uint_segment(base + u64::from(n)));
-            texts.push(key.map(|key| text(&key)).unwrap_or_default());
-        }
-    }
-    texts
 }
 
 /// Advance a serial number's text by `by`: the rightmost run of digits is
@@ -4003,12 +3682,13 @@ mod tests {
 
     /// A store holding `root`, with nothing unsaved and no lock.
     fn store_of(root: OwnedNode) -> Store {
+        let derived = Derived::new(&TreeView::new(&root, 0), Catalog::default(), "")
+            .expect("the file engine's tree never fails a read");
         Store {
             root,
-            catalog: Catalog::default(),
+            version: 0,
+            derived: Arc::new(derived),
             name: String::new(),
-            locale: None,
-            date_order: DateOrder::default(),
             basis: HashMap::new(),
             superblock: Vec::new(),
             dirty: false,
@@ -4016,13 +3696,11 @@ mod tests {
             #[cfg(debug_assertions)]
             fail_commit_saves: false,
             generation: 0,
-            issued: Mutex::new(HashMap::new()),
-            on_demand: Mutex::new(BTreeSet::new()),
+            waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: false,
-            desktop: false,
         }
     }
 
@@ -4173,17 +3851,20 @@ mod tests {
             OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu("INV0098")),
         );
         let mut store = store_of(root);
-        store.catalog.tables.push(om_hbam::Table {
-            id: 0x8002,
-            name: "Invoices".into(),
-            fields: vec![om_hbam::Field {
-                id: 4,
-                name: "Number".into(),
-                kind: om_hbam::FieldKind::Normal,
-                data_type: DataType::Text,
-                options: definition,
-            }],
-        });
+        Arc::make_mut(&mut store.derived)
+            .catalog_mut()
+            .tables
+            .push(om_hbam::Table {
+                id: 0x8002,
+                name: "Invoices".into(),
+                fields: vec![om_hbam::Field {
+                    id: 4,
+                    name: "Number".into(),
+                    kind: om_hbam::FieldKind::Normal,
+                    data_type: DataType::Text,
+                    options: definition,
+                }],
+            });
         let store = std::sync::RwLock::new(store);
         let reserve = || {
             (0..100)
@@ -4300,8 +3981,8 @@ mod tests {
         let largest = modcount::serial_leaf(0, u64::MAX);
         store.root.put(&scripts, largest);
         assert_eq!(store.generate_member_key(&[vec![0x11]]), None);
-        let issued = store.issued.lock().unwrap();
-        assert!(!issued.contains_key(&[vec![0x11]][..]));
+        let issued = store.take_issued_member_keys();
+        assert!(issued.iter().all(|(catalog, _)| catalog != &[vec![0x11]]));
     }
 
     /// A library whose last member id or member count the file holds at the

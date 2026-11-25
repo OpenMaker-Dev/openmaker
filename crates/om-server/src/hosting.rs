@@ -430,11 +430,12 @@ impl Hosted {
     /// otherwise: for work that must not wait on a request. Only the engine
     /// has a [`Writer`].
     pub(crate) fn try_write_store(&self, _: &Writer) -> Option<StoreWriteGuard<'_>> {
-        let store = match self.store.try_write() {
+        let mut store = match self.store.try_write() {
             Ok(store) => store,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
+        store.begin_writing();
         Some(StoreWriteGuard {
             hosted: self,
             store,
@@ -451,10 +452,12 @@ impl Hosted {
     /// The file's contents for writing, for this module's setup of a file
     /// no one else can reach yet and for its test switch.
     fn store_for_writing(&self) -> StoreWriteGuard<'_> {
-        let store = self.store.write().unwrap_or_else(|poisoned| {
+        let mut store = self.store.write().unwrap_or_else(|poisoned| {
             warn!("{:?}: a request panicked holding the store", self.name);
             poisoned.into_inner()
         });
+        // Views from now on read a new version (`engine::View::version`).
+        store.begin_writing();
         StoreWriteGuard {
             hosted: self,
             store,

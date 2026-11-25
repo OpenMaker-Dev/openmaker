@@ -643,7 +643,7 @@ pub(crate) fn commit(
     }
     // A field without access keeps its stored value whatever an edit
     // uploads for it: the client never had it (`views::keep_hidden`).
-    let hidden = crate::views::hidden_fields(tx.view(), &access);
+    let hidden = crate::views::hidden_fields(tx.view().derived(), &access);
     tx.begin_commit();
     let changes = tx.guarded(|tx| commit_list(file, user, locks, &mut staged, &list, tx, &hidden));
     for change in &changes {

@@ -11,7 +11,8 @@
 //! file's own container library, which may hold any table's data, is
 //! withheld too. Every read of record data goes
 //! through [`ViewFilter::filter`]: downloads (op90, op15, op92) and query
-//! programs (op86). The formula is always evaluated on the stored record.
+//! programs (op86), which read a view of the file and its derived state
+//! (`engine::Read`). The formula is always evaluated on the stored record.
 //! Container uploads and reference counts, which answer from the libraries
 //! (whether some content exists, how often it is used), are refused for
 //! such an account (`connection.rs`).
@@ -26,8 +27,9 @@ use om_data::rules::RecordEnvironment;
 use om_hbam::slot::uint_segment;
 use om_hbam::OwnedNode;
 
+use crate::derived::Derived;
+use crate::engine::{Read, ReadError, NO_LIMIT};
 use crate::modcount::MOD_COUNT;
-use crate::store::Store;
 
 /// Under a table `[T]`: its indexes, its records and its global values.
 const INDEXES: u8 = 0x01;
@@ -49,21 +51,21 @@ pub(crate) struct ViewFilter {
 
 /// The cells of the fields of each base table an account's custom set
 /// gives no access, by table key and cell key: each field's own key and
-/// its repetitions' (`Store::repetition_cells`). Tables with none are left
-/// out.
+/// its repetitions' (`Derived::repetition_cells`). Tables with none are
+/// left out.
 pub(crate) type HiddenFields = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
 
-/// The fields of `store`'s base tables that `access` gives no access (its
-/// own entry, else the table's default field access, else the set's
-/// default).
-pub(crate) fn hidden_fields(store: &Store, access: &SetAccess) -> HiddenFields {
+/// The fields of the base tables of the file `derived` was computed from
+/// that `access` gives no access (its own entry, else the table's default
+/// field access, else the set's default).
+pub(crate) fn hidden_fields(derived: &Derived, access: &SetAccess) -> HiddenFields {
     let mut hidden = HiddenFields::new();
-    for table in &store.catalog().tables {
+    for table in &derived.catalog().tables {
         let key = uint_segment(table.id);
         let mut fields = BTreeSet::new();
         for field in table.fields.iter().map(|field| uint_segment(field.id)) {
             if access.hides_field(&key, &field) {
-                fields.extend(store.repetition_cells(&key, &field, &BTreeSet::new()));
+                fields.extend(derived.repetition_cells(&key, &field, &BTreeSet::new()));
                 fields.insert(field);
             }
         }
@@ -138,21 +140,26 @@ impl Withheld {
 }
 
 impl ViewFilter {
-    /// The filter for `access` on `store`; `None` when it keeps nothing
-    /// from the account, so that everything may be read. A table whose
-    /// records may never be viewed (its own entry or the set's default)
-    /// counts as a view limit no record meets.
-    pub(crate) fn new(store: &Store, access: &SetAccess, account: &str) -> Option<Self> {
+    /// The filter for `access` on the file `read` reads; `None` when it
+    /// keeps nothing from the account, so that everything may be read. A
+    /// table whose records may never be viewed (its own entry or the set's
+    /// default) counts as a view limit no record meets.
+    pub(crate) fn new(
+        read: Read<'_>,
+        access: &SetAccess,
+        account: &str,
+    ) -> Result<Option<Self>, ReadError> {
         if !access.limits_viewing() {
-            return None;
+            return Ok(None);
         }
         let mut limits = BTreeMap::new();
-        for table in &store.catalog().tables {
+        for table in &read.derived.catalog().tables {
             let key = uint_segment(table.id);
             match access.record_view(&key) {
                 RecordView::All => {}
                 RecordView::Where(code) => {
-                    let limit = store.record_limit(&key, code).ok();
+                    let limit =
+                        crate::derived::record_limit(read.view, read.derived, &key, code)?.ok();
                     limits.insert(key, limit);
                 }
                 RecordView::Never => {
@@ -160,12 +167,12 @@ impl ViewFilter {
                 }
             }
         }
-        Some(Self {
+        Ok(Some(Self {
             limits,
-            hidden: hidden_fields(store, access),
+            hidden: hidden_fields(read.derived, access),
             environment: crate::recalc::record_environment(account, crate::recalc::random_uuid()),
             withheld: RefCell::default(),
-        })
+        }))
     }
 
     /// Whether the account may not read all of base table `table`: a view
@@ -193,47 +200,45 @@ impl ViewFilter {
     }
 
     /// Whether record `record` (its key) of `table` may be viewed. The
-    /// formula is evaluated on the record as `store` holds it, never on the
+    /// formula is evaluated on the record as `read` reads it, never on the
     /// node being served, which may hold only the fields a client asked
-    /// for; a record the store does not hold is not.
-    fn viewable(&self, store: &Store, table: &[u8], record: &[u8]) -> bool {
-        match self.limits.get(table) {
+    /// for; a record the file does not hold is not.
+    fn viewable(&self, read: Read<'_>, table: &[u8], record: &[u8]) -> Result<bool, ReadError> {
+        Ok(match self.limits.get(table) {
             None => true,
             Some(None) => false,
-            Some(Some(limit)) => {
-                store
-                    .node(&[table, &[RECORDS][..], record])
-                    .is_some_and(|stored| {
-                        limit.allows(&crate::recalc::texts(stored), &self.environment)
-                    })
-            }
-        }
+            Some(Some(limit)) => read
+                .view
+                .subtree(&[table, &[RECORDS][..], record], NO_LIMIT)?
+                .is_some_and(|stored| {
+                    limit.allows(&crate::recalc::texts(&stored), &self.environment)
+                }),
+        })
     }
 
     /// `node`, the file's node at `path`, as the session may read it: a
     /// view-limited table's indexes and container library, and the file's
     /// own library, empty (and `None` below them), `None` for a value inside
     /// a record it may not view, otherwise a copy with those records' values
-    /// withheld. `store` holds the records a path
-    /// below one names.
+    /// withheld. `read` reads the records a path below one names.
     pub(crate) fn filter(
         &self,
-        store: &Store,
+        read: Read<'_>,
         path: &[&[u8]],
         node: OwnedNode,
-    ) -> Option<OwnedNode> {
-        match path {
-            [] => Some(self.root(store, node)),
+    ) -> Result<Option<OwnedNode>, ReadError> {
+        Ok(match path {
+            [] => Some(self.root(read, node)?),
             // The file's own container library may hold any table's data:
             // served empty, as a client opening the file asks for it.
             [[LIBRARY]] => Some(emptied(node)),
             [[LIBRARY], ..] => None,
-            [table, rest @ ..] if self.limits(table) => self.table(store, table, rest, node),
+            [table, rest @ ..] if self.limits(table) => self.table(read, table, rest, node)?,
             _ => Some(node),
-        }
+        })
     }
 
-    fn root(&self, store: &Store, mut root: OwnedNode) -> OwnedNode {
+    fn root(&self, read: Read<'_>, mut root: OwnedNode) -> Result<OwnedNode, ReadError> {
         for child in &mut root.children {
             if child.segment == [LIBRARY] {
                 *child = emptied(std::mem::take(child));
@@ -242,27 +247,27 @@ impl ViewFilter {
         for child in &mut root.children {
             if self.limits(&child.segment) {
                 let table = child.segment.clone();
-                *child = self.whole_table(store, &table, std::mem::take(child));
+                *child = self.whole_table(read, &table, std::mem::take(child))?;
             }
         }
-        root
+        Ok(root)
     }
 
     fn table(
         &self,
-        store: &Store,
+        read: Read<'_>,
         table: &[u8],
         rest: &[&[u8]],
         node: OwnedNode,
-    ) -> Option<OwnedNode> {
-        match rest {
-            [] => Some(self.whole_table(store, table, node)),
+    ) -> Result<Option<OwnedNode>, ReadError> {
+        Ok(match rest {
+            [] => Some(self.whole_table(read, table, node)?),
             [[INDEXES]] | [[LIBRARY]] => Some(emptied(node)),
             [[INDEXES], ..] | [[LIBRARY], ..] => None,
-            [[RECORDS]] => Some(self.records(store, table, node)),
+            [[RECORDS]] => Some(self.records(read, table, node)?),
             [[RECORDS], record] => {
                 let mut node = node;
-                if self.viewable(store, table, record) {
+                if self.viewable(read, table, record)? {
                     self.strip(table, &mut node);
                 } else {
                     self.note(table, record);
@@ -271,7 +276,7 @@ impl ViewFilter {
                 Some(node)
             }
             [[RECORDS], record, field, ..] => {
-                let viewable = self.viewable(store, table, record);
+                let viewable = self.viewable(read, table, record)?;
                 if !viewable {
                     self.note(table, record);
                 }
@@ -285,10 +290,15 @@ impl ViewFilter {
             }
             [[GLOBALS], field, ..] => (!self.hides(table, field)).then_some(node),
             _ => Some(node),
-        }
+        })
     }
 
-    fn whole_table(&self, store: &Store, table: &[u8], mut node: OwnedNode) -> OwnedNode {
+    fn whole_table(
+        &self,
+        read: Read<'_>,
+        table: &[u8],
+        mut node: OwnedNode,
+    ) -> Result<OwnedNode, ReadError> {
         for child in &mut node.children {
             if child.segment == [INDEXES] || child.segment == [LIBRARY] {
                 *child = emptied(std::mem::take(child));
@@ -296,24 +306,29 @@ impl ViewFilter {
         }
         for child in &mut node.children {
             if child.segment == [RECORDS] {
-                *child = self.records(store, table, std::mem::take(child));
+                *child = self.records(read, table, std::mem::take(child))?;
             } else if child.segment == [GLOBALS] {
                 self.strip(table, child);
             }
         }
-        node
+        Ok(node)
     }
 
-    fn records(&self, store: &Store, table: &[u8], mut records: OwnedNode) -> OwnedNode {
+    fn records(
+        &self,
+        read: Read<'_>,
+        table: &[u8],
+        mut records: OwnedNode,
+    ) -> Result<OwnedNode, ReadError> {
         for record in &mut records.children {
-            if self.viewable(store, table, &record.segment) {
+            if self.viewable(read, table, &record.segment)? {
                 self.strip(table, record);
             } else {
                 self.note(table, &record.segment);
                 withhold(record);
             }
         }
-        records
+        Ok(records)
     }
 
     /// Record that record `record` of `table` was served withheld.
@@ -341,8 +356,22 @@ fn withhold(record: &mut OwnedNode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
     use om_hbam::slot::uint_segment;
     use om_hbam::HbamFile;
+
+    /// What a read of `store` gets, through its tree's view.
+    macro_rules! read_of {
+        ($store:expr, $tree:ident) => {{
+            let store: &Store = $store;
+            Read {
+                view: &$tree,
+                derived: store.derived(),
+                waiting: store.waiting(),
+                read_only: false,
+            }
+        }};
+    }
 
     /// #137's file and its `limited` set (`[23, 2, 5, 4]`), the set's rules
     /// changed by `change` (the fixture has no set hiding a table or a
@@ -381,22 +410,27 @@ mod tests {
             table.actions.edit = Allow::Yes;
             table.field_levels.insert(vec![1], AccessLevel::No);
         });
-        let view = ViewFilter::new(&store, &access, "limited").unwrap();
+        let tree = store.tree_view();
+        let read = read_of!(&store, tree);
+        let view = ViewFilter::new(read, &access, "limited").unwrap().unwrap();
         let records: [&[u8]; 2] = [&contacts, &[RECORDS]];
         let stored = store.node(&records).unwrap().clone();
-        let served = view.filter(&store, &records, stored.clone()).unwrap();
+        let served = view
+            .filter(read, &records, stored.clone())
+            .unwrap()
+            .unwrap();
         for (stored, served) in stored.children.iter().zip(&served.children) {
             assert!(stored.child(&[1]).is_some() && served.child(&[1]).is_none());
             assert_eq!(served.children.len() + 1, stored.children.len());
             // The client's edit of what it was served keeps First Name.
             let mut upload = served.clone();
-            let hidden = hidden_fields(&store, &access);
+            let hidden = hidden_fields(store.derived(), &access);
             keep_hidden(&mut upload, stored, &hidden[&contacts]);
             assert_eq!(&upload, stored);
         }
         // Its repetitions' cells are hidden too, and so is its global value
         // if it has one.
-        let hidden = hidden_fields(&store, &access);
+        let hidden = hidden_fields(store.derived(), &access);
         assert!(hidden[&contacts].contains(&vec![1, 2]));
         let globals: [&[u8]; 2] = [&contacts, &[GLOBALS]];
         let mut node = OwnedNode {
@@ -407,20 +441,21 @@ mod tests {
         node.set_child(OwnedNode::leaf(vec![1], b"secret".to_vec()));
         node.set_child(OwnedNode::leaf(vec![1, 2], b"secret".to_vec()));
         node.set_child(OwnedNode::leaf(vec![2], b"kept".to_vec()));
-        let served = view.filter(&store, &globals, node.clone()).unwrap();
+        let served = view.filter(read, &globals, node.clone()).unwrap().unwrap();
         assert_eq!(served.children.len(), 1);
         assert_eq!(served.children[0].segment, vec![2]);
         let cell: [&[u8]; 3] = [&contacts, &[GLOBALS], &[1, 2]];
-        assert!(view.filter(&store, &cell, node).is_none());
+        assert!(view.filter(read, &cell, node).unwrap().is_none());
         // Nor is it read below a record, or in the table's indexes.
         let record = &stored.children[0].segment;
         let cell: [&[u8]; 4] = [&contacts, &[RECORDS], record, &[1]];
         let node = store.node(&cell).unwrap().clone();
-        assert!(view.filter(&store, &cell, node).is_none());
+        assert!(view.filter(read, &cell, node).unwrap().is_none());
         let indexes: [&[u8]; 2] = [&contacts, &[INDEXES]];
         if let Some(node) = store.node(&indexes) {
             assert!(view
-                .filter(&store, &indexes, node.clone())
+                .filter(read, &indexes, node.clone())
+                .unwrap()
                 .unwrap()
                 .children
                 .is_empty());
@@ -437,10 +472,15 @@ mod tests {
             table.actions.view = Allow::No;
             table.actions.edit = Allow::Yes;
         });
-        let view = ViewFilter::new(&store, &access, "limited").unwrap();
+        let tree = store.tree_view();
+        let read = read_of!(&store, tree);
+        let view = ViewFilter::new(read, &access, "limited").unwrap().unwrap();
         let records: [&[u8]; 2] = [&contacts, &[RECORDS]];
         let stored = store.node(&records).unwrap().clone();
-        let served = view.filter(&store, &records, stored.clone()).unwrap();
+        let served = view
+            .filter(read, &records, stored.clone())
+            .unwrap()
+            .unwrap();
         assert_eq!(served.children.len(), stored.children.len());
         for record in &served.children {
             assert!(record
@@ -468,7 +508,9 @@ mod tests {
         let store = Store::load(&file, "Contacts-custom.fmp12").unwrap();
         let sets = file.subtree(&[&[23], &[2], &[5]]).unwrap().unwrap();
         let access = om_data::host::security::set_access(sets.child(&[4]).unwrap()).unwrap();
-        let view = ViewFilter::new(&store, &access, "limited").unwrap();
+        let tree = store.tree_view();
+        let read = read_of!(&store, tree);
+        let view = ViewFilter::new(read, &access, "limited").unwrap().unwrap();
         let contacts = uint_segment(0x8002);
         let mut served = BTreeMap::new();
         for record in &store.node(&[&contacts, &[RECORDS]]).unwrap().children {
@@ -479,7 +521,7 @@ mod tests {
             asked.children.retain(|child| child.segment != [1]);
             let fields = asked.children.len();
             let path: [&[u8]; 3] = [&contacts, &[RECORDS], &record.segment];
-            let reply = view.filter(&store, &path, asked).unwrap();
+            let reply = view.filter(read, &path, asked).unwrap().unwrap();
             served.insert(first_name, reply.children.len() == fields);
         }
         assert_eq!(

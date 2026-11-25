@@ -16,6 +16,10 @@ use crate::store::{MemberKey, Store};
 pub struct FileEngine {
     environment: Box<dyn Environment>,
     recorder: Option<Recorder>,
+    /// The test view reads go through when a test asked for it
+    /// (`super::copies`).
+    #[cfg(debug_assertions)]
+    pub(super) copies: std::sync::RwLock<Option<std::sync::Arc<super::copies::Switch>>>,
 }
 
 /// What the engine offers each operation to, by reference, completed and
@@ -205,6 +209,8 @@ impl FileEngine {
         FileEngine {
             environment,
             recorder: None,
+            #[cfg(debug_assertions)]
+            copies: Default::default(),
         }
     }
 

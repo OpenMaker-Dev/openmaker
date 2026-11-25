@@ -164,9 +164,13 @@
 //! storing the indexes panicked. The store engine will have to make
 //! issuing a member key and building an index operations of their own.
 
+#[cfg(debug_assertions)]
+mod copies;
 mod file;
+mod reading;
 mod schema;
 mod transaction;
+mod view;
 
 #[cfg(test)]
 mod tests;
@@ -192,7 +196,9 @@ use crate::views::Withheld;
 use crate::writes::{self, Change, CommitError, Mailboxes, RecordWrite};
 
 pub(crate) use file::FileEngine;
+pub(crate) use reading::{Read, Waiting};
 pub(crate) use transaction::{Hold, Locks, Transaction};
+pub(crate) use view::{wire, Direction, ReadError, TreeView, Version, View, NO_LIMIT};
 
 /// A change the server makes to a hosted file: one request's work, as a
 /// value. Who asks is part of it (the lock user, the name other users see

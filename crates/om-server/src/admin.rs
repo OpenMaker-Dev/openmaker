@@ -710,6 +710,20 @@ impl ServerHandle {
         true
     }
 
+    /// Fail every read of `path`, and of what is below it, in the hosted
+    /// file named `file`, as a damaged page fails the reads that reach it
+    /// (docs/server-storage.md 6.12): downloads and finds then read through
+    /// the test view alone (`engine::copies`), so that the client gets what
+    /// a failed read gives. For tests of what a client sees when a read
+    /// fails. Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_reads(&self, file: &str, path: &[&[u8]]) {
+        self.shared
+            .engine
+            .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
+    }
+
     /// The hosted files in id order, open or not, each with its state and
     /// how many connected clients have it open. Sizes come from the file
     /// system, so a file busy with a request is not waited for.

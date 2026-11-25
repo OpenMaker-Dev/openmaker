@@ -500,6 +500,19 @@ impl Server {
         self
     }
 
+    /// Answer every download and find (op90, op15, op92, op86) through a
+    /// second, test-only view of the hosted files as well as the file
+    /// engine's, and panic when the two answers differ
+    /// (docs/server-storage.md 5, "Views"; `engine::copies`): a test
+    /// fixture that shows readers do not lean on the file engine's view.
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn checking_reads(self) -> Self {
+        self.shared.engine.check_reads();
+        self
+    }
+
     /// Answer a client's find on a field without the index it reads as
     /// FileMaker Server does: with no records, building the index
     /// afterwards for later finds (query-program.md 7.1). By default the

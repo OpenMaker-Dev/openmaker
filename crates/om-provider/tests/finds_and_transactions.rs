@@ -66,6 +66,11 @@ fn host_with(
         record_dir,
     };
     let server = configure(Server::bind("127.0.0.1:0", config, identity).unwrap());
+    // Every download and find is answered through the test view too, and
+    // checked against the file engine's view (docs/server-storage.md 5,
+    // "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let port = server.local_addr().unwrap().port();
     std::thread::spawn(move || server.serve());
     (port, ca_pem)
