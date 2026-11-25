@@ -14,11 +14,11 @@ fn at(path: &[Vec<u8>]) -> Vec<&[u8]> {
     path.iter().map(Vec::as_slice).collect()
 }
 
-fn leaf(key: &[u8], value: &[u8]) -> OwnedNode {
+pub(super) fn leaf(key: &[u8], value: &[u8]) -> OwnedNode {
     OwnedNode::leaf(key.to_vec(), value.to_vec())
 }
 
-fn list(key: &[u8], children: Vec<OwnedNode>) -> OwnedNode {
+pub(super) fn list(key: &[u8], children: Vec<OwnedNode>) -> OwnedNode {
     OwnedNode::list(key.to_vec(), children)
 }
 
@@ -196,7 +196,7 @@ fn keys_inside_a_member_take_their_own_group_and_the_token_covers_them_all() {
 
 /// A script step descriptor (script-steps.md 2): data key `01 <key>`, step
 /// id, no value or flags.
-fn descriptor(key: u8, step: i16) -> Vec<u8> {
+pub(super) fn descriptor(key: u8, step: i16) -> Vec<u8> {
     let mut d = vec![2, 1, key, 0, 0, 0];
     d.extend([0; 14]);
     d.extend(step.to_be_bytes());
@@ -423,7 +423,7 @@ fn step_data_whose_step_is_not_identified_with_certainty_is_secret() {
 }
 
 /// A varint and a length-delimited protobuf field.
-fn varint(mut v: u64, out: &mut Vec<u8>) {
+pub(super) fn varint(mut v: u64, out: &mut Vec<u8>) {
     loop {
         let byte = (v & 0x7f) as u8;
         v >>= 7;
@@ -435,7 +435,7 @@ fn varint(mut v: u64, out: &mut Vec<u8>) {
     }
 }
 
-fn message(field: u32, bytes: &[u8], out: &mut Vec<u8>) {
+pub(super) fn message(field: u32, bytes: &[u8], out: &mut Vec<u8>) {
     varint(u64::from(field) << 3 | 2, out);
     varint(bytes.len() as u64, out);
     out.extend_from_slice(bytes);

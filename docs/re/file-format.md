@@ -341,7 +341,8 @@ the only shipped files with records) and enforced by
 ### 3.7 Catalog keys no spec explains
 
 `om_hbam::design_paths` puts a path in a group only where a spec says what
-it holds (docs/server-storage.md section 4). In the 66 FileMaker Pro 26
+it holds (docs/server-storage.md section 4), or, for two keys below, by an
+inference from their form. In the 66 FileMaker Pro 26
 starter files (six solutions in 11 languages, read by
 `crates/om-hbam/tests/design_paths.rs`), these keys of catalogs it
 otherwise covers are explained by no spec. Every row is observed in those
@@ -352,11 +353,20 @@ what is known or inferred.
 |---|---|---|
 | `[4, 5, L, 16]` | `00 00` on 11 layouts | unexplained (layout-model.md 10.15); in no group |
 | `[11, 5, S, 13]` | u32 0 on all 330 scripts | meaning unknown (script-steps.md 1); in no group |
-| `[17, 2, 1, 07, P]`, `[17, 3, 1, 07, E]`, `[19, 1, 07, F]`, `[21, 1, 07, V]`, `[40, 1, 07, M]`, `[41, 1, 07, M]` | an empty leaf per member, keyed by the member's key, in every file (198, 660, 139, 264, 66 and 264 leaves) | [I] a member list, as the file library's `07` (containers.md 1.2) and the themes' entries (layout-model.md 7.5); in no group |
+| `[17, 2, 1, 07, P]`, `[17, 3, 1, 07, E]`, `[19, 1, 07, F]`, `[21, 1, 07, V]`, `[40, 1, 07, M]`, `[41, 1, 07, M]` | an empty leaf per member, keyed by the member's key, in every file (198, 660, 139, 264, 66 and 264 leaves) | [I] a member list, as the file library's `07` (containers.md 1.2) and the themes' entries (layout-model.md 7.5); grouped Derived by this inference |
 | `[19, 5, F, 02]` | `01 00` on all 139 fonts | in no group |
 | `[19, 5, F, 03]` | text on 73 of 139 fonts: Tasks' `.SF NS Text` has `.SFNSText`, its name without spaces | [I] another form of the font's name; in no group |
-| `[21, 1, 06, <key>]` | one leaf per value list: `00 00` or `00 01`, the name's key, `00 00`, holding the list's key string. In Tasks the one list whose definition starts `01` has `00 01`, the custom lists `00 00` | [I] a second name list, as the field catalog's by type (schema-path.md 5.5); [I] that the two bytes give the list's type, from one file; in no group |
+| `[21, 1, 06, <key>]` | one leaf per value list: `00 00` or `00 01`, the name's key, `00 00`, holding the list's key string. In Tasks the one list whose definition starts `01` has `00 01`, the custom lists `00 00` | [I] a second name list, as the field catalog's by type (schema-path.md 5.5); [I] that the two bytes give the list's type, from one file; grouped Derived by this inference |
 | `[41, 5, M, 02]` | on all 264 custom menus | [U] calc-encoding.md 8 places menu item calculations under the member, at a position not given; in no group |
+
+The member lists `07` and the value lists' `06` are grouped Derived,
+not Design entries as the themes' `07` are, because the inference rests
+on their form alone: if it is wrong, a difference there is reported as
+Derived when it is Design, and nothing of it is hashed into a design
+revision or shown. The other rows are in no group, so an object holding
+one has no design revision (docs/server-storage.md section 9) until a
+spec says what the key holds: a custom menu item can run a script step,
+so a custom menu's `02` may hold a step's stored credential.
 
 Three index keys have the same form and value as keys a spec names, and
 take their rule by that inference: `[6, 1, 20]` (`01` in the 11 Contacts

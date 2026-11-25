@@ -89,6 +89,12 @@ pub(super) struct Secret {
     /// Relative to the member.
     pub path: Path,
     pub holds: &'static str,
+    /// An identified credential: the text or calculation of a credential
+    /// slot of a step identified with certainty. Every other Secret path
+    /// (a slot of a step not identified, an ODBC profile, a member the
+    /// decoders could read differently) is Secret because what it holds
+    /// could not be identified, and may hold design too.
+    pub credential: bool,
 }
 
 /// The step each data node belongs to, by data key: `None` inside where
@@ -220,6 +226,7 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
             .map(|c| Secret {
                 path: vec![c.segment.clone()],
                 holds: "a member whose keys the decoders can read differently",
+                credential: false,
             })
             .collect();
     }
@@ -236,6 +243,7 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
                     out.push(Secret {
                         path: slot,
                         holds: "an ODBC connection profile, with its user name and password",
+                        credential: false,
                     });
                 }
                 continue;
@@ -247,6 +255,7 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
                 None => out.push(Secret {
                     path: slot,
                     holds: "a slot of a step OpenMaker cannot identify with certainty",
+                    credential: false,
                 }),
                 Some(step) => {
                     let Some(holds) = credential(step, &child.segment) else {
@@ -256,7 +265,11 @@ pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
                         if child.child(part).is_some() {
                             let mut path = slot.clone();
                             path.push(part.to_vec());
-                            out.push(Secret { path, holds });
+                            out.push(Secret {
+                                path,
+                                holds,
+                                credential: true,
+                            });
                         }
                     }
                 }

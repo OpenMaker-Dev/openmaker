@@ -215,6 +215,19 @@ const fn derived(key: &'static [u8], holds: &'static str, spec: &'static str) ->
     keyed(Group::Derived, key, holds, spec)
 }
 
+/// An index key `07` holding an empty leaf per member, keyed by the
+/// member's key, in every file observed: [I] a member list, by its form
+/// (file-format.md 3.7). It is grouped Derived, not Design entries as the
+/// themes' `07` is: the inference rests on the form alone, and if it is
+/// wrong a difference there is reported as Derived when it is Design, and
+/// nothing is hashed or shown. As Design entries, a wrong inference would
+/// put unidentified content into each member's design revision.
+const MEMBER_LIST: Key = derived(
+    &[0x07],
+    "a member list, an empty leaf per member [I]",
+    "file-format.md 3.7 [I]",
+);
+
 /// A catalog: a node with an index `01` and members `05` (file-format.md
 /// 3.4, schema-path.md 1).
 #[derive(Clone, Copy, Debug)]
@@ -527,11 +540,10 @@ pub const CATALOGS: &[Catalog] = &[
         group: Group::Design,
         kind: Some(Kind::PrivilegeSet),
         spec: "session-identity.md 2",
-        index: &[derived(
-            &[0x08],
-            "the sets by checksum",
-            "session-identity.md 4.1",
-        )],
+        index: &[
+            MEMBER_LIST,
+            derived(&[0x08], "the sets by checksum", "session-identity.md 4.1"),
+        ],
         member: &[
             design(
                 &[0x02],
@@ -573,7 +585,7 @@ pub const CATALOGS: &[Catalog] = &[
         group: Group::Design,
         kind: Some(Kind::ExtendedPrivilege),
         spec: "session-identity.md 4.2",
-        index: &[],
+        index: &[MEMBER_LIST],
         member: &[
             design(&[0x02], "the sharing state", "session-identity.md 4.2"),
             design(&[0x03], "the description", "session-identity.md 4.2"),
@@ -597,7 +609,7 @@ pub const CATALOGS: &[Catalog] = &[
         group: Group::Design,
         kind: Some(Kind::Font),
         spec: "layout-model.md 8",
-        index: &[],
+        index: &[MEMBER_LIST],
         member: &[],
     },
     Catalog {
@@ -648,11 +660,19 @@ pub const CATALOGS: &[Catalog] = &[
         group: Group::Design,
         kind: Some(Kind::ValueList),
         spec: "file-metadata.md 6",
-        index: &[design(
-            &[0x20],
-            "the Manage dialog's view order [I]",
-            "scripts.md, \"The catalog index\"",
-        )],
+        index: &[
+            derived(
+                &[0x06],
+                "a second name list, by type as the field catalog's [I]",
+                "file-format.md 3.7 [I]; schema-path.md 5.5",
+            ),
+            MEMBER_LIST,
+            design(
+                &[0x20],
+                "the Manage dialog's view order [I]",
+                "scripts.md, \"The catalog index\"",
+            ),
+        ],
         member: &[
             design(&[0x02], "the definition", "file-metadata.md 6.1, 6.2"),
             design(&[0x03], "the custom values", "file-metadata.md 6.1"),
@@ -679,6 +699,7 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::CustomMenuSet),
         spec: "file-format.md 3.4 [I]",
         index: &[
+            MEMBER_LIST,
             design(&[0x18], "the default menu set [I]", "file-format.md 3.7"),
             design(
                 &[0x20],
@@ -694,7 +715,7 @@ pub const CATALOGS: &[Catalog] = &[
         group: Group::Design,
         kind: Some(Kind::CustomMenu),
         spec: "calc-encoding.md 8",
-        index: &[],
+        index: &[MEMBER_LIST],
         member: &[design(
             &[0x25],
             "the install-when calculation",

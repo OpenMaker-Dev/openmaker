@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 
 use crate::api::{
     ApplyParams, ArrangeObjectsParams, AuthorError, ChangePartsParams, ChoiceParams, ChooseParams,
-    Command, CompletionParams, CreateFieldParams, CreateFileParams, CreateLayoutParams,
-    DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams, ErrorKind,
-    FieldControlParams, FieldParams, InspectParams, LayoutParams, LayoutSetupParams,
+    Command, CompareDesignsParams, CompletionParams, CreateFieldParams, CreateFileParams,
+    CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
+    ErrorKind, FieldControlParams, FieldParams, InspectParams, LayoutParams, LayoutSetupParams,
     LayoutWidthParams, NoParams, ObjectFramesParams, OtherParams, PartOptionsParams,
     PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams, RunScriptParams,
     ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
@@ -213,6 +213,27 @@ pub static CREATE_FILE: CommandSpec = CommandSpec {
     operation: None,
     params: schema_for_type::<CreateFileParams>,
     parse: |params| read::<CreateFileParams>(params).map(Command::CreateFile),
+};
+
+pub static COMPARE_DESIGNS: CommandSpec = CommandSpec {
+    id: om_hbam::design_paths::COMPARE_DESIGNS,
+    cli: "compare-designs",
+    tool: "openmaker_compare_designs",
+    title: "Compare two files' designs",
+    description: "Compare the designs of two FileMaker files on this computer, a source and a \
+                  target, with an optional base they were both made from. Objects are matched \
+                  by kind and id when the base has them, or without a base only when kind, id \
+                  and name all agree; an object agreeing in id or name alone is listed as a \
+                  possible match, never matched. For each matched object it says how the two \
+                  differ (same; Design; only stored secrets; only Data or Derived content; \
+                  unidentified content) and, with a base, which side changed it. It reports \
+                  kinds, ids, names, these classes and design revisions, never content, \
+                  passwords or edit tokens. Reads the files only. Needs no connection.",
+    effect: Effect::Reads,
+    needs: Needs::Nothing,
+    operation: None,
+    params: schema_for_type::<CompareDesignsParams>,
+    parse: |params| read::<CompareDesignsParams>(params).map(Command::CompareDesigns),
 };
 
 pub static COMMANDS: CommandSpec = CommandSpec {
@@ -835,7 +856,7 @@ pub static COMPLETE_CALCULATION: CommandSpec = CommandSpec {
 
 /// Every command, in the order the MCP tool list, `commands` and the CLI's
 /// usage give them.
-pub static ALL: [&CommandSpec; 36] = [
+pub static ALL: [&CommandSpec; 37] = [
     &CAPABILITIES,
     &INSPECT,
     &GET_SCRIPT,
@@ -871,6 +892,7 @@ pub static ALL: [&CommandSpec; 36] = [
     &GET_VALUE_LISTS,
     &COMPLETE_CALCULATION,
     &CREATE_FILE,
+    &COMPARE_DESIGNS,
     &COMMANDS,
 ];
 
@@ -963,6 +985,7 @@ mod tests {
             "get_value_lists": {},
             "complete_calculation": {"text": "Le"},
             "create_file": {"path": "New.fmp12"},
+            "compare_designs": {"source": "A.fmp12", "target": "B.fmp12"},
         });
         for spec in ALL {
             assert!(std::ptr::eq(get(spec.id).unwrap(), spec));

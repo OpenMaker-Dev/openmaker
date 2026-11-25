@@ -127,6 +127,11 @@ commands (each prints one JSON response):
   create-file --path PATH            make a new, blank file at PATH (.fmp12
                                      added), as File > Create New... does;
                                      never replaces a file (no connection)
+  compare-designs --source PATH --target PATH [--base PATH] [--include-same]
+                                     compare two files' designs on this
+                                     computer: matched objects and how
+                                     they differ, never content (no
+                                     connection)
   commands                           every command, what it needs and its
                                      parameters' JSON Schema (no connection)
   request                            run one JSON request read from stdin
@@ -206,6 +211,9 @@ struct Args {
     occurrence_name: Option<String>,
     limit: Option<String>,
     path: Option<String>,
+    target_file: Option<String>,
+    base: Option<String>,
+    include_same: bool,
     views: Option<String>,
     default_view: Option<String>,
     in_menus: Option<String>,
@@ -301,6 +309,9 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--occurrence-name" => args.occurrence_name = Some(value(&arg)?),
             "--limit" => args.limit = Some(value(&arg)?),
             "--path" => args.path = Some(value(&arg)?),
+            "--target" => args.target_file = Some(value(&arg)?),
+            "--base" => args.base = Some(value(&arg)?),
+            "--include-same" => args.include_same = true,
             "--password" => {
                 return Err(
                     "Passwords are not taken as arguments (other users can list them); use \
@@ -434,6 +445,15 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
         "create_file" => Command::CreateFile(api::CreateFileParams {
             path: args.path.clone().ok_or("create-file needs --path PATH")?,
         }),
+        "compare_designs" => {
+            let needs = "compare-designs needs --source PATH and --target PATH";
+            Command::CompareDesigns(api::CompareDesignsParams {
+                source: args.source.clone().ok_or(needs)?,
+                target: args.target_file.clone().ok_or(needs)?,
+                base: args.base.clone(),
+                include_same: args.include_same,
+            })
+        }
         "capabilities" => Command::Capabilities,
         "get_security" => Command::GetSecurity,
         "inspect" => Command::Inspect(InspectParams {

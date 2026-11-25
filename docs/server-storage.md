@@ -177,12 +177,15 @@ member's id; a test keeps this table equal to the code's):
 | `[11, 01, 08]` | the digest of the member cache | Derived |  | scripts.md, "The catalog index" |
 | `[17, 01]` | accounts | Access |  | session-identity.md 1, 3; local-files.md 3 |
 | `[17, 02]` | privilege sets | Design | privilege_set | session-identity.md 2 |
+| `[17, 02, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
 | `[17, 02, 01, 08]` | the sets by checksum | Derived |  | session-identity.md 4.1 |
 | `[17, 02, 05, *, 04]` | the checksum, over the set and the file's creation stamp | Derived |  | session-identity.md 4.1, 4.4 |
 | `[17, 03]` | extended privileges | Design | extended_privilege | session-identity.md 4.2 |
+| `[17, 03, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
 | `[17, 03, 05, *, 04]` | the checksum | Derived |  | session-identity.md 4.2, 4.4 |
 | `[17, 04]` | file access | Access |  | session-identity.md 4.3 |
 | `[19]` | fonts | Design | font | layout-model.md 8 |
+| `[19, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
 | `[1f]` | file library | Design | library_item | containers.md 1 |
 | `[1f, 01, 06]` | the glyph index: the members that are glyphs; each entry is part of its member's object | Design |  | containers.md 1.2 |
 | `[1f, 01, 07]` | the member list; each entry is part of its member's object | Design |  | containers.md 1.2 |
@@ -191,9 +194,13 @@ member's id; a test keeps this table equal to the code's):
 | `[1f, 05, *, 12]` | the reference count | Data |  | containers.md 1.3, 5 |
 | `[20]` | data sources | Design | data_source | file-metadata.md 1.1 |
 | `[21]` | value lists | Design | value_list | file-metadata.md 6 |
+| `[21, 01, 06]` | a second name list, by type as the field catalog's [I] | Derived |  | file-format.md 3.7 [I]; schema-path.md 5.5 |
+| `[21, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
 | `[26]` | base directories | Design | base_directory | containers.md 8.1 |
 | `[40]` | custom menu sets | Design | custom_menu_set | file-format.md 3.4 [I] |
+| `[40, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
 | `[41]` | custom menus | Design | custom_menu | calc-encoding.md 8 |
+| `[41, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
 | `[T, 03]` | fields | Design | field | schema-path.md 5.5 |
 | `[T, 03, 01, 06]` | the name list by type | Derived |  | schema-path.md 5.5 |
 | `[T, 03, 01, 0e]` | the fields' triggers and dependencies | Derived |  | schema-path.md 5.5, 5.10 |
@@ -256,9 +263,11 @@ everything is that rule's. A password typed into a calculation, a URL
 with credentials in Insert from URL's options or a cURL option, or a key
 in a custom function is ordinary formula text and Design. A credential
 under a key no spec names (a data source's connection settings, if a
-file has them) is in no group, and like every path in no group it stays
-in its object's revision. A custom menu item that runs a step, and a
-button in a table view `[4, 5, L, 0d]`, are not looked into.
+file has them) is in no group: like every path in no group it stays in
+its object's edit token, and the object has no design revision (section
+9). A custom menu item that runs a step, and a button in a table view
+`[4, 5, L, 0d]`, are not looked into; a custom menu's step data is under
+its unexplained key `02`, in no group.
 
 A path in no group is the file as a whole (`[2]`, `[1a]`), or a key no
 rule names: no spec says what it is, so it is not guessed. Neither is an
@@ -273,7 +282,11 @@ that replaces one is classified by the paths below it. The report
 (`cargo run -p om-hbam --example design_paths -- <file>`) lists the
 paths no rule covers by shape, and the catalog members that are no
 design object; the keys of FileMaker Pro 26's starter files that no spec
-explains are listed in [file-format.md](re/file-format.md) 3.7.
+explains are listed in [file-format.md](re/file-format.md) 3.7. Two
+index keys there are grouped Derived by inference from their form alone
+(a member list `07` in six catalogs, the value lists' second name list
+`06`): if the inference is wrong, a difference there is reported as
+Derived when it is Design, and no content is hashed or shown.
 
 ## 5. The engine interface
 
@@ -1080,23 +1093,71 @@ Workspace shows, scripts.md). A catalog object is its index, whose
 Design paths are the display order, and so the order of scripts and
 their folders, and the catalog's settings; the name lists, digests,
 counts and dependency lists there are Derived, and the last issued id is
-Data. An emptied member, a deletion, is no object. An object's revision
-today is its edit token (`Object::edit_token`): the `sha256:` of its whole
-member or index, stored passwords included, without modification stamps,
-what `om-author` reports and the host checks to guard an edit
-([authoring.md](authoring.md), "Revisions"); it is exchanged only between
-a client that holds the member and the host. A revision that can be
-shown and kept in history, comparisons, the text form and a mirror, and
-that carries no stored password, is not built
-([#723](https://github.com/OpenMaker-Dev/openmaker/issues/723)). Derived
-paths are recomputed by whoever writes the paths they come from, a deploy
-too: a privilege set's checksum covers the file's creation stamp, so one
-copied from another file would fail FileMaker's check at open
-(session-identity.md 4.4).
+Data. An emptied member, a deletion, is no object.
+
+An object has two revisions. Its **edit token** (`Object::edit_token`)
+is the `sha256:` of its whole member or index, stored passwords
+included, without modification stamps: what `om-author` reports and the
+host checks to guard an edit ([authoring.md](authoring.md),
+"Revisions"), exchanged only between a client that holds the member and
+the host. Its **design revision** (`Object::design_revision`) is the
+revision history, comparisons, the text form and a mirror show and keep:
+the SHA-256 of its Design content alone, in its member (or index) and
+its index entries. It is built by walking the object and adding each
+node whose path `group_in` puts in Design, in the edit token's canonical
+form for the kind and without modification stamps, each node written
+with only its children that lead to Design content, so that no value,
+length or count of another group reaches it. A catalog's covers its
+index without the entries that belong to its members. The hashed bytes
+start with eight `ff` bytes, which no edit token's input can start with
+(they would be a segment length of 2^64 - 1), then the form's version,
+1: a design revision is comparable only with one of the same version.
+Its text is `design-sha256:` and 64 hex digits, which no command takes
+as an edit token. A split value is hashed as the value it joins to, as
+the edit token hashes it; its header's other words (a text's character
+count) are framing that neither covers.
+
+An object has **no design revision** when it holds unidentified
+content: a path in no group, or a path that is Secret because what it
+holds could not be identified (every slot of a step not identified with
+certainty; an ODBC profile, which holds the query beside the
+credentials; a member the decoders could read differently; a credential
+slot's own list value). Nothing unidentified is ever hashed. In FileMaker
+Pro 26's 66 starter files 6,347 of 7,091 objects have a design revision;
+every script, font and custom menu and 11 layouts hold a key no spec
+explains (file-format.md 3.7,
+[#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)) and have
+none until that key has a rule. Derived paths are recomputed by whoever
+writes the paths they come from, a deploy too: a privilege set's
+checksum covers the file's creation stamp, so one copied from another
+file would fail FileMaker's check at open (session-identity.md 4.4).
+
+**Comparison.** `compare_designs` (`om_hbam::design_paths::compare_files`,
+an `om-author` command) compares the designs of two files on this
+computer, a source and a target, with or without a base, as steps 2 and
+3 of a deploy (below) will. Objects are matched as step 2 says; a field
+only when its table is matched, and without a base only objects with a
+name decoded on both sides and equal byte for byte. Every matched object
+is compared by its bytes group by group inside the process, whether it
+has a design revision or not: the same (modification stamps may
+differ); Design content differs; only stored secrets differ, said only
+when every differing Secret path is an identified credential; only Data
+content, only Derived content, or both; unidentified content differs,
+alone or with Design content. With a base each side is also compared
+with the base, and a side changed an object when its Design content,
+its stored secrets or its unidentified content differs from the base's:
+a serial number taken or a checksum over the file's creation stamp is no
+change. Both sides changing an object, differently, is a conflict. A
+comparison reports kinds, ids, names, these classes and design
+revisions; never an edit token, a hash covering other content, or any
+content. In the starter files 143 relationships, 528 file library items
+and 66 custom menu sets have no name, so without a base they are always
+possible matches, never matched.
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the
-operation and each object's revision before and after. Each revision's
+operation and each object's design revision before and after (for an
+object without one, that it changed, by its content). Each revision's
 content is kept once, by its hash; two events that reach the same content
 stay two events. History is part of the state, so it does not depend on
 how long the log is kept. That covers deploys, `om-author` edits and a

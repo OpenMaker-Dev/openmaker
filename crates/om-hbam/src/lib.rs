@@ -25,8 +25,8 @@
 //! Nothing is copied or rewritten, so [`HbamFile::as_bytes`] round-trips.
 //!
 //! Which paths of a tree are Design, Data or Access, the file's design
-//! objects and their revisions: [`design_paths`] (`docs/server-storage.md`
-//! sections 4 and 9).
+//! objects and their revisions, and the comparison of two files' designs:
+//! [`design_paths`] (`docs/server-storage.md` sections 4 and 9).
 
 pub mod catalog;
 pub mod container;

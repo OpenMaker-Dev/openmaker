@@ -3,9 +3,10 @@
 //! terminal paths per group, the paths no rule covers by shape, and the
 //! catalog members that are no design object. With `--objects`, also each
 //! design object (each catalog as a whole, then its members) with its
-//! kind, key, name and how many Secret paths it holds. Edit tokens are not
-//! printed: a token covers stored passwords, and a report is pasted where a
-//! token does not belong (it is for an authoring client and its host).
+//! kind, key, name, how many Secret paths it holds and its design
+//! revision, or `-` when it has none. Edit tokens are not printed: a token
+//! covers stored passwords, and a report is pasted where a token does not
+//! belong (it is for an authoring client and its host).
 //! Several files give one report over all of them.
 //!
 //! `cargo run -p om-hbam --example design_paths -- [--objects] <file.fmp12>...`
@@ -56,8 +57,11 @@ fn main() {
                     hex(&object.key)
                 };
                 let secrets = object.secrets().len();
+                let revision = object
+                    .design_revision()
+                    .map_or_else(|| "-".to_string(), |r| r.text());
                 println!(
-                    "  {:<18} {table}{key:<8} {}{}",
+                    "  {:<18} {table}{key:<8} {revision} {}{}",
                     object.kind.name(),
                     object.name.as_deref().unwrap_or("-"),
                     if secrets > 0 {

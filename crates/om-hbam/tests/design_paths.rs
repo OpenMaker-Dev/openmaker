@@ -104,15 +104,8 @@ mod oracle {
 const UNCLASSIFIED: &[&str] = &[
     "[04, 05, *, 16]",
     "[11, 05, *, 13]",
-    "[17, 02, 01, 07, …]",
-    "[17, 03, 01, 07, …]",
-    "[19, 01, 07, …]",
     "[19, 05, *, 02]",
     "[19, 05, *, 03]",
-    "[21, 01, 06, …]",
-    "[21, 01, 07, …]",
-    "[40, 01, 07, …]",
-    "[41, 01, 07, …]",
     "[41, 05, *, 02]",
 ];
 
@@ -445,4 +438,153 @@ fn the_storage_design_shows_the_rule_tables() {
             "docs/server-storage.md section 4 must show design_paths::{name}() as it is"
         );
     }
+}
+
+/// Per kind: the objects with and without a design revision, why those
+/// without have none (the shapes of their paths in no group, or a Secret
+/// path that could not be identified), and the objects with no decoded
+/// name, which a comparison without a base can never match.
+#[test]
+#[ignore = "requires the git-ignored extracted templates in re/extracted"]
+fn design_revisions_and_names_per_kind() {
+    let files = files();
+    assert!(!files.is_empty(), "no template folder under re/extracted");
+    // (kind, catalog) -> (with, without, without a name)
+    let mut table: BTreeMap<(Kind, bool), (usize, usize, usize)> = BTreeMap::new();
+    let mut why: BTreeMap<(Kind, bool, String), usize> = BTreeMap::new();
+    for path in &files {
+        let (_, root) = tree(path);
+        let objects = design_paths::objects(&root);
+        // An object with no name is matched with none, itself included:
+        // listed as a possible match by id.
+        let itself = design_paths::compare(&root, &root, None).unwrap();
+        for possible in &itself.possible_matches {
+            assert_eq!(possible.agrees, design_paths::Agreement::Id);
+            assert_eq!(possible.source.name, None);
+            table
+                .entry((possible.source.kind, possible.source.catalog))
+                .or_default()
+                .2 += 1;
+        }
+        assert!(itself
+            .matched
+            .iter()
+            .all(|m| m.difference == design_paths::Difference::Same));
+        for object in &objects {
+            let entry = table.entry((object.kind, object.catalog)).or_default();
+            if object.design_revision().is_some() {
+                entry.0 += 1;
+                continue;
+            }
+            entry.1 += 1;
+            let mut reasons = object.unclassified();
+            reasons.extend(
+                object
+                    .secrets()
+                    .into_iter()
+                    .map(|(_, holds)| format!("Secret: {holds}")),
+            );
+            assert!(!reasons.is_empty(), "{:?} {:02x?}", object.kind, object.key);
+            reasons.sort();
+            reasons.dedup();
+            for reason in reasons {
+                *why.entry((object.kind, object.catalog, reason))
+                    .or_default() += 1;
+            }
+        }
+    }
+    println!("| Objects | With a design revision | Without | No decoded name |");
+    println!("|---|---|---|---|");
+    for ((kind, catalog), (with, without, unnamed)) in &table {
+        let what = if *catalog { " catalog" } else { "" };
+        println!("| {}{what} | {with} | {without} | {unnamed} |", kind.name());
+    }
+    println!("why:");
+    for ((kind, catalog, reason), count) in &why {
+        println!(
+            "  {count:>5}  {}{} {reason}",
+            kind.name(),
+            if *catalog { " catalog" } else { "" }
+        );
+    }
+    let count =
+        |kind: Kind, catalog: bool| table.get(&(kind, catalog)).copied().unwrap_or_default();
+    // Scripts hold the unexplained `13`; the catalogs given rules by
+    // inference now have revisions.
+    assert_eq!(count(Kind::Script, false).0, 0);
+    for kind in [
+        Kind::PrivilegeSet,
+        Kind::ExtendedPrivilege,
+        Kind::Font,
+        Kind::ValueList,
+        Kind::CustomMenuSet,
+    ] {
+        assert_eq!(count(kind, true).1, 0, "{kind:?}");
+    }
+    assert_eq!(count(Kind::Field, false).1, 0);
+}
+
+/// Two language versions of one starter solution compared, without a base
+/// and with the English one as the base, and each with itself: the counts
+/// per class, a check that the classes say something sensible.
+#[test]
+#[ignore = "requires the git-ignored extracted templates in re/extracted"]
+fn two_language_versions_compare_class_by_class() {
+    let files = files();
+    let find = |solution: &str, language: &str| {
+        files
+            .iter()
+            .find(|p| p.ends_with(format!("{solution}/{language}.fmp12")))
+            .cloned()
+    };
+    let (Some(en), Some(de)) = (find("Tasks", "en"), find("Tasks", "de")) else {
+        panic!("no Tasks starter files under re/extracted");
+    };
+    let print = |label: &str, c: &design_paths::Comparison| {
+        let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
+        for m in &c.matched {
+            *classes.entry(m.difference.name()).or_default() += 1;
+        }
+        let by_agreement = |a| c.possible_matches.iter().filter(|p| p.agrees == a).count();
+        let without = c
+            .matched
+            .iter()
+            .filter(|m| m.source_revision.is_none() || m.target_revision.is_none())
+            .count();
+        println!(
+            "{label}: matched {} ({without} without a design revision) {classes:?}; possible matches by id {}, by name {}; only in source {}, only in target {}; changed by {:?}",
+            c.matched.len(),
+            by_agreement(design_paths::Agreement::Id),
+            by_agreement(design_paths::Agreement::Name),
+            c.only_in_source.len(),
+            c.only_in_target.len(),
+            {
+                let mut by: BTreeMap<String, usize> = BTreeMap::new();
+                for m in &c.matched {
+                    if let Some(base) = &m.base {
+                        *by.entry(format!("{:?}", base.changed_by())).or_default() += 1;
+                    }
+                }
+                by
+            }
+        );
+    };
+    let same = design_paths::compare_files(&en, &en, None).unwrap();
+    print("Tasks en with itself", &same);
+    assert!(same
+        .matched
+        .iter()
+        .all(|m| m.difference == design_paths::Difference::Same));
+    let without = design_paths::compare_files(&en, &de, None).unwrap();
+    print("Tasks en and de, no base", &without);
+    let with = design_paths::compare_files(&en, &de, Some(&en)).unwrap();
+    print("Tasks en and de, en as the base", &with);
+    // With English as the base every object both files have is matched,
+    // and only the German side changed any.
+    assert!(with.possible_matches.is_empty());
+    assert!(with.matched.iter().all(|m| {
+        let base = m.base.as_ref().unwrap();
+        base.source == design_paths::Difference::Same && base.target == m.difference
+    }));
+    assert!(with.matched.len() >= without.matched.len());
 }

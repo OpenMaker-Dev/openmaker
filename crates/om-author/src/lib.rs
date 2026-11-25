@@ -4,7 +4,8 @@
 //! edits against the file's names, and applies a script step replacement
 //! with conflict protection, reading the result back over a new
 //! connection; it plans and adds stored fields to tables the same way, and
-//! runs scripts on the host with Perform Script on Server. The
+//! runs scripts on the host with Perform Script on Server, and compares
+//! the designs of two files on this computer ([`designs`]). The
 //! `om-author` binary offers the same commands as a CLI
 //! and as an MCP server over stdio ([`mcp`]); both run through
 //! [`Service`]. Each command is described once in [`catalog`]: its id, CLI
@@ -21,6 +22,7 @@
 pub mod api;
 pub mod catalog;
 pub mod config;
+pub mod designs;
 pub mod mcp;
 pub mod refs;
 pub mod service;

@@ -1,6 +1,7 @@
 //! Which paths of a file are Design, Data, Access, Secret or Derived, the
-//! file's design objects, and their edit tokens (`docs/server-storage.md`
-//! sections 4 and 9; `docs/authoring.md`, "Revisions").
+//! file's design objects, their edit tokens and design revisions, and the
+//! comparison of two files' designs (`docs/server-storage.md` sections 4
+//! and 9; `docs/authoring.md`, "Revisions" and "Comparing designs").
 //!
 //! **Groups.** [`group_in`] puts a path of a tree in a [`Group`] by the
 //! path rules of [`rules()`], one table, each rule with the spec section
@@ -37,14 +38,34 @@
 //! **Edit tokens** ([`revision`]). An object's [`Object::edit_token`]
 //! covers its whole member (or index), stored passwords included, without
 //! modification stamps: what `om-author`, `om-provider` and `om-server`
-//! exchange as a revision to guard an edit. A revision for history that
-//! carries no stored password is not built here.
+//! exchange as a revision to guard an edit.
+//!
+//! **Design revisions** ([`design`]). An object's
+//! [`Object::design_revision`] is the hash of its Design content alone, in
+//! its member (or index) and its index entries, built by adding what
+//! [`group_in`] puts in Design and nothing else: the revision history,
+//! comparisons and the text form show and keep. An object holding
+//! unidentified content (a path in no group, or a path that is Secret
+//! because what it holds could not be identified) has none.
+//!
+//! **Comparison** ([`compare`], [`compare_files`]). Two files' objects
+//! matched with or without a base, and each matched object compared by
+//! its content group by group, reported as kinds, ids, names, classes of
+//! difference and design revisions, never content.
 
+mod compare;
+mod design;
 mod report;
 mod revision;
 mod rules;
 mod secrets;
 
+pub use compare::{
+    compare, compare_files, design_tree, Agreement, Alone, ChangedBy, CompareError, Comparison,
+    Difference, FromBase, Ident, Matched, PossibleMatch, Presence, Which, COMPARE_DESIGNS,
+    NAME_CANDIDATES,
+};
+pub use design::{DesignRevision, DESIGN_REVISION_VERSION};
 pub use report::{report, Member, MemberIs, Report};
 pub use revision::{
     catalog_revision, is_stamp, legacy_catalog_revision, legacy_script_form_revision,
@@ -166,6 +187,17 @@ impl Object<'_> {
     /// [`Object::entries`].
     pub fn edit_token(&self) -> Revision {
         edit_token(if self.catalog { None } else { Some(self.kind) }, self.node)
+    }
+
+    /// The object's design revision: the hash of its Design content, in
+    /// its member (or index) and its index entries, with no byte of a
+    /// stored credential or any other group in it ([`design`]'s module
+    /// doc). `None` when the object holds unidentified content: a path in
+    /// no group, or a path that is Secret because what it holds could not
+    /// be identified. A catalog's covers its index without its members'
+    /// entries.
+    pub fn design_revision(&self) -> Option<DesignRevision> {
+        design::classify(self)?.revision()
     }
 
     /// The member's Secret paths, relative to it, with what each holds.

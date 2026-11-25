@@ -753,7 +753,7 @@ Each of these cost a debugging round:
 
   | Crate | Example | Shows |
   |---|---|---|
-  | `om-hbam` | `dump_keys`, `dump_calcs`, `file_metadata`, `design_paths` | the key tree, stored formulas, file metadata; the paths in each path group, those no rule covers, and the design objects with their Secret paths (`--objects`) |
+  | `om-hbam` | `dump_keys`, `dump_calcs`, `file_metadata`, `design_paths` | the key tree, stored formulas, file metadata; the paths in each path group, those no rule covers, and the design objects with their Secret paths and design revisions (`--objects`) |
   | `om-layout` | `inspect`, `objects`, `styles`, `library_images` | layouts, objects with bounds and resolved styles, images |
   | `om-provider` | `schema_catalog`, `field_options` | tables, occurrences, relationships; field options |
   | `om-scripts` | `inspect_scripts`, `step_params` | the script catalog, re-encoded exactly; step parameters |

@@ -489,6 +489,10 @@ pub fn handle_offline(command: &Command) -> Option<Value> {
     match command {
         Command::Commands => Some(api::response(command.name(), Ok(catalog::describe()))),
         Command::CreateFile(params) => Some(api::response(command.name(), create_file(params))),
+        Command::CompareDesigns(params) => Some(api::response(
+            command.name(),
+            crate::designs::compare_designs(params),
+        )),
         _ => None,
     }
 }
@@ -682,6 +686,7 @@ impl Service {
         match command {
             Command::Commands => Ok(catalog::describe()),
             Command::CreateFile(params) => create_file(params),
+            Command::CompareDesigns(params) => crate::designs::compare_designs(params),
             Command::Capabilities => self.capabilities(),
             Command::Inspect(params) => self.inspect(params),
             Command::GetScript(params) => self.get_script(params),

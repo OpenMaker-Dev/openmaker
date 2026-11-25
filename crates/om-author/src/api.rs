@@ -90,6 +90,10 @@ pub enum Command {
     /// Make a new, blank file on this computer, as File > Create New...
     /// does (`om_data::new_file::create`). Needs no connection.
     CreateFile(CreateFileParams),
+    /// Compare the designs of two files on this computer, with or without
+    /// a base (`om_hbam::design_paths::compare_files`). Needs no
+    /// connection.
+    CompareDesigns(CompareDesignsParams),
 }
 
 impl Command {
@@ -132,6 +136,7 @@ impl Command {
             Command::GetValueLists(_) => &catalog::GET_VALUE_LISTS,
             Command::CompleteCalculation(_) => &catalog::COMPLETE_CALCULATION,
             Command::CreateFile(_) => &catalog::CREATE_FILE,
+            Command::CompareDesigns(_) => &catalog::COMPARE_DESIGNS,
         }
     }
 
@@ -202,6 +207,27 @@ pub struct CreateFileParams {
     /// file name without the extension names the file, its table and its
     /// layout. A file already there is never replaced.
     pub path: String,
+}
+
+/// The files `compare_designs` compares, each a path on this computer,
+/// relative to the working directory or absolute. Files are only read.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompareDesignsParams {
+    /// The source: the file whose design is compared with the target's.
+    pub source: String,
+    /// The target.
+    pub target: String,
+    /// The base: the copy the source and the target were both made from.
+    /// With it objects are matched by kind and id, and each side's
+    /// changes since it are reported; without it only by kind, id and
+    /// name together.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Also list the matched objects that are the same; by default only
+    /// those that differ are listed, and every class is counted.
+    #[serde(default)]
+    pub include_same: bool,
 }
 
 /// Metadata `inspect` can list.
