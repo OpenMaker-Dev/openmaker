@@ -1575,7 +1575,7 @@ pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadErr
         if account.segment.len() >= usize::from(u8::MAX) {
             continue;
         }
-        let account = crate::store::view(&account);
+        let account = crate::store::view(account);
         let decoded = (|| {
             let name = account.child(ACCOUNT_NAME)?.text()?.ok()?;
             let password = match account.child(ACCOUNT_PASSWORD).and_then(|n| n.assembled()) {
