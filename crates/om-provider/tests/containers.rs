@@ -52,6 +52,10 @@ fn host_recording(path: &Path, record_dir: Option<&Path>) -> (u16, Vec<u8>) {
         record_dir: record_dir.map(Path::to_path_buf),
     };
     let server = Server::bind("127.0.0.1:0", config, identity).unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let port = server.local_addr().unwrap().port();
     std::thread::spawn(move || server.serve());
     (port, ca_pem)

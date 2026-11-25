@@ -79,6 +79,11 @@ pub mod status {
     /// create file on disk", 809 "Disk/volume is full", 810 "Disk/volume
     /// is locked").
     pub const SAVE_FAILED: [u16; 3] = [800, 809, 810];
+    /// The host wrote the change but could not confirm that the file on
+    /// disk keeps it: the change may or may not be in the file, which takes
+    /// no more changes until it is hosted again (FileMaker's -1, "Unknown
+    /// error"). A client reports it as an outcome it cannot know.
+    pub const OUTCOME_UNKNOWN: u16 = 0xffff;
     /// The table already has a field of that name ("Name already exists").
     pub const NAME_EXISTS: u16 = 12;
     /// No such table ("Table is missing").
@@ -97,6 +102,10 @@ pub mod status {
     pub const LAYOUT_IN_USE: u16 = 304;
     /// No such value list ("Value list is missing").
     pub const VALUE_LIST_MISSING: u16 = 108;
+    /// The host could not read the part of the file the request reads
+    /// ("Unable to open file"), as a login to a file whose accounts cannot
+    /// be read is answered.
+    pub const UNREADABLE: u16 = 802;
 }
 
 /// Operation numbers.

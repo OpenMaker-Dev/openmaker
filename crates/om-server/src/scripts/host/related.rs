@@ -28,6 +28,7 @@ use om_hbam::{FieldKind, OwnedNode, RidList};
 use om_scripts::runtime::{ErrorCode, HostError, HostResult, LayoutTarget, RelatedRecords};
 
 use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
+use crate::engine::Draft;
 use crate::modcount;
 
 /// The session's records as calculation data (`om_data::host`).
@@ -328,8 +329,9 @@ impl ServerHost {
             store.has_indexes_on_demand()
         };
         if built {
-            self.hosted.write_store().store_indexes_on_demand();
-            self.hosted.save();
+            self.shared
+                .engine
+                .submit_draft(&self.hosted, Draft::StoreIndexes);
         }
         Ok(found)
     }

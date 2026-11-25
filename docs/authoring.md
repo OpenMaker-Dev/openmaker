@@ -207,7 +207,12 @@ layout's indexes), leaving out every stamp in it.
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
 `outcome_unknown`, `save_failed`, `verification_failed`. An
-`outcome_unknown` result means the save could not be confirmed. For an
+`outcome_unknown` result means the save could not be confirmed: the answer
+was lost, or OpenMaker Server answered status 65535, as it does when its
+save renamed the new copy over the file and could not flush the folder
+(the change may or may not be in the file, which takes no more changes
+until it is hosted again; docs/server-storage.md 5). `save_failed`
+(800, 809, 810) means nothing was written. For an
 OpenMaker Server script save, read the script again and compare its
 revision with `after_revision` and `previous_revision`. The same edit from
 the same revision reports `already_applied` if the script has the requested
@@ -1271,7 +1276,7 @@ operation's fields.
 | 2 Replace script steps | `u32` length, the new definition as a wire slot list (one child of a root), 32-byte expected revision, `u64` script id | `u8` changed, 32-byte stored revision |
 | 3 Create field | `u64` table id (its key read big-endian), 32-byte expected fields revision, `u8` data type (1 text, 2 number, 3 date, 4 time, 5 timestamp), name, comment (empty for none), strings in the trailing-`u32` SCSU form | `u8` changed, `u64` field id (its key read big-endian), 32-byte stored fields revision |
 | 4 Place field | `u64` layout id, 32-byte expected layout revision, `u64` expected base-table id, `u64` occurrence id, `u64` field id (keys read big-endian), the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), `u8` label (0 none, 1), and with one the label's text and its frame | `u8` changed, `u64` field object key, `u64` label object key (0 for none), 32-byte stored layout revision |
-| 5 Describe security | none | three lists, each a `u32` count: accounts (record key as `u8` length and bytes; then name, kind (`u8`), active, must-change-password and privilege set key, each a presence `u8` and the value), privilege sets (key; name, record flags as `u8` length and bytes, at most 16, password days `u16`, each optional) and extended privileges (key; optional keyword; a `u32` count of set keys). A count past the bytes left is malformed; a catalog whose reply would pass 1 MiB is refused with status 3 |
+| 5 Describe security | none | three lists, each a `u32` count: accounts (record key as `u8` length and bytes; then name, kind (`u8`), active, must-change-password and privilege set key, each a presence `u8` and the value), privilege sets (key; name, record flags as `u8` length and bytes, at most 16, password days `u16`, each optional) and extended privileges (key; optional keyword; a `u32` count of set keys). A count past the bytes left is malformed; a catalog whose reply would pass 1 MiB is refused with status 3, and one the host cannot read with 802 ("Unable to open file", `status::UNREADABLE`; OpenMaker's choice) |
 | 6 Create layout | 32-byte expected layout index revision, `u64` occurrence id (its key read big-endian), `u64` id of the layout whose theme and width it takes (0: the first in the order with a theme), the name, the 16-byte UUID the layout gets (the request's identity) | `u8` changed, `u64` layout id (its key read big-endian), 32-byte stored layout index revision |
 | 13 Duplicate layout | 32-byte expected layout index revision, `u64` layout id (its key read big-endian), the 16-byte UUID the copy gets (the request's identity) | as 6 Create layout: `u8` changed, `u64` the copy's id, 32-byte stored layout index revision |
 | 14 Delete layout | 32-byte expected layout index revision, `u64` layout id | as 12 Delete objects: `u8` changed, 32-byte stored layout index revision |

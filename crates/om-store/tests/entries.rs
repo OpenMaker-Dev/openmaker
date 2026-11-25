@@ -2053,8 +2053,9 @@ fn edits_leave_what_owned_node_holds() {
         }
     }
     // Review of #732: a put under a leaf whose value is empty, which the
-    // file engine's `holds_value` lets through, leaves a list that keeps
-    // its empty value: both, empty.
+    // file engine's `holds_value` lets through, leaves an empty list: the
+    // empty value goes, as the file writer writes a list's empty value as
+    // nothing (`OwnedNode::ensure`).
     {
         let mut nodes = BTreeMap::new();
         let mut owned = OwnedNode::list(Vec::new(), Vec::new());
@@ -2069,9 +2070,72 @@ fn edits_leave_what_owned_node_holds() {
         );
         let mut got = Vec::new();
         flatten(&owned, &mut Vec::new(), &mut got);
-        assert_eq!(got[0], (vec![b"a".to_vec()], Node::Both(Vec::new())));
+        assert_eq!(got[0], (vec![b"a".to_vec()], Node::List));
         let want: Vec<(Path, Node)> = nodes.into_iter().collect();
         assert_eq!(got, want);
+    }
+    // Review of #758: through the page tree, a put below each kind of
+    // ancestor leaves what `OwnedNode` leaves. A list that holds an
+    // explicit empty value keeps it and its other children; a leaf with an
+    // empty value becomes a list; a leaf with a value becomes both.
+    {
+        let store = MemStore::new(Numbering::Sequential);
+        let name = TreeName::new(b"t".to_vec()).unwrap();
+        let both_empty = OwnedNode {
+            segment: Vec::new(),
+            value: Some(Vec::new()),
+            push: true,
+            children: Vec::new(),
+        };
+        let leaf = |v: &[u8]| OwnedNode::leaf(Vec::new(), v.to_vec());
+        let steps: Vec<(Vec<&[u8]>, OwnedNode, Node)> = vec![
+            (vec![b"a"], both_empty, Node::Both(Vec::new())),
+            (vec![b"a", b"x"], leaf(&[1]), Node::Value(vec![1])),
+            (vec![b"a", b"y"], leaf(&[2]), Node::Value(vec![2])),
+            (vec![b"b"], leaf(&[]), Node::Value(Vec::new())),
+            (vec![b"b", b"c"], leaf(&[3]), Node::Value(vec![3])),
+            (vec![b"d"], leaf(&[4]), Node::Value(vec![4])),
+            (vec![b"d", b"e"], leaf(&[5]), Node::Value(vec![5])),
+        ];
+        let mut owned = OwnedNode::list(Vec::new(), Vec::new());
+        let mut root = None;
+        for (entry, (path, node, kind)) in (1..).zip(steps) {
+            owned.put(&path, node);
+            let edit = Edit::Put {
+                path: path.iter().map(|s| s.to_vec()).collect(),
+                node: kind,
+            };
+            let mut unit = store.begin().unwrap();
+            let new = tree::apply(&store, &mut unit, root, entry, &[edit]).unwrap();
+            match root {
+                None => unit.add_tree(&name, new),
+                Some(_) => unit.set_root(&name, new),
+            }
+            unit.commit().unwrap();
+            root = Some(new);
+        }
+        let tree = Tree::open(&store, root.unwrap()).unwrap();
+        let held: Vec<(Path, Node)> = tree
+            .walk::<Vec<u8>>(&[])
+            .map(|item| {
+                let item = item.unwrap();
+                (item.key.path(), item.node)
+            })
+            .collect();
+        let mut got = Vec::new();
+        flatten(&owned, &mut Vec::new(), &mut got);
+        assert_eq!(held, got);
+        let kind_of = |path: &[&[u8]]| {
+            let path: Path = path.iter().map(|s| s.to_vec()).collect();
+            held.iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, n)| n.clone())
+        };
+        assert_eq!(kind_of(&[b"a"]), Some(Node::Both(Vec::new())));
+        assert_eq!(kind_of(&[b"a", b"x"]), Some(Node::Value(vec![1])));
+        assert_eq!(kind_of(&[b"b"]), Some(Node::List));
+        assert_eq!(kind_of(&[b"d"]), Some(Node::Both(vec![4])));
+        assert_eq!(held.len(), 7);
     }
     for seed in seeds(2) {
         let mut rng = Rng(seed ^ 0x0e);

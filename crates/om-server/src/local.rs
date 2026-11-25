@@ -23,11 +23,14 @@
 //! A file is served read-only ([`ReadOnly`]) when it cannot be written
 //! safely: this user or its folder may not write it, it has other names
 //! (hard links, which a save's new copy would leave behind), it cannot be
-//! locked here, or an entry is where a save would make its new copy. Its
-//! writes are refused and nothing reaches the disk. A file that is not a
-//! FileMaker Pro 12 file, or does not decode (damaged or encrypted at
-//! rest), is refused before anything is written. Deferred field work
-//! finished on opening stays in memory until an admitted account logs in.
+//! locked here, or anything is where a save would make its new copy (an
+//! earlier save's leftover copy included, which is never removed: the user
+//! removes it). Its writes are refused and nothing reaches the disk. A file
+//! that is not a FileMaker Pro 12 file, or does not decode (damaged or
+//! encrypted at rest), is refused before anything is written. Deferred
+//! field work is finished and saved when an admitted account first logs in;
+//! when that save fails, or a save's outcome is unknown, the file is
+//! served read-only from then on, with its own reason ([`ReadOnly`]).
 //!
 //! The host belongs to its client: [`LocalHost::close`] (or dropping it)
 //! stops it, closes every connection it accepted (one stalled in its TLS
@@ -51,6 +54,12 @@ use rustls::pki_types::CertificateDer;
 
 use crate::config::{ConnectionLimits, HostedFile, ServerConfig, ServerIdentity};
 use crate::connection::Shared;
+#[cfg(target_os = "linux")]
+use crate::engine::{export, ExportError, Progress};
+use crate::engine::{
+    ChangePassword, Credentials, FileEngine, Operation, Password, Read as FileRead, ReadError,
+    Reply, SaveFoundSet, NO_LIMIT,
+};
 use crate::filelock::{link_count, same_file, FileLock, LockKind};
 use crate::hosting::Hosting;
 use crate::server::{Server, ServerHandle};
@@ -92,8 +101,21 @@ pub enum ReadOnly {
     /// programs' writes could not be kept out.
     NoLocks,
     /// Something is where a save would make its new copy
-    /// (`<file>.omsave`, left by an earlier save?).
+    /// (`<file>.omsave`: a copy an earlier save left when it stopped part
+    /// way, or anything else). It is never removed: the user removes it.
     CopyInTheWay,
+    /// It holds content OpenMaker cannot write back (found when it was
+    /// read).
+    Unwritable,
+    /// Its deferred field work, finished when an account it admits first
+    /// logged in, could not be saved, or cannot be done, or that work was
+    /// left part way: the file is served as its disk holds it, the work
+    /// pending.
+    DeferredWork,
+    /// A save of it was written but could not be confirmed on disk: it
+    /// takes no more changes until it is opened again
+    /// (docs/server-storage.md 5).
+    NoMoreChanges,
 }
 
 impl std::fmt::Display for ReadOnly {
@@ -104,7 +126,16 @@ impl std::fmt::Display for ReadOnly {
             ReadOnly::OtherNames => "it has other names (hard links) a save would not update",
             ReadOnly::NoLocks => "it cannot be locked here, so other programs could change it",
             ReadOnly::CopyInTheWay => {
-                "an earlier save's copy (.omsave) is beside it; remove that to save changes"
+                "something is beside it under its name with .omsave added, where saves write \
+                 their new copy (an earlier save's leftover?); remove that to save changes"
+            }
+            ReadOnly::Unwritable => "it holds content OpenMaker cannot write back",
+            ReadOnly::DeferredWork => {
+                "the field changes it was waiting to finish could not be saved; it is shown as \
+                 saved before them"
+            }
+            ReadOnly::NoMoreChanges => {
+                "a save could not be confirmed on disk; close and open it again to make changes"
             }
         })
     }
@@ -246,6 +277,15 @@ impl LocalHost {
             Locked::Lock(lock) => Some(lock),
             Locked::Unlocked(_) => None,
         };
+        if read_only == Some(ReadOnly::CopyInTheWay) {
+            warn!(
+                "{}: something is at {}, where its saves write their new copy; opening it \
+                 read-only until that is removed",
+                path.display(),
+                save_copy_path(&path).display()
+            );
+        }
+        let engine = FileEngine::default();
         let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some())
             .map_err(|e| LocalHostError::Undecodable(e.to_string()))?;
         drop(hbam);
@@ -278,6 +318,7 @@ impl LocalHost {
             tls,
             true,
             Default::default(),
+            engine,
         )
         .map_err(|e| LocalHostError::Start(e.to_string()))?
         .with_connection_limits(ConnectionLimits {
@@ -316,6 +357,32 @@ impl LocalHost {
         })
     }
 
+    /// Answer every read of the file that goes through a view through the
+    /// test view as well as the file engine's (`Server::checking_reads`).
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn checking_reads(self) -> Self {
+        if let Some(handle) = &self.handle {
+            handle.shared.engine.check_reads();
+        }
+        self
+    }
+
+    /// Fail every read of `path` (and below it) in the file, answering its
+    /// reads through the test view alone (`ServerHandle::failing_reads`):
+    /// whether the file is served. Only in debug builds, for tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_reads(&self, path: &[&[u8]]) -> bool {
+        let Some((shared, file)) = self.served() else {
+            return false;
+        };
+        let path = path.iter().map(|segment| segment.to_vec()).collect();
+        shared.engine.fail_reads(&file.name, path);
+        true
+    }
+
     /// The loopback port the file is served on.
     pub fn port(&self) -> u16 {
         self.port
@@ -338,12 +405,30 @@ impl LocalHost {
 
     /// Whether the file is served read-only.
     pub fn is_read_only(&self) -> bool {
-        self.read_only.is_some()
+        self.read_only().is_some()
     }
 
-    /// Why the file is served read-only, if it is.
+    /// Why the file is served read-only, if it is, as the file is now: the
+    /// reason it was opened read-only, or what made it so since (its
+    /// deferred work, finished at the first admitted login, could not be
+    /// saved or was left part way; a save's outcome was unknown, after
+    /// which it takes no more changes).
     pub fn read_only(&self) -> Option<ReadOnly> {
-        self.read_only
+        self.read_only.or_else(|| {
+            let (shared, file) = self.served()?;
+            // The engine's state of the file, not a version's
+            // (`engine::state`).
+            if shared.engine.writes_refused(&file).is_some() {
+                return Some(ReadOnly::NoMoreChanges);
+            }
+            let cause = shared.engine.read_only(&file)?;
+            Some(match cause {
+                crate::store::ReadOnlyCause::Unwritable => ReadOnly::Unwritable,
+                crate::store::ReadOnlyCause::DeferredWork => ReadOnly::DeferredWork,
+                // Opened so: the reason it was opened with, which is set.
+                crate::store::ReadOnlyCause::Opened => ReadOnly::NotWritable,
+            })
+        })
     }
 
     /// The account the file names in its account catalog's header (`[23,
@@ -351,15 +436,17 @@ impl LocalHost {
     /// it is one of the file's accounts: the name a client suggests when it
     /// asks for an account. Possibly FileMaker Pro's File Options account
     /// [I]; it is no evidence that FileMaker would log in without asking.
-    pub fn suggested_account(&self) -> Option<String> {
-        let handle = self.handle.as_ref()?;
-        let hosted = handle.shared.hosting.files().into_iter().next()?;
-        let name = {
-            let store = hosted.read_store();
-            let bytes = store.node(&SUGGESTED_ACCOUNT)?.assembled()?;
-            om_scsu::decode_scsu(&bytes).ok()?
+    /// Read through a reading of the file: the header from its view, the
+    /// account from its derived state. A read that fails is an error.
+    pub fn suggested_account(&self) -> io::Result<Option<String>> {
+        let Some((shared, hosted)) = self.served() else {
+            return Ok(None);
         };
-        hosted.account(&name).map(|account| account.name.clone())
+        let suggested = shared
+            .engine
+            .read(&hosted)
+            .serve_with_accounts(suggested_account);
+        suggested.map_err(io::Error::other)
     }
 
     /// File Options' "Log in using" account and password (local-files.md
@@ -367,81 +454,104 @@ impl LocalHost {
     /// file without asking: `None` when the option is off or names the
     /// [Guest] account (its name is not text), which OpenMaker does not
     /// log in as (#158). The password is as the file stores it, in the
-    /// clear once unmasked.
-    pub fn stored_login(&self) -> Option<(String, zeroize::Zeroizing<String>)> {
-        let handle = self.handle.as_ref()?;
-        let hosted = handle.shared.hosting.files().into_iter().next()?;
-        let store = hosted.read_store();
-        let name = store.node(&SUGGESTED_ACCOUNT)?.assembled()?;
-        // [Guest]'s login is its own name, `[` U+E002 `]`, for both.
-        let account = om_scsu::decode_scsu(&name)
-            .ok()
-            .filter(|name| !name.is_empty() && name != "[\u{e002}]")?;
-        // The password, wiped when dropped, its masked bytes too.
-        let password = match store.node(&STORED_PASSWORD) {
-            None => zeroize::Zeroizing::new(String::new()),
-            // A plain value is the store's own bytes; a value assembled
-            // from parts is a copy, wiped.
-            Some(node) => match node.assembled()? {
-                std::borrow::Cow::Borrowed(masked) => om_scsu::decode_scsu_secret(masked).ok()?,
-                std::borrow::Cow::Owned(masked) => {
-                    let masked = zeroize::Zeroizing::new(masked);
-                    om_scsu::decode_scsu_secret(&masked).ok()?
-                }
-            },
+    /// clear once unmasked. Read through a reading of the file
+    /// ([`stored_login`]); a read that fails is an error.
+    pub fn stored_login(&self) -> io::Result<Option<(String, zeroize::Zeroizing<String>)>> {
+        let Some((shared, hosted)) = self.served() else {
+            return Ok(None);
         };
-        Some((account, password))
+        let login = shared
+            .engine
+            .read(&hosted)
+            .serve(stored_login)
+            .map_err(io::Error::other)?;
+        Ok(login.map(|login| (login.account, login.password)))
     }
 
-    /// Resolve a successful login's account key in this file only.
-    pub fn authenticated_account(&self, result_key: &[u8]) -> om_data::host::AccountInfo {
+    /// Resolve a successful login's account key in this file only, from
+    /// the accounts of a reading of it (`engine::Read::derived`). Accounts
+    /// that could not be read are an error.
+    pub fn authenticated_account(
+        &self,
+        result_key: &[u8],
+    ) -> io::Result<om_data::host::AccountInfo> {
         let Some(key) = om_data::host::security::account_key(result_key) else {
-            return Default::default();
+            return Ok(Default::default());
         };
-        self.handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-            .and_then(|file| {
-                file.accounts()
+        let Some((shared, file)) = self.served() else {
+            return Ok(Default::default());
+        };
+        let info = shared.engine.read(&file).serve_with_accounts(|read| {
+            let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
+            Ok::<_, ReadError>(
+                accounts
                     .iter()
                     .find(|account| account.key == key)
                     .map(|account| account.authenticated_info())
-            })
-            .unwrap_or_default()
+                    .unwrap_or_default(),
+            )
+        });
+        info.map_err(io::Error::other)
     }
 
     /// Set account `name`'s password from `old` to `new`, as FileMaker
-    /// sets the signed-in account's own ([`crate::Hosted::change_password`]),
-    /// stamped with this computer's local time [I: whether FileMaker stamps
-    /// local time or UTC is unmeasured, local-files.md 2.4]. A read-only
-    /// file changes nothing.
+    /// sets the signed-in account's own ([`Operation::ChangePassword`]),
+    /// its status stamped with this computer's local time [I: whether
+    /// FileMaker stamps local time or UTC is unmeasured, local-files.md
+    /// 2.4]. A read-only file changes nothing.
     pub fn change_password(
         &self,
         name: &str,
         old: &str,
         new: &str,
     ) -> Result<(), crate::hosting::PasswordChangeError> {
-        let Some(file) = self
-            .handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-        else {
+        let Some((shared, file)) = self.served() else {
             return Err(crate::hosting::PasswordChangeError::Refused);
         };
-        if file.is_read_only() {
+        if shared.engine.read_only(&file).is_some() {
             return Err(crate::hosting::PasswordChangeError::Unwritten(
                 "the file is read-only".into(),
             ));
         }
-        let now = jiff::Zoned::now().datetime();
-        file.change_password(
-            crate::hosting::AccountRef::Name(name),
-            old,
-            new,
-            false,
-            None,
-            now,
-        )
+        let change = ChangePassword {
+            account: crate::hosting::AccountRef::Name(name.to_owned()),
+            manager: false,
+            stamp: None,
+        };
+        let passwords = Credentials::Change {
+            old: Password::new(old),
+            new: Password::new(new),
+        };
+        match shared
+            .engine
+            .submit_with(&file, Operation::ChangePassword(change), passwords)
+            .reply
+        {
+            Reply::ChangePassword(changed) => changed,
+            other => Err(crate::hosting::PasswordChangeError::Unwritten(format!(
+                "not a password change's reply: {other:?}"
+            ))),
+        }
+    }
+
+    /// The host's shared state and its one file, while it serves it.
+    /// Make every save of the file fail at `fault`, or work again with
+    /// `None`, as `ServerHandle::failing_saves` does for a hosted file:
+    /// whether the file is served. Only in debug builds, for tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_saves(&self, fault: Option<crate::store::SaveFault>) -> bool {
+        let Some((_, file)) = self.served() else {
+            return false;
+        };
+        file.fail_saves(fault);
+        true
+    }
+
+    fn served(&self) -> Option<(&Shared, Arc<crate::hosting::Hosted>)> {
+        let shared = &self.handle.as_ref()?.shared;
+        let file = shared.hosting.files().into_iter().next()?;
+        Some((shared, file))
     }
 
     /// Keep, at table occurrence `occurrence`'s `[TO, 07]`, the found set
@@ -459,81 +569,47 @@ impl LocalHost {
         records: Option<om_hbam::RidList>,
         current: Option<u64>,
     ) -> bool {
-        let Some(file) = self
-            .handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-        else {
+        let Some((shared, file)) = self.served() else {
             return false;
         };
         let key = |value: u64| {
             let bytes = value.to_be_bytes();
             bytes[bytes.iter().position(|b| *b != 0).unwrap_or(7)..].to_vec()
         };
-        let (occurrence, table) = (key(occurrence), key(table));
+        let save = SaveFoundSet {
+            occurrence: key(occurrence),
+            table: key(table),
+            records,
+            current,
+        };
         // A close never waits on another request's hold of the store.
-        let Some(mut store) = file.try_write_store() else {
+        let Some(outcome) = shared
+            .engine
+            .try_submit(&file, Operation::SaveFoundSet(save))
+        else {
             info!(
                 "{}: the file is busy; the window's found set is not kept",
                 self.name
             );
             return false;
         };
-        if store.is_read_only() {
-            return false;
-        }
-        let version = store
-            .node(&[&[3], &[0x10], &[5], &table, &[0xfb]])
-            .and_then(|n| n.value.as_deref())
-            .and_then(|v| <[u8; 4]>::try_from(v).ok())
-            .map(u32::from_be_bytes);
-        let Some(data_version) = version else {
-            info!(
-                "{}: no data version for table {table:02x?}; found set not kept",
-                self.name
-            );
-            return false;
-        };
-        let write = om_data::meta::FoundSetWrite {
-            records,
-            current,
-            data_version,
-        };
-        let existing = store.node(&[&occurrence, &[7]]);
-        let Some(node) = om_data::meta::saved_found_set_written(existing, &table, &write) else {
-            info!(
-                "{}: occurrence {occurrence:02x?} holds a found set FileMaker Pro never wrote \
-                 that way; not kept",
-                self.name
-            );
-            return false;
-        };
-        if existing == Some(&node) {
-            return true;
-        }
-        let mut journal = store.begin_commit();
-        store.replace_node_in(&mut journal, vec![occurrence, vec![7]], node);
-        match store.save_commit(&file.at, journal) {
-            Ok(()) => true,
-            Err(e) => {
-                warn!(
-                    "{}: keeping the window's found set failed, taken back: {e}",
-                    self.name
-                );
-                false
-            }
-        }
+        outcome.reply == Reply::SaveFoundSet(true)
     }
 
     /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file
-    /// as `kind` to `to`, a new file. A copy of the current file is the
-    /// file's bytes as its last save left them, read through the
-    /// descriptor the host holds locked ([`crate::store::Store::saved_file`]);
-    /// a compacted copy is the tree rewritten packed
-    /// ([`crate::store::Store::compacted`]), and so is a copy while changes
-    /// a failed save left wait in memory or when the file is not locked.
-    /// Clones and self-contained copies are refused with
-    /// [`io::ErrorKind::Unsupported`].
+    /// as `kind` to `to`, a new file, as an export of the version the host
+    /// holds (`crate::engine::export`). A copy of the current file is the
+    /// file on disk when it holds that version (its bytes as the last save
+    /// left them, or as it was opened when no save wrote it), opened under
+    /// the store's read lock and copied after it, checked against it. While
+    /// changes a failed save left wait in memory, it is the tree written as
+    /// the next save would write it, under the read lock. A copy of a file
+    /// opened read-only for content the writer cannot write, while its
+    /// refused saves left changes in memory, would lack them, and is
+    /// refused ([`io::ErrorKind::InvalidData`]). A compacted copy is the
+    /// tree written, under the read lock, from the change number the next
+    /// save starts from, as a compacted copy always was. Clones and
+    /// self-contained copies are refused with [`io::ErrorKind::Unsupported`].
     ///
     /// The destination is validated before reading the store. See
     /// [`Self::prepare_copy`] for its platform and pathname requirements.
@@ -562,31 +638,30 @@ impl LocalHost {
                 ));
             }
         };
-        let Some(file) = self
-            .handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-        else {
+        let Some((engine, file)) = self.handle.as_ref().and_then(|handle| {
+            let file = handle.shared.hosting.files().into_iter().next()?;
+            Some((Arc::clone(&handle.shared.engine), file))
+        }) else {
             return Err(io::Error::other("the file is closed"));
         };
         let mut destination = copy_destination::Destination::open(to)?;
         Ok(move || {
-            let contents = {
-                let store = file.read_store();
-                let saved = if compacted { None } else { store.saved_file() };
-                match saved {
-                    Some(saved) => Contents::File(saved?),
-                    None => Contents::Bytes(store.compacted()?),
-                }
+            let kind = if compacted {
+                export::Kind::Compacted
+            } else {
+                export::Kind::Current
             };
-            use std::io::Write;
-            match contents {
-                Contents::File(file) => {
-                    io::copy(&mut FromStart { file: &file, at: 0 }, &mut destination.file)?;
-                }
-                Contents::Bytes(bytes) => destination.file.write_all(&bytes)?,
+            let target = export::Target::File(destination.file_mut());
+            match engine.export(&file, kind, target, Progress::none()) {
+                Ok(_) => destination.publish(),
+                // Refused before anything was written.
+                Err(ExportError::Unsaved) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the copy would lack changes that could not be saved",
+                )),
+                Err(ExportError::Io(e) | ExportError::Source(e)) => Err(e),
+                Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
             }
-            destination.publish()
         })
     }
 
@@ -659,33 +734,94 @@ impl Drop for LocalHost {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod copy_destination;
-
-/// What a saved copy holds: a version of the file, or new bytes.
-#[cfg(target_os = "linux")]
-enum Contents {
-    File(File),
-    Bytes(Vec<u8>),
+/// [`LocalHost::suggested_account`] of `read`.
+fn suggested_account(read: FileRead<'_>) -> Result<Option<String>, ReadError> {
+    let Some(node) = read.view.subtree(&SUGGESTED_ACCOUNT, NO_LIMIT)? else {
+        return Ok(None);
+    };
+    let Some(name) = node
+        .assembled()
+        .and_then(|bytes| om_scsu::decode_scsu(&bytes).ok())
+    else {
+        return Ok(None);
+    };
+    Ok(read
+        .derived
+        .account(&name)?
+        .map(|account| account.name.clone()))
 }
 
-/// `file` read from its start by position (`pread`), leaving alone the
-/// offset it shares with the descriptor it was cloned from.
-#[cfg(target_os = "linux")]
-struct FromStart<'a> {
-    file: &'a File,
-    at: u64,
+/// File Options' "Log in using" account and password as a reading holds
+/// them ([`LocalHost::stored_login`]). Its `Debug` shows no password, so
+/// that the test view's comparison of two reads (`Reading::serve`) never
+/// prints one.
+struct StoredLogin {
+    account: String,
+    password: zeroize::Zeroizing<String>,
 }
 
-#[cfg(target_os = "linux")]
-impl Read for FromStart<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        use std::os::unix::fs::FileExt;
-        let n = self.file.read_at(buf, self.at)?;
-        self.at += n as u64;
-        Ok(n)
+impl PartialEq for StoredLogin {
+    fn eq(&self, other: &Self) -> bool {
+        self.account == other.account && *self.password == *other.password
     }
 }
+
+impl std::fmt::Debug for StoredLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredLogin")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
+    }
+}
+
+/// [`LocalHost::stored_login`] of `read`: the account named in the account
+/// catalog's header, then, unless it is none or [Guest], the stored
+/// password. The masked password is read as the store held it before: a
+/// view that lends the store's own bytes (the file engine's) copies
+/// nothing, a value assembled from parts is a copy wiped when dropped, and
+/// a copy the view itself hands over (a view that reads pages, the test
+/// view) is wiped when dropped too (`engine::Wiped`).
+fn stored_login(read: FileRead<'_>) -> Result<Option<StoredLogin>, ReadError> {
+    use std::borrow::Cow;
+    let Some(name) = read.view.subtree(&SUGGESTED_ACCOUNT, NO_LIMIT)? else {
+        return Ok(None);
+    };
+    let Some(name) = name.assembled() else {
+        return Ok(None);
+    };
+    // [Guest]'s login is its own name, `[` U+E002 `]`, for both.
+    let Some(account) = om_scsu::decode_scsu(&name)
+        .ok()
+        .filter(|name| !name.is_empty() && name != "[\u{e002}]")
+    else {
+        return Ok(None);
+    };
+    // The password, wiped when dropped, its masked bytes too.
+    let password = match read.view.subtree(&STORED_PASSWORD, NO_LIMIT)? {
+        None => zeroize::Zeroizing::new(String::new()),
+        Some(node) => {
+            let node = crate::engine::Wiped(node);
+            let Some(masked) = node.0.assembled() else {
+                return Ok(None);
+            };
+            let password = match masked {
+                Cow::Borrowed(masked) => om_scsu::decode_scsu_secret(masked).ok(),
+                Cow::Owned(masked) => {
+                    let masked = zeroize::Zeroizing::new(masked);
+                    om_scsu::decode_scsu_secret(&masked).ok()
+                }
+            };
+            let Some(password) = password else {
+                return Ok(None);
+            };
+            password
+        }
+    };
+    Ok(Some(StoredLogin { account, password }))
+}
+
+#[cfg(target_os = "linux")]
+mod copy_destination;
 
 /// Open and lock the file at `path` as it is now, and say whether (and why)
 /// it is to be read-only. The lock counts only while the descriptor it is

@@ -434,6 +434,7 @@ pub(super) mod tests {
     pub(in crate::scripts::host) fn session(file: &Path, dir: &Path) -> ServerHost {
         let path = dir.join("work.fmp12");
         std::fs::copy(file, &path).unwrap();
+        let engine = crate::engine::FileEngine::default();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: "work.fmp12".into(),
@@ -441,6 +442,7 @@ pub(super) mod tests {
             }],
             false,
             &Default::default(),
+            &engine,
         )
         .unwrap();
         let shared = Arc::new(Shared {
@@ -458,6 +460,7 @@ pub(super) mod tests {
             connection_ids: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
+            engine: std::sync::Arc::new(engine),
             scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
             refused_downloads: Default::default(),
             omitted_list_paths: Default::default(),

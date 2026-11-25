@@ -115,6 +115,10 @@ impl Model {
                             self.nodes.insert(ancestor.clone(), Node::List);
                             self.changed.insert(ancestor, entry);
                         }
+                        Some(Node::Value(v)) if v.is_empty() => {
+                            self.nodes.insert(ancestor.clone(), Node::List);
+                            self.changed.insert(ancestor, entry);
+                        }
                         Some(Node::Value(v)) => {
                             let both = Node::Both(v.clone());
                             self.nodes.insert(ancestor.clone(), both);

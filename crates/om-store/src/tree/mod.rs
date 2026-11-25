@@ -76,7 +76,8 @@ pub enum Edit {
     /// The node at `path` becomes `node`, with no children: whatever was
     /// there, and everything under it, is replaced. Missing ancestors are
     /// created as empty lists, and an ancestor that holds a value becomes
-    /// one that holds both, as `om_hbam::OwnedNode::put` does.
+    /// one that holds both (an empty value goes, leaving an empty list), as
+    /// `om_hbam::OwnedNode::put` does.
     Put { path: Vec<Vec<u8>>, node: Node },
     /// The node at `path` and everything under it are deleted. The empty
     /// path deletes every node; the root itself always exists.
@@ -176,25 +177,41 @@ pub(crate) fn fault(page: PageNo, hash: Hash, fault: Fault) -> Error {
 /// entry.
 pub fn check_edits(edits: &[Edit]) -> Result<(), Error> {
     for (i, edit) in edits.iter().enumerate() {
-        let refuse = |why| Err(Error::Refused { edit: i, why });
-        let path = edit.path();
-        if path.len() > MAX_DEPTH {
-            return refuse(Refusal::TooDeep(path.len()));
-        }
-        let len = key::encoded_len(path);
-        if len > MAX_KEY {
-            return refuse(Refusal::KeyTooLong(len));
-        }
-        if let Edit::Put { node, .. } = edit {
-            if path.is_empty() {
-                return refuse(Refusal::RootPut);
-            }
-            if node.value().len() > MAX_VALUE {
-                return refuse(Refusal::ValueTooLong(node.value().len()));
-            }
+        let put = match edit {
+            Edit::Put { node, .. } => Some(node),
+            Edit::Delete { .. } => None,
+        };
+        if let Some(why) = refusal(edit.path(), put) {
+            return Err(Error::Refused { edit: i, why });
         }
     }
     Ok(())
+}
+
+/// Why [`check_edits`] refuses a put of `node` at `path`, if it does: the
+/// same check on a put not yet made an [`Edit`].
+pub fn check_put(path: &[Vec<u8>], node: &Node) -> Result<(), Refusal> {
+    refusal(path, Some(node)).map_or(Ok(()), Err)
+}
+
+/// Why an edit at `path`, a put of `put` or a delete (`None`), is outside
+/// the store's bounds.
+fn refusal(path: &[Vec<u8>], put: Option<&Node>) -> Option<Refusal> {
+    if path.len() > MAX_DEPTH {
+        return Some(Refusal::TooDeep(path.len()));
+    }
+    let len = key::encoded_len(path);
+    if len > MAX_KEY {
+        return Some(Refusal::KeyTooLong(len));
+    }
+    let node = put?;
+    if path.is_empty() {
+        return Some(Refusal::RootPut);
+    }
+    if node.value().len() > MAX_VALUE {
+        return Some(Refusal::ValueTooLong(node.value().len()));
+    }
+    None
 }
 
 /// Which way to iterate.
@@ -202,4 +219,81 @@ pub fn check_edits(edits: &[Edit]) -> Result<(), Error> {
 pub enum Direction {
     Forward,
     Backward,
+}
+
+/// Trees written page by page, for tests of what the writer never makes:
+/// a key without its parent, a leaf whose spilled keys are out of order, a
+/// key outside its leaf's range.
+#[cfg(test)]
+pub(crate) mod built {
+    use std::sync::Arc;
+
+    use crate::page::{
+        item_inline, Builder, EntryPages, Hash, MemStore, PageKind, PageNo, PageStore, Root,
+        OVERFLOW_DATA,
+    };
+
+    /// An item as it goes into a leaf: its kind, key and value.
+    pub(crate) type Item = (u8, Vec<u8>, Vec<u8>);
+
+    /// What [`tree`] wrote: the root, and each item's overflow pages, in
+    /// the order the items were given.
+    pub(crate) struct Built {
+        pub root: Root,
+        pub overflow: Vec<Vec<PageNo>>,
+    }
+
+    /// Writes `leaves` with their items in the order given (an item too
+    /// large for its page spilled to overflow pages, as the writer spills
+    /// it) and, for more than one leaf, an index page over them with the
+    /// separators `seps`, all as entry 1, and commits them.
+    pub(crate) fn tree(store: &MemStore, leaves: &[Vec<Item>], seps: &[&[u8]]) -> Built {
+        let mut out = store.begin().unwrap();
+        let mut write = |builder: Builder| -> (PageNo, Hash) {
+            let number = out.allocate().unwrap();
+            let page = builder.finish(number).unwrap();
+            let written = (number, page.hash());
+            out.write(Arc::new(page)).unwrap();
+            written
+        };
+        let mut overflow = Vec::new();
+        let mut children = Vec::new();
+        for items in leaves {
+            let mut leaf = Builder::new(PageKind::Leaf, 0, 1);
+            for (kind, key, value) in items {
+                let stream = [key.as_slice(), value].concat();
+                let inline = item_inline(key.len(), value.len()).unwrap_or(stream.len());
+                let refs: Vec<(PageNo, Hash)> = stream[inline..]
+                    .chunks(OVERFLOW_DATA)
+                    .map(|chunk| {
+                        let mut page = Builder::new(PageKind::Overflow, 0, 1);
+                        page.data(chunk);
+                        write(page)
+                    })
+                    .collect();
+                overflow.push(refs.iter().map(|r| r.0).collect());
+                leaf.item(*kind, key.len(), value.len(), &stream[..inline], &refs);
+            }
+            children.push(write(leaf));
+        }
+        let top = match children[..] {
+            [only] => only,
+            _ => {
+                let mut index = Builder::new(PageKind::Index, 1, 1);
+                for (i, (number, hash)) in children.iter().enumerate() {
+                    let separator = i.checked_sub(1).map(|s| (seps[s].len(), seps[s], &[][..]));
+                    index.child(*number, hash, 1, separator);
+                }
+                write(index)
+            }
+        };
+        out.commit().unwrap();
+        Built {
+            root: Root {
+                page: top.0,
+                hash: top.1,
+            },
+            overflow,
+        }
+    }
 }

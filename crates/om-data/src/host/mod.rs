@@ -53,11 +53,11 @@ pub mod window;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use om_calc::eval::{
     default_call, evaluate, CalcHost, CalcLimits, Context, CustomFunction, FieldId, FieldInfo,
-    HostFunction, LookupDirection, Pending, VarScope, Variables,
+    HostFunction, Lcg, LookupDirection, Pending, VarScope, Variables,
 };
 use om_calc::{CalcError, Ctx, Date, Locale, Value};
 use om_formula::{Expr, Names};
@@ -175,6 +175,9 @@ pub struct FileCalc<'a> {
     /// calculation the host evaluates itself reads ([`Self::read_field`]):
     /// a summary's inputs and a sort's keys (#615). `None` reads with none.
     variables: Option<&'a VariableSnapshot>,
+    /// The generator `Random` draws from ([`Self::with_random`]); `None`:
+    /// the process's (`om_calc::eval::shared_random`).
+    random: Option<&'a Mutex<Lcg>>,
 }
 
 /// One copy of a caller's `$` and `$$` variables for what `FileCalc`
@@ -217,7 +220,15 @@ impl<'a> FileCalc<'a> {
             summaries: None,
             reads: None,
             variables: None,
+            random: None,
         }
+    }
+
+    /// The same data with `Random` drawn from `random`, a generator the
+    /// host supplies (a record write's, `rules::WriteSources`), in its
+    /// calculations and in those it evaluates itself.
+    pub fn with_random(self, random: Option<&'a Mutex<Lcg>>) -> FileCalc<'a> {
+        FileCalc { random, ..self }
     }
 
     /// The same data with a copy of the caller's variables
@@ -1146,6 +1157,18 @@ impl CalcHost for FileHost<'_> {
 
     fn custom_function(&self, id: u64) -> Option<Arc<CustomFunction>> {
         self.file.custom_function(id)
+    }
+
+    /// FileMaker's generator (calc-functions.md 3.9): the file's own
+    /// ([`FileCalc::with_random`]), else the process's.
+    fn random(&mut self) -> f64 {
+        match self.file.random {
+            Some(random) => random
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .next_f64(),
+            None => om_calc::eval::shared_random(),
+        }
     }
 
     fn container_data(
