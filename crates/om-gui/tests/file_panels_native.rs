@@ -2,8 +2,8 @@
 //! eframe's own event loop and window, no file open.
 //!
 //! - File > Open..., chosen in the system menu bar (the menu's own action,
-//!   as a click in it runs it), shows the system's open panel, limited to
-//!   `.fmp12` files.
+//!   as a click in it runs it), shows the system's open panel in Documents,
+//!   limited to `.fmp12` files.
 //! - File > Create New..., then Create in the Create an App sheet, shows
 //!   the system's save panel proposing "Untitled.fmp12" in Documents,
 //!   limited to `.fmp12` files.
@@ -18,8 +18,8 @@
 //!
 //! `cargo test -p om-gui --test file_panels_native` opens a window and the
 //! panels on macOS; elsewhere it does nothing. With `OM_PANEL_SHOTS` set to
-//! a directory, the open panel is shown that folder and each panel is
-//! saved there as PNG (the system's `screencapture` of its window).
+//! a directory, each panel is saved there as PNG (the system's
+//! `screencapture` of its window).
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -55,7 +55,6 @@ mod macos {
     use objc2::rc::Retained;
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem, NSOpenPanel, NSSavePanel};
-    use objc2_foundation::{NSString, NSURL};
     use om_data::mock::MockProvider;
     use om_gui::OpenMakerApp;
 
@@ -119,6 +118,21 @@ mod macos {
             .collect()
     }
 
+    /// The panel shows the user's Documents folder (`HOME`'s), or there is
+    /// none to show.
+    fn in_documents(panel: &NSSavePanel) -> bool {
+        let folder = panel
+            .directoryURL()
+            .and_then(|url| url.path())
+            .map(|path| path.to_string())
+            .unwrap_or_default();
+        let documents = std::env::var("HOME")
+            .map(|home| std::path::Path::new(&home).join("Documents"))
+            .unwrap_or_default();
+        !documents.is_dir()
+            || std::fs::canonicalize(&folder).ok() == std::fs::canonicalize(&documents).ok()
+    }
+
     /// Save `panel` as `name`.png in `OM_PANEL_SHOTS` when it is set.
     fn shot(panel: &NSSavePanel, name: &str) {
         let Some(dir) = std::env::var_os("OM_PANEL_SHOTS") else {
@@ -137,7 +151,7 @@ mod macos {
     pub enum Phase {
         Starting,
         Opening,
-        /// The open panel shown the screenshots' folder, until then.
+        /// The open panel drawn, until then.
         Showing(Instant),
         Creating,
         Sheet,
@@ -180,28 +194,17 @@ mod macos {
                     };
                     let title = panel.title().to_string();
                     let kinds = extensions(&panel);
-                    if title != "Open File" || kinds != ["fmp12"] {
+                    if title != "Open File" || kinds != ["fmp12"] || !in_documents(&panel) {
                         fail(format!("open panel {title:?} for {kinds:?}"));
                     }
                     if open.allowsMultipleSelection() || open.canChooseDirectories() {
                         fail("the open panel chooses more than one file".into());
                     }
-                    println!("open panel {title:?} for {kinds:?}");
-                    self.phase = Phase::Showing(Instant::now() + Duration::from_secs(4));
+                    println!("open panel {title:?} in Documents for {kinds:?}");
+                    self.phase = Phase::Showing(Instant::now() + Duration::from_secs(5));
                 }
                 Phase::Showing(until) => {
                     if Instant::now() < until {
-                        // The panel, in its other process, may take the
-                        // folder only once it has loaded: ask until then.
-                        if let (Some(panel), Some(dir)) =
-                            (panel(), std::env::var_os("OM_PANEL_SHOTS"))
-                        {
-                            if until - Instant::now() > Duration::from_secs(1) {
-                                let dir = NSString::from_str(&dir.to_string_lossy());
-                                let url = NSURL::fileURLWithPath_isDirectory(&dir, true);
-                                panel.setDirectoryURL(Some(&url));
-                            }
-                        }
                         return;
                     }
                     if let Some(panel) = panel() {
@@ -234,19 +237,8 @@ mod macos {
                     };
                     let name = panel.nameFieldStringValue().to_string();
                     let kinds = extensions(&panel);
-                    let folder = panel
-                        .directoryURL()
-                        .and_then(|url| url.path())
-                        .map(|path| path.to_string())
-                        .unwrap_or_default();
-                    let documents = std::env::var("HOME")
-                        .map(|home| std::path::Path::new(&home).join("Documents"))
-                        .unwrap_or_default();
-                    let in_documents = !documents.is_dir()
-                        || std::fs::canonicalize(&folder).ok()
-                            == std::fs::canonicalize(&documents).ok();
-                    if name != "Untitled.fmp12" || kinds != ["fmp12"] || !in_documents {
-                        fail(format!("save panel {name:?} in {folder:?} for {kinds:?}"));
+                    if name != "Untitled.fmp12" || kinds != ["fmp12"] || !in_documents(&panel) {
+                        fail(format!("save panel {name:?} for {kinds:?}"));
                     }
                     println!("save panel {name:?} in Documents for {kinds:?}");
                     self.phase = Phase::Saved(Instant::now() + Duration::from_secs(2));

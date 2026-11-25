@@ -85,6 +85,12 @@ impl Request {
         }
     }
 
+    /// Starting in `folder`.
+    pub fn in_folder(mut self, folder: PathBuf) -> Self {
+        self.folder = Some(folder);
+        self
+    }
+
     /// Only files with `extension`.
     pub fn of_kind(mut self, extension: &'static str) -> Self {
         self.extension = Some(extension);

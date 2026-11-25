@@ -72,12 +72,13 @@ without a file chooser, or no native window, as in the GUI tests)
 OpenMaker's own chooser asks instead: a folder's subfolders and FileMaker
 files, and a path that can be typed. What follows a choice is the same
 either way. While a panel is up, Open, Create and the other commands that
-start from no file do nothing, and Home takes no keys. The open panel
-starts where the platform chooses (macOS shows the folder last used);
-OpenMaker's own chooser and the save panel start in Documents. GTK's chooser also offers "Open files
-read-only", which OpenMaker does not read: the file opens as it would
-from OpenMaker's chooser. Which files FileMaker Pro's open panel lists,
-and where it starts, are unmeasured.
+start from no file do nothing, and Home takes no keys. Both panels start
+in the user's Documents folder (or home without one), as OpenMaker's own
+chooser does, so macOS's open panel does not return to the folder last
+used. GTK's chooser also offers "Open files read-only", which OpenMaker
+does not read: the file opens as it would from OpenMaker's chooser.
+Which files FileMaker Pro's open panel lists, and where it starts, are
+unmeasured.
 
 A file on this computer opens at once. A hosted file fills in the Hosts
 dialog's host, port and file, and the user signs in. Home keeps paths, host

@@ -80,15 +80,7 @@ impl CreateNewDialog {
     /// The save panel's folder: the user's Documents folder (or home), as
     /// Pro's.
     fn folder() -> PathBuf {
-        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let documents = home.join("Documents");
-        if documents.is_dir() {
-            documents
-        } else {
-            home
-        }
+        crate::open_file::documents()
     }
 
     /// "Untitled.fmp12", as Pro's save panel names a new file.
