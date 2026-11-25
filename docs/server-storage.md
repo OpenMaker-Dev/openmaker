@@ -197,15 +197,15 @@ member's id; a test keeps this table equal to the code's):
 | `[11, 01, 08]` | the digest of the member cache | Derived |  | scripts.md, "The catalog index" |
 | `[17, 01]` | accounts | Access |  | session-identity.md 1, 3; local-files.md 3 |
 | `[17, 02]` | privilege sets | Design | privilege_set | session-identity.md 2 |
-| `[17, 02, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[17, 02, 01, 07]` | a member list: an empty leaf per member, keyed by its key | Derived |  | file-format.md 3.7 |
 | `[17, 02, 01, 08]` | the sets by checksum | Derived |  | session-identity.md 4.1 |
 | `[17, 02, 05, *, 04]` | the checksum, over the set and the file's creation stamp | Derived |  | session-identity.md 4.1, 4.4 |
 | `[17, 03]` | extended privileges | Design | extended_privilege | session-identity.md 4.2 |
-| `[17, 03, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[17, 03, 01, 07]` | a member list: an empty leaf per member, keyed by its key | Derived |  | file-format.md 3.7 |
 | `[17, 03, 05, *, 04]` | the checksum | Derived |  | session-identity.md 4.2, 4.4 |
 | `[17, 04]` | file access | Access |  | session-identity.md 4.3 |
 | `[19]` | fonts | Design | font | layout-model.md 8 |
-| `[19, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[19, 01, 07]` | a member list: an empty leaf per member, keyed by its key | Derived |  | file-format.md 3.7 |
 | `[1f]` | file library | Design | library_item | containers.md 1 |
 | `[1f, 01, 06]` | the glyph index: the members that are glyphs; each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | containers.md 1.2 |
 | `[1f, 01, 07]` | the member list; each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | containers.md 1.2 |
@@ -214,13 +214,13 @@ member's id; a test keeps this table equal to the code's):
 | `[1f, 05, *, 12]` | the reference count | Data |  | containers.md 1.3, 5 |
 | `[20]` | data sources | Design | data_source | file-metadata.md 1.1 |
 | `[21]` | value lists | Design | value_list | file-metadata.md 6 |
-| `[21, 01, 06]` | a second name list, by type as the field catalog's [I] | Derived |  | file-format.md 3.7 [I]; schema-path.md 5.5 |
-| `[21, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[21, 01, 06]` | the name list by type: the list's type, then its name's sort key, holding its key | Derived |  | file-metadata.md 6.1; file-format.md 3.7 |
+| `[21, 01, 07]` | a member list: an empty leaf per member, keyed by its key | Derived |  | file-format.md 3.7 |
 | `[26]` | base directories | Design | base_directory | containers.md 8.1 |
 | `[40]` | custom menu sets | Design | custom_menu_set | file-format.md 3.4 [I] |
-| `[40, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[40, 01, 07]` | a member list: an empty leaf per member, keyed by its key | Derived |  | file-format.md 3.7 |
 | `[41]` | custom menus | Design | custom_menu | calc-encoding.md 8 |
-| `[41, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[41, 01, 07]` | a member list: an empty leaf per member, keyed by its key | Derived |  | file-format.md 3.7 |
 | `[T, 03]` | fields | Design | field | schema-path.md 5.5 |
 | `[T, 03, 01, 06]` | the name list by type | Derived |  | schema-path.md 5.5 |
 | `[T, 03, 01, 0e]` | the fields' triggers and dependencies | Derived |  | schema-path.md 5.5, 5.10 |
@@ -311,10 +311,11 @@ that replaces one is classified by the paths below it. The report
 paths no rule covers by shape, and the catalog members that are no
 design object; the keys of FileMaker Pro 26's starter files that no spec
 explains are listed in [file-format.md](re/file-format.md) 3.7. Two
-index keys there are grouped Derived by inference from their form alone
-(a member list `07` in six catalogs, the value lists' second name list
-`06`): if the inference is wrong, a difference there is reported as
-Derived when it is Design, and no content is hashed or shown.
+index keys there are grouped Derived because the files show they hold
+nothing the members do not: a member list `07` in six catalogs, whose
+keys are exactly the members' keys, and the value lists' name list by
+type `06`. That FileMaker rebuilds them from the members rather than
+reading them is inferred.
 
 ## 5. The engine interface
 

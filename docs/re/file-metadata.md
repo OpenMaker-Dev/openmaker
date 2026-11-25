@@ -791,7 +791,11 @@ worked. FileMaker Pro's own files have no additional fields in the corpus
 
 ### 6.1 Storage [O]
 
-`[21, 1]` is the common catalog index; members `[21, 5, V]`:
+`[21, 1]` is the common catalog index, with two keys of its own [O: the
+66 starter files, file-format.md 3.7]: `06`, the name list by type, one
+leaf per list keyed by the list's type as two bytes (`00 00` custom,
+`00 01` from a field), its name's sort key and `00 00`, holding the list's
+key string; and `07`, an empty leaf per member. Members `[21, 5, V]`:
 
 | key | value |
 |---|---|

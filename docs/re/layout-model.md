@@ -1913,6 +1913,14 @@ template carries copies of `com.filemaker.theme.universal_touch` and
   `DBFontMapper`, `DBFontStyleTranslator`); styled text refers to fonts through
   it [O names, I semantics]. XML attributes `fontIdAttr`, `fontPSAttr`,
   `fontFamily`, `fontCodeSet`, `fontSize` [O].
+- A font is a member `[19, 5, F]`, `F` a two-byte key [O: the 66 starter
+  files, file-format.md 3.7]: `10` the family name (`Helvetica Neue`, or a
+  CSS list such as `arial,sans-serif`); `03`, on faces, the face's
+  PostScript name (`HelveticaNeue-Light`, `ArialMT`, `.SFNSText`); `02`,
+  `01 00` or `01 fe`, [I] a one-byte value as a key string, [I] the code
+  set (`fontCodeSet`), [U] what `fe` is; `d8` and the stamp. A theme names
+  a font the same two ways: `-fm-font-family(<family>, <code set or
+  PostScript name>)` (7.3).
 - Styled text model (`Draco::Text` in Support): Unicode text with character
   style runs (`CharacterStyle`: font, size, color, faces) and paragraph style
   runs (`ParagraphStyle`: alignment, indents, spacing, tabs); SCSU compression
@@ -2243,6 +2251,7 @@ small SVGs for the `-fm-icon` arrow, calendar, and check glyphs.
 | Layout-level styles | `KLayoutStyleDefs` | `ThemeStyles` protobuf |
 | Layout metadata | `KMetadataDefs` | [U] |
 | Layout script triggers | `KScriptTriggers` (`30`) | trigger cache and records, [file-metadata.md](file-metadata.md) section 7 |
+| [U] `16` | layout + `16` | `00 00` on every layout that has it; FileMaker Pro 26 adds it when it saves a layout in Layout mode (10.14, 10.17); [I] `KGuides`, the layout's guides (file-format.md 3.7) |
 | Table-view layout | layout + `0d` | the layout's own table view (`FMLayout::HasTableLayout`), objects at `0d/05/<object>` with their own trigger caches ([file-metadata.md](file-metadata.md) 7.1); a new file's, member by member, in 10.14 |
 | Per-object attributes | section 5.5 | calc formulas and binary records [U] |
 | Themes | `KThemeDefs`, `KStyleDefs`, `KMetadataDefs`, `KBaseThemeName`, `KBaseThemeVersion` | `ThemeStyles`, `ThemeMetadata` protobuf |
