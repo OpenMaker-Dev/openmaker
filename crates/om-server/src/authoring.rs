@@ -1018,7 +1018,7 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
     }
     let revision = answer(older, &catalog, catalog_revision, legacy_catalog_revision);
     ed.write(catalog_path.clone(), Some(catalog));
-    ed.tx.add_field_basis_once_stored(table, planned.field);
+    ed.tx.add_field_basis(&table, planned.field);
     let account = ed.account;
     ed.once_stored(
         vec![catalog_path],

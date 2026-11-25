@@ -25,12 +25,16 @@ tools/fms-script-harness/runbat.sh -l /dev/null contacts-en.fmp12 /tmp/results  
 ```
 
 `runbat.sh [-l] <battery> <file> [results dir]` writes
-`<battery>.<file>.tsv` (and `.stderr`). Environment: `FMS_ROOT`, `FILES`
-(mounted read-only), `WORK` (writable scratch for the file's saveAsXML
-schema, generated patches and the patched copies; default
-`script-harness-work` next to `$FILES`), `ACCOUNT` (a full access account
-of the file as `name:password`, default `Admin:`, needed by FMDeveloperTool
-and FMUpgradeTool), `HARNESS_LOCK`, `STEP_LIMIT` (steps per run before the
+`<battery>.<file>.tsv` (and `.stderr`). Without a results directory, both
+go under the git-ignored `re/work/fms-script-harness/`. Inspect a new
+result before copying it into `tools/fms-script-harness/results/` as a
+fixture.
+
+Environment: `FMS_ROOT`, `FILES` (mounted read-only), `WORK` (writable
+scratch for the file's saveAsXML schema, generated patches and patched
+copies; default `script-harness-work` next to `$FILES`), `ACCOUNT` (a full
+access account of the file as `name:password`, default `Admin:`, needed by
+FMDeveloperTool and FMUpgradeTool), `HARNESS_LOCK`, `STEP_LIMIT` (steps per run before the
 harness stops a runaway script, default 20000), `FILE_TRIGGERS=base` (see
 below), `BEFORE` (a command started in the background in the container before
 the run, such as a loopback HTTP server: the container has no other network); `runbat.sh` passes the last two into the container.
@@ -299,9 +303,9 @@ Directives (lines of the run section):
 | `s49-two-hops-<variant>` | contacts-en with `SCHEMA=` the document `s49_two_hop_schema.py` writes: Phone Emails (an occurrence of Email Addresses) related from Phone Numbers, a second hop after Contacts -> Phone Numbers; variants `both`, `firstoff`, `secondoff`, `bothoff` turn creation off on either hop (`@relationship`) | Set Field of a field two relationships away with no related record, and from an existing middle record: the error (0, 101 or 415) and which records the commit creates and links (script-runtime.md 13.24) |
 | `s36-schedule-run` | contacts-en | a schedule's run (script-runtime.md 13.23): script names in other cases, with spaces, missing, empty or shared by two scripts; parameters; the session's Get answers; results and errors; `$$` variables across runs; real logins (wrong password, unknown, lower-case and disabled accounts); a file that cannot be opened (`@path`) |
 
-`results/` holds the outputs. Expressions of a run line are evaluated
-after the script, with no table occurrence unless `@context` sets one; a
-probe script that `Evaluate`s them answers in the window's occurrence
+`results/` holds the checked-in fixtures. Expressions of a run line are
+evaluated after the script, with no table occurrence unless `@context` sets
+one; a probe script that `Evaluate`s them answers in the window's occurrence
 instead, and only there do `ValueListItems` and fields named without an
 occurrence answer (s30). Evaluating a value list from a field builds that
 field's index when it is set to index automatically, which changes its
