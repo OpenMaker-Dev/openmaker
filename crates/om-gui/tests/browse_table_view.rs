@@ -93,8 +93,7 @@ fn shown(rect: egui::Rect) -> bool {
 #[test]
 fn a_table_wider_than_the_window_scrolls_sideways_to_its_last_column() {
     let mut app = common::harness(Box::new(Provider));
-    common::fill(&mut app, "Host", "wide.example.invalid");
-    common::fill(&mut app, "File", "Wide.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/wide.example.invalid/Wide.fmp12");
     common::click(&mut app, "Open");
     common::wait_for_value(&mut app, &cell(1, 1));
     common::click(&mut app, "Table View");

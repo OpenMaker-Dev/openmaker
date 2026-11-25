@@ -40,7 +40,8 @@ OPENMAKER_PROVIDER=mock cargo run -p om-gui          # sample data, no server
 ```
 
 In the client, **File > Open...** opens a `.fmp12` file on this computer,
-and the Hosts dialog connects to a server. To host a copy of a file with
+and Home's Hosts (or File > Hosts > Open Network File...) connects to a
+server. To host a copy of a file with
 OpenMaker Server and open it from the client, follow
 [Hosting a file and opening it](docs/development.md#hosting-a-file-and-opening-it). Requirements, environment
 variables, tests and tools: [docs/development.md](docs/development.md).

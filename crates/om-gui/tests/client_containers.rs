@@ -172,11 +172,13 @@ fn an_inserted_attachment_on_an_existing_record_survives_explicit_reconnect() {
         host.provider()
             .with_keepalive(Some(std::time::Duration::from_millis(100))),
     ));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", fixture::FILE);
-    common::fill(&mut app, "Account", fixture::ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/{}", host.port, fixture::FILE),
+    );
+    common::fill(&mut app, "Account Name", fixture::ACCOUNT);
     common::fill(&mut app, "Password", fixture::PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "existing file", |a| a.state().is_settled());

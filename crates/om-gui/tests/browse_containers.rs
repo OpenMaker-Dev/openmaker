@@ -340,8 +340,11 @@ fn container_fields_show_pictures_scaled_and_files_by_name() {
         reads: reads.clone(),
         interactive: false,
     }));
-    common::fill(&mut app, "Host", "containers.example.invalid");
-    common::fill(&mut app, "File", "Containers.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/containers.example.invalid/Containers.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the pictures and the page", |app| {
         pictures(app).len() == 3
@@ -542,8 +545,11 @@ fn an_interactive_container_shows_every_page_of_its_pdf() {
         reads: Reads::default(),
         interactive: true,
     }));
-    common::fill(&mut app, "Host", "containers.example.invalid");
-    common::fill(&mut app, "File", "Containers.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/containers.example.invalid/Containers.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the interactive container's pages", |app| {
         app.query_by_label("Page 1 of 4").is_some()

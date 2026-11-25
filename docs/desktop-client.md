@@ -64,19 +64,57 @@ itself stays. File > Favorites > Show Favorites and File > Recent > Show
 Recent show the lists, and both submenus list their files. Home opens on
 the list it showed last.
 
-A file on this computer opens at once. A hosted file fills in the Hosts
-dialog's host, port and file, and the user signs in. Home keeps paths, host
-names, ports, file names and the list shown in the OS account's
-`settings.json`, never account names or passwords. When that file cannot be
-read or written, the lists last until OpenMaker quits: Home says so beside
-its tabs, and a pin or Remove that could not be saved shows an alert.
+A file on this computer opens at once. A hosted file asks for its sign-in
+first: **Open “Name”**, with Account Name, Password and, when the provider
+can send one, **Use saved FileMaker license**, then **Sign in**. Home keeps
+paths, host names, ports, file names, the list shown and the saved hosts
+(below) in the OS account's `settings.json`, never account names or
+passwords. When that file cannot be read or written, the lists last until
+OpenMaker quits: Home says so beside its tabs, and a pin, Remove or host
+change that could not be saved shows an alert.
+
+Under Home in the sidebar, **Hosts** lists the saved hosts, by name or
+address; **+** adds one (Address, Port, and an optional Name the sidebar
+shows instead of the address). Selecting a host shows its page, which lists
+its files at once ("Hosts and their files", below): its name as the title,
+its address and what it says it is beside a refresh button and **Search
+Files**, and its files in Home's table. A click selects a file, and a
+double-click or Return signs in to it. A host's context menu lists its
+files again, opens **Open Network File...** with the host filled in, edits
+the host (Edit Host...) or removes it (Remove Host, or Delete after
+clicking it); removing a host forgets only the saved entry. File > Hosts >
+Show Hosts shows the host shown last, or Hosts with **Add Host...** while
+none is saved.
+
+**Open Network File...** (File > Hosts, a host's context menu, and a host
+page's empty or failed list) opens a file by its path,
+`fmnet:/host[:port]/File`, read as a script's or related file's path is
+(`om_data::file_refs`), with an IPv6 address in brackets
+(`fmnet:/[::1]/File`, OpenMaker's own form): a line under the field says
+which file on which host and port the path names, or what is wrong with it,
+and **Open** waits until it names a host and a file. A host's address
+cannot carry an account (`name@host`): the account goes in Account Name,
+so none is saved with a host. It signs in as the sign-in does. A path
+to a host Home does not have offers **Add host to Hosts**, off by default.
+Searching a host page for a name it does not list offers **Open “Name”...**,
+the same dialog with that file's path: a host can leave a file unlisted, and
+it still opens by its name.
 
 Where OpenMaker differs from FileMaker's Home, or chose where it is
 unmeasured:
 
 - **Hosts** takes the place of FileMaker Cloud and Resources in the
-  sidebar. It shows the Hosts dialog in Home's place; Cancel returns to
-  Home.
+  sidebar, and its host pages take the place of FileMaker's Hosts window,
+  which is a window of its own (capture 28) with a host field, the
+  account, password and file along its bottom, and tiles. Selecting a host
+  lists its files without a List Files step; a file's sign-in is a dialog
+  of its own, as FileMaker asks for an account when it opens a file.
+- Open Network File is OpenMaker's: how FileMaker Pro 26 opens a file a
+  host does not list is unmeasured. It takes `fmnet:` paths only, not
+  `fmp://` URLs, and has no shortcut (FileMaker gives Shift-Command-O to
+  Show Hosts).
+- The sign-in's default button reads **Sign in**, as FileMaker Pro's for a
+  related file does; its wording for a hosted file is unmeasured.
 - The header shows OpenMaker's name where FileMaker has the Claris logo, and
   files show OpenMaker's document glyph, or a server glyph for a hosted
   file, not the solution's icon.
@@ -111,8 +149,10 @@ reads it (network-protocol.md 5.6.9b). The provider
 never substitutes sample records after a failure: sample data needs
 `OPENMAKER_PROVIDER=mock` and is labeled in the window title and a banner.
 `OPENMAKER_HOST`, `OPENMAKER_PORT`, `OPENMAKER_FILE` and `OPENMAKER_ACCOUNT`
-prefill the Hosts form, and a nonempty `OPENMAKER_HOST` starts the desktop in
-Hosts. The password is always entered separately. A local file opens through a
+prefill Open Network File, which a nonempty `OPENMAKER_HOST` opens over Home
+at startup. The password is always entered separately. An app built without
+Home (an embedding, most tests) shows Open Network File alone in its window
+while no file is open, filled in with the last file opened. A local file opens through a
 private embedded host (local-files.md).
 
 A hosted file's related files open when the window first reads them, not
@@ -308,9 +348,9 @@ that file opens. After a reconnect the files open again in the order the
 window reads them, so their ids may differ from before, and the window
 reads everything again, as for any reconnect.
 
-### Hosts dialog file list
+### Hosts and their files
 
-**List files** lists the host and port typed in the Hosts dialog. A host
+A host's page lists the files of its host and port. A host
 with OpenMaker's own file list extension, which OpenMaker Server has
 ([hosted-file-list.md](hosted-file-list.md)), lists through it. Any other
 host, FileMaker Server above all, is asked with FileMaker's own GetFileList
@@ -321,34 +361,34 @@ certificate checks of opening a file and without the client license, and
 disconnects when it is done, failed or canceled. It never uses or waits for
 an open file's connection.
 
-The file area shows what came back, for that host and port only:
+The page shows what came back, for that host and port only:
 
-- the published files, alphabetically, with the host's name and version
-  beside the heading; **Search Files** filters them. Clicking a file puts
-  its name in File; double-clicking it opens it. Opening still goes through
-  the account, password and **Use saved license** as typed: listing a file
-  grants nothing;
-- **This host lists no files.** for a host that publishes none (OpenMaker
-  Server's default);
-- **OpenMaker cannot list this host's files.** for a host that answers
+- the published files, alphabetically, without their `.fmp12`, with the
+  host's name and version beside its address; **Search Files** filters
+  them. Opening still goes through the sign-in: listing a file grants
+  nothing;
+- **This host lists no files** for a host that publishes none (OpenMaker
+  Server's default), with **Open Network File...**;
+- **OpenMaker cannot list this host’s files** for a host that answers
   neither the extension nor op77 with a list, or that does not answer as a
   FileMaker host;
 - the host's reason when its op77 reply refuses the list:
   - sign-in required (18), which OpenMaker does not send yet;
   - not accepting new connections (1638, 812);
   - another FileMaker error, by its number;
-- **Could not connect to this host.** when it cannot be reached or trusted;
-- **This host's file list could not be read.** for a malformed or
+- **Could not connect to this host** when it cannot be reached or trusted;
+- **This host’s file list could not be read** for a malformed or
   incomplete list: an op77 tree that does not decode, names fewer files
   than its count, or runs past 64 MiB over its pages (how FileMaker Server
   pages a long list is unmeasured). No partial list is shown.
 
-Each failure names the host and port and the cause. A failure is not an
-alert, and neither it nor a list changes the form, an opening file or a
-window. **Cancel** stops a listing under way. Changing the host or port
-forgets the list (stopping a listing under way), and a reply to a listing no
-longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
-Pro's is not captured.
+Each failure names the host and port and the cause, with **Open Network
+File...** to open a file by name. A failure is not an alert, and neither it
+nor a list changes an opening file or a window. The refresh button and the
+host's List Files ask again. Leaving a host's page stops a listing under way,
+and a reply to a listing no longer waited for is dropped unseen; a list that
+came back shows again when its page does, until another host is listed. The
+wording is OpenMaker's; FileMaker Pro's is not captured.
 
 Opening a file the host refuses because it blocks new users (Open status
 1638) shows FileMaker Pro's alert, "The host is not allowing new
@@ -432,11 +472,12 @@ Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
 
 ### Client license
 
-**FileMaker License...** is available in Hosts and the OpenMaker menu. It is
+**FileMaker License...** is in the OpenMaker menu. It is
 an OpenMaker setting, not a file-defined layout object. The key is masked on
 entry and is never read back into the dialog. Save replaces the current OS
-user's stored key; Remove deletes it. The Hosts switch **Use saved license**
-selects whether a connection sends that key. With no saved key, or with the
+user's stored key; Remove deletes it. **Use saved FileMaker license**, in the
+sign-in and Open Network File, selects whether a connection sends that key,
+and is kept for the next one. With no saved key, or with the
 switch off, native connections send an empty install code. OpenMaker Server
 connections therefore need no license; FileMaker Server decides whether it
 accepts the client.

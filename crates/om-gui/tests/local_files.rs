@@ -235,8 +235,8 @@ fn a_file_on_this_computer_opens_saves_an_edit_and_reopens_with_it() {
     common::click(&mut app, "Close");
     common::wait_until(&mut app, "the file to close", |app| !app.state().is_open());
 
-    // The Hosts dialog's Browse opens the same chooser.
-    common::click(&mut app, "Browse...");
+    // File > Open... opens the same chooser.
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -407,7 +407,7 @@ fn a_new_script_is_saved_in_a_file_on_this_computer_and_runs_after_reopening() {
 fn a_starter_solution_opens_with_no_sign_in_dialog() {
     let path = PathBuf::from(std::env::var_os("OM_STARTER_FILE").expect("a file"));
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &path);
     common::wait_until(&mut app, "the file to open", |app| {
         assert!(
@@ -437,7 +437,7 @@ fn an_account_due_a_change_is_asked_for_a_new_password() {
     let folder = Folder::new("change");
     let mut app = app();
     let open_as = |app: &mut App, password: &str| {
-        common::click(app, "Browse...");
+        common::show_open_file(app);
         choose(app, &folder.file());
         common::wait_for_label(app, "Open “Tasks”");
         replace(app, "Account Name", fixture::NEWCOMER);
@@ -489,7 +489,7 @@ fn file_change_password_changes_the_accounts_password() {
     const NEW: &str = "a new secret";
     let folder = Folder::new("change-menu");
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -518,7 +518,7 @@ fn file_change_password_changes_the_accounts_password() {
     common::click(&mut app, "Close");
     common::wait_until(&mut app, "the file to close", |app| !app.state().is_open());
 
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     common::wait_for_label(
@@ -536,7 +536,7 @@ fn a_refused_password_asks_again_and_cancel_lets_the_file_go() {
     let folder = Folder::new("refused");
     let before = std::fs::read(folder.file()).unwrap();
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, "not the password");
     common::wait_for_label(
@@ -598,7 +598,7 @@ fn a_file_that_is_not_a_filemaker_file_is_refused_unchanged() {
     let path = folder.0.join("notes.fmp12");
     std::fs::write(&path, b"plain text, not a database").unwrap();
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &path);
     common::wait_until(&mut app, "the refusal", |app| app.state().error().is_some());
     let error = app.state().error().unwrap().to_owned();
@@ -1520,7 +1520,7 @@ fn revert_transaction_lets_go_only_of_the_records_it_removes() {
     add_name_field(&mut root);
     fixture::write_tree(&folder.file(), &root);
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -1608,7 +1608,7 @@ fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     );
     fixture::write_tree(&folder.file(), &tree);
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     common::wait_until(&mut app, "local file and layout", |app| {
@@ -1654,7 +1654,7 @@ fn send_mail_sends_through_the_steps_smtp_server() {
     add_name_field(&mut root);
     fixture::write_tree(&folder.file(), &root);
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -1829,7 +1829,7 @@ fn relookup_field_contents_copies_each_found_records_lookup_again() {
     ];
     relookup_file(&folder, &scripts, false);
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -1864,7 +1864,7 @@ fn relookup_field_contents_writes_nothing_it_refuses() {
     )];
     relookup_file(&folder, &scripts, true);
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -1889,7 +1889,7 @@ fn the_records_menu_relooks_up_through_the_field_entered() {
     );
     relookup_file(&folder, &[fixture::script(1, "Notes", vec![shown])], false);
     let mut app = app();
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
@@ -2041,7 +2041,7 @@ fn the_script_workspace_shows_new_steps_of_a_filemaker_written_probe_file() {
         .build_eframe(|_cc| {
             OpenMakerApp::with_license_store(Box::new(clean_provider()), Box::new(Untouchable))
         });
-    common::click(&mut app, "Browse...");
+    common::show_open_file(&mut app);
     choose(&mut app, &scratch.file());
     sign_in(&mut app, "");
     common::wait_until(&mut app, "the probe file", |app| {

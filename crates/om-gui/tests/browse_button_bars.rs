@@ -429,8 +429,7 @@ fn open_with_segment(veto: bool, entry_segment: EntrySegment) -> (common::App, A
         ..Default::default()
     }));
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "bars.example.invalid");
-    common::fill(&mut app, "File", "Bars.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/bars.example.invalid/Bars.fmp12");
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "BAR ENTRY");
     common::loaded_record_number(&mut app);
