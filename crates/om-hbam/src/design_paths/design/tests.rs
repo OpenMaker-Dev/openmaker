@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::compare::{compare, CompareError, Difference, Which};
 use super::super::inventory::{inventory, IdentityError, IdentityProblem};
-use super::super::revision::{is_stamp, parse_revision, split_value};
+use super::super::revision::{is_stamp, parse_revision};
 use super::super::rules::{rule_for, rules, Group};
 use super::super::tests::{descriptor, leaf, list, message, varint};
 use super::super::{instances, objects, Kind, Object, Path, CATALOGS};
@@ -81,10 +81,9 @@ fn oracle(path: &[Vec<u8>], piece: Piece) -> Class {
     }
 }
 
-/// Every piece under the tree's design catalogs, by path, but the stamps
-/// at the two places they are left out (a member object's own node, a
-/// catalog's index), when a stamp's shape (a leaf, or a value in pieces),
-/// with what is below them.
+/// Every piece under the tree's design catalogs, by path, but the stamp
+/// keys at the two places they are left out (a member object's own node, a
+/// catalog's index), each with its whole subtree.
 fn tree_pieces(root: &OwnedNode) -> BTreeSet<(Path, Piece)> {
     fn walk(
         node: &OwnedNode,
@@ -111,7 +110,6 @@ fn tree_pieces(root: &OwnedNode) -> BTreeSet<(Path, Piece)> {
             let skip = |p: &Path, n: &OwnedNode| {
                 let rel = &p[base..];
                 is_stamp(&n.segment)
-                    && (n.children.is_empty() || split_value(n).is_some())
                     && match rel {
                         // The index's own stamps.
                         [index, _] => index == &[0x01],
@@ -497,9 +495,9 @@ fn button_member(id: u64, data: Vec<OwnedNode>) -> OwnedNode {
 /// and catalogs with a value of their own, a branch beside the index and
 /// the members, a value on the member list, a member with a value and no
 /// children, an index list shaped like a split value, a stamp-shaped key
-/// inside an index entry, an entry of a member that is gone; stamps in a
-/// stamp's shape (a leaf, a value in pieces) and stamp keys holding a
-/// subtree, on a member and on an index. The secrets planted in it.
+/// inside an index entry, an entry of a member that is gone; stamps as a
+/// leaf, as a value in pieces and holding another subtree, on a member and
+/// on an index. The secrets planted in it.
 fn built() -> (OwnedNode, Vec<Vec<u8>>) {
     let (pw, odbc) = (planted(1), planted(2));
     let mut root = OwnedNode::default();
@@ -605,9 +603,10 @@ fn built() -> (OwnedNode, Vec<Vec<u8>>) {
         &[&[0x80, 0x01], &[3], &[1], &[0x01], b"count"],
         leaf(&[], &[1]),
     );
-    // Stamps: the field's user name in pieces, as text that is not ASCII is
-    // kept (left out); a stamp key on the field and on the scripts' index
-    // holding a subtree of no stamp's shape (content, classified).
+    // Stamps, each left out with its whole subtree, whatever its shape: the
+    // field's user name in pieces, as text that is not ASCII is kept; a
+    // stamp key on the field and on the scripts' index holding a subtree no
+    // stamp has.
     let field = &[&[0x80, 0x01][..], &[3], &[5], &[1]];
     root.put(
         &[field, &[&[0xfc, 0x01][..]][..]].concat(),

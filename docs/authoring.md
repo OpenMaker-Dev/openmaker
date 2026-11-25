@@ -1157,10 +1157,12 @@ the way to and within each design catalog in order and unique, as a
 file's are; every key under a catalog's member list, of a member with
 children or without, of the shape its catalog's spec gives (a font's two
 bytes, a base directory's four, a serial key elsewhere); no two objects
-of one kind (and table) with one id; no member the decoders could read
-differently (a key such as `[00 05]` that they read by number as a
-script's step data, a layout's attribute records or table view, or a
-button's step data). A file that fails is refused with
+of one kind (and table) with one id; no key the decoders, which look
+keys up by number, could take for another than the design reading takes:
+on the way to a design catalog or at its index and member list (`00 11`
+for the scripts' `11`), or in a member (`[00 05]` for a script's step
+data, a layout's attribute records or table view, or a button's step
+data). A file that fails is refused with
 `invalid_request`; `details` give the `file`, the `reason`
 (`unsorted_keys`, `key_shape`, `duplicate_id` or `misread`), and where
 known the `kind`, the `table` and, when the key has its specified shape,
@@ -1609,7 +1611,10 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   what in it changed, until step data is identified exactly per step
   ([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)).
   Leaving out step data covers the places the specs name for a stored
-  password or key, not any other key that might hold one. A tree held in
+  password or key, not any other key that might hold one. A modification
+  stamp on a member or a catalog's index is left out with everything
+  below it, so content there is not compared; a file FileMaker wrote
+  holds none. A tree held in
   memory with a value inline that the file stores in pieces compares as
   different from that file
   ([#777](https://github.com/OpenMaker-Dev/openmaker/issues/777)). Which

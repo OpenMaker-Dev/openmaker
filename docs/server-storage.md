@@ -1117,8 +1117,13 @@ unique, as a file's are; that every key under a design catalog's member
 list has the shape its catalog's spec gives (a font's two bytes, a base
 directory's four, a serial key elsewhere), a member object's and a
 member's with no children alike, whose key is in its catalog's object;
-that no two objects of one kind (and table) report one id; and that no
-member is one the decoders could read differently: a key of more than
+that no two objects of one kind (and table) report one id; that no key
+on the way to a design catalog, or at its first level (its index `01`
+and member list `05`), is one the decoders, which look these keys up by
+number, could take for a key the design reading spells otherwise (`00
+11` for the scripts' `11`, `00 80 01` for table `80 01`), whether that
+key is there too or not; and that no member is one the decoders could
+read differently: a key of more than
 one byte that reads by number as one they look up (a script's step list
 `04` and step data `05`; a layout's attribute records `05`, object store
 `07` and table view `0d`; the table view's records `05`; a button's step
@@ -1175,10 +1180,13 @@ different; the history will bring such a tree to the stored form first
 tokens, which join values in pieces, differ from design revisions in
 this. Modification stamps are left out at exactly two places, where
 schema-path.md 8 places them: the direct stamp keys of a member object's
-own node and of a catalog's index, in a stamp's shape (8.1: a key string
-or text, so a leaf, or a value in pieces when the text is not ASCII). A
-stamp key there with any other subtree is content, classified like any
-other piece, and so is a stamp-shaped key anywhere else. The design revision is built by walking the object
+own node and of a catalog's index, each with everything below it,
+whatever its shape: decided by its key alone. The cost: content below a
+stamp key at those two places is not compared, which a file FileMaker
+wrote never has (8.1: a stamp is a key string or text, a leaf or a value
+in pieces). A stamp still counts as a member's child, so a member whose
+only child is a stamp is an object. A stamp-shaped key anywhere else is a
+piece like any other. The design revision is built by walking the object
 and adding its Design pieces, in the edit token's general form (segments,
 values and child counts, framed, without list flags), each node written
 with only its children that lead to Design pieces, so that no value,

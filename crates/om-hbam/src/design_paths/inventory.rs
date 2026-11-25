@@ -9,12 +9,16 @@
 //! layout-model.md 8; a base directory's four, containers.md 8.1; a serial
 //! key elsewhere, file-metadata.md 1, whose encoding is one per id),
 //! whether it is a member object's or, with no children, its catalog's; no
-//! two objects of one kind (and table) report one id; and no member is one
-//! the decoders could read differently (`design::misread`: a script's step
-//! list and step data, a layout's attribute records, object store, table
-//! view and step data, looked up by number). A refusal names a kind, a
-//! table and an id at most, the id only when the key has its specified
-//! shape, never a key's bytes.
+//! two objects of one kind (and table) report one id; no key on the way to
+//! a design catalog, or at its first level (its index `01`, its member list
+//! `05`), that the decoders, looking keys up by number, could take for one
+//! the design reading spells otherwise ([`on_the_way`]: `00 11` for the
+//! scripts' `11`, `00 80 01` for table `80 01`), whether that key is also
+//! there or not; and no member is one the decoders could read differently
+//! (`design::misread`: a script's step list and step data, a layout's
+//! attribute records, object store, table view and step data, looked up by
+//! number). A refusal names a kind, a table and an id at most, the id only
+//! when the key has its specified shape, never a key's bytes.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -23,7 +27,7 @@ use std::ops::Deref;
 use super::design::{self, DesignRevision};
 use super::rules::{Group, Seg, CATALOGS};
 use super::{objects, Kind, Object};
-use crate::slot::be_uint;
+use crate::slot::{be_uint, uint_segment};
 use crate::tree::OwnedNode;
 
 /// What an identity check found.
@@ -177,11 +181,72 @@ fn ordered(root: &OwnedNode) -> Result<(), IdentityError> {
     Ok(())
 }
 
+/// Whether `segment` is the key `seg` stands for on the way to a design
+/// catalog, or one the decoders could take for it: they look these keys up
+/// by number (`Node::get`, a key of 1 to 8 bytes read big-endian; om-scripts'
+/// `at(&[17, 5])`, om-layout's `at(&[4, 5, id])`, `catalog::fields`' table
+/// by its id), so `00 11` is the scripts' `11` and `00 80 01` is table
+/// `80 01`.
+pub(super) fn on_the_way(seg: &Seg, segment: &[u8]) -> bool {
+    seg.matches(segment)
+        || match seg {
+            Seg::Key(key) => be_uint(segment).is_some() && be_uint(segment) == be_uint(key),
+            Seg::Table => be_uint(segment).is_some_and(|n| Seg::Table.matches(&uint_segment(n))),
+            _ => false,
+        }
+}
+
+/// Whether a key on the way to a design catalog, or at the catalog's first
+/// level, could be taken by the decoders for a key the design reading
+/// spells otherwise: refused, the exact key there too or not.
+fn unaliased(root: &OwnedNode) -> Result<(), IdentityError> {
+    const FIRST_LEVEL: [Seg; 2] = [Seg::Key(&[0x01]), Seg::Key(&[0x05])];
+    let aliased = |node: &OwnedNode, segs: &[Seg]| {
+        node.children.iter().any(|c| {
+            segs.iter()
+                .any(|seg| on_the_way(seg, &c.segment) && !seg.matches(&c.segment))
+        })
+    };
+    for catalog in CATALOGS.iter().filter(|c| c.group == Group::Design) {
+        let refuse = |table| IdentityError {
+            kind: catalog.kind,
+            table,
+            id: None,
+            problem: IdentityProblem::Misread,
+        };
+        // The nodes reached so far, with their table's id under a table.
+        let mut level: Vec<(Option<u64>, &OwnedNode)> = vec![(None, root)];
+        for seg in catalog.path {
+            let mut next = Vec::new();
+            for &(table, node) in &level {
+                if aliased(node, std::slice::from_ref(seg)) {
+                    return Err(refuse(table));
+                }
+                next.extend(
+                    node.children
+                        .iter()
+                        .filter(|c| seg.matches(&c.segment))
+                        .map(|c| match seg {
+                            Seg::Table => (crate::serial::decode(&c.segment), c),
+                            _ => (table, c),
+                        }),
+                );
+            }
+            level = next;
+        }
+        if let Some(&(table, _)) = level.iter().find(|(_, n)| aliased(n, &FIRST_LEVEL)) {
+            return Err(refuse(table));
+        }
+    }
+    Ok(())
+}
+
 /// A tree's design objects, each checked (module doc), or why they are
 /// not trusted. Nothing is read from any object before every check has
 /// passed.
 pub fn inventory(root: &OwnedNode) -> Result<Vec<Checked<'_>>, IdentityError> {
     ordered(root)?;
+    unaliased(root)?;
     let found = objects(root);
     let mut seen = BTreeSet::new();
     for object in &found {

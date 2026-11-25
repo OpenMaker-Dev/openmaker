@@ -463,8 +463,11 @@ fn design_revisions_and_names_per_kind() {
     let mut why: BTreeMap<(Kind, bool, String), usize> = BTreeMap::new();
     let mut table_view = 0;
     for path in &files {
-        let (_, root) = tree(path);
+        let (file, root) = tree(path);
         let objects = design_paths::inventory(&root).expect("a starter file passes the checks");
+        // Its design catalogs as `compare_files` reads them pass too.
+        let design = design_paths::design_tree(&file).expect("a design tree");
+        assert!(design_paths::inventory(&design).is_ok());
         // Step data in a layout's table view, [I] `[4, 5, L, 0d, 05, O,
         // 11]`: counted.
         for layout in objects

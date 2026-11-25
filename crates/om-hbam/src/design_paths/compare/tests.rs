@@ -615,6 +615,49 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
         compare(&base, &one_byte, None).unwrap_err(),
         shape(Kind::Font)
     );
+    // A key on the way to a catalog, or at its first level, that the
+    // decoders look up by number and could take for the design reading's
+    // (finding 1 of #768's fifth review): beside the exact key and alone,
+    // at the root, at the member list, at the index; and a table's key with
+    // a leading zero, which `catalog::fields` finds by the table's id.
+    let misread = |kind| refused(kind, None, IdentityProblem::Misread);
+    let moved = |path: &[&[u8]], alias: &[&[u8]], beside: bool| {
+        let mut tree = base.clone();
+        let node = tree.at(path).unwrap().clone();
+        if !beside {
+            tree.remove(path);
+        }
+        tree.put(alias, node);
+        tree
+    };
+    for beside in [true, false] {
+        for (path, alias) in [
+            (&[&[0x11][..]][..], &[&[0x00, 0x11][..]][..]),
+            (&[&[0x11], &[0x05]], &[&[0x11], &[0x00, 0x05]]),
+            (&[&[0x11], &[0x01]], &[&[0x11], &[0x00, 0x01]]),
+        ] {
+            assert_eq!(
+                compare(&base, &moved(path, alias, beside), None).unwrap_err(),
+                misread(Kind::Script),
+                "{alias:02x?}, beside the exact key: {beside}"
+            );
+        }
+        assert_eq!(
+            compare(
+                &base,
+                &moved(&[TABLE], &[&[0x00, 0x80, 0x01]], beside),
+                None
+            )
+            .unwrap_err(),
+            misread(Kind::Field),
+            "table, beside the exact key: {beside}"
+        );
+    }
+    // Read from a file, such a key is kept for the inventory to refuse.
+    let segments = |keys: &[&'static [u8]]| keys.iter().map(|k| KeySegment(k)).collect::<Vec<_>>();
+    assert!(design_slot(&segments(&[&[0x00, 0x11], &[0x05]])));
+    assert!(design_slot(&segments(&[&[0x00, 0x80, 0x01], &[0x03]])));
+    assert!(!design_slot(&segments(&[&[0x00, 0x02]])));
     // Keys out of order or repeated, which a file never holds: a member
     // twice, or two member lists, one of which would be enumerated and the
     // other skipped (finding 4 of #768's third review).

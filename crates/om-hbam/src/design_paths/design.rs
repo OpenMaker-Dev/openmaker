@@ -42,10 +42,13 @@
 //! them; the two differ for a tree in memory that holds such a value
 //! inline.) Modification stamps are left out at exactly two places, where
 //! schema-path.md 8 places them: the direct stamp keys of a member
-//! object's own node, and of a catalog's index, each with the shape a
-//! stamp has (8.1: a key string or text, so a leaf, or a value in pieces
-//! when the text is not ASCII). A stamp key there with any other subtree,
-//! and a stamp-shaped key anywhere else, is a piece like any other.
+//! object's own node, and of a catalog's index, each with everything below
+//! it, whatever its shape, decided by its key alone. The cost: content
+//! below a stamp key at those places is not compared, which a file
+//! FileMaker wrote never has (a stamp is a key string or text, 8.1). A
+//! stamp-shaped key anywhere else is a piece like any other. A stamp still
+//! counts as a member's child, so a member whose only child is a stamp is
+//! an object.
 //!
 //! **Projections.** A class's projection of an object is built by walking
 //! the object and adding the pieces of that class: the edit token's general
@@ -69,7 +72,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use super::revision::{is_stamp, split_value};
+use super::revision::is_stamp;
 use super::rules::{hex, Group, Rule};
 use super::{candidates, secrets, step, Kind, Object};
 use crate::slot::be_uint;
@@ -211,13 +214,6 @@ fn reads_as(segment: &[u8], number: u64) -> bool {
     be_uint(segment) == Some(number)
 }
 
-/// Whether `node` is a modification stamp in a stamp's shape: a stamp key
-/// holding a leaf, or a value in pieces (schema-path.md 8.1: a key string or
-/// text; file-format.md 3.6: text that is not ASCII is kept in pieces).
-fn stamp(node: &OwnedNode) -> bool {
-    is_stamp(&node.segment) && (node.children.is_empty() || split_value(node).is_some())
-}
-
 /// Whether the decoders could find another node than this classing does in
 /// a member of `kind`: `secrets::misread`'s places (a script's step list
 /// and step data, a layout's attribute records, object store and buttons'
@@ -254,15 +250,16 @@ impl Walk {
         }
     }
 
-    /// Whether the child `child` of the node at `rel` is left out: a
-    /// direct stamp of a member's own node or of a catalog's index, in a
-    /// stamp's shape, or a catalog's member that is an object of its own.
+    /// Whether the child `child` of the node at `rel` is left out, with
+    /// everything below it: a direct stamp key of a member's own node or of
+    /// a catalog's index, or a catalog's member that is an object of its
+    /// own.
     fn left_out(&self, rel: &[&[u8]], child: &OwnedNode) -> bool {
         match (self.part, rel) {
-            (Part::Catalog, [[0x01]]) => stamp(child),
+            (Part::Catalog, [[0x01]]) => is_stamp(&child.segment),
             (Part::Catalog, [[0x05]]) => !child.children.is_empty(),
             (Part::Catalog, _) => false,
-            (_, []) => stamp(child),
+            (_, []) => is_stamp(&child.segment),
             _ => false,
         }
     }

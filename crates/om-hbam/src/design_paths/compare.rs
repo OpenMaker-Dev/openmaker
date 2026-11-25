@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 
 use super::design::{classify, Class, Classified, DesignRevision, Refusal};
-use super::inventory::{inventory, Checked, IdentityError, IdentityProblem};
+use super::inventory::{inventory, on_the_way, Checked, IdentityError, IdentityProblem};
 use super::rules::{Group, CATALOGS};
 use super::{Kind, Object};
 use crate::container::HbamFile;
@@ -586,12 +586,14 @@ fn alone(side: &Side, indexes: &[usize], other: &Side, base: Option<&Side>) -> V
 }
 
 /// Whether a slot of a file belongs to a design catalog (or leads to
-/// one): [`design_tree`] keeps only these.
+/// one), its keys on the way read as the decoders read them, by number, so
+/// that the inventory sees, and refuses, a key they could take for a
+/// catalog's ([`on_the_way`]): [`design_tree`] keeps only these.
 fn design_slot(path: &[KeySegment<'_>]) -> bool {
     CATALOGS
         .iter()
         .filter(|c| c.group == Group::Design)
-        .any(|c| c.path.iter().zip(path).all(|(seg, s)| seg.matches(s.0)))
+        .any(|c| c.path.iter().zip(path).all(|(seg, s)| on_the_way(seg, s.0)))
 }
 
 /// The design catalogs of a file's key tree, and nothing else: the file is
