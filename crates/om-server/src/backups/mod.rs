@@ -250,6 +250,10 @@ pub(crate) struct Backups {
     /// ([`crate::ServerHandle::failing_next_backup_flush`]).
     #[cfg(debug_assertions)]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// A test fixture: the backup folders act as on a file system without
+    /// hard links ([`crate::ServerHandle::backing_up_without_hard_links`]).
+    #[cfg(debug_assertions)]
+    no_hard_links: std::sync::atomic::AtomicBool,
     /// A test fixture: run before a checked backup folder is removed
     /// ([`crate::ServerHandle::before_backup_removal`]).
     #[cfg(debug_assertions)]
@@ -352,6 +356,21 @@ pub(crate) struct Outcome {
     pub cancelled: Option<AbortReason>,
 }
 
+/// A backup folder that refuses hard links, as some file systems do
+/// ([`Backups::refuse_hard_links`]).
+struct WithoutLinks<'a>(&'a fs::Folder);
+
+impl export::Folder for WithoutLinks<'_> {
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        export::Folder::descriptor(self.0)
+    }
+
+    fn links(&self) -> bool {
+        false
+    }
+}
+
 /// Why a run did not complete.
 enum Failure {
     Cancelled(AbortReason),
@@ -421,6 +440,27 @@ impl Backups {
     pub fn fail_next_flush(&self) {
         self.fail_next_flush
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Make the backup folders act as on a file system without hard links
+    /// (tests): no copy is linked to an earlier backup's, and each copy is
+    /// made under its name, as a file system that refuses links makes it.
+    #[cfg(debug_assertions)]
+    pub fn refuse_hard_links(&self) {
+        self.no_hard_links
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the backup folders may be given hard links.
+    fn links(&self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            !self
+                .no_hard_links
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
+        #[cfg(not(debug_assertions))]
+        true
     }
 
     /// The failure [`Backups::fail_next_flush`] asked for, once.
@@ -1316,10 +1356,11 @@ fn write_backup(
         }
         let shown = shown_name(hosted);
         let previous = last.get(&hosted.id).filter(|p| p.saves == source.saves);
+        let links = backups.links();
         let linked = match previous {
-            Some(previous) => link_previous(&target.folder, previous, &into, file_name)
+            Some(previous) if links => link_previous(&target.folder, previous, &into, file_name)
                 .map_err(|e| Failure::io(&dest_path.display(), &e))?,
-            None => false,
+            _ => false,
         };
         let identity = if let (true, Some(previous)) = (linked, previous) {
             info!(
@@ -1330,8 +1371,9 @@ fn write_backup(
             previous.identity
         } else {
             info!("Starting to back up database {shown:?}, current status: Normal");
+            let without_links = WithoutLinks(&into);
             let to = Destination {
-                folder: &into,
+                folder: if links { &into } else { &without_links },
                 name: file_name,
                 permissions: Some(source.permissions.clone()),
             };
@@ -1339,8 +1381,26 @@ fn write_backup(
                 stop: &stop,
                 written: &copied,
             };
-            let exported = export::copy(&source, &to, progress)
-                .map_err(|e| Failure::export(&dest_path.join(file_name).display(), e, ticket))?;
+            let exported = match export::copy(&source, &to, progress) {
+                Ok(exported) => exported,
+                // The copy is complete under its name. The run flushes every
+                // folder of the backup before the backup is named, and fails
+                // if one cannot be, as it always did.
+                Err(ExportError::NotFlushed { exported, error }) => {
+                    warn!(
+                        "{}: copied, but flushing its folder failed for now: {error}",
+                        dest_path.join(file_name).display()
+                    );
+                    exported
+                }
+                Err(e) => {
+                    return Err(Failure::export(
+                        &dest_path.join(file_name).display(),
+                        e,
+                        ticket,
+                    ))
+                }
+            };
             let id = exported.id.ok_or_else(|| Failure::Failed {
                 code: CANNOT_WRITE,
                 message: format!(

@@ -967,6 +967,15 @@ impl ServerHandle {
         self.schedules.backups().fail_next_flush();
     }
 
+    /// Make the backup folders act as on a file system without hard links:
+    /// no copy is linked to an earlier backup's, and each is made under its
+    /// name. A test fixture, only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn backing_up_without_hard_links(&self) {
+        self.schedules.backups().refuse_hard_links();
+    }
+
     /// Run `hook` each time a backup folder has been checked and is about
     /// to be removed (Delete, retention, an unfinished backup's cleanup). A
     /// test fixture, only in debug builds.

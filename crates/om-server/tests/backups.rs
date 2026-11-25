@@ -509,6 +509,36 @@ fn a_file_with_the_longest_name_is_backed_up() {
     );
 }
 
+/// A backup folder on a file system without hard links (simulated: the
+/// server's test switch makes every link to it fail as such a file system
+/// fails it) gets a full copy of each file under its name in every backup,
+/// as before exports: none is linked to an earlier backup's copy.
+#[test]
+fn a_folder_without_hard_links_gets_full_copies() {
+    let folder = Folder::new("no-hard-links");
+    let file = hosted_file(&folder);
+    let backups = folder.0.join("Backups");
+    let clock = ManualClock::new(at(8, 0));
+    let mut schedule = backup_schedule("Copies", 5);
+    schedule.enabled = false;
+    let (_, handle) = start(&file, &backups, vec![schedule], &clock);
+    handle.backing_up_without_hard_links();
+    clock.set(at(8, 1));
+    let first = back_up_now(&handle, "Copies");
+    // Nothing changed: on a file system with links this one is linked.
+    clock.set(at(8, 2));
+    let second = back_up_now(&handle, "Copies");
+    let copy = |made: &str| backups.join(made).join("Databases/Sample.fmp12");
+    for made in [&first, &second] {
+        assert_eq!(
+            std::fs::read(copy(made)).unwrap(),
+            std::fs::read(&file.0).unwrap()
+        );
+    }
+    #[cfg(unix)]
+    assert_ne!(inode(&copy(&first)), inode(&copy(&second)));
+}
+
 #[test]
 fn backups_taken_while_a_client_writes_are_each_a_saved_version() {
     let folder = Folder::new("concurrent");

@@ -55,14 +55,14 @@
 //! written and compared. Nothing grows with the file.
 //!
 //! **Where it goes.** An export to a folder is made there without its name
-//! where the system can, else under a short temporary name of its own, and
-//! checked there ([`Prepared`], `crate::staged`). [`Prepared::publish`]
-//! flushes it to the device, gives it its name by a link that fails when
-//! the name is taken, and flushes the folder. A failure, or a [`Prepared`]
-//! dropped unpublished, leaves nothing under the final name and no
-//! temporary name, as far as the export can show what it made (the limits
-//! are in `crate::staged`). An export can also fill an empty file its
-//! caller made ([`Target::File`]), from its first byte.
+//! where the system can, else under its name, as copies were made before
+//! exports, and checked there ([`Prepared`], `crate::staged`).
+//! [`Prepared::publish`] flushes it and gives an unnamed file its name by a
+//! link that fails when the name is taken, then flushes the folder; when
+//! that flush fails the export stays complete under its name
+//! ([`ExportError::NotFlushed`]). Nothing removes a name. An export can also
+//! fill a file its caller made ([`Target::File`], whose contract is there),
+//! from its first byte.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -120,6 +120,13 @@ pub struct OnDisk {
 pub trait Folder {
     #[cfg(unix)]
     fn descriptor(&self) -> std::os::fd::BorrowedFd<'_>;
+
+    /// Whether the folder's file system makes hard links. False only for a
+    /// test's folder that refuses them as such a file system would
+    /// (`backups`); an export otherwise finds out when it links.
+    fn links(&self) -> bool {
+        true
+    }
 }
 
 /// A hosted file's kind of folder ([`crate::anchored::Folder`]), opened by
@@ -199,8 +206,13 @@ pub enum ExportError {
     Unsaved,
     /// Creating, writing, flushing or naming the export failed.
     Io(io::Error),
-    /// An entry is in the way at the export's temporary name.
-    TemporaryTaken,
+    /// The export is complete under its name, and flushing its folder
+    /// afterwards failed: whether the name survives a crash is not
+    /// established. The file stays.
+    NotFlushed {
+        exported: Exported,
+        error: io::Error,
+    },
     /// An entry is at the final name.
     Exists(OsString),
     /// The caller stopped it.
@@ -225,9 +237,10 @@ impl fmt::Display for ExportError {
             ExportError::Unsaved => {
                 write!(f, "the file on disk lacks changes that could not be saved")
             }
-            ExportError::TemporaryTaken => {
-                write!(f, "an entry is in the way of the export's temporary name")
-            }
+            ExportError::NotFlushed { error, .. } => write!(
+                f,
+                "the export is complete under its name, but flushing its folder failed: {error}"
+            ),
             ExportError::Exists(name) => write!(f, "{} already exists", name.to_string_lossy()),
             ExportError::Stopped => write!(f, "the export was stopped"),
         }
@@ -503,66 +516,101 @@ fn next_is(
     Ok(())
 }
 
-/// An export made and checked in its folder without its final name
-/// ([`prepare_walked`], [`prepare_copy`]), not yet published. Dropped
-/// unpublished, it leaves nothing (`crate::staged`).
+/// An export made for its name in its folder ([`prepare`]), not yet
+/// published (`crate::staged`).
 pub struct Prepared {
     staged: crate::staged::Staged,
     name: OsString,
 }
 
-/// Make a new file in `to`'s folder without `to`'s name, fill it with
-/// `fill` and give it `to`'s permissions.
-fn prepare(
-    to: &Destination<'_>,
-    fill: impl FnOnce(&mut File) -> Result<(), ExportError>,
-) -> Result<Prepared, ExportError> {
+/// A prepared export and how filling it went. On an error the caller drops
+/// it, after any lock it holds: an unnamed file then vanishes, and a file
+/// made under its name stays as written, as copies always did.
+pub type Filled = (Prepared, Result<(), ExportError>);
+
+/// Make the file for `to`'s name in its folder: unnamed where the system
+/// can, else under the name, only where nothing is.
+fn prepare(to: &Destination<'_>) -> Result<Prepared, ExportError> {
     #[cfg(unix)]
-    let staged = crate::staged::Staged::new(to.folder.descriptor()).map_err(|e| {
+    let mut staged = crate::staged::Staged::new(to.folder.descriptor(), to.name).map_err(|e| {
         if e.kind() == io::ErrorKind::AlreadyExists {
-            ExportError::TemporaryTaken
+            ExportError::Exists(to.name.to_owned())
         } else {
             ExportError::Io(e)
         }
     })?;
     #[cfg(not(unix))]
-    let staged: crate::staged::Staged =
+    let mut staged: crate::staged::Staged =
         return Err(ExportError::Io(crate::staged::Staged::unsupported()));
-    let mut prepared = Prepared {
+    if !to.folder.links() {
+        staged.refuse_links();
+    }
+    Ok(Prepared {
         staged,
         name: to.name.to_owned(),
-    };
-    fill(prepared.staged.file_mut())?;
-    if let Some(permissions) = &to.permissions {
-        prepared
-            .staged
-            .file()
-            .set_permissions(permissions.clone())
-            .map_err(ExportError::Io)?;
-    }
-    Ok(prepared)
+    })
 }
 
-/// Write and check the version `read` reads, from `change_number`, in
-/// `to`'s folder (the module doc).
+impl Prepared {
+    /// Fill the file with `fill` and give it `to`'s permissions.
+    fn fill(
+        mut self,
+        to: &Destination<'_>,
+        fill: impl FnOnce(&mut File) -> Result<(), ExportError>,
+    ) -> Filled {
+        let filled = fill(self.staged.file_mut()).and_then(|()| match &to.permissions {
+            Some(permissions) => self
+                .staged
+                .file()
+                .set_permissions(permissions.clone())
+                .map_err(ExportError::Io),
+            None => Ok(()),
+        });
+        (self, filled)
+    }
+
+    /// Flush the export and give it its name, never over an entry there,
+    /// then flush the folder ([`ExportError::NotFlushed`] when that fails:
+    /// the file stays).
+    pub fn publish(self) -> Result<Exported, ExportError> {
+        let Prepared { staged, name } = self;
+        let (file, named) = staged.publish().map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                ExportError::Exists(name.clone())
+            } else {
+                ExportError::Io(e)
+            }
+        })?;
+        let exported = exported(&file)?;
+        match named {
+            crate::staged::Named::Flushed => Ok(exported),
+            crate::staged::Named::NotFlushed(error) => {
+                Err(ExportError::NotFlushed { exported, error })
+            }
+        }
+    }
+}
+
+/// Write and check the version `read` reads, from `change_number`, for
+/// `to` (the module doc).
 pub fn prepare_walked(
     read: Read<'_>,
     change_number: u64,
     to: &Destination<'_>,
     progress: Progress<'_>,
-) -> Result<Prepared, ExportError> {
-    prepare(to, |file| write_walked(read, change_number, file, progress))
+) -> Result<Filled, ExportError> {
+    Ok(prepare(to)?.fill(to, |file| write_walked(read, change_number, file, progress)))
 }
 
-/// Copy and check `on_disk` in `to`'s folder.
+/// Copy and check `on_disk` for `to`.
 pub fn prepare_copy(
     on_disk: &OnDisk,
     to: &Destination<'_>,
     progress: Progress<'_>,
-) -> Result<Prepared, ExportError> {
-    prepare(to, |file| {
+) -> Result<Filled, ExportError> {
+    Ok(prepare(to)?.fill(to, |file| {
         copy_checked(&on_disk.file, on_disk.len, file, progress)
-    })
+    }))
 }
 
 /// Copy `on_disk` to `to`, checked, and publish it: what a backup does
@@ -572,30 +620,9 @@ pub fn copy(
     to: &Destination<'_>,
     progress: Progress<'_>,
 ) -> Result<Exported, ExportError> {
-    prepare_copy(on_disk, to, progress)?.publish()
-}
-
-impl Prepared {
-    /// Flush the export, give it its name, never over an entry there, and
-    /// flush the folder.
-    pub fn publish(self) -> Result<Exported, ExportError> {
-        let size = self
-            .staged
-            .file()
-            .metadata()
-            .map_err(ExportError::Io)?
-            .len();
-        let id = file_identity(self.staged.file()).map_err(ExportError::Io)?;
-        let Prepared { staged, name } = self;
-        staged.publish(&name).map_err(|e| {
-            if e.kind() == io::ErrorKind::AlreadyExists {
-                ExportError::Exists(name.clone())
-            } else {
-                ExportError::Io(e)
-            }
-        })?;
-        Ok(Exported { size, id })
-    }
+    let (prepared, filled) = prepare_copy(on_disk, to, progress)?;
+    filled?;
+    prepared.publish()
 }
 
 /// Which file an export of the version a store holds writes.
@@ -609,10 +636,16 @@ pub enum Kind {
     Compacted,
 }
 
-/// Where an export goes: a new entry of a folder, made without its name and
-/// named once complete ([`Destination`], `crate::staged`), or an empty file
-/// the caller made, open for reading and writing, which it then publishes
+/// Where an export goes: a new entry of a folder ([`Destination`],
+/// `crate::staged`), or a file the caller made, which it then publishes
 /// itself (the desktop's unnamed copy).
+///
+/// A caller's file must be empty, open for reading and writing at any
+/// position, not for appending (refused before anything is written: a walk
+/// writes its pages at offsets), and the caller's alone while the export
+/// fills it: what another holder of the same file writes meanwhile cannot
+/// be seen, and can be overwritten or make the export wrong. It is written
+/// from its first byte and checked to be as long as the export.
 pub enum Target<'t, 'd> {
     #[allow(
         dead_code,
@@ -647,9 +680,13 @@ impl FileEngine {
             // Refused before anything is written: the copy would lack what
             // memory holds.
             (Source::OnDisk(on_disk), _) if on_disk.unsaved => Err(ExportError::Unsaved),
+            (_, Target::File(into)) if appends(into)? => Err(ExportError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the export's file is open for appending",
+            ))),
             (Source::OnDisk(on_disk), Target::Folder(to)) => {
                 drop(reading);
-                prepare_copy(&on_disk, to, progress)?.publish()
+                copy(&on_disk, to, progress)
             }
             (Source::OnDisk(on_disk), Target::File(into)) => {
                 drop(reading);
@@ -657,9 +694,11 @@ impl FileEngine {
                 exported(into)
             }
             (Source::Written { change_number }, Target::Folder(to)) => {
-                let prepared =
+                let (prepared, filled) =
                     reading.serve_once(|read| prepare_walked(read, change_number, to, progress))?;
+                // A file that failed is dropped after the lock.
                 drop(reading);
+                filled?;
                 prepared.publish()
             }
             (Source::Written { change_number }, Target::File(into)) => {
@@ -679,7 +718,21 @@ impl FileEngine {
     }
 }
 
-/// What a caller's file holds once an export filled it.
+/// Whether `file` is open for appending.
+fn appends(file: &File) -> Result<bool, ExportError> {
+    #[cfg(unix)]
+    {
+        let flags = rustix::fs::fcntl_getfl(file).map_err(|e| ExportError::Io(e.into()))?;
+        Ok(flags.contains(rustix::fs::OFlags::APPEND))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Ok(false)
+    }
+}
+
+/// What a file holds once an export filled it.
 fn exported(file: &File) -> Result<Exported, ExportError> {
     Ok(Exported {
         size: file.metadata().map_err(ExportError::Io)?.len(),
@@ -1099,9 +1152,9 @@ mod tests {
     }
 
     /// An export never removes or replaces an entry it did not make: one at
-    /// the final name fails its publication and is left as it was, and
-    /// nothing else is left; so does a stop. (The temporary names of a
-    /// system without unnamed files: `crate::staged`'s tests.)
+    /// the final name fails it and is left as it was, and nothing else is
+    /// left; so does a stop. (Each way of naming a file: `crate::staged`'s
+    /// tests.)
     #[test]
     fn an_export_leaves_other_entries_alone() {
         let (_disk, file) = hosted("export-entries");
@@ -1165,6 +1218,30 @@ mod tests {
             } else {
                 assert!(HbamFile::from_bytes(written).is_ok(), "{name}");
             }
+        }
+    }
+
+    /// A caller's file open for appending is refused before anything is
+    /// written, copied or walked: a walk writes its pages at offsets.
+    #[test]
+    fn a_callers_file_open_for_appending_is_refused() {
+        let (_disk, file) = hosted("export-append");
+        let scratch = Scratch::new("append");
+        let engine = engine(None);
+        for kind in [Kind::Current, Kind::Compacted] {
+            let mut into = std::fs::File::options()
+                .read(true)
+                .append(true)
+                .create(true)
+                .truncate(false)
+                .open(scratch.0.join("appended"))
+                .unwrap();
+            let refused = engine.export(&file, kind, Target::File(&mut into), Progress::none());
+            assert!(
+                matches!(&refused, Err(ExportError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput),
+                "{kind:?}: {refused:?}"
+            );
+            assert_eq!(into.metadata().unwrap().len(), 0);
         }
     }
 
@@ -1352,10 +1429,10 @@ mod templates {
                     waiting: store.waiting(),
                     read_only: store.is_read_only(),
                 };
-                prepare_walked(read, change_number, &to, Progress::none())
-                    .unwrap()
-                    .publish()
-                    .unwrap();
+                let (prepared, filled) =
+                    prepare_walked(read, change_number, &to, Progress::none()).unwrap();
+                filled.unwrap();
+                prepared.publish().unwrap();
                 true
             }
         };
@@ -1562,8 +1639,10 @@ mod measurement {
                     waiting: store.waiting(),
                     read_only: store.is_read_only(),
                 };
-                let prepared = prepare_walked(read, change_number, &to, Progress::none()).unwrap();
+                let (prepared, filled) =
+                    prepare_walked(read, change_number, &to, Progress::none()).unwrap();
                 held = started.elapsed();
+                filled.unwrap();
                 prepared.publish().unwrap();
             }
             "copy" => {

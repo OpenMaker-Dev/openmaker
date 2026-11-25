@@ -1,16 +1,16 @@
 //! Linux local-copy publication. The destination is checked before a script
 //! can commit its record, and the copy has no pathname until publication.
 
-use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path};
 
+use log::warn;
 use rustix::fs::{self, AtFlags, Mode, OFlags};
 use rustix::io::Errno;
 
-use crate::staged::Staged;
+use crate::staged::{Named, Staged};
 
 const EXT_SUPER_MAGIC: u64 = 0xef53; // ext2, ext3 and ext4
 const TMPFS_MAGIC: u64 = 0x0102_1994;
@@ -35,7 +35,6 @@ fn directory_stat(dir: &OwnedFd) -> io::Result<fs::Stat> {
 /// previously unused name (`crate::staged`, which exports share).
 pub(super) struct Destination {
     staged: Staged,
-    name: OsString,
 }
 
 impl Destination {
@@ -97,7 +96,7 @@ impl Destination {
             Err(Errno::NOENT) => {}
             Err(e) => return Err(e.into()),
         }
-        let staged = Staged::unnamed(parent.as_fd())?;
+        let staged = Staged::unnamed(parent.as_fd(), name)?;
         // Creation mode bounds any inherited POSIX ACL from the start.
         // Restore the owner bits if the ACL or umask narrowed them.
         let private = Mode::RUSR | Mode::WUSR;
@@ -106,10 +105,7 @@ impl Destination {
         if stat.st_uid != uid || stat.st_mode & 0o777 != 0o600 {
             return Err(unsupported("the copy must be accessible only to its owner"));
         }
-        Ok(Self {
-            staged,
-            name: name.to_owned(),
-        })
+        Ok(Self { staged })
     }
 
     /// The copy, written by the caller from its first byte.
@@ -118,8 +114,12 @@ impl Destination {
     }
 
     /// Flush the copy, link it to its name, never over an entry there,
-    /// and flush the folder; a failure leaves nothing under the name.
+    /// and flush the folder. A folder that cannot be flushed is logged and
+    /// the copy kept.
     pub(super) fn publish(self) -> io::Result<()> {
-        self.staged.publish(&self.name)
+        if let (_, Named::NotFlushed(error)) = self.staged.publish()? {
+            warn!("saved a copy, but flushing its folder failed: {error}");
+        }
+        Ok(())
     }
 }
