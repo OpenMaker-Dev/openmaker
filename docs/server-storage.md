@@ -319,9 +319,13 @@ The readers that read through views:
   derived state's catalog;
 - Describe Security (op240, `security::catalog`): each record of the
   accounts `[23, 1, 5]`, privilege sets `[23, 2, 5]` and extended
-  privileges `[23, 3, 5]`, listed one key at a time, with only the
-  members it decodes read whole (never an account's password `06` or its
-  `04`), where it took the three lists whole before;
+  privileges `[23, 3, 5]`, listed one key at a time and decoded as it is
+  read, one record held at a time, with only the members it decodes:
+  each read whole within what one reply carries (1 MiB, `MEMBER_LIMIT`),
+  and an extended privilege's sets `05` read as the keys of its children,
+  all the reply takes of them, so nothing below those keys is read. Never
+  an account's password `06` or its `04`. Before, it borrowed the three
+  lists whole from the store;
 - the desktop's private host (`LocalHost`): the account its account
   catalog's header names (`[23, 1, 1, 16]`, one node), looked up in the
   reading's accounts, which a client suggests (`suggested_account`); the
@@ -365,7 +369,8 @@ does not admit does not), and no failed login is recorded in the event
 log, since no credentials were refused. Describe Security is refused with
 802 too (`om_protocol::authoring::status::UNREADABLE`, with the message
 "The file's security catalog could not be read."), never answered with a
-catalog that lacks what could not be read. A schedule's run whose file's
+catalog that lacks what could not be read; a member larger than one reply
+carries refuses it with status 3, as a reply past that size is. A schedule's run whose file's
 accounts cannot be read is aborted with 802, its event "Schedule "…"
 aborted; its file's accounts could not be read (error 802).", as the
 client's login is answered, not as an account that cannot log in (212).
@@ -422,9 +427,17 @@ that reach it). A server switched to it (`Server::checking_reads`, and
 read above through the file engine's view and then through this one,
 from the same version, and panics when the answers differ; it computes
 its derived state through this view, once for each load of a file and
-its catalog and its accounts again each time the file engine reads them
-again, and checks it against the file engine's, failing the check when it
-cannot compute it. The test servers of `om-server`, `om-provider` and
+its catalog again each time the file engine reads it again, and checks it
+against the file engine's, failing the check when it cannot compute it.
+The accounts it reads through itself only for a reader of them
+(`Reading::serve_with_accounts`: a login, a schedule's login, the desktop
+host's suggested account and account facts), for that read alone, wiping
+its copies of the account records once decoded (`engine::Wiped`); for any
+other reader its derived state holds no accounts, so one that read them
+without asking would fail its check
+(`engine::tests::the_test_view_reads_the_accounts_only_for_a_reader_of_them`),
+and the test view copies no password verifier for it (Describe Security
+included). The test servers of `om-server`, `om-provider` and
 `om-author` and of `om-gui`'s hosted-file tests, and the private hosts
 `om-server`'s local-file tests open, are switched to it; the private
 hosts the desktop opens for itself in `om-provider`'s and `om-gui`'s
@@ -439,9 +452,10 @@ through it alone, so that a test sees what the client gets
 `om-author`'s `security_that_cannot_be_read_is_refused`);
 there a derived state it cannot compute is the file engine's, since
 derived state is computed when a file is loaded and when its schema
-changes, not by the read that fails. Accounts it cannot read are held as
-unreadable instead, as an engine holds them ("Derived state" below), and
-every login is answered as for a file whose accounts could not be read
+changes, not by the read that fails. Accounts it cannot read for a reader
+of them are unreadable instead, as an engine holds them ("Derived state"
+below), and every login is answered as for a file whose accounts could
+not be read
 (`tests/logins.rs`,
 `a_login_whose_accounts_cannot_be_read_is_answered_unable_to_open`).
 
@@ -686,12 +700,14 @@ an `.fmp12`, in one of two ways; the engine says which
   entry at the file's path while it is the one the server read or last
   saved there,
   [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)).
-  "Nothing changed since" is exact also after a save that is not written:
-  the change is taken back whole, the parents it created included, and
-  the store's record of unsaved changes with it ("Taking a change back",
-  below; after a table's first record whose save failed, an export holds
-  exactly what memory holds,
-  `engine::tests::an_export_after_a_failed_save_holds_what_memory_holds`). A file
+  "Nothing changed since" is the store's record of unsaved changes, clear
+  only while memory is known to equal the disk ("The record of unsaved
+  changes", below): exact after a save that is not written, the change
+  taken back whole, the parents it created and a record held as a value
+  included (`engine::tests::an_export_after_a_failed_save_holds_what_memory_holds`,
+  `a_deletion_taken_back_puts_the_record_back_as_it_was`), and set after
+  a panic, whatever it left
+  (`a_panic_in_deferred_container_work_leaves_nothing_and_counts_as_changed`). A file
   hosted read-only for content the writer cannot write is always its file
   on disk, the bytes it was loaded from (section 2, rule 2); while changes
   its refused saves left wait in memory, an export of the version held is
@@ -1256,7 +1272,11 @@ log says so; op240's Save answers that the disk lacks them.
 *Taking a change back.* Every operation that changes the tree writes into
 one journal (`store::Journal`, which `engine::Transaction` holds), which
 keeps what each change replaced; `Store::roll_back` puts it back, newest
-first, byte for byte, the root's list flag included. Each entry keeps,
+first, byte for byte and kind for kind, the root's list flag included: a
+record as it was kept too, never through the checks of a client's write
+(`put_record`, which makes a record a list and refused one held as a
+value, leaving it deleted), the index entries, record lists and counts it
+moved being nodes the journal kept before it. Each entry keeps,
 with the node a change writes, the first of its parents the change
 creates (as absent), so that taking it back removes what it created: the
 first record of a table takes its record list `[T, 05]` back with it. The
@@ -1282,9 +1302,10 @@ What follows from the tree is taken back with it: the decoded schema the
 store reads is put back as it was before the operation's first change to
 a catalog (`Journal::schema_from`), not read again from the tree put back
 (a catalog that does not decode is served with the schema last read, and
-reading it again would keep the one the operation decoded); the basis of
-stored calculations is put back too, and the store's schema generation
-advances, so the accounts and the verified-index marks are derived again. The locks
+reading it again would keep the one the operation decoded), and the
+accounts with it; the basis of stored calculations is put back too, and
+the store's schema generation advances, so the verified-index marks and
+a server script's schema are derived again. The locks
 the operation took are released and the releases that waited for it
 dropped (`Locks::take_back`); an authoring edit's locks are released all
 the same. The member keys and indexes a draft took from what reads left
@@ -1292,8 +1313,26 @@ waiting wait again, for the next write. Thumbnails of the libraries a
 deleted table took or a script's commit emptied are forgotten, a new
 field's basis is counted and the log lines that say a change was made are
 written only for a change the file holds (stored or unknown). A run left
-by a panic is taken back the same way, and the file is left without
-unsaved changes when it had none before.
+by a panic is taken back the same way, and the store then counts as
+changed since its last save (below).
+
+*The record of unsaved changes.* The store keeps whether memory may hold
+what the file on disk lacks (`Store::has_unsaved_changes`). Clear, it
+means that memory is known to equal the file on disk, and an export then
+copies that file rather than walk the tree ("Exports", above). Every
+change of the tree sets it, and a save that renamed its new copy over the
+file clears it, its folder flush confirmed or not. A roll-back of a change
+whose save was not written puts back what it was before the change: the
+change is taken back exactly, each node and record as it was kept, and
+every change of the operation is in its journal (deferred work's journal
+of each record it recomputes is taken back with it when the work is left
+by a panic, `Store::guarded`, and absorbed into it otherwise). A run left
+by an unwind is taken back the same way but leaves the record set,
+whatever it was (`Store::roll_back_unwound`, in every unwind handler: the
+engine's, `Transaction::guarded`, `Store::guarded`): a panic can leave
+what no journal holds, so memory is no longer known to equal the disk;
+the next save writes the tree, and an export walks it. A member-key draft
+whose keys a write already passed changes nothing and sets nothing.
 
 What a journal costs, on the file of a million records measured in
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) (522 MB on
