@@ -33,7 +33,7 @@ use std::time::Duration;
 use sentry::integrations::backtrace::AttachStacktraceIntegration;
 use sentry::integrations::backtrace::{current_stacktrace, ProcessStacktraceIntegration};
 use sentry::integrations::contexts::ContextIntegration;
-use sentry::integrations::log::{LogFilter, SentryLogger};
+use sentry::integrations::log::{LogFilter, NoopLogger, SentryLogger};
 use sentry::integrations::panic::PanicIntegration;
 use sentry::protocol::{Event, Exception, Level, Mechanism};
 use sentry::types::Dsn;
@@ -147,14 +147,41 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
 }
 
 /// `console`, the program's logger, with Sentry's log integration around
-/// it. Every record still reaches `console` as before. Error records
+/// it. Every record reaches `console` as before, and first: an error's
+/// line is written before Sentry takes the thread's stack. Error records
 /// become events, warning and info records breadcrumbs, and warning and
 /// error records of OpenMaker's own crates (`om_*`) entries of Sentry's
 /// log too. Not read: debug and trace records, Sentry's own threads' records
 /// and those of `ureq` (Sentry's transport, and Insert from URL's requests,
 /// whose URLs may carry a file's data).
 pub fn logger<L: log::Log>(console: L) -> impl log::Log {
-    SentryLogger::with_dest(console).filter(route)
+    ConsoleFirst {
+        console,
+        sentry: SentryLogger::new().filter(route),
+    }
+}
+
+/// The program's logger, then Sentry's.
+struct ConsoleFirst<L> {
+    console: L,
+    sentry: SentryLogger<NoopLogger>,
+}
+
+impl<L: log::Log> log::Log for ConsoleFirst<L> {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        self.console.enabled(metadata) || self.sentry.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.console.log(record);
+        self.sentry.log(record);
+    }
+
+    // Sentry's logger holds nothing to flush (and its `NoopLogger`'s
+    // `flush` panics).
+    fn flush(&self) {
+        self.console.flush();
+    }
 }
 
 fn route(metadata: &log::Metadata<'_>) -> LogFilter {
