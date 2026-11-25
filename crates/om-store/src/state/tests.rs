@@ -1461,6 +1461,7 @@ fn a_version_1_copy_is_read_with_no_cuts() {
     drop(file);
     let mut state = open(&sim).unwrap();
     assert_eq!(state.values().cut_count, 0);
+    assert_eq!(state.values().mark, None);
     assert_eq!(state.values().server_id, values.server_id);
     state.update(|v| v.cut_count = 1).unwrap();
     assert!(matches!(

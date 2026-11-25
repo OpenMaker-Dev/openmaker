@@ -81,13 +81,32 @@ struct Flaky {
     /// Another process makes a store in the folder just before the lock
     /// is taken for the so manyth time from now.
     create_at_lock: Arc<std::sync::Mutex<Option<(u64, sim::SimRandom)>>>,
+    /// The calls made, in order: each change when it is asked for, each
+    /// flush once it returned, and each open of the incident journal.
+    ops: Ops,
 }
+
+/// What [`Flaky`] saw: the call and its path.
+type Ops = Arc<std::sync::Mutex<Vec<(&'static str, String)>>>;
 
 struct FlakyFile {
     inner: Box<dyn sys::File>,
     path: String,
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
     fail_writes: Arc<std::sync::Mutex<Option<(String, u64, ErrorKind)>>>,
+    ops: Ops,
+}
+
+impl Flaky {
+    fn op(&self, op: &'static str, path: &str) {
+        self.ops.lock().unwrap().push((op, path.to_owned()));
+    }
+}
+
+impl FlakyFile {
+    fn op(&self, op: &'static str) {
+        self.ops.lock().unwrap().push((op, self.path.clone()));
+    }
 }
 
 impl sys::Fs for Flaky {
@@ -122,23 +141,33 @@ impl sys::Fs for Flaky {
         self.inner.owns(lock)
     }
     fn create(&self, path: &str, options: sys::FileOptions) -> sys::Result<Box<dyn sys::File>> {
+        self.op("create", path);
         let inner = self.inner.create(path, options)?;
         Ok(self.wrap(path, inner))
     }
     fn open(&self, path: &str, options: sys::FileOptions) -> sys::Result<Box<dyn sys::File>> {
+        if path == incident::FILE {
+            self.op("open", path);
+        }
         let inner = self.inner.open(path, options)?;
         Ok(self.wrap(path, inner))
     }
     fn create_folder(&self, path: &str) -> sys::Result<()> {
+        self.op("create", path);
         self.inner.create_folder(path)
     }
     fn flush_folder(&self, path: &str) -> sys::Result<()> {
-        self.inner.flush_folder(path)
+        self.inner.flush_folder(path)?;
+        self.op("flush_folder", path);
+        Ok(())
     }
     fn rename(&self, from: &str, to: &str) -> sys::Result<()> {
+        self.op("remove", from);
+        self.op("create", to);
         self.inner.rename(from, to)
     }
     fn remove(&self, path: &str) -> sys::Result<()> {
+        self.op("remove", path);
         self.inner.remove(path)
     }
     fn list(&self, path: &str) -> sys::Result<Vec<String>> {
@@ -154,6 +183,7 @@ impl Flaky {
             lock_checks_left: Arc::new(std::sync::Mutex::new(None)),
             fail_writes: Arc::new(std::sync::Mutex::new(None)),
             create_at_lock: Arc::new(std::sync::Mutex::new(None)),
+            ops: Ops::default(),
         }
     }
 
@@ -163,6 +193,7 @@ impl Flaky {
             path: path.to_owned(),
             bad: self.bad.clone(),
             fail_writes: self.fail_writes.clone(),
+            ops: self.ops.clone(),
         })
     }
 }
@@ -193,12 +224,16 @@ impl sys::File for FlakyFile {
         if let Some(kind) = fail {
             return Err(sys::Error::new(kind, sys::Op::Write, &self.path));
         }
+        self.op("write");
         self.inner.write_at(offset, data)
     }
     fn flush(&self) -> sys::Result<()> {
-        self.inner.flush()
+        self.inner.flush()?;
+        self.op("flush");
+        Ok(())
     }
     fn allocate(&self, size: u64) -> sys::Result<()> {
+        self.op("write");
         self.inner.allocate(size)
     }
     fn size(&self) -> sys::Result<u64> {
@@ -1168,14 +1203,29 @@ impl Run {
         let Some(store) = self.store.as_mut() else {
             return;
         };
-        let Some(last) = store.incidents().last().map(|i| i.number) else {
+        // What a fresh read shows, acknowledged as shown.
+        let Ok((shown, found)) = store.incidents() else {
             return;
         };
-        let done = store.acknowledge(last);
+        let Some(last) = shown.last().map(|i| i.number) else {
+            return;
+        };
+        let done = store.acknowledge(last, &found);
         self.note(format!("acknowledge through {last}: {done:?}"));
+        if matches!(done, Err(WriteError::Rule(_))) {
+            // Refused, with nothing written: the journal reads otherwise.
+            return;
+        }
         // Done, or (a failed call) perhaps done: its rename may have landed
-        // before the failure. Either way those incidents may be gone.
-        let acked: Vec<u64> = self.incidents.range(..=last).map(|(n, _)| *n).collect();
+        // before the failure. Either way those incidents may be gone, and
+        // so may any the read did not show, in the places it named.
+        let places = !found.same_places(&incident::Found::default());
+        let acked: Vec<u64> = self
+            .incidents
+            .keys()
+            .copied()
+            .filter(|&n| n <= last || (places && !shown.iter().any(|i| i.number == n)))
+            .collect();
         for number in acked {
             let incident = self.incidents.remove(&number).expect("listed");
             self.acknowledged.push(incident);
@@ -1372,10 +1422,16 @@ impl Run {
                 // The journal full of incidents not acknowledged: the
                 // administrator acknowledges them.
                 Err(OpenError::Journal(incident::JournalError::Full)) => {
-                    let through = self.incidents.keys().next_back().copied().unwrap_or(0);
+                    // What a fresh read shows, acknowledged as shown.
+                    let Ok((shown, found)) = Store::read_incidents(&self.fs) else {
+                        continue;
+                    };
+                    let through = shown.last().map_or(0, |i| i.number);
                     // Done, or perhaps done when it failed.
-                    if Store::acknowledge_incidents(&self.fs, through).is_ok() {
-                        self.reached.acknowledged += 1;
+                    match Store::acknowledge_incidents(&self.fs, through, &found) {
+                        Ok(_) => self.reached.acknowledged += 1,
+                        Err(OpenError::Journal(incident::JournalError::Refused(_))) => continue,
+                        Err(_) => {}
                     }
                     let acked: Vec<u64> = self.incidents.keys().copied().collect();
                     for number in acked {
@@ -1656,6 +1712,7 @@ impl Run {
                     let number = done.written.number;
                     let step = self.sim.steps();
                     let since = store
+                        .journal
                         .incidents()
                         .last()
                         .map_or(0, |i| i.number)
@@ -3563,7 +3620,14 @@ fn a_damaged_newest_checkpoint_is_given_up_by_the_store_with_its_incident() {
     sim.restart();
     let (mut store, opened) = Store::open(fs.clone(), CONFIG).unwrap();
     assert_eq!(opened.incidents, std::slice::from_ref(incident));
-    assert_eq!(store.acknowledge(incident.number).unwrap(), 1);
+    // Acknowledged as a fresh read shows it.
+    let (shown, found) = store.incidents().unwrap();
+    assert_eq!(shown, std::slice::from_ref(incident));
+    assert!(matches!(
+        store.acknowledge(incident.number + 1, &found),
+        Err(WriteError::Rule(_))
+    ));
+    assert_eq!(store.acknowledge(incident.number, &found).unwrap(), 1);
     drop(store);
     sim.restart();
     let (_, opened) = Store::open(fs, CONFIG).unwrap();
@@ -3674,6 +3738,63 @@ fn an_acceptance_interrupted_after_its_renames_is_understood_by_the_next_plan() 
     }
 }
 
+/// Round 1 of #766, Sol's second finding: a plan names a missing segment
+/// as set aside earlier only while `state` is the one that acceptance's
+/// plan was made against. An acceptance keeps a prefix and sets the rest
+/// aside; appends list a set-aside number again; that newer file gone, the
+/// next plan says it is missing, though the record not acknowledged still
+/// names the older file set aside under that number.
+#[test]
+fn a_number_listed_again_is_not_taken_for_one_set_aside_earlier() {
+    let s = Shaped::new();
+    let tag = s.tags_in(2)[1];
+    s.damage(tag, 100, 4);
+    s.sim.restart();
+    let plan = Store::plan_damage(s.fs(), SHAPE_CONFIG).unwrap();
+    let after = plan.listed.first + plan.listed.count;
+    let parked: Vec<u64> = plan
+        .files
+        .iter()
+        .filter(|f| matches!(f.fate, log::Fate::SetAside { .. }) && f.number >= after)
+        .map(|f| f.number)
+        .collect();
+    assert!(
+        plan.listed.count > 0 && parked.first() == Some(&after),
+        "{plan:?}"
+    );
+    s.sim.restart();
+    let (mut store, _) = Store::accept_damage(s.fs(), SHAPE_CONFIG, &plan).unwrap();
+    // Appends until that number is listed again.
+    while store.log_segments().first + store.log_segments().count <= after {
+        store
+            .append(s.file, &put(b"again", &[9; SHAPE_PAYLOAD]))
+            .unwrap();
+        store.flush().unwrap();
+    }
+    drop(store);
+    s.sim.restart();
+    let fs = s.sim.fs();
+    fs.remove(&format!("{}/{after:016x}", log::FOLDER)).unwrap();
+    fs.flush_folder(log::FOLDER).unwrap();
+    s.sim.restart();
+    let (incidents, _) = Store::read_incidents(&s.fs()).unwrap();
+    let recorded = incidents.iter().any(|i| match &i.what {
+        What::LogDamage(p) => p
+            .files
+            .iter()
+            .any(|f| f.number == after && matches!(f.fate, log::Fate::SetAside { .. })),
+        _ => false,
+    });
+    assert!(
+        recorded,
+        "the record names {after} set aside: {incidents:?}"
+    );
+    s.sim.restart();
+    let again = Store::plan_damage(s.fs(), SHAPE_CONFIG).unwrap();
+    let fate = again.files.iter().find(|f| f.number == after).unwrap();
+    assert_eq!(fate.fate, log::Fate::Missing, "{again:?}");
+}
+
 /// A give-up path to crash, built once: the disk as the call finds it (and
 /// a place of it the device keeps failing to read), what must not go
 /// missing without an incident (a restore point, by name and the checkpoint
@@ -3685,6 +3806,24 @@ struct GivingUp {
     point: Option<(String, u64)>,
     acked: u64,
     call: OpenCall,
+    /// The incident the path records: every open after a crash reports
+    /// one of it.
+    kind: fn(&What) -> bool,
+    /// The files that, once the call has read the journal, it changes
+    /// nothing of before its first record is durable: none for the
+    /// unreadable end, given up after an ordinary open (section 6.12); the
+    /// log and `state` where the page file's ordinary open comes first.
+    guarded: Option<fn(&str) -> bool>,
+}
+
+/// The log, `state` and the page file.
+fn all_three(path: &str) -> bool {
+    path == pagefile::FILE || log_and_state(path)
+}
+
+/// The log and `state`.
+fn log_and_state(path: &str) -> bool {
+    path == crate::state::FILE || path.starts_with(log::FOLDER)
 }
 
 /// A call that opens the store.
@@ -3692,11 +3831,12 @@ type OpenCall = Box<dyn Fn(Arc<dyn Fs>) -> Result<(Store, Opened), OpenError>>;
 
 impl GivingUp {
     /// A new simulated disk holding the image, its folder failing reads
-    /// of `bad`.
-    fn disk(&self) -> (Sim, Arc<dyn Fs>) {
+    /// of `bad`, and what the folder sees.
+    fn disk(&self) -> (Sim, Arc<dyn Fs>, Ops) {
         let sim = Sim::new(90);
         let flaky = Flaky::new(&sim);
         *flaky.bad.lock().unwrap() = self.bad.clone();
+        let ops = flaky.ops.clone();
         let fs = sim.fs();
         fs.create_root().unwrap();
         let mut folders = vec![String::new()];
@@ -3718,8 +3858,37 @@ impl GivingUp {
             fs.flush_folder(folder).unwrap();
         }
         sim.restart();
-        (sim, Arc::new(flaky))
+        (sim, Arc::new(flaky), ops)
     }
+}
+
+/// Whether, after the first open of the journal in `ops`, nothing
+/// `guarded` was changed before the journal's first record was durable:
+/// its file flushed, or, for a journal made again, renamed into place and
+/// the folder flushed.
+fn recorded_before_acting(
+    ops: &[(&'static str, String)],
+    guarded: fn(&str) -> bool,
+) -> Result<(), String> {
+    let Some(read) = ops
+        .iter()
+        .position(|(op, path)| *op == "open" && path == incident::FILE)
+    else {
+        return Ok(());
+    };
+    let mut renamed = false;
+    for (op, path) in &ops[read..] {
+        match (*op, path.as_str()) {
+            ("flush", incident::FILE) => return Ok(()),
+            ("create", incident::FILE) => renamed = true,
+            ("flush_folder", "") if renamed => return Ok(()),
+            ("write" | "create" | "remove", path) if guarded(path) => {
+                return Err(format!("{op} {path} before the record was durable"))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Open the store as an administrator would after a failure: again, and
@@ -3778,7 +3947,7 @@ fn long_every_give_up_names_what_it_gave_up_after_a_crash_at_every_step() {
 
 fn give_ups_crashed_at_every_step(every_fate: bool) {
     type Build = fn() -> GivingUp;
-    let paths: [(&str, Build); 5] = [
+    let paths: [(&str, Build); 6] = [
         ("the page file's damage, by the store", || {
             let (sim, _, meta, number, acked) = with_a_point(72);
             sim.damage(pagefile::FILE, meta_place(meta), 8).unwrap();
@@ -3789,6 +3958,8 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 point: Some(("point".into(), number)),
                 acked: acked.index,
                 call: Box::new(|fs| Store::open(fs, CONFIG)),
+                kind: |w| matches!(w, What::Checkpoints { damaged: true, .. }),
+                guarded: Some(all_three),
             }
         }),
         ("a read of the page file, by the administrator", || {
@@ -3807,6 +3978,16 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 point: Some(("point".into(), number)),
                 acked: acked.index,
                 call: Box::new(move |fs| Store::give_up_pages(fs, CONFIG, &approval)),
+                kind: |w| {
+                    matches!(
+                        w,
+                        What::Checkpoints {
+                            by_administrator: true,
+                            ..
+                        }
+                    )
+                },
+                guarded: Some(all_three),
             }
         }),
         ("the log's damage, accepted", || {
@@ -3822,6 +4003,8 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 point: None,
                 acked: s.durable.index,
                 call: Box::new(move |fs| Store::accept_damage(fs, SHAPE_CONFIG, &plan)),
+                kind: |w| matches!(w, What::LogDamage(_)),
+                guarded: Some(log_and_state),
             }
         }),
         ("the log's unreadable end", || {
@@ -3841,6 +4024,8 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 point: None,
                 acked: s.durable.index,
                 call: Box::new(move |fs| Store::give_up_unreadable_end(fs, SHAPE_CONFIG, last)),
+                kind: |w| matches!(w, What::UnreadableEnd { .. }),
+                guarded: None,
             }
         }),
         ("the last batch after a passed-over copy of state", || {
@@ -3870,13 +4055,31 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 point: None,
                 acked: s.durable.index,
                 call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
+                kind: |w| matches!(w, What::LastBatch { .. }),
+                guarded: Some(log_and_state),
+            }
+        }),
+        ("a lost journal, made again", || {
+            let s = Shaped::new();
+            s.sim.fs().remove(incident::FILE).unwrap();
+            s.sim.fs().flush_folder("").unwrap();
+            s.sim.restart();
+            GivingUp {
+                image: s.sim.image(),
+                bad: None,
+                config: SHAPE_CONFIG,
+                point: None,
+                acked: s.durable.index,
+                call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
+                kind: |w| *w == What::JournalLost,
+                guarded: Some(all_three),
             }
         }),
     ];
     for (name, build) in paths {
         let g = build();
         let steps = {
-            let (sim, fs) = g.disk();
+            let (sim, fs, _) = g.disk();
             let begin = sim.steps();
             (g.call)(fs).unwrap_or_else(|e| panic!("{name}: {e}"));
             sim.steps() - begin
@@ -3892,14 +4095,25 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 &all[step as usize % 3..step as usize % 3 + 1]
             };
             for &fates in fates_now {
-                let (sim, fs) = g.disk();
+                let (sim, fs, ops) = g.disk();
                 sim.set_crash_fates(fates);
                 sim.place(sim.steps() + step, Fault::Crash);
                 let crashed = (g.call)(fs.clone());
                 assert!(crashed.is_err(), "{name}, step {step}: the crash fired");
-                let (store, opened) = settle_open(&sim, &fs, g.config);
                 let case = format!("{name}, step {step}, {fates:?}");
+                if let Some(guarded) = g.guarded {
+                    let ops = ops.lock().unwrap().clone();
+                    if let Err(e) = recorded_before_acting(&ops, guarded) {
+                        panic!("{case}: {e}: {ops:?}");
+                    }
+                }
+                let (store, opened) = settle_open(&sim, &fs, g.config);
                 reported += opened.incidents.len();
+                assert!(
+                    opened.incidents.iter().any(|i| (g.kind)(&i.what)),
+                    "{case}: no incident of the path: {:?}",
+                    opened.incidents
+                );
                 if let Some((point, number)) = &g.point {
                     if !store.restore_points().iter().any(|rp| rp.name == *point) {
                         missing += 1;
@@ -3933,7 +4147,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
         }
         eprintln!("{name}: {missing} missing and named, {reported} incidents reported");
         assert!(reported > 0, "{name}: no incident was reported at any step");
-        let can_lose = !name.contains("unreadable end");
+        let can_lose = !name.contains("unreadable end") && !name.contains("journal");
         assert!(
             !can_lose || missing > 0,
             "{name}: nothing went missing at any step"

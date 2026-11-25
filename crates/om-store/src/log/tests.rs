@@ -112,12 +112,25 @@ struct Rereads {
     read: BTreeMap<String, Vec<(u64, u64)>>,
     /// How many reads came back changed.
     changed: u64,
+    /// This operation's second reads come back unchanged.
+    quiet: bool,
 }
 
 impl Rereads {
     /// A new operation begins: what was read before it may be read again.
     fn begin(&mut self) {
         self.read.clear();
+        self.quiet = false;
+    }
+
+    /// An operation that reads a place twice by design begins (an open of
+    /// a `state` with a mark): half of them, drawn, read it again
+    /// unchanged, so that such an open can succeed on this device.
+    fn begin_deciding(&mut self) {
+        self.begin();
+        if let Some(draw) = self.draw.as_mut() {
+            self.quiet = draw.below(2) == 0;
+        }
     }
 
     /// `buf`, just read at `offset` of `path`: one byte changed when it
@@ -135,7 +148,7 @@ impl Rereads {
             let (lo, hi) = (a.max(range.0), b.min(range.1));
             (lo < hi).then_some((lo, hi))
         });
-        if let Some((lo, hi)) = overlap {
+        if let Some((lo, hi)) = overlap.filter(|_| !self.quiet) {
             let at = lo + draw.below(hi - lo);
             buf[(at - offset) as usize] ^= 1 + draw.below(255) as u8;
             self.changed += 1;
@@ -332,13 +345,16 @@ trait Machine {
     /// The next flush or write of a log file fails (simulated machines
     /// only).
     fn arm_failure(&self);
-    /// An operation that reads begins (see [`Rereads`]).
-    fn begin_reads(&self);
+    /// An operation that reads begins (see [`Rereads`]); `deciding`, one
+    /// that reads a place twice by design ([`Rereads::begin_deciding`]).
+    fn begin_reads(&self, deciding: bool);
     /// The device can no longer read the byte at `offset` of `path`, or,
     /// with `None`, can read every byte again.
     fn set_bad(&self, place: Option<(String, u64)>);
     /// How many reads failed on such a byte.
     fn bad_reads(&self) -> u64;
+    /// How many second reads came back changed (see [`Rereads`]).
+    fn rereads_changed(&self) -> u64;
     fn random(&self) -> &dyn Random;
     /// The process ends; with `power_loss` the power fails first, where the
     /// machine can do that.
@@ -370,11 +386,6 @@ impl Simulated {
         self.fs.rereads.lock().unwrap().draw = Some(Rng::stream(seed, 11));
         self
     }
-
-    /// How many second reads came back changed.
-    fn rereads_changed(&self) -> u64 {
-        self.fs.rereads.lock().unwrap().changed
-    }
 }
 
 impl Machine for Simulated {
@@ -395,8 +406,13 @@ impl Machine for Simulated {
         self.fs.fail_next.store(true, Ordering::Relaxed);
     }
 
-    fn begin_reads(&self) {
-        self.fs.rereads.lock().unwrap().begin();
+    fn begin_reads(&self, deciding: bool) {
+        let mut rereads = self.fs.rereads.lock().unwrap();
+        if deciding {
+            rereads.begin_deciding();
+        } else {
+            rereads.begin();
+        }
     }
 
     fn set_bad(&self, place: Option<(String, u64)>) {
@@ -405,6 +421,10 @@ impl Machine for Simulated {
 
     fn bad_reads(&self) -> u64 {
         self.fs.bad_reads.load(Ordering::Relaxed)
+    }
+
+    fn rereads_changed(&self) -> u64 {
+        self.fs.rereads.lock().unwrap().changed
     }
 
     fn random(&self) -> &dyn Random {
@@ -457,8 +477,13 @@ impl Machine for Real {
 
     fn arm_failure(&self) {}
 
-    fn begin_reads(&self) {
-        self.fs.rereads.lock().unwrap().begin();
+    fn begin_reads(&self, deciding: bool) {
+        let mut rereads = self.fs.rereads.lock().unwrap();
+        if deciding {
+            rereads.begin_deciding();
+        } else {
+            rereads.begin();
+        }
     }
 
     fn set_bad(&self, place: Option<(String, u64)>) {
@@ -467,6 +492,10 @@ impl Machine for Real {
 
     fn bad_reads(&self) -> u64 {
         self.fs.bad_reads.load(Ordering::Relaxed)
+    }
+
+    fn rereads_changed(&self) -> u64 {
+        self.fs.rereads.lock().unwrap().changed
     }
 
     fn random(&self) -> &dyn Random {
@@ -591,6 +620,9 @@ struct Reached {
     /// Opens that found `state`'s mark and no whole batch after the marker,
     /// and opened again settling it.
     loss_recorded: u64,
+    /// Opens whose second walk, writing again what the first kept, read
+    /// the log differently, and recorded nothing.
+    read_changed: u64,
     cut_past_unreadable: u64,
     lost_slots: u64,
     tails_in_cache: u64,
@@ -988,7 +1020,7 @@ impl<'a> Run<'a> {
                 return None;
             }
         };
-        self.machine.begin_reads();
+        self.machine.begin_reads(false);
         let state = match State::open(&*fs, lock) {
             Ok(state) => state,
             Err(StateError::Missing) => {
@@ -1029,18 +1061,34 @@ impl<'a> Run<'a> {
         loop {
             // What this attempt writes, not an earlier one's.
             let before = self.machine.changes();
-            self.machine.begin_reads();
+            // Only an open that decides before it writes (`state` marks a
+            // copy passed over) reads a place twice: its second walk writes
+            // again what the first kept, and acts only when it ends there.
+            let marked = state.values().mark.is_some();
+            self.machine.begin_reads(marked);
+            let rereads = self.machine.rereads_changed();
             // When `state` marks a copy passed over and no whole batch
             // follows the marker, the store records the possible loss and
             // opens again, settling: another operation.
-            let opened = match Log::open(fs.clone(), state, CONFIG, self.model.start) {
-                Err(failed) if matches!(failed.error, LogError::LossNotRecorded(_)) => {
-                    self.reached.loss_recorded += 1;
-                    self.machine.begin_reads();
-                    Log::open_settling(fs.clone(), failed.state, CONFIG, self.model.start)
-                }
-                other => other,
-            };
+            let mut opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
+            // A settling open that reads another loss returns it, having
+            // written nothing; the store records it in turn.
+            for _ in 0..4 {
+                let Err(failed) = opened else { break };
+                let LogError::LossNotRecorded(loss) = &failed.error else {
+                    opened = Err(failed);
+                    break;
+                };
+                let loss = (**loss).clone();
+                self.reached.loss_recorded += 1;
+                self.machine.begin_reads(true);
+                opened =
+                    Log::open_settling(fs.clone(), failed.state, CONFIG, self.model.start, &loss);
+            }
+            assert!(
+                marked || self.machine.rereads_changed() == rereads,
+                "seed {seed}: an open of a `state` with no mark read the same bytes twice"
+            );
             if let Some(reads) = self.given_up_place {
                 assert_eq!(
                     self.machine.bad_reads(),
@@ -1085,7 +1133,10 @@ impl<'a> Run<'a> {
                     let OpenFailed { error, state: back } = *failed;
                     let retryable = matches!(
                         error,
-                        LogError::Unreadable { .. } | LogError::Disk(_) | LogError::State(_)
+                        LogError::Unreadable { .. }
+                            | LogError::Disk(_)
+                            | LogError::State(_)
+                            | LogError::ReadChanged { .. }
                     );
                     let running = self.machine.sim().is_none_or(|sim| !sim.halted());
                     if retryable && self.cache_tail_pending && running && self.plan.below(2) == 0 {
@@ -1114,6 +1165,10 @@ impl<'a> Run<'a> {
                         }
                         LogError::Unreadable { .. } => {
                             self.reached.unreadable += 1;
+                            self.fail();
+                        }
+                        LogError::ReadChanged { .. } => {
+                            self.reached.read_changed += 1;
                             self.fail();
                         }
                         LogError::Disk(_) | LogError::State(_) => self.fail(),
@@ -1224,7 +1279,7 @@ impl<'a> Run<'a> {
         // Read back from the start, against the model.
         let from = self.model.start.index + 1;
         let read: Result<Vec<Entry>, LogError> = self.quiet(|run| {
-            run.machine.begin_reads();
+            run.machine.begin_reads(false);
             run.log
                 .as_ref()
                 .expect("opened")
@@ -1381,7 +1436,7 @@ impl<'a> Run<'a> {
             self.machine
                 .set_bad(Some((format::segment_path(end.segment), end.offset)));
         }
-        self.machine.begin_reads();
+        self.machine.begin_reads(false);
         let log = self.log.as_mut().expect("opened");
         let done = if choice == 1 {
             // Giving up needs no committed position, and is refused for any
@@ -1755,7 +1810,7 @@ impl<'a> Run<'a> {
             self.given_up_place = None;
             self.machine.set_bad(None);
         }
-        self.machine.begin_reads();
+        self.machine.begin_reads(false);
         let log = self.log.as_mut().expect("open");
         let cut = log.cut(from);
         self.trace
@@ -1934,7 +1989,7 @@ impl<'a> Run<'a> {
     fn read_check(&mut self) {
         let seed = self.seed;
         let from = self.model.start.index + 1;
-        self.machine.begin_reads();
+        self.machine.begin_reads(false);
         let log = self.log.as_ref().expect("open");
         let read: Result<Vec<Entry>, LogError> = log.read(from).and_then(|r| r.collect());
         match read {
@@ -2040,24 +2095,23 @@ fn the_log_survives_drawn_crashes_and_faults() {
 /// or returned whose bytes do not match its hash, and no field returned
 /// differs from the bytes the hash was checked over (format section 3.11,
 /// "Whatever is checked is what is used"). The log reads each place once,
-/// so it never meets such a read; code that reads a place again and acts on
-/// it fails the model's checks.
+/// except in an open that decides before it writes (`state` marks a copy
+/// passed over): its second walk writes again what the first kept, and acts
+/// only when it ends where the first did, so a changed byte fails that open
+/// ([`LogError::ReadChanged`]) with nothing recorded; the run asserts that
+/// no other open reads a place twice. Code that reads a place again and
+/// acts on it fails the model's checks.
 #[test]
 fn the_log_acts_only_on_what_it_checked_when_a_second_read_differs() {
     let mut reached = Reached::default();
-    let mut changed = 0;
     for seed in seeds(100) {
         let mut machine = Simulated::new(seed, FAULTS).with_rereads_changed(seed);
         Run::new(&mut machine, Device::Honest, seed, FAULTS, &mut reached).go(70);
-        changed += machine.rereads_changed();
     }
     if seeds(100).len() >= 100 {
         assert!(reached.kept_tails > 0 && reached.opens > 100, "{reached:?}");
     }
-    assert_eq!(
-        changed, 0,
-        "the log read the same bytes twice in one operation"
-    );
+    eprintln!("{reached:?}");
 }
 
 #[test]
@@ -2191,12 +2245,16 @@ fn open_settled(
     config: Config,
     start: Position,
 ) -> Result<(Log, Opened), Box<OpenFailed>> {
-    match Log::open(fs.clone(), state, config, start) {
-        Err(failed) if matches!(failed.error, LogError::LossNotRecorded(_)) => {
-            Log::open_settling(fs, failed.state, config, start)
-        }
-        other => other,
+    let mut opened = Log::open(fs.clone(), state, config, start);
+    for _ in 0..4 {
+        let Err(failed) = opened else { break };
+        let LogError::LossNotRecorded(loss) = &failed.error else {
+            return Err(failed);
+        };
+        let loss = (**loss).clone();
+        opened = Log::open_settling(fs.clone(), failed.state, config, start, &loss);
     }
+    opened
 }
 
 fn open_store(sim: &Sim, start: Position) -> Result<(Log, Opened), LogError> {
@@ -3293,6 +3351,137 @@ fn a_confirmed_batch_behind_a_lost_marker_and_a_failed_read_comes_back() {
     let (log, opened) = open();
     assert_eq!(opened.durable, two);
     assert_eq!(log.read(1).unwrap().count(), 2);
+}
+
+/// A log whose `state` marks a copy passed over: entry `one` in a batch the
+/// marker covers, then `sizes.len()` entries in one batch after it, whose
+/// marker advance was lost with the newest copy of `state`. Returns the
+/// disk, the watched folder, the configuration, `one`, and where each entry
+/// of the batch after it begins.
+fn marked_with_a_batch_after(
+    seed: u64,
+    sizes: &[usize],
+) -> (Sim, Arc<Watched>, Config, Position, Vec<u64>) {
+    let sim = Sim::new(seed);
+    let watched = Arc::new(Watched::new(Arc::new(sim.fs())));
+    let fs: Arc<dyn Fs> = watched.clone();
+    let big = Config {
+        segment_size: 4 << 20,
+        max_payload: 300 << 10,
+    };
+    let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    let (mut log, _) = open_settled(fs.clone(), state, big, Position::START).unwrap();
+    let one = log.append(1, 0, 0, b"one").unwrap();
+    log.flush_batch(None).unwrap();
+    let mut at = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 3 + BATCH_HEADER;
+    let mut entries = Vec::new();
+    for (i, &size) in sizes.iter().enumerate() {
+        log.append(1, 0, 0, &vec![i as u8 + 2; size]).unwrap();
+        entries.push(at);
+        at += ENTRY_OVERHEAD + size as u64;
+    }
+    log.flush_batch(None).unwrap();
+    let (_, newest) = log.state().copy();
+    drop(log);
+    sim.damage(
+        crate::state::FILE,
+        (newest * crate::state::SLOT + 40) as u64,
+        2,
+    )
+    .unwrap();
+    sim.restart();
+    (sim, watched, big, one, entries)
+}
+
+/// Round 1 of #766, Sol's fourth finding: an open of a `state` with a mark
+/// decides before it writes. More than a write-back chunk of checked
+/// entries in the batch after the marker, a later entry of it damaged: the
+/// open that finds the loss writes nothing to the log, and the open that
+/// settles it, given that loss, writes nothing of the batch it cuts.
+#[test]
+fn a_marked_open_writes_nothing_before_its_loss_is_recorded() {
+    let sizes = [256 << 10; 5];
+    let (sim, watched, config, one, entries) = marked_with_a_batch_after(18, &sizes);
+    assert!(entries[4] - entries[0] > WRITE_BACK_CHUNK);
+    sim.damage(&format::segment_path(1), entries[4] + 1000, 4)
+        .unwrap();
+    sim.restart();
+    let fs: Arc<dyn Fs> = watched.clone();
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    assert!(state.values().mark.is_some());
+    let before = watched.changes.load(Ordering::Relaxed);
+    let Err(failed) = Log::open(fs.clone(), state, config, Position::START) else {
+        panic!("the loss is not recorded yet")
+    };
+    let LogError::LossNotRecorded(loss) = &failed.error else {
+        panic!("{}", failed.error)
+    };
+    let loss = (**loss).clone();
+    assert!(loss.cut.is_some(), "{loss:?}");
+    assert_eq!(
+        watched.changes.load(Ordering::Relaxed),
+        before,
+        "the open that decides wrote to the log"
+    );
+    let (_, opened) =
+        Log::open_settling(fs.clone(), failed.state, config, Position::START, &loss).unwrap();
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut, loss.cut);
+    assert_eq!(watched.changes.load(Ordering::Relaxed), before);
+}
+
+/// Round 1 of #766, Sol's third finding: the open that settles a mark does
+/// the loss it was given or nothing. The batch after the marker is
+/// damaged, and the first open's read of it fails: it reports an
+/// unreadable end and no cut. The settling open, given that, reads the
+/// batch, finds the damage and a cut instead, and returns that loss having
+/// written nothing; given the new one, it cuts.
+#[test]
+fn a_settling_open_does_only_the_loss_it_was_given() {
+    let (sim, watched, config, one, entries) = marked_with_a_batch_after(19, &[64 << 10, 64 << 10]);
+    sim.damage(&format::segment_path(1), entries[1] + 1000, 4)
+        .unwrap();
+    sim.restart();
+    let fs: Arc<dyn Fs> = watched.clone();
+    watched
+        .bad
+        .lock()
+        .unwrap()
+        .push((format::segment_path(1), entries[0] + 1000));
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let Err(failed) = Log::open(fs.clone(), state, config, Position::START) else {
+        panic!("the loss is not recorded yet")
+    };
+    let LogError::LossNotRecorded(first) = &failed.error else {
+        panic!("{}", failed.error)
+    };
+    let first = (**first).clone();
+    assert!(
+        first.unreadable_end.is_some() && first.cut.is_none(),
+        "{first:?}"
+    );
+    // The read succeeds from now on.
+    watched.bad.lock().unwrap().clear();
+    let before = watched.changes.load(Ordering::Relaxed);
+    let Err(failed) = Log::open_settling(fs.clone(), failed.state, config, Position::START, &first)
+    else {
+        panic!("the settling open did a loss it was not given")
+    };
+    let LogError::LossNotRecorded(found) = &failed.error else {
+        panic!("{}", failed.error)
+    };
+    let found = (**found).clone();
+    assert!(
+        found.cut.is_some() && found.unreadable_end.is_none(),
+        "{found:?}"
+    );
+    assert_eq!(watched.changes.load(Ordering::Relaxed), before);
+    assert!(failed.state.values().mark.is_some(), "the mark was settled");
+    let (_, opened) =
+        Log::open_settling(fs.clone(), failed.state, config, Position::START, &found).unwrap();
+    assert_eq!(opened.durable, one);
+    assert_eq!(opened.cut, found.cut);
+    assert!(opened.unreadable_end.is_none());
 }
 
 /// A batch whole in the system's cache only, after a write the device did
@@ -4771,6 +4960,7 @@ fn the_open_after_an_acceptance_removes_nothing() {
         start: at,
         kept: last,
         marker: last.index,
+        cut_count_before: before.cut_count,
         cut_count: None,
         listed_before: before.segments,
         listed: before.segments,
@@ -4780,7 +4970,7 @@ fn the_open_after_an_acceptance_removes_nothing() {
         before_start: None,
         prefix: None,
     };
-    let Err(failed) = Log::open_as(fs.clone(), state, laid.config, at, Some(&plan), true) else {
+    let Err(failed) = Log::open_as(fs.clone(), state, laid.config, at, Some(&plan), None) else {
         panic!("the open after an acceptance would remove a file and went on")
     };
     assert!(

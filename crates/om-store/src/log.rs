@@ -296,6 +296,8 @@ pub struct DamagePlan {
     pub kept: Position,
     /// The marker now.
     pub marker: u64,
+    /// The cut count `state` holds now.
+    pub cut_count_before: u64,
     /// The cut count raised to, when anything after `kept` is given up.
     pub cut_count: Option<u64>,
     /// The segments `state` lists now, and will list.
@@ -340,8 +342,12 @@ pub const SET_ASIDE_REASONS: [&str; 8] = [
 ];
 
 /// A segment file an earlier acceptance set aside, as its record says (the
-/// store's incident journal): the plan names it, when a listed segment is
-/// missing under its own name and the file it was renamed to is there.
+/// store's incident journal), with the `state` that acceptance's plan was
+/// made against: the run listed, the marker's index and the cut count. The
+/// plan names it only while `state` is still that one, which is the case of
+/// an acceptance interrupted after its renames and before its `state`
+/// update: once `state` changed, the number may have been listed again for
+/// another segment, and the fate is [`Fate::Missing`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Earlier {
     pub number: u64,
@@ -349,6 +355,9 @@ pub struct Earlier {
     pub last: Option<u64>,
     /// The path it was renamed to, in `log/`.
     pub moved_to: String,
+    pub run: Segments,
+    pub marker: u64,
+    pub cut_count: u64,
 }
 
 /// A segment file's fate in a [`DamagePlan`].
@@ -609,11 +618,20 @@ pub enum LogError {
     /// refused, with nothing changed. Plan again.
     PlanChanged,
     /// `state` marks a copy passed over and the log holds no whole batch
-    /// after the marker: the last batch this server confirmed may be lost.
-    /// The open wrote nothing. Record that durably, then open again with
-    /// [`Log::open_settling`], which does what this open would have done
-    /// (`Loss` says what) and settles the mark.
+    /// after the later of the marker and the start: the last batch this
+    /// server confirmed may be lost. The open wrote nothing. Record that
+    /// durably, then open again with [`Log::open_settling`] given this
+    /// `Loss`, which does what this open would have done, and settles the
+    /// mark, only when its own walk finds the same loss: otherwise it
+    /// returns the loss it found, again having written nothing.
     LossNotRecorded(Box<Loss>),
+    /// The walk that writes again what an open's deciding walk kept read
+    /// the log differently (a read the device failed once, or bytes that
+    /// changed meanwhile): the first walk kept through entry `decided`, the
+    /// second found what `second` says. Nothing was recorded in `state`,
+    /// and what the second walk wrote again is only bytes it checked of
+    /// batches the first kept. Open again.
+    ReadChanged { decided: u64, second: String },
     /// An acceptance's plan could not be recorded before it acted, why:
     /// nothing was changed.
     NotRecorded(String),
@@ -686,6 +704,11 @@ impl fmt::Display for LogError {
                 "the log's framing before the checkpoint's entry is broken in segment \
                  {segment} at offset {offset}: where the entry after it begins cannot be \
                  established, and nothing was given up"
+            ),
+            LogError::ReadChanged { decided, second } => write!(
+                f,
+                "the log read differently on the open's second walk ({second}, where the first \
+                 kept through entry {decided}); nothing was recorded: open the store again"
             ),
             LogError::LossNotRecorded(loss) => write!(
                 f,
@@ -886,8 +909,10 @@ struct Walked {
 /// `run_first`) from `start`, against `marker` and the cut count
 /// `cut_count`: what it keeps, where it ends, what it reports. With
 /// `write_back` the batches it keeps after the firm position are written
-/// again as it goes (the open); without, nothing is written (an
-/// acceptance's plan, which so knows what the open after it keeps).
+/// again as it goes (the open); without, nothing is written (a plan, and
+/// the walk that decides an open that must decide before it writes). With
+/// `until`, the walk stops once it has kept the batch that ends there: the
+/// walk that writes again what a deciding walk kept, and nothing more.
 fn walk_log(
     segs: &[Seg],
     start: Position,
@@ -895,6 +920,7 @@ fn walk_log(
     cut_count: u64,
     run_first: u64,
     write_back: bool,
+    until: Option<u64>,
 ) -> Result<Walked, LogError> {
     let after_start = start.index + 1;
     let firm = marker.index.max(start.index);
@@ -1039,6 +1065,9 @@ fn walk_log(
                         kept += count;
                         end = Some((found.seg, found.offset + found.size));
                         last = position(&found);
+                        if until.is_some_and(|until| last.index >= until) {
+                            break end.expect("set by this batch");
+                        }
                     }
                     Some(_) => {
                         back.clear();
@@ -1382,19 +1411,25 @@ impl Log {
         config: Config,
         start: Position,
     ) -> Result<(Log, Opened), Box<OpenFailed>> {
-        Self::open_as(fs, state, config, start, None, false)
+        Self::open_as(fs, state, config, start, None, None)
     }
 
     /// [`Log::open`] for a caller that has recorded, durably, that the last
-    /// batch this server confirmed may be lost ([`LogError::LossNotRecorded`]):
-    /// the open goes on, and settles `state`'s mark in its update.
+    /// batch this server confirmed may be lost, as `loss` says
+    /// ([`LogError::LossNotRecorded`]): the open goes on, and settles
+    /// `state`'s mark in its update, only when its own deciding walk, which
+    /// writes nothing, finds the same marker, cut and unreadable end.
+    /// Otherwise it returns the loss it found
+    /// ([`LogError::LossNotRecorded`]), having written nothing, to record
+    /// in turn.
     pub fn open_settling(
         fs: Arc<dyn Fs>,
         state: State,
         config: Config,
         start: Position,
+        loss: &Loss,
     ) -> Result<(Log, Opened), Box<OpenFailed>> {
-        Self::open_as(fs, state, config, start, None, true)
+        Self::open_as(fs, state, config, start, None, Some(loss))
     }
 
     /// [`Log::open`], or with `plan` the open an acceptance runs after
@@ -1402,13 +1437,14 @@ impl Log {
     /// only when its walk ends the log where `plan` says, with the run it
     /// lists, and no segment file would be removed; otherwise it fails
     /// ([`LogError::NotAsPlanned`]) having written and removed nothing.
-    fn open_as(
+    /// With `settle`, [`Log::open_settling`].
+    pub(crate) fn open_as(
         fs: Arc<dyn Fs>,
         mut state: State,
         config: Config,
         start: Position,
         plan: Option<&DamagePlan>,
-        settle: bool,
+        settle: Option<&Loss>,
     ) -> Result<(Log, Opened), Box<OpenFailed>> {
         match Self::recover(&*fs, &mut state, config, start, plan, settle) {
             Ok(recovered) => {
@@ -1448,7 +1484,7 @@ impl Log {
         config: Config,
         start: Position,
         plan: Option<&DamagePlan>,
-        settle: bool,
+        settle: Option<&Loss>,
     ) -> Result<Recovered, LogError> {
         config.check()?;
         if !state.holds_lock_of(fs) {
@@ -1530,6 +1566,11 @@ impl Log {
             });
         }
 
+        // An open that must decide before it writes (a mark to settle or
+        // record, a plan to match) walks first without writing anything,
+        // and writes again what it keeps only once it has decided.
+        let deciding = values.mark.is_some() || plan.is_some();
+        let firm = marker.index.max(start.index);
         let Walked {
             last,
             end,
@@ -1538,7 +1579,7 @@ impl Log {
             unreadable_end,
             before_start,
             walked_before_start,
-        } = walk_log(&segs, start, marker, cut_count, run.first, true)?;
+        } = walk_log(&segs, start, marker, cut_count, run.first, !deciding, None)?;
 
         let mut cut = None;
         if let (Some((seg, offset)), None) = (end, &unreadable_end) {
@@ -1583,15 +1624,49 @@ impl Log {
         // may be one advance behind. A whole batch kept after the firm
         // position makes up for it, and the update below settles the mark;
         // otherwise the last batch confirmed may be lost, and nothing is
-        // written until the caller has recorded that (`settle`).
+        // written until the caller has recorded that loss, this one
+        // (`settle`). After an acceptance its plan is the record.
+        let loss = Loss {
+            marker,
+            cut,
+            unreadable_end,
+        };
         let settles =
-            values.mark.is_some() && (last.index > marker.index.max(start.index) || settle);
+            values.mark.is_some() && (last.index > firm || plan.is_some() || settle == Some(&loss));
         if values.mark.is_some() && !settles {
-            return Err(LogError::LossNotRecorded(Box::new(Loss {
+            return Err(LogError::LossNotRecorded(Box::new(loss)));
+        }
+        let Loss {
+            cut,
+            unreadable_end,
+            ..
+        } = loss;
+        // Decided: the batches kept after the firm position are written
+        // again, and nothing past the last of them.
+        if deciding && last.index > firm {
+            let second = match walk_log(
+                &segs,
+                start,
                 marker,
-                cut,
-                unreadable_end,
-            })));
+                cut_count,
+                run.first,
+                true,
+                Some(last.index),
+            ) {
+                Ok(walked) if walked.last == last => None,
+                Ok(walked) => Some(format!("it kept through entry {}", walked.last.index)),
+                // What the first walk read whole, the second did not.
+                Err(e @ (LogError::Damaged(_) | LogError::Unreadable { .. })) => {
+                    Some(e.to_string())
+                }
+                Err(e) => return Err(e),
+            };
+            if let Some(second) = second {
+                return Err(LogError::ReadChanged {
+                    decided: last.index,
+                    second,
+                });
+            }
         }
         // The log holds what it must, and what it keeps after the firm
         // position was written again as the walk went. Make its folder's
@@ -1791,7 +1866,7 @@ impl Log {
         }
         // The open ends the log where the plan said, with the run it said,
         // and removes nothing, or fails having written nothing.
-        match Log::open_as(fs, state, config, start, Some(plan), true) {
+        match Log::open_as(fs, state, config, start, Some(plan), None) {
             Ok((log, opened)) => Ok((log, opened, accepted)),
             Err(failed) => Err(Box::new(AcceptFailed {
                 failed,
@@ -2045,6 +2120,7 @@ impl Log {
                     cut_count,
                     usable[*front].number,
                     false,
+                    None,
                 )?;
                 opens_at = walked.last;
                 before_start = walked.before_start;
@@ -2111,12 +2187,18 @@ impl Log {
             .map(|k| format!("{GIVEN_UP_PREFIX}{k}."))
             .ok_or(LogError::Refused("the numbers of given-up names are spent"));
         // A listed segment missing under its own name that an earlier
-        // acceptance, by its record, renamed to a file that is there.
+        // acceptance, by its record, renamed to a file that is there, while
+        // `state` is still the one that acceptance's plan was made against:
+        // it was interrupted before its update, so the number was not listed
+        // again since.
         let moved_earlier = |number: u64| {
-            earlier
-                .iter()
-                .rev()
-                .find(|e| e.number == number && fs.open(&e.moved_to, FileOptions::PLAIN).is_ok())
+            earlier.iter().rev().find(|e| {
+                e.number == number
+                    && e.run == run
+                    && e.marker == marker.index
+                    && e.cut_count == values.cut_count
+                    && fs.open(&e.moved_to, FileOptions::PLAIN).is_ok()
+            })
         };
         for number in run.first..run_end {
             let (mut first, mut last) = entries_of(number);
@@ -2233,6 +2315,7 @@ impl Log {
             start,
             kept,
             marker: marker.index,
+            cut_count_before: values.cut_count,
             cut_count,
             listed_before: run,
             listed,
