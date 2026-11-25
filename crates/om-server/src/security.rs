@@ -13,11 +13,13 @@
 //!
 //! It is read through a reading of the file (`engine::Reading::serve`), all
 //! from one version: its records listed one key at a time, each decoded as
-//! it is read, with only the members it decodes, each read whole within
-//! what one reply carries ([`MEMBER_LIMIT`]), and an extended privilege's
-//! sets `05` read as the keys of its children, all the reply takes of
-//! them. A read that fails, or a member past the limit, is the caller's
-//! error.
+//! it is read, with only the members it decodes, each read as its decoder
+//! reads it ([`Member`]): heads and keys first, a member's pieces only where
+//! a decoder uses them, an extended privilege's sets `05` as the keys of
+//! its children, all the reply takes of them. A text member or a member's
+//! keys past what one reply carries, as stored, refuse the request
+//! ([`MEMBER_LIMIT`]). A read that fails, or a member past the limit, is
+//! the caller's error.
 
 use std::ops::Bound;
 
@@ -62,14 +64,17 @@ const SET_MEMBERS: [Member; 3] = [Member::Scalar(2), Member::Scalar(0x0c), Membe
 /// ([`extended_privilege`]): its sets `05` are the keys of its children.
 const EXTENDED_MEMBERS: [Member; 2] = [Member::Keys(5), Member::Text(0x10)];
 
-/// The most a text member or the keys of a member may take: the bytes of
-/// the keys and values the view hands out for it, what its part of the
-/// reply holds. That is what one reply carries; a member past it refuses
-/// the request ([`ReadError::TooLarge`]), as a reply past it is refused.
-/// FileMaker's own security editor is not known to write a member of that
-/// size. A scalar member is read as its own value alone, as large as one
-/// node's value is, and its children (a value in pieces, which no decoder
-/// takes) never.
+/// The most a text member or the keys of a member may take, as stored: the
+/// bytes of the keys and values of what the decoder is given of it ([`Budget`]).
+/// That is what one reply carries; a member past it refuses the request
+/// ([`ReadError::TooLarge`]). It bounds the stored bytes read for a member
+/// the reply uses, input from a file, not the reply: a name whose stored
+/// pieces are past it refuses the whole catalog, though its decoded text
+/// may be short (SCSU) or not decode at all (a bad chunk header), where the
+/// decoder would leave that one name out. FileMaker's own security editor
+/// is not known to write a member of that size. A scalar member is read as
+/// its own value alone, as large as one node's value is, and its children
+/// (a value in pieces, which no decoder takes) never.
 const MEMBER_LIMIT: usize = MAX_DEFINITION_BYTES;
 
 /// `hosted`'s security catalog in the version `engine` holds now.
@@ -126,7 +131,15 @@ fn decoded<T>(
     Ok(decoded)
 }
 
-/// What the view handed out for one member, against [`MEMBER_LIMIT`].
+/// What the decoder is given of one member, against [`MEMBER_LIMIT`]: a
+/// text member's own value, or the key and own value of each of its pieces;
+/// the key and own value of each child of a member read as keys. Not
+/// charged: a scalar member's own value; the probe for a first child
+/// ([`has_children`]), whose key and value the view hands out and the
+/// decoder never sees (for a scalar member that opens a list, and for each
+/// piece of a text member that does); and the rest of
+/// the page of up to 256 children a listing fetches before the entry that
+/// passes the limit is charged.
 struct Budget {
     path: Vec<Vec<u8>>,
     taken: usize,
