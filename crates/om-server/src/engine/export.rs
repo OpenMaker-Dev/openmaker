@@ -148,6 +148,7 @@ pub struct Progress<'p> {
 
 impl Progress<'_> {
     /// No stopping and nothing to tell.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn none() -> Progress<'static> {
         fn never() -> bool {
             false
@@ -648,7 +649,8 @@ impl FileEngine {
     }
 }
 
-#[cfg(test)]
+/// Through the test view too, which only debug builds have.
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -775,7 +777,7 @@ mod tests {
     /// Save what [`change`] left.
     fn save(file: &Hosted) {
         let mut store = file.write_store(&Writer::for_tests());
-        assert_eq!(store.save(&file.at).unwrap(), true);
+        assert!(store.save(&file.at).unwrap());
     }
 
     /// Export `file`'s current version to `name` through the test view,
@@ -957,7 +959,7 @@ mod tests {
         std::thread::scope(|scope| {
             let committer = scope.spawn(move || {
                 writing.recv().unwrap();
-                engine.submit(&file, serial);
+                engine.submit(file, serial);
                 committed.store(true, Ordering::SeqCst);
             });
             // Once the export writes, the commit is submitted, and given
@@ -975,14 +977,14 @@ mod tests {
                 written: &|_| {},
             };
             engine
-                .export(&file, &to(&folder, "during.fmp12"), progress)
+                .export(file, &to(&folder, "during.fmp12"), progress)
                 .unwrap();
             committer.join().unwrap();
         });
         assert!(committed.load(Ordering::SeqCst));
         assert_eq!(scratch.read("during.fmp12"), scratch.read("before.fmp12"));
         engine
-            .export(&file, &to(&folder, "after.fmp12"), Progress::none())
+            .export(file, &to(&folder, "after.fmp12"), Progress::none())
             .unwrap();
         assert_ne!(scratch.read("after.fmp12"), scratch.read("before.fmp12"));
         assert_eq!(scratch.read("after.fmp12"), std::fs::read(&disk.0).unwrap());
@@ -1019,7 +1021,8 @@ mod tests {
         check(&view, &file, expect()).unwrap();
         let task = record(3);
         let task: Vec<&[u8]> = task.iter().map(Vec::as_slice).collect();
-        let variants: Vec<(&str, Box<dyn Fn(&mut OwnedNode)>)> = vec![
+        type Vary<'a> = Box<dyn Fn(&mut OwnedNode) + 'a>;
+        let variants: Vec<(&str, Vary)> = vec![
             (
                 "a value",
                 Box::new(|t: &mut OwnedNode| {
@@ -1195,5 +1198,172 @@ mod templates {
             "{} files: {written} exported as loaded, unsaved and saved, {read_only} read-only as loaded",
             found.len()
         );
+    }
+}
+
+/// A measurement, not a test: peak memory and time of an export of a
+/// generated file against a save of the same tree, and how long each holds
+/// the store's read lock. One step per process, so that each peak is its
+/// own: `generate` writes a file of `OM_EXPORT_RECORDS` records (one table,
+/// eight 64-byte text cells each, as #673 measured) to `OM_EXPORT_FILE`;
+/// `export` and `save` load it, change one node, then export it (written
+/// from the view, not copied) or save it, reporting the peak resident
+/// memory above the loaded store (`VmHWM`, reset through `clear_refs`
+/// once loaded). For a release build:
+///
+/// ```sh
+/// OM_EXPORT_RECORDS=200000 OM_EXPORT_FILE=target/m/f.fmp12 OM_EXPORT_STEP=generate \
+///   cargo test --release -p om-server --lib -- --ignored export_measurement --nocapture
+/// ```
+#[cfg(all(test, target_os = "linux"))]
+mod measurement {
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, HbamFile, OwnedNode};
+
+    use super::*;
+    use crate::anchored::FileAt;
+    use crate::scripts::fixture;
+    use crate::store::Store;
+
+    fn var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"))
+    }
+
+    /// `VmHWM` and `VmRSS` of this process, in MB.
+    fn memory() -> (f64, f64) {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
+                .unwrap()
+                / 1024.0
+        };
+        (field("VmHWM:"), field("VmRSS:"))
+    }
+
+    fn reset_peak() {
+        std::fs::write("/proc/self/clear_refs", "5").unwrap();
+    }
+
+    #[test]
+    #[ignore = "a measurement for release builds; set OM_EXPORT_STEP"]
+    fn export_measurement() {
+        let path = PathBuf::from(var("OM_EXPORT_FILE"));
+        let step = var("OM_EXPORT_STEP");
+        if step == "generate" {
+            let records: u64 = var("OM_EXPORT_RECORDS").parse().unwrap();
+            let mut tree = fixture::tree(&[], true);
+            let cell = |field: u64, record: u64| {
+                let text: String = format!("{record:012}-{field:02}-")
+                    .chars()
+                    .cycle()
+                    .take(64)
+                    .collect();
+                om_scripts::text_node(&uint_segment(field), &text)
+            };
+            let list = (1..=records)
+                .map(|id| {
+                    OwnedNode::list(serial::encode(id), (1..=8).map(|f| cell(f, id)).collect())
+                })
+                .collect();
+            tree.put(
+                &[&uint_segment(fixture::TABLE), &[0x05]],
+                OwnedNode::list(vec![0x05], list),
+            );
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fixture::write_tree(&path, &tree);
+            println!(
+                "generated {records} records: {:.1} MB",
+                std::fs::metadata(&path).unwrap().len() as f64 / 1e6
+            );
+            return;
+        }
+        let started = Instant::now();
+        let file = HbamFile::open(&path).unwrap();
+        let mut store = Store::load(&file, "Measured.fmp12").unwrap();
+        drop(file);
+        {
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::metadata(&path).unwrap();
+            store.set_file(Some((m.dev(), m.ino())));
+        }
+        assert!(store.put_subtree(
+            &[vec![2], vec![0x7e]],
+            OwnedNode::leaf(Vec::new(), b"measured".to_vec())
+        ));
+        let loaded = started.elapsed();
+        let at = FileAt::open(&path).unwrap();
+        reset_peak();
+        let (_, base) = memory();
+        let size = std::fs::metadata(&path).unwrap().len() as f64 / 1e6;
+        match step.as_str() {
+            "export" => {
+                let folder = at.folder_now().unwrap();
+                let name = OsStr::new("Measured-export.fmp12");
+                let started = Instant::now();
+                let view = store.tree_view();
+                let read = Read {
+                    view: &view,
+                    derived: store.derived(),
+                    waiting: store.waiting(),
+                    read_only: store.is_read_only(),
+                };
+                let source = store.export_source(&at).unwrap();
+                assert!(matches!(source, Source::Written { .. }));
+                let to = Destination {
+                    folder: &folder,
+                    name,
+                    permissions: None,
+                };
+                let prepared = prepare(read, source, &to, Progress::none()).unwrap();
+                let held = started.elapsed();
+                let exported = prepared.publish(None).unwrap();
+                let total = started.elapsed();
+                let (peak, _) = memory();
+                println!(
+                    "export {size:.1} MB file: {:.0} ms ({:.0} ms written and checked under the \
+                     lock, {:.0} ms flushed and renamed after it), peak {:.1} MB above the \
+                     loaded store ({base:.0} MB; load {:.0} ms), export {:.1} MB",
+                    total.as_secs_f64() * 1e3,
+                    held.as_secs_f64() * 1e3,
+                    (total - held).as_secs_f64() * 1e3,
+                    peak - base,
+                    loaded.as_secs_f64() * 1e3,
+                    exported.size as f64 / 1e6
+                );
+                std::fs::remove_file(path.with_file_name(name)).unwrap();
+            }
+            "save" => {
+                let started = Instant::now();
+                assert!(store.save(&at).unwrap());
+                let total = started.elapsed();
+                let (peak, _) = memory();
+                println!(
+                    "save {size:.1} MB file: {:.0} ms under the write lock, peak {:.1} MB above \
+                     the loaded store ({base:.0} MB)",
+                    total.as_secs_f64() * 1e3,
+                    peak - base,
+                );
+            }
+            "open" => {
+                // What a backup held the store's read lock for before: one
+                // open of the saved file.
+                let runs = 1000;
+                let started = Instant::now();
+                for _ in 0..runs {
+                    drop(store.open_saved(&at).unwrap());
+                }
+                println!(
+                    "open of the saved file: {:.1} µs",
+                    started.elapsed().as_secs_f64() * 1e6 / f64::from(runs)
+                );
+            }
+            other => panic!("unknown step {other}"),
+        }
     }
 }

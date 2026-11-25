@@ -182,7 +182,7 @@ impl Server {
                 connection_ids: Mutex::new(Default::default()),
                 recordings,
                 mailboxes: Default::default(),
-                engine,
+                engine: Arc::new(engine),
                 scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
                 refused_downloads: RwLock::new(Vec::new()),
                 omitted_list_paths: Default::default(),

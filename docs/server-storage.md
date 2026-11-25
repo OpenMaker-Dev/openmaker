@@ -11,11 +11,13 @@ it except the contract in section 2.
 (`crates/om-server/src/store.rs`). Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them (section 5). Views are built, and
-downloads and finds read through them; the other readers still hold the
-file engine's store (section 5, "Moving the other readers"). Still to
-come: `export`, `import` and `capabilities` (section 5), the file engine's
-reporting of failed saves (section 5, last part), the store engine and
-everything in sections 6 to 12, which are specified here and not built.
+downloads and finds read through them; so is `export`, which backups and
+the desktop's Save a Copy as write their copies with. The other readers
+still hold the file engine's store (section 5, "Moving the other
+readers"). Still to come: `import` and `capabilities` (section 5), the
+file engine's reporting of failed saves (section 5, last part), the store
+engine and everything in sections 6 to 12, which are specified here and
+not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -166,8 +168,9 @@ desktop's own Change Password and its saved found sets; and the deferred
 field work a file is opened with, with its save. Only the engine can take
 a file's store for writing or change its lock table (`engine::Writer`),
 and code elsewhere that tries does not compile; everyone else gets the
-lock table to read (`Hosted::lock_table`) and the saved file, for a copy,
-only to read (`store::SavedFile`). The exceptions:
+lock table to read (`Hosted::lock_table`), and a whole-file copy is an
+export (`engine::export`, below), which opens the file on disk only to
+read it (`Store::open_saved`). The exceptions:
 
 - the setup of a file no one can reach yet: `hosting::load_hosted` records
   the file's identity in its store before serving it;
@@ -180,15 +183,17 @@ only to read (`store::SavedFile`). The exceptions:
   for writing: `Hosted::path` is read for log lines, `Get ( FilePath )`,
   the file's size, the Documents folder of a server script and the
   folders backups resolve; `Hosted::at` (and `Slot::file_at`) is read by
-  backups, which look up the file's entry and open it read-only, and by
-  the engine's saves. Nothing outside the engine's saves writes through
-  either.
+  backups, which look up the file's entry, by exports, which open the file
+  read-only (`Store::open_saved`), and by the engine's saves. Nothing
+  outside the engine's saves writes through either.
 
 Views are built, with the file engine's behind them, and the first
 readers read through them: downloads (op90, op15, op92) and finds (op86).
-The other readers still hold the store; "Moving the other readers" below
-is the plan for them. `export`, `import` and `capabilities` are not built,
-and nor are the failed-save fixes at the end of this section.
+`export` is built on them ("Exports", below), and backup schedules and the
+desktop's Save a Copy as write their copies with it. The other readers
+still hold the store; "Moving the other readers" below is the plan for
+them. `import` and `capabilities` are not built, and nor are the
+failed-save fixes at the end of this section.
 
 **Views.** A view (`engine::View`) is one fixed version of one file's
 tree. Nothing a view returned changes later. It answers:
@@ -548,16 +553,76 @@ capabilities()          -> clones, history, replication, point-in-time restore
 
 `submit` is `engine::FileEngine::submit(file, operation) -> Outcome`; the
 caller encodes the reply and delivers the notices only after it returns.
-`view` is `engine::FileEngine::read(file) -> Reading`, above. There is no
-engine trait while there is one engine. The other names are settled when
-they are built. A feature that needs a capability the running
-engine lacks answers a typed "unavailable".
+`view` is `engine::FileEngine::read(file) -> Reading`, above. `export` is
+`engine::FileEngine::export(file, destination, progress) -> Exported`,
+below. There is no engine trait while there is one engine. The other
+names are settled when they are built. A feature that needs a capability
+the running engine lacks answers a typed "unavailable".
+
+**Exports** (`engine::export`). An export writes one version of a file as
+an `.fmp12`: a depth-first walk of its view, in key order, into
+`om_hbam::writer::NodeWriter`, every node with its kind and value, empty
+lists included, and page 0 as the file was loaded (derived state, below)
+with the clean-close flag set and the change number counted on from the
+one the engine names for the version (hbam-writer.md 5.1). The engine
+says how a version is exported (`engine::Source`, from
+`Reading::export_source`). On the file engine:
+
+- a version a save wrote, unchanged since, is written from the change
+  number that save started from, so that it is the saved file byte for
+  byte;
+- a version with changes the disk lacks (a failed save's) is written from
+  the change number the next save starts from: what that save would
+  write;
+- a version no save wrote, the file as it was loaded, is the bytes it was
+  loaded from, read from the file on disk while the store can tell it is
+  that file (the descriptor a desktop's host holds locked, or the entry at
+  the file's path while it is the one the server read, #468): FileMaker's
+  own pages, which no writer of the tree reproduces. A store that cannot
+  tell (no lock, no identity) writes the version instead;
+- a file hosted read-only for content the writer cannot write is exported
+  as the bytes it was loaded from (section 2, rule 2), also while changes
+  its refused saves left wait in memory. Those are then not in the export,
+  and `Exported::current` says so.
+
+So an export of a file engine's version is the file the engine keeps, or
+would keep, on disk for it, and a backup's copy of a file holds the bytes
+it held before for the same content (they were the file on disk). Before
+it gets its final name the export is read back with `om_hbam`'s streaming
+reader (`stream::NodeStream`) and compared with a second walk of the view,
+node by node (path, kind and value, a value over 1,000 bytes as the writer
+splits it) and page 0 as written; an image that is not the version is read
+to its end and its page 0 compared. A difference, a file that does not
+read back, a read of the view that fails (`ReadError`) or a refusal of the
+writer is a typed error (`engine::ExportError`). The export is written
+under `<name>.omexport` in the destination folder, made only where nothing
+is, then flushed, renamed to its name, never over an entry there, and the
+folder flushed; on any failure what the export made is removed while it is
+still that file, and nothing else. Memory is what the writer and reader
+hold (a few pages and the open key path), a page of the view's walk and a
+256 KB copy buffer, never a part of the file
+([performance/export.md](performance/export.md)).
+
+On the file engine the view holds the store's read lock while the export is
+written and checked (`engine::export::prepare`), and the flush and rename
+come after it is let go (`Prepared::publish`). Writes to the file wait for
+that hold: for a generated file of 105 MB, 674 ms (the median of three),
+where a backup held the lock for one `open` of the saved file (7 µs)
+before. A change committed during an export is in it whole or not at all:
+the file engine's commit waits for it. On the store engine a view will not
+hold up writers. Exports are offered by backup schedules (`backups`, a
+copy of each file) and the desktop's Save a Copy as
+(`LocalHost::prepare_copy`, written into its unnamed destination by
+`engine::export::write_checked`, a compacted copy from the change number
+the next save starts from, as before). Not yet: an export at any time from
+a running server, at a clean stop, and `om-server export` (section 6.10).
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's locale and the
-order of its stored dates, and two facts not in the tree that compiling
-its calculations needs, the file's name and whether it is served to a
-desktop client. It is computed from a view (`Derived::new`,
+order of its stored dates, two facts not in the tree that compiling its
+calculations needs, the file's name and whether it is served to a desktop
+client, and one an export needs, the file's page 0 as it was loaded
+(`Derived::page_zero`; its change number is the engine's, per version). It is computed from a view (`Derived::new`,
 `derived::read_catalog`) and carries the version it was computed from. It
 is not part of an engine; an engine decides when to compute it. The file
 engine computes it when it loads a file and reads the catalog again after
@@ -601,8 +666,9 @@ is named by nothing, and a server that stops between op13 and op73 never
 computes it
 ([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)).
 
-**Moving the other readers.** The readers below still hold the store
-(`Hosted::read_store`, or `Transaction::view() -> &Store` inside `run`).
+**Moving the other readers.** The readers below, but the one marked
+moved, still hold the store (`Hosted::read_store`, or
+`Transaction::view() -> &Store` inside `run`).
 Each is listed with the `Store` helpers it reads through, what it reads
 (one node, a list a node's children make, or a subtree whole), and what it
 needs that views and derived state do not give yet. They move in this
@@ -646,12 +712,12 @@ order, the smaller first, each with the test view's runs of its tests:
    overlay view, the calculation schema in derived state, and the script
    session's cache keyed by a design version rather than the store's
    schema generation.
-4. Backups and exports. `backups::open_source` reads the store only for
-   the saved file it copies (`Store::saved_file`), and `LocalHost`'s
-   `prepare_copy` the same. Needs: `export(view, writer)`, a walk of a
-   whole version into an `.fmp12` (`om_hbam::writer` builds a file from a
-   whole tree today), so that a backup is taken from a view rather than
-   from the file the last save wrote.
+4. Backups and exports: moved. A backup's copy of each file and
+   `LocalHost`'s `prepare_copy` are exports from one view ("Exports",
+   above). Before its export a backup takes one reading for the file's
+   permissions and whether it is the saved version it linked last time
+   (`Reading::open_saved`, `Reading::saved_version`), as it opened the
+   file under the store before.
 5. Admin commands and the hosting state. `Hosted::is_read_only`,
    `Hosted::saved_file` (`Store::file`), `finish_close_if_drained` and
    `hosting::hosted_as` read the store's flags and the file's identity on

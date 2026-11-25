@@ -823,13 +823,18 @@ than a second reader and writer.
   metadata beyond the permission bits are not carried over.
 - **Save a Copy as.** The host writes a copy of the current file or a
   compacted copy (3.3) to a new file only.
-  - *Contents.* A copy of the current file is the file's bytes as the last
-    save left them, read by position through a second descriptor of the
-    one the host holds locked, so the version copied is the one the host
-    has, whatever is renamed over the path meanwhile. A compacted copy is
-    the key tree written as a new packed file (hbam-writer.md 7.2). So is a
-    copy while changes a failed save left wait in memory, or of a file the
-    host could not lock.
+  - *Contents.* Each copy is an export of the version the host holds
+    (docs/server-storage.md 5, "Exports"), written and checked against it
+    while the host holds the file for reading. A copy of the current file
+    is the file's bytes as the last save left them, or as the file was
+    opened when no save wrote it (read from the file the host holds
+    locked, while its path still leads there). While changes a failed save
+    left wait in memory, or for a file the host could not lock, it is the
+    key tree written as a new packed file (hbam-writer.md 7.2), as the
+    next save would write it; a copy that would lack changes a failed save
+    left (a file opened read-only for content OpenMaker cannot write) is
+    refused. A compacted copy is the key tree written as a new packed file
+    from the change number the next save starts from.
   - *Destinations.* Linux only. The resolved path must lead through
     existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
     be owned by root or the effective user and either deny group and other

@@ -202,22 +202,6 @@ pub struct Store {
 /// An index: its table, field and kind (value 0, word 1).
 pub type IndexId = (Vec<u8>, Vec<u8>, u8);
 
-/// The file as a store last loaded or saved it ([`Store::saved_file`]),
-/// to read by position and nothing else: the descriptor inside is a clone
-/// of the store's own, which is open for writing, and no way to it or to
-/// a write leaves this type.
-#[cfg(target_os = "linux")]
-pub struct SavedFile(std::fs::File);
-
-#[cfg(target_os = "linux")]
-impl SavedFile {
-    /// Read into `buf` from byte `offset` of the file, leaving the offset
-    /// the descriptor shares alone (`pread`).
-    pub fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
-        std::os::unix::fs::FileExt::read_at(&self.0, buf, offset)
-    }
-}
-
 /// A catalog path with the last member id and modification count
 /// GenerateMemberKey issued for it (schema-path.md 3.4).
 pub type MemberKey = (Vec<Vec<u8>>, (u64, u64));
@@ -750,36 +734,6 @@ impl Store {
         Ok(true)
     }
 
-    /// The file as the store last loaded or saved it, for a copy of it: a
-    /// new descriptor of the one the store holds locked, which names that
-    /// version whatever later saves rename over its path, to be read by
-    /// position so as not to move the offset the two share. It is a
-    /// [`SavedFile`], which only reads: the descriptor the store holds is
-    /// open for writing, and only the engine's save may write the file.
-    /// `None` while the tree has changes the file lacks (a failed save's)
-    /// or when the store holds no lock, where the file at the path could be
-    /// another program's: such a copy is built from the tree
-    /// ([`Store::compacted`]).
-    #[cfg(target_os = "linux")]
-    pub fn saved_file(&self) -> Option<std::io::Result<SavedFile>> {
-        if self.dirty {
-            return None;
-        }
-        self.lock
-            .as_ref()
-            .map(|lock| lock.file().try_clone().map(SavedFile))
-    }
-
-    /// The tree as a complete new file, packed (`om_hbam::writer::rebuild`,
-    /// hbam-writer.md 7.2): the shape of FileMaker's compacted copies
-    /// (hbam-writer.md 9.3). A tree holding content the writer cannot write
-    /// is refused, as its saves are.
-    #[cfg(target_os = "linux")]
-    pub fn compacted(&self) -> std::io::Result<Vec<u8>> {
-        om_hbam::writer::rebuild(&self.root, &self.page_zero_from(self.change_number))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
-    }
-
     /// The loaded page 0 with change number `scn`: what a writer of the
     /// file starts from.
     fn page_zero_from(&self, scn: u64) -> Vec<u8> {
@@ -810,6 +764,16 @@ impl Store {
             _ => self.change_number,
         };
         Ok(Source::Written { change_number })
+    }
+
+    /// How a compacted copy is written: the tree from the change number
+    /// the next save starts from (the shape of FileMaker's compacted
+    /// copies, hbam-writer.md 9.3), whatever the file on disk holds.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn compacted_source(&self) -> Source {
+        Source::Written {
+            change_number: self.change_number,
+        }
     }
 
     /// How many saves wrote the file since it was loaded, when the version

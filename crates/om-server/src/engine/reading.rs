@@ -279,6 +279,13 @@ impl<'h> Reading<'h> {
         self.view.store.export_source(&self.file.at)
     }
 
+    /// How a compacted copy of this version is written
+    /// (`Store::compacted_source`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn compacted_source(&self) -> super::export::Source {
+        self.view.store.compacted_source()
+    }
+
     /// How many saves wrote the file since it was loaded, when this version
     /// is the file on disk; `None` while it has changes the disk lacks
     /// (`Store::saved_version`).

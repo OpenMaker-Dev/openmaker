@@ -34,24 +34,29 @@
 //! inode numbers, found where the server reads the hosted files, links
 //! followed (`fs::Protected`).
 //!
-//! **Consistency.** OpenMaker Server writes each change of a file as a
-//! complete new file renamed over the old one, and never writes a file in
-//! place (`crate::store::Store::save`). A run opens each file while it
-//! holds the file's store for reading, so that no save is half done, and
-//! lets go at once: the descriptor names that version of the file whatever
-//! later saves rename over it, so the copy made from it is a snapshot of
-//! one save. The store is held only for that open call, never while the
-//! file is copied. Clients see no pause (FileMaker Server pauses each file
-//! at the end of its copy, re 3): a client's write waits at most for one
-//! `open`, and a save in progress delays the backup, not the client.
-//! Changes a failed save left in memory are not in the copy; the run logs
-//! a warning.
+//! **Consistency.** A file's copy is an export of one version of it
+//! (`crate::engine::FileEngine::export`, docs/server-storage.md 5,
+//! "Exports"): written under a temporary name in its folder of the backup,
+//! read back and compared with the version, then renamed. A version a save
+//! wrote is the saved file byte for byte, and a file no save wrote since it
+//! was loaded is the bytes it was loaded from, so a copy is the file on disk
+//! as it was when copies were made from it. Changes a failed save left in
+//! memory are in the export; a file hosted read-only for content the
+//! writer cannot write is the bytes it was loaded from without them, and
+//! the run logs a warning. The store is held for reading while the export
+//! is written and checked, and let go before it is flushed and renamed: a
+//! client's write to the file waits for that (docs/performance/export.md),
+//! where FileMaker Server pauses each file at the end of its copy (re 3).
+//! Before the export the run takes the store once more, for one open of the
+//! saved file, whose permissions the copy gets, as it opened the file for
+//! its copy before.
 //!
 //! **Unchanged files are linked**, as FileMaker does (re 2.3): when the
 //! file has not been saved since this schedule's last complete backup made
-//! in this process (`Store::saves`), its entry is a hard link to that
-//! backup's copy, while that copy is still the file the run made. After a
-//! restart, the first run of each schedule copies every file.
+//! in this process (`Store::saves`), and neither then nor now held changes a
+//! failed save left in memory, its entry is a hard link to that backup's
+//! copy, while that copy is still the file the run made. After a restart,
+//! the first run of each schedule copies every file.
 //!
 //! **A run** writes `<name>_InProgress`, flushes every file and folder,
 //! and renames it to `<name>` once it is complete, so a crash never leaves

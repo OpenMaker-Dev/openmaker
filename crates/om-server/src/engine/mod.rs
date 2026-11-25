@@ -25,7 +25,8 @@
 //! Only the engine can change a file: the store's write guard and the
 //! lock table for changing take a [`Writer`], which only this module can
 //! make, `Hosted::lock_table` gives everyone else the table to read, and
-//! the saved file a copy reads is a `store::SavedFile`, which only reads.
+//! a whole-file copy is an export ([`export`]), which opens the file on
+//! disk only to read it (`Store::open_saved`).
 //! What else takes the store for writing is the setup of a file no one can
 //! reach yet (`hosting::load_hosted`) and test switches
 //! (`Hosted::fail_commit_saves`, `Writer::for_tests`). The file's path and
