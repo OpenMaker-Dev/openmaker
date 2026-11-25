@@ -296,21 +296,30 @@ The readers that read through views:
   index nodes (`derived::issue_member_key`). `Source` gained
   `record_ids`, a table's record list read entry by entry (`[T, 0d]`;
   its default, which `HbamFile` keeps, decodes `Source::node`'s node), and
-  `children`: a node's children listed a page at a time in key order from
-  a bound (`om_query::Listing`, through `View::subtrees_page`:
-  `connection::ViewListing`) where no account filter reaches the node
-  (`ViewFilter::filters`), and the node whole through `Source::node`
-  otherwise. `om_query::Index` reads a field's index so: a lookup by key
-  is one page of one entry, a range or a full read pages through the
-  entries it passes (8 a page, growing to 256), and no instruction needs
-  an entry by its position (the module doc of `om-query`'s `index`). An
-  index held whole (a file on disk, a source without listings, an index
-  built on demand) is read as before, its order checked once and its keys
-  found by binary search. What `om-query` still asks of `Source::node`
-  whole: a record's cell (`Indexes::stored_text`), the node NodeExists
-  and GetKey name, of which only its own value is read
-  (`exec::file_node`), and each node on the destination of
-  UploadMultiple, which is measured whole as the program's work
+  `children`: a node's children listed a page of keys at a time in key
+  order from a bound, and a child with what is below it only by its key
+  (`om_query::Listing`, through `View::children_page`, heads only, and
+  `View::subtree` of the one entry: `connection::ViewListing`), where no
+  account filter reaches the node (`QuerySource::filtered`), and the node
+  whole through `Source::node` otherwise; and `head`, a node without its
+  children (`View::node`), on the same terms. `om_query::Index` reads a
+  field's index so: a lookup by key is one page of one key and reads no
+  entry's records, a range or a full read pages through the keys it
+  passes (8 a page, growing to 256), an entry's records are read only when
+  an instruction takes that entry, and no instruction needs an entry by
+  its position (the module doc of `om-query`'s `index`). An index held
+  whole (a file on disk, a source without listings, an index built on
+  demand) is read as before, its order checked once, its keys found by
+  binary search, and its work counted as before, instruction for
+  instruction (`exec::tests::whole_indexes_count_what_they_counted_before_listings`).
+  What a view limit hides (a view-limited table's indexes and container
+  library, below the file's own library: `ViewFilter::withholds`) is not
+  read at all. NodeExists and GetKey read the node they name alone
+  (`Source::head`; `exec::file_node`). What `om-query` still asks of
+  `Source::node` whole: a record's cell (`Indexes::stored_text`), a node a
+  filter reaches, and each node on the destination of UploadMultiple,
+  read whole (a long value's pieces included) to refuse a write beneath a
+  value and counted as one node and its own key and value
   (`exec::upload_multiple`). The view filter evaluates a view limit on
   the record as stored (`ViewFilter::viewable`, a record whole);
 - a server script's find (`scripts::host::FindSource`): `om_query::Source`
@@ -483,9 +492,11 @@ without asking would fail its check
 and the test view copies no password verifier for it (Describe Security
 included). For a find (`Reading::serve_find`: op86's program, a server
 script's find and its related records' lookup) it also refuses a subtree
-at or above a field's index `[T, 01, F, kind]`, and a page of subtrees
-that would give one, so that a find that read an index whole answers
-otherwise than the file engine and fails the test that made it
+at or above a field's index `[T, 01, F, kind]`, a page of subtrees that
+would give one, and a page of an index's entries each with its records
+(a find lists the keys and reads an entry by its key), so that a find
+that read an index whole, or the records of entries it does not take,
+answers otherwise than the file engine and fails the test that made it
 (`engine::copies::tests::the_test_view_refuses_a_find_an_index_read_whole`).
 The test servers of `om-server`, `om-provider` and
 `om-author` and of `om-gui`'s hosted-file tests, and the private hosts
@@ -1501,9 +1512,11 @@ first, each with the test view's runs of its tests:
    of an index are written over the listing a find reads it through
    (`om_query::upkeep`): a commit's entries by key (`entries_at`),
    whether an index holds more entries than a move leaves
-   (`holds_more_than`), the check of an index against one built from the
-   records in one pass that stops at the first difference
-   (`holds_exactly`), and a sweep's entries in key order (`entries`).
+   (`holds_more_than`: keys only, in pages no larger than the keys still
+   wanted), the check of an index against one built from the records in
+   one pass that stops at the first difference, an entry's records read
+   only when its key agrees (`holds_exactly`), and a sweep's entries in
+   key order (`entries`).
    Which fields have which indexes is read from the heads of `[T, 01,
    F]`'s children, and an index node's own value from its head. The
    upkeep itself still reads and writes the store's tree.

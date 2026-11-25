@@ -192,6 +192,18 @@ impl ViewFilter {
         }
     }
 
+    /// Whether [`ViewFilter::filter`] answers `None` at `path` whatever the
+    /// file holds there: below the file's own library, and below a
+    /// view-limited table's indexes and container library. A reader asks
+    /// this before reading the node, which may be a whole index.
+    pub(crate) fn withholds(&self, path: &[&[u8]]) -> bool {
+        match path {
+            [[LIBRARY], _, ..] => true,
+            [table, [INDEXES] | [LIBRARY], _, ..] => self.limits(table),
+            _ => false,
+        }
+    }
+
     /// Whether field `field` of `table` (their keys) is hidden.
     fn hides(&self, table: &[u8], field: &[u8]) -> bool {
         self.hidden

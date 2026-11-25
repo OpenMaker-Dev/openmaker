@@ -89,20 +89,30 @@ impl<'v> Copies<'v> {
     /// above it (`[T, 01, F]`, `[T, 01]`, `[T]`, the root). An index's
     /// counts (`10`, `11`) are no index.
     fn check_whole_index(&self, path: &[&[u8]]) -> Result<(), ReadError> {
-        // A table's key: a serial key from `80 01` (129) on, below the
-        // table occurrences' ids (schema-path.md 5.2, 5.3).
-        let table =
-            |t: &[u8]| om_hbam::serial::decode(t).is_some_and(|id| (0x80..0x10_4080).contains(&id));
         // The value and word indexes `00` and `01`, not their counts.
         let holds_one = match path {
             [] => true,
-            [t] | [t, [1]] | [t, [1], _] | [t, [1], _, [0 | 1]] => table(t),
+            [t] | [t, [1]] | [t, [1], _] | [t, [1], _, [0 | 1]] => is_table(t),
             _ => false,
         };
         if self.whole_indexes_refused && holds_one {
             return Err(ReadError::Unreadable {
                 path: owned_path(path),
                 why: "the test view refuses a find an index read whole".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a page of a field index's entries each with its records, for
+    /// a find: a find lists an index's keys ([`View::children_page`]) and
+    /// reads an entry's records by its key only for an entry it takes.
+    fn check_listed_index(&self, path: &[&[u8]]) -> Result<(), ReadError> {
+        if self.whole_indexes_refused && matches!(path, [t, [1], _, [0 | 1]] if is_table(t)) {
+            return Err(ReadError::Unreadable {
+                path: owned_path(path),
+                why: "the test view refuses a find an index's entries listed with their records"
+                    .into(),
             });
         }
         Ok(())
@@ -136,6 +146,12 @@ impl<'v> Copies<'v> {
         }
         Ok(())
     }
+}
+
+/// Whether `key` is a table's key: a serial key from `80 01` (129) on,
+/// below the table occurrences' ids (schema-path.md 5.2, 5.3).
+fn is_table(key: &[u8]) -> bool {
+    om_hbam::serial::decode(key).is_some_and(|id| (0x80..0x10_4080).contains(&id))
 }
 
 fn unreadable(path: &[Vec<u8>]) -> ReadError {
@@ -213,6 +229,7 @@ impl View for Copies<'_> {
         out: &mut Vec<Cow<'a, OwnedNode>>,
     ) -> Result<bool, ReadError> {
         self.check(path)?;
+        self.check_listed_index(path)?;
         let mut page = Vec::new();
         let more =
             self.inner
@@ -760,21 +777,35 @@ mod tests {
         let finds = Copies::new(&tree, &[]).for_finds();
         // An index's counts are no index.
         assert!(finds.subtree(&counts, NO_LIMIT).unwrap().is_some());
-        // A find reads an entry, and lists the index a page at a time.
+        // A find reads an entry, and lists the index's keys a page at a
+        // time, but not its entries with their records.
         let entry: Vec<&[u8]> = index.iter().copied().chain([&[2u8][..]]).collect();
         assert!(finds.subtree(&entry, NO_LIMIT).unwrap().is_some());
-        let mut page = Vec::new();
+        let mut keys = Vec::new();
         finds
+            .children_page(&index, Bound::Unbounded, Direction::Forward, 10, &mut keys)
+            .unwrap();
+        assert_eq!(keys.len(), 3);
+        let mut page = Vec::new();
+        let listed = finds.subtrees_page(
+            &index,
+            Bound::Unbounded,
+            Direction::Forward,
+            10,
+            NO_LIMIT,
+            &mut page,
+        );
+        assert!(listed.is_err());
+        assert!(plain
             .subtrees_page(
                 &index,
                 Bound::Unbounded,
                 Direction::Forward,
                 10,
                 NO_LIMIT,
-                &mut page,
+                &mut page
             )
-            .unwrap();
-        assert_eq!(page.len(), 3);
+            .is_ok());
         // The index whole, or anything above it, is refused; other readers
         // read it as before.
         for depth in 0..=4 {

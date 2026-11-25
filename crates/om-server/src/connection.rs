@@ -2972,10 +2972,12 @@ pub(crate) fn listed_record_ids(
     Ok(ids)
 }
 
-/// A node's children listed through a view a page at a time, each with
-/// its subtree ([`crate::engine::View::subtrees_page`]), as a find reads a
-/// field's index: an entry at a time from a bound, never the index whole
-/// (`om_query::Listing`; docs/server-storage.md 5, "Views").
+/// A node's children listed through a view a page of heads at a time
+/// ([`crate::engine::View::children_page`]), each child read with its
+/// subtree only by its key, as a find reads a field's index: the keys from
+/// a bound, an entry's records only when an instruction takes them, never
+/// the index whole (`om_query::Listing`; docs/server-storage.md 5,
+/// "Views").
 pub(crate) struct ViewListing<'v> {
     view: &'v dyn crate::engine::View,
     path: Vec<Vec<u8>>,
@@ -2998,21 +3000,30 @@ impl<'v> ViewListing<'v> {
 }
 
 impl om_query::Listing for ViewListing<'_> {
-    fn page<'a>(
+    fn keys<'a>(
         &'a self,
         from: std::ops::Bound<&[u8]>,
         direction: om_query::Direction,
         max: usize,
-        out: &mut Vec<Cow<'a, OwnedNode>>,
+        out: &mut Vec<Cow<'a, [u8]>>,
     ) -> om_hbam::Result<bool> {
         let path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
         let direction = match direction {
             om_query::Direction::Forward => Direction::Forward,
             om_query::Direction::Backward => Direction::Backward,
         };
-        Ok(self
+        let mut page = Vec::new();
+        let more = self
             .view
-            .subtrees_page(&path, from, direction, max, NO_LIMIT, out)?)
+            .children_page(&path, from, direction, max, &mut page)?;
+        out.extend(page.into_iter().map(|child| child.segment));
+        Ok(more)
+    }
+
+    fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        let mut path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
+        path.push(key);
+        Ok(self.view.subtree(&path, NO_LIMIT)?)
     }
 }
 
@@ -3041,6 +3052,22 @@ struct QuerySource<'s> {
     failed: std::cell::RefCell<Option<ViewError>>,
 }
 
+impl QuerySource<'_> {
+    /// Whether what the source answers at `path`, or below it, may differ
+    /// from what the view holds there: a credential path a restricted
+    /// account reads, its own account's member, or a path the view limits
+    /// filter ([`crate::views::ViewFilter::filters`]).
+    fn filtered(&self, path: &[&[u8]]) -> bool {
+        let segments = || path.iter().copied();
+        (self.restricted
+            && (credential_path(segments())
+                || self
+                    .account_key
+                    .is_some_and(|key| account_member_path(segments(), key))))
+            || self.view.as_ref().is_some_and(|view| view.filters(path))
+    }
+}
+
 impl om_query::Source for QuerySource<'_> {
     fn catalog(&self) -> om_hbam::Result<om_hbam::Catalog> {
         Ok(self.read.derived.catalog().clone())
@@ -3051,6 +3078,11 @@ impl om_query::Source for QuerySource<'_> {
             .account_key
             .is_some_and(|key| self.restricted && account_member_path(path.iter().copied(), key));
         if self.restricted && credential_path(path.iter().copied()) && !own {
+            return Ok(None);
+        }
+        // What the view limits hide is not read at all: a view-limited
+        // table's index is absent, not read whole and then dropped.
+        if self.view.as_ref().is_some_and(|view| view.withholds(path)) {
             return Ok(None);
         }
         let node = self.read.view.subtree(path, NO_LIMIT)?;
@@ -3072,19 +3104,26 @@ impl om_query::Source for QuerySource<'_> {
         })
     }
 
+    /// The node alone, read through the view, when nothing the source
+    /// filters reaches it; [`om_query::Source::node`]'s otherwise (which
+    /// reads nothing where the view limits hide the node).
+    fn head(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Head>> {
+        if self.filtered(path) {
+            return Ok(self.node(path)?.map(|node| om_query::Head::of(&node)));
+        }
+        Ok(self.read.view.node(path)?.map(|head| om_query::Head {
+            list: head.list,
+            value: head.value.map(Cow::into_owned),
+        }))
+    }
+
     /// A node's children listed through the view a page at a time
     /// ([`ViewListing`]: a field's index, which a find reads an entry at a
     /// time), when nothing the source filters reaches the node; through
-    /// [`om_query::Source::node`], whole, otherwise.
+    /// [`om_query::Source::node`], whole, otherwise (and not read where the
+    /// view limits hide it: a view-limited table's index is absent).
     fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Children<'_>>> {
-        let segments = || path.iter().copied();
-        let filtered = (self.restricted
-            && (credential_path(segments())
-                || self
-                    .account_key
-                    .is_some_and(|key| account_member_path(segments(), key))))
-            || self.view.as_ref().is_some_and(|view| view.filters(path));
-        if filtered {
+        if self.filtered(path) {
             return Ok(self.node(path)?.map(om_query::Children::Whole));
         }
         ViewListing::of(self.read.view, path)

@@ -146,6 +146,113 @@ fn a_failed_read_reaches_the_client_as_an_error() {
     session.disconnect().unwrap();
 }
 
+/// Finds of Tasks::Name `==Ship` (its value index) on a session's
+/// connection: the program.
+fn ship_finder(file_id: u32) -> Vec<u8> {
+    let finders: Vec<Vec<u8>> = find::finders(
+        fixture::TABLE,
+        fixture::NAME,
+        DataType::Text,
+        "==Ship",
+        DateOrder::MonthDayYear,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|finder| finder.bytes)
+    .collect();
+    find::program(file_id, fixture::TABLE, &finders, None)
+}
+
+/// A find by an account whose set may view no record of Tasks reads Name's
+/// index as absent without reading it: under the test view, which refuses
+/// a find an index read whole (`Server::checking_reads`), it answers as the
+/// file engine does, no records, where the index read whole and then
+/// dropped by the view limits failed the comparison.
+#[test]
+fn a_find_on_a_table_the_account_may_not_view_reads_no_index() {
+    use om_hbam::slot::uint_segment;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_custom_clerk(&mut root);
+    // Temp's set: no Tasks record created, viewed, edited or deleted.
+    let tasks = uint_segment(fixture::TABLE);
+    root.put(
+        &[&[23], &[2], &[5], &[4], &[5], &tasks, &[2]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![0x00, 0x03]),
+    );
+    let file = fixture::TempFile::from_tree("hidden-index", &root);
+    let port = server::start_configured(&file, |server| server.admitting_custom_sets());
+    // Admin's find builds and stores Name's index.
+    let (mut admin, admin_file) = server::logged_in(port, "admin");
+    let reply = admin.query(&ship_finder(admin_file)).unwrap();
+    assert_eq!(
+        find::found(&reply.slots)
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    let (mut temp, temp_file) = server::logged_in_as(
+        port,
+        "temp",
+        fixture::FILE,
+        fixture::TEMP,
+        fixture::TEMP_PASSWORD,
+    );
+    for _ in 0..2 {
+        let reply = temp.query(&ship_finder(temp_file)).unwrap();
+        assert!(find::found(&reply.slots).unwrap().is_empty());
+    }
+    temp.disconnect().unwrap();
+    admin.disconnect().unwrap();
+}
+
+/// NodeExists and GetKey of Name's value index read the node alone, not
+/// the index under it: under the test view, which refuses a find an index
+/// read whole (`Server::checking_reads`), they answer as the file engine
+/// does (the index exists; it is a node, so GetKey gives no value).
+#[test]
+fn node_exists_on_an_index_reads_its_node_alone() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::OwnedNode;
+    use om_query::program::{leaf, opcode};
+    let file = fixture::TempFile::new("index-node", &[], true);
+    let port = server::start(&file);
+    let (mut session, file_id) = server::logged_in(port, "index-node");
+    let reply = session.query(&ship_finder(file_id)).unwrap();
+    assert_eq!(
+        find::found(&reply.slots)
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let index: [&[u8]; 4] = [&table, &[1], &name, &[0]];
+    let path: Vec<u8> = index
+        .iter()
+        .flat_map(|segment| std::iter::once(segment.len() as u8).chain(segment.iter().copied()))
+        .collect();
+    let answer = |session: &mut om_session::Session, op: u8| {
+        let mut query = OwnedNode::list(Vec::new(), Vec::new());
+        for (key, value) in [
+            (leaf::OPCODE, vec![op]),
+            (leaf::SRC, path.clone()),
+            (leaf::DEST, vec![1, 3, 1, 1]),
+            (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+        ] {
+            query.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+        }
+        let slots = session.query(&query.to_wire().unwrap()).unwrap().slots;
+        let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&slots)).unwrap();
+        tree.node(&[&[1], &[0]])
+            .and_then(|node| node.value.map(<[u8]>::to_vec))
+    };
+    assert_eq!(answer(&mut session, opcode::NODE_EXISTS), Some(vec![1, 1]));
+    assert_eq!(answer(&mut session, opcode::GET_KEY), None);
+    session.disconnect().unwrap();
+}
+
 /// Two finds of Tasks::Name `ship` (read from the word index) and Count
 /// `5` (the value index) in a row, each checking both indexes first
 /// (`find::checked_find_program`): which existed, and what the find found.

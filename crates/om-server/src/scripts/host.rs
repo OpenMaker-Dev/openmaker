@@ -972,6 +972,16 @@ impl om_query::Source for FindSource<'_> {
         Ok(crate::engine::View::subtree(&self.view, path, NO_LIMIT)?)
     }
 
+    /// The node alone, read through the view.
+    fn head(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Head>> {
+        Ok(
+            crate::engine::View::node(&self.view, path)?.map(|head| om_query::Head {
+                list: head.list,
+                value: head.value.map(Cow::into_owned),
+            }),
+        )
+    }
+
     /// Listed through the view a page at a time (a field's index, which a
     /// find reads an entry at a time).
     fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Children<'_>>> {

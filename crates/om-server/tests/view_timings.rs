@@ -453,9 +453,11 @@ fn process_mb(pid: u32, name: &str) -> f64 {
 ///
 /// The steps: `generate`, a file of `OM_TIMING_RECORDS` records as
 /// `export_measurement` writes it, with the table's record list (which that
-/// file leaves as the fixture's two records) listing every record; `index`, the file hosted by the file engine and found on
-/// Name, which builds Name's value index and stores it in the file, as a
-/// file with indexes is served; `serve`, the file hosted by the engine
+/// file leaves as the fixture's two records) listing every record, and
+/// Creator holding [`COMMON_CREATOR`] in nine records of ten; `index`, the
+/// file hosted by the file engine and found on Name and on Creator, which
+/// builds their value indexes and stores them in the file, as a file with
+/// indexes is served; `serve`, the file hosted by the engine
 /// `OM_TIMING_ENGINE` (`file` or `store`, its folder `OM_TIMING_STORE`; the
 /// state folder `OM_TIMING_STATE`), the file's folder made read-only first
 /// so that the file engine's save of an index built on demand fails at once
@@ -465,7 +467,10 @@ fn process_mb(pid: u32, name: &str) -> f64 {
 /// stored index (median of 5), a find on Code whose index is built on
 /// demand (the first, then once more), a sort of every record by Name, and
 /// a download of the table's records `[T, 05]` in pages (op90), and the
-/// process's peak resident memory and its resident memory after them.
+/// process's peak resident memory and its resident memory after them; then
+/// an ExistsInIndex of [`BULK_KEYS`] keys no record holds, each just below
+/// the key most records hold, with the peak resident memory during it alone.
+/// `OM_TIMING_SERVER` names another `om-server` binary to measure.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "a measurement for release builds; set OM_TIMING_FILE and OM_TIMING_STEP"]
@@ -487,7 +492,10 @@ fn engines() {
         let list = (1..=count)
             .map(|id| {
                 let cells = (1..=8)
-                    .map(|f| text_node(&uint_segment(f), &generated_text(id, f)))
+                    .map(|f| match f == fixture::CREATOR && id % 10 != 0 {
+                        true => text_node(&uint_segment(f), COMMON_CREATOR),
+                        false => text_node(&uint_segment(f), &generated_text(id, f)),
+                    })
                     .collect();
                 OwnedNode::list(serial::encode(id), cells)
             })
@@ -534,7 +542,10 @@ fn engines() {
     if step == "serve" {
         read_only(true);
     }
-    let mut command = Command::new(env!("CARGO_BIN_EXE_om-server"));
+    let binary = std::env::var_os("OM_TIMING_SERVER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_om-server")));
+    let mut command = Command::new(binary);
     command
         .args(["--bind", &format!("127.0.0.1:{port}"), "--engine", &engine])
         .arg("--state-dir")
@@ -594,6 +605,14 @@ fn engines() {
         assert_eq!(records(&session.query(&by_name).unwrap()), 1);
         println!(
             "Name's index built, stored and saved in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
+        let creator = format!("=={}", generated_text(10, fixture::CREATOR));
+        let by_creator = finder_program(file_id, fixture::CREATOR, DataType::Text, &creator);
+        let started = Instant::now();
+        assert_eq!(records(&session.query(&by_creator).unwrap()), 1);
+        println!(
+            "Creator's index built, stored and saved in {:.1} s",
             started.elapsed().as_secs_f64()
         );
         session.disconnect().unwrap();
@@ -677,7 +696,84 @@ fn engines() {
         process_mb(pid, "VmRSS:"),
         process_mb(pid, "VmHWM:")
     );
+    // ExistsInIndex of keys no record holds, each just below the key of the
+    // value most records hold, so that each lookup misses next to its entry
+    // (the value's key is checked first: a hit, its records read once).
+    let common = om_collate::text_key(COMMON_CREATOR);
+    let exists = |session: &mut om_session::Session, keys: &[Vec<u8>]| {
+        let reply = session
+            .query(&exists_program(file_id, fixture::CREATOR, keys))
+            .unwrap();
+        let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&reply.slots)).unwrap();
+        match tree.node(&[&[1], &[0]]).and_then(|node| node.value) {
+            Some([1, 1]) => true,
+            Some([1, 0]) => false,
+            other => panic!("ExistsInIndex answered {other:02x?}"),
+        }
+    };
+    assert!(exists(&mut session, std::slice::from_ref(&common)));
+    let last = common.iter().rposition(|&b| b > 0).unwrap();
+    let missing: Vec<Vec<u8>> = (0..BULK_KEYS)
+        .map(|i| {
+            let mut key = common[..=last].to_vec();
+            key[last] -= 1;
+            key.extend(i.to_be_bytes());
+            key
+        })
+        .collect();
+    // The peak from here on alone (proc(5), clear_refs).
+    std::fs::write(format!("/proc/{pid}/clear_refs"), "5").unwrap();
+    let resident = process_mb(pid, "VmRSS:");
+    let times = (0..3)
+        .map(|_| timed(&mut || assert!(!exists(&mut session, &missing))))
+        .collect();
+    report(
+        &format!("ExistsInIndex of {BULK_KEYS} missing keys below the common Creator"),
+        times,
+    );
+    println!(
+        "{engine} engine: resident {resident:.0} MB before it, peak during it {:.0} MB",
+        process_mb(pid, "VmHWM:")
+    );
     session.disconnect().unwrap();
     drop(server);
     read_only(false);
+}
+
+/// What Creator (field 6) holds in nine records of ten of a file `engines`
+/// generates (the others hold their own text): one value whose index entry
+/// lists most of the table's records.
+const COMMON_CREATOR: &str = "Admin";
+
+/// How many keys `engines`' ExistsInIndex looks up.
+const BULK_KEYS: u32 = 10_000;
+
+/// ExistsInIndex (op 18, query-program.md 8.4) of `keys` in the value index
+/// of `field` of Tasks, its answer at `[3, 1]`.
+fn exists_program(file_id: u32, field: u64, keys: &[Vec<u8>]) -> Vec<u8> {
+    use om_query::program::{leaf, opcode};
+    let mut leaves = vec![
+        OwnedNode::leaf(vec![leaf::OPCODE], vec![opcode::EXISTS_IN_INDEX]),
+        OwnedNode::leaf(vec![leaf::FILE_ID], file_id.to_be_bytes().to_vec()),
+        OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+        OwnedNode::leaf(vec![leaf::FIELD_KEY], vec![1, field as u8]),
+        OwnedNode::leaf(vec![leaf::TABLE], vec![2, 0x80, 0x01]),
+        OwnedNode::leaf(vec![leaf::DEST], vec![1, 3, 1, 1]),
+    ];
+    leaves.sort_by(|a, b| a.segment.cmp(&b.segment));
+    let mut keys: Vec<OwnedNode> = keys
+        .iter()
+        .map(|key| OwnedNode::leaf(key.clone(), Vec::new()))
+        .collect();
+    keys.sort_by(|a, b| a.segment.cmp(&b.segment));
+    keys.dedup_by(|a, b| a.segment == b.segment);
+    OwnedNode::list(
+        Vec::new(),
+        vec![
+            OwnedNode::list(vec![1], vec![OwnedNode::list(serial::encode(1), leaves)]),
+            OwnedNode::list(vec![2], vec![OwnedNode::list(vec![1], keys)]),
+        ],
+    )
+    .to_wire()
+    .unwrap()
 }

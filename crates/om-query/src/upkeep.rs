@@ -6,21 +6,25 @@
 //! - a commit's moves of a record read and change only the entries under
 //!   the keys its old and new values give ([`entries_at`]), and whether the
 //!   index holds more entries than the record leaves, which a move that may
-//!   empty the index needs ([`holds_more_than`]);
+//!   empty the index needs ([`holds_more_than`]: keys only, no more than
+//!   decide it);
 //! - the check that an index holds the keys the current rules give every
 //!   record compares the index with one built from the records, in one pass
-//!   that stops at the first difference ([`holds_exactly`]);
+//!   that stops at the first difference, an entry's records read only when
+//!   its key agrees ([`holds_exactly`]);
 //! - a sweep reads every entry once, in key order ([`entries`]).
 //!
 //! Which fields of a table have which indexes is read from the heads of
 //! `[T, 01, F]`'s children, not from a listing of entries, and the index
 //! node's own value from its head.
 //!
-//! A listing is read a page at a time, each page from just past the last
-//! key it gave, its pages growing to [`PAGE`]. A key out of the listing's
-//! order (or outside where its page was asked from) is an error
-//! ([`om_hbam::Error::KeyOrder`]), so a broken source can neither repeat an
-//! entry nor make a read loop.
+//! A listing's keys are read a page at a time, each page from just past the
+//! last key it gave, its pages growing to [`PAGE`], and an entry with what
+//! is below it only by its key. A key out of the listing's order (or
+//! outside where its page was asked from) is an error
+//! ([`om_hbam::Error::KeyOrder`]), and so is a page with no key that says
+//! more follow, so a broken source can neither repeat an entry, nor make a
+//! read loop, nor end one early unnoticed.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
@@ -28,111 +32,147 @@ use std::ops::Bound;
 
 use om_hbam::{OwnedNode, RidList};
 
-use crate::source::{Direction, Listing};
+use crate::source::{broken, out_of_order, Direction, Listing};
 
-/// The most entries a page asks for, after a first one of [`FIRST_PAGE`].
+/// The most keys a page asks for, after a first one of [`FIRST_PAGE`].
 pub const PAGE: usize = 256;
 const FIRST_PAGE: usize = 8;
 
-fn out_of_order() -> om_hbam::Error {
-    om_hbam::Error::KeyOrder {
-        path: "an index's listing".into(),
-    }
+/// Every key of `listing` from `from` on in `direction`, read a page at a
+/// time ([`Listing::keys`]), nothing below them.
+pub fn keys<'a>(listing: &'a dyn Listing, from: Bound<&[u8]>, direction: Direction) -> Keys<'a> {
+    Keys::new(listing, from, direction, usize::MAX)
 }
 
-/// Every entry of `listing` from `from` on in `direction`, each with what
-/// is below it, read a page at a time ([`Listing`]).
-pub fn entries<'a>(
-    listing: &'a dyn Listing,
-    from: Bound<&[u8]>,
-    direction: Direction,
-) -> Entries<'a> {
-    Entries {
-        listing,
-        direction,
-        from: from.map(<[u8]>::to_vec),
-        page: VecDeque::new(),
-        more: true,
-        size: FIRST_PAGE,
-        last: None,
-        failed: false,
-    }
-}
-
-/// The entries of a listing ([`entries`]).
-pub struct Entries<'a> {
+/// The keys of a listing ([`keys`]).
+pub struct Keys<'a> {
     listing: &'a dyn Listing,
     direction: Direction,
     /// Where the next page starts.
     from: Bound<Vec<u8>>,
-    page: VecDeque<Cow<'a, OwnedNode>>,
+    page: VecDeque<Cow<'a, [u8]>>,
     more: bool,
     size: usize,
     last: Option<Vec<u8>>,
     failed: bool,
+    /// How many more keys the reader takes at most: no page asks for more.
+    wanted: usize,
 }
 
-impl<'a> Iterator for Entries<'a> {
-    type Item = om_hbam::Result<Cow<'a, OwnedNode>>;
+impl<'a> Keys<'a> {
+    fn new(
+        listing: &'a dyn Listing,
+        from: Bound<&[u8]>,
+        direction: Direction,
+        wanted: usize,
+    ) -> Self {
+        Self {
+            listing,
+            direction,
+            from: from.map(<[u8]>::to_vec),
+            page: VecDeque::new(),
+            more: true,
+            size: FIRST_PAGE,
+            last: None,
+            failed: false,
+            wanted,
+        }
+    }
+
+    fn fail(&mut self, error: om_hbam::Error) -> Option<om_hbam::Result<Cow<'a, [u8]>>> {
+        self.failed = true;
+        Some(Err(error))
+    }
+}
+
+impl<'a> Iterator for Keys<'a> {
+    type Item = om_hbam::Result<Cow<'a, [u8]>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.failed {
+        if self.failed || self.wanted == 0 {
             return None;
         }
         if self.page.is_empty() {
             if !self.more {
                 return None;
             }
+            if let Some(last) = &self.last {
+                self.from = Bound::Excluded(last.clone());
+            }
             let mut out = Vec::new();
             let from = self.from.as_ref().map(Vec::as_slice);
-            match self.listing.page(from, self.direction, self.size, &mut out) {
+            let max = self.size.min(self.wanted);
+            match self.listing.keys(from, self.direction, max, &mut out) {
                 Ok(more) => self.more = more,
-                Err(e) => {
-                    self.failed = true;
-                    return Some(Err(e));
-                }
+                Err(e) => return self.fail(e),
             }
             if out.is_empty() {
-                self.more = false;
-                return None;
+                return match self.more {
+                    true => self.fail(broken("a page with no key said more follow")),
+                    false => None,
+                };
             }
             self.size = (self.size * 2).min(PAGE);
             self.page.extend(out);
         }
-        let node = self.page.pop_front()?;
-        let key = node.segment.as_slice();
+        let key = self.page.pop_front()?;
         let start = self.from.as_ref().map(Vec::as_slice);
         let in_order = match self.direction {
             Direction::Forward => {
                 (match start {
-                    Bound::Included(b) => key >= b,
-                    Bound::Excluded(b) => key > b,
+                    Bound::Included(b) => *key >= *b,
+                    Bound::Excluded(b) => *key > *b,
                     Bound::Unbounded => true,
-                }) && self.last.as_deref().is_none_or(|l| key > l)
+                }) && self.last.as_deref().is_none_or(|l| *key > *l)
             }
             Direction::Backward => {
                 (match start {
-                    Bound::Included(b) => key <= b,
-                    Bound::Excluded(b) => key < b,
+                    Bound::Included(b) => *key <= *b,
+                    Bound::Excluded(b) => *key < *b,
                     Bound::Unbounded => true,
-                }) && self.last.as_deref().is_none_or(|l| key < l)
+                }) && self.last.as_deref().is_none_or(|l| *key < *l)
             }
         };
         if !in_order {
-            self.failed = true;
-            return Some(Err(out_of_order()));
+            return self.fail(out_of_order());
         }
         self.last = Some(key.to_vec());
-        if self.page.is_empty() {
-            self.from = Bound::Excluded(key.to_vec());
-        }
-        Some(Ok(node))
+        self.wanted -= 1;
+        Some(Ok(key))
     }
 }
 
+/// The entry under `key`, which `listing` listed: one it then does not
+/// hold is an error (the source broke).
+fn listed_entry<'a>(listing: &'a dyn Listing, key: &[u8]) -> om_hbam::Result<Cow<'a, OwnedNode>> {
+    listing
+        .entry(key)?
+        .filter(|node| node.segment == key)
+        .ok_or_else(|| broken("a key it listed has no entry"))
+}
+
+/// Every entry of `listing` from `from` on in `direction`, each with what
+/// is below it: its keys a page at a time, and each entry by its key.
+pub fn entries<'a>(
+    listing: &'a dyn Listing,
+    from: Bound<&[u8]>,
+    direction: Direction,
+) -> impl Iterator<Item = om_hbam::Result<Cow<'a, OwnedNode>>> + 'a {
+    let mut keys = keys(listing, from, direction);
+    let mut failed = false;
+    std::iter::from_fn(move || {
+        if failed {
+            return None;
+        }
+        let entry = keys.next()?.and_then(|key| listed_entry(listing, &key));
+        failed = entry.is_err();
+        Some(entry)
+    })
+}
+
 /// The entry under each of `keys` (`None` where the index has none), each
-/// looked up by key: what a commit's move of a record reads, changes and
-/// keeps in its journal, for the keys of the record's old and new values.
+/// read by key: what a commit's move of a record reads, changes and keeps
+/// in its journal, for the keys of the record's old and new values.
 pub fn entries_at<'a, 'k>(
     listing: &'a dyn Listing,
     keys: impl IntoIterator<Item = &'k [u8]>,
@@ -142,51 +182,52 @@ pub fn entries_at<'a, 'k>(
         if out.contains_key(key) {
             continue;
         }
-        let mut page = Vec::with_capacity(1);
-        listing.page(Bound::Included(key), Direction::Forward, 1, &mut page)?;
-        let entry = match page.into_iter().next() {
-            Some(node) if node.segment.as_slice() < key => return Err(out_of_order()),
-            Some(node) if node.segment == key => Some(node),
-            _ => None,
+        let entry = match listing.entry(key)? {
+            Some(node) if node.segment != key => return Err(broken("an entry under another key")),
+            entry => entry,
         };
         out.insert(key.to_vec(), entry);
     }
     Ok(out)
 }
 
-/// Whether the index holds more than `n` entries, reading at most `n + 1`:
-/// whether a move that takes a record out of `n` keys could leave it
-/// empty.
+/// Whether the index holds more than `n` entries, reading at most `n + 1`
+/// keys and nothing below them, in pages no larger than the keys still
+/// wanted: whether a move that takes a record out of `n` keys could leave
+/// it empty.
 pub fn holds_more_than(listing: &dyn Listing, n: usize) -> om_hbam::Result<bool> {
+    let wanted = n.saturating_add(1);
     let mut seen = 0;
-    for entry in entries(listing, Bound::Unbounded, Direction::Forward) {
-        entry?;
+    for key in Keys::new(listing, Bound::Unbounded, Direction::Forward, wanted) {
+        key?;
         seen += 1;
-        if seen > n {
-            return Ok(true);
-        }
     }
-    Ok(false)
+    Ok(seen == wanted)
 }
 
 /// Whether the index holds exactly `built`: the same keys, and under each
 /// a record list `plain` reads (an entry it cannot read is a difference)
 /// equal to the built one. Read in one pass in key order beside `built`,
-/// stopping at the first difference, so that an index that disagrees costs
-/// only what is read up to it. The index node's own value, which a check
-/// also refuses, is its head's.
+/// stopping at the first difference, an entry read only when its key is
+/// the one `built` has there, so that an index that disagrees costs only
+/// what is read up to it. The index node's own value, which a check also
+/// refuses, is its head's.
 pub fn holds_exactly(
     listing: &dyn Listing,
     built: &BTreeMap<Vec<u8>, RidList>,
     plain: impl Fn(&OwnedNode) -> Option<RidList>,
 ) -> om_hbam::Result<bool> {
     let mut wanted = built.iter();
-    for entry in entries(listing, Bound::Unbounded, Direction::Forward) {
-        let entry = entry?;
-        let Some((key, ids)) = wanted.next() else {
+    for key in keys(listing, Bound::Unbounded, Direction::Forward) {
+        let key = key?;
+        let Some((want, ids)) = wanted.next() else {
             return Ok(false);
         };
-        if entry.segment != *key || plain(&entry).as_ref() != Some(ids) {
+        if *key != **want {
+            return Ok(false);
+        }
+        let entry = listed_entry(listing, &key)?;
+        if plain(&entry).as_ref() != Some(ids) {
             return Ok(false);
         }
     }
@@ -196,7 +237,7 @@ pub fn holds_exactly(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::NodeListing;
+    use crate::source::{node_entry, node_keys, NodeListing};
 
     fn entry(key: &[u8], ids: &[u64]) -> OwnedNode {
         ids.iter()
@@ -209,27 +250,71 @@ mod tests {
         OwnedNode::list(vec![0], keys.iter().map(|(k, ids)| entry(k, ids)).collect())
     }
 
-    /// A listing that gives its pages in the wrong order, or the same page
-    /// again: every read of it stops with an error.
+    /// A listing that breaks its contract in one way: its keys in the wrong
+    /// order, the same keys on every page, or a first page of two keys and
+    /// then pages with no key that say more follow.
+    #[derive(Clone, Copy, Debug)]
+    enum Breaks {
+        Reversed,
+        Repeated,
+        Stalled,
+    }
+
     struct Broken {
         node: OwnedNode,
-        repeat: bool,
+        breaks: Breaks,
     }
 
     impl Listing for Broken {
-        fn page<'a>(
+        fn keys<'a>(
             &'a self,
-            _from: Bound<&[u8]>,
+            from: Bound<&[u8]>,
             _direction: Direction,
             max: usize,
-            out: &mut Vec<Cow<'a, OwnedNode>>,
+            out: &mut Vec<Cow<'a, [u8]>>,
         ) -> om_hbam::Result<bool> {
-            let children = self.node.children.iter().take(max.max(2));
-            match self.repeat {
-                true => out.extend(children.map(Cow::Borrowed)),
-                false => out.extend(children.rev().map(Cow::Borrowed)),
+            let keys = self
+                .node
+                .children
+                .iter()
+                .map(|c| Cow::Borrowed(c.segment.as_slice()));
+            match self.breaks {
+                Breaks::Reversed => out.extend(keys.rev().take(max.max(2))),
+                Breaks::Repeated => out.extend(keys.take(max.max(2))),
+                Breaks::Stalled if from == Bound::Unbounded => out.extend(keys.take(2)),
+                Breaks::Stalled => {}
             }
             Ok(true)
+        }
+
+        fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+            Ok(node_entry(&self.node, key))
+        }
+    }
+
+    /// A listing that notes how many keys each page asks for, and counts
+    /// the entries read below its keys.
+    struct Noted<'n> {
+        node: &'n OwnedNode,
+        asked: std::cell::RefCell<Vec<usize>>,
+        entries: std::cell::Cell<usize>,
+    }
+
+    impl Listing for Noted<'_> {
+        fn keys<'a>(
+            &'a self,
+            from: Bound<&[u8]>,
+            direction: Direction,
+            max: usize,
+            out: &mut Vec<Cow<'a, [u8]>>,
+        ) -> om_hbam::Result<bool> {
+            self.asked.borrow_mut().push(max);
+            Ok(node_keys(self.node, from, direction, max, out))
+        }
+
+        fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+            self.entries.set(self.entries.get() + 1);
+            Ok(node_entry(self.node, key))
         }
     }
 
@@ -355,17 +440,89 @@ mod tests {
             .collect();
         assert_eq!(backward, [vec![1, 9], vec![1, 5], vec![1]]);
 
-        for repeat in [false, true] {
+        for breaks in [Breaks::Reversed, Breaks::Repeated, Breaks::Stalled] {
             let broken = Broken {
                 node: held.clone(),
-                repeat,
+                breaks,
             };
             // At most the four entries once, then the error; a check never
             // finds that a broken listing agrees.
             let read: Vec<_> = entries(&broken, Bound::Unbounded, Direction::Forward).collect();
-            assert!(read.len() <= 5, "{repeat}: {}", read.len());
-            assert!(read.last().unwrap().is_err(), "{repeat}");
-            assert!(!matches!(holds_exactly(&broken, &built, plain), Ok(true)));
+            assert!(read.len() <= 5, "{breaks:?}: {}", read.len());
+            assert!(read.last().unwrap().is_err(), "{breaks:?}");
+            let check = holds_exactly(&broken, &built, plain);
+            assert!(!matches!(check, Ok(true)), "{breaks:?}");
+        }
+        // A first page that holds every key the built index holds, then a
+        // page with no key that says more follow: the index may hold more,
+        // so the check fails rather than agree.
+        let stalled = Broken {
+            node: held.clone(),
+            breaks: Breaks::Stalled,
+        };
+        let first_two: BTreeMap<Vec<u8>, RidList> = built.into_iter().take(2).collect();
+        assert!(holds_exactly(&stalled, &first_two, plain).is_err());
+        assert!(holds_more_than(&stalled, 2).is_err());
+        assert!(holds_more_than(&stalled, 1).unwrap());
+        // An entry under another key than the one asked for.
+        struct Elsewhere(OwnedNode);
+        impl Listing for Elsewhere {
+            fn keys<'a>(
+                &'a self,
+                from: Bound<&[u8]>,
+                direction: Direction,
+                max: usize,
+                out: &mut Vec<Cow<'a, [u8]>>,
+            ) -> om_hbam::Result<bool> {
+                Ok(node_keys(&self.0, from, direction, max, out))
+            }
+
+            fn entry<'a>(&'a self, _key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+                Ok(self.0.children.first().map(Cow::Borrowed))
+            }
+        }
+        let elsewhere = Elsewhere(held);
+        assert!(entries_at(&elsewhere, [&[2][..]]).is_err());
+        assert!(
+            entries(&elsewhere, Bound::Excluded(&[1]), Direction::Forward)
+                .next()
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    /// Whether the index holds more than `n` entries reads `n + 1` keys at
+    /// most, in pages no larger than the keys still wanted, and no entry
+    /// below them.
+    #[test]
+    fn the_count_reads_no_more_keys_than_decide_it() {
+        let held = OwnedNode::list(
+            vec![0],
+            (0..600u16)
+                .map(|n| entry(&n.to_be_bytes(), &[1 + u64::from(n)]))
+                .collect(),
+        );
+        for (n, more) in [
+            (0, true),
+            (1, true),
+            (9, true),
+            (300, true),
+            (599, true),
+            (600, false),
+        ] {
+            let noted = Noted {
+                node: &held,
+                asked: Default::default(),
+                entries: Default::default(),
+            };
+            assert_eq!(holds_more_than(&noted, n).unwrap(), more, "{n}");
+            let asked = noted.asked.into_inner();
+            let mut wanted = n + 1;
+            for &max in &asked {
+                assert!(max <= wanted && max <= PAGE, "{n}: asked {asked:?}");
+                wanted -= max.min(wanted);
+            }
+            assert_eq!(noted.entries.get(), 0, "{n}");
         }
     }
 }

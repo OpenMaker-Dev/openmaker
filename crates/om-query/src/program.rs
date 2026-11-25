@@ -102,6 +102,12 @@ impl Work {
         }
     }
 
+    /// What has been counted so far.
+    #[cfg(test)]
+    pub(crate) fn done(&self) -> Size {
+        self.done.get()
+    }
+
     /// Count `size`, or refuse it when it would pass the limit.
     pub(crate) fn spend(&self, size: Size) -> Result<(), QueryError> {
         let done = self.done.get().plus(size);
