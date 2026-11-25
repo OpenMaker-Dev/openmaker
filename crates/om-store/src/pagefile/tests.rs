@@ -2714,17 +2714,30 @@ fn a_checkpoint_being_written_takes_no_unit_of_its_entry() {
             s = cv.wait(s).unwrap();
         }
         drop(s);
+        let release = || {
+            let mut s = state.lock().unwrap();
+            s.2 = true;
+            cv.notify_all();
+        };
         // The checkpoint has fixed entry 2: nothing of entry 2 is taken
-        // now, and entry 3 goes on.
-        assert!(matches!(
-            pf.reserve(2, 4, Purpose::Entry),
-            Err(SpaceError::Refused(_))
-        ));
+        // now, and entry 3 goes on. A reservation that waited for the
+        // checkpoint instead of being refused would wait for good: it is
+        // made on a thread of its own and given 20 seconds.
+        let (tx, rx) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let refused = matches!(
+                pf.reserve(2, 4, Purpose::Entry),
+                Err(SpaceError::Refused(_))
+            );
+            let _ = tx.send(refused);
+        });
+        let refused = rx.recv_timeout(std::time::Duration::from_secs(20));
+        if refused != Ok(true) {
+            release();
+            panic!("a reservation at the entry being checkpointed: {refused:?}");
+        }
         let at_three = tree::apply(&later, at_two, 3, &edits(3)).unwrap();
-        let mut s = state.lock().unwrap();
-        s.2 = true;
-        cv.notify_all();
-        drop(s);
+        release();
         writing.join().unwrap().unwrap();
         at_three
     });
@@ -2804,9 +2817,11 @@ fn replay_after_restore_points_are_dropped_fits() {
         config,
     );
     run.replay_must_fit = true;
+    // The longest names, so that the records a reopened page file would
+    // count twice span more pages than any rounding hides.
     for i in 0..250 {
         run.entry();
-        run.checkpoint_as(Some(format!("p{i}")));
+        run.checkpoint_as(Some(format!("p{i:063}")));
     }
     run.checkpoint(false);
     run.checkpoint(false);
@@ -2816,7 +2831,7 @@ fn replay_after_restore_points_are_dropped_fits() {
         }
     }
     // The disk holds the file as it is, and no more.
-    sim.set_capacity(run.pf().space().end * PAGE + (64 << 10));
+    sim.set_capacity(run.pf().space().end * PAGE);
     for (rp, _) in run.pf().restore_points() {
         run.pf().drop_restore_point(&rp.name).unwrap();
         run.restore.remove(&rp.name);

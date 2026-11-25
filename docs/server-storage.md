@@ -489,9 +489,8 @@ published version while it applies ahead and checkpoints only once
 everything applied is published. A checkpoint is of one exact version:
 it covers every change of its entry and of those before, and none after
 (the page file refuses the rest; server-storage-format.md 4.6). The order
-of the writes and flushes,
-and what a crash at each step leaves, are in server-storage-format.md
-4.6.
+of the writes and flushes, and what a crash at each step leaves, are in
+server-storage-format.md 4.6.
 
 **What is kept.** The two newest checkpoints are kept whole, and so is
 every checkpoint held as a restore point (section 11), which each

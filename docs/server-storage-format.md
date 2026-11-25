@@ -937,13 +937,15 @@ rebuilt for them when those entries are applied again (4.7).
   dropped point is still on disk, so a drop does not lower the floor,
   and a reopen, which lists them again, does not raise it) and one more,
   and a map in which every page of the file is dying (81 bytes a page,
-  more than a shared page's record or a free bit). The floor is the same
-  before and after a reopen at the same point: what the running page
-  file knows and a reopened one does not (pins, restore point drops not
-  yet checkpointed, the reclaim cursor, a larger file) never raises it
-  above what the reopened one computes. Two, because the next checkpoint retires nothing when the other
-  pair is empty, and the one after frees the first's meta stream only
-  once it is on disk. Commits, the taking down of dropped subtrees and
+  more than a shared page's record or a free bit). A reopened page file
+  never computes a higher floor than the running one had at the same
+  point, which is what recovery needs. Of what the running page file
+  knows and a reopened one does not, pins and the reclaim cursor do not
+  enter the floor, restore point drops not yet checkpointed do not lower
+  it (above), and the map's end, which the running file may have grown
+  past the checkpoint's, only raises the running floor. Two, because the
+  next checkpoint retires nothing when the other pair is empty, and the
+  one after frees the first's meta stream only once it is on disk. Commits, the taking down of dropped subtrees and
   reclaims never make a map larger than that, so the room stays enough
   whatever is applied meanwhile; it is about 1% of the file. An ordinary
   entry also leaves the **reserve** (256 pages by default), which
