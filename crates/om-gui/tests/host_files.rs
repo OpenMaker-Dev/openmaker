@@ -75,10 +75,8 @@ fn fill_host(app: &mut common::App, name: &str, port: u16) {
     common::click(app, "Add");
 }
 
-/// The sign-in for hosted file `file`: the test account, and no client
-/// license, which these loopback servers do not need.
-fn sign_in(app: &mut common::App, file: &str) {
-    common::wait_for_label(app, &format!("Open “{file}”"));
+/// Turn Use saved FileMaker license off, if it shows and is on.
+fn no_license(app: &mut common::App) {
     let license = "Use saved FileMaker license";
     let on = app.query_by_label(license).is_some_and(|node| {
         node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
@@ -86,6 +84,13 @@ fn sign_in(app: &mut common::App, file: &str) {
     if on {
         common::click(app, license);
     }
+}
+
+/// The sign-in for hosted file `file`: the test account, and no client
+/// license, which these loopback servers do not need.
+fn sign_in(app: &mut common::App, file: &str) {
+    common::wait_for_label(app, &format!("Open “{file}”"));
+    no_license(app);
     common::fill(app, "Account Name", ACCOUNT);
     common::fill(app, "Password", PASSWORD);
     common::click(app, "Sign in");
@@ -215,13 +220,22 @@ fn empty_unsupported_and_stale_listings_are_told_apart_for_their_host() {
 
     // A file the host does not list still opens by its name, through Open
     // Network File.
-    common::fill(&mut app, "Search Files", "Typed");
-    common::click(&mut app, "Open “Typed”...");
+    common::fill(&mut app, "Search Files", "Hidden");
+    common::click(&mut app, "Open “Hidden”...");
     common::wait_for_text_field(&mut app, "Path");
     assert_eq!(
         common::text_field(&app, "Path").value(),
-        Some(format!("fmnet:/127.0.0.1:{}/Typed", quiet.connection.port))
+        Some(format!("fmnet:/127.0.0.1:{}/Hidden", quiet.connection.port))
     );
-    common::click(&mut app, "Cancel");
-    assert!(!app.state().is_open());
+    no_license(&mut app);
+    common::fill(&mut app, "Account Name", ACCOUNT);
+    common::fill(&mut app, "Password", PASSWORD);
+    // Home's own Open shows behind the dialog, disabled.
+    app.query_all_by_label("Open")
+        .find(|node| !node.accesskit_node().is_disabled())
+        .expect("the dialog's Open")
+        .click();
+    common::wait_until(&mut app, "Hidden to open", |app| app.state().is_open());
+    assert_eq!(app.state().error(), None);
+    assert_eq!(app.state().window_name(), "Hidden (127.0.0.1)");
 }

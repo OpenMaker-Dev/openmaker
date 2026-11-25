@@ -199,6 +199,11 @@ impl Home {
     fn contents(&mut self, ui: &mut Ui, view: &HomeView<'_>, actions: &mut Vec<Action>) {
         let hosts = view.history.hosts();
         self.settle_page(hosts);
+        // Delete removes a host only right after a click on it: any other
+        // press, or the keyboard focus going elsewhere, disarms it.
+        if ui.input(|input| input.pointer.any_pressed()) {
+            self.host_armed = false;
+        }
         let area = ui.max_rect();
         let at = |x: f32, y: f32| area.min + vec2(x, y);
         let painter = ui.painter().clone();
@@ -375,7 +380,10 @@ impl Home {
                     }
                     if enabled {
                         response.context_menu(|ui| {
-                            host_menu(ui, host, actions);
+                            // List Files shows the host it lists.
+                            if host_menu(ui, host, actions) {
+                                self.show_host(server.clone());
+                            }
                         });
                     }
                 }
@@ -396,6 +404,9 @@ impl Home {
         };
         let row = Id::unique(("home_host", &(address.clone(), port)));
         let focus = ui.ctx().memory(|memory| memory.focused());
+        if focus.is_some_and(|id| id != row) {
+            self.host_armed = false;
+        }
         let armed = (self.host_armed && focus.is_none()) || focus == Some(row);
         if !enabled
             || !armed
@@ -665,8 +676,10 @@ impl Home {
 }
 
 /// A saved host's context menu.
-fn host_menu(ui: &mut Ui, host: &SavedHost, actions: &mut Vec<Action>) {
-    if ui.button("List Files").clicked() {
+/// A saved host's context menu. Returns whether List Files was chosen.
+fn host_menu(ui: &mut Ui, host: &SavedHost, actions: &mut Vec<Action>) -> bool {
+    let list = ui.button("List Files").clicked();
+    if list {
         actions.push(Action::ListFiles(host.server()));
         ui.close();
     }
@@ -690,6 +703,7 @@ fn host_menu(ui: &mut Ui, host: &SavedHost, actions: &mut Vec<Action>) {
         )));
         ui.close();
     }
+    list
 }
 
 /// The page's title.

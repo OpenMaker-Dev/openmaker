@@ -83,9 +83,12 @@ none is saved.
 **Open Network File...** (File > Hosts, a host's context menu, and a host
 page's empty or failed list) opens a file by its path,
 `fmnet:/host[:port]/File`, read as a script's or related file's path is
-(`om_data::file_refs`): a line under the field says which file on which
-host and port the path names, or what is wrong with it, and **Open** waits
-until it names a host and a file. It signs in as the sign-in does. A path
+(`om_data::file_refs`), with an IPv6 address in brackets
+(`fmnet:/[::1]/File`, OpenMaker's own form): a line under the field says
+which file on which host and port the path names, or what is wrong with it,
+and **Open** waits until it names a host and a file. A host's address
+cannot carry an account (`name@host`): the account goes in Account Name,
+so none is saved with a host. It signs in as the sign-in does. A path
 to a host Home does not have offers **Add host to Hosts**, off by default.
 Searching a host page for a name it does not list offers **Open “Name”...**,
 the same dialog with that file's path: a host can leave a file unlisted, and

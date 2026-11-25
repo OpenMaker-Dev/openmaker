@@ -2331,9 +2331,16 @@ impl OpenMakerApp {
                     || self.create_new.is_some()
                     || self.local_login.is_some()
                     || self.change_password.is_some();
-                // Not while another file opens: a local file's sign-in may
-                // follow.
-                if self.network.is_none() && !other && self.status == ConnectStatus::Idle {
+                // Not while a local file opens: its sign-in may follow. A
+                // hosted file opening (a launch's) shows here, with Cancel.
+                let hosted_opening = self
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.target.local.is_none());
+                if self.network.is_none()
+                    && !other
+                    && (self.status == ConnectStatus::Idle || hosted_opening)
+                {
                     self.network = Some(
                         connect::NetworkDialog::from_form(&self.form, self.use_saved_license)
                             .closable(false),
@@ -3182,10 +3189,7 @@ impl OpenMakerApp {
                 save_host,
             } => {
                 if let Some(host) = save_host {
-                    self.edit_file_history(crate::file_history::Change::SaveHost {
-                        replacing: None,
-                        host,
-                    });
+                    self.edit_file_history(crate::file_history::Change::AddHost(host));
                 }
                 if let Some(dialog) = &self.network {
                     self.use_saved_license = dialog.use_saved_license;
@@ -3375,7 +3379,9 @@ impl OpenMakerApp {
         }
         // One dialog opens a file at a time: the command's takes the place
         // of Open Network File or a sign-in.
-        self.network = None;
+        if self.network.take().is_some() {
+            connect::forget_password(ctx);
+        }
         self.host_dialog = None;
         let license = self.use_saved_license;
         match launch {
@@ -6456,10 +6462,12 @@ impl OpenMakerApp {
         }
         loop {
             match self.worker.poll() {
-                // A License dialog answer is the app's, of any session.
+                // A License dialog answer is the app's, of any session; a
+                // listing's is its token's, which a new session leaves
+                // waited for.
                 Ok(response)
                     if response.epoch == self.epoch
-                        || matches!(response.reply, Reply::License { .. }) =>
+                        || matches!(response.reply, Reply::License { .. } | Reply::Files(_)) =>
                 {
                     self.on_response(ctx, response)
                 }

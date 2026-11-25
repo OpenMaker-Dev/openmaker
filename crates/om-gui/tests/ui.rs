@@ -504,7 +504,7 @@ fn file_close_returns_to_open_network_file() {
     wait_for_label(&mut app, "Open Network File");
     assert_eq!(
         text_field(&app, "Path").value().as_deref(),
-        Some("fmnet:/fms.example.com/Contacts")
+        Some("fmnet:/fms.example.com/Contacts.fmp12")
     );
     assert_eq!(
         text_field(&app, "Account Name").value().as_deref(),

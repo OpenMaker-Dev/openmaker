@@ -100,6 +100,9 @@ impl SavedHost {
 pub(crate) fn location(address: &str, port: u16) -> String {
     if port == crate::connect::DEFAULT_PORT {
         address.to_owned()
+    } else if address.contains(':') {
+        // An IPv6 address, bracketed so its colons are not the port's.
+        format!("[{address}]:{port}")
     } else {
         format!("{address}:{port}")
     }
@@ -135,6 +138,10 @@ pub(crate) enum Change {
         replacing: Option<(String, u16)>,
         host: SavedHost,
     },
+    /// Save `host` under Hosts unless one at its address and port is
+    /// saved: Open Network File's Add to Hosts, which leaves a name
+    /// another instance gave it.
+    AddHost(SavedHost),
     /// Forget the saved host at this address and port.
     RemoveHost(String, u16),
 }
@@ -148,6 +155,7 @@ impl Change {
             Self::SetFavorite(..)
                 | Self::RemoveRecent(_)
                 | Self::SaveHost { .. }
+                | Self::AddHost(_)
                 | Self::RemoveHost(..)
         )
     }
@@ -286,6 +294,15 @@ impl History {
                     keep
                 });
             }
+            Change::AddHost(host) => {
+                if !self
+                    .hosts
+                    .iter()
+                    .any(|saved| saved.is(&host.address, host.port))
+                {
+                    self.hosts.push(host);
+                }
+            }
             Change::RemoveHost(address, port) => {
                 self.hosts.retain(|saved| !saved.is(&address, port))
             }
@@ -386,6 +403,14 @@ mod tests {
             .change(
                 Some(&path),
                 Change::RemoveHost("nowhere.example.test".into(), 5003),
+            )
+            .unwrap();
+        // Open Network File's Add to Hosts leaves a host saved meanwhile,
+        // and its name, as it was.
+        first
+            .change(
+                Some(&path),
+                Change::AddHost(host("fms.example.test", 5003, "")),
             )
             .unwrap();
         let restored = History::load(&path).unwrap();

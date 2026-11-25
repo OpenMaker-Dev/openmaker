@@ -107,14 +107,14 @@ impl ConnectForm {
 
     /// The form's file as an Open Network File path, as far as it is filled
     /// in: empty without a host.
+    /// The file and port are written as given, so the path opens what the
+    /// form names, and says so when its port is wrong.
     fn path(&self) -> String {
-        match self.host.trim() {
-            "" => String::new(),
-            host => network_path_text(
-                host,
-                self.port().unwrap_or(DEFAULT_PORT),
-                file_refs::file_stem(self.file.trim()),
-            ),
+        let file = self.file.trim();
+        match (self.host.trim(), self.port()) {
+            ("", _) => String::new(),
+            (host, Ok(port)) => network_path_text(host, port, file),
+            (host, Err(_)) => format!("fmnet:/{host}:{}/{file}", self.port.trim()),
         }
     }
 }
@@ -217,9 +217,29 @@ pub(crate) fn failure_headline(failure: ListingFailure) -> &'static str {
 }
 
 /// `fmnet:/host[:port]/file`: the Open Network File path of `file` on a
-/// host, the port written only when it is not FileMaker's.
+/// host, the port written only when it is not FileMaker's, and an IPv6
+/// address in brackets.
 pub(crate) fn network_path_text(host: &str, port: u16, file: &str) -> String {
-    format!("fmnet:/{}/{file}", file_history::location(host, port))
+    let authority = match (host.contains(':'), port == DEFAULT_PORT) {
+        (true, true) => format!("[{host}]"),
+        _ => file_history::location(host, port),
+    };
+    format!("fmnet:/{authority}/{file}")
+}
+
+/// Why `host`, as typed, is no host's address. An account belongs in
+/// Account Name: a saved host keeps no account.
+fn bad_address(host: &str) -> Option<&'static str> {
+    if host.contains('@') {
+        Some("Put the account in Account Name, not in the host’s address.")
+    } else if host
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '/' | '\\'))
+    {
+        Some("A host’s address can’t contain spaces, / or \\.")
+    } else {
+        None
+    }
 }
 
 /// What a typed `fmnet:/host[:port]/File` path names: the host, the port
@@ -245,16 +265,49 @@ pub(crate) fn network_path(path: &str) -> Result<(String, u16, String), String> 
         });
     };
     let (authority, name) = rest.split_once('/').unwrap_or((rest, ""));
-    // A colon in an IPv6 address is not a port's.
+    // `account:password@host` first: its colons are not a port's either.
+    if authority.contains('@') {
+        return Err(bad_address(authority).unwrap_or_default().into());
+    }
+    // An IPv6 address is in brackets, as in a URL: its colons are not a
+    // port's. `file_refs` reads no brackets, so this one is read here.
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, after) = bracketed
+            .split_once(']')
+            .ok_or("Close the IPv6 address’s bracket: fmnet:/[::1]/File")?;
+        let port = match after {
+            "" => DEFAULT_PORT,
+            written => port(written.strip_prefix(':').ok_or(PORT_RANGE)?)?,
+        };
+        if host.is_empty() || !host.contains(':') {
+            return Err(format!("Add the host: {FORM}"));
+        }
+        if let Some(reason) = bad_address(host) {
+            return Err(reason.into());
+        }
+        return match name {
+            "" => Err(format!("Add the file’s name: {FORM}")),
+            name if file_refs::is_plain_name(name) => {
+                Ok((host.to_owned(), port, file_refs::hosted_name(name)))
+            }
+            _ => Err("A file’s name can’t contain /, \\ or :.".into()),
+        };
+    }
     let host = match authority.rsplit_once(':') {
-        Some((host, written)) if !host.contains(':') => {
+        Some((host, _)) if host.contains(':') => {
+            return Err("Put an IPv6 address in brackets: fmnet:/[::1]/File".into());
+        }
+        Some((host, written)) => {
             port(written)?;
             host
         }
-        _ => authority,
+        None => authority,
     };
     if host.is_empty() {
         return Err(format!("Add the host: {FORM}"));
+    }
+    if let Some(reason) = bad_address(host) {
+        return Err(reason.into());
     }
     if name.is_empty() {
         return Err(format!("Add the file’s name: {FORM}"));
@@ -339,6 +392,18 @@ fn buttons(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     );
 }
 
+/// Escape, for a dialog with nothing in front of it (`top`): an alert over
+/// it takes the key itself.
+fn escape(ctx: &egui::Context, top: bool) -> bool {
+    top && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+}
+
+/// Forget what egui keeps of Open Network File's or the sign-in's password
+/// field, as the dialog goes.
+pub(crate) fn forget_password(ctx: &egui::Context) {
+    forget_field(ctx, egui::Id::unique(PASSWORD_ID));
+}
+
 /// What a host dialog did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HostAction {
@@ -389,11 +454,8 @@ impl HostDialog {
         if address.is_empty() {
             return Err("Enter a host name or address.".into());
         }
-        if address
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || c == '/')
-        {
-            return Err("A host’s address can’t contain spaces or /.".into());
+        if let Some(reason) = bad_address(address) {
+            return Err(reason.into());
         }
         Ok(SavedHost {
             address: address.to_owned(),
@@ -408,7 +470,7 @@ impl HostDialog {
             None => ("Add Host", "Add"),
             Some(_) => ("Edit Host", "Save"),
         };
-        modal("om_host_dialog", ctx).show(ctx, |ui| {
+        let shown = modal("om_host_dialog", ctx).show(ctx, |ui| {
             ui.set_width(HOST_DIALOG_WIDTH);
             ui.spacing_mut().item_spacing.y = 8.0;
             title(ui, heading);
@@ -458,7 +520,7 @@ impl HostDialog {
                 }
             });
         });
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if escape(ctx, shown.is_top_modal) {
             action = Some(HostAction::Cancel);
         }
         action
@@ -570,10 +632,10 @@ impl NetworkDialog {
     /// Open Network File or the sign-in over the window, as a modal dialog.
     pub fn show(&mut self, ctx: &egui::Context, view: NetworkView<'_>) -> Option<NetworkAction> {
         let mut action = None;
-        modal("om_network_dialog", ctx).show(ctx, |ui| {
+        let shown = modal("om_network_dialog", ctx).show(ctx, |ui| {
             self.contents(ui, &view, &mut action);
         });
-        self.finish(ctx, &view, action)
+        self.finish(ctx, &view, action, shown.is_top_modal)
     }
 
     /// Open Network File as the window's launcher, without Home: a dialog
@@ -592,26 +654,28 @@ impl NetworkDialog {
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             frame.show(ui, |ui| self.contents(ui, &view, &mut action));
         });
-        self.finish(ui.ctx(), &view, action)
+        let top = ui.ctx().memory(|m| m.top_modal_layer().is_none());
+        self.finish(ui.ctx(), &view, action, top)
     }
 
     pub fn is_closable(&self) -> bool {
         self.closable
     }
 
-    /// Escape cancels; and once the dialog is done, egui forgets the
-    /// password field's text.
+    /// Escape cancels while nothing is in front of the dialog (`top`); and
+    /// once the dialog is done, egui forgets the password field's text.
     fn finish(
         &self,
         ctx: &egui::Context,
         view: &NetworkView<'_>,
         mut action: Option<NetworkAction>,
+        top: bool,
     ) -> Option<NetworkAction> {
-        if (view.connecting || self.closable) && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if (view.connecting || self.closable) && escape(ctx, top) {
             action = Some(NetworkAction::Cancel);
         }
         if action.is_some() {
-            forget_field(ctx, egui::Id::unique(PASSWORD_ID));
+            forget_password(ctx);
         }
         action
     }
@@ -828,6 +892,19 @@ mod tests {
                 "file:Payroll.fmp12",
                 Err("That is a file on this computer. Use Open.".into()),
             ),
+            ("fmnet:/[::1]/Payroll", opens("::1", 5003, "Payroll.fmp12")),
+            (
+                "fmnet:/[fe80::1]:5004/Payroll",
+                opens("fe80::1", 5004, "Payroll.fmp12"),
+            ),
+            (
+                "fmnet:/::1/Payroll",
+                Err("Put an IPv6 address in brackets: fmnet:/[::1]/File".into()),
+            ),
+            (
+                "fmnet:/demo:secret@db.example.test:5004/Payroll",
+                Err("Put the account in Account Name, not in the host’s address.".into()),
+            ),
             (
                 "fms.example.com/Payroll",
                 Err("A network path starts with fmnet:/, as in fmnet:/host/File".into()),
@@ -843,5 +920,23 @@ mod tests {
             network_path_text("fms.example.com", DEFAULT_PORT, ""),
             "fmnet:/fms.example.com/"
         );
+        assert_eq!(
+            network_path_text("::1", DEFAULT_PORT, "A"),
+            "fmnet:/[::1]/A"
+        );
+        assert_eq!(network_path_text("::1", 5004, "A"), "fmnet:/[::1]:5004/A");
+        // A launch's file and port, as given: one extension is not taken
+        // off a name that has two, and a bad port is shown, not replaced.
+        let form = |file: &str, port: &str| ConnectForm {
+            file: file.into(),
+            port: port.into(),
+            ..filled()
+        };
+        let path = |form: ConnectForm| network_path(&form.path());
+        assert_eq!(
+            path(form("Archive.fmp12.fmp12", "5003")),
+            opens("fms.local", 5003, "Archive.fmp12.fmp12")
+        );
+        assert_eq!(path(form("Contacts.fmp12", "0")), Err(PORT_RANGE.into()));
     }
 }
