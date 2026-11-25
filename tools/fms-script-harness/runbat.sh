@@ -31,12 +31,13 @@
 #                     runs as fmsased runs it (SASE_EXPORT, README)
 set -e
 H=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$H/../.." && pwd)
 : "${FMS_ROOT:?set FMS_ROOT to the unpacked opt/FileMaker directory}"
 : "${FILES:?set FILES to a directory with .fmp12 copies}"
 WORK=${WORK:-$(dirname "$FILES")/script-harness-work}
 MODE=()
 while case "$1" in -*) true;; *) false;; esac; do MODE+=("$1"); shift; done
-B=$1; F=$2; OUT=${3:-$H/results}
+B=$1; F=$2; OUT=${3:-$ROOT/re/work/fms-script-harness}
 mkdir -p "$OUT" "$WORK"
 name=$(basename "$B" .txt); base=${F%.fmp12}
 out="$OUT/$name.$base.tsv"

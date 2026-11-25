@@ -555,8 +555,11 @@ fn open_holding(
         gate,
         hold,
     }));
-    common::fill(&mut app, "Host", "portals.example.invalid");
-    common::fill(&mut app, "File", "Portals.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/portals.example.invalid/Portals.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "RELATED LINES");
     (app, reads)

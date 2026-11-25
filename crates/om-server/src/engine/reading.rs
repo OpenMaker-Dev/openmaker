@@ -335,6 +335,14 @@ impl View for StoreView<'_> {
         self.paged()?.subtree(path, limit)
     }
 
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<std::borrow::Cow<'_, OwnedNode>>, ReadError> {
+        self.paged()?.subtree_within(path, work)
+    }
+
     fn children_page<'v>(
         &'v self,
         path: &[&[u8]],

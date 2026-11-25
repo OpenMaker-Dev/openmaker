@@ -4390,11 +4390,13 @@ fn root_and_portal_attachment_inserts_reconnect_before_the_first_save() {
         vec![(fixture::FILE, root), ("Related Notes.fmp12", owner)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1060.0, 1300.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", fixture::FILE);
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/{}", host.port, fixture::FILE),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the two-file portal", |a| {

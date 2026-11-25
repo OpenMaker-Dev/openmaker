@@ -23,17 +23,45 @@
 use om_hbam::OwnedNode;
 use om_store::tree::{Edit, Node};
 
+use std::sync::Arc;
+
 use super::view::{TreeView, Version, View};
-use crate::store::Store;
+use crate::derived::Derived;
+use crate::recalc::TableBasis;
+use crate::store::{Bases, Journal, Store};
 
 /// What a check keeps of one transaction.
 pub(crate) struct Check {
+    /// Whether the operation's tree writes are checked: an operation not
+    /// moved onto the transaction's writes at all has none, and only its
+    /// state of its own and its verified-index marks are
+    /// (`engine::file::on_the_store`).
+    tree: bool,
     /// The tree the operation started on with the writes applied in order,
     /// taken again as each store helper left it ([`Self::after_store`]).
     current: OwnedNode,
     version: Version,
     /// The writes, in order.
     edits: Vec<Edit>,
+    /// The derived state the operation started with, its verified-index
+    /// marks in it.
+    start: Arc<Derived>,
+    /// The bases of stored calculations the operation started with.
+    start_bases: Arc<Bases>,
+    /// Those bases with the basis writes recorded applied, taken again as
+    /// each store helper left them.
+    bases: Bases,
+}
+
+/// What a check keeps once the operation ended, to check its save
+/// ([`Settled::after_stored`]) or a roll-back of it
+/// ([`Settled::after_roll_back`]).
+pub(crate) struct Settled {
+    start: Arc<Derived>,
+    start_bases: Arc<Bases>,
+    /// How many field indexes failed saves had taken out when the
+    /// operation ended (`Store::dropped_indexes`).
+    dropped: usize,
 }
 
 /// `node` as a node of the store engine's edits, without its children.
@@ -78,12 +106,31 @@ fn apply(root: &mut OwnedNode, edit: &Edit) {
 }
 
 impl Check {
-    pub(crate) fn new(store: &Store) -> Self {
+    /// A check of an operation on `store`; with `tree` false, of its state
+    /// of its own and its marks alone.
+    pub(crate) fn new(store: &Store, tree: bool) -> Self {
         Check {
-            current: store.tree().clone(),
+            tree,
+            current: if tree {
+                store.tree().clone()
+            } else {
+                OwnedNode::default()
+            },
             version: store.version(),
             edits: Vec::new(),
+            start: store.derived().clone(),
+            start_bases: store.bases().clone(),
+            bases: (**store.bases()).clone(),
         }
+    }
+
+    /// Record a write of the version's own state: `table`'s basis set to
+    /// `basis` (`None`: removed).
+    pub(crate) fn wrote_basis(&mut self, table: &[u8], basis: Option<TableBasis>) {
+        match basis {
+            Some(basis) => self.bases.insert(table.to_vec(), basis),
+            None => self.bases.remove(table),
+        };
     }
 
     /// Record a write the file engine made: `node` (with its children) put
@@ -121,13 +168,19 @@ impl Check {
     /// the operation's writes made of it, since the start or since the
     /// last helper returned.
     pub(crate) fn before_store(&self, store: &Store) {
-        self.agrees(store, "before a store helper");
+        if self.tree {
+            self.agrees(store, "before a store helper");
+            self.bases_agree(store, "before a store helper");
+        }
     }
 
     /// A store helper returned: what it changed is taken as it is, and the
     /// writes after it are checked from there.
     pub(crate) fn after_store(&mut self, store: &Store) {
-        self.current = store.tree().clone();
+        if self.tree {
+            self.current = store.tree().clone();
+            self.bases = (**store.bases()).clone();
+        }
     }
 
     /// `ours`, the file engine's answer to a read, against the answer the
@@ -139,6 +192,9 @@ impl Check {
         ours: &T,
         read: impl FnOnce(&dyn View) -> T,
     ) {
+        if !self.tree {
+            return;
+        }
         let theirs = read(&TreeView::new(&self.current, self.version));
         // Paths only: an account's node holds its password's verifier.
         assert!(
@@ -158,34 +214,163 @@ impl Check {
         }
     }
 
-    /// At the end of the operation: the starting tree changed by the
-    /// writes is `store`'s tree, the derived state is what that tree
-    /// decodes to, and a written tree counts as changed since its last
-    /// save.
-    pub(crate) fn finish(self, store: &Store) {
-        self.agrees(store, "by its end");
-        if !self.edits.is_empty() {
-            assert!(
-                store.has_unsaved_changes(),
-                "an operation wrote the tree, and it does not count as changed since its save"
+    /// The bases the basis writes made are `store`'s bases.
+    fn bases_agree(&self, store: &Store, when: &str) {
+        if let Some(table) = first_different_basis(&self.bases, store.bases()) {
+            panic!(
+                "an operation changed the basis of table {table:02x?}'s stored calculations \
+                 beyond its writes {when}"
             );
         }
-        let view = store.tree_view();
-        let Ok(catalog) = crate::derived::read_catalog(&view) else {
-            // The store keeps the schema it last read (`Store::reread_catalog`).
-            return;
-        };
-        let derived = store.derived();
-        let decoded = derived.with_catalog(&view, catalog).map(|decoded| {
-            decoded.with_accounts(store.version(), crate::derived::read_accounts(&view))
-        });
-        if let Ok(decoded) = decoded {
+    }
+
+    /// At the end of the operation, `journal` its change: the starting tree
+    /// changed by the writes is `store`'s tree, the derived state is what
+    /// that tree decodes to, and a written tree counts as changed since its
+    /// last save; the bases are those the basis writes made; whatever of
+    /// the bases and the verified-index marks changed, the journal keeps
+    /// as it was, to put back; and every mark that an index agrees holds
+    /// for the tree.
+    pub(crate) fn finish(self, store: &Store, journal: &Journal) -> Settled {
+        if self.tree {
+            self.agrees(store, "by its end");
+            self.bases_agree(store, "by its end");
+            if !self.edits.is_empty() {
+                assert!(
+                    store.has_unsaved_changes(),
+                    "an operation wrote the tree, and it does not count as changed since its save"
+                );
+            }
+        }
+        if **store.bases() != *self.start_bases {
             assert!(
-                decoded.same_as(derived, true),
-                "an operation's writes left the derived state behind its tree:\n{derived:?}\n\
-                 decoded again: {decoded:?}"
+                journal
+                    .kept_bases()
+                    .is_some_and(|kept| **kept == *self.start_bases),
+                "an operation changed the bases of stored calculations, and its journal does \
+                 not keep them as they were"
             );
         }
+        if store.derived().marks() != self.start.marks() {
+            assert!(
+                journal
+                    .kept_schema()
+                    .is_some_and(|kept| kept.marks() == self.start.marks()),
+                "an operation changed the verified-index marks, and its journal does not keep \
+                 them as they were"
+            );
+        }
+        marks_hold(store, "by its end");
+        bases_have_tables(store, "by its end");
+        if self.tree {
+            derived_agrees(store);
+        }
+        Settled {
+            start: self.start,
+            start_bases: self.start_bases,
+            dropped: store.dropped_indexes().len(),
+        }
+    }
+}
+
+impl Settled {
+    /// The operation's change was taken back: the bases are those it
+    /// started with, and the verified-index marks those it started with,
+    /// but for any whose index the save that failed took out
+    /// (`Store::drop_unwritable_indexes`), every one that an index agrees
+    /// holding.
+    pub(crate) fn after_roll_back(&self, store: &Store) {
+        if let Some(table) = first_different_basis(&self.start_bases, store.bases()) {
+            panic!(
+                "a roll-back left the basis of table {table:02x?}'s stored calculations other \
+                 than the operation found it"
+            );
+        }
+        // The marks from before the operation, less those of the indexes
+        // the save that failed took out, exactly.
+        let dropped = &store.dropped_indexes()[self.dropped..];
+        let mut expected = self.start.marks().clone();
+        expected
+            .retain(|(table, field, _), _| !dropped.iter().any(|(t, f)| t == table && f == field));
+        if let Some(id) = expected
+            .keys()
+            .chain(store.derived().marks().keys())
+            .find(|id| expected.get(*id) != store.derived().marks().get(*id))
+        {
+            panic!(
+                "a roll-back left the verified-index mark of table {:02x?} field {:02x?} index \
+                 {} other than the operation found it",
+                id.0, id.1, id.2
+            );
+        }
+        marks_hold(store, "after a roll-back");
+        bases_have_tables(store, "after a roll-back");
+    }
+
+    /// The operation's change was stored, with what its save wrote last
+    /// (a commit's record ids, its sweeps, its counts): every mark that an
+    /// index agrees holds, and every basis is of a table the tree holds.
+    pub(crate) fn after_stored(&self, store: &Store) {
+        marks_hold(store, "after its save");
+        bases_have_tables(store, "after its save");
+    }
+}
+
+/// Every basis of stored calculations `store` keeps is of a table its tree
+/// holds: a deleted table's goes with it.
+fn bases_have_tables(store: &Store, when: &str) {
+    for table in store.bases().keys() {
+        let segments: [&[u8]; 1] = [table];
+        assert!(
+            store.tree_view().head(&segments).is_some(),
+            "a basis of stored calculations is kept for table {table:02x?}, which the tree \
+             does not hold, {when}"
+        );
+    }
+}
+
+/// The table of the first basis where `a` and `b` differ.
+fn first_different_basis(a: &Bases, b: &Bases) -> Option<Vec<u8>> {
+    a.keys()
+        .chain(b.keys())
+        .find(|table| a.get(*table) != b.get(*table))
+        .cloned()
+}
+
+/// Every verified-index mark of `store` that an index agrees with its
+/// records holds for its tree: a mark may be missing, never wrong.
+fn marks_hold(store: &Store, when: &str) {
+    for (id, agrees) in store.derived().marks() {
+        if *agrees {
+            assert!(
+                store.index_holds(id),
+                "a verified-index mark says index {} of table {:02x?} field {:02x?} agrees \
+                 with its records {when}, and it does not",
+                id.2,
+                id.0,
+                id.1
+            );
+        }
+    }
+}
+
+/// The derived state of `store` is what its tree decodes to.
+fn derived_agrees(store: &Store) {
+    let view = store.tree_view();
+    let Ok(catalog) = crate::derived::read_catalog(&view) else {
+        // The store keeps the schema it last read (`Store::reread_catalog`).
+        return;
+    };
+    let derived = store.derived();
+    let decoded = derived.with_catalog(&view, catalog).map(|decoded| {
+        decoded.with_accounts(store.version(), crate::derived::read_accounts(&view))
+    });
+    if let Ok(decoded) = decoded {
+        assert!(
+            decoded.same_as(derived, true),
+            "an operation's writes left the derived state behind its tree:\n{derived:?}\n\
+             decoded again: {decoded:?}"
+        );
     }
 }
 
@@ -237,11 +422,8 @@ mod tests {
         start: &OwnedNode,
         writes: &[(Vec<Vec<u8>>, Option<OwnedNode>)],
     ) -> (OwnedNode, Check) {
-        let mut check = Check {
-            current: start.clone(),
-            version: 1,
-            edits: Vec::new(),
-        };
+        let store = crate::store::tests::store_of(start.clone());
+        let mut check = Check::new(&store, true);
         let mut expected = start.clone();
         for (at, node) in writes {
             check.wrote(at, node.as_ref());

@@ -2580,6 +2580,7 @@ fn download_list(
         Upload::Partial(resume) => {
             return Ok(reply(Vec::new(), resume, 0).to_result_within(max_return as usize));
         }
+        // A read: the empty last page FileMaker Server's code gives.
         Upload::Unknown => {
             let reply = reply(Vec::new(), unknown_cursor(peer, &request.resume), 0);
             return Ok(reply.to_result_within(max_return as usize));
@@ -2648,9 +2649,18 @@ fn query(
             Upload::Partial(resume) => {
                 return Ok(reply(Vec::new(), resume).to_result_within(max_return as usize));
             }
+            // A part of a program this connection does not hold, or the
+            // last part of one that ran: what the program does cannot be
+            // known, or was answered already, and a program may write
+            // (`query_changes_file`), which the empty last page would answer
+            // as done. It fails; a continuation of results keeps the empty
+            // last page (above).
             Upload::Unknown => {
-                let reply = reply(Vec::new(), unknown_cursor(peer, &request.resume));
-                return Ok(reply.to_result_within(max_return as usize));
+                return Err(PerformError::Status(format!(
+                    "a part of program upload {:#x}, which this connection does not hold: the \
+                     program is not run",
+                    request.resume.cursor
+                )));
             }
         };
         // Its tree is charged until the query is answered.
@@ -3031,10 +3041,12 @@ impl om_query::Listing for ViewListing<'_> {
         Ok(more)
     }
 
-    /// The entry within the memory no subtree within `limit` passes
-    /// (`om_query::memory_limit`), so that the store engine refuses an
-    /// entry past what the program may still read before it builds it
-    /// whole (`PagedView::build` counts as it builds).
+    /// The entry within the work its reader has left
+    /// ([`crate::engine::View::subtree_within`]): the store engine counts
+    /// each node as the reader counts it and refuses at the first past
+    /// either counter, so that an entry past what the program may still read
+    /// is never built whole; the file engine lends it, and the reader counts
+    /// it.
     fn entry<'a>(
         &'a self,
         key: &[u8],
@@ -3042,7 +3054,7 @@ impl om_query::Listing for ViewListing<'_> {
     ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
         let mut path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
         path.push(key);
-        Ok(self.view.subtree(&path, om_query::memory_limit(limit))?)
+        Ok(self.view.subtree_within(&path, limit)?)
     }
 }
 
@@ -3553,11 +3565,22 @@ fn get_serial(
     Ok(reply.to_result())
 }
 
-/// The complete payload of an upload-style request, with the charge its
-/// bytes hold if they arrived in parts (keep it as long as the payload), or
-/// the resume block to answer with while its parts are still arriving (spec
-/// 5.6.6c). The caller has authorized the request: each part is held only
-/// for one that may run.
+/// What one part of an upload-style request gives its operation
+/// ([`upload_payload`]).
+enum Payload {
+    /// The complete payload, with the charge its bytes hold if they arrived
+    /// in parts: keep it as long as the payload.
+    Complete(Vec<u8>, Charge),
+    /// More parts follow: answer with this resume block (spec 5.6.6c).
+    Continues(Resume),
+}
+
+/// The complete payload of an upload-style request, or the resume block to
+/// answer with while its parts are still arriving ([`Payload`]). The caller
+/// has authorized the request: each part is held only for one that may run.
+/// The last part of a completed upload sent again is a continuation of an
+/// upload the connection does not hold, and fails as one: the connection
+/// keeps no memory of completed uploads (`crate::transfer`).
 fn upload_payload(
     shared: &Shared,
     peer: &str,
@@ -3565,14 +3588,14 @@ fn upload_payload(
     header: &Header,
     resume: &Resume,
     part: Vec<u8>,
-) -> Result<Result<(Vec<u8>, Charge), Resume>, PerformError> {
+) -> Result<Payload, PerformError> {
     let owner = Owner::of(header);
     let upload = session
         .transfers
         .upload(owner, resume, part, MAX_UPLOAD, || shared.handle());
     Ok(match upload? {
-        Upload::Complete(payload, held) => Ok((payload, held)),
-        Upload::Partial(resume) => Err(resume),
+        Upload::Complete(payload, held) => Payload::Complete(payload, held),
+        Upload::Partial(resume) => Payload::Continues(resume),
         // A continuation of an upload this connection does not hold (its
         // earlier parts never came, or it ended): nothing of it can be
         // stored, so it fails rather than answer the last page a download
@@ -3659,8 +3682,10 @@ fn upload(
     let part = std::mem::take(&mut request.payload);
     let (payload, _held) =
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
-            Ok(payload) => payload,
-            Err(resume) => return Ok(write::upload_reply(&resume, max_return as usize)),
+            Payload::Complete(payload, held) => (payload, held),
+            Payload::Continues(resume) => {
+                return Ok(write::upload_reply(&resume, max_return as usize))
+            }
         };
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
@@ -3808,6 +3833,14 @@ fn update_table(
         }
         Err(Unwritable::Session) => None,
     };
+    // FileMaker Pro names one table (`[T]`, schema-path.md 3.6); any other
+    // path names no table's work to do, and fails rather than answer the
+    // empty reply with nothing done.
+    if file.is_some() && table.len() != 1 {
+        return Err(PerformError::Status(format!(
+            "table update not done: {table:02x?} names no single table"
+        )));
+    }
     if let (Some(file), [table]) = (file, table.as_slice()) {
         let account = file.account.as_deref().map_or("", |account| &account.name);
         let update = UpdateTable {
@@ -3938,8 +3971,10 @@ fn commit(
     let (user, _) = lock_user(session, file, request.txn);
     let (list, held) =
         match upload_payload(shared, peer, session, header, &request.resume, request.list)? {
-            Ok(list) => list,
-            Err(resume) => return Ok(write::upload_reply(&resume, max_return as usize)),
+            Payload::Complete(list, held) => (list, held),
+            Payload::Continues(resume) => {
+                return Ok(write::upload_reply(&resume, max_return as usize))
+            }
         };
     // The list's tree is charged until the commit is done.
     let reading = reserve_tree(shared, session, list.len());
@@ -4134,8 +4169,8 @@ fn upload_binary(
     let part = std::mem::take(&mut request.payload);
     let (payload, held) =
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
-            Ok(payload) => payload,
-            Err(resume) => {
+            Payload::Complete(payload, held) => (payload, held),
+            Payload::Continues(resume) => {
                 // An intermediate part: no member yet (spec 3.3).
                 let reply = UploadBinaryReply {
                     resume,
@@ -4425,9 +4460,8 @@ mod tests {
             restricted,
             account_key: Some(&[3][..]),
             late: false,
-            view: view.then(|| {
-                crate::views::ViewFilter::of(std::slice::from_ref(&tasks), hidden.clone())
-            }),
+            view: view
+                .then(|| crate::views::ViewFilter::of([(tasks.clone(), None)], hidden.clone())),
             built: Default::default(),
             failed: Default::default(),
         };
@@ -4447,6 +4481,75 @@ mod tests {
             }
         }
         assert!(compared > 200, "{compared}");
+    }
+
+    /// A head read of a record a view limit withholds notes the record
+    /// withheld, as a read of it does (its own node is what the session is
+    /// served); a head read of the records list, the table or the root
+    /// serves no record and notes none (OpenMaker's choice,
+    /// `views::ViewFilter::head`). The limit is a formula, `Count = 3`, true
+    /// for record 1 and false for record 2.
+    #[test]
+    fn a_head_of_a_withheld_record_notes_it_and_one_of_its_table_does_not() {
+        use crate::scripts::fixture;
+        use crate::views::{ViewFilter, Withheld};
+        use om_hbam::slot::uint_segment;
+        let root = fixture::tree(&[], true);
+        let bytes =
+            om_hbam::writer::rebuild(&root, &om_hbam::new_superblock("Tasks").unwrap()).unwrap();
+        let store = crate::store::Store::load(
+            &om_hbam::HbamFile::from_bytes(bytes).unwrap(),
+            fixture::FILE,
+        )
+        .unwrap();
+        let tree = store.tree_view();
+        let read = FileRead {
+            view: &tree,
+            derived: store.derived(),
+            waiting: store.waiting(),
+            read_only: false,
+            writes_refused: None,
+        };
+        let tasks = uint_segment(fixture::TABLE);
+        let code = fixture::calculated_calc("Count = 3").polish.unwrap();
+        let limit = crate::derived::record_limit(&tree, store.derived(), &tasks, &code)
+            .unwrap()
+            .unwrap();
+        let source = QuerySource {
+            read,
+            issued: Default::default(),
+            restricted: false,
+            account_key: Some(&[3][..]),
+            late: false,
+            view: Some(ViewFilter::of(
+                [(tasks.clone(), Some(limit))],
+                Default::default(),
+            )),
+            built: Default::default(),
+            failed: Default::default(),
+        };
+        let noted = |path: &[&[u8]]| {
+            assert!(
+                om_query::Source::head(&source, path).unwrap().is_some(),
+                "{path:02x?}"
+            );
+            let mut withheld = Withheld::default();
+            withheld.note(source.view.as_ref().unwrap());
+            [1u64, 2].map(|id| withheld.contains(&tasks, &om_hbam::serial::encode(id)))
+        };
+        let (one, two) = (om_hbam::serial::encode(1), om_hbam::serial::encode(2));
+        assert_eq!(noted(&[]), [false, false]);
+        assert_eq!(noted(&[&tasks]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5]]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5], &one]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5], &two]), [false, true]);
+        // A whole read of the records notes the one it withholds, as before.
+        assert!(om_query::Source::node(&source, &[&tasks, &[5]])
+            .unwrap()
+            .is_some());
+        let mut withheld = Withheld::default();
+        withheld.note(source.view.as_ref().unwrap());
+        assert!(withheld.contains(&tasks, &two) && !withheld.contains(&tasks, &one));
     }
 
     #[test]

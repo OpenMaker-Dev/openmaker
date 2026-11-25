@@ -58,8 +58,6 @@ pub(crate) enum Icon {
     Styles,
     Appearance,
     Data,
-    Tiles,
-    Lines,
     /// A file in a container field.
     File,
     /// A drop-down calendar's icon.
@@ -68,6 +66,10 @@ pub(crate) enum Icon {
     Home,
     /// A host, and a file on one: a server of two stacked units.
     Server,
+    /// Add: a plus.
+    Plus,
+    /// List again: an arrow circling clockwise.
+    Refresh,
 }
 
 /// Maps the 20x20 design grid into a target rect.
@@ -434,7 +436,7 @@ pub(crate) fn paint(
             g.rect(painter, 2.5, 4.0, 17.5, 16.0, 0.5);
             g.line(painter, &[(2.5, 7.5), (17.5, 7.5)]);
         }
-        Icon::ViewList | Icon::Lines => {
+        Icon::ViewList => {
             for y in [5.0, 8.3, 11.6, 14.9] {
                 g.line(painter, &[(2.5, y), (17.5, y)]);
             }
@@ -461,6 +463,35 @@ pub(crate) fn paint(
             g.dot(painter, 5.5, 13.5, 0.9);
             g.line(painter, &[(9.5, 6.5), (14.5, 6.5)]);
             g.line(painter, &[(9.5, 13.5), (14.5, 13.5)]);
+        }
+        Icon::Plus => {
+            g.line(painter, &[(10.0, 4.5), (10.0, 15.5)]);
+            g.line(painter, &[(4.5, 10.0), (15.5, 10.0)]);
+        }
+        Icon::Refresh => {
+            // Clockwise from the right, open at the top right, where the
+            // arrow points on round.
+            let (cx, cy, radius) = (10.0_f32, 10.5_f32, 6.0_f32);
+            let at = |degrees: f32| {
+                let (sin, cos) = degrees.to_radians().sin_cos();
+                (cx + radius * cos, cy + radius * sin)
+            };
+            let arc: Vec<(f32, f32)> = (0..=30).map(|i| at(i as f32 * 10.0)).collect();
+            g.line(painter, &arc);
+            let (ex, ey) = at(300.0);
+            let (sin, cos) = 300.0_f32.to_radians().sin_cos();
+            let (tx, ty) = (-sin, cos);
+            let (nx, ny) = (-ty, tx);
+            let tip = (ex + 1.5 * tx, ey + 1.5 * ty);
+            let back = (tip.0 - 3.0 * tx, tip.1 - 3.0 * ty);
+            g.line(
+                painter,
+                &[
+                    (back.0 + 2.5 * nx, back.1 + 2.5 * ny),
+                    tip,
+                    (back.0 - 2.5 * nx, back.1 - 2.5 * ny),
+                ],
+            );
         }
         Icon::Calendar => {
             g.rect(painter, 2.5, 4.0, 17.5, 17.0, 1.5);
@@ -531,12 +562,6 @@ pub(crate) fn paint(
                 })
                 .collect();
             painter.add(PathShape::line(bottom, PathStroke::from(g.stroke)));
-        }
-        Icon::Tiles => {
-            g.rect(painter, 3.5, 3.5, 9.0, 9.0, 1.0);
-            g.rect(painter, 11.0, 3.5, 16.5, 9.0, 1.0);
-            g.rect(painter, 3.5, 11.0, 9.0, 16.5, 1.0);
-            g.rect(painter, 11.0, 11.0, 16.5, 16.5, 1.0);
         }
     }
 }

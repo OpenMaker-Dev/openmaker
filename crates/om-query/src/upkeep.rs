@@ -20,11 +20,12 @@
 //!
 //! A listing's keys are read a page at a time, each page from just past the
 //! last key it gave, its pages growing to [`PAGE`], and an entry with what
-//! is below it only by its key. A key out of the listing's order (or
-//! outside where its page was asked from) is an error
-//! ([`om_hbam::Error::KeyOrder`]), and so is a page with no key that says
-//! more follow, so a broken source can neither repeat an entry, nor make a
-//! read loop, nor end one early unnoticed.
+//! is below it only by its key. Each page is checked whole as it is
+//! fetched, before any of its keys is given: a page with a key out of the
+//! listing's order (or outside where the page was asked from) is an error
+//! ([`om_hbam::Error::KeyOrder`]), and so is one with more keys than asked
+//! for or with no key that says more follow, so a broken source can neither
+//! repeat an entry, nor make a read loop, nor end one early unnoticed.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
@@ -33,7 +34,7 @@ use std::ops::Bound;
 use om_hbam::{OwnedNode, RidList};
 
 use crate::program::Size;
-use crate::source::{broken, out_of_order, Direction, Listing};
+use crate::source::{broken, out_of_order, page_in_order, Direction, Listing};
 
 /// The most keys a page asks for, after a first one of [`FIRST_PAGE`].
 pub const PAGE: usize = 256;
@@ -116,30 +117,14 @@ impl<'a> Iterator for Keys<'a> {
             if out.len() > max {
                 return self.fail(broken("a page with more keys than asked for"));
             }
+            // The whole page is checked before any of it is taken.
+            if !page_in_order(&out, from, self.direction) {
+                return self.fail(out_of_order());
+            }
             self.size = (self.size * 2).min(PAGE);
             self.page.extend(out);
         }
         let key = self.page.pop_front()?;
-        let start = self.from.as_ref().map(Vec::as_slice);
-        let in_order = match self.direction {
-            Direction::Forward => {
-                (match start {
-                    Bound::Included(b) => *key >= *b,
-                    Bound::Excluded(b) => *key > *b,
-                    Bound::Unbounded => true,
-                }) && self.last.as_deref().is_none_or(|l| *key > *l)
-            }
-            Direction::Backward => {
-                (match start {
-                    Bound::Included(b) => *key <= *b,
-                    Bound::Excluded(b) => *key < *b,
-                    Bound::Unbounded => true,
-                }) && self.last.as_deref().is_none_or(|l| *key < *l)
-            }
-        };
-        if !in_order {
-            return self.fail(out_of_order());
-        }
         self.last = Some(key.to_vec());
         self.wanted -= 1;
         Some(Ok(key))
@@ -264,6 +249,8 @@ mod tests {
         Stalled,
         /// Its keys in order, one more a page than asked for.
         Overfull,
+        /// Its keys in order but for the first two, swapped.
+        Swapped,
     }
 
     struct Broken {
@@ -291,6 +278,13 @@ mod tests {
                 Breaks::Stalled => {}
                 Breaks::Overfull => {
                     return Ok(node_keys(&self.node, from, direction, max + 1, out))
+                }
+                Breaks::Swapped => {
+                    let more = node_keys(&self.node, from, direction, max, out);
+                    if out.len() >= 2 {
+                        out.swap(0, 1);
+                    }
+                    return Ok(more);
                 }
             }
             Ok(true)
@@ -510,6 +504,17 @@ mod tests {
         assert!(holds_exactly(&overfull, &all, plain).is_err());
         let read: Vec<_> = entries(&overfull, Bound::Unbounded, Direction::Forward).collect();
         assert!(read.last().unwrap().is_err());
+        // A page whose first two keys are swapped is refused when it is
+        // fetched, before its first key is given: a reader that stops at
+        // that key never takes it as the end.
+        let swapped = Broken {
+            node: held.clone(),
+            breaks: Breaks::Swapped,
+        };
+        let mut read = keys(&swapped, Bound::Unbounded, Direction::Forward);
+        assert!(read.next().unwrap().is_err());
+        assert!(read.next().is_none());
+        assert!(holds_exactly(&swapped, &built, plain).is_err());
         // An entry under another key than the one asked for.
         struct Elsewhere(OwnedNode);
         impl Listing for Elsewhere {

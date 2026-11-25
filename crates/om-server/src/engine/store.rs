@@ -9,11 +9,13 @@
 //! (section 6.10). The import goes into a tree under a name of its own, and
 //! one unit of work then drops the tree it replaces, gives the new one the
 //! file's tree name and records what was imported, the source's length and
-//! SHA-256 and its page 0; a checkpoint then makes it durable. The SHA-256
-//! is of the bytes the import read, taken in the same pass
-//! ([`Hashing`]), and a source whose length, modification or change time
-//! moved while it was read is not recorded ([`StoreError::SourceChanged`]):
-//! the import is dropped and the next start tries again. A stop at any
+//! SHA-256 and its page 0; a checkpoint then makes it durable. The source
+//! is read whole before the import and again after it, and the import is
+//! recorded only when both readings found the same bytes and the source's
+//! length, modification and change times did not move between them
+//! ([`StoreFolder::hold`] says what that gives and its limit); otherwise it
+//! is not recorded ([`StoreError::SourceChanged`]): the import is dropped
+//! and the next start tries again. A stop at any
 //! point leaves the store holding the file whole, as imported or as before,
 //! and never part of an import: what an earlier start left under an
 //! import's name is dropped when the folder is opened, and an import that
@@ -135,6 +137,10 @@ pub enum StoreError {
     /// The store folder is not one only the server's own user can reach,
     /// or it was replaced while it was opened: why, and what to do.
     NotPrivate(String),
+    /// The store folder is not where the store may be: its parent is
+    /// missing, its name is not plain, it is not a folder, or it overlaps a
+    /// database folder (`config::check_store_folder`). Why, and what to do.
+    Misplaced(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -156,7 +162,7 @@ impl std::fmt::Display for StoreError {
                 "the file changed while it was imported: not hosted, and imported again at \
                  the next start"
             ),
-            StoreError::NotPrivate(why) => f.write_str(why),
+            StoreError::NotPrivate(why) | StoreError::Misplaced(why) => f.write_str(why),
         }
     }
 }
@@ -234,36 +240,45 @@ impl StoreFolder {
     /// file holds trees without this server's mark ([`FORMAT_MARK`]) is
     /// refused too. What an import left part way at an earlier start is
     /// dropped.
-    /// The store folder at `dir` on this system's file system
-    /// ([`Self::open`]), which only the server's own user may reach: the
-    /// directory opened (never a link) must be owned by the server's user,
-    /// with no access for its group or others, and the store must have
-    /// opened that same directory, by device and inode, not another that
-    /// took its name meanwhile (docs/server-storage.md 11). A folder that
-    /// does not exist is made, for the server's user only. Checked on
-    /// Unix; other systems take the folder as it is.
-    pub fn open_dir(dir: &std::path::Path, cache_bytes: u64) -> Result<StoreFolder, StoreError> {
+    /// The store folder named `dir` on this system's file system
+    /// ([`Self::open`]): placed as [`crate::config::check_store_folder`]
+    /// says (its parent exists, resolved, plus its own plain name, outside
+    /// every one of `database_folders`), made if missing (that one folder
+    /// only, mode 700, its parent flushed), and one only the server's own
+    /// user may reach (docs/server-storage.md 11). On Unix the folder is
+    /// looked at twice. First it is opened without following a link and
+    /// checked on that handle: owned by the server's user, no access for
+    /// its group or others. Then the store opens its files by path, and
+    /// afterwards the path is looked at again (`lstat`): the same device and
+    /// inode, owner and mode. That rules out a folder replaced, or its mode
+    /// or owner changed, and left so; it does not rule out a swap and a swap
+    /// back between the two looks by someone who can rename entries in the
+    /// folder's parent, as the store's own opens are by path
+    /// ([#814](https://github.com/OpenMaker-Dev/openmaker/issues/814)): the
+    /// parent must be a folder only the server's user, or root, can change.
+    /// Other systems take the folder as it is.
+    pub fn open_dir(
+        dir: &std::path::Path,
+        database_folders: &[std::path::PathBuf],
+        cache_bytes: u64,
+    ) -> Result<StoreFolder, StoreError> {
+        let dir = crate::config::check_store_folder(dir, database_folders)
+            .map_err(StoreError::Misplaced)?;
+        make_store_folder(&dir)?;
         #[cfg(unix)]
-        let opened = {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)
-                .map_err(|e| {
-                    StoreError::NotPrivate(format!("--store-dir {}: {e}", dir.display()))
-                })?;
-            private_folder(dir)?
-        };
-        let folder = Self::open(&om_store::os::OsFs::new(dir.to_path_buf()), cache_bytes)?;
+        let opened = private_folder(&dir)?;
+        let folder = Self::open(&om_store::os::OsFs::new(dir.clone()), cache_bytes)?;
         #[cfg(unix)]
         {
-            let now = rustix::fs::lstat(dir).map_err(|e| {
+            let now = rustix::fs::lstat(&dir).map_err(|e| {
                 StoreError::NotPrivate(format!("the store folder {}: {e}", dir.display()))
             })?;
-            if (now.st_dev, now.st_ino) != (opened.st_dev, opened.st_ino) {
+            let look =
+                |stat: &rustix::fs::Stat| (stat.st_dev, stat.st_ino, stat.st_uid, stat.st_mode);
+            if look(&now) != look(&opened) {
                 return Err(StoreError::NotPrivate(format!(
-                    "the store folder {} was replaced while the server opened it: start again",
+                    "the store folder {} was replaced, or its owner or mode changed, while the \
+                     server opened it: start again",
                     dir.display()
                 )));
             }
@@ -422,16 +437,27 @@ impl StoreFolder {
     }
 
     /// The tree that holds the file clients open as `name`, read from
-    /// `source`: the one the store holds when it was imported from bytes of
-    /// the same length and SHA-256, else a new import of `source`, which
-    /// replaces the one held before only once it is complete. The source is
-    /// read whole once for its digest when the store holds the name, and
-    /// once for an import, which takes the digest of what it read in the
-    /// same pass; it is never written. A source whose [`Stamp`] moved while
-    /// it was imported, or a page of which the import read again with other
-    /// bytes ([`Hashing`]), is refused ([`StoreError::SourceChanged`]), and an
-    /// import that fails after its tree was made drops that tree. Pinned,
-    /// so that the version read is kept from reuse.
+    /// `source`, which is never written: the one the store holds when it was
+    /// imported from bytes of the same length and SHA-256, else a new import
+    /// of `source`, which replaces the one held before only once it is
+    /// complete. Pinned, so that the version read is kept from reuse.
+    ///
+    /// The source is read whole for its digest ([`digest`]) between two
+    /// looks at its [`Stamp`]: the stored tree is served when the digest is
+    /// the recorded one and the stamp did not move. Otherwise it is
+    /// imported, and then read whole once more: the import is recorded only
+    /// when that second digest is the first and the stamp is still the one
+    /// taken first, and the digest recorded is that one. So every byte the
+    /// import used was read between two whole readings of the file that
+    /// found the same bytes: unless a byte was changed and changed back
+    /// between them while the stamp stayed the same, the tree is the tree of
+    /// the bytes the file held whole at one moment. Nothing short of the
+    /// writer's cooperation closes that limit. A source that moved during
+    /// either reading, or that does not end where its stamp's length says,
+    /// is refused ([`StoreError::SourceChanged`]) and not hosted at this
+    /// start; an import that fails after its tree was made drops that tree.
+    /// The store reads a source when a file is hosted, at a start or an
+    /// open: what is written to it later is found the next time.
     pub fn hold<R: IoRead + Seek + Stamped>(
         &self,
         name: &str,
@@ -447,9 +473,20 @@ impl StoreFolder {
             .root(&meta)
             .ok_or_else(|| StoreError::Foreign("no mark".into()))?;
         let recorded = Recorded::read(&self.pages, meta_root, name)?;
+        let changed = || {
+            warn!("the store: {name:?} changed while it was read; not hosted at this start");
+            StoreError::SourceChanged
+        };
+        // The first whole reading, between two looks at the stamp.
+        let before = source.stamp()?;
+        let len = before.as_ref().map(|stamp| stamp.len);
+        let first = digest(&mut source, len)?;
+        let still = source.stamp()? == before;
         if let Some(recorded) = recorded.as_ref() {
-            if self.pages.root(&recorded.tree).is_some() && digest(&mut source)? == recorded.source
-            {
+            if self.pages.root(&recorded.tree).is_some() && first == Some(recorded.source) {
+                if !still {
+                    return Err(changed());
+                }
                 let pin = self.pages.pin_newest()?;
                 let root = root_in(&pin, &recorded.tree)?;
                 return Ok(Held {
@@ -461,38 +498,47 @@ impl StoreFolder {
                 });
             }
         }
-        let before = source.stamp()?;
+        let first = match first {
+            Some(first) if still => first,
+            _ => return Err(changed()),
+        };
+        // The second whole reading, after the import: the same bytes, the
+        // stamp as it was first.
+        let unchanged = |source: &mut R| -> Result<bool, StoreError> {
+            Ok(digest(source, len)? == Some(first) && source.stamp()? == before)
+        };
         let number = next_number(&self.pages, meta_root)?;
         let importing = tree_name(IMPORTING, number);
         let named = tree_name(FILE_TREE, number);
-        let first = self.next_entry()?;
-        let mut hashing = Hashing::new(source);
+        let first_entry = self.next_entry()?;
+        source.seek(SeekFrom::Start(0))?;
         let imported = paged::import(
-            io::BufReader::with_capacity(64 << 10, &mut hashing),
+            io::BufReader::with_capacity(64 << 10, &mut source),
             &mut OnPages { pages: &self.pages },
             &importing,
-            first,
+            first_entry,
             Batch::default(),
         );
         // A source that changed while it was read is reported as such,
         // whatever the import made of the bytes it got.
         let imported = match imported {
             Ok(imported) => imported,
-            Err(_) if hashing.changed() || hashing.inner().stamp()? != before => {
-                warn!("the store: {name:?} changed while it was imported");
-                return Err(StoreError::SourceChanged);
+            Err(e) => {
+                return Err(match unchanged(&mut source) {
+                    Ok(true) => StoreError::Import(e),
+                    Ok(false) => changed(),
+                    Err(read) => read,
+                })
             }
-            Err(e) => return Err(StoreError::Import(e)),
         };
         // The import's tree exists from here: whatever fails drops it, so
         // that the next import, which takes the same number, finds no tree
         // of its name.
         let published = (|| {
-            let digest = hashing.finish()?;
-            if hashing.changed() || hashing.inner().stamp()? != before {
-                warn!("the store: {name:?} changed while it was imported");
-                return Err(StoreError::SourceChanged);
+            if !unchanged(&mut source)? {
+                return Err(changed());
             }
+            let digest = first;
             #[cfg(test)]
             if FAIL_PUBLISHING.with(|fail| fail.replace(false)) {
                 return Err(StoreError::Store(
@@ -645,220 +691,51 @@ impl Digest {
     }
 }
 
-/// The length and SHA-256 of what `source` holds, read from its start.
-fn digest<R: IoRead + Seek>(source: &mut R) -> io::Result<Digest> {
+/// The length and SHA-256 of what `source` holds, read whole from its
+/// start with one buffer: no further than `len` when its [`Stamp`] gave a
+/// length, and then the source must end there. `None` when it does not (it
+/// grew, or shrank, since the stamp): a source that changed. A source
+/// without a stamp is read to its end.
+fn digest<R: IoRead + Seek>(source: &mut R, len: Option<u64>) -> io::Result<Option<Digest>> {
     source.seek(SeekFrom::Start(0))?;
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buffer = vec![0; 1 << 16];
-    let mut len = 0u64;
+    let mut read = 0u64;
     loop {
-        let n = source.read(&mut buffer)?;
+        let want = match len {
+            Some(len) => usize::try_from(len - read).map_or(buffer.len(), |n| n.min(buffer.len())),
+            None => buffer.len(),
+        };
+        if want == 0 {
+            break;
+        }
+        let n = match source.read(&mut buffer[..want]) {
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             break;
         }
         context.update(&buffer[..n]);
-        len += n as u64;
+        read += n as u64;
+    }
+    if let Some(len) = len {
+        let mut past = [0; 1];
+        let more = loop {
+            match source.read(&mut past) {
+                Ok(n) => break n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        };
+        if read != len || more != 0 {
+            return Ok(None);
+        }
     }
     let mut sha256 = [0; 32];
     sha256.copy_from_slice(context.finish().as_ref());
-    Ok(Digest { len, sha256 })
-}
-
-/// The pages [`Hashing`] keeps a SHA-256 of: the `.fmp12` block size, so
-/// that each block the import reads is one page.
-const HASHED_PAGE: usize = 4096;
-
-/// `source`, read for an import, with the SHA-256 of the whole file taken
-/// in the same pass, in file order, and the SHA-256 of each page as it was
-/// first read. Every read is served from whole pages: a page read for the
-/// first time is hashed into the file's SHA-256 (with the pages before it
-/// the import skipped), and a page read again is compared with its first
-/// hash, so a byte the import reads twice is the byte the file's SHA-256
-/// holds, or the read fails ([`Hashing::changed`]). [`Hashing::finish`]
-/// hashes what the import did not read. 32 bytes are kept per 4 KiB page
-/// (8 MiB for each GiB of the file) while the file is imported.
-struct Hashing<R> {
-    inner: R,
-    /// Where the next read reads, and where the inner reader is.
-    pos: u64,
-    inner_pos: Option<u64>,
-    /// The SHA-256 of each page from the first, as first read.
-    pages: Vec<[u8; 32]>,
-    /// The bytes hashed so far: the pages above, the last of them short
-    /// at the end of the file.
-    hashed: u64,
-    /// The file ended at a short or empty page.
-    ended: bool,
-    context: ring::digest::Context,
-    /// The page read last, whole, and its index.
-    page: Vec<u8>,
-    page_at: Option<u64>,
-    /// A page read again did not hold what it held at first.
-    changed: bool,
-}
-
-impl<R: IoRead + Seek> Hashing<R> {
-    fn new(inner: R) -> Self {
-        Hashing {
-            inner,
-            pos: 0,
-            inner_pos: None,
-            pages: Vec::new(),
-            hashed: 0,
-            ended: false,
-            context: ring::digest::Context::new(&ring::digest::SHA256),
-            page: Vec::with_capacity(HASHED_PAGE),
-            page_at: None,
-            changed: false,
-        }
-    }
-
-    fn inner(&self) -> &R {
-        &self.inner
-    }
-
-    /// Whether a page read again held other bytes than at its first read:
-    /// the source changed while it was imported.
-    fn changed(&self) -> bool {
-        self.changed
-    }
-
-    /// Read page `index` whole (short at the end of the file) from the
-    /// inner reader into `self.page`.
-    fn read_page(&mut self, index: u64) -> io::Result<()> {
-        let at = index * HASHED_PAGE as u64;
-        if self.inner_pos != Some(at) {
-            self.inner.seek(SeekFrom::Start(at))?;
-            self.inner_pos = Some(at);
-        }
-        self.page.resize(HASHED_PAGE, 0);
-        let mut filled = 0;
-        while filled < HASHED_PAGE {
-            let n = match self.inner.read(&mut self.page[filled..]) {
-                Ok(n) => n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => {
-                    self.inner_pos = None;
-                    self.page_at = None;
-                    return Err(e);
-                }
-            };
-            if n == 0 {
-                break;
-            }
-            filled += n;
-        }
-        self.page.truncate(filled);
-        self.inner_pos = Some(at + filled as u64);
-        self.page_at = Some(index);
-        Ok(())
-    }
-
-    /// Page `index` in `self.page`: read and hashed for the first time
-    /// (with each page before it not hashed yet), or read again and
-    /// compared with its first hash. An index past the end holds nothing.
-    fn load(&mut self, index: u64) -> io::Result<()> {
-        if self.page_at == Some(index) {
-            return Ok(());
-        }
-        let first = self.pages.len() as u64;
-        if self.ended && index >= first {
-            self.page.clear();
-            self.page_at = Some(index);
-            return Ok(());
-        }
-        if index < first {
-            self.read_page(index)?;
-            let hash = ring::digest::digest(&ring::digest::SHA256, &self.page);
-            if hash.as_ref() != self.pages[index as usize] {
-                self.changed = true;
-                self.page_at = None;
-                return Err(io::Error::other(
-                    "a page read again does not hold what it held when first read",
-                ));
-            }
-            return Ok(());
-        }
-        for next in first..=index {
-            self.read_page(next)?;
-            let mut hash = [0; 32];
-            hash.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &self.page).as_ref());
-            self.context.update(&self.page);
-            self.hashed += self.page.len() as u64;
-            if self.page.len() < HASHED_PAGE {
-                self.ended = true;
-                if self.page.is_empty() {
-                    break;
-                }
-            }
-            self.pages.push(hash);
-            if self.ended {
-                break;
-            }
-        }
-        if self.page_at != Some(index) {
-            // The file ended before `index`.
-            self.page.clear();
-            self.page_at = Some(index);
-        }
-        Ok(())
-    }
-
-    /// The length and SHA-256 of the whole file, hashing what is left.
-    fn finish(&mut self) -> io::Result<Digest> {
-        while !self.ended {
-            self.load(self.pages.len() as u64)?;
-        }
-        let context = std::mem::replace(
-            &mut self.context,
-            ring::digest::Context::new(&ring::digest::SHA256),
-        );
-        let mut sha256 = [0; 32];
-        sha256.copy_from_slice(context.finish().as_ref());
-        Ok(Digest {
-            len: self.hashed,
-            sha256,
-        })
-    }
-}
-
-impl<R: IoRead + Seek> IoRead for Hashing<R> {
-    /// Page by page until `buf` is full or the file ends. A page that
-    /// fails after others were copied fails the next read.
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut n = 0;
-        while n < buf.len() {
-            if let Err(e) = self.load(self.pos / HASHED_PAGE as u64) {
-                return if n == 0 { Err(e) } else { Ok(n) };
-            }
-            let at = (self.pos % HASHED_PAGE as u64) as usize;
-            let Some(left) = self.page.get(at..).filter(|left| !left.is_empty()) else {
-                break;
-            };
-            let take = (buf.len() - n).min(left.len());
-            buf[n..n + take].copy_from_slice(&left[..take]);
-            n += take;
-            self.pos += take as u64;
-        }
-        Ok(n)
-    }
-}
-
-impl<R: IoRead + Seek> Seek for Hashing<R> {
-    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
-        self.pos = match to {
-            SeekFrom::Start(at) => at,
-            SeekFrom::Current(by) => self.pos.checked_add_signed(by).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "a seek before the start")
-            })?,
-            SeekFrom::End(by) => {
-                let at = self.inner.seek(SeekFrom::End(by))?;
-                self.inner_pos = Some(at);
-                at
-            }
-        };
-        Ok(self.pos)
-    }
+    Ok(Some(Digest { len: read, sha256 }))
 }
 
 /// What tells a source's contents changed without reading them: its
@@ -901,6 +778,29 @@ impl<T> Stamped for io::Cursor<T> {
     fn stamp(&self) -> io::Result<Option<Stamp>> {
         Ok(None)
     }
+}
+
+/// Make the store folder `dir` if it is missing: that one folder, its
+/// parent existing (`check_store_folder`), for the server's user only on
+/// Unix, and the parent flushed so that its new entry is durable.
+fn make_store_folder(dir: &std::path::Path) -> Result<(), StoreError> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let refused =
+        |e: io::Error| StoreError::Misplaced(format!("--store-dir {}: {e}", dir.display()));
+    match builder.create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(e) => return Err(refused(e)),
+    }
+    #[cfg(unix)]
+    if let Some(parent) = dir.parent() {
+        std::fs::File::open(parent)
+            .and_then(|parent| parent.sync_all())
+            .map_err(refused)?;
+    }
+    Ok(())
 }
 
 /// The status of the directory at `dir`, opened without following a link
@@ -1436,11 +1336,24 @@ fn unavailable(operation: Operation) -> Outcome {
 const UNAVAILABLE_CODE: u16 = 3;
 
 /// The state of `file` the store engine computes from `view` when it is
-/// hosted, page 0 as imported.
+/// hosted, page 0 as imported ([`derived_within`], its accounts within
+/// [`HOSTING_LIMIT`]).
 pub(crate) fn derived_of(
     view: &dyn View,
     name: &str,
     page_zero: &[u8],
+) -> Result<Derived, ReadError> {
+    derived_within(view, name, page_zero, HOSTING_LIMIT)
+}
+
+/// [`derived_of`], refused as too large when what its decoded accounts
+/// keep together passes `kept_limit` ([`crate::hosting::kept_by_accounts`]),
+/// however small each account's and each set's tree is.
+pub(crate) fn derived_within(
+    view: &dyn View,
+    name: &str,
+    page_zero: &[u8],
+    kept_limit: usize,
 ) -> Result<Derived, ReadError> {
     let catalog = crate::derived::read_catalog(view).map_err(|e| match e {
         // A catalog past what the reader reads whole (`Capped`).
@@ -1459,6 +1372,12 @@ pub(crate) fn derived_of(
     // catalog past the limit is, and the file is not hosted.
     if let Err(error) = derived.accounts() {
         return Err(error.clone());
+    }
+    if crate::hosting::kept_by_accounts(view)? > kept_limit {
+        return Err(ReadError::TooLarge {
+            path: vec![vec![23], vec![1], vec![5]],
+            limit: kept_limit,
+        });
     }
     derived.set_page_zero(page_zero);
     Ok(derived)
@@ -1684,7 +1603,7 @@ mod tests {
         std::fs::create_dir_all(&shared).unwrap();
         for mode in [0o755, 0o750, 0o701] {
             std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(mode)).unwrap();
-            let refused = StoreFolder::open_dir(&shared, CACHE);
+            let refused = StoreFolder::open_dir(&shared, &[], CACHE);
             assert!(
                 matches!(refused, Err(StoreError::NotPrivate(_))),
                 "{mode:o}: {:?}",
@@ -1692,16 +1611,43 @@ mod tests {
             );
         }
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
-        drop(StoreFolder::open_dir(&shared, CACHE).unwrap());
+        drop(StoreFolder::open_dir(&shared, &[], CACHE).unwrap());
+        // A link, also named with a trailing separator, is refused.
         let link = base.join("link");
         std::os::unix::fs::symlink(&shared, &link).unwrap();
-        assert!(matches!(
-            StoreFolder::open_dir(&link, CACHE),
-            Err(StoreError::NotPrivate(_))
-        ));
-        let missing = base.join("missing").join("Store");
-        drop(StoreFolder::open_dir(&missing, CACHE).unwrap());
-        let mode = std::fs::metadata(&missing).unwrap().permissions().mode() & 0o777;
+        for named in [link.clone(), base.join("link/")] {
+            let refused = StoreFolder::open_dir(&named, &[], CACHE);
+            assert!(
+                matches!(refused, Err(StoreError::Misplaced(_))),
+                "{named:?}: {:?}",
+                refused.err()
+            );
+        }
+        // A missing parent is refused and nothing is made; inside a
+        // database folder too.
+        let databases = base.join("Databases");
+        std::fs::create_dir_all(&databases).unwrap();
+        for (named, folders) in [
+            (base.join("missing").join("Store"), Vec::new()),
+            (
+                base.join("missing/../Databases/Store"),
+                vec![databases.clone()],
+            ),
+            (databases.join("Store"), vec![databases.clone()]),
+        ] {
+            let refused = StoreFolder::open_dir(&named, &folders, CACHE);
+            assert!(
+                matches!(refused, Err(StoreError::Misplaced(_))),
+                "{named:?}: {:?}",
+                refused.err()
+            );
+        }
+        assert!(!base.join("missing").exists());
+        assert!(!databases.join("Store").exists());
+        // A missing folder whose parent exists is made, private.
+        let made = base.join("Store");
+        drop(StoreFolder::open_dir(&made, &[], CACHE).unwrap());
+        let mode = std::fs::metadata(&made).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1758,84 +1704,165 @@ mod tests {
         }
     }
 
-    /// A file's bytes, page 1 of which holds other bytes from its second
-    /// read on, its length and times as they were (a [`Stamp`] that never
-    /// moves): what a write in place of the same length between two reads
-    /// looks like on a system whose times do not show it.
-    struct ChangedOnRereading {
-        versions: [Vec<u8>; 2],
-        reads_of_page_1: u32,
+    /// A change made to a source's bytes.
+    type Change = Box<dyn FnOnce(&mut Vec<u8>)>;
+
+    /// A source that changes as it is read: once `at` bytes were read in
+    /// all, over every reading, `change` is made to its bytes; its stamp
+    /// gives their length, and moves otherwise only when `stamp_moves`.
+    struct Changes {
+        bytes: Vec<u8>,
+        at: u64,
+        change: Option<Change>,
+        stamp_moves: bool,
+        moved: bool,
+        read: u64,
         pos: u64,
     }
 
-    impl IoRead for ChangedOnRereading {
+    impl IoRead for Changes {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let page_1 = self.pos / HASHED_PAGE as u64 == 1;
-            let bytes = &self.versions[usize::from(page_1 && self.reads_of_page_1 > 0)];
-            if page_1 {
-                self.reads_of_page_1 += 1;
+            if self.read >= self.at {
+                if let Some(change) = self.change.take() {
+                    change(&mut self.bytes);
+                    self.moved |= self.stamp_moves;
+                }
             }
-            let at = (self.pos as usize).min(bytes.len());
-            let n = buf.len().min(bytes.len() - at);
-            buf[..n].copy_from_slice(&bytes[at..at + n]);
+            let room = match self.change {
+                Some(_) => usize::try_from(self.at - self.read).unwrap_or(usize::MAX),
+                None => usize::MAX,
+            };
+            let at = (self.pos as usize).min(self.bytes.len());
+            let n = buf.len().min(self.bytes.len() - at).min(room);
+            buf[..n].copy_from_slice(&self.bytes[at..at + n]);
             self.pos += n as u64;
+            self.read += n as u64;
             Ok(n)
         }
     }
 
-    impl Seek for ChangedOnRereading {
+    impl Seek for Changes {
         fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
             self.pos = match to {
                 SeekFrom::Start(at) => at,
                 SeekFrom::Current(by) => self.pos.saturating_add_signed(by),
-                SeekFrom::End(by) => (self.versions[0].len() as u64).saturating_add_signed(by),
+                SeekFrom::End(by) => (self.bytes.len() as u64).saturating_add_signed(by),
             };
             Ok(self.pos)
         }
     }
 
-    /// Every byte the import reads twice is the byte the file's SHA-256
-    /// holds ([`Hashing`]): read page by page as the import reads, a page
-    /// read again after a seek back must hold what it held at its first
-    /// read. Changed in between, with the length and times as they were,
-    /// the read fails and the source is taken as changed, which refuses the
-    /// import ([`StoreError::SourceChanged`]). Unchanged, it is read again
-    /// and the digest is the whole file's. (The files the store tests
-    /// import are read in file order, each page once, so the reader is
-    /// driven here as the import drives it after a backward leaf link.)
-    #[test]
-    fn a_page_read_again_must_hold_what_it_held() {
-        let source = file("store-reread", 400);
-        assert!(source.len() >= 4 * HASHED_PAGE);
-        let mut edited = source.clone();
-        edited[HASHED_PAGE + 100] ^= 0xff;
-        let read_back = |reader: &mut dyn IoReadSeek| {
-            let mut first = vec![0; 3 * HASHED_PAGE];
-            reader.read_exact(&mut first).unwrap();
-            assert_eq!(first, source[..3 * HASHED_PAGE]);
-            reader.seek(SeekFrom::Start(HASHED_PAGE as u64)).unwrap();
-            let mut again = vec![0; HASHED_PAGE];
-            reader.read_exact(&mut again).map(|()| again)
-        };
-        let mut hashing = Hashing::new(ChangedOnRereading {
-            versions: [source.clone(), edited],
-            reads_of_page_1: 0,
-            pos: 0,
-        });
-        assert!(read_back(&mut hashing).is_err());
-        assert!(hashing.changed());
-
-        let mut hashing = Hashing::new(Cursor::new(source.clone()));
-        let again = read_back(&mut hashing).unwrap();
-        assert_eq!(again, source[HASHED_PAGE..2 * HASHED_PAGE]);
-        assert!(!hashing.changed());
-        let whole = hashing.finish().unwrap();
-        assert_eq!(whole, digest(&mut Cursor::new(&source)).unwrap());
+    impl Stamped for Changes {
+        fn stamp(&self) -> io::Result<Option<Stamp>> {
+            Ok(Some(Stamp {
+                len: self.bytes.len() as u64,
+                modified: None,
+                changed: (i64::from(self.moved), 0),
+                inode: 1,
+            }))
+        }
     }
 
-    /// A reader the test above drives through `dyn`.
-    trait IoReadSeek: IoRead + Seek {}
-    impl<T: IoRead + Seek> IoReadSeek for T {}
+    /// A source is imported only when it held the same bytes, its stamp
+    /// unmoved, through two whole readings around the import
+    /// ([`StoreFolder::hold`]). Each case changes the source once, at a point
+    /// of the reading, and is refused as a source that changed: nothing is
+    /// recorded, and no import's tree is left. (a) A page changes after the
+    /// first reading read it and before the import does. (b) After the import
+    /// read the file's first 64 KiB, a page there and the last page change:
+    /// the import holds the first page old and the last new, bytes the file
+    /// never held together. (c) A page the import read changes and stays
+    /// changed (what the import would have read again). (d) The store holds
+    /// the file; its stamp moves during the reading that would serve the
+    /// tree held, its bytes as they were: refused, the tree held as it was.
+    /// (e) The file grows during the first reading. The same bytes standing
+    /// still are imported.
+    #[test]
+    fn a_source_that_changes_around_its_import_is_refused() {
+        let source = file("store-changes", 10_000);
+        let len = source.len() as u64;
+        assert!(len > 3 * (64 << 10), "{len}");
+        let flip = |offset: u64| {
+            Box::new(move |bytes: &mut Vec<u8>| bytes[offset as usize] ^= 0xff) as Change
+        };
+        let last = len - 100;
+        type Case = (&'static str, u64, Change, bool, bool);
+        let cases: Vec<Case> = vec![
+            (
+                "a: after the first reading",
+                len,
+                flip(4096 + 100),
+                false,
+                false,
+            ),
+            (
+                "b: a page the import read and one it had not",
+                len + (64 << 10),
+                Box::new(move |bytes: &mut Vec<u8>| {
+                    bytes[4096 + 100] ^= 0xff;
+                    bytes[last as usize] ^= 0xff;
+                }),
+                false,
+                false,
+            ),
+            (
+                "c: a page the import read",
+                len + (64 << 10),
+                flip(4096 + 100),
+                false,
+                false,
+            ),
+            (
+                "d: the stamp, while the tree held is checked",
+                len / 2,
+                Box::new(|_: &mut Vec<u8>| {}),
+                true,
+                true,
+            ),
+            (
+                "e: the file grows",
+                len / 2,
+                Box::new(|bytes: &mut Vec<u8>| bytes.extend([0; 4096])),
+                false,
+                false,
+            ),
+        ];
+        let importing = |folder: &StoreFolder| {
+            folder
+                .pages()
+                .tree_names()
+                .iter()
+                .any(|name| name.as_bytes().starts_with(IMPORTING.as_bytes()))
+        };
+        for (what, at, change, stamp_moves, held_first) in cases {
+            let sim = Sim::new(17);
+            let folder = open(&sim);
+            let before = held_first.then(|| {
+                folder.hold(NAME, Cursor::new(source.clone())).unwrap();
+                held(&folder).unwrap()
+            });
+            let changes = Changes {
+                bytes: source.clone(),
+                at,
+                change: Some(change),
+                stamp_moves,
+                moved: false,
+                read: 0,
+                pos: 0,
+            };
+            let refused = folder.hold(NAME, changes);
+            assert!(
+                matches!(refused, Err(StoreError::SourceChanged)),
+                "{what}: {:?}",
+                refused.err()
+            );
+            assert_eq!(held(&folder), before, "{what}");
+            assert!(!importing(&folder), "{what}");
+        }
+        let sim = Sim::new(17);
+        let folder = open(&sim);
+        assert!(folder.hold(NAME, Cursor::new(source)).unwrap().imported);
+    }
 
     /// The SHA-256 the store records is of the bytes it imported: a source
     /// replaced in place while the import reads it is not recorded, and is
@@ -1914,6 +1941,42 @@ mod tests {
         assert!(!folder.hold(NAME, Cursor::new(&source)).unwrap().imported);
     }
 
+    /// A flush that fails during the checkpoint after an import's
+    /// publication (the file recorded in memory, its tree renamed), a write
+    /// error the page file cannot take back, marks the page file failed:
+    /// that hold fails,
+    /// and so does every later one in the same process, as the store cannot
+    /// make anything durable; after a restart the store opens its last
+    /// durable checkpoint, which does not hold the import, and imports the
+    /// file again. Found by placing the failed flush at each step of the
+    /// hold in turn until one marks the page file failed.
+    #[test]
+    fn a_checkpoint_that_fails_to_flush_fails_the_process_until_a_restart() {
+        let source = file("store-fail-flush", 40);
+        let steps = {
+            let sim = Sim::new(21);
+            let folder = open(&sim);
+            let opened = sim.steps();
+            folder.hold(NAME, Cursor::new(&source)).unwrap();
+            sim.steps() - opened
+        };
+        let failed = (1..=steps).find_map(|k| {
+            let sim = Sim::new(21);
+            let folder = open(&sim);
+            sim.place(sim.steps() + k, Fault::FailFlush);
+            let first = folder.hold(NAME, Cursor::new(&source));
+            // The publication's checkpoint: the file is recorded in memory.
+            let published = !folder.recorded().is_empty();
+            (first.is_err() && folder.pages().failed() && published).then_some((sim, folder))
+        });
+        let (sim, folder) = failed.expect("a failed flush that marks the page file failed");
+        assert!(folder.hold(NAME, Cursor::new(&source)).is_err());
+        drop(folder);
+        sim.restart();
+        let folder = open(&sim);
+        assert!(folder.hold(NAME, Cursor::new(&source)).unwrap().imported);
+    }
+
     /// An import whose own drop of its tree failed leaves that tree under
     /// the import's name: the next import, which takes the same number,
     /// drops it first and goes through in the same process.
@@ -1986,6 +2049,52 @@ mod tests {
         let refused = derive("store-accounts-large", true);
         assert!(
             matches!(refused, Err(ReadError::TooLarge { .. })),
+            "{refused:?}"
+        );
+    }
+
+    /// What the decoded accounts keep together is held under a limit
+    /// (`hosting::kept_by_accounts`, [`derived_within`]): each account keeps
+    /// its own copy of its privilege set's rules, so 300 small accounts on
+    /// one set keep that set 300 times, and the file is refused as too large
+    /// although every tree is far under the limit; the file's own two
+    /// accounts derive within it.
+    #[test]
+    fn many_small_accounts_on_one_set_are_refused_past_the_limit() {
+        let kept = |copies: u8| {
+            let mut tree = fixture::tree(&[], true);
+            let clerk = tree.at(&[&[23], &[1], &[5], &[3]]).unwrap().clone();
+            for n in 0..copies {
+                let key = vec![0x80, n];
+                let mut copy = clerk.clone();
+                copy.segment = key.clone();
+                tree.put(&[&[23], &[1], &[5], &key], copy);
+            }
+            let source =
+                std::fs::read(&fixture::TempFile::from_tree("store-kept", &tree).0).unwrap();
+            let sim = Sim::new(8);
+            let folder = open(&sim);
+            let held = folder.hold(NAME, Cursor::new(&source)).unwrap();
+            let view = view_of(&folder, held.root).unwrap();
+            let kept = crate::hosting::kept_by_accounts(&view).unwrap();
+            let derive = |limit| {
+                derived_within(
+                    &Capped::new(&view, HOSTING_LIMIT),
+                    NAME,
+                    &held.page_zero,
+                    limit,
+                )
+                .map(|_| ())
+            };
+            (kept, derive(64 << 10))
+        };
+        let (few, derived) = kept(0);
+        assert!(few < 64 << 10, "{few}");
+        assert_eq!(derived, Ok(()));
+        let (many, refused) = kept(255);
+        assert!(many > 64 << 10, "{many}");
+        assert!(
+            matches!(refused, Err(ReadError::TooLarge { limit, .. }) if limit == 64 << 10),
             "{refused:?}"
         );
     }

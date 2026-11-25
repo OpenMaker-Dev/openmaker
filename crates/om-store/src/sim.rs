@@ -531,6 +531,18 @@ impl Sim {
             .collect()
     }
 
+    /// What a read of the file `path` would show now: its cache, which a
+    /// drawn damage of the device does not reach until it is dropped. For a
+    /// test's own look at what the store reads; no step, no fault.
+    pub fn visible(&self, path: &str) -> Option<Vec<u8>> {
+        let world = self.world();
+        let names = sys::names(path, Op::Read).ok()?;
+        match world.nodes.get(&world.find(&names)?) {
+            Some(Node::File(file)) => Some(file.cache.clone()),
+            _ => None,
+        }
+    }
+
     /// Let time pass on both clocks.
     pub fn advance(&self, by: Duration) {
         let mut world = self.world();

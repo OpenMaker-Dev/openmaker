@@ -573,56 +573,185 @@ const SMALL: Batch = Batch {
     bytes: 64 << 10,
 };
 
-/// A find's index entry is read within the work its program has left
-/// (`om_query::Listing::entry`): through the store engine's view, an entry
-/// past it is refused at the limit rather than given, one within it is
-/// given, and a view that keeps failed reads for a server script's find
-/// (`Noted`) does not take the refusal for one, so that the find fails at
-/// its work limit, not as an unreadable file.
-#[test]
-fn a_listed_entry_past_the_work_left_is_refused_by_the_store_engines_view() {
-    use om_hbam::RidList;
-    use om_query::program::Size;
+/// A page store that counts the pages read from it.
+struct CountingReads<'s> {
+    inner: &'s MemStore,
+    reads: Cell<usize>,
+}
+
+impl PageStore for CountingReads<'_> {
+    type Entry<'a>
+        = om_store::page::MemEntry<'a>
+    where
+        Self: 'a;
+
+    fn read(
+        &self,
+        number: om_store::page::PageNo,
+        hash: &Hash,
+    ) -> Result<std::sync::Arc<om_store::page::Page>, om_store::page::Fault> {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.read(number, hash)
+    }
+
+    fn trees(&self) -> Vec<(TreeName, om_store::page::Root)> {
+        self.inner.trees()
+    }
+
+    fn root(&self, name: &TreeName) -> Option<om_store::page::Root> {
+        self.inner.root(name)
+    }
+
+    fn begin(&self) -> Result<Self::Entry<'_>, StoreError> {
+        self.inner.begin()
+    }
+}
+
+/// An index of Tasks' Name holding one entry of about fifty RID list nodes
+/// (25 KB, over several pages): its path, the entry's key, and its records.
+fn indexed_file() -> (
+    OwnedNode,
+    [&'static [u8]; 4],
+    &'static [u8],
+    om_hbam::RidList,
+) {
     let mut root = fixture::tree(&[], true);
     let index: [&[u8]; 4] = [&[0x80, 0x01], &[1], &[1], &[0]];
     let key: &[u8] = b"\x01ship";
-    let posting: RidList = (1..=200_000u64).step_by(3).collect();
+    let posting: om_hbam::RidList = (1..=200_000u64).step_by(3).collect();
     let mut at = index.to_vec();
     at.push(key);
     root.put(&at, posting.to_node(Vec::new()));
+    (root, index, key, posting)
+}
+
+/// The store engine builds a find's index entry within the work its program
+/// has left (`View::subtree_within`), counting each node as the reader
+/// counts it (`om_query::program::Size::of_tree`): an entry exactly at the
+/// limit in both counters is given; one node or one byte more is refused;
+/// and with either counter spent, the other ample, it is refused before
+/// its first node is kept, having read no page past the one a head read of
+/// it reads. Through a view that keeps failed reads for a server script's
+/// find (`Noted`), the refusal is no failed read.
+#[test]
+fn the_store_engine_refuses_an_entry_at_the_first_node_past_either_counter() {
+    use om_query::program::Size;
+    let (root, index, key, posting) = indexed_file();
     let (memory, imported) = import_into_memory(&written(&root), SMALL);
-    let view = PagedView::open(&memory, imported.root).unwrap();
+    let counting = CountingReads {
+        inner: &memory,
+        reads: Cell::new(0),
+    };
+    let view = PagedView::open(&counting, imported.root).unwrap();
+    let mut path = index.to_vec();
+    path.push(key);
+    let exact = Size::of_tree(&posting.to_node(key.to_vec()));
+    assert!(exact.nodes > 40, "{exact:?}");
+    let given = view.subtree_within(&path, exact).unwrap().unwrap();
+    assert_eq!(om_hbam::RidList::from_owned(&given).unwrap(), posting);
+    let refused = |work: Size| {
+        matches!(
+            view.subtree_within(&path, work),
+            Err(ReadError::TooLarge { .. })
+        )
+    };
+    for short in [
+        Size {
+            nodes: exact.nodes - 1,
+            ..exact
+        },
+        Size {
+            bytes: exact.bytes - 1,
+            ..exact
+        },
+    ] {
+        assert!(refused(short), "{short:?}");
+    }
+    // What a head read of the entry reads: the seek.
+    counting.reads.set(0);
+    assert!(view.node(&path).unwrap().is_some());
+    let seek = counting.reads.get();
+    for spent in [
+        Size {
+            nodes: usize::MAX,
+            bytes: 0,
+        },
+        Size {
+            nodes: 0,
+            bytes: usize::MAX,
+        },
+    ] {
+        counting.reads.set(0);
+        assert!(refused(spent), "{spent:?}");
+        assert_eq!(counting.reads.get(), seek, "{spent:?}");
+    }
+    counting.reads.set(0);
+    assert!(view.subtree_within(&path, exact).unwrap().is_some());
+    assert!(
+        counting.reads.get() > seek,
+        "the entry spans pages past the seek"
+    );
     let noted = crate::engine::Noted::new(&view);
-    let Some(om_query::Children::Listed(listing)) =
-        crate::connection::ViewListing::of(&noted, &index).unwrap()
-    else {
-        panic!("the store engine's view lists an index");
-    };
-    let whole = posting.to_node(key.to_vec());
-    let work = Size {
-        nodes: 1 + whole.children.len(),
-        bytes: key.len()
-            + whole
-                .children
-                .iter()
-                .map(|c| c.segment.len() + c.value.as_ref().map_or(0, Vec::len))
-                .sum::<usize>(),
-    };
-    assert!(work.nodes > 40, "{work:?}");
-    let little = Size {
-        nodes: 4,
-        bytes: 200,
-    };
     assert!(matches!(
-        listing.entry(key, little),
-        Err(om_hbam::Error::TooLarge { .. })
+        noted.subtree_within(&path, Size::default()),
+        Err(ReadError::TooLarge { .. })
     ));
     assert!(
         noted.failed().is_ok(),
-        "a refusal at the caller's limit is no failed read"
+        "a refusal at the reader's limit is no failed read"
     );
-    let given = listing.entry(key, work).unwrap().unwrap();
-    assert_eq!(RidList::from_owned(&given).unwrap(), posting);
+}
+
+/// The file engine lends a find's index entry unchecked
+/// (`View::subtree_within`), so that one whose lists hold room past their
+/// length is given when its work fits, and its reader's count decides; and
+/// the test view over each engine gives the reader the same outcome at, and
+/// either side of, the entry's work.
+#[test]
+fn the_file_engine_lends_an_entry_and_both_engines_answer_the_reader_alike() {
+    use om_query::program::Size;
+    let (mut root, index, key, posting) = indexed_file();
+    let mut path = index.to_vec();
+    path.push(key);
+    // The entry's list with room for a thousand times its length.
+    let entry = root.at_mut(&path).unwrap();
+    let mut roomy = Vec::with_capacity(entry.children.len() * 1000);
+    roomy.append(&mut entry.children);
+    entry.children = roomy;
+    let exact = Size::of_tree(&posting.to_node(key.to_vec()));
+    let tree = crate::engine::TreeView::new(&root, 1);
+    assert!(matches!(
+        tree.subtree_within(&path, exact).unwrap(),
+        Some(Cow::Borrowed(_))
+    ));
+    let (memory, imported) = import_into_memory(&written(&root), SMALL);
+    let paged = PagedView::open(&memory, imported.root).unwrap();
+    let reader = |view: &dyn View, work: Size| match view.subtree_within(&path, work) {
+        Err(ReadError::TooLarge { .. }) => "refused",
+        Ok(Some(node)) => {
+            let size = Size::of_tree(&node);
+            match size.nodes <= work.nodes && size.bytes <= work.bytes {
+                true => "read",
+                false => "refused",
+            }
+        }
+        other => panic!("{other:?}"),
+    };
+    let at = |nodes: usize, bytes: usize| Size { nodes, bytes };
+    for (work, outcome) in [
+        (exact, "read"),
+        (at(exact.nodes + 1, exact.bytes + 1), "read"),
+        (at(exact.nodes - 1, exact.bytes), "refused"),
+        (at(exact.nodes, exact.bytes - 1), "refused"),
+        (at(exact.nodes, exact.bytes / 2), "refused"),
+        (at(usize::MAX, 0), "refused"),
+        (at(0, usize::MAX), "refused"),
+        (Size::default(), "refused"),
+    ] {
+        let file = reader(&crate::engine::copies::Copies::new(&tree, &[]), work);
+        let store = reader(&crate::engine::copies::Copies::new(&paged, &[]), work);
+        assert_eq!((file, store), (outcome, outcome), "{work:?}");
+    }
 }
 
 /// Two engines, one answer (docs/server-storage.md 12, "Both engines

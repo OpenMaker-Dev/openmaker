@@ -239,8 +239,11 @@ fn paints(app: &common::App, text: &str) -> bool {
 #[test]
 fn fields_show_their_format_and_edit_their_value() {
     let mut app = common::harness(Box::new(Provider));
-    common::fill(&mut app, "Host", "formats.example.invalid");
-    common::fill(&mut app, "File", "Formats.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/formats.example.invalid/Formats.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "FORMATTED FIELDS");
     common::wait_until(&mut app, "the formatted amount", |app| {

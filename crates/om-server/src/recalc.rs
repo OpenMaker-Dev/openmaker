@@ -20,9 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::{self, RecordEnvironment};
 use om_hbam::slot::{be_uint, uint_segment};
-use om_hbam::{Cell, OwnedNode, Table};
+use om_hbam::{Cell, Field, OwnedNode, Table};
 
-use crate::engine::{Environment, HostEnvironment};
+use crate::engine::{Environment, HostEnvironment, ReadError, TreeView, View, NO_LIMIT};
 use crate::modcount;
 
 /// Option bits that change a field's stored values: global storage,
@@ -72,46 +72,55 @@ pub type TableBasis = BTreeMap<u64, FieldBasis>;
 
 /// The basis of `table` as `root` (the file's key tree) defines it now.
 pub fn table_basis(root: &OwnedNode, table: &Table) -> TableBasis {
-    let t = uint_segment(table.id);
+    let view = TreeView::new(root, 0);
     table
         .fields
         .iter()
         .map(|field| {
-            let Some(options) = field.decoded_options() else {
-                return (
-                    field.id,
-                    FieldBasis {
-                        kind: 0,
-                        data_type: 0,
-                        options: 0,
-                        repetitions: 0,
-                        formula: None,
-                    },
-                );
-            };
-            let f = uint_segment(field.id);
-            let formula = (options.field_kind == 2)
-                .then(|| {
-                    let part = |key: u8| {
-                        root.at(&[&t, &[3], &[5], &f, &[FORMULA], &[key]])
-                            .and_then(|n| n.assembled())
-                            .map(|b| b.into_owned())
-                    };
-                    Some((part(CONTEXT)?, part(POLISH)?))
-                })
-                .flatten();
-            (
-                field.id,
-                FieldBasis {
-                    kind: options.field_kind,
-                    data_type: options.data_type,
-                    options: options.options & VALUE_OPTIONS,
-                    repetitions: options.max_repetitions,
-                    formula,
-                },
-            )
+            let basis = field_basis(&view, table.id, field)
+                .expect("the file engine's tree never fails a read");
+            (field.id, basis)
         })
         .collect()
+}
+
+/// The basis of `field` of table `table` as `view` reads its definition.
+pub(crate) fn field_basis(
+    view: &dyn View,
+    table: u64,
+    field: &Field,
+) -> Result<FieldBasis, ReadError> {
+    let Some(options) = field.decoded_options() else {
+        return Ok(FieldBasis {
+            kind: 0,
+            data_type: 0,
+            options: 0,
+            repetitions: 0,
+            formula: None,
+        });
+    };
+    let formula = if options.field_kind == 2 {
+        let (t, f) = (uint_segment(table), uint_segment(field.id));
+        let part = |key: u8| -> Result<Option<Vec<u8>>, ReadError> {
+            let path: [&[u8]; 6] = [&t, &[3], &[5], &f, &[FORMULA], &[key]];
+            Ok(view
+                .subtree(&path, NO_LIMIT)?
+                .and_then(|node| node.assembled().map(|bytes| bytes.into_owned())))
+        };
+        match (part(CONTEXT)?, part(POLISH)?) {
+            (Some(context), Some(polish)) => Some((context, polish)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(FieldBasis {
+        kind: options.field_kind,
+        data_type: options.data_type,
+        options: options.options & VALUE_OPTIONS,
+        repetitions: options.max_repetitions,
+        formula,
+    })
 }
 
 /// The fields whose stored values the change from `old` to `new` makes

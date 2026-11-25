@@ -3607,7 +3607,7 @@ impl ServerHost {
     /// own waiting set: added to the file's and stored by a draft
     /// (query-program.md 7.1), as for a client's find, once the find ended
     /// without a failed read. The stored index is built again from the
-    /// records then (`Store::store_indexes_in`). After a read that failed
+    /// records then (`engine::schema::store_indexes`). After a read that failed
     /// the session has no effect outside itself, so none is added, and
     /// an index added before the failure stays (docs/server-storage.md 5).
     pub(super) fn store_built_indexes(&self, built: &crate::engine::Waiting) {

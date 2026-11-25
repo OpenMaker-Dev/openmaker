@@ -190,6 +190,23 @@ impl View for Copies<'_> {
             .map(|node| Cow::Owned(node.into_owned())))
     }
 
+    /// The inner view's, copied: the file engine lends the subtree
+    /// unchecked and its reader refuses it by counting, the store engine
+    /// refuses it as it builds, and either way the reader's answer is the
+    /// same (`om_query::Listing::entry`).
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        self.check_whole_index(path)?;
+        self.check_subtree(path)?;
+        Ok(self
+            .inner
+            .subtree_within(path, work)?
+            .map(|node| Cow::Owned(node.into_owned())))
+    }
+
     fn children_page<'a>(
         &'a self,
         path: &[&[u8]],

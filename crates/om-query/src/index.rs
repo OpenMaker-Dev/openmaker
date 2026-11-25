@@ -33,7 +33,7 @@ use std::ops::{Bound, Range};
 use om_hbam::{serial, slot::be_uint, Catalog, Cell, Field, OwnedNode, RidList};
 
 use crate::program::{measure, take_key_string, Size, Work};
-use crate::source::{broken, out_of_order, Children, Direction, Listing};
+use crate::source::{broken, out_of_order, page_in_order, Children, Direction, Listing};
 use crate::Source;
 
 use crate::QueryError;
@@ -353,7 +353,19 @@ impl<'f> Index<'f> {
                 let entries = Self::held(node, *len);
                 Ok((!entries.is_empty()).then(|| Self::at(entries, 0)))
             }
-            Held::Listed(_) => self.entries(work).next().transpose(),
+            // A page of one key first: a join asks for the lowest entry for
+            // each row and predicate.
+            Held::Listed(listing) => Scan {
+                walk: Walk::listed(
+                    listing.as_ref(),
+                    (Bound::Unbounded, Bound::Unbounded),
+                    Direction::Forward,
+                    work,
+                    1,
+                ),
+            }
+            .next()
+            .transpose(),
         }
     }
 
@@ -374,7 +386,9 @@ impl<'f> Index<'f> {
                     direction,
                 }
             }
-            Held::Listed(listing) => Walk::listed(listing.as_ref(), range, direction, work),
+            Held::Listed(listing) => {
+                Walk::listed(listing.as_ref(), range, direction, work, FIRST_PAGE)
+            }
         };
         Ok(Scan { walk })
     }
@@ -393,6 +407,7 @@ impl<'f> Index<'f> {
                 (Bound::Unbounded, Bound::Unbounded),
                 Direction::Forward,
                 work,
+                FIRST_PAGE,
             ),
         };
         Scan { walk }
@@ -668,11 +683,13 @@ fn higher(a: Bound<Vec<u8>>, b: Bound<Vec<u8>>) -> Bound<Vec<u8>> {
 /// The entries of a range of an [`Index`], in the scan's direction
 /// ([`Index::scan`], [`Index::entries`]). A listed scan reads a page of keys
 /// at a time, each from just past the last key it gave, and an entry's
-/// records only when they are asked for; a key that does not follow the
-/// last one in the scan's direction (or lies outside where the page was
-/// asked from), or a page with no key that says more follow, ends the scan
-/// with an error, so a broken source can neither repeat entries, nor make
-/// the scan loop, nor end it early unnoticed.
+/// records only when they are asked for. Each page is checked whole as it
+/// is fetched, before any of its keys is taken: a page whose keys do not
+/// each follow the one before in the scan's direction (the first, where the
+/// page was asked from), with more keys than asked for, or with no key that
+/// says more follow ends the scan with an error, so a broken source can
+/// neither repeat entries, nor make the scan loop, nor end it early at a
+/// key past its range that a key out of order hid.
 pub struct Scan<'a, 'w> {
     walk: Walk<'a, 'w>,
 }
@@ -701,11 +718,14 @@ enum Walk<'a, 'w> {
 }
 
 impl<'a, 'w> Walk<'a, 'w> {
+    /// A listed walk of `range` in `direction`, its first page `first` keys
+    /// (each page after it twice the one before, at most [`PAGE`]).
     fn listed(
         listing: &'a dyn Listing,
         (low, high): KeyRange<'_>,
         direction: Direction,
         work: &'w Work,
+        first: usize,
     ) -> Self {
         let owned = |b: Bound<&[u8]>| b.map(<[u8]>::to_vec);
         let from = match direction {
@@ -721,7 +741,7 @@ impl<'a, 'w> Walk<'a, 'w> {
             page: VecDeque::new(),
             from,
             more: true,
-            size: FIRST_PAGE,
+            size: first,
             last: None,
         }
     }
@@ -795,24 +815,20 @@ impl<'a> Scan<'a, '_> {
                     if out.len() > *size {
                         return Some(Err(broken("a page with more keys than asked for").into()));
                     }
+                    // The whole page is checked before any of it is taken:
+                    // a key out of order further on must not let the scan
+                    // end at an earlier key past its range as if the index
+                    // ended there.
+                    let start = from.as_ref().map(Vec::as_slice);
+                    if !page_in_order(&out, start, *direction) {
+                        return Some(Err(out_of_order().into()));
+                    }
                     *size = (*size * 2).min(PAGE);
                     page.extend(out);
                 }
                 let key = page.pop_front().expect("a page with keys");
                 if let Err(e) = work.spend(listed(&key)) {
                     return Some(Err(e));
-                }
-                let start = from.as_ref().map(Vec::as_slice);
-                let in_order = match direction {
-                    Direction::Forward => {
-                        above(&key, start) && last.as_deref().is_none_or(|l| *key > *l)
-                    }
-                    Direction::Backward => {
-                        below(&key, start) && last.as_deref().is_none_or(|l| *key < *l)
-                    }
-                };
-                if !in_order {
-                    return Some(Err(out_of_order().into()));
                 }
                 *last = Some(key.to_vec());
                 let past = match direction {
@@ -1592,6 +1608,8 @@ mod tests {
         Empty,
         /// Its keys in order, one more a page than asked for.
         Overfull,
+        /// Its keys in order but for the first two, swapped.
+        Swapped,
     }
 
     struct Broken(OwnedNode, Breaks);
@@ -1616,6 +1634,13 @@ mod tests {
                 Breaks::Stalled => {}
                 Breaks::Empty => return Ok(node_keys(&self.0, from, direction, max, out)),
                 Breaks::Overfull => return Ok(node_keys(&self.0, from, direction, max + 1, out)),
+                Breaks::Swapped => {
+                    let more = node_keys(&self.0, from, direction, max, out);
+                    if out.len() >= 2 {
+                        out.swap(0, 1);
+                    }
+                    return Ok(more);
+                }
             }
             Ok(true)
         }
@@ -1697,6 +1722,84 @@ mod tests {
         .unwrap();
         assert!(overfull.get(&[3], &work).is_err());
         assert!(overfull.lookups().get(&[3], &work).is_err());
+    }
+
+    /// A page whose keys are out of order is refused when it is fetched,
+    /// before any of it is taken: index `10`, `20`, `30` (records 1, 2, 3)
+    /// listed with a first page `20 10 30`, a scan of `00..15` fails where
+    /// it would otherwise stop at `20`, past its range, and answer nothing
+    /// where the index held whole answers record 1.
+    #[test]
+    fn a_page_out_of_order_fails_a_scan_it_would_end_early() {
+        let work = unlimited();
+        let entry = |k: u8, id: u64| [id].into_iter().collect::<RidList>().to_node(vec![k]);
+        let node = OwnedNode::list(
+            vec![0],
+            vec![entry(0x10, 1), entry(0x20, 2), entry(0x30, 3)],
+        );
+        let range = (Bound::Included(&[0x00][..]), Bound::Included(&[0x15][..]));
+        let whole = Index::whole(Cow::Borrowed(&node), &work).unwrap();
+        assert_eq!(
+            scanned(&whole, range, Direction::Forward, &work),
+            [(vec![0x10], [1u64].into_iter().collect::<RidList>())]
+        );
+        let swapped = Index::read(
+            Children::Listed(Box::new(Broken(node.clone(), Breaks::Swapped))),
+            &work,
+        )
+        .unwrap();
+        let read: Vec<_> = swapped
+            .scan(range, Direction::Forward, &work)
+            .unwrap()
+            .collect();
+        assert!(matches!(read.as_slice(), [Err(_)]), "{} read", read.len());
+    }
+
+    /// A listing that notes the most keys each page asked for.
+    struct Asked<'n> {
+        node: &'n OwnedNode,
+        asked: &'n std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl Listing for Asked<'_> {
+        fn keys<'a>(
+            &'a self,
+            from: Bound<&[u8]>,
+            direction: Direction,
+            max: usize,
+            out: &mut Vec<Cow<'a, [u8]>>,
+        ) -> om_hbam::Result<bool> {
+            self.asked.borrow_mut().push(max);
+            Ok(node_keys(self.node, from, direction, max, out))
+        }
+
+        fn entry<'a>(
+            &'a self,
+            key: &[u8],
+            _limit: Size,
+        ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+            Ok(node_entry(self.node, key))
+        }
+    }
+
+    /// The lowest entry of a listed index asks for one key, which a join
+    /// asks for each row and predicate (`exec`'s `Predicate::related`), and
+    /// is counted a seek and that key, as before.
+    #[test]
+    fn the_lowest_entry_asks_for_one_key() {
+        let entry = |k: u8| [1u64].into_iter().collect::<RidList>().to_node(vec![k]);
+        let node = OwnedNode::list(vec![0], (1..=20).map(entry).collect());
+        let asked = std::cell::RefCell::new(Vec::new());
+        let listing = Asked {
+            node: &node,
+            asked: &asked,
+        };
+        let index = Index::read(Children::Listed(Box::new(listing)), &unlimited()).unwrap();
+        let work = unlimited();
+        let lowest = index.first(&work).unwrap().unwrap();
+        assert_eq!(lowest.key(), [1]);
+        assert_eq!(*asked.borrow(), [1]);
+        assert_eq!(work.done(), Size { nodes: 2, bytes: 1 });
     }
 
     /// A listing that notes the limit each entry was read within, and

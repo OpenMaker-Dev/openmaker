@@ -1055,8 +1055,11 @@ fn open_with(mut state: State) -> (common::App, Arc<Mutex<State>>) {
         ..state
     }));
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "scripts.example.invalid");
-    common::fill(&mut app, "File", "Contacts.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/scripts.example.invalid/Contacts.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "ENTRY LAYOUT");
     common::wait_until(&mut app, "first record", |app| {

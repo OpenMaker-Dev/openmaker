@@ -21,12 +21,13 @@
 //! beyond the limits is served read-only.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
 use om_data::containers::{self, MemberInfo};
@@ -35,10 +36,10 @@ use om_data::rules::RecordEnvironment;
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::writer::{holds_value, put_refusals, unwritable_in_tree, value_on_path, Unwritable};
 use om_hbam::{serial, Catalog, DataType, HbamFile, KeyTree, OwnedNode, RidList};
-use om_query::keys::{record_value_entries, word_entries, Reading, TextKeys};
+use om_query::keys::{Reading, TextKeys};
 
 use crate::anchored::{FileAt, FileId, Folder};
-use crate::derived::{self, cell_text, counts_key, field_texts, Derived, ENGLISH};
+use crate::derived::{self, cell_text, counts_key, field_texts, Derived, Marks, ENGLISH};
 use crate::engine::{OnDisk, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
@@ -135,10 +136,11 @@ pub struct Store {
     derived: Arc<Derived>,
     /// The file's name, as calculations see it (`Get ( FileName )`).
     name: String,
-    /// Per table, the field definitions its stored values were computed
-    /// with ([`recalc`]); a table without one has every stored calculation
-    /// recomputed by its next op73.
-    basis: HashMap<Vec<u8>, TableBasis>,
+    /// The bases of the stored calculations of the version the tree holds
+    /// ([`Bases`]): state of its own, not derived from the tree, changed by
+    /// the writes that change it ([`Store::set_basis_in`]) and put back by
+    /// a roll-back.
+    bases: Arc<Bases>,
     /// The change number (hbam-writer.md 5.1) the next save starts from:
     /// the loaded page 0's, then the one each save left in its page 0. The
     /// rest of the page is the loaded one, in derived state
@@ -166,6 +168,12 @@ pub struct Store {
     /// [`crate::ServerHandle::failing_saves`]). Only in debug builds.
     #[cfg(debug_assertions)]
     pub(crate) save_fault: Option<SaveFault>,
+    /// Every field index a save that failed took out
+    /// ([`Store::drop_unwritable_indexes`]), as (table, field), in order: a
+    /// test's check of a roll-back is told which marks may go
+    /// (`engine::checking`). Only in debug builds.
+    #[cfg(debug_assertions)]
+    dropped_indexes: Vec<(Vec<u8>, Vec<u8>)>,
     /// Why the file takes no more changes: a save renamed its new copy over
     /// the file and could not flush the folder, so whether the file on disk
     /// keeps the change is unknown ([`SaveError::Unknown`]). Every later
@@ -188,11 +196,6 @@ pub struct Store {
     /// queries built on demand, until [`Store::take_indexes_on_demand`]
     /// takes them to be stored.
     waiting: Waiting,
-    /// Whether each index a write checked holds the keys the current rules
-    /// give its records ([`Store::index_agrees`]), at schema generation
-    /// `verified.0`: a rollback or a schema change, which raise the
-    /// generation, empties it.
-    verified: (u64, BTreeMap<IndexId, bool>),
     /// The lock this process holds on the file ([`crate::filelock`]), for
     /// a file hosted privately for a local client; each save moves it to
     /// the file it writes.
@@ -225,6 +228,13 @@ pub enum ReadOnlyCause {
 
 /// An index: its table, field and kind (value 0, word 1).
 pub type IndexId = (Vec<u8>, Vec<u8>, u8);
+
+/// The basis of each table's stored calculations: the field definitions
+/// its stored values were computed with ([`recalc`]); a table without one
+/// has every stored calculation recomputed by its next op73. State of a
+/// version of its own, not derived from its tree (docs/server-storage.md
+/// 5, "The basis of stored calculations").
+pub(crate) type Bases = BTreeMap<Vec<u8>, TableBasis>;
 
 /// What became of the member keys a request issued
 /// ([`Store::issued_keys`]).
@@ -312,9 +322,9 @@ pub struct Journal {
     /// changed nothing. [`Store::save_commit`] takes back the rest of the
     /// commit and fails it.
     refused: Option<String>,
-    /// The basis of stored calculations of each table op73 recomputed, as
-    /// it was before ([`Store::update_table`]): a roll-back puts it back.
-    basis: Vec<(Vec<u8>, Option<TableBasis>)>,
+    /// The bases of stored calculations before the change's first write of
+    /// them ([`Store::set_basis_in`]): a roll-back puts them back.
+    bases: Option<Arc<Bases>>,
     /// Log lines that say what the change did, written once it is stored
     /// ([`Journal::take_lines`]) and dropped when it is taken back.
     lines: Vec<String>,
@@ -491,12 +501,6 @@ impl Journal {
         true
     }
 
-    /// Keep what putting a node at `path` of `root` changes: its parents
-    /// ([`Self::save_parents`]) and the node there now, copied.
-    fn save_path(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
-        self.save_node(root, path);
-    }
-
     /// Remove the node at `path` of `root`, kept here (moved, not copied)
     /// unless this commit already kept the path, and return whether there
     /// was one.
@@ -562,11 +566,26 @@ impl Journal {
         std::mem::take(&mut self.lines)
     }
 
+    /// The derived state kept before the change's first change of it, for
+    /// a roll-back ([`Journal::schema_from`]).
+    #[cfg(debug_assertions)]
+    pub(crate) fn kept_schema(&self) -> Option<&Arc<Derived>> {
+        self.schema.as_ref()
+    }
+
+    /// The bases kept before the change's first write of them, for a
+    /// roll-back.
+    #[cfg(debug_assertions)]
+    pub(crate) fn kept_bases(&self) -> Option<&Arc<Bases>> {
+        self.bases.as_ref()
+    }
+
     /// Whether the change has effects to store or take back: it changed
-    /// the tree, op73's basis, or a write of it was refused.
+    /// the tree, a basis of stored calculations, or a write of it was
+    /// refused.
     pub fn changed(&self) -> bool {
         !self.undo.is_empty()
-            || !self.basis.is_empty()
+            || self.bases.is_some()
             || self.refused.is_some()
             || !self.ids.is_empty()
     }
@@ -726,7 +745,7 @@ impl Store {
             version: 0,
             derived,
             name: name.to_string(),
-            basis: HashMap::new(),
+            bases: Arc::default(),
             change_number: 0,
             saved_from: None,
             unwritable: false,
@@ -736,11 +755,12 @@ impl Store {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
             waiting: Waiting::default(),
-            verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: Some(cause),
@@ -760,7 +780,7 @@ impl Store {
             version: 0,
             derived: Arc::new(derived),
             name: name.to_string(),
-            basis: HashMap::new(),
+            bases: Arc::default(),
             change_number: om_hbam::writer::change_number(page_zero).unwrap_or(0),
             saved_from: None,
             unwritable: false,
@@ -770,11 +790,12 @@ impl Store {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
             waiting: Waiting::default(),
-            verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: None,
@@ -795,15 +816,18 @@ impl Store {
         }
         // Tables with deferred work pending (the server stopped between a
         // client's op13 and its op73) get no basis: [`Store::recover`]
-        // recomputes all their stored calculations.
+        // recomputes all their stored calculations. Nor does a table the
+        // catalog names whose tree `[T]` the file does not hold (a
+        // DeleteTable's physical delete saved before its catalog write): a
+        // basis is only ever of a table the version holds.
+        let mut bases = Bases::new();
         for table in &store.derived.catalog().tables {
             let t = uint_segment(table.id);
-            if store.node(&Self::deferred_path(&t)).is_none() {
-                store
-                    .basis
-                    .insert(t, recalc::table_basis(&store.root, table));
+            if store.node(&[&t]).is_some() && store.node(&Self::deferred_path(&t)).is_none() {
+                bases.insert(t, recalc::table_basis(&store.root, table));
             }
         }
+        store.bases = Arc::new(bases);
         Ok(store)
     }
 
@@ -889,7 +913,7 @@ impl Store {
                 if bits & (deferred::REMOVES_VALUES | deferred::TO_DATE | deferred::TO_TIMESTAMP)
                     != 0
                 {
-                    let old = self.basis.get(table).and_then(|basis| basis.get(&field));
+                    let old = self.bases.get(table).and_then(|basis| basis.get(&field));
                     let (container, global) =
                         old.and_then(recalc::FieldBasis::known_storage).ok_or(
                             "deferred value removal or conversion has no known old field type",
@@ -1319,7 +1343,7 @@ impl Store {
             sweep: BTreeMap::new(),
             schema: None,
             refused: None,
-            basis: Vec::new(),
+            bases: None,
             lines: Vec::new(),
         }
     }
@@ -1766,6 +1790,10 @@ impl Store {
                 let segments: Vec<&[u8]> = node.path.iter().map(Vec::as_slice).collect();
                 if self.root.remove(&segments).is_some() {
                     removed = true;
+                    self.forget_verified(None, &node.path);
+                    #[cfg(debug_assertions)]
+                    self.dropped_indexes
+                        .push((node.path[0].clone(), node.path[2].clone()));
                     if !dropped.iter().any(|d| d.path == node.path) {
                         dropped.push(node);
                     }
@@ -1869,14 +1897,13 @@ impl Store {
                 }
             }
         }
+        // The derived state from before the change, its verified-index
+        // marks with it, and the bases.
         if let Some(derived) = journal.schema {
             self.derived = derived;
         }
-        for (table, basis) in journal.basis.into_iter().rev() {
-            match basis {
-                Some(basis) => self.basis.insert(table, basis),
-                None => self.basis.remove(&table),
-            };
+        if let Some(bases) = journal.bases {
+            self.bases = bases;
         }
         // Catalog members put back are a change readers of them must see,
         // as their replacement was (a server script session's schema).
@@ -2222,11 +2249,13 @@ impl Store {
             }
         }
         self.dirty = true;
-        self.forget_verified(path);
+        self.forget_verified(Some(journal), path);
         if feeds {
             // Who read what the schema derives from reads it again: the
-            // verified-index marks and the accounts follow the count.
+            // accounts follow the count, and every verified-index mark is
+            // checked again.
             self.generation += 1;
+            self.forget_marks(Some(journal));
         }
         Ok(Some(Written { feeds, from }))
     }
@@ -2257,9 +2286,9 @@ impl Store {
     /// a library member and the rest of a table touch no mark. A commit
     /// keeps its marks itself, and a change of the schema forgets them all
     /// through the generation.
-    fn forget_verified(&mut self, path: &[Vec<u8>]) {
+    fn forget_verified(&mut self, journal: Option<&mut Journal>, path: &[Vec<u8>]) {
         let Some((table, rest)) = path.split_first() else {
-            self.verified.1.clear();
+            self.forget_marks(journal);
             return;
         };
         /// What a write can make wrong: a table's marks, a field's, one
@@ -2286,17 +2315,41 @@ impl Store {
             _ => return,
         };
         // Only a table has marks.
-        if self.verified.1.is_empty() || !be_uint(table).is_some_and(|t| t >= 0x8000) {
+        if self.derived.marks().is_empty() || !be_uint(table).is_some_and(|t| t >= 0x8000) {
             return;
         }
-        self.verified.1.retain(|(t, f, kind), _| {
-            t != table
-                || match scope {
-                    Scope::Table => false,
-                    Scope::Field(field) => f.as_slice() != field,
-                    Scope::Index(field, index) => f.as_slice() != field || *kind != index,
+        let affected = |(t, f, kind): &IndexId| {
+            t == table
+                && match scope {
+                    Scope::Table => true,
+                    Scope::Field(field) => f.as_slice() == field,
+                    Scope::Index(field, index) => f.as_slice() == field && *kind == index,
                 }
-        });
+        };
+        if !self.derived.marks().keys().any(affected) {
+            return;
+        }
+        let mut marks = self.derived.marks().clone();
+        marks.retain(|id, _| !affected(id));
+        self.keep_marks(journal, marks);
+    }
+
+    /// Forget every verified-index mark: a change of what the derived state
+    /// reads, op73's field work.
+    fn forget_marks(&mut self, journal: Option<&mut Journal>) {
+        if !self.derived.marks().is_empty() {
+            self.keep_marks(journal, Marks::new());
+        }
+    }
+
+    /// Keep `marks` as the verified-index marks of the version, in its
+    /// derived state, the derived state before the change's first change
+    /// of it kept in `journal`, so a roll-back puts the marks back with it.
+    fn keep_marks(&mut self, journal: Option<&mut Journal>, marks: Marks) {
+        if let Some(journal) = journal {
+            journal.schema_from(&self.derived);
+        }
+        self.derived = Arc::new(self.derived.with_marks(marks));
     }
 
     /// The derived state read again after writes that reach it
@@ -2306,22 +2359,36 @@ impl Store {
         self.reread_catalog();
     }
 
-    /// Count field `field` of `table`, which was just added, as computed
-    /// with its definition ([`recalc`]): a new field has no stored values
-    /// to recompute.
-    pub fn add_field_basis(&mut self, table: &[u8], field: u64) {
-        let Some(definition) = be_uint(table)
-            .and_then(|t| self.derived.catalog().table(t))
-            .cloned()
-        else {
-            return;
-        };
-        let Some(entry) = recalc::table_basis(&self.root, &definition).remove(&field) else {
-            return;
-        };
-        if let Some(basis) = self.basis.get_mut(table) {
-            basis.insert(field, entry);
+    /// The bases of stored calculations of the version the tree holds
+    /// ([`Bases`]).
+    pub(crate) fn bases(&self) -> &Arc<Bases> {
+        &self.bases
+    }
+
+    /// Set the basis of `table`'s stored calculations to `basis` (`None`:
+    /// it has none), the bases before the change's first write of them
+    /// kept in `journal`: a write of the version's own state, as a tree
+    /// write is one of its tree (docs/server-storage.md 5, "The basis of
+    /// stored calculations"). A basis set to what it is is no change.
+    /// Returns whether it changed.
+    pub(crate) fn set_basis_in(
+        &mut self,
+        journal: Option<&mut Journal>,
+        table: &[u8],
+        basis: Option<TableBasis>,
+    ) -> bool {
+        if self.bases.get(table) == basis.as_ref() {
+            return false;
         }
+        if let Some(journal) = journal {
+            journal.bases.get_or_insert_with(|| self.bases.clone());
+        }
+        let bases = Arc::make_mut(&mut self.bases);
+        match basis {
+            Some(basis) => bases.insert(table.to_vec(), basis),
+            None => bases.remove(table),
+        };
+        true
     }
 
     /// Put `node` at `path` as op13 does, for tests that set a tree up:
@@ -2333,6 +2400,7 @@ impl Store {
         if stored {
             // Read again, as after any upload, whatever the path.
             self.generation += 1;
+            self.forget_marks(Some(&mut journal));
             self.schema_changed_in(&mut journal);
         }
         stored
@@ -2411,7 +2479,7 @@ impl Store {
         let preflight = (|| {
             let work = self.deferred_work(table)?;
             let basis = recalc::table_basis(&self.root, &definition);
-            let retyped = recalc::retyped_to_container(self.basis.get(table), &basis)?;
+            let retyped = recalc::retyped_to_container(self.bases.get(table), &basis)?;
             Ok((work, basis, retyped))
         })();
         let (work, basis, retyped) = match preflight {
@@ -2425,7 +2493,7 @@ impl Store {
                 return Err(reason);
             }
         };
-        let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
+        let stale = recalc::changed_fields(self.bases.get(table), &basis, &work);
         let list = Self::deferred_path(table);
         let mut changed = match journal.as_deref_mut() {
             Some(journal) => {
@@ -2438,7 +2506,7 @@ impl Store {
         // the same edit is no longer in the catalog, and its key may read as
         // another's repetition (`repetition_cells`).
         let mut named: BTreeSet<Vec<u8>> = work.iter().map(|(field, _)| field.clone()).collect();
-        if let Some(old) = self.basis.get(table) {
+        if let Some(old) = self.bases.get(table) {
             named.extend(old.keys().map(|id| uint_segment(*id)));
         }
         let mut removed = BTreeMap::new();
@@ -2493,10 +2561,10 @@ impl Store {
         if journal.is_some() {
             entry();
         }
-        let before = self.basis.insert(table.to_vec(), basis);
-        if let Some(journal) = journal.as_deref_mut() {
-            journal.basis.push((table.to_vec(), before));
-        }
+        // A basis is only ever of a table the version holds: a table the
+        // catalog names without its tree `[T]` has none (`Store::load`).
+        let basis = self.node(&[table]).is_some().then_some(basis);
+        self.set_basis_in(journal.as_deref_mut(), table, basis);
         for field in &retyped {
             let journal = journal.as_deref_mut();
             changed |= self.drop_retyped_cells(journal, table, *field, &named);
@@ -2580,6 +2648,7 @@ impl Store {
         self.dirty |= changed;
         if changed {
             self.generation += 1;
+            self.forget_marks(journal);
         }
         Ok(changed)
     }
@@ -3293,12 +3362,6 @@ impl Store {
         .expect("the file engine's tree never fails a read")
     }
 
-    /// The field `field` of `table` when its index `kind` can be built on
-    /// demand ([`Derived::indexable`]).
-    fn indexable(&self, table: &[u8], field: &[u8], kind: u8) -> Option<DataType> {
-        self.derived.indexable(table, field, kind)
-    }
-
     /// Note the device and inode of the file on disk the store was read
     /// from ([`anchored::file_identity`](crate::anchored::file_identity)).
     pub fn set_file(&mut self, file: Option<FileId>) {
@@ -3333,56 +3396,11 @@ impl Store {
         self.waiting.take_indexes()
     }
 
-    /// Store `indexes`, which queries built on demand
-    /// ([`Store::take_indexes_on_demand`]), so that record writes keep them
-    /// current from now on (query-program.md 7.1). Each is built again
-    /// here, under the write lock, from the records as they are now.
-    #[cfg(test)]
-    pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
-        let mut journal = self.begin_commit();
-        self.store_indexes_in(&mut journal, indexes);
-    }
-
     /// Put `indexes`, taken by [`Store::take_indexes_on_demand`] and not
     /// stored, back among those waiting: the write that took them was not
     /// stored, so the next one stores them.
     pub fn put_back_indexes(&mut self, indexes: Vec<IndexId>) {
         self.waiting.put_back_indexes(indexes);
-    }
-
-    /// [`Store::store_indexes`] within `journal`, which keeps what each
-    /// index replaces (nothing, as a rule) and the parents it creates.
-    pub fn store_indexes_in(&mut self, journal: &mut Journal, indexes: Vec<IndexId>) {
-        for (table, field, kind) in indexes {
-            let index = [table.as_slice(), &[keys::INDEXES], &field];
-            if self
-                .node(&[index[0], index[1], index[2], &[counts_key(kind)]])
-                .is_some()
-            {
-                continue;
-            }
-            let Some(data_type) = self.indexable(&table, &field, kind) else {
-                continue;
-            };
-            // A query builds no index in a language whose keys this server
-            // does not build while a record holds text there (#572); one
-            // built while none did, a record of which has gained text since,
-            // is not stored (#159), and the next query is refused.
-            let Some(form) = self.written_form(&table, &field, data_type) else {
-                continue;
-            };
-            let index = self.index_keys(&table, &field, data_type, kind, form);
-            for key in [kind, counts_key(kind)] {
-                let path = vec![table.clone(), vec![keys::INDEXES], field.clone(), vec![key]];
-                journal.save_path(&self.root, path);
-            }
-            if self.put_index(&table, &field, kind, index) {
-                journal.note(format!(
-                    "built index {kind} of table {table:02x?} field {field:02x?} on demand"
-                ));
-                self.dirty = true;
-            }
-        }
     }
 
     /// Write one index and its counts; an index without keys is its counts
@@ -3469,7 +3487,7 @@ impl Store {
             version: 0,
             derived: self.derived.clone(),
             name: self.name.clone(),
-            basis: HashMap::new(),
+            bases: Arc::default(),
             change_number: 0,
             saved_from: None,
             unwritable: false,
@@ -3479,11 +3497,12 @@ impl Store {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
             waiting: Waiting::default(),
-            verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: None,
@@ -3551,7 +3570,8 @@ impl Store {
     ) -> Result<(), String> {
         let segment = serial::encode(id);
         let path: [&[u8]; 3] = [table, &[keys::RECORDS], &segment];
-        let plan = self.reindex_plan(table, id, old, record.as_ref(), recount)?;
+        let mut unaccounted = Vec::new();
+        let plan = self.reindex_plan(table, id, old, record.as_ref(), recount, &mut unaccounted)?;
         if let Some(reason) = self.record_refusal(table, &segment, record.as_ref(), &plan) {
             return Err(reason);
         }
@@ -3582,11 +3602,30 @@ impl Store {
                     journal.save_node(&self.root, entry);
                 }
             }
-            if sweep && old.is_some() && !self.index_agrees(table, &field, index) {
+            if sweep
+                && old.is_some()
+                && !self.index_agrees(journal.as_deref_mut(), table, &field, index)
+            {
                 sweeps.push((field.clone(), index, after.clone()));
             }
             if self.move_record(table, &field, index, id, &before, &after) {
                 recount.insert((table.to_vec(), field, index, counts_key(index)));
+            }
+        }
+        // A value the current rules key to nothing makes its index disagree
+        // with them (`derived::record_keys`): with the record holding it,
+        // the check would find so, whatever it found before this write, so
+        // the mark says so and the next edit sweeps without checking the
+        // index whole again. A later write that changes the value back
+        // leaves the mark stale, which costs only a sweep that changes
+        // nothing (the checking transaction checks only the marks that say
+        // an index agrees).
+        for (field, index) in unaccounted {
+            let id: IndexId = (table.to_vec(), field, index);
+            if self.derived.marks().get(&id) != Some(&false) {
+                let mut marks = self.derived.marks().clone();
+                marks.insert(id, false);
+                self.keep_marks(journal.as_deref_mut(), marks);
             }
         }
         for (field, index, after) in sweeps {
@@ -3705,6 +3744,7 @@ impl Store {
         old: Option<&OwnedNode>,
         new: Option<&OwnedNode>,
         pending: &BTreeSet<Recount>,
+        unaccounted: &mut Vec<(Vec<u8>, u8)>,
     ) -> Result<Vec<Reindex>, String> {
         let mut plan = Vec::new();
         let Some(definition) = be_uint(table).and_then(|t| self.derived.catalog().table(t)) else {
@@ -3757,16 +3797,18 @@ impl Store {
                     ENGLISH
                 }
             };
+            // The keys and whether they account for the value, as the check
+            // of the index finds them (`derived::record_keys`).
+            let keys_of = |kind: u8, record: Option<&OwnedNode>, texts: &[String]| match record {
+                None => (BTreeSet::new(), true),
+                Some(_) => derived::record_keys(kind, data_type, texts, self.reading(), form),
+            };
             if value {
-                let keys_of = |record: Option<&OwnedNode>, texts: &[String]| {
-                    if record.is_none() {
-                        return BTreeSet::new();
-                    }
-                    record_value_entries(data_type, texts, self.reading(), form)
-                };
-                let (before, after) = (keys_of(old, &old_texts), keys_of(new, &new_texts));
-                if new.is_some() && after.is_empty() && new_texts.iter().any(|t| !t.is_empty()) {
+                let (before, _) = keys_of(keys::VALUE_INDEX, old, &old_texts);
+                let (after, accounted) = keys_of(keys::VALUE_INDEX, new, &new_texts);
+                if !accounted {
                     warn!("no index key for {data_type:?} value {new_texts:?}; record {id} is left out of the index");
+                    unaccounted.push((field.clone(), keys::VALUE_INDEX));
                 }
                 if before != after || old_texts != new_texts || changes {
                     plan.push((field.clone(), keys::VALUE_INDEX, before, after));
@@ -3774,8 +3816,8 @@ impl Store {
             }
             if word {
                 let (before, after) = (
-                    word_entries(&old_texts, form),
-                    word_entries(&new_texts, form),
+                    keys_of(keys::WORD_INDEX, old, &old_texts).0,
+                    keys_of(keys::WORD_INDEX, new, &new_texts).0,
                 );
                 if before != after || old_texts != new_texts || changes {
                     plan.push((field.clone(), keys::WORD_INDEX, before, after));
@@ -3798,17 +3840,45 @@ impl Store {
     /// ([`Store::sweep_index`]). A text field in a language whose keys this
     /// server does not build counts as agreeing: no write changes its text
     /// ([`Store::reindex_plan`] refuses that).
-    fn index_agrees(&mut self, table: &[u8], field: &[u8], kind: u8) -> bool {
-        if self.verified.0 != self.generation {
-            self.verified = (self.generation, BTreeMap::new());
-        }
+    fn index_agrees(
+        &mut self,
+        journal: Option<&mut Journal>,
+        table: &[u8],
+        field: &[u8],
+        kind: u8,
+    ) -> bool {
         let id: IndexId = (table.to_vec(), field.to_vec(), kind);
-        if let Some(agrees) = self.verified.1.get(&id) {
+        if let Some(agrees) = self.derived.marks().get(&id) {
             return *agrees;
         }
+        let started = Instant::now();
         let agrees = self.check_index(table, field, kind);
-        self.verified.1.insert(id, agrees);
+        debug!(
+            "{}: index {kind} of table {table:02x?} field {field:02x?} checked against its \
+             records in {:?}: {}",
+            self.name,
+            started.elapsed(),
+            if agrees { "agrees" } else { "disagrees" }
+        );
+        let mut marks = self.derived.marks().clone();
+        marks.insert(id, agrees);
+        self.keep_marks(journal, marks);
         agrees
+    }
+
+    /// The field indexes saves that failed took out, in order
+    /// (`engine::checking`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn dropped_indexes(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.dropped_indexes
+    }
+
+    /// Whether index `id` holds the keys the current rules give its
+    /// records, checked now: what a verified-index mark that it agrees must
+    /// say (`engine::checking`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn index_holds(&self, id: &IndexId) -> bool {
+        self.check_index(&id.0, &id.1, id.2)
     }
 
     fn check_index(&self, table: &[u8], field: &[u8], kind: u8) -> bool {
@@ -4158,8 +4228,8 @@ pub(crate) fn increment_serial(text: &str, by: i32) -> String {
 impl Store {
     /// The basis of stored calculations, by table ([`recalc`]): tests check
     /// that a change not stored leaves it as it was.
-    pub(crate) fn basis_for_tests(&self) -> &HashMap<Vec<u8>, TableBasis> {
-        &self.basis
+    pub(crate) fn basis_for_tests(&self) -> &Bases {
+        &self.bases
     }
 
     /// What reads left waiting: the indexes built on demand and the member
@@ -4236,7 +4306,7 @@ pub(crate) mod tests {
             version: 0,
             derived: Arc::new(derived),
             name: String::new(),
-            basis: HashMap::new(),
+            bases: Arc::default(),
             change_number: 0,
             saved_from: None,
             unwritable: false,
@@ -4246,11 +4316,12 @@ pub(crate) mod tests {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
             waiting: Waiting::default(),
-            verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: None,

@@ -1008,7 +1008,9 @@ A source gives an index either whole (a file on disk, a source that
 cannot list, an index built on demand) or listed (OpenMaker Server's hosted
 files, `om_query::Listing`): its keys a page at a time from a bound in
 either direction, nothing below them, and an entry's RID list only when an
-instruction takes that entry. A lookup is then one seek, a miss reads no
+instruction takes that entry, within the work the program has left: a
+source that builds the list refuses it at the first node past either of
+the work's counters (11.4). A lookup is then one seek, a miss reads no
 RID list, and a scan reads the keys it passes (8 a page, growing to 256).
 
 The first time a program reads an index held whole, om-query checks that
@@ -1018,12 +1020,15 @@ missing indexes in key order and changes them in place, so no index it
 serves fails the check. An index held whole that does (keys out of order
 or one repeated) is read as if sorted, the records of a repeated key
 merged, and every lookup then answers as on the sorted index. A listed
-index is checked as it is read instead: a key that does not follow the
-last one in the read's direction (or lies outside the bound its page was
+index is checked as it is read instead, each page whole as it is fetched,
+before any of its keys is taken: a page whose keys do not each follow the
+one before in the read's direction (the first, the bound the page was
 asked from), a page with no key that says more follow, a page with more
-keys than asked for, or a listed key without an entry fails the program, so a broken source can neither repeat
-an entry, nor make a read loop, nor end one early as if the index ended
-there. The entry `ff 80` (long keys, above) is no value's key, so om-query
+keys than asked for, or a listed key without an entry fails the program,
+so a broken source can neither repeat an entry, nor make a read loop, nor
+end one early as if the index ended there (a source that says no more
+follow early, or leaves a key out, cannot be told from an index without
+it). The entry `ff 80` (long keys, above) is no value's key, so om-query
 leaves it out of every index it reads: no lookup, run, count or full read
 meets it, and each of its records is found under its cut key. No value's
 key starts with `ff`, so in an index in order it is the last entry, and an
@@ -1996,9 +2001,14 @@ its bytes (a page can hold keys a scan that stops never takes, at most a
 page of them, fetched and not counted; OpenMaker Server's store engine
 also reads one child past a full page to say whether more follow); and
 each RID list read, a node more, read within the work the program has
-left, so that a list past it fails the program at the work limit before
-it is read whole. The read of an index's own node that finds whether the
-field has the index is not counted (one per index a program opens).
+left: a source that builds the list counts each node as the program
+counts it (one node, and the bytes of its segment and value) and refuses
+it at the first node past either counter, so that a list past the work
+left fails the program at the work limit before it is read whole, and
+never one that fits; a source that lends it (OpenMaker Server's file
+engine) gives it, and the program's count refuses it the same. The read
+of an index's own node that finds whether the field has the index is not
+counted (one per index a program opens).
 Either way, each index entry whose RID list is read, with that list; a
 node of eight bytes per 64 records each time an instruction combines with
 the table's record list; each stored value read; and each node on an
