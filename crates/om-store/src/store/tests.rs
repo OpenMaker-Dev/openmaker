@@ -1053,10 +1053,13 @@ impl Run {
                         && *offset < crate::page::PAGE_SIZE as u64)
             })
         };
+        // Reported, acknowledged, or seen and hidden since by the journal's
+        // own damage (which `check_incidents` allowed).
         let incidents: Vec<Incident> = opened
             .incidents
             .iter()
             .chain(self.acknowledged.iter())
+            .chain(self.incidents.values())
             .cloned()
             .collect();
         let mut gone = Vec::new();
@@ -1086,10 +1089,8 @@ impl Run {
         );
         // Every file the store set aside is named by an incident's plan.
         if !self.lying {
-            let prefixes: Vec<String> = opened
-                .incidents
+            let prefixes: Vec<String> = incidents
                 .iter()
-                .chain(self.acknowledged.iter())
                 .filter_map(|i| match &i.what {
                     What::LogDamage(plan) => plan.prefix.clone(),
                     _ => None,
@@ -1146,7 +1147,10 @@ impl Run {
             self.reached.journal_damaged += 1;
         }
         if !self.lying {
-            let journal_damaged = self.damaged(incident::FILE);
+            // The device damaged the journal, or failed a read of it: a
+            // record there can be hidden, and the open says where.
+            let journal_damaged =
+                self.damaged(incident::FILE) || !opened.journal.unreadable.is_empty();
             for (number, incident) in &self.incidents {
                 let again = opened.incidents.iter().find(|i| i.number == *number);
                 assert!(
@@ -1169,15 +1173,15 @@ impl Run {
         };
         let done = store.acknowledge(last);
         self.note(format!("acknowledge through {last}: {done:?}"));
+        // Done, or (a failed call) perhaps done: its rename may have landed
+        // before the failure. Either way those incidents may be gone.
+        let acked: Vec<u64> = self.incidents.range(..=last).map(|(n, _)| *n).collect();
+        for number in acked {
+            let incident = self.incidents.remove(&number).expect("listed");
+            self.acknowledged.push(incident);
+        }
         match done {
-            Ok(_) => {
-                self.reached.acknowledged += 1;
-                let acked: Vec<u64> = self.incidents.range(..=last).map(|(n, _)| *n).collect();
-                for number in acked {
-                    let incident = self.incidents.remove(&number).expect("listed");
-                    self.acknowledged.push(incident);
-                }
-            }
+            Ok(_) => self.reached.acknowledged += 1,
             Err(_) => {
                 self.reached.stopped_after_failure += 1;
                 let power_loss = self.plan.below(2) == 0;
@@ -1369,13 +1373,14 @@ impl Run {
                 // administrator acknowledges them.
                 Err(OpenError::Journal(incident::JournalError::Full)) => {
                     let through = self.incidents.keys().next_back().copied().unwrap_or(0);
-                    if let Ok(n) = Store::acknowledge_incidents(&self.fs, through) {
-                        self.reached.acknowledged += n as u64;
-                        let acked: Vec<u64> = self.incidents.keys().copied().collect();
-                        for number in acked {
-                            let incident = self.incidents.remove(&number).expect("listed");
-                            self.acknowledged.push(incident);
-                        }
+                    // Done, or perhaps done when it failed.
+                    if Store::acknowledge_incidents(&self.fs, through).is_ok() {
+                        self.reached.acknowledged += 1;
+                    }
+                    let acked: Vec<u64> = self.incidents.keys().copied().collect();
+                    for number in acked {
+                        let incident = self.incidents.remove(&number).expect("listed");
+                        self.acknowledged.push(incident);
                     }
                     continue;
                 }

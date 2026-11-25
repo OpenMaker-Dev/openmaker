@@ -121,8 +121,10 @@ fn every_kind() -> Vec<What> {
     ]
 }
 
+/// The journal, for a call made with the store closed (start count 0, so
+/// numbers from 1).
 fn opened(sim: &Sim) -> Journal {
-    Journal::open(&sim.fs(), 9).unwrap()
+    Journal::open(&sim.fs(), 0).unwrap()
 }
 
 /// Every kind reads back as it was written, in order, numbered from 1, and
@@ -286,4 +288,59 @@ fn a_damaged_record_is_passed_over_and_said() {
     assert_eq!(numbers, [1, 3, 4]);
     assert_eq!(journal.found().damaged, [second, last]);
     assert!(journal.found().ends_damaged);
+}
+
+/// Records the device fails to read are taken as zeros, and said so; the
+/// next record's number skips past every number they could hold, so none is
+/// used twice once they read again.
+#[test]
+fn a_record_the_device_fails_to_read_keeps_its_number() {
+    let sim = Sim::new(4);
+    let fs = sim.fs();
+    fs.create_root().unwrap();
+    let _lock = fs.lock().unwrap();
+    let mut journal = opened(&sim);
+    let mut written = Vec::new();
+    for what in every_kind().into_iter().take(2) {
+        written.push(journal.record(&fs, what).unwrap());
+    }
+    sim.restart();
+    // The block read, then each of its two sectors, fails.
+    for _ in 0..1 + 2 {
+        sim.place(sim.steps() + 1, Fault::FailRead);
+    }
+    let mut journal = opened(&sim);
+    assert!(journal.incidents().is_empty());
+    assert!(
+        !journal.found().unreadable.is_empty(),
+        "{:?}",
+        journal.found()
+    );
+    let next = journal.record(&fs, What::JournalLost).unwrap();
+    assert!(next.number > written[1].number, "{next:?}");
+    sim.restart();
+    let journal = opened(&sim);
+    let numbers: Vec<u64> = journal.incidents().iter().map(|i| i.number).collect();
+    assert_eq!(numbers, [1, 2, next.number]);
+}
+
+/// After an acknowledgement the journal's only record of the numbers used
+/// is its base record; that damaged, the numbers an open gives still come
+/// after every earlier one, from its start count.
+#[test]
+fn a_number_never_comes_again_when_the_base_record_is_damaged() {
+    let sim = Sim::new(5);
+    let fs = sim.fs();
+    fs.create_root().unwrap();
+    let _lock = fs.lock().unwrap();
+    let mut journal = Journal::open(&fs, 1).unwrap();
+    let first = journal.record(&fs, What::JournalLost).unwrap();
+    assert_eq!(first.number, PER_START);
+    journal.acknowledge(&fs, first.number).unwrap();
+    sim.damage(FILE, 40, 4).unwrap();
+    sim.restart();
+    let mut journal = Journal::open(&fs, 2).unwrap();
+    assert!(!journal.found().damaged.is_empty());
+    let next = journal.record(&fs, What::JournalLost).unwrap();
+    assert!(next.number > first.number, "{next:?} after {first:?}");
 }

@@ -2743,7 +2743,7 @@ bytes:
 | 8 | 2 | format version, 1 |
 | 10 | 2 | kind (7.2) |
 | 12 | 4 | payload length `L`, at most 65,536 |
-| 16 | 8 | record number: 1 for the first record of the store, one more for each next; 0 for a base record |
+| 16 | 8 | record number (7.3), never used twice; 0 for a base record |
 | 24 | 8 | the start count of the open that wrote it (0 when written with the store closed) |
 | 32 | `L` | payload (7.2) |
 | 32 + `L` | 32 | SHA-256 of bytes 0 to 32 + `L` |
@@ -2791,9 +2791,13 @@ incident is unknown), the places the device failed, and a file longer
 than the read takes.
 
 The next record's number is one past the last record's and the base
-record's, and one more for each place that does not check after the last
-record (each could have begun one): a number is never used twice, though
-some are skipped.
+record's, one more for each place that does not check or that the device
+failed to read after the last record (each could have begun one), and at
+least the start count of the open that writes it times 2^20: `state`
+never issues a start count twice and an open records far fewer records,
+so a number is never used twice, whatever happened to the journal (a
+damaged base record, a lost file). Numbers are skipped, and order the
+records in time.
 
 ### 7.4 Writing
 
@@ -2840,3 +2844,5 @@ administrator has acknowledged, and numbers go on.
 - The read takes the journal whole into memory, at most 16.2 MiB.
 - An acknowledgement acknowledges every place that does not check, not
   only those before `through`: what was there cannot be known.
+- An acknowledgement that fails may have taken effect (its rename can land
+  before the failure); the next open shows which.

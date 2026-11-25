@@ -76,6 +76,12 @@ const HASH: usize = 32;
 /// The longest text a record keeps of an error.
 const MAX_TEXT: usize = 2048;
 
+/// An open's records are numbered from its start count times this: `state`
+/// never issues a start count twice, and an open records far fewer, so a
+/// number is never used twice, whatever happened to the journal (a base
+/// record or the last records damaged or lost).
+pub const PER_START: u64 = 1 << 20;
+
 /// The room a record with `payload` bytes takes, aligned.
 const fn record_room(payload: usize) -> u64 {
     let len = (HEADER + payload + HASH) as u64;
@@ -334,7 +340,7 @@ impl Journal {
                         missing: true,
                         ..Found::default()
                     },
-                    next: 1,
+                    next: start_count.saturating_mul(PER_START).max(1),
                     end: 0,
                     start_count,
                     failed: false,
@@ -344,7 +350,7 @@ impl Journal {
         };
         let size = file.size()?;
         let (bytes, unreadable) = read_bounded(&*file, size.min(MAX_FILE))?;
-        let scan = scan(&bytes)?;
+        let scan = scan(&bytes, &unreadable)?;
         let found = Found {
             missing: false,
             damaged: scan.damaged.iter().copied().take(MAX_REPORTED).collect(),
@@ -360,7 +366,7 @@ impl Journal {
             file: Some(file),
             incidents: scan.incidents,
             found,
-            next: scan.next,
+            next: scan.next.max(start_count.saturating_mul(PER_START)),
             end: align_up(size),
             start_count,
             failed: false,
@@ -578,9 +584,10 @@ struct Scan {
 /// Every record that checks, in order, wherever it begins; places that are
 /// not zero and begin none are damaged. The next number is one past the
 /// last record's and the base record's, and past one more for each damaged
-/// place after the last record (each could have begun one): a number is
+/// place, and each place the device failed to read (`unreadable`, read as
+/// zeros), after the last record (each could have begun one): a number is
 /// never used twice, though some are skipped.
-fn scan(bytes: &[u8]) -> Result<Scan, JournalError> {
+fn scan(bytes: &[u8], unreadable: &[(u64, u64)]) -> Result<Scan, JournalError> {
     let mut incidents: Vec<Incident> = Vec::new();
     let mut base = 1u64;
     let mut damaged = Vec::new();
@@ -615,10 +622,13 @@ fn scan(bytes: &[u8]) -> Result<Scan, JournalError> {
             }
         }
     }
-    let after_last = damaged
-        .iter()
-        .filter(|&&at| last_record.is_none_or(|last| at > last))
-        .count() as u64;
+    let after = |at: u64| last_record.is_none_or(|last| at > last);
+    let after_last = damaged.iter().filter(|&&at| after(at)).count() as u64
+        + unreadable
+            .iter()
+            .filter(|(at, _)| after(*at))
+            .map(|(_, len)| len.div_ceil(ALIGN))
+            .sum::<u64>();
     let next = incidents
         .last()
         .map_or(1, |i| i.number.saturating_add(1))
