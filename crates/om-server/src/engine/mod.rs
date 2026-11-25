@@ -1228,11 +1228,11 @@ pub fn run(
                 notices: Notices { from, changes },
             }
         }
-        (Operation::TakeLock(op), Hold::View(store)) => {
-            Outcome::new(Reply::TakeLock(writes::lock(op, file, store, locks)))
-        }
+        (Operation::TakeLock(op), Hold::View(store)) => Outcome::new(Reply::TakeLock(
+            writes::lock(op, file, &store.tree_view(), locks),
+        )),
         (Operation::TakeLock(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::TakeLock(writes::lock(op, file, tx.view(), locks)))
+            Outcome::new(Reply::TakeLock(writes::lock(op, file, tx, locks)))
         }
         (Operation::UpgradeLock(op), _) => {
             Outcome::new(Reply::UpgradeLock(writes::upgrade(op, file, locks)))

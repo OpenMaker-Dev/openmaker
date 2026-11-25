@@ -29,8 +29,9 @@ use om_protocol::write::{
 
 use crate::connection::ACCESS_DENIED;
 use crate::engine::{
-    CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReleaseLock, ReleaseLocks,
-    ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock, View, NO_LIMIT,
+    CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReadError, ReleaseLock,
+    ReleaseLocks, ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
+    View, NO_LIMIT,
 };
 use crate::hosting::Hosted;
 use crate::library::BinaryData;
@@ -1171,27 +1172,39 @@ fn over_cap(file: &str, holder: &str, path: &[Vec<u8>]) -> LockReply {
 /// does not return) is refused with error 3 and takes nothing. A new lock
 /// is refused when `room`, the locks the connection may still take
 /// ([`MAX_LOCKS`]), is 0.
-pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_>) -> LockReply {
+pub(crate) fn lock(op: TakeLock, file: &str, view: &dyn View, locks: &mut Locks<'_>) -> LockReply {
     let TakeLock {
         user,
         holder,
         request: req,
         room,
     } = op;
-    let mod_count = req.want_mod_count.then(|| store.mod_count(&req.path));
+    let unavailable = || LockReply::Refused {
+        status: LOCK_UNAVAILABLE,
+        conflict: Conflict {
+            self_conflict: false,
+            users: String::new(),
+        },
+    };
+    let mod_count = match req.want_mod_count.then(|| mod_count(view, file, &req.path)) {
+        None => None,
+        Some(Ok(count)) => Some(count),
+        Some(Err(error)) => {
+            warn!(
+                "{file:?}: lock of {:02x?} refused: its modification count cannot be read: \
+                 {error}",
+                req.path
+            );
+            return unavailable();
+        }
+    };
     let granted = LockReply::Granted { mod_count };
     if let Err(e) = granted.to_result() {
         warn!(
             "{file:?}: lock of {:02x?} refused: its modification count cannot be sent: {e}",
             req.path
         );
-        return LockReply::Refused {
-            status: LOCK_UNAVAILABLE,
-            conflict: Conflict {
-                self_conflict: false,
-                users: String::new(),
-            },
-        };
+        return unavailable();
     }
     if room == 0 && !locks.holds(&req.path, user, req.lock_type) {
         return over_cap(file, &holder, &req.path);
@@ -1202,6 +1215,34 @@ pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_
             status: LOCK_CONFLICT,
             conflict,
         },
+    }
+}
+
+/// The modification count of the node at `path` as op60 returns it: its
+/// `fc` child, `01 00` when it has none, empty when the node does not
+/// exist. A record (`[T, 05, R]`, write-path.md 4.2, 5.4), a layout or a
+/// catalog index alike (schema-path.md 4.1). An `fc` that is not a count
+/// (`modcount::is_count`: a file written before commits were checked, or
+/// by another program) is `01 00` too, the 0 the server's scripts read for
+/// it; so the value is at most 10 bytes and op60's reply can always carry
+/// it.
+fn mod_count(view: &dyn View, file: &str, path: &[Vec<u8>]) -> Result<Vec<u8>, ReadError> {
+    let mut segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    if view.node(&segments)?.is_none() {
+        return Ok(Vec::new());
+    }
+    segments.push(&[modcount::MOD_COUNT]);
+    let Some(count) = view.node(&segments)? else {
+        return Ok(modcount::key_string(0));
+    };
+    match count.value.filter(|_| !count.list) {
+        Some(value) if modcount::parse(&value).is_some() => Ok(value.into_owned()),
+        _ => {
+            warn!(
+                "{file}: {path:02x?} holds a modification count that is not one; reported as none"
+            );
+            Ok(modcount::key_string(0))
+        }
     }
 }
 

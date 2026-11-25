@@ -42,7 +42,7 @@ use crate::derived::{self, cell_text, counts_key, field_texts, Derived, ENGLISH}
 use crate::engine::{OnDisk, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
-use crate::modcount::{self, MOD_COUNT};
+use crate::modcount;
 use crate::recalc::{self, TableBasis};
 
 /// Keys under a base table `T` (query-program.md 7.1, write-path.md 5).
@@ -3390,32 +3390,6 @@ impl Store {
             .is_some()
     }
 
-    /// The modification count of the node at `path` as op60 returns it: its
-    /// `fc` child, `01 00` when it has none, empty when the node does not
-    /// exist. A record (`[T, 05, R]`, write-path.md 4.2, 5.4), a layout or a
-    /// catalog index alike (schema-path.md 4.1). An `fc` that is not a count
-    /// ([`modcount::is_count`]: a file written before commits were checked,
-    /// or by another program) is `01 00` too, the 0 the server's scripts
-    /// read for it; so the value is at most 10 bytes and op60's reply can
-    /// always carry it.
-    pub fn mod_count(&self, path: &[Vec<u8>]) -> Vec<u8> {
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let Some(node) = self.node(&segments) else {
-            return Vec::new();
-        };
-        match node.child(&[MOD_COUNT]) {
-            Some(count) if modcount::is_count(count) => count.value.clone().unwrap_or_default(),
-            Some(_) => {
-                warn!(
-                    "{}: {path:02x?} holds a modification count that is not one; reported as none",
-                    self.name
-                );
-                modcount::key_string(0)
-            }
-            None => modcount::key_string(0),
-        }
-    }
-
     /// Write `record` (a new or modified record node, as uploaded) as record
     /// `id` of `table`, or delete the record when `record` is `None`, keeping
     /// `[T, 0d]` and the field indexes current (write-path.md 5.2-5.5).
@@ -4455,8 +4429,8 @@ pub(crate) mod tests {
             2
         );
         store.root.put(
-            &[table, &[LIBRARY], &[5], &[1], &[MOD_COUNT]],
-            largest(MOD_COUNT),
+            &[table, &[LIBRARY], &[5], &[1], &[modcount::MOD_COUNT]],
+            largest(modcount::MOD_COUNT),
         );
         let before = store.root.clone();
         // A new member, the member reused, its count adjusted.
