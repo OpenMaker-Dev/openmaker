@@ -43,6 +43,8 @@ struct Inner {
     /// Calls made so far, and the one to fail.
     calls: u64,
     fail_at: Option<u64>,
+    /// Pages whose next reads fail, and how many of them.
+    failing: BTreeMap<PageNo, u32>,
 }
 
 /// A [`PageStore`] in memory. Pages are never freed, so every root it was
@@ -87,6 +89,7 @@ impl MemStore {
                 unit_open: false,
                 calls: 0,
                 fail_at: None,
+                failing: BTreeMap::new(),
             }),
         }
     }
@@ -193,6 +196,12 @@ impl MemStore {
         let mut inner = self.lock();
         inner.fail_at = n.map(|n| inner.calls + n);
     }
+
+    /// Makes the next `reads` reads of page `number` fail with
+    /// [`Fault::Io`]; 0 fails none.
+    pub fn fail_reads(&self, number: PageNo, reads: u32) {
+        self.lock().failing.insert(number, reads);
+    }
 }
 
 impl Inner {
@@ -243,6 +252,10 @@ impl PageStore for MemStore {
         let mut inner = self.lock();
         if inner.fails() {
             return Err(Fault::Io("a failure the test asked for".into()));
+        }
+        if let Some(left @ 1..) = inner.failing.get_mut(&number) {
+            *left -= 1;
+            return Err(Fault::Io("a failed read of a page the test named".into()));
         }
         let stored = inner.pages.get_mut(&number).ok_or(Fault::Missing)?;
         if let Some(page) = &stored.page {
