@@ -1129,30 +1129,13 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     let capabilities = provider.record_capabilities(layout).unwrap();
     assert!(capabilities.update);
     assert!(capabilities.create && capabilities.delete);
-    assert!(
-        capabilities
-            .editable_fields
-            .as_ref()
-            .unwrap()
-            .contains("Name")
-            && capabilities
-                .editable_fields
-                .as_ref()
-                .unwrap()
-                .contains("Code")
-    );
-    assert!(
-        !capabilities
-            .editable_fields
-            .as_ref()
-            .unwrap()
-            .contains("Setting")
-            && !capabilities
-                .editable_fields
-                .as_ref()
-                .unwrap()
-                .contains("File Info")
-    );
+    // Its text global is typed as the related file's session value (#43).
+    let editable = capabilities.editable_fields.as_ref().unwrap();
+    assert!(["Name", "Code", "Setting"]
+        .iter()
+        .all(|name| editable.contains(*name)));
+    assert!(!editable.contains("File Info"));
+    assert_eq!(capabilities.globals, ["Setting".to_string()].into());
     let page = provider.records(layout, 0, 1).unwrap();
     let value = |page: &om_data::RecordPage, name: &str| {
         let field = page.fields.iter().position(|f| f.name == name).unwrap();
@@ -1481,14 +1464,9 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
         let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&commit.list)).unwrap();
         assert_eq!(tree.root.children[0].segment.0, uint_segment(TABLE));
     }
+    // A global is no record's cell: it is set as the session's value
+    // (`set_global`, a_related_files_globals_are_its_session_values).
     let before = host.captures.with_opcode(om_protocol::Opcode::Lock).len();
-    assert_eq!(
-        provider
-            .set_global(imported, SETTING, 1, "unsupported")
-            .unwrap_err()
-            .code,
-        Some(3)
-    );
     for cells in [
         [(SETTING, Some("unsupported".into()))].into(),
         [(NAME * 256 + 2, Some("repeat".into()))].into(),
@@ -1863,6 +1841,97 @@ fn imported_layout_creation_uses_the_owner_engine_and_caller_found_set() {
     assert_eq!(value(&stored.records[2], "Creator"), ACCOUNT);
     assert_eq!(value(&stored.records[4], "Doubled"), "42");
     assert_eq!(ids(&mut host.open(ROOT), 1), [1, 2, 3]);
+}
+
+/// A related file's global is that file's session value (#43): a script's
+/// Set Field into it from a layout of Root's own table, and the user's
+/// typing into it on a layout of the related file's table, set it for this
+/// session only. Root's calculations, the related file's own rules (the
+/// auto-entry of a record made there) and its desktop window read it;
+/// Root's global of the same ids keeps its own value, nothing is locked or
+/// committed, and a new session reads the stored value. That FileMaker Pro
+/// keeps it so is inferred (Claris "Global fields"), not measured.
+#[test]
+fn a_related_files_globals_are_its_session_values() {
+    use om_protocol::Opcode;
+
+    let mut files = files();
+    files[0].1.put(
+        &[&[4], &[5], &[2], &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    // Related's new record enters its Setting, also while Name is empty.
+    fixture::add_field(&mut files[1].1, TABLE, 20, "Entered", 1, 1, 0, 0xa8, 0);
+    fixture::add_formula(
+        &mut files[1].1,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        20,
+        5,
+        "Setting & \"|\" & Get ( FileName )",
+    );
+    let host = Host::new("related-globals", files);
+    let mut provider = host.open(ROOT);
+    let schema = provider.calc_schema().unwrap().unwrap();
+    let imported = schema.table_of(REMOTE).unwrap().id;
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let own = fixture::LAYOUT as u32;
+    let fields = provider.records(layout, 0, 1).unwrap().fields;
+    let value = |row: &om_data::Record, name: &str| {
+        row.values[fields.iter().position(|f| f.name == name).unwrap()]
+            .clone()
+            .unwrap_or_default()
+    };
+    let shown = |page: om_data::RecordPage, name: &str| {
+        let field = page.fields.iter().position(|f| f.name == name).unwrap();
+        page.records[0].values[field].clone().unwrap_or_default()
+    };
+    let effects = || {
+        [Opcode::Lock, Opcode::HostCreateRecord, Opcode::HostCommit]
+            .map(|op| host.captures.with_opcode(op).len())
+    };
+
+    // Set Field [ Remote Tasks::Setting ] from Root's own layout.
+    provider
+        .set_global(imported, SETTING, 1, "scripted")
+        .unwrap();
+    assert_eq!(
+        Window::new(&mut provider).read(&["Setting & \"|\" & Remote Tasks::Setting"]),
+        [(0, "root-global|scripted".to_string())]
+    );
+    assert_eq!(
+        shown(provider.records(layout, 0, 1).unwrap(), "Setting"),
+        "scripted"
+    );
+
+    // Typed in Browse on the layout of Remote Tasks: no change of its record.
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    assert!(capabilities.editable_fields.unwrap().contains("Setting"));
+    let typed = provider
+        .update_record(layout, 1, [("Setting".into(), Some("typed".into()))].into())
+        .unwrap();
+    assert_eq!((typed.id, value(&typed, "Setting")), (1, "typed".into()));
+    assert_eq!(effects(), [0, 0, 0]);
+
+    // The related file's rules read it there.
+    let created = provider.create_record(layout, Default::default()).unwrap();
+    assert_eq!(value(&created, "Entered"), "typed|Related");
+    // So does its own window; Root's global of the same ids is its own.
+    let mut window = provider.open_peer(RELATED).unwrap();
+    assert_eq!(
+        shown(window.records(own, 0, 1).unwrap(), "Setting"),
+        "typed"
+    );
+    window.close();
+    assert_eq!(
+        shown(provider.records(own, 0, 1).unwrap(), "Setting"),
+        "root-global"
+    );
+    // Never sent to the host.
+    assert_eq!(
+        shown(host.open(RELATED).records(own, 0, 1).unwrap(), "Setting"),
+        "child-global"
+    );
 }
 
 /// Root's Tasks::Code is validated Always by value list 5, the values of
