@@ -85,6 +85,9 @@ struct Watched {
     bad: Arc<Mutex<Vec<(String, u64)>>>,
     /// How many reads failed on one of those places.
     bad_reads: Arc<AtomicU64>,
+    /// How a read of one of those places fails: the device
+    /// ([`ErrorKind::Read`]) unless a test says otherwise.
+    bad_kind: Arc<Mutex<ErrorKind>>,
     /// The next write to a log file reaches the system's cache only, whole,
     /// and fails: a write the device did not take, whose bytes a process
     /// that goes on without a power loss still reads.
@@ -150,6 +153,7 @@ struct WatchedFile {
     largest_read: Arc<AtomicU64>,
     bad: Arc<Mutex<Vec<(String, u64)>>>,
     bad_reads: Arc<AtomicU64>,
+    bad_kind: Arc<Mutex<ErrorKind>>,
     cache_only: Arc<std::sync::atomic::AtomicBool>,
     fail_next: Arc<std::sync::atomic::AtomicBool>,
     rereads: Arc<Mutex<Rereads>>,
@@ -175,6 +179,7 @@ impl Watched {
             largest_read: Arc::default(),
             bad: Arc::default(),
             bad_reads: Arc::default(),
+            bad_kind: Arc::new(Mutex::new(ErrorKind::Read)),
             cache_only: Arc::default(),
             fail_next: Arc::default(),
             rereads: Arc::default(),
@@ -198,6 +203,7 @@ impl Watched {
             largest_read: self.largest_read.clone(),
             bad: self.bad.clone(),
             bad_reads: self.bad_reads.clone(),
+            bad_kind: self.bad_kind.clone(),
             cache_only: self.cache_only.clone(),
             fail_next: self.fail_next.clone(),
             rereads: self.rereads.clone(),
@@ -268,7 +274,8 @@ impl File for WatchedFile {
             .any(|(path, at)| *path == self.path && (offset..end).contains(at));
         if bad {
             self.bad_reads.fetch_add(1, Ordering::Relaxed);
-            return Err(sys::Error::new(ErrorKind::Read, sys::Op::Read, &self.path));
+            let kind = *self.bad_kind.lock().unwrap();
+            return Err(sys::Error::new(kind, sys::Op::Read, &self.path));
         }
         let n = self.inner.read_at(offset, buf)?;
         self.rereads
@@ -4319,6 +4326,52 @@ fn a_read_at_the_checkpoints_entry_checks_it_against_the_checkpoint() {
         read_back(&log, start + 1).len(),
         laid.entries.len() - start as usize
     );
+}
+
+/// A read the device fails of an entry's payload before the start is
+/// reported, by the open and by the plan, and decides nothing; any other
+/// error there (a stopped process) is not the device's and fails both.
+#[test]
+fn a_failed_read_before_the_start_is_reported_and_any_other_error_fails() {
+    let laid = Laid::new();
+    let at = laid.entries[3].0;
+    let (seg, offset) = laid.place_of(2);
+    let bad = (laid.segments[seg].0.clone(), offset as u64 + 40);
+    // The last segment cut back to its batches, so that the plan has work.
+    let end = laid.owners[2].last().unwrap().1;
+    for kind in [ErrorKind::Read, ErrorKind::Halted] {
+        let watched_on = |sim: &Sim| {
+            let watched = Watched::new(Arc::new(sim.fs()));
+            watched.bad.lock().unwrap().push(bad.clone());
+            *watched.bad_kind.lock().unwrap() = kind;
+            let fs: Arc<dyn Fs> = Arc::new(watched);
+            let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+            (fs, state)
+        };
+        let (fs, state) = watched_on(&laid.disk(seg, |_| {}));
+        let opened = Log::open(fs, state, laid.config, at).map(|(_, opened)| opened);
+        let (fs, state) = watched_on(&laid.disk(2, |b| b.truncate(end)));
+        let plan = Log::plan_damage(&*fs, &state, laid.config, at);
+        if kind == ErrorKind::Read {
+            let opened = opened.unwrap_or_else(|e| panic!("{}", e.error));
+            let plan = plan.unwrap();
+            let fault = opened.before_start.unwrap();
+            assert_eq!((fault.index, fault.unreadable), (2, true), "{fault:?}");
+            assert_eq!(plan.before_start, opened.before_start);
+            assert_eq!(plan.kept, laid.entries.last().unwrap().0);
+        } else {
+            let failed = opened.unwrap_err();
+            assert!(
+                matches!(&failed.error, LogError::Disk(e) if e.kind() == kind),
+                "{}",
+                failed.error
+            );
+            assert!(
+                matches!(&plan, Err(LogError::Disk(e)) if e.kind() == kind),
+                "{plan:?}"
+            );
+        }
+    }
 }
 
 /// An acceptance carries out the plan it is given or refuses with nothing
