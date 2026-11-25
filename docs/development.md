@@ -58,7 +58,8 @@ host without its own).
 
 **Desktop client.** **File > Open...** opens a `.fmp12` file on this
 computer through a private embedded host (no server or license needed);
-the Hosts dialog connects to FileMaker Server or OpenMaker Server. Useful
+Home's Hosts and File > Hosts > Open Network File... connect to FileMaker
+Server or OpenMaker Server. Useful
 environment variables:
 
 | Variable | Effect |
@@ -122,8 +123,9 @@ OPENMAKER_CA_CERT=~/.local/state/openmaker-server/tls/cert.pem OPENMAKER_HOST=lo
   OPENMAKER_FILE=hosted.fmp12 OPENMAKER_ACCOUNT=Admin cargo run -p om-gui
 ```
 
-In the Hosts dialog, type the account's password in the file and choose
-Open; **List files** shows the hosted file.
+Open Network File opens over Home, filled in: type the account's password
+and choose Open. Saved under Home's Hosts (**+**, `localhost`), the host
+lists the hosted file.
 
 Files can also be put in a database folder instead of named on the
 command line. At startup the server hosts the `.fmp12` files at the
@@ -803,7 +805,7 @@ Each of these cost a debugging round:
   that a second connection reads back and performs a script on the host
   that changes a record, and deletes both records and the script; it writes
   `hosted.md`. `OM_STARTER_FINDS_HOSTED=1` runs `starter_finds` against the
-  same kind of server through the Hosts dialog.
+  same kind of server through Open Network File.
 
   ```sh
   cargo build -p om-server
