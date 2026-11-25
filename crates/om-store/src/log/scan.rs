@@ -9,7 +9,7 @@
 //! every field returned and every byte the open writes back comes from that
 //! buffer (format section 3.11, "Whatever is checked is what is used").
 
-use crate::sys::{self, File};
+use crate::sys::{self, ErrorKind, File};
 
 use super::format::{
     entry_hash, is_batch_mark, BatchHeader, BatchStart, EntryHead, SegmentHeader, BATCH_HEADER,
@@ -508,7 +508,13 @@ impl<'a> Scanner<'a> {
                 let computed = self.chain.map(|prev| entry_hash(&prev, &bytes[..content]));
                 Some(Ok((stored, computed)))
             }
-            Err(fault) => Some(Err(fault)),
+            // Only a read the device failed is noted and passed; any other
+            // error (a stopped process) is the walk's.
+            Err(fault) if fault.error.kind() == ErrorKind::Read => Some(Err(fault)),
+            Err(fault) => {
+                self.recycle(place);
+                return Err(fault);
+            }
         };
         self.recycle(place);
         let stored = match read {

@@ -2325,39 +2325,66 @@ read; an entry the log holds that cannot be applied (a page that does not
 check); no space to apply the log's entries, or for this start's own
 entry. Two calls go past two of them, and nothing else does:
 
-- `Store::accept_damage` (`Log::accept_damage`, server-storage.md 6.12)
-  decides from the start, the checkpoint the store opens on. Every listed
-  segment the folder holds is opened; one that is missing or whose header
-  is not valid is passed over, and a file shorter than its header says is
-  read as far as it goes. The rule:
+- Accepting the loss is two calls. `Store::plan_damage`
+  (`Log::plan_damage`, server-storage.md 6.12) shows what would be kept and
+  given up, and writes nothing to the log (the store's open steps 0 to 2
+  run as in any open): the entry kept, the run listed before and after,
+  where the open after the acceptance will end the log, and each segment
+  file's fate (kept, lengthened, set aside and why, missing) with the
+  entries it held as far as the headers say. `Store::accept_damage` takes
+  that plan and does exactly that, or refuses with nothing changed when a
+  fresh plan differs (`LogError::PlanChanged`); an administrator who would
+  rather keep what a plan gives up restores, or repairs by hand. The plan
+  is made from the start, the checkpoint the store opens on. Every listed
+  segment the folder holds is opened, and a file shorter than its header
+  says is read as far as it goes. The rule:
   - **kept**: in the listed segment that holds the entry after the start,
-    the start reached by framing alone (3.5, "Anchored walks"), then the
+    the start reached by framing alone (3.5, "Anchored walks"; what does
+    not check before it, or a read the device fails of an entry's payload
+    or hash there, is reported in the plan and does not count), then the
     chain checked forward from the start's hash through the listed
     segments that follow without a gap, no further than the later of the
     marker and the start; the last entry so reached is `kept`. With it, the
     listed segments before that segment that follow one another without a
-    gap. A kept file that is short is lengthened to its header's size with
-    zeros, flushed, before `state` changes: past what is kept, which the
-    walk read, nothing in it is part of the log;
-  - **given up**: every other listed segment, and whatever follows `kept`.
-    Nothing is destroyed: every file given up is renamed, in `log/`, to
-    `given-up-<k>.<number>` (`k` the next number no name uses, one per
-    acceptance), a name no open removes, since an open removes only files
-    named as segments; the kept segment whose bytes after `kept` are given
-    up stays in use, and is copied to `given-up-<k>.<number>.tail`, a block
-    the device cannot read written as zeros and said so. The folder and the
-    copy are flushed before `state` changes. A rename is used, not a copy
-    into a folder of its own beside `log/`: the file system renames within
-    one folder only, and a file given up is often one the device cannot
-    read, which a rename keeps whole without reading it;
-  - **refused**, with nothing in the log changed: when the framing breaks
-    before the start in the segment that holds its successor
-    (`LogError::FramingBroken`); when nothing would change; on a segment
-    of a newer format; on a read the device fails.
+    gap. The run is then walked as the open after the acceptance will walk
+    it (the open's own walk, writing nothing), and listed only as far as
+    that walk goes, so that the open keeps exactly the plan. A kept file
+    that is short is lengthened to its header's size with zeros, flushed,
+    before `state` changes. Those zeros are bytes like any: where they
+    complete a batch whose hashes all check (a file short only by trailing
+    zero bytes), the batch is whole, as it was written;
+  - **given up**: every other listed segment (one whose own header does
+    not check is not looked into), every segment file the run does not
+    list, and whatever follows `kept`. Nothing is destroyed: every file
+    given up is renamed, in `log/`, to `given-up-<k>.<number>` (`k` the
+    next number no name uses, one per acceptance; refused when none is
+    left, and never over a file of that name), a name no open removes,
+    since an open removes only files named as segments; the kept segment
+    whose bytes after `kept` are given up stays in use, and is copied to
+    `given-up-<k>.<number>.tail`, a block the device cannot read written as
+    zeros and said so. The folder and the copy are flushed before `state`
+    changes. A rename is used, not a copy into a folder of its own beside
+    `log/`: the file system renames within one folder only, and a file
+    given up is often one the device cannot read, which a rename keeps
+    whole without reading it;
+  - **refused**, with nothing in the log changed: when the walk cannot say
+    where the entry after the start begins (`LogError::FramingBroken`): it
+    stops before any entry after the start, at a batch's mark or header,
+    at bytes that do not frame, or past a start whose own end its hash
+    does not place (a damaged length would place its successor wrong),
+    unless it reached the clean end of its last segment, nothing is
+    written after that in the segment, and the listed segment after it is
+    missing; when a listed segment whose header does not check could hold
+    that entry; when nothing would change; on a segment of a newer format;
+    on a read the device fails of anything the decision depends on (an
+    error that is not the device's, such as a stopped process, is the
+    call's error, never a report).
 
   Then one `state` update, written to both slots, lists the kept segments,
   lowers the marker to `kept`, and raises the cut count when anything after
-  `kept` is given up. The report (`DamageAccepted`) says it all: `kept`,
+  `kept` is given up; the log is opened, and what that open keeps, where it
+  ends and that it removed nothing are checked against the plan. The
+  report (`DamageAccepted`) carries the plan and says it all: `kept`,
   the marker before, the cut count, the run before and after, every
   segment given up with the entries it held as far as the headers say
   (its first from its own header, its last from the next one's; unknown

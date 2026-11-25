@@ -4279,3 +4279,182 @@ fn accepting_a_loss_gives_up_no_entry_it_could_check_whatever_byte_is_damaged() 
 fn long_accepting_a_loss_gives_up_no_entry_it_could_check_whatever_byte_is_damaged() {
     eprintln!("{:?}", sweep_damage(1));
 }
+
+/// Opens `laid`'s log on `sim` from entry `start`.
+fn open_laid(sim: &Sim, laid: &Laid, start: u64) -> Result<(Log, Opened), Box<OpenFailed>> {
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    Log::open(fs, state, laid.config, laid.entries[start as usize - 1].0)
+}
+
+/// A read that reaches the entry the log was opened from checks it against
+/// that entry's hash: an older, locally valid version of it (the same
+/// length and predecessor) on disk is damage there, though the open, which
+/// reaches the start by framing, goes on and reports it.
+#[test]
+fn a_read_at_the_checkpoints_entry_checks_it_against_the_checkpoint() {
+    let laid = Laid::new();
+    let start = 4u64;
+    let prev = laid.entries[start as usize - 2].0;
+    let (bytes, _) = format::encode_entry(&prev.hash, start, 1, 1, 0, &[0xee; 32]);
+    let (seg, offset) = laid.place_of(start);
+    let sim = laid.disk(seg, |b| {
+        b[offset..offset + bytes.len()].copy_from_slice(&bytes)
+    });
+    let (log, opened) = open_laid(&sim, &laid, start).unwrap_or_else(|e| panic!("{}", e.error));
+    assert_eq!(opened.before_start.map(|f| f.index), Some(start));
+    let read = log.read(start).unwrap().next().unwrap();
+    assert!(
+        matches!(
+            read,
+            Err(LogError::Damaged(Damage {
+                kind: DamageKind::Start,
+                ..
+            }))
+        ),
+        "{read:?}"
+    );
+    // From after it, the read anchors at the checkpoint, as the open does.
+    assert_eq!(
+        read_back(&log, start + 1).len(),
+        laid.entries.len() - start as usize
+    );
+}
+
+/// An acceptance carries out the plan it is given or refuses with nothing
+/// changed: the log changed since the plan, or the names it would give
+/// what it sets aside are spent.
+#[test]
+fn an_acceptance_refuses_a_plan_the_log_no_longer_matches() {
+    let laid = Laid::new();
+    let start = 6u64;
+    let at = laid.entries[start as usize - 1].0;
+    // The first segment's header damaged: the plan sets it aside.
+    let sim = laid.disk(0, |b| b[40] ^= 1);
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    assert!(
+        matches!(plan.files[0].fate, Fate::SetAside { .. }),
+        "{plan:?}"
+    );
+    // Then the last segment is lost: the plan no longer holds.
+    let log_files = |sim: &Sim| -> Vec<(String, Option<Vec<u8>>)> {
+        sim.image()
+            .into_iter()
+            .filter(|(p, _)| p.starts_with("log/"))
+            .collect()
+    };
+    fs.remove(&laid.segments[2].0).unwrap();
+    fs.flush_folder(FOLDER).unwrap();
+    let before = log_files(&sim);
+    let refused = Log::accept_damage(fs.clone(), state, laid.config, at, &plan);
+    let Err(refused) = refused else {
+        panic!("accepted a stale plan")
+    };
+    assert!(matches!(refused.failed.error, LogError::PlanChanged));
+    assert!(refused.decided.is_none());
+    assert!(log_files(&sim) == before, "the refusal changed the log");
+    // The names spent: refused too, with nothing changed.
+    let sim = laid.disk(0, |b| b[40] ^= 1);
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let taken = format!("{FOLDER}/{GIVEN_UP_PREFIX}{}.x", u64::MAX);
+    drop(fs.create(&taken, FileOptions::PLAIN).unwrap());
+    fs.flush_folder(FOLDER).unwrap();
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    let before = log_files(&sim);
+    let refused = Log::accept_damage(fs.clone(), state, laid.config, at, &plan);
+    let Err(refused) = refused else {
+        panic!("accepted with the names spent")
+    };
+    assert!(
+        matches!(refused.failed.error, LogError::Refused(_)),
+        "{}",
+        refused.failed.error
+    );
+    assert!(log_files(&sim) == before, "the refusal changed the log");
+}
+
+/// The plan is what the open after the acceptance does: a listed segment
+/// after the marker whose header (valid in itself) does not continue from
+/// the marker's entry is one that open would drop, so the plan sets it
+/// aside rather than list it kept, and nothing is removed.
+#[test]
+fn the_plan_sets_aside_what_the_open_after_it_would_drop() {
+    let laid = Laid::new();
+    let start = 6u64;
+    let last = laid.entries.last().unwrap().0;
+    // The last segment cut back to its batches: short, so that the open
+    // refuses and the acceptance has work.
+    let end = laid.owners[2].last().unwrap().1;
+    let sim = laid.disk(2, |b| b.truncate(end));
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let mut state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    // A listed segment after it, with a whole batch chained from the
+    // marker's entry, and a header naming another predecessor.
+    let run = state.values().segments;
+    let number = run.first + run.count;
+    let (entry, hash) = format::encode_entry(&last.hash, last.index + 1, 1, 1, 0, &[0x77; 32]);
+    let header = format::SegmentHeader {
+        store: state.values().server_id.0,
+        number,
+        size: laid.config.segment_size,
+        first: last.index + 1,
+        prev_term: last.term,
+        prev_hash: [7; 32],
+    };
+    let batch = format::BatchHeader {
+        count: 1,
+        first: last.index + 1,
+        length: entry.len() as u64,
+        cut_count: state.values().cut_count,
+        prev: last.hash,
+        last: hash,
+    };
+    let mut bytes = header.encode().to_vec();
+    bytes.extend_from_slice(&batch.encode());
+    bytes.extend_from_slice(&entry);
+    bytes.resize(laid.config.segment_size as usize, 0);
+    let file = fs
+        .create(&segment_path(number), FileOptions::PLAIN)
+        .unwrap();
+    file.write_at(0, &bytes).unwrap();
+    file.flush().unwrap();
+    fs.flush_folder(FOLDER).unwrap();
+    state
+        .update(|v| {
+            v.segments = Segments {
+                first: run.first,
+                count: run.count + 1,
+            }
+        })
+        .unwrap();
+    let at = laid.entries[start as usize - 1].0;
+    assert!(Log::open(fs.clone(), state, laid.config, at).is_err());
+    sim.restart();
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    let fate = plan.files.iter().find(|f| f.number == number).unwrap();
+    assert!(matches!(fate.fate, Fate::SetAside { .. }), "{plan:?}");
+    assert_eq!(plan.listed.first + plan.listed.count, number, "{plan:?}");
+    let (log, opened, accepted) = Log::accept_damage(fs.clone(), state, laid.config, at, &plan)
+        .unwrap_or_else(|e| panic!("{}", e.failed.error));
+    assert_eq!(accepted.plan, plan);
+    assert_eq!(opened.durable, last);
+    assert!(opened.removed.is_empty());
+    assert_eq!(log.segments(), plan.listed);
+    let moved = accepted
+        .given_up
+        .iter()
+        .find(|g| g.number == number)
+        .and_then(|g| g.moved_to.clone())
+        .unwrap();
+    let kept: Vec<u8> = sim
+        .image()
+        .into_iter()
+        .find(|(p, _)| *p == moved)
+        .and_then(|(_, b)| b)
+        .unwrap();
+    assert!(kept == bytes, "the set-aside segment kept whole");
+}

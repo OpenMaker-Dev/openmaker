@@ -1025,8 +1025,23 @@ fn park(
         })
         .max()
         .unwrap_or(0);
-    let prefix = format!("{GIVEN_UP_PREFIX}{}.", taken + 1);
+    let next = taken
+        .checked_add(1)
+        .ok_or(LogError::Refused("the numbers of given-up names are spent"))?;
+    let prefix = format!("{GIVEN_UP_PREFIX}{next}.");
     let named = |number: u64| format!("{FOLDER}/{prefix}{number:016x}");
+    // A rename replaces a file of its new name: none may be there.
+    let free = |path: &str| match fs.open(path, FileOptions::PLAIN) {
+        Ok(_) => Err(LogError::Refused("a given-up name is taken")),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(disk(e)),
+    };
+    for &number in moves {
+        free(&named(number))?;
+    }
+    if let Some(number) = tail {
+        free(&format!("{}.tail", named(number)))?;
+    }
     for &number in moves {
         fs.rename(&segment_path(number), &named(number))
             .map_err(disk)?;
@@ -1216,10 +1231,15 @@ impl Log {
     /// it hands it back ([`OpenFailed`], boxed: a `State` is large).
     ///
     /// Every listed segment must be there with a valid header. Every entry
-    /// from `start` through the marker must be there, whole and chained,
-    /// with the marker's hash at its index, and the entry at `start` with
-    /// its hash; else the log is damaged and nothing is changed. When
-    /// `start` covers the marker's entry it answers for it. After the marker
+    /// after `start` through the marker must be there, whole and chained
+    /// from `start`'s hash, with the marker's hash at its index; else the
+    /// log is damaged and nothing is changed. The entries up to `start` in
+    /// the segment that holds the one after it are reached by their framing
+    /// alone (format section 3.5): their chain is checked as the walk goes,
+    /// and where it does not hold, the entry at `start` included, is
+    /// reported ([`Opened::before_start`]) and does not fail the open;
+    /// framing that breaks there does. When `start` covers the marker's
+    /// entry it answers for it. After the marker
     /// (or `start`, whichever is later), a batch is kept only when it is
     /// whole and carries the cut count `state` holds; the first that is not,
     /// and everything after it, is cut. Then, in this order: the segments
@@ -1440,40 +1460,46 @@ impl Log {
         })
     }
 
-    /// Accept the loss of everything the log can no longer produce, and
-    /// open it: the storage half of the administrator's "accept the loss"
-    /// on a single server, for a log that does not hold, whole, every entry
-    /// through its marker ([`LogError::Damaged`]; server-storage.md 6.12).
-    /// `start` is the entry of the checkpoint the store opens on. The rule
-    /// (format section 6.2):
+    /// What accepting the loss of everything the log can no longer produce
+    /// would do, computed without writing anything: the storage half of the
+    /// administrator's "accept the loss" on a single server, for a log that
+    /// does not hold, whole, every entry through its marker
+    /// ([`LogError::Damaged`]; server-storage.md 6.12). `start` is the entry
+    /// of the checkpoint the store opens on. [`Log::accept_damage`] carries
+    /// the plan out. The rule (format section 6.2):
     ///
-    /// - **kept**: the chain from `start`: in the listed segment that holds
-    ///   the entry after it, reached by framing alone (nothing before the
-    ///   start is needed), then checked forward by the chain from the
-    ///   start's hash through the segments that follow without a gap, up
-    ///   to the later of the marker and the start; and the listed segments
-    ///   before it that follow one another without a gap. A kept file
-    ///   shorter than its header says is read as far as it goes, and
-    ///   lengthened with zeros;
-    /// - **given up**: every listed segment not kept, and what follows the
-    ///   last entry so reached (`kept`); the marker is lowered to it. Every
-    ///   file given up is renamed, in `log/`, to a name of this
-    ///   acceptance's own that no open removes, and the kept one whose tail
-    ///   is given up is copied there: durable before `state` changes. The
-    ///   file system renames within one folder only, and a rename reads
-    ///   nothing, so a file given up because the device cannot read it is
-    ///   kept whole;
-    /// - **refused**, with nothing changed: when the framing before the
-    ///   start breaks in the segment that holds the start's successor, so
-    ///   that where it begins cannot be established; when nothing would
-    ///   change; on a segment of a newer format; on a read the device fails
-    ///   (`LogError::Unreadable`).
+    /// - **kept**: the chain from `start`, in the listed segment that holds
+    ///   the entry after it: the start reached by framing alone (nothing
+    ///   before it is needed; what does not check there, or a read the
+    ///   device fails of an entry's payload or hash, is reported and does
+    ///   not count), then checked forward from the start's hash through the
+    ///   listed segments that follow without a gap, up to the later of the
+    ///   marker and the start; with the listed segments before that segment
+    ///   that follow one another without a gap; and no further than the
+    ///   open's own walk over that run would go, which the plan runs. A kept
+    ///   file shorter than its header says is lengthened with zeros;
+    /// - **given up**: every other listed segment (one whose header does
+    ///   not check is not looked into), every segment file the run does not
+    ///   list, and what follows the last entry kept (`kept`); the marker is
+    ///   lowered to it. Every file given up is renamed, in `log/`, to a name
+    ///   of this acceptance's own that no open removes, and the kept one
+    ///   whose tail is given up is copied: durable before `state` changes,
+    ///   and nothing is removed;
+    /// - **refused**, with nothing changed: when the walk cannot say where
+    ///   the entry after the start begins (it stops before any entry after
+    ///   the start, at a batch's mark or header, at bytes that do not frame,
+    ///   or past a start whose own end its hash does not place, unless it
+    ///   reached the clean end of its last segment and the listed segment
+    ///   after it is missing); when a listed segment whose header does not
+    ///   check could hold that entry; when nothing would change; on a
+    ///   segment of a newer format; on a read the device fails of anything
+    ///   the decision depends on (`LogError::Unreadable`).
     ///
     /// One `state` update, written to both slots, lists the kept segments,
     /// lowers the marker (its committed position with it, when that was
     /// past) and raises the cut count when anything after `kept` is given
-    /// up. Then the log is opened as [`Log::open`] opens it, which removes
-    /// the files no longer listed. A failure after the decision says what
+    /// up. Then the log is opened as [`Log::open`] opens it, and its effect
+    /// is checked against the plan. A failure after the decision says what
     /// it was and whether `state` holds it ([`AcceptFailed::decided`]). It
     /// needs no committed position: it is the administrator's decision,
     /// which no committed position could make on a single server.
@@ -2709,6 +2735,7 @@ impl Log {
             scanner,
             from,
             until,
+            anchor: (from <= self.anchor.index).then_some(self.anchor),
         })
     }
 }
@@ -2719,6 +2746,9 @@ pub struct Reader<'a> {
     scanner: Option<Scanner<'a>>,
     from: u64,
     until: u64,
+    /// The entry the log was opened from, when the read reaches it: the
+    /// entry at its index must be it (its hash), or the read fails there.
+    anchor: Option<Position>,
 }
 
 impl Iterator for Reader<'_> {
@@ -2735,6 +2765,22 @@ impl Iterator for Reader<'_> {
                 }
             };
             match event {
+                // The entry the log was opened from is the checkpoint's: an
+                // entry at its index that chains from what precedes it on
+                // disk and is another entry is damage, not that entry.
+                Event::Entry(found)
+                    if self
+                        .anchor
+                        .is_some_and(|a| a.index == found.index && a.hash != found.hash) =>
+                {
+                    self.scanner = None;
+                    return Some(Err(damage(
+                        DamageKind::Start,
+                        self.segs[found.seg].number,
+                        found.offset,
+                        found.index,
+                    )));
+                }
                 Event::Entry(found) if found.index < self.from => {}
                 Event::Entry(found) => {
                     if found.index >= self.until {
