@@ -258,6 +258,22 @@ fn the_cli_prints_one_json_response_and_takes_no_password_argument() {
     assert_eq!(ran["result"], "hello", "{ran:#}");
     assert_eq!(ran["last_error"], 0);
 
+    // Where a field is used, from the command line: the layout's edit box.
+    let uses = om_author(&host, &secrets)
+        .args(["find-uses", "--field-name", "Name", "--table-name", "Tasks"])
+        .output()
+        .unwrap();
+    assert!(uses.status.success(), "{uses:?}");
+    let uses = ok(serde_json::from_slice(&uses.stdout).unwrap());
+    assert!(
+        uses["uses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["holder"]["ref"] == "layout_object:1.2@Tasks.fmp12"),
+        "{uses:#}"
+    );
+
     // A placement planned from the command line: frames as numbers.
     let planned = om_author(&host, &secrets)
         .args([
@@ -641,6 +657,10 @@ fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
             "openmaker_complete_calculation",
             "openmaker_create_file",
             "openmaker_compare_designs",
+            "openmaker_find_uses",
+            "openmaker_broken_references",
+            "openmaker_unused_objects",
+            "openmaker_script_calls",
             "openmaker_commands",
         ]
     );
@@ -842,6 +862,15 @@ fn mcp_2025_11_25_initializes_and_calls_tools() {
         capabilities["operations"]["apply_script_steps"]["available"],
         true
     );
+    // A script's call chain, through its tool.
+    let chain = mcp.request(
+        3,
+        "tools/call",
+        json!({ "name": "openmaker_script_calls", "arguments": { "script_name": "Greeting" } }),
+    );
+    let chain = ok(tool_result(&chain));
+    assert_eq!(chain["script"]["ref"], "script:5@Tasks.fmp12", "{chain:#}");
+    assert_eq!(chain["calls"]["scripts"], json!([]));
     // A revision this server does not implement is refused, not guessed.
     let mut old = Mcp::start(&host, &secrets);
     let refused = old.request(

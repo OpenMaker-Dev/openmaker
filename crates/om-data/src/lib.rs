@@ -21,6 +21,7 @@ pub mod calc_field;
 mod calc_triggers;
 pub mod choice;
 pub mod containers;
+pub mod design_refs;
 pub mod field_catalog;
 pub mod field_options;
 pub mod file_refs;

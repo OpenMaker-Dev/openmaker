@@ -75,7 +75,7 @@ pub struct Service {
 }
 
 /// An open file, closed when dropped.
-struct Opened(NativeProvider);
+pub(crate) struct Opened(NativeProvider);
 
 impl Deref for Opened {
     type Target = NativeProvider;
@@ -721,15 +721,19 @@ impl Service {
             Command::GetSecurity => self.get_security(),
             Command::GetValueLists(_) => self.get_value_lists(),
             Command::CompleteCalculation(params) => self.complete_calculation(params),
+            Command::FindUses(params) => self.find_uses(params),
+            Command::BrokenReferences(params) => self.broken_references(params),
+            Command::UnusedObjects(params) => self.unused_objects(params),
+            Command::ScriptCalls(params) => self.script_calls(params),
         }
     }
 
     /// The file's name as references give it.
-    fn file(&self) -> String {
+    pub(crate) fn file(&self) -> String {
         om_data::file_refs::hosted_name(&self.target.file)
     }
 
-    fn open(&self) -> Result<Opened, AuthorError> {
+    pub(crate) fn open(&self) -> Result<Opened, AuthorError> {
         let mut provider = NativeProvider::new(self.target.tls.clone());
         let mut connection = self.target.connection();
         let opened = provider.open_metadata(&connection);
@@ -751,7 +755,7 @@ impl Service {
         Ok(Opened(provider))
     }
 
-    fn read_error(e: om_data::DataError) -> AuthorError {
+    pub(crate) fn read_error(e: om_data::DataError) -> AuthorError {
         AuthorError::new(ErrorKind::Connection, e.to_string())
     }
 

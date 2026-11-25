@@ -23,7 +23,9 @@ use om_protocol::authoring::{
     OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
 };
 
-use crate::{download, download_node, download_tree, failure, key_bytes, NativeProvider};
+use crate::{
+    download, download_node, download_tree, download_value, failure, key_bytes, NativeProvider,
+};
 
 /// The script catalog `[17]`, its index `[17, 1]` and its definitions
 /// `[17, 5]`; the layout catalog `[4]` and its members `[4, 5]`.
@@ -47,6 +49,28 @@ pub enum Authoring {
 enum ScriptSave {
     Extension,
     Native,
+}
+
+/// A file's design catalogs as the host gave them, for the reference
+/// graph (`om_data::design_refs`): one download of each of
+/// [`om_data::design_refs::DESIGN_CATALOGS`] and of each table's field
+/// catalog, and the catalogs the host would not give.
+pub struct DesignCatalogs {
+    downloads: Vec<crate::Download>,
+    /// What the host refused or could not send, with its error.
+    pub unavailable: Vec<om_data::design_refs::Unavailable>,
+    /// The catalogs whose modification count `[cat, 1, fc]` differed
+    /// between the start and the end of the read, or could not be read:
+    /// the design may have changed while it was read
+    /// (`DesignGraph::note_changed_during_read`).
+    pub changed: Vec<String>,
+}
+
+impl DesignCatalogs {
+    /// The catalogs as one key tree.
+    pub fn tree(&self) -> Result<om_hbam::KeyTree<'_>, DataError> {
+        download_tree(&self.downloads)
+    }
 }
 
 /// The scripts as the host stores them: the catalog, each member's
@@ -1080,6 +1104,115 @@ impl NativeProvider {
         }
     }
 
+    /// The file's design catalogs as stored on the host, read now: each
+    /// catalog the reference graph reads, whole, and each table's field
+    /// catalog. A catalog the host does not have is left out; one it does
+    /// not send is listed in [`DesignCatalogs::unavailable`] with the
+    /// host's error. No record or account is read: of the security
+    /// catalog, only the privilege sets `[23, 2]`, which hold no
+    /// credential.
+    pub fn design_catalogs(&mut self) -> Result<DesignCatalogs, DataError> {
+        self.require_open()?;
+        let session = self.session.as_mut().expect("open session");
+        let mut downloads = Vec::new();
+        let mut unavailable = Vec::new();
+        // Each catalog index's modification count, read before the catalogs
+        // and again after (schema-path.md 8): FileMaker Pro reads the same
+        // count to tell whether its copy of a catalog is current.
+        let mut counts: Vec<(Vec<u64>, String, ModCount)> = Vec::new();
+        for (path, what) in om_data::design_refs::DESIGN_CATALOGS {
+            for (index, what) in catalog_indexes(path, what) {
+                let count = mod_count(session, &index);
+                counts.push((index, what, count));
+            }
+        }
+        for (path, what) in om_data::design_refs::DESIGN_CATALOGS {
+            get(
+                session,
+                path.to_vec(),
+                what.to_owned(),
+                &mut downloads,
+                &mut unavailable,
+            );
+        }
+        // The tables the schema catalog `[3]` lists, by their member keys
+        // alone, then their fields. Nothing here is defaulted: a member
+        // list or member key that does not read is a failure of this
+        // download, reported with the catalogs not given, since the fields
+        // of a table it hides were never asked for.
+        let mut tables = Vec::new();
+        if let Some(schema) = downloads.iter().find(|d| d.path == [key_bytes(3)]) {
+            let tree = download_tree(std::slice::from_ref(schema))?;
+            match tree.at(&[3, 16, 5]) {
+                Some(list) if list.value.is_none_or(<[u8]>::is_empty) => {
+                    for member in &list.children {
+                        let deleted =
+                            member.children.is_empty() && member.value.is_none_or(<[u8]>::is_empty);
+                        match member.id() {
+                            Some(0) => {}
+                            Some(_) if deleted => {}
+                            Some(id) => {
+                                let name = member
+                                    .get(0x10)
+                                    .and_then(om_hbam::Node::text)
+                                    .and_then(Result::ok)
+                                    .unwrap_or_else(|| format!("table {id}"));
+                                tables.push((id, name));
+                            }
+                            None => unavailable.push(om_data::design_refs::Unavailable {
+                                path: vec![3, 16, 5],
+                                what: format!("the fields of base table {}", member.segment),
+                                reason: "the table's key does not read, so they were not asked \
+                                         for"
+                                .into(),
+                            }),
+                        }
+                    }
+                }
+                Some(_) => unavailable.push(om_data::design_refs::Unavailable {
+                    path: vec![3, 16, 5],
+                    what: "the fields of every base table".into(),
+                    reason: "the base tables' member list does not read, so no table's fields \
+                             were asked for"
+                        .into(),
+                }),
+                None => {}
+            }
+        }
+        for (table, name) in tables {
+            let what = format!("the fields of table “{name}”");
+            let count = mod_count(session, &[table, 3]);
+            counts.push((vec![table, 3], what.clone(), count));
+            get(
+                session,
+                vec![table, 3],
+                what,
+                &mut downloads,
+                &mut unavailable,
+            );
+        }
+        // The counts again: a catalog whose count moved, or whose count
+        // could not be read either time, may have changed while it was read.
+        let mut changed = Vec::new();
+        for (index, what, before) in counts {
+            let after = mod_count(session, &index);
+            match (before, after) {
+                (Ok(before), Ok(after)) if before == after => {}
+                (Ok(_), Ok(_)) => changed.push(format!("{what}: its modification count changed")),
+                (Err(e), _) | (_, Err(e)) => changed.push(format!(
+                    "{what}: its modification count could not be read ({e})"
+                )),
+            }
+        }
+        // A key tree is built in key order.
+        downloads.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(DesignCatalogs {
+            downloads,
+            unavailable,
+            changed,
+        })
+    }
+
     /// The scripts as stored on the host, read now.
     pub fn script_definitions(&mut self) -> Result<ScriptDefinitions, DataError> {
         self.require_open()?;
@@ -1323,4 +1456,56 @@ impl NativeProvider {
             ))),
         }
     }
+}
+
+/// Download the catalog at `path` into `downloads`; a failure is recorded
+/// in `unavailable`, and an absent node holds nothing.
+fn get(
+    session: &mut om_session::Session,
+    path: Vec<u64>,
+    what: String,
+    downloads: &mut Vec<crate::Download>,
+    unavailable: &mut Vec<om_data::design_refs::Unavailable>,
+) {
+    match download_node(session, path.iter().map(|k| key_bytes(*k)).collect()) {
+        Ok(Some(download)) => downloads.push(download),
+        Ok(None) => {}
+        Err(e) => unavailable.push(om_data::design_refs::Unavailable {
+            path,
+            what,
+            reason: e.to_string(),
+        }),
+    }
+}
+
+/// The catalogs within the design catalog at `path` whose index `[.., 1]`
+/// keeps a modification count: the schema's base tables, occurrences and
+/// relationships for `[3]`, the catalog itself otherwise. The file's
+/// status `[2]` has none.
+fn catalog_indexes(path: &[u64], what: &str) -> Vec<(Vec<u64>, String)> {
+    match path {
+        [2] => Vec::new(),
+        [3] => vec![
+            (vec![3, 16], "the base tables".into()),
+            (vec![3, 17], "the table occurrences".into()),
+            (vec![3, 0xfb], "the relationships".into()),
+        ],
+        _ => vec![(path.to_vec(), what.to_owned())],
+    }
+}
+
+/// A catalog's modification count as read: its stored bytes, `None` when
+/// it has none yet, or why it could not be read.
+type ModCount = Result<Option<Vec<u8>>, String>;
+
+/// A catalog's modification count `[cat, 1, fc]` (schema-path.md 8.1), as
+/// stored; `None` when it has none yet.
+fn mod_count(
+    session: &mut om_session::Session,
+    catalog: &[u64],
+) -> Result<Option<Vec<u8>>, String> {
+    let mut path: Vec<Vec<u8>> = catalog.iter().map(|k| key_bytes(*k)).collect();
+    path.push(vec![1]);
+    path.push(vec![0xfc]);
+    download_value(session, path).map_err(|e| e.to_string())
 }

@@ -18,6 +18,7 @@ use rmcp::model::JsonObject;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::api::{AnalysisParams, ObjectParams, ScriptCallsParams, UnusedParams};
 use crate::api::{
     ApplyParams, ArrangeObjectsParams, AuthorError, ChangePartsParams, ChoiceParams, ChooseParams,
     Command, CompareDesignsParams, CompletionParams, CreateFieldParams, CreateFileParams,
@@ -859,7 +860,110 @@ pub static COMPLETE_CALCULATION: CommandSpec = CommandSpec {
 
 /// Every command, in the order the MCP tool list, `commands` and the CLI's
 /// usage give them.
-pub static ALL: [&CommandSpec; 37] = [
+/// An analysis command's description, ending with what every analysis
+/// result says of its coverage.
+macro_rules! analysis {
+    ($text:literal) => {
+        concat!(
+            $text,
+            " Results report what was read, not facts about the whole file: check them \
+             before acting on them. Every result carries how far to trust it: \
+             `read_cleanly` with its `anomalies`, `consistent` (whether the design was seen \
+             to change while it was read), the places not decoded and the references made \
+             by a name looked up when the file runs (Evaluate, ExecuteSQL, a script \
+             performed by name), catalogs the host did not give, `omitted` and `stopped`. \
+             An object asked for and not found is the error `not_found` (not among the \
+             objects read) only for a file read cleanly, else `not_known`; either carries \
+             the same `coverage` in its details. Reads metadata only, never records."
+        )
+    };
+}
+
+pub static FIND_USES: CommandSpec = CommandSpec {
+    id: "find_uses",
+    cli: "find-uses",
+    tool: "openmaker_find_uses",
+    title: "Find where an object is used",
+    description: analysis!(
+        "Every reference OpenMaker decodes to a design object (a script, table, \
+                  field, table occurrence, layout, value list, custom function or data \
+                  source) from another object: each with the object that holds it and the \
+                  place in it (a script's step and line, a layout object, a field's \
+                  formula), whether it resolves, and for a script what the holder does \
+                  with it (`script_role`: `performs`, `performs_on_server`, `installs` or \
+                  `names`). Coverage lists the places that could refer to the object but \
+                  were not read."
+    ),
+    effect: Effect::Reads,
+    needs: Needs::File,
+    operation: Some("find_uses"),
+    params: schema_for_type::<ObjectParams>,
+    parse: |params| read(params).map(Command::FindUses),
+};
+
+pub static BROKEN_REFERENCES: CommandSpec = CommandSpec {
+    id: "broken_references",
+    cli: "broken-references",
+    tool: "openmaker_broken_references",
+    title: "Find references whose target was not found",
+    description: analysis!(
+        "Every reference OpenMaker decodes whose target was not found among the \
+                  objects read (`target_not_found`): a field, script, layout, occurrence, \
+                  value list, custom function or data source the reference names, with the \
+                  object that holds it, the place in it and what was not found. Only in a \
+                  file read cleanly; otherwise such a reference is `unresolved`."
+    ),
+    effect: Effect::Reads,
+    needs: Needs::File,
+    operation: Some("broken_references"),
+    params: schema_for_type::<AnalysisParams>,
+    parse: |params| read(params).map(Command::BrokenReferences),
+};
+
+pub static UNUSED_OBJECTS: CommandSpec = CommandSpec {
+    id: "unused_objects",
+    cli: "unused-objects",
+    tool: "openmaker_unused_objects",
+    title: "Find objects no reference was found for",
+    description: analysis!(
+        "The tables, fields, occurrences, layouts, scripts, value lists, custom \
+                  functions and data sources for which no reference from another object was \
+                  found in what was read (`no_reference_found`; a reference an object holds \
+                  to itself, such as a script performing itself, does not count): \
+                  candidates to check, never objects known to be unused. \
+                  `nothing_known_unread` says, per kind, whether any place not read or name \
+                  looked up at run time could refer to one."
+    ),
+    effect: Effect::Reads,
+    needs: Needs::File,
+    operation: Some("unused_objects"),
+    params: schema_for_type::<UnusedParams>,
+    parse: |params| read(params).map(Command::UnusedObjects),
+};
+
+pub static SCRIPT_CALLS: CommandSpec = CommandSpec {
+    id: "script_calls",
+    cli: "script-calls",
+    tool: "openmaker_script_calls",
+    title: "Get a script's call chain",
+    description: analysis!(
+        "The scripts a script performs and the scripts that perform it (Perform \
+                  Script, Perform Script on Server), transitively, each with its depth, \
+                  every perform between them with its step and `script_role`, and the \
+                  cycles found. Each script is walked once. References between the scripts \
+                  walked and other scripts that are not performs (a script trigger, timer \
+                  or callback installed, `installs`; a script only named, as Validate \
+                  Scripts names its scripts, `names`) are listed apart, in \
+                  `other_references`, and not followed."
+    ),
+    effect: Effect::Reads,
+    needs: Needs::File,
+    operation: Some("script_calls"),
+    params: schema_for_type::<ScriptCallsParams>,
+    parse: |params| read(params).map(Command::ScriptCalls),
+};
+
+pub static ALL: [&CommandSpec; 41] = [
     &CAPABILITIES,
     &INSPECT,
     &GET_SCRIPT,
@@ -896,6 +1000,10 @@ pub static ALL: [&CommandSpec; 37] = [
     &COMPLETE_CALCULATION,
     &CREATE_FILE,
     &COMPARE_DESIGNS,
+    &FIND_USES,
+    &BROKEN_REFERENCES,
+    &UNUSED_OBJECTS,
+    &SCRIPT_CALLS,
     &COMMANDS,
 ];
 
@@ -989,6 +1097,10 @@ mod tests {
             "complete_calculation": {"text": "Le"},
             "create_file": {"path": "New.fmp12"},
             "compare_designs": {"source": "A.fmp12", "target": "B.fmp12"},
+            "find_uses": {"object": "field:32769.1@F.fmp12"},
+            "broken_references": {},
+            "unused_objects": {"kinds": ["script"]},
+            "script_calls": {"script_name": "S", "direction": "callers"},
         });
         for spec in ALL {
             assert!(std::ptr::eq(get(spec.id).unwrap(), spec));
