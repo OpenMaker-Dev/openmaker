@@ -226,6 +226,36 @@ pub enum ReadOnlyCause {
     StoreEngine,
 }
 
+/// Deferred field work that cannot be done (an unknown work bit or field
+/// key, a value removal or conversion whose old type is unknown, a work
+/// list that is not a list), with why. Decided from what the version holds,
+/// its tree and its bases, before anything changes, so every server that
+/// applies the same operation decides alike. The work is kept, and the
+/// engine holds the file read-only for it (`ReadOnlyCause::DeferredWork`)
+/// as the operation's outcome (`engine::Outcome::holds_read_only`); the
+/// store sets nothing of its hold itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkKept(pub &'static str);
+
+/// Why op73's field work was not done ([`Store::update_table`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotUpdated {
+    /// The file is hosted read-only: nothing is tried.
+    ReadOnly,
+    /// The work cannot be done, and is kept ([`WorkKept`]).
+    Kept(WorkKept),
+}
+
+impl NotUpdated {
+    /// Why, as op73's reply says it.
+    pub fn why(self) -> &'static str {
+        match self {
+            NotUpdated::ReadOnly => "the file is hosted read-only",
+            NotUpdated::Kept(WorkKept(why)) => why,
+        }
+    }
+}
+
 /// An index: its table, field and kind (value 0, word 1).
 pub type IndexId = (Vec<u8>, Vec<u8>, u8);
 
@@ -845,34 +875,36 @@ impl Store {
     /// stopped during or before a client's op73 left the work list in the
     /// file (the save that would have removed it never happened), so it
     /// runs now, before the file is served, as op73 would have. Returns
-    /// whether anything changed.
+    /// whether anything changed, or the work of the first table that
+    /// cannot be done ([`WorkKept`]), decided for every pending table
+    /// before any changes, so that nothing changes then.
     pub fn recover(
         &mut self,
         mut journal: Option<&mut Journal>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
-    ) -> bool {
-        let pending: Vec<Vec<u8>> = self
-            .derived
-            .catalog()
-            .tables
-            .iter()
-            .map(|t| uint_segment(t.id))
-            .filter(|t| self.node(&Self::deferred_path(t)).is_some())
-            .collect();
+    ) -> Result<bool, WorkKept> {
         if self.is_read_only() {
-            return false;
+            return Ok(false);
         }
-        // A failed recovery must leave the file and the pending work intact.
-        for table in &pending {
-            if let Err(reason) = self.deferred_work(table) {
+        // A failed recovery must leave the file and the pending work intact:
+        // every pending table's work is planned before any is done, as op73
+        // plans its own ([`Store::planned_work`]).
+        let derived = Arc::clone(&self.derived);
+        let mut pending = Vec::new();
+        for definition in &derived.catalog().tables {
+            let table = uint_segment(definition.id);
+            if self.node(&Self::deferred_path(&table)).is_none() {
+                continue;
+            }
+            if let Err(reason) = self.planned_work(&table, definition) {
                 warn!(
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
-                self.set_read_only(ReadOnlyCause::DeferredWork);
-                return false;
+                return Err(WorkKept(reason));
             }
+            pending.push(table);
         }
         let mut changed = false;
         for table in pending {
@@ -881,12 +913,28 @@ impl Store {
                 journal.as_deref_mut(),
                 format!("finished the deferred field work of table {table:02x?}"),
             );
-            // The preflight checked every pending table before any changed.
+            // Planned above for every pending table before any changed.
             changed |= self
                 .update_table(journal.as_deref_mut(), &table, environment, unique_id)
                 .unwrap_or(false);
         }
-        changed
+        Ok(changed)
+    }
+
+    /// What op73 is to do for `table`, whose definition is `definition`,
+    /// read from the version alone: the deferred work list, the basis the
+    /// work leaves, and the fields whose stored values a container
+    /// calculation replaces; or why the work cannot be done ([`WorkKept`]).
+    #[allow(clippy::type_complexity)]
+    fn planned_work(
+        &self,
+        table: &[u8],
+        definition: &om_hbam::catalog::Table,
+    ) -> Result<(Vec<(Vec<u8>, u32)>, TableBasis, BTreeSet<u64>), &'static str> {
+        let work = self.deferred_work(table)?;
+        let basis = recalc::table_basis(&self.root, definition);
+        let retyped = recalc::retyped_to_container(self.bases.get(table), &basis)?;
+        Ok((work, basis, retyped))
     }
 
     fn deferred_work(&self, table: &[u8]) -> Result<Vec<(Vec<u8>, u32)>, &'static str> {
@@ -2459,16 +2507,19 @@ impl Store {
     /// replaced or removed, and the table's basis; the log lines that say
     /// what changed wait in it too. Without one (a test's) the changes are
     /// made in place.
-    /// Returns whether anything changed.
+    /// Returns whether anything changed; or why nothing was done
+    /// ([`NotUpdated`]): on a file hosted read-only, or work that cannot be
+    /// done, which is kept, and which the engine then holds the file
+    /// read-only for ([`WorkKept`]).
     pub fn update_table(
         &mut self,
         mut journal: Option<&mut Journal>,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
-    ) -> Result<bool, &'static str> {
+    ) -> Result<bool, NotUpdated> {
         if self.is_read_only() {
-            return Err("the file is hosted read-only");
+            return Err(NotUpdated::ReadOnly);
         }
         let Some(definition) = be_uint(table)
             .and_then(|t| self.derived.catalog().table(t))
@@ -2476,21 +2527,14 @@ impl Store {
         else {
             return Ok(false);
         };
-        let preflight = (|| {
-            let work = self.deferred_work(table)?;
-            let basis = recalc::table_basis(&self.root, &definition);
-            let retyped = recalc::retyped_to_container(self.bases.get(table), &basis)?;
-            Ok((work, basis, retyped))
-        })();
-        let (work, basis, retyped) = match preflight {
-            Ok(prepared) => prepared,
+        let (work, basis, retyped) = match self.planned_work(table, &definition) {
+            Ok(planned) => planned,
             Err(reason) => {
                 warn!(
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
-                self.set_read_only(ReadOnlyCause::DeferredWork);
-                return Err(reason);
+                return Err(NotUpdated::Kept(WorkKept(reason)));
             }
         };
         let stale = recalc::changed_fields(self.bases.get(table), &basis, &work);

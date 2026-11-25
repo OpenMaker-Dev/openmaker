@@ -1387,11 +1387,34 @@ before; whether the file takes no more changes it keeps beside the store
 writes outside an operation are the engine's too: the identity of the
 file it loaded, set before anyone can reach the file
 (`FileEngine::loaded_from`), and the read-only hold of a file whose
-deferred work a panic left part way (`FileEngine::hold_read_only`). On
-the store engine every file is read-only (`ReadOnlyCause::StoreEngine`),
-no write's outcome is ever unknown (`writes_refused` is none), and its
-file on disk is the `.fmp12` it imported, or checked against what it
-holds, when it hosted the file.
+deferred work a panic left part way (`FileEngine::hold_read_only`). The
+read-only hold for deferred work comes from an operation only through its
+outcome: deferred field work that cannot be done (op73's or the file's at
+opening: an unknown work bit or field key, a value removal or conversion
+whose old type is unknown, a work list that is not a list) is decided from
+what the version holds, its tree and its bases, with the field catalog
+decoded from that tree, before anything changes, and comes back as the
+outcome (`store::WorkKept`, `store::NotUpdated::Kept`;
+`Outcome::holds_read_only`), not set by the store while it runs; and a save
+of finished deferred work that definitely failed (its work taken back) asks
+the same. The engine applies it in one place, after the operation's save
+(`FileEngine::submit`). Every server applying the same operation to the same
+version decides alike, as long as the decoded catalog is the tree's: a
+catalog that fails to decode leaves the previous one in place
+(`Store::reread_catalog`), so two stores with one tree and one set of bases
+can hold different catalogs and decide an op73 differently
+([#847](https://github.com/OpenMaker-Dev/openmaker/issues/847)). The rest
+of a save's outcome does not go through the operation's outcome: a save
+whose outcome is unknown (its copy renamed over the file, the folder's
+flush failed) records that the file takes no more changes, and the
+hosting publishes it, during the save itself (`Hosted::save_change`),
+before the engine applies the operation's outcome; and a save records
+the identity of the file it renamed into place as it renames it.
+On the store engine every file is read-only
+(`ReadOnlyCause::StoreEngine`), no operation's outcome holds it read-only
+for deferred work (it takes no changes), no write's outcome is ever
+unknown (`writes_refused` is none), and its file on disk is the `.fmp12`
+it imported, or checked against what it holds, when it hosted the file.
 
 The callers: the desktop host's read-only reasons (`LocalHost::read_only`,
 in the same order of precedence: the reason it was opened with, then no
@@ -1978,10 +2001,10 @@ first, each with the test view's runs of its tests:
      listing of the records with each changed record written through the
      transaction, and the container data it reads through a view rather
      than the library node whole
-     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)); and
-     the read-only decision for work it cannot do as the operation's
-     outcome, not a side effect on the file
-     ([#809](https://github.com/OpenMaker-Dev/openmaker/issues/809)).
+     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)). The
+     read-only hold for work it cannot do is its outcome now, decided from
+     the version before anything changes, which the engine applies ("The
+     engine's state of a file", above).
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a `Source` method for the head NodeExists and GetKey read,

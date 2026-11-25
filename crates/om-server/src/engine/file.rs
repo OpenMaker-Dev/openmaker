@@ -606,13 +606,22 @@ impl FileEngine {
                     // The work list is back, and the file cannot hold the
                     // work finished: served read-only, as when the work
                     // cannot be done (`Store::recover`).
-                    if outcome.reply == Reply::FinishDeferredWork(Ok(true)) {
-                        store.set_read_only(crate::store::ReadOnlyCause::DeferredWork);
+                    let kept = outcome.reply == Reply::FinishDeferredWork(Ok(true));
+                    let outcome = outcome.not_stored(&error);
+                    if kept {
+                        outcome.work_kept()
+                    } else {
+                        outcome
                     }
-                    outcome.not_stored(&error)
                 }
             }
         };
+        // What the outcome asks of the file's state, here alone: the
+        // operation's (work that cannot be done) and its save's (finished
+        // work that could not be saved), after the save (#809).
+        if let Some(cause) = outcome.holds_read_only {
+            store.set_read_only(cause);
+        }
         drop(store);
         transaction::release(file.locks(&WRITER), held);
         outcome
