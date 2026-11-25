@@ -483,13 +483,14 @@ impl<'a> Transaction<'a> {
     /// op73: a table's deferred field work (`Store::update_table`), each
     /// record's environment for a recalculation from `environment`, and
     /// the unique ids of container data it stores from `unique_id`, every
-    /// change in the journal.
+    /// change in the journal. Work that cannot be done is kept and said
+    /// (`NotUpdated::Kept`), for the engine to hold the file read-only.
     pub fn update_table(
         &mut self,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
-    ) -> Result<bool, &'static str> {
+    ) -> Result<bool, crate::store::NotUpdated> {
         self.by_store(|store, journal| {
             store.update_table(Some(journal), table, environment, unique_id)
         })
@@ -497,13 +498,14 @@ impl<'a> Transaction<'a> {
 
     /// The deferred field work the file records as pending, as op73 does
     /// it for each table (`Store::recover`), every change in the journal:
-    /// whether it changed the file. Work that cannot be done is kept, and
-    /// the file hosted read-only.
+    /// whether it changed the file. Work that cannot be done is kept and
+    /// said ([`crate::store::WorkKept`]), nothing changed, for the engine
+    /// to hold the file read-only.
     pub fn recover(
         &mut self,
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
-    ) -> bool {
+    ) -> Result<bool, crate::store::WorkKept> {
         let recovered =
             self.by_store(|store, journal| store.recover(Some(journal), environment, unique_id));
         #[cfg(test)]

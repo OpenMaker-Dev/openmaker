@@ -887,11 +887,20 @@ pub struct CommitReply {
     pub unused: Staged,
 }
 
-/// An operation's reply and the notices for other clients.
+/// An operation's reply, the notices for other clients, and what it asks
+/// of the file's state, which the engine applies in one place, after the
+/// operation's save ([`FileEngine::submit`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub reply: Reply,
     pub notices: Notices,
+    /// Hold the file read-only for this cause from now on, unless it is
+    /// already for another: deferred field work that cannot be done
+    /// (op73's, or what the file is opened with, `store::WorkKept`), or
+    /// whose finished work's save failed. Decided from what the version
+    /// holds and from the save, never set by the store while it runs
+    /// (docs/server-storage.md 5).
+    pub holds_read_only: Option<crate::store::ReadOnlyCause>,
 }
 
 /// The changes to tell the connections registered on the file about
@@ -916,6 +925,16 @@ impl Outcome {
         Outcome {
             reply,
             notices: Notices::default(),
+            holds_read_only: None,
+        }
+    }
+
+    /// This outcome, with the file to be held read-only for deferred field
+    /// work that cannot be done.
+    fn work_kept(self) -> Self {
+        Outcome {
+            holds_read_only: Some(crate::store::ReadOnlyCause::DeferredWork),
+            ..self
         }
     }
 
@@ -1027,6 +1046,7 @@ impl Outcome {
                 from: self.notices.from,
                 changes: Vec::new(),
             },
+            holds_read_only: self.holds_read_only,
         }
     }
 }
@@ -1227,6 +1247,7 @@ pub fn run(
             Outcome {
                 reply: Reply::CommitRecords(reply),
                 notices: Notices { from, changes },
+                holds_read_only: None,
             }
         }
         (Operation::TakeLock(op), Hold::View(store)) => Outcome::new(Reply::TakeLock(
@@ -1246,6 +1267,7 @@ pub fn run(
                     from,
                     changes: writes::unlock(op, locks),
                 },
+                holds_read_only: None,
             }
         }
         (Operation::ReleaseLocks(op), _) => {
@@ -1266,9 +1288,18 @@ pub fn run(
             schema::store_indexes(op.indexes, file, tx);
             Outcome::new(Reply::StoreIndexes(Ok(())))
         }
-        (Operation::UpdateTable(op), Hold::Transaction(tx)) => Outcome::new(Reply::UpdateTable(
-            schema::update_table(op, tx, environment).map_err(String::from),
-        )),
+        (Operation::UpdateTable(op), Hold::Transaction(tx)) => {
+            match schema::update_table(op, tx, environment) {
+                Ok(changed) => Outcome::new(Reply::UpdateTable(Ok(changed))),
+                Err(not_updated) => {
+                    let outcome = Outcome::new(Reply::UpdateTable(Err(not_updated.why().into())));
+                    match not_updated {
+                        crate::store::NotUpdated::Kept(_) => outcome.work_kept(),
+                        crate::store::NotUpdated::ReadOnly => outcome,
+                    }
+                }
+            }
+        }
         (Operation::StoreContainerData(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::StoreContainerData(crate::containers::store_upload(op, file, tx, environment)),
         ),
@@ -1283,6 +1314,7 @@ pub fn run(
             Outcome {
                 reply: Reply::EditDesign(reply),
                 notices: Notices { from, changes },
+                holds_read_only: None,
             }
         }
         // The engine saves the file (`FileEngine::submit`).
@@ -1299,6 +1331,7 @@ pub fn run(
             Outcome {
                 reply: Reply::CommitScriptRecords(result),
                 notices: Notices { from, changes },
+                holds_read_only: None,
             }
         }
         (Operation::SetNextSerial(op), Hold::Transaction(tx)) => {
@@ -1320,6 +1353,7 @@ pub fn run(
                     from: user.connection,
                     changes,
                 },
+                holds_read_only: None,
             }
         }
         (Operation::ReleaseSessionLocks(op), _) => {
@@ -1346,9 +1380,15 @@ pub fn run(
         (Operation::DeleteAccount(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::DeleteAccount(crate::hosting::delete_account(op, tx, environment)),
         ),
-        (Operation::FinishDeferredWork, Hold::Transaction(tx)) => Outcome::new(
-            Reply::FinishDeferredWork(Ok(schema::finish_deferred_work(tx, environment))),
-        ),
+        (Operation::FinishDeferredWork, Hold::Transaction(tx)) => {
+            match schema::finish_deferred_work(tx, environment) {
+                Ok(changed) => Outcome::new(Reply::FinishDeferredWork(Ok(changed))),
+                // Nothing done, as nothing changed before (`Store::recover`).
+                Err(crate::store::WorkKept(_)) => {
+                    Outcome::new(Reply::FinishDeferredWork(Ok(false))).work_kept()
+                }
+            }
+        }
         (Operation::SaveFoundSet(op), Hold::Transaction(tx)) => {
             Outcome::new(Reply::SaveFoundSet(save_found_set(op, file, tx)))
         }
