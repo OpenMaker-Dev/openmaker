@@ -13,6 +13,8 @@ mod hosted;
 
 use std::net::TcpListener;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::{NodeT as _, Queryable};
@@ -196,14 +198,31 @@ fn empty_unsupported_and_stale_listings_are_told_apart_for_their_host() {
     // then hangs up: leaving its page stops its listing, and its failure,
     // when it comes, is dropped.
     let slow = TcpListener::bind("127.0.0.1:0").unwrap();
+    slow.set_nonblocking(true).unwrap();
     let slow_port = slow.local_addr().unwrap().port();
-    let hang_up = std::thread::spawn(move || {
-        let (stream, _) = slow.accept().unwrap();
-        std::thread::sleep(Duration::from_millis(1500));
-        drop(stream);
-    });
+    let accepted = Arc::new(AtomicBool::new(false));
+    let hang_up = {
+        let accepted = accepted.clone();
+        // Bounded: a listing that never connects leaves nothing to accept.
+        std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < until {
+                if let Ok((stream, _)) = slow.accept() {
+                    accepted.store(true, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(1500));
+                    drop(stream);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
     add_host(&mut app, "Slow", slow_port);
     common::wait_for_label(&mut app, "Listing files…");
+    // Left while the host holds the listing's connection.
+    common::wait_until(&mut app, "the slow host's connection", |_| {
+        accepted.load(Ordering::SeqCst)
+    });
     common::click(&mut app, "Quiet");
     common::wait_for_label(&mut app, empty);
     hang_up.join().unwrap();

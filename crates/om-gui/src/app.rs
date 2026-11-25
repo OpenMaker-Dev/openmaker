@@ -1373,6 +1373,14 @@ impl OpenMakerApp {
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
+            // Over Home, the launch's file shows in Open Network File,
+            // which waits with Cancel and stays filled in if it fails.
+            if self.launcher.has_home() {
+                self.network = Some(connect::NetworkDialog::from_form(
+                    &self.form,
+                    self.use_saved_license,
+                ));
+            }
             self.apply(&ctx, Action::Connect);
         }
         self.poll_worker(&ctx);
@@ -3176,6 +3184,7 @@ impl OpenMakerApp {
             client_license: self.client_license,
             connecting: self.status == ConnectStatus::Connecting,
             saved: self.launcher.has_home().then(|| self.file_history.hosts()),
+            covered: self.error.is_some() || self.host_message_shown(),
         }
     }
 
@@ -3188,9 +3197,6 @@ impl OpenMakerApp {
                 connection,
                 save_host,
             } => {
-                if let Some(host) = save_host {
-                    self.edit_file_history(crate::file_history::Change::AddHost(host));
-                }
                 if let Some(dialog) = &self.network {
                     self.use_saved_license = dialog.use_saved_license;
                 }
@@ -3198,6 +3204,11 @@ impl OpenMakerApp {
                 self.form.password.zeroize();
                 self.form = ConnectForm::from(connection);
                 self.apply(ctx, Action::Connect);
+                // After Connect, which clears the alert: a host that could
+                // not be saved says so.
+                if let Some(host) = save_host {
+                    self.edit_file_history(crate::file_history::Change::AddHost(host));
+                }
             }
             connect::NetworkAction::Cancel => {
                 if self.status == ConnectStatus::Connecting {

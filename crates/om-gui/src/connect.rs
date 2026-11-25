@@ -119,6 +119,14 @@ impl ConnectForm {
     }
 }
 
+/// A path's port: digits only, as `file_refs` reads it.
+fn path_port(written: &str) -> Result<u16, String> {
+    if written.is_empty() || !written.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(PORT_RANGE.into());
+    }
+    port(written)
+}
+
 fn port(text: &str) -> Result<u16, String> {
     match text.trim().parse::<u16>() {
         Ok(port) if port != 0 => Ok(port),
@@ -234,9 +242,9 @@ fn bad_address(host: &str) -> Option<&'static str> {
         Some("Put the account in Account Name, not in the host’s address.")
     } else if host
         .chars()
-        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '/' | '\\'))
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '/' | '\\' | '[' | ']'))
     {
-        Some("A host’s address can’t contain spaces, / or \\.")
+        Some("A host’s address can’t contain spaces, /, \\ or brackets.")
     } else {
         None
     }
@@ -277,7 +285,7 @@ pub(crate) fn network_path(path: &str) -> Result<(String, u16, String), String> 
             .ok_or("Close the IPv6 address’s bracket: fmnet:/[::1]/File")?;
         let port = match after {
             "" => DEFAULT_PORT,
-            written => port(written.strip_prefix(':').ok_or(PORT_RANGE)?)?,
+            written => path_port(written.strip_prefix(':').ok_or(PORT_RANGE)?)?,
         };
         if host.is_empty() || !host.contains(':') {
             return Err(format!("Add the host: {FORM}"));
@@ -298,7 +306,7 @@ pub(crate) fn network_path(path: &str) -> Result<(String, u16, String), String> 
             return Err("Put an IPv6 address in brackets: fmnet:/[::1]/File".into());
         }
         Some((host, written)) => {
-            port(written)?;
+            path_port(written)?;
             host
         }
         None => authority,
@@ -450,7 +458,13 @@ impl HostDialog {
 
     /// The host the fields describe, or why they do not.
     fn host(&self) -> Result<SavedHost, String> {
+        // An IPv6 address as a path writes it, in brackets: the brackets
+        // are the path's, not the address's.
         let address = self.address.trim();
+        let address = address
+            .strip_prefix('[')
+            .and_then(|inner| inner.strip_suffix(']'))
+            .unwrap_or(address);
         if address.is_empty() {
             return Err("Enter a host name or address.".into());
         }
@@ -560,6 +574,10 @@ pub(crate) struct NetworkView<'a> {
     /// Home's saved hosts; `None` without Home, which has no Hosts to add
     /// the file's host to.
     pub saved: Option<&'a [SavedHost]>,
+    /// An alert is up, or comes up this frame, over the dialog: Escape is
+    /// the alert's. egui knows a modal is in front only from the frame
+    /// after it is first drawn.
+    pub covered: bool,
 }
 
 /// Open Network File, or the sign-in for a hosted file: the account and
@@ -571,7 +589,9 @@ pub(crate) struct NetworkDialog {
     pub account: String,
     pub password: Zeroizing<String>,
     pub use_saved_license: bool,
-    save_host: bool,
+    /// The host and port Add to Hosts was ticked for: another path's host
+    /// starts unticked.
+    save_host: Option<(String, u16)>,
     /// Cancel closes it. Without Home it is the window's launcher, and
     /// Cancel only stops a file opening.
     closable: bool,
@@ -591,7 +611,7 @@ impl NetworkDialog {
             account: String::new(),
             password: Zeroizing::new(String::new()),
             use_saved_license,
-            save_host: false,
+            save_host: None,
             closable: true,
             focus: true,
         }
@@ -671,7 +691,7 @@ impl NetworkDialog {
         mut action: Option<NetworkAction>,
         top: bool,
     ) -> Option<NetworkAction> {
-        if (view.connecting || self.closable) && escape(ctx, top) {
+        if (view.connecting || self.closable) && !view.covered && escape(ctx, top) {
             action = Some(NetworkAction::Cancel);
         }
         if action.is_some() {
@@ -770,16 +790,19 @@ impl NetworkDialog {
                 );
             });
         }
+        let mut save_host = false;
         if let Some(host) = &unsaved {
+            save_host = self.save_host.as_ref() == Some(&host.server());
             indented(ui, |ui| {
                 ui.add_enabled(
                     idle,
                     egui::Checkbox::new(
-                        &mut self.save_host,
+                        &mut save_host,
                         format!("Add {} to Hosts", host.location()),
                     ),
                 );
             });
+            self.save_host = save_host.then(|| host.server());
         }
         ui.add_space(4.0);
         buttons(ui, |ui| {
@@ -803,7 +826,7 @@ impl NetworkDialog {
                             account: self.account.trim().to_owned(),
                             password: self.password.to_string(),
                         },
-                        save_host: unsaved.clone().filter(|_| self.save_host),
+                        save_host: unsaved.clone().filter(|_| save_host),
                     });
                 }
             }
@@ -901,6 +924,8 @@ mod tests {
                 "fmnet:/::1/Payroll",
                 Err("Put an IPv6 address in brackets: fmnet:/[::1]/File".into()),
             ),
+            ("fmnet:/localhost: 5004/Payroll", Err(PORT_RANGE.into())),
+            ("fmnet:/[::1]: 5004/Payroll", Err(PORT_RANGE.into())),
             (
                 "fmnet:/demo:secret@db.example.test:5004/Payroll",
                 Err("Put the account in Account Name, not in the host’s address.".into()),
@@ -925,6 +950,18 @@ mod tests {
             "fmnet:/[::1]/A"
         );
         assert_eq!(network_path_text("::1", 5004, "A"), "fmnet:/[::1]:5004/A");
+        // Add Host takes an IPv6 address as a path writes it, and saves it
+        // without the path's brackets, so its paths open it.
+        let added = HostDialog {
+            address: " [::1] ".into(),
+            ..HostDialog::add()
+        };
+        let saved = added.host().unwrap();
+        assert_eq!(saved.address, "::1");
+        assert_eq!(
+            network_path(&network_path_text(&saved.address, saved.port, "A")),
+            opens("::1", 5003, "A.fmp12")
+        );
         // A launch's file and port, as given: one extension is not taken
         // off a name that has two, and a bad port is shown, not replaced.
         let form = |file: &str, port: &str| ConnectForm {

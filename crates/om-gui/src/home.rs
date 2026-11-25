@@ -117,6 +117,8 @@ pub(crate) struct Home {
     search: String,
     /// A host row was clicked last: Delete removes that host.
     host_armed: bool,
+    /// The host List Files asked of this frame.
+    asked: Option<(String, u16)>,
 }
 
 impl Home {
@@ -184,21 +186,36 @@ impl Home {
     }
 
     /// A host page whose host is gone shows another (a removed host's, say).
+    /// A host renamed in another instance, the case of its address
+    /// included, keeps its page, under the address as saved.
     fn settle_page(&mut self, hosts: &[SavedHost]) {
-        let gone = match &self.page {
-            Page::Files => false,
-            Page::Hosts => !hosts.is_empty(),
-            Page::Host((address, port)) => !hosts.iter().any(|host| host.is(address, *port)),
+        let saved = match &self.page {
+            Page::Host((address, port)) => Some(
+                hosts
+                    .iter()
+                    .find(|host| host.is(address, *port))
+                    .map(SavedHost::server),
+            ),
+            _ => None,
         };
-        if gone {
-            self.last_host = None;
-            self.show_hosts(hosts);
+        match saved {
+            Some(Some(server)) if self.page != Page::Host(server.clone()) => {
+                self.last_host = Some(server.clone());
+                self.page = Page::Host(server);
+            }
+            Some(None) => {
+                self.last_host = None;
+                self.show_hosts(hosts);
+            }
+            _ if self.page == Page::Hosts && !hosts.is_empty() => self.show_hosts(hosts),
+            _ => {}
         }
     }
 
     fn contents(&mut self, ui: &mut Ui, view: &HomeView<'_>, actions: &mut Vec<Action>) {
         let hosts = view.history.hosts();
         self.settle_page(hosts);
+        self.asked = None;
         // Delete removes a host only right after a click on it: any other
         // press, or the keyboard focus going elsewhere, disarms it.
         if ui.input(|input| input.pointer.any_pressed()) {
@@ -383,6 +400,7 @@ impl Home {
                             // List Files shows the host it lists.
                             if host_menu(ui, host, actions) {
                                 self.show_host(server.clone());
+                                self.asked = Some(server.clone());
                             }
                         });
                     }
@@ -441,7 +459,8 @@ impl Home {
         let server = host.server();
         let enabled = !view.busy && view.in_front;
         let listing = view.listing;
-        let asked = listing.server() == Some(&server);
+        // Asked once: by the page, or by List Files this frame.
+        let asked = listing.server() == Some(&server) || self.asked.as_ref() == Some(&server);
         if !asked && enabled {
             actions.push(Action::ListFiles(server.clone()));
         }
@@ -472,7 +491,8 @@ impl Home {
             theme::CAPTION,
             Align::Min,
         );
-        if refresh_button(ui, refresh, enabled && !listing.pending()).clicked() {
+        let again = enabled && listing.server() == Some(&server) && !listing.pending();
+        if refresh_button(ui, refresh, again).clicked() {
             actions.push(Action::ListFiles(server.clone()));
         }
         search_field(ui, search, &mut self.search, enabled && listed.is_some());
