@@ -30,6 +30,7 @@ use crate::admission::{Admissions, Slot};
 use crate::backups::{BackupError, BackupInfo, BackupProgress};
 use crate::config::{ConnectionLimits, ScriptLimits, ServerConfig};
 use crate::connection::{Connection, Shared};
+use crate::engine::FileEngine;
 use crate::eventlog::{Event, EventLog};
 use crate::hosting::{Hosting, HostingError};
 use crate::record::Recordings;
@@ -131,15 +132,17 @@ impl Server {
         identity: Identity,
     ) -> Result<Self, StartError> {
         let events = EventLog::new(crate::eventlog::host_name(&config.identity.name));
-        let hosting = Hosting::load(&config.files, config.insecure_files, &events)
+        let engine = FileEngine::default();
+        let hosting = Hosting::load(&config.files, config.insecure_files, &events, &engine)
             .map_err(StartError::Hosting)?;
         let tls = server_config(identity).map_err(StartError::Identity)?;
-        Self::start(addr, config, hosting, tls, false, events)
+        Self::start(addr, config, hosting, tls, false, events, engine)
     }
 
-    /// Bind `addr` for `hosting`, with TLS `tls`, recording in `events`;
-    /// `local`: the private host of a file a client opened from its own
-    /// computer ([`crate::LocalHost`]).
+    /// Bind `addr` for `hosting`, with TLS `tls`, recording in `events`
+    /// and running every change to the files with `engine`, the one that
+    /// loaded them; `local`: the private host of a file a client opened
+    /// from its own computer ([`crate::LocalHost`]).
     pub(crate) fn start(
         addr: impl ToSocketAddrs,
         config: ServerConfig,
@@ -147,6 +150,7 @@ impl Server {
         tls: Arc<rustls::ServerConfig>,
         local: bool,
         events: EventLog,
+        engine: FileEngine,
     ) -> Result<Self, StartError> {
         // A server asked to record refuses to start without its folder
         // rather than serve unrecorded.
@@ -178,6 +182,7 @@ impl Server {
                 connection_ids: Mutex::new(Default::default()),
                 recordings,
                 mailboxes: Default::default(),
+                engine: Arc::new(engine),
                 scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
                 refused_downloads: RwLock::new(Vec::new()),
                 omitted_list_paths: Default::default(),
@@ -492,6 +497,24 @@ impl Server {
                 path: path.iter().map(|key| key.to_vec()).collect(),
                 slots,
             });
+        self
+    }
+
+    /// Answer every download and find (op90, op15, op92, op86) through a
+    /// second, test-only view of the hosted files as well as the file
+    /// engine's, and panic when the two answers differ
+    /// (docs/server-storage.md 5, "Views"; `engine::copies`): a test
+    /// fixture that shows readers do not lean on the file engine's view.
+    /// Every operation's reads and writes through its transaction are
+    /// checked too, against its starting tree with its writes applied in order
+    /// ("The operations' transaction"; `engine::checking`), which shows
+    /// each moved operation's writes say all it changed. Only in debug
+    /// builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn checking_reads(self) -> Self {
+        self.shared.engine.check_reads();
+        self.shared.engine.check_writes();
         self
     }
 
@@ -947,6 +970,15 @@ impl ServerHandle {
     #[doc(hidden)]
     pub fn failing_next_backup_flush(&self) {
         self.schedules.backups().fail_next_flush();
+    }
+
+    /// Make the backup folders act as on a file system without hard links:
+    /// no copy is linked to an earlier backup's, and each is made under its
+    /// name. A test fixture, only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn backing_up_without_hard_links(&self) {
+        self.schedules.backups().refuse_hard_links();
     }
 
     /// Run `hook` each time a backup folder has been checked and is about

@@ -1,0 +1,18 @@
+[package]
+name = "om-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenMaker Server's store engine: a change log and copy-on-write page trees"
+
+[dependencies]
+ring = "0.17"
+
+[dev-dependencies]
+# The file engine's in-memory tree, to check that tree edits leave what it
+# holds after the same change (tests/entries.rs).
+om-hbam = { path = "../om-hbam" }
+
+[lints]
+workspace = true

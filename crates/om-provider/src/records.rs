@@ -757,6 +757,7 @@ impl NativeProvider {
             held: None,
             others_held: Default::default(),
             related_needs: None,
+            sources: None,
         })
     }
 

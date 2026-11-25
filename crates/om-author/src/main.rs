@@ -124,9 +124,28 @@ commands (each prints one JSON response):
         [--occurrence REF | --occurrence-name NAME] [--limit N]
                                      the names completing the one typed
                                      at the cursor in formula text
+  find-uses OBJECT [--limit N]       every decoded reference to the object,
+                                     with where it is and the coverage
+  broken-references [--limit N]      every decoded reference whose target
+                                     was not found among the objects read
+  unused-objects [--kinds KINDS] [--limit N]
+                                     objects no reference from another object
+                                     was found for: candidates to check
+                                     (KINDS: table,field,occurrence,layout,
+                                     script,value_list,custom_function,
+                                     data_source)
+  script-calls SCRIPT [--direction calls|callers|both] [--limit N]
+                                     the scripts it performs and that perform
+                                     it, transitively, with cycles; other
+                                     references between scripts apart
   create-file --path PATH            make a new, blank file at PATH (.fmp12
                                      added), as File > Create New... does;
                                      never replaces a file (no connection)
+  compare-designs --source PATH --target PATH [--base PATH] [--include-same]
+                                     compare two files' designs on this
+                                     computer: matched objects and how
+                                     they differ, never content (no
+                                     connection)
   commands                           every command, what it needs and its
                                      parameters' JSON Schema (no connection)
   request                            run one JSON request read from stdin
@@ -150,6 +169,13 @@ value from list-choices. For
 complete-calculation, N for --cursor counts characters (default: the end of
 the text) and REF is an occurrence reference from inspect
 (occurrence:13631490@File.fmp12); the default occurrence is the file's first.
+OBJECT for find-uses is --object REF (any reference: script:, table:,
+field:, occurrence:, layout:, layout_object:, value_list:,
+custom_function:, data_source:, relationship:) or one of --script-name,
+--table-name, --occurrence-name, --layout-name, --value-list-name,
+--custom-function-name, --data-source-name NAME, or --field-name NAME with
+--table REF or --table-name NAME. N for --limit is how many references,
+objects and coverage places are listed (default 500).
 run-script exits 1 when the script's last
 error is not 0; a run whose answer is lost is outcome_unknown, and it may
 have run.
@@ -206,6 +232,9 @@ struct Args {
     occurrence_name: Option<String>,
     limit: Option<String>,
     path: Option<String>,
+    target_file: Option<String>,
+    base: Option<String>,
+    include_same: bool,
     views: Option<String>,
     default_view: Option<String>,
     in_menus: Option<String>,
@@ -219,6 +248,11 @@ struct Args {
     kind: Option<String>,
     height: Option<String>,
     sorted_by: Option<String>,
+    value_list_name: Option<String>,
+    custom_function_name: Option<String>,
+    data_source_name: Option<String>,
+    kinds: Option<String>,
+    direction: Option<String>,
 }
 
 /// `--options NAME=on|off,...`, as a map of the names to on (true) or off.
@@ -272,6 +306,11 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--kind" => args.kind = Some(value(&arg)?),
             "--height" => args.height = Some(value(&arg)?),
             "--sorted-by" => args.sorted_by = Some(value(&arg)?),
+            "--value-list-name" => args.value_list_name = Some(value(&arg)?),
+            "--custom-function-name" => args.custom_function_name = Some(value(&arg)?),
+            "--data-source-name" => args.data_source_name = Some(value(&arg)?),
+            "--kinds" => args.kinds = Some(value(&arg)?),
+            "--direction" => args.direction = Some(value(&arg)?),
             "--type" => args.field_type = Some(value(&arg)?),
             "--comment" => args.comment = Some(value(&arg)?),
             "--layout" => args.layout = Some(value(&arg)?),
@@ -301,6 +340,9 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--occurrence-name" => args.occurrence_name = Some(value(&arg)?),
             "--limit" => args.limit = Some(value(&arg)?),
             "--path" => args.path = Some(value(&arg)?),
+            "--target" => args.target_file = Some(value(&arg)?),
+            "--base" => args.base = Some(value(&arg)?),
+            "--include-same" => args.include_same = true,
             "--password" => {
                 return Err(
                     "Passwords are not taken as arguments (other users can list them); use \
@@ -416,6 +458,14 @@ fn choice_target(args: &Args) -> Result<(String, u64), String> {
     Ok((object, record))
 }
 
+/// A whole number given to `option`.
+fn count(text: &Option<String>, option: &str) -> Result<Option<usize>, String> {
+    text.as_deref()
+        .map(|n| n.parse::<usize>())
+        .transpose()
+        .map_err(|_| format!("{option} must be a whole number."))
+}
+
 /// The command the arguments ask for (not `request` or `mcp`).
 fn command(name: &str, args: &Args) -> Result<Command, String> {
     let spec = catalog::by_cli(name).ok_or_else(|| {
@@ -434,6 +484,15 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
         "create_file" => Command::CreateFile(api::CreateFileParams {
             path: args.path.clone().ok_or("create-file needs --path PATH")?,
         }),
+        "compare_designs" => {
+            let needs = "compare-designs needs --source PATH and --target PATH";
+            Command::CompareDesigns(api::CompareDesignsParams {
+                source: args.source.clone().ok_or(needs)?,
+                target: args.target_file.clone().ok_or(needs)?,
+                base: args.base.clone(),
+                include_same: args.include_same,
+            })
+        }
         "capabilities" => Command::Capabilities,
         "get_security" => Command::GetSecurity,
         "inspect" => Command::Inspect(InspectParams {
@@ -802,6 +861,53 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
                 limit: number(&args.limit, "--limit")?,
             })
         }
+        "find_uses" => Command::FindUses(api::ObjectParams {
+            object: args.object.clone(),
+            script_name: args.script_name.clone(),
+            table_name: args.table_name.clone(),
+            occurrence_name: args.occurrence_name.clone(),
+            layout_name: args.layout_name.clone(),
+            value_list_name: args.value_list_name.clone(),
+            custom_function_name: args.custom_function_name.clone(),
+            data_source_name: args.data_source_name.clone(),
+            field_name: args.field_name.clone(),
+            table: args.table.clone(),
+            limit: count(&args.limit, "--limit")?,
+        }),
+        "broken_references" => Command::BrokenReferences(api::AnalysisParams {
+            limit: count(&args.limit, "--limit")?,
+        }),
+        "unused_objects" => Command::UnusedObjects(api::UnusedParams {
+            kinds: match &args.kinds {
+                Some(list) => Some(
+                    list.split(',')
+                        .map(|kind| {
+                            serde_json::from_value(serde_json::Value::String(kind.trim().into()))
+                                .map_err(|_| {
+                                    format!(
+                                        "“{kind}” is not table, field, occurrence, layout, \
+                                         script, value_list, custom_function or data_source."
+                                    )
+                                })
+                        })
+                        .collect::<Result<_, _>>()?,
+                ),
+                None => None,
+            },
+            limit: count(&args.limit, "--limit")?,
+        }),
+        "script_calls" => Command::ScriptCalls(api::ScriptCallsParams {
+            script: script.script,
+            script_name: script.script_name,
+            direction: match args.direction.as_deref() {
+                None => None,
+                Some(text) => Some(
+                    serde_json::from_value(serde_json::Value::String(text.into()))
+                        .map_err(|_| format!("“{text}” is not calls, callers or both."))?,
+                ),
+            },
+            limit: count(&args.limit, "--limit")?,
+        }),
         _ => return Err(format!("{name} has no command-line form yet")),
     })
 }
@@ -919,6 +1025,7 @@ mod tests {
             action: Some("resize".into()),
             height: Some("100".into()),
             path: Some("New.fmp12".into()),
+            target_file: Some("B.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
             arrangement: Some("align_left_edges".into()),
             ..Args::default()

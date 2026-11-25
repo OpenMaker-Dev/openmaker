@@ -25,6 +25,7 @@ members = [
     "crates/om-url",
     "crates/om-author",
     "crates/om-report",
+    "crates/om-store",
     "mobile/core",
 ]
 exclude = ["mobile/bindings"]

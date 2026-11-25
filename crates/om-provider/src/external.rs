@@ -2672,6 +2672,8 @@ fn load(
         schema.authenticated_account = lease
             .as_ref()
             .map(|host| host.authenticated_account(&login.result_key))
+            .transpose()
+            .map_err(crate::local_unreadable)?
             .unwrap_or_default();
         let privileges =
             crate::privileges::read_current_account(&mut session, &login.result_key, cancel);

@@ -39,7 +39,7 @@ use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeSt
 use om_session::Session;
 
 mod schema;
-pub use authoring::{Authoring, AuthoringError, ScriptDefinitions};
+pub use authoring::{Authoring, AuthoringError, DesignCatalogs, ScriptDefinitions};
 pub use calc::local_utc_offset;
 pub use choice::ListedChoices;
 pub use schema::{schema_from_tree, schema_from_tree_with, DatabaseSchemaSnapshot};
@@ -476,6 +476,15 @@ const LOGIN_UNSUPPORTED_PRIVILEGES: i32 = om_server::LOGIN_UNSUPPORTED_PRIVILEGE
 /// (`om_server::LOGIN_TOO_MANY_ATTEMPTS`).
 const LOGIN_TOO_MANY_ATTEMPTS: i32 = om_server::LOGIN_TOO_MANY_ATTEMPTS as i32;
 
+/// A local file whose host could not read what it was asked for
+/// (`om_server::LocalHost`: its stored login, its suggested account, the
+/// logged-in account's facts): FileMaker's 802, "Unable to open file", as
+/// a login to a file whose accounts cannot be read is answered
+/// (`om_server::LOGIN_UNREADABLE_FILE`; OpenMaker's choice).
+pub(crate) fn local_unreadable(error: std::io::Error) -> DataError {
+    DataError::with_code(802, format!("The file could not be read: {error}"))
+}
+
 /// Whether a local file's Login error leaves the file waiting for another
 /// account.
 fn local_refusal(code: i32) -> bool {
@@ -886,7 +895,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutFieldPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutField, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutField, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -894,7 +903,7 @@ impl NativeProvider {
                 format!("The host has no layout {layout}."),
             )
         })?;
-        let current = catalog_revision(&member);
+        let current = layout_revision(&member);
         let expected = place.expected;
         if expected != current {
             // A lost answer's objects may already be there; only the host
@@ -1054,14 +1063,14 @@ impl NativeProvider {
         again: &str,
     ) -> Result<(), DataError> {
         use om_data::layout_placement::{self, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
                 i32::from(status::LAYOUT_MISSING),
                 format!("The host has no layout {layout}."),
             )
         })?;
-        if catalog_revision(&member) != *expected {
+        if layout_revision(&member) != *expected {
             if !already(&member) {
                 return Err(DataError::with_code(
                     layout_placement::CONFLICT,
@@ -1300,7 +1309,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutButtonPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutButton, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutButton, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -1309,7 +1318,7 @@ impl NativeProvider {
             )
         })?;
         let expected = place.expected;
-        if expected != catalog_revision(&member) {
+        if expected != layout_revision(&member) {
             // A lost answer's button may already be there; only the host
             // can tell, so the request goes with the expected revision.
             if layout_placement::already_placed_button(&member, &place.placement).is_none() {
@@ -1398,7 +1407,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutTextPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutText, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutText, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -1406,7 +1415,7 @@ impl NativeProvider {
                 format!("The host has no layout {layout}."),
             )
         })?;
-        if place.expected != catalog_revision(&member) {
+        if place.expected != layout_revision(&member) {
             // A lost answer's text may already be there; only the host
             // can tell, so the request goes with the expected revision.
             if layout_placement::already_placed_text(&member, &place.text).is_none() {
@@ -1447,7 +1456,7 @@ impl NativeProvider {
         place: &om_data::layout_placement::LayoutPortalPlacement,
     ) -> Result<om_data::layout_placement::PlacedLayoutPortal, DataError> {
         use om_data::layout_placement::{self, PlacedLayoutPortal, Refusal};
-        use om_protocol::authoring::{catalog_revision, status};
+        use om_protocol::authoring::{layout_revision, status};
         let layout = u64::from(place.layout);
         let member = self.layout_member(layout)?.ok_or_else(|| {
             DataError::with_code(
@@ -1455,7 +1464,7 @@ impl NativeProvider {
                 format!("The host has no layout {layout}."),
             )
         })?;
-        if place.expected != catalog_revision(&member) {
+        if place.expected != layout_revision(&member) {
             // A lost answer's portal may already be there; only the host
             // can tell, so the request goes with the expected revision.
             if layout_placement::already_placed_portal(&member, &place.portal).is_none() {
@@ -2511,6 +2520,8 @@ impl NativeProvider {
                 .local
                 .as_ref()
                 .map(|host| host.authenticated_account(&login.result_key))
+                .transpose()
+                .map_err(local_unreadable)?
                 .unwrap_or_else(|| om_data::host::AccountInfo {
                     // Hosted Root uses its own authenticated set reply,
                     // as each hosted related owner does. Local hosts keep
@@ -2881,12 +2892,17 @@ impl NativeProvider {
         // OpenMaker does not read: it always asks, suggesting the account
         // the file names (not a sign that it would open without asking).
         let Some((account, password)) = &file.credentials else {
-            let suggested = host.suggested_account().unwrap_or_default();
+            let suggested = host
+                .suggested_account()
+                .map_err(local_unreadable)?
+                .unwrap_or_default();
             // File Options' "Log in using" (local-files.md 3.1): FileMaker
             // Pro opens the file with it without asking, and asks when it
             // is refused or when the user holds Option or Shift.
             let stored = (!self.ask_for_account)
                 .then(|| host.stored_login())
+                .transpose()
+                .map_err(local_unreadable)?
                 .flatten();
             self.local = Some(host);
             if let Some((account, password)) = stored {
@@ -2914,7 +2930,6 @@ impl NativeProvider {
             account: account.clone(),
             password: password.to_string(),
         };
-        let read_only = host.read_only().map(|reason| reason.to_string());
         let endpoint = Endpoint {
             ca_pem: host.certificate_pem().to_vec(),
             // No client license goes to a file OpenMaker opens itself.
@@ -2931,7 +2946,15 @@ impl NativeProvider {
         use zeroize::Zeroize;
         connection.password.zeroize();
         match opened {
-            Ok(()) => Ok(om_data::LocalOpen::Opened { read_only }),
+            // As the file is after the login, which may have made it
+            // read-only (its deferred work could not be saved).
+            Ok(()) => Ok(om_data::LocalOpen::Opened {
+                read_only: self
+                    .local
+                    .as_ref()
+                    .and_then(|host| host.read_only())
+                    .map(|reason| reason.to_string()),
+            }),
             // A refused account keeps the file waiting for another.
             Err(error) if error.code.is_some_and(local_refusal) => Err(error),
             Err(error) => {
@@ -5441,7 +5464,7 @@ impl DataProvider for NativeProvider {
         // layouts read when the file opened, or since a placement).
         let revision = download_tree(&self.layout_downloads)?
             .at(&[4, 5, u64::from(layout_id)])
-            .map(|member| om_protocol::authoring::catalog_revision(&member.to_owned_node()));
+            .map(|member| om_protocol::authoring::layout_revision(&member.to_owned_node()));
         Ok(Some(LayoutGeometry {
             revision,
             width: layout.width(),
@@ -5697,6 +5720,10 @@ fn password_change_error(
         Refusal::TooLong => "The new password can have at most 100 characters.".into(),
         Refusal::Inactive => format!("The account “{account}” is inactive in this file."),
         Refusal::Unwritten(reason) => format!("The new password could not be saved: {reason}."),
+        Refusal::OutcomeUnknown(reason) => format!(
+            "The new password was written, but whether the file on disk keeps it is unknown: \
+             {reason}. Close the file and open it again."
+        ),
     };
     match refusal.code() {
         Some(code) => DataError::with_code(code, message),
@@ -5756,6 +5783,31 @@ fn download_node(session: &mut Session, path: Vec<Vec<u8>>) -> Result<Option<Dow
     node_from_reply(path, reply)
 }
 
+/// The value stored at `path` (a leaf), `None` when the host has no such
+/// key, an error when the download fails or the key is a node.
+pub(crate) fn download_value(
+    session: &mut Session,
+    path: Vec<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, DataError> {
+    let refs: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    let reply = session
+        .download(&refs)
+        .map_err(|e| failure(&format!("download server path {path:02x?}"), e))?;
+    if reply.lock_error != 0 {
+        return Err(DataError::new(format!(
+            "Server download {path:02x?} failed (lock error 0x{:04x}).",
+            reply.lock_error
+        )));
+    }
+    match reply.node_state {
+        NodeState::Missing if reply.slots.is_empty() => Ok(None),
+        NodeState::Terminal => Ok(Some(reply.value)),
+        state => Err(DataError::new(format!(
+            "Server path {path:02x?} is not a value ({state:?})."
+        ))),
+    }
+}
+
 /// The node at `path` from `reply`, its op90 download, checked as
 /// [`download_node`] checks one: `None` when the server has no such key.
 fn node_from_reply(
@@ -5769,6 +5821,17 @@ fn node_from_reply(
         )));
     }
     match reply.node_state {
+        // A later reply of a paged download that ends it as missing (a
+        // continuation the host no longer knows) after earlier pages gave
+        // slots: the node arrived in part, which is a failure, not an
+        // absent node.
+        NodeState::Missing if !reply.slots.is_empty() => {
+            return Err(DataError::new(format!(
+                "Server download {path:02x?} failed after its first reply: the last reply \
+                 said the node is missing after {} bytes had arrived.",
+                reply.slots.len()
+            )))
+        }
         NodeState::Missing => return Ok(None),
         NodeState::NonTerminal => {}
         state => {

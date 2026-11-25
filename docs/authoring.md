@@ -7,7 +7,11 @@ text, validate and plan an edit against the file's names, and apply it with
 conflict protection, reading the result back over a new connection; plan
 and add a field to a table, add a layout, and place a field on a layout,
 the same way;
-and run a script on the host to see what an edit does. The same service
+run a script on the host to see what an edit does; and find where a design
+object is used, which references name a target not found among the
+objects read, which objects no reference was found for, and a script's
+call chain, as findings about what was read
+([Design analysis](#design-analysis)). The same service
 (`om_author::Service`) answers a command-line tool and an MCP server; both
 print the same versioned JSON.
 
@@ -174,12 +178,20 @@ and every response is one JSON object:
 | `get_value_lists` | none | the file's value lists in display order (`om_data::value_lists`, the catalog File > Manage > Value Lists shows): each list's `ref`, `id`, `filemaker_id` (the id FileMaker shows), `name` and `source`: `custom` with its `values`; `field` with the `field`, `second_field`, `related_from` occurrence, `sort_by_second_field` and `show_second_field_only`; `external` with the stored `file_reference` and `list_key`, unresolved; `calculation`; or `unreadable` with the reason. Decoded lists add `sort_language` and `unknown_options`. `editable` is `false` and `read_only` gives the reason. Never reads records |
 | `complete_calculation` | `text` (formula text), optional `cursor` (characters; default the end), `occurrence` or `occurrence_name` (the context; default the first occurrence), `limit` (default 50, at most 1000) | the `prefix` typed at the cursor, the characters it `replace`s, the `candidates` best first (`kind`, `name`, `label`, the text to `insert`, `selection_after`, a function's `category`, a field's `field` and `occurrence` refs), `total`, `truncated`, `refused` when nothing is completed, and each name source's availability. Reads metadata only. [Calculation name completion](#calculation-name-completion) |
 | `create_file` | `path` (on this computer; `.fmp12` added when missing) | the new file's `path`, its `name` (the file name without the extension, also its table's and layout's), and the `account` (`Admin`) and `password` (empty) that open it. Makes a blank file as File > Create New... does ([docs/new-files.md](new-files.md)); never replaces a file (`duplicate_name`); a name the table or layout cannot have is `invalid_name`, a failed write `save_failed`, with nothing left. Needs no connection |
+| `compare_designs` | `source`, `target` (paths on this computer), optional `base` (the copy both were made from) and `include_same` | `with_base`, the `design_revision_version`, `counts` (matched objects, those without a design revision, the matched objects that are `same` and those in which each part differs, conflicts, objects in one file only, possible matches), the `matched` objects that differ (all with `include_same`): `kind`, `id`, `table`, `catalog`, `name` and `target_name`, the `difference` (the parts that differ: `design`, `step_data`, `unidentified`, `data`, `derived`; none when the same), `source_revision` and `target_revision`, and with a base `base_revision`, `source_change`, `target_change`, `changed_by` and `conflict`; `only_in_source` and `only_in_target` (`presence`: `only`, `new` with `id_taken`, `deleted_in_other` with `changed`), and `possible_matches` (`agrees`: `id` or `name`) with `possible_matches_left_out`. Reads the files only; never content, passwords or edit tokens. [Comparing designs](#comparing-designs). Needs no connection |
+| `find_uses` | `object` (a reference of any kind below) or one of `script_name`, `table_name`, `occurrence_name`, `layout_name`, `value_list_name`, `custom_function_name`, `data_source_name`, or `field_name` with `table` or `table_name`; optional `limit` (default 500, at most 100,000) | the `object` (`found`: true, false when not among the objects read, or null when the file was not read cleanly, with `not_known_because`), each decoded reference to it from another object in `uses` (holder, place, target, `via`, `resolution`, and for a script its `script_role`), `total`, `truncated`, `nothing_known_unread` and `coverage`. A name not found is the error `not_found` or `not_known`. Reads metadata only. [Design analysis](#design-analysis) |
+| `broken_references` | optional `limit` | each decoded reference whose target was not found among the objects read, in `references`, with what was not found in `missing` (resolution `target_not_found`; only for a file read cleanly), `total`, `truncated`, their `meaning` and `coverage`. [Design analysis](#design-analysis) |
+| `unused_objects` | optional `kinds` (`table`, `field`, `occurrence`, `layout`, `script`, `value_list`, `custom_function`, `data_source`; all when absent) and `limit` | the `objects` for which no reference from another object was found in what was read, each with the finding `no_reference_found`: candidates to check, not objects known to be unused; `nothing_known_unread` per kind, their `meaning`, `total`, `truncated` and `coverage`. [Design analysis](#design-analysis) |
+| `script_calls` | `script` or `script_name`, optional `direction` (`calls`, `callers`, `both`, the default) and `limit` | the `script`, and in `calls` and `callers` the `scripts` reached through performs with their `depth`, the `performs` among them with each step and `script_role`, the `other_references` between the scripts walked and other scripts that are not performs, and the `cycles`; `nothing_known_unread` and `coverage`. A name not found is the error `not_found` or `not_known`. [Design analysis](#design-analysis) |
 
 **References** are `kind:id@file` with the file's own ids:
 `script:5@Tasks.fmp12`, `table:32769@Tasks.fmp12`,
 `field:32769.2@Tasks.fmp12`, `occurrence:13631489@Tasks.fmp12`,
-`layout:1@Tasks.fmp12`, `value_list:3@Tasks.fmp12`, and a layout's
-objects `layout_object:1.4@Tasks.fmp12` (layout 1, object key 4). A
+`layout:1@Tasks.fmp12`, `value_list:3@Tasks.fmp12`, a layout's
+objects `layout_object:1.4@Tasks.fmp12` (layout 1, object key 4), and
+for the analysis commands `custom_function:1@Tasks.fmp12`,
+`data_source:1@Tasks.fmp12` (as `inspect` gives it) and
+`relationship:1@Tasks.fmp12`. A
 reference naming
 another file than the one connected to is refused (`wrong_file`); it is
 never resolved to an object of this file with the same id. A name
@@ -190,24 +202,92 @@ a table the same way, `layout_name` a layout and `field_name` a field of
 the layout's table. Occurrences of another file's tables have no `table`
 and name their `data_source`.
 
-**Revisions** are `sha256:` of a script's stored definition `[17, 5, S]`
-in a canonical form, leaving out its modification stamp (`fc`, `fc 01`
-to `fc 03`): a save that stores the same content keeps the revision. A
-table's `fields_revision` (`inspect`) is the same over its whole field
-catalog `[T, 3]`, leaving out every stamp in it: any field added, renamed,
-changed or deleted, by anyone, changes it. Each table's listed fields and
-revision come from the same downloaded catalog. A concurrent edit leaves
-that observation stale together, so its token detects the change. This
-is not a transaction covering all metadata in the inspection. A layout's
-`revision` (`get_layout`) is the same over its whole catalog member
-`[4, 5, L]` (definition, parts, objects, object attributes and the
-layout's indexes), leaving out every stamp in it.
+**Revisions** come in two kinds, both defined once in
+`om_hbam::design_paths` ([server-storage.md](server-storage.md) sections 4
+and 9). An **edit token**, `sha256:` and 64 hex digits, guards an edit:
+`revision`, `expected_revision` and the other `*_revision` parameters and
+results of the commands above are edit tokens, but for `compare_designs`,
+whose `*_revision` results are design revisions. A **design revision**,
+`design-sha256:` and 64 hex digits, is what `compare_designs` reports: the
+hash of an object's Design pieces alone. It leaves out step data, the
+places the specs name for a stored password or key, and every piece no
+rule identifies; it does not prove that no other key of a design catalog
+holds one (server-storage.md section 4, "What the rules cannot see"). A
+design revision is refused where an edit token is expected, and it is
+comparable only with one of the same version (`design_revision_version`,
+now 1). An object holding step data, or a piece no rule identifies, has
+none ([Comparing designs](#comparing-designs)).
 
-**Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
+Edit tokens are computed over an object's stored content in a canonical
+form, used by `om-author`, the host and the desktop client alike. A script's
+`revision` covers its whole member `[17, 5, S]`; a layout's its whole
+member `[4, 5, L]` (definition, parts, objects, object attributes and the
+layout's indexes); a value list's its member `[21, 5, V]`. Each leaves
+out only modification stamps (`fc`, `fc 01` to `fc 03`), so a save that
+stores the same content keeps it, and any other change changes it,
+stored passwords included: an edit that changes only Re-Login's password
+is applied, and a request made from a token older than another client's
+password change is a `conflict`. The token is exchanged only between a
+client that has read the member and the host, so it shows neither side
+anything it does not hold. A script's token leaves out the member's own
+stamp only and counts whether each key is stored as a list; every other
+leaves out every stamp in it and does not count list flags. A table's
+`fields_revision` (`inspect`) is the second form over its whole field
+catalog `[T, 3]`: any field added, renamed, changed or deleted, by anyone,
+changes it, and so does a serial number taken by a new record
+([#717](https://github.com/OpenMaker-Dev/openmaker/issues/717)). Each
+table's listed fields and revision come from the same downloaded
+catalog. A concurrent edit leaves that observation stale together, so its
+token detects the change. This is not a transaction covering all
+metadata in the inspection. The file's `layouts_revision` is the second
+form over the layout catalog's index `[4, 1]`.
+
+A value is hashed as the bytes it holds, the same whether the file keeps
+it whole or split, so a file written and read back keeps every token. A
+node is a split value by the format's rule (file-format.md 3.6): no value
+of its own, a first child `00` with a header of 4, 8 or 12 bytes whose
+first `u32` is the total length, then children keyed 1 to n as serial
+keys in order, each a leaf, every one but the last 1,000 bytes and the
+last 1 to 1,000, adding up to the total, and nothing else. A list that
+meets the rule is a split value as far as the format can tell, and is
+hashed as one. Before this, a split value was hashed as its header and
+pieces, so tokens of content holding one have new strings: in FileMaker
+Pro 26's 66 starter files 75 of 330 scripts, 245 of 418 layouts, 72 of
+264 value lists and 94 of 341 `fields_revision`, `layouts_revision` and
+script catalog index tokens; every other token is the string it was. The
+host accepts a token in either form for the current content and answers
+in the form the request named, so an older client reads back the token it
+computes and goes on working. A newer client against an older host cannot
+be helped: for such content every edit is a `conflict`, reading the
+object again gives the same token and the next edit the same answer,
+until the host is updated. An older client against a newer host can also
+report `verification_failed` after a save that was made: when the edit
+itself makes a value split (Set Value List Values with text such as
+`タスク` that is stored in pieces, in a list held whole before), or when
+it repeats an edit that already succeeded with the token from before it
+(an exact retry), the host cannot tell which form the client speaks, as
+both forms agreed or the token is the earlier content's, and answers in
+the new one. The client then reads the object back, computes the older
+form and reports the mismatch. The save was made: reading the object
+again shows it, with a token the client accepts. `om-author`, the desktop
+client and OpenMaker Server are released together, so this needs a mixed
+installation.
+
+**Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`
+(for the design analysis: not among the objects read, in a file read
+cleanly, a finding with its `details.coverage`), `not_known` (the design
+analysis read the file but not cleanly, so whether the object is there is
+not known; `details.reason` says what made the read not clean and
+`details.coverage` gives the rest),
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
 `outcome_unknown`, `save_failed`, `verification_failed`. An
-`outcome_unknown` result means the save could not be confirmed. For an
+`outcome_unknown` result means the save could not be confirmed: the answer
+was lost, or OpenMaker Server answered status 65535, as it does when its
+save renamed the new copy over the file and could not flush the folder
+(the change may or may not be in the file, which takes no more changes
+until it is hosted again; docs/server-storage.md 5). `save_failed`
+(800, 809, 810) means nothing was written. For an
 OpenMaker Server script save, read the script again and compare its
 revision with `after_revision` and `previous_revision`. The same edit from
 the same revision reports `already_applied` if the script has the requested
@@ -1080,6 +1160,503 @@ issue [#69](https://github.com/OpenMaker-Dev/openmaker/issues/69); docs/desktop-
 The matching and order are OpenMaker's choices; FileMaker's own list has
 not been measured (re/client-ui.md, Unknowns).
 
+### Comparing designs
+
+`compare_designs` compares the designs of two `.fmp12` files on this
+computer, a source and a target, and with a `base`, the copy both were
+made from, says which side changed what
+([server-storage.md](server-storage.md) section 9, "Comparison"). It only
+reads the files. Each is read whole and every slot decoded, as
+OpenMaker's file reader reads files; only the design catalogs are kept,
+with their own indexes (never records, field value indexes, accounts or
+the file's status), so it holds each file in memory once, and the tree
+of its design catalogs.
+
+Before anything is named, classified or hashed it checks the inventory
+of every file (`om_hbam::design_paths::inventory`): the sibling keys on
+the way to and within each design catalog in order and unique, as a
+file's are; every key under a catalog's member list, of a member with
+children or without, of the shape its catalog's spec gives (a font's two
+bytes, a base directory's four, a serial key elsewhere); no two objects
+of one kind (and table) with one id; no key the decoders, which look
+keys up by number, could take for another than the design reading takes:
+on the way to a design catalog or at its index and member list (`00 11`
+for the scripts' `11`), or in a member (`[00 05]` for a script's step
+data, a layout's attribute records or table view, or a button's step
+data). A file that fails is refused with
+`invalid_request`; `details` give the `file`, the `reason`
+(`unsorted_keys`, `key_shape`, `duplicate_id` or `misread`), and where
+known the `kind`, the `table` and, when the key has its specified shape,
+the `id`, never a key's bytes.
+
+Its objects are every member of a design catalog that has children
+(tables, occurrences, relationships, fields, layouts, themes, custom
+functions, scripts, privilege sets, extended privileges, fonts, file
+library items, data sources, value lists, base directories, custom menu
+sets and menus), and for each catalog everything in it that is in no
+member object: the catalog's own value, its index with every entry (its
+members' entries too), any other branch, the member list's own value,
+and the members with no children. Index entries never move between
+objects. A member that gains its first child becomes an object and takes
+its own node and value from its catalog; one that loses its last child
+gives them back. A script's cached name is an entry of its catalog's
+index, so renaming a script changes the script and its catalog.
+
+The tree is compared as the file holds it: a value stored in pieces
+(re/file-format.md 3.6) is its header and its pieces, never joined.
+Files read from disk store each value one way, so equal content compares
+equal; a tree held in memory with such a value inline would compare as
+different from the file written from it
+([#777](https://github.com/OpenMaker-Dev/openmaker/issues/777)). Edit
+tokens join the pieces, so they do not differ in this way.
+
+With a base, an object of the source is the target's object of the same
+kind and id when the base has it too. An object the base lacks is new
+(`presence` `new`); when the other file has a different new object with
+the same id, `id_taken` says so: two copies gave one id to unrelated
+objects. One the base has and the other file lacks was deleted there
+(`deleted_in_other`), with `changed` saying whether this file changed it
+since the base. Without a base, two objects of one kind and id are
+matched when their names, decoded on both sides, are equal byte for
+byte, or when neither has a name (relationships, file library items,
+custom menu sets) and all of their content is equal: that is no proof
+that they share a history, and a deploy must not rely on it. A field
+(and a table's field catalog) is matched only when its table is, by the
+same test. Every object matched with none is listed once, in
+`only_in_source` or `only_in_target`; among them, one agreeing with
+another in id alone is also listed as a possible match (`agrees` `id`),
+and so is a field whose id and name agree under a table that is not
+matched. Without a base, one agreeing with another in name alone is
+listed too (`agrees` `name`, up to 8 per source object;
+`possible_matches_left_out` counts the rest). A person settles a
+possible match; it is never matched. With a base, a field under a table
+the base lacks is new on each side.
+
+Each matched object is compared by its pieces, group by group, whether
+it has a design revision or not, and `difference` lists the parts that
+differ: `design`; `step_data`, a script's or a button's step data (and,
+inferred, a layout table view's), found as the decoders find it (its
+keys read by number, server-storage.md section 9), which is compared as
+bytes and not read, so a stored password's change and any other change
+of a step's parameters are both `step_data`; `unidentified`, a key no spec explains;
+`data` and `derived`. An empty list is the same (modification stamps may
+differ). With a base, `source_change` and
+`target_change` are each side's difference from it, and a side changed
+the object when it lists `design`, `step_data` or `unidentified`: a
+serial number taken or a checksum over the file's creation stamp is no
+change. `changed_by` is `source`, `target`, `both`, or null when neither
+side changed it; `conflict` is true when both changed it and the two
+still differ in `design`, `step_data` or `unidentified`. The same change
+made on both sides, with a serial number taken on one, is `changed_by`
+`both`, `difference` `data` and no conflict.
+
+Design revisions are given for matched objects (`source_revision`,
+`target_revision`, `base_revision`), for objects in one file
+(`revision`) and for possible matches; null where the object has none.
+An object has one only when it holds no step data and no piece a rule
+does not name. So no script has one, and no layout with a button that
+has step data (nor, inferred, one whose table view holds step data,
+which no starter file does); in FileMaker Pro 26's starter files every
+font and custom menu also holds a key of their own no spec explains
+([#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)). Two
+copies made separately, such as two language versions of a starter
+solution, give each object its own UUID, which is Design: every object
+they share differs in Design.
+
+```sh
+om-author compare-designs --source Tasks-dev.fmp12 --target Tasks.fmp12 --base Tasks-base.fmp12
+```
+
+### Design analysis
+
+`find_uses`, `broken_references`, `unused_objects` and `script_calls`
+answer questions across a file's design objects, as third-party tools such
+as FMPerception do from FileMaker's Database Design Report (issue
+[#691](https://github.com/OpenMaker-Dev/openmaker/issues/691)). Each
+downloads the file's design catalogs over a new connection
+(`NativeProvider::design_catalogs`): the file's options `[2]`, the schema
+`[3]` and each table's fields `[T, 3]`, layouts `[4]`, custom functions
+`[16]`, scripts `[17]`, privilege sets `[23, 2]`, data sources `[32]`,
+value lists `[33]`, catalog `[64]` and custom menus `[65]`. From them it
+builds the file's reference graph (`om_data::design_refs`). It reads no
+record and no account, and writes nothing. The graph is built from the
+catalogs as a key tree holds them, not from a connection, so a server can
+build it from any version of a file it hosts
+([server-storage.md](server-storage.md) 9).
+
+**What counts as a reference.** An id one design object stores to name
+another, read by the decoder OpenMaker already has for it:
+
+| Holder | References | Read by |
+|---|---|---|
+| Script step | each stored location of each parameter of the step's schema: a field or a variable's target, a layout, a script (also another file's, through its data source), a table occurrence or base table, a data source, calculations, find request fields, a sort order's fields, summary fields and value lists; an import order's target occurrence and fields and an export order's fields | `om_scripts` (script-steps.md 4, 5), `om_transfer::spec` (11.3, 11.4) |
+| Layout | its table occurrence, sub-summary parts' break fields, script triggers and their parameters, and a stored table view's own parts and columns | `om_layout` (layout-model.md 4, 10.14) |
+| Layout object | a field object's field and value list; a portal's occurrence and stored sort; a button's or group's step, read as a script step with the data in its attribute `11`; script triggers; merge fields; every formula in its attributes (label, tooltip, older button text, placeholder, portal filter, hide condition, conditional formatting, active segment, web address, calculated icon, item calculations) | `om_layout` (layout-model.md 5.5, calc-encoding.md 8) |
+| Field | its calculation, auto-enter, validation, validation message, external storage path and display names calculations; a lookup's occurrences and copied field; the value list it validates by; its furigana field; a summary's summarized and additional fields | `om_data::field_options`, `om_data::meta` (schema-path.md 5.5, 5.13; file-metadata.md 5) |
+| Table occurrence | its table, or its data source | `om_hbam::catalog` (file-metadata.md 1.1) |
+| Relationship | both occurrences, each match's fields, the sort of a sorted side | `om_data::meta` (file-metadata.md 4) |
+| Value list | its fields, the related-values occurrence, another file's data source, a calculated list's formula | `om_data::meta` (file-metadata.md 6) |
+| Custom function | its body | `om_formula` |
+| Privilege set | the calculations that limit a table's records | session-identity.md 2.1 |
+| The file | File Options' startup layout and file script triggers | `om_data::meta` (file-metadata.md 3) |
+
+A formula stores the fields and custom functions it names by id, and its
+context occurrence (calc-encoding.md 2.5, 4.2): those are its references.
+It stores Design and plug-in functions by id too, but they name no object
+of the file. A field is named through a table occurrence and resolves to
+the occurrence's table's field; through an occurrence of another file's
+table it is `external`. A name in a text literal is never resolved: a
+function that looks a name up when the formula runs is listed as a
+reference by name instead (below). A reference an object holds to itself
+is not a use of it. A formula stored for an option that is off (an
+auto-enter calculation of a field that does not auto-enter one, a tooltip
+without its flag) is never evaluated and is not read. A privilege set's
+access to layouts, scripts, value lists and fields is a setting on those
+objects, not a use of them.
+
+**What the results are.** Findings about what was read, to check before
+acting on them, never facts about the whole file. A use the analysis
+reports was decoded from the file and is a fact. The rest is stated as
+what was found:
+
+- `broken_references` lists references whose target was **not found among
+  the objects read** (`target_not_found`);
+- `unused_objects` lists objects for which **no reference was found in what
+  was read** (`no_reference_found`): candidates, not objects known to be
+  unused;
+- an object asked for that the graph does not have is `found: false` (not
+  among the objects read), or `not_found` for a lookup by name; never "does
+  not exist".
+
+How far to trust a finding travels beside it, as data: `read_cleanly` and
+its `anomalies`, `consistent`, the places not decoded, the references made
+by name, and `nothing_known_unread`, per kind. A finding is as reliable as
+this code can make it when the read was clean and consistent, nothing
+known to be unread could refer to the kind (`nothing_known_unread`), and no
+name looked up at run time could name it. Even then, what is listed below
+under "What can still make a finding wrong" applies. A stronger guarantee
+("certainly unused") is
+[#722](https://github.com/OpenMaker-Dev/openmaker/issues/722).
+
+**Read cleanly.** Every result says in `coverage.read_cleanly` whether the
+file was read cleanly, and lists its first `anomalies` (`total` counts them
+all). The file was read cleanly when:
+
+- the source gave every catalog asked for and reported no failure of its
+  own (`unavailable` is empty: a refused download, a download whose later
+  reply failed after earlier ones gave part of it, or a base table list or
+  key the provider could not read, so that it never asked for those
+  tables' fields);
+- no stored node was failed: present but not readable in the form asked
+  for (a list where a value is expected or the reverse, a value stored in
+  pieces that do not assemble, text or a number that does not decode, a
+  child asked of a node that is not a list, anywhere on the way to a
+  catalog);
+- the final walk found no stored node unread and none holding a value
+  beside keys;
+- no value a reader took was rejected (a formula that does not decode, a
+  field binding whose keys do not read, a stored step parameter or key
+  list that does not read, several keys without their count or a count
+  without its keys, a layout the layout index lists whose member was not
+  read as a layout: not given, not readable, emptied, or a folder or
+  separator, each said as it is), and nothing unknown was met (an object
+  type, a field kind or a step id without a schema, data a step's schema
+  does not explain);
+- no budget stopped anything (the work and entry budgets, or the
+  20,000-step limit of a script).
+
+One anomaly anywhere is enough. When the file was not read cleanly, no
+finding depends on which kinds the anomaly could affect: no target is
+`target_not_found` (such a reference is `unresolved`), an object the graph
+does not have is `found: null` and a lookup `not_known`, and
+`nothing_known_unread` is false for every kind. Places OpenMaker knows and
+does not decode are not anomalies but coverage, each with the kinds it
+could name: a custom menu's items, a chart's or plug-in object's setup,
+and the references by name below.
+
+**Consistent.** A client reads the design catalogs in several downloads,
+so another user's change between two of them can give a read that is
+clean but mixes two versions. The provider reads each catalog index's
+modification count `[cat, 1, fc]` before the catalogs and again after,
+and `coverage.consistent` is false, with `changed_during_read` naming the
+catalogs, when one moved or could not be read. That FileMaker Pro reads
+the same count to tell whether its copy of a catalog is current is
+specified (schema-path.md 8.2); that any change to a catalog's members
+moves it is inferred from that use. It does not catch a change that moves
+no index's count, a change to a table's field catalog made after the
+schema was read but before that field catalog's count was taken, or a
+change to the file's status `[2]`, which has no index. A file read from
+disk, or a server reading one version, has nothing to compare and is
+`consistent`.
+
+**Results.** Each reference names its `holder` (`ref`, kind, name; a
+layout object's layout), the `place` in it (`part`: the step's parameter,
+`field`, `hide condition`, `calculation`, `script trigger OnRecordLoad`;
+in a script, the `step` with its `index`, the `line` it starts on in
+`get_script`'s source, its id and name, and whether it is `enabled`), its
+`target`, the occurrence or data source it goes `via`, and its
+`resolution`: `resolved`; `target_not_found` with what was not found (a
+field, or the occurrence or table it is named through); `external` with
+the data source; or `unresolved` with the reason (a catalog that would
+hold the target was not read, with the host's reason; the file was not
+read cleanly, with what made it not clean; or the occurrence's table is
+not known, because its definition is not stored, does not read or does
+not decode, or names a data source key that does not read). A reference
+to a script also has its `script_role` (below, "Call chains"). A disabled
+step's references are listed with `enabled` false. `find_uses` given the
+reference of an object not found among those read returns the references
+naming it. A lookup by name that finds nothing is an error, `not_found`
+or `not_known`, whose `details.coverage` is the same as a result's.
+
+**Coverage.** Every result has `coverage` for the kinds of object it is
+about: `read_cleanly` and `anomalies`; `consistent` and
+`changed_during_read`; the `read` counts; the `unread` places (anomalies
+and the known places not decoded), each with its `reason` (`not_decoded`,
+`malformed` or `limit`), `detail` and the kinds it `could_refer_to`; the
+references `by_name`; `omitted`, the places past the first 20 of their
+kind (the holder's kind and the place, digits folded), each kind of place
+with its `count`; the catalogs the host did not give (`unavailable`);
+`stopped`, the place where the build stopped at a budget, or null; and
+`nothing_known_unread`. The `total` of `unread` and `by_name` counts the
+omitted ones; lists stop at `limit`. `read_cleanly`, `anomalies`,
+`consistent` and `stopped` are fields of their own, never cut by `limit`.
+A detail is at most 300 characters.
+
+**How the catalogs are read.** Readers reach the catalogs only through one
+access layer (`design_refs::access`). The tree and the node in each handle
+are private fields of that module, so no reader can name or reach them;
+the decoders that read a whole node (a script, a value list, a layout) are
+called by the layer itself (`At::decode_script` and the others), and what
+the reader relies on from them it takes through the accessors. A test
+fails if a reader file names the key tree or a node. Every accessor marks
+what it gives on the stored node itself: a value taken, a list whose keys
+were looked at, or a place declared to name nothing. A value is absent,
+read, or present and not readable, and the third is marked failed on the
+node when met; nothing turns it into an absent value. At the end one walk
+of every catalog the build was given reports, by its path (`stored
+4/5/12/119`), each node nothing accounted for, each failed and each holding
+a value beside keys, as anomalies. A key with no value is reported too
+when nothing took it, since a key's segment can itself name an object. The
+walk is charged to the work budget; after a stop it does not run.
+
+A subtree is accounted for whole without being read only for a reason in
+one table (`access::Declared`):
+
+| Declared | Places | Source |
+|---|---|---|
+| catalog index | a catalog's `01`: names, display order, counters derived from its members | schema-path.md 5.1 |
+| access settings | a privilege set's object access `09` and a table's field access `05, T, 05`: settings on objects, not uses | session-identity.md 2, 4.1 |
+| layout indexes | a layout's `08`, `0a`, `15`, over its own objects | layout-model.md 10.5 |
+| file status | `[2]` but the document preferences `18` | file-format.md (catalog 2); file-metadata.md 0, 2 |
+| step data | a step's data `[17, 5, S, 5, K]` (or a button's `11`), only when its steps read all of it: every stored place of every parameter read, nothing the schema does not explain, no anomaly | script-steps.md 4, 5 |
+| deleted member | a member FileMaker emptied, its key kept | scripts.md |
+| reported | a place its reader reported itself | |
+
+Everything else is read through the accessors: stamps, comments, names,
+settings, a formula's formatted stream, an inactive formula's streams (a
+formula stored for an option that is off, never evaluated, so not a use),
+a layout folder's or separator's keys (never shown, so not a use; that is
+OpenMaker's choice), and a setting kept for an option that is off. Derived
+structures the file stores are read as uses, not checked and dropped, so
+that one that disagrees with what it is derived from cannot make an object
+look unused: a layout's field index (each entry a use of the field it
+names, held by the object it names, at `field index`), the layout index's
+table occurrence (`layout index: table occurrence`) and an occurrence's
+relationship index (`relationship index`, the related occurrence and the
+relationship). The other indexes name only a catalog's own members or a
+layout's own objects.
+
+Keys with no meaning in the specs are accepted only in the one form every
+observation shows, byte for byte; any other form is an anomaly: a script's
+and folder's `13` (`00 00 00 00`), a field's `26` (`00 00 00 00`), a
+layout's and table view's `16` (`00 00`), `17` and `21` (empty), a
+conditional format's `06` (empty) and the formats' count `04` (two bytes,
+the number of formats), a field index entry's value (empty, or one of `00`
+`02` `09` `0a` `0d`), and the counters `05, 00` and `03, 00` of a layout
+and `05, 00` of a script's step data (a key string). A layout without
+references holds an empty list at `01, 00`, which is accepted.
+
+A test generates a file holding every structure the readers know, checked
+against the readers' own lists (`read::Structure` and `access::Declared`,
+each generated with its enum). For every node in it, it makes a list a
+leaf, a leaf a list, cuts the last piece from a value stored in pieces,
+adds an unknown key and sets a value beside keys, one at a time. Each is
+an error the read must notice (it is then not clean, with no target not
+found, nothing listed whole and nothing known unread), unless it lies
+inside a subtree declared by spec or reported as not decoded, or stores a
+value in pieces whole; a read still clean must give the same result byte
+for byte; a value in pieces is stored whole as its assembled value, which
+must give the same result. Removing a node must leave the same assertions
+true for a read not clean. In a clean one, uses are compared as a
+multiset of holder, place and target: a use must not appear except on a
+holder the removal made where the node was (a folder whose flags are
+removed reads as a layout), none may be lost except from a holder whose
+member held the node, and no target may be left not found but what was
+removed (`design_refs::tests::completeness`). A use carries no stored
+path, so a lost use is excused for any node of its holder's member (an
+option beside a value can turn it off), not only for the node storing it:
+a reader that loses a use when an unrelated key of the same member is
+removed would pass.
+
+**References by name.** Never resolved; each is listed with the kinds the
+name can be:
+
+| Entry | Can name | Source |
+|---|---|---|
+| Perform Script, Perform Script on Server, Perform Script on Server with Callback, by name | a script, or another file's script as `datasource::script` | script-runtime.md 3.6; script-steps.md 12.1 |
+| Perform Script on Server with Callback's callback by name | the same | script-steps.md 12.1 |
+| Go to Layout, Go to Related Record: layout by name or number calculation (the stored layout key is then not counted) | a layout | script-steps.md 11.8 |
+| Go to Related Record: table by calculation | a table occurrence | script-steps.md 12.4 (ledger F114) |
+| Set Field By Name, Replace Field Contents by Name | a field, through its occurrence | script-step-params.csv (`kFieldSpecByCalc`); script-steps.md 12.4 |
+| Go to Object, Set Web Viewer, Refresh Object, Perform JavaScript in Web Viewer, Refresh Portal: object name | a layout object | script-step-params.csv |
+| Execute FileMaker Data API: the request | layouts, table occurrences, fields, portals by object name; the request's script keys are ignored | Claris help, Execute FileMaker Data API |
+| Perform SQL Query by Natural Language | fields; table occurrences when the tables are given by name or by DDL, or the options as JSON (whose `data tables` can name them) | Claris help; script-step-params.csv (Tables slot 8, Options slot 15); script-steps.md 12.2 |
+| Perform Find by Natural Language | fields, through their occurrences | Claris help |
+| Generate Response from Model, Perform SQL Query by Natural Language: Perform JavaScript in Web Viewer | a web viewer, by object name | Claris help, Generate Response from Model; script-step-params.csv (`LLMWebScript`, slot 20) |
+| Generate Response from Model: tool definitions | custom functions | Claris help; calc-functions.md (`GetToolDefinitions`) |
+| Open URL | a script, in an `fmp://` URL's `script` parameter | Claris help, Open URL and Opening files using a URL |
+| Perform AppleScript | scripts, layouts, tables, occurrences and fields, through FileMaker Pro's AppleScript dictionary (inferred) | docs/re/architecture.md (`fmpro.sdef`) |
+| Send Event | the same as Perform AppleScript: an Apple event sent to FileMaker Pro itself (inferred; Send Event names no restriction on its target, and FileMaker Pro receives Apple events) | Claris help, Send Event and Receiving Apple events |
+| A web viewer allowed to perform scripts from JavaScript | a script (`FileMaker.PerformScript`) | layout-model.md 9.6 |
+| A button bar's active segment calculation | a segment, by object name | layout-model.md 5.5.1 |
+| OnWindowTransaction's field name | a field | file-metadata.md 3 |
+| `Evaluate`, `IsValidExpression` | anything a calculation can name | calc-encoding.md 3.1 (`dc`); calc-functions.md |
+| `GetField` | a field, through its occurrence | calc-encoding.md 3.1 (`dd`) |
+| `ExecuteSQL`, `ExecuteSQLe` | table occurrences and their fields | calc-functions.md |
+| `GetLayoutObjectAttribute` | a layout object | calc-functions.md |
+| `GetRecordIDsFromFoundSet` | a table occurrence or a portal's object name | Claris help |
+| `GetFieldsOnLayout` | a layout | Claris help |
+| `GetTableDDL` | table occurrences | Claris help |
+| `GetToolDefinitions` | custom functions | calc-functions.md |
+| Design functions | by function: value lists, scripts, layouts and their objects, fields, tables and occurrences | calc-functions.md, Design functions |
+| Plug-in functions | anything | not knowable |
+
+A step that names objects in its own parameters is counted, as Execute
+FileMaker Data API is. A request a step sends over the network to any
+server, this file's host included (Insert from URL, Execute URL, Open URL
+with an http address), is not: nothing in the step's stored data
+identifies the target as this file. Insert from URL supports http, https,
+ftp, ftps, sftp, file, smb, smtp, smtps, ldap and ldaps, and no other
+protocol (Claris help), so not `fmp`; Execute URL makes a REST call
+(script-steps.csv). FileMaker Pro sends DDE commands but does not receive
+them (Claris help), so Send DDE Execute is not in the table.
+
+**Bounds.** A hostile file cannot make the build unbounded. Before a
+reader decodes anything sized by the file (a member, a script, a formula,
+a step's data, a shared value), it charges the stored bytes and nodes
+against the work budget, sizing them no further than the budget left; a
+layout is decoded from its member alone, so the layout decoder reads no
+theme, font or image outside the charge. Formulas are decoded within
+`om_formula`'s limits and walked without recursion; a script is read up to
+20,000 steps; a value that steps naming one data key share, a step's
+unexplained data and its line count are each decoded once per script and
+charged once, and a cache hit does no work. Every coverage entry is
+charged to the entry budget, and past the first 20 of their kind they are
+counted, not kept. Lookups among many keys (a script's step data, a
+layout's object attributes) go through one map per list, not a scan per
+key. The build stops after 1,000,000 references, unread places and
+references by name together (`MAX_ENTRIES`) or 50,000,000 units of work
+(`MAX_WORK`), and says where in `stopped`: the file was then not read
+cleanly.
+
+The budgets bound work and memory up to a constant factor, not exactly. A
+unit of work is a stored byte or node charged before it is decoded, a
+step, an object, or a node of the final walk; each unit stands for a
+bounded number of operations. Some work proportional to what was already
+charged is not charged again: listing a list's children into handles,
+building the map of a list's keys, sizing a subtree (counted only up to
+the budget left), the walk's stacks (as deep and wide as the tree), and
+the marks (one per stored node). Memory is bounded by the size of the
+stored catalogs, which the tree already holds, plus the kept entries.
+
+**No reference found.** `unused_objects` lists the tables, fields,
+occurrences, layouts, scripts, value lists, custom functions and data
+sources for which no reference from another object was found in what was
+read, each with the finding `no_reference_found`, and per kind
+`nothing_known_unread`. A reference an object holds to itself (a script
+that performs itself) is not counted. Every reference counts, whatever
+its `script_role`: a script that only Validate Scripts names is not
+listed. A file with custom menus, as every shipped template has, has
+`nothing_known_unread` false for every kind. A layout reached only from
+the layout menu has no reference.
+
+**What can still make a finding wrong.** Even after a clean, consistent
+read with nothing known unread:
+
+- a reader that reads a well-formed value wrongly: the tests catch stored
+  data that is not read or does not read, not a decoder that misreads it;
+  the decoders follow the specs and have not all been compared with
+  FileMaker;
+- a subtree declared by spec and not read key by key (a catalog index, the
+  file status, privilege set access settings, a layout's own object
+  indexes), or a key accepted in its observed form whose meaning is not
+  known;
+- a design change the modification counts do not show (above);
+- a use OpenMaker chooses not to count: what a layout folder or separator
+  stores, a privilege set's per-object access, a request a step sends over
+  the network to any server, this file's host included;
+- whatever names an object from outside the file: another file's scripts
+  and layouts, a client of the Data API or OData, a plug-in.
+
+**Call chains.** A reference to a script carries what its holder does
+with it, `script_role`, from the step's specification. Every step whose
+parameter schema stores a script has one (a test checks the list against
+the schemas):
+
+| Step | `script_role` | Source |
+|---|---|---|
+| Perform Script (1), and a button's | `performs` | script-steps.md 4.1 |
+| Perform Script on Server (164); Perform Script on Server with Callback (210), its script | `performs_on_server` | script-runtime.md 3.6; script-steps.md 12.1 |
+| 210, its callback; Execute URL (224), its callback | `installs` | script-steps.md 5, 12.1, 12.2 |
+| Install OnTimer Script (148) | `installs` | script-step-params.csv |
+| Configure Region Monitor Script (185), Configure Local Notification (187), Configure NFC Reading (201) | `installs`; the key is not decoded and is reported unread | script-step-params.csv, script-steps.csv |
+| Validate Scripts (239) | `names`: the scripts go to an AI model to be checked, none is performed | script-steps.md 12.2 |
+| A script trigger: a layout's, a layout object's or the file's | `installs` | layout-model.md; file-metadata.md 3 |
+
+`script_calls` follows only `performs` and `performs_on_server` between
+scripts of this file, in either direction, transitively: each script
+reached once with its least `depth`, every perform among them with its
+step, and each cycle as the scripts on it (at most 100, then
+`cycles_truncated`). Each script is walked once, so a cycle ends the walk.
+The references between a script walked and another script that are not
+performs (`installs`, `names`) are listed in `other_references` and not
+followed: they are uses, which `find_uses` shows, not calls. Buttons,
+triggers and menus that perform a script are in its `find_uses`, not its
+callers.
+
+**Measured.** Over the 66 FileMaker Pro 26 templates (6 starter solutions
+in 11 languages): 9,350 objects (209 tables, 2,354 fields, 209
+occurrences, 143 relationships, 231 layouts, 5,544 layout objects, 198
+scripts with 935 steps, 264 value lists, 198 privilege sets) and 264
+custom menus; 10,210 references, every one resolved: 6,261 from 4,950
+formulas and the other places, and 3,949 from the derived indexes (2,739
+field index entries and 407 field index branches, 231 layout index
+occurrences, 286 related occurrences and 286 relationships of the
+occurrences' relationship indexes); the 264 custom menus' items not
+decoded; 121 references by name, all Go to Object's object names. 60
+files read cleanly; the six Korean files do not, each for one anomaly:
+`[2, 0e]`, whose one key `4c` is an empty list the specs do not describe
+(`crates/om-data/tests/design_refs_corpus.rs`, ignored by default).
+The results have not been compared with FileMaker's Database Design
+Report or with FMPerception.
+
+**Limits.** The analysis is of the file's current design: a past revision
+needs the store's design history (server-storage.md 9). There is no
+security review. Each command downloads every design catalog and builds
+the graph again. A catalog the host does not give an account is listed as
+`unavailable` and the file is not read cleanly; whether FileMaker Server gives `[23, 2]` and `[64]` has
+not been measured. Catalogs outside the list above (themes, fonts, the
+image library and image streams, base directories, accounts) are taken to
+name no design object. A Go to Related Record step's layout in another
+file and the objects of other files are not followed. What a layout
+folder or separator stores (a separator keeps a table occurrence) is not
+counted as a use, since it is never shown; that is OpenMaker's choice.
+Whether FileMaker Server answers a single-key download of `[cat, 1, fc]`,
+which the consistency check uses, has not been measured; if it does not,
+results from it are `consistent: false`. The findings say what was read,
+not what the file holds: the stronger guarantee is
+[#722](https://github.com/OpenMaker-Dev/openmaker/issues/722).
+
 ## Command line
 
 ```sh
@@ -1104,7 +1681,12 @@ om-author place-field --layout layout:1@Tasks.fmp12 --field-name "Follow up" --f
 echo '{"version":"openmaker.authoring/v1","command":"capabilities"}' | om-author request
 om-author run-script --script-name Greeting --parameter agent   # run it on the host, wait for the result
 om-author complete-calculation --text 'Left ( Tasks::Ti' # names completing the one typed at the end
+om-author find-uses --field-name Title --table-name Tasks   # every decoded use, with coverage
+om-author broken-references                 # references whose target was not found among the objects read
+om-author unused-objects --kinds script,layout
+om-author script-calls --script-name Greeting --direction callers
 om-author commands                          # every command and its parameters; no connection
+om-author compare-designs --source Dev.fmp12 --target Tasks.fmp12   # two local files; no connection
 ```
 
 `--host`, `--port`, `--file`, `--account` and `--password-file` override
@@ -1271,7 +1853,7 @@ operation's fields.
 | 2 Replace script steps | `u32` length, the new definition as a wire slot list (one child of a root), 32-byte expected revision, `u64` script id | `u8` changed, 32-byte stored revision |
 | 3 Create field | `u64` table id (its key read big-endian), 32-byte expected fields revision, `u8` data type (1 text, 2 number, 3 date, 4 time, 5 timestamp), name, comment (empty for none), strings in the trailing-`u32` SCSU form | `u8` changed, `u64` field id (its key read big-endian), 32-byte stored fields revision |
 | 4 Place field | `u64` layout id, 32-byte expected layout revision, `u64` expected base-table id, `u64` occurrence id, `u64` field id (keys read big-endian), the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), `u8` label (0 none, 1), and with one the label's text and its frame | `u8` changed, `u64` field object key, `u64` label object key (0 for none), 32-byte stored layout revision |
-| 5 Describe security | none | three lists, each a `u32` count: accounts (record key as `u8` length and bytes; then name, kind (`u8`), active, must-change-password and privilege set key, each a presence `u8` and the value), privilege sets (key; name, record flags as `u8` length and bytes, at most 16, password days `u16`, each optional) and extended privileges (key; optional keyword; a `u32` count of set keys). A count past the bytes left is malformed; a catalog whose reply would pass 1 MiB is refused with status 3 |
+| 5 Describe security | none | three lists, each a `u32` count: accounts (record key as `u8` length and bytes; then name, kind (`u8`), active, must-change-password and privilege set key, each a presence `u8` and the value), privilege sets (key; name, record flags as `u8` length and bytes, at most 16, password days `u16`, each optional) and extended privileges (key; optional keyword; a `u32` count of set keys). A count past the bytes left is malformed; a catalog whose reply would pass 1 MiB is refused with status 3, and one the host cannot read with 802 ("Unable to open file", `status::UNREADABLE`; OpenMaker's choice) |
 | 6 Create layout | 32-byte expected layout index revision, `u64` occurrence id (its key read big-endian), `u64` id of the layout whose theme and width it takes (0: the first in the order with a theme), the name, the 16-byte UUID the layout gets (the request's identity) | `u8` changed, `u64` layout id (its key read big-endian), 32-byte stored layout index revision |
 | 13 Duplicate layout | 32-byte expected layout index revision, `u64` layout id (its key read big-endian), the 16-byte UUID the copy gets (the request's identity) | as 6 Create layout: `u8` changed, `u64` the copy's id, 32-byte stored layout index revision |
 | 14 Delete layout | 32-byte expected layout index revision, `u64` layout id | as 12 Delete objects: `u8` changed, 32-byte stored layout index revision |
@@ -1363,7 +1945,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   frame chosen, not of the placement. Other field types, labels, layouts
   and script edits have not been opened in FileMaker Pro.
 - **Records.** `list_choices` reads records, as above; no other command
-  does. `choose_value_list_item` and `enter_other_value` are unavailable
+  does.
+- **Design analysis.** It reads only what [Design analysis](#design-analysis)
+  lists, and says what it could not read. `choose_value_list_item` and `enter_other_value` are unavailable
   without a window.
 - **Operations.** Only replacing an existing script's steps and adding a
   stored text, number, date, time or timestamp field with the default
@@ -1432,6 +2016,30 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
 - **Large files.** OpenMaker Server rewrites the whole `.fmp12` on each
   save; a save that takes longer than the client's 30-second read timeout
   is reported as `outcome_unknown`.
+- **Comparing designs** reads files on this computer only, not a hosted
+  file, and reads each whole: a large file costs its size in memory, and
+  its records are decoded though not kept
+  ([#772](https://github.com/OpenMaker-Dev/openmaker/issues/772)). It
+  reports differences; it classes none by what every record must do (a
+  field's type, a stored calculation), keeps no history, writes no text
+  form, and deploys nothing. Objects holding step data (scripts, and
+  layouts with a button or a table view that has step data) have no
+  design revision, and a change in step data is reported without saying
+  what in it changed, until step data is identified exactly per step
+  ([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)).
+  Leaving out step data covers the places the specs name for a stored
+  password or key, not any other key that might hold one. A modification
+  stamp on a member or a catalog's index is left out with everything
+  below it, so content there is not compared; a file FileMaker wrote
+  holds none. A tree held in
+  memory with a value inline that the file stores in pieces compares as
+  different from that file
+  ([#777](https://github.com/OpenMaker-Dev/openmaker/issues/777)). Which
+  differences FileMaker itself would see as changes is not compared with
+  FileMaker; the grouping of the member lists `07` and the value lists'
+  `06` as Derived, and the table view's step data `[4, 5, L, 0d, 05, O,
+  11]`, which no starter file holds, are inferred (re/file-format.md 3.7,
+  re/layout-model.md 10.14).
 - **Not audited.** A dedicated security review of the extension and of
   OpenMaker Server's existing op13 handling (direct catalog uploads need
   the file's [Full Access] set; staged record uploads need only a session

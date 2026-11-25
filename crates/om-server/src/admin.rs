@@ -31,6 +31,8 @@ use crate::eventlog::{ClientLabel, Event};
 use crate::hosting::{FileClose, ReopenError};
 use crate::scripts::AbortReason;
 use crate::server::ServerHandle;
+#[cfg(debug_assertions)]
+use crate::store::SaveFault;
 
 /// The server, as the administrator sees it (the Admin API's
 /// `/server/metadata`).
@@ -105,7 +107,11 @@ pub struct FileInfo {
     /// How many connected clients have it open.
     pub clients: usize,
     /// Why it is closed, when it failed to open again
-    /// ([`ServerHandle::open_file`]).
+    /// ([`ServerHandle::open_file`]); or, while it is served, why it takes
+    /// no more changes: a save renamed its new copy over the file and could
+    /// not flush the folder, so whether the file on disk keeps that change
+    /// is unknown (docs/server-storage.md 5). Closing it and opening it
+    /// again, or a restart, clears that.
     pub error: Option<String>,
 }
 
@@ -672,6 +678,13 @@ impl Write for ClientSocket {
     }
 }
 
+/// For one catalog: the last member id and modification count
+/// GenerateMemberKey issued that wait to be written, and those the tree
+/// holds ([`ServerHandle::member_keys`]).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub type MemberKeys = (Option<(u64, u64)>, (u64, u64));
+
 impl ServerHandle {
     /// The server: its identity, when it started, where it listens and how
     /// many files it hosts.
@@ -706,8 +719,68 @@ impl ServerHandle {
         else {
             return false;
         };
-        hosted.write_store().fail_commit_saves = fail;
+        hosted.fail_commit_saves(fail);
         true
+    }
+
+    /// Fail every read of `path`, and of what is below it, in the hosted
+    /// file named `file`, as a damaged page fails the reads that reach it
+    /// (docs/server-storage.md 6.12): downloads and finds then read through
+    /// the test view alone (`engine::copies`), so that the client gets what
+    /// a failed read gives. For tests of what a client sees when a read
+    /// fails. Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_reads(&self, file: &str, path: &[&[u8]]) {
+        self.shared
+            .engine
+            .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
+    }
+
+    /// Make every save of hosted file `id` fail at `fault` (before the
+    /// rename, or flushing the folder after it), or work again with `None`:
+    /// for tests of an operation whose change is not stored, or whose
+    /// outcome is unknown. Whether the file is served. Only in debug
+    /// builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_saves(&self, id: u32, fault: Option<SaveFault>) -> bool {
+        let Some(hosted) = self
+            .shared
+            .hosting
+            .slots()
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.served())
+        else {
+            return false;
+        };
+        hosted.fail_saves(fault);
+        true
+    }
+
+    /// For catalog `catalog` of hosted file `id`: the last member id and
+    /// modification count GenerateMemberKey issued that wait to be
+    /// written, and those its tree holds, from which the next key is one
+    /// more. `None` when the file is not served. Only in debug builds, for
+    /// tests that check a refused request reserved no key.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn member_keys(&self, id: u32, catalog: &[Vec<u8>]) -> Option<MemberKeys> {
+        let hosted = self
+            .shared
+            .hosting
+            .slots()
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.served())?;
+        // The engine's own read of the version it holds, once: what waits is
+        // its state, not the view's.
+        let reading = self.shared.engine.read(&hosted);
+        let read = reading.read();
+        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
+        let stored = crate::derived::stored_member_key(read.view, &path).ok()?;
+        Some((read.waiting.issued_for(catalog), stored))
     }
 
     /// The hosted files in id order, open or not, each with its state and
@@ -729,7 +802,10 @@ impl ServerHandle {
                     path,
                     status: slot.status(),
                     clients: counts.get(&slot.id).copied().unwrap_or(0),
-                    error: slot.error(),
+                    error: slot.error().or_else(|| {
+                        slot.served()
+                            .and_then(|file| file.writes_refused().map(str::to_owned))
+                    }),
                 }
             })
             .collect()
@@ -792,7 +868,11 @@ impl ServerHandle {
     /// closed file is opened. One that fails to load stays closed, with
     /// the reason in [`FileInfo::error`] and in the error returned.
     pub fn open_file(&self, id: u32) -> Result<(), FileError> {
-        match self.shared.hosting.reopen(id, &self.shared.events) {
+        match self
+            .shared
+            .hosting
+            .reopen(id, &self.shared.events, &self.shared.engine)
+        {
             Ok(()) => {
                 info!("file {id}: opened for the administrator");
                 Ok(())
@@ -1012,7 +1092,7 @@ fn finish_close(shared: &Shared, id: u32) {
                 }
             }
         }
-        if slot.finish_close_if_drained() {
+        if slot.finish_close_if_drained(&shared.engine) {
             info!("{:?}: closed", slot.name);
             return;
         }

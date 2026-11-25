@@ -29,6 +29,8 @@ om-layout = { path = "../om-layout" }
 om-protocol = { path = "../om-protocol" }
 om-query = { path = "../om-query" }
 om-scripts = { path = "../om-scripts" }
+# The store engine's pages and trees (docs/server-storage.md 6).
+om-store = { path = "../om-store" }
 om-rctransaction = { path = "../om-rctransaction" }
 om-scsu = { path = "../om-scsu" }
 om-transfer = { path = "../om-transfer" }

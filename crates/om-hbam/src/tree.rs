@@ -16,7 +16,8 @@ use std::mem::size_of;
 
 use crate::error::{Error, Result};
 use crate::slot::{
-    encode_chunk, minimal_code, path_string, ChunkKind, KeySegment, Slot, SlotReader, BEGIN, POP,
+    encode_chunk_into, minimal_code, path_string, ChunkKind, KeySegment, Slot, SlotReader, BEGIN,
+    POP,
 };
 
 /// One key in the tree: its segment, an optional value, and its children in
@@ -204,21 +205,12 @@ impl WireNode for OwnedNode {
 /// A node's children as one bracketed list (see [`Node::to_wire`]).
 fn wire_list<N: WireNode>(node: &N) -> Option<Vec<u8>> {
     fn write<N: WireNode>(node: &N, out: &mut Vec<u8>) -> Option<()> {
-        let key = node.segment();
-        if node.is_push() || !node.children().is_empty() {
-            let value = node.value().unwrap_or_default();
-            let code = minimal_code(true, key.len(), node.value().map(<[u8]>::len))?;
-            out.extend_from_slice(&encode_chunk(code, key, value)?);
-            write_list(node, out)
-        } else {
-            // An empty leaf value is written with value class 0, not as a
-            // zero-length class-6 value.
-            let value = node.value().unwrap_or_default();
-            let size = (!value.is_empty()).then_some(value.len());
-            let code = minimal_code(false, key.len(), size)?;
-            out.extend_from_slice(&encode_chunk(code, key, value)?);
-            Some(())
+        let list = node.is_push() || !node.children().is_empty();
+        write_chunk(out, node.segment(), list, node.value())?;
+        if list {
+            write_list(node, out)?;
         }
+        Some(())
     }
     fn write_list<N: WireNode>(node: &N, out: &mut Vec<u8>) -> Option<()> {
         out.push(BEGIN);
@@ -231,6 +223,88 @@ fn wire_list<N: WireNode>(node: &N) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     write_list(node, &mut out)?;
     Some(out)
+}
+
+/// One node's own chunk in the wire form: a push chunk for a node that opens
+/// a list (`list`: pushed, or holding children), with its value if it has
+/// one, else a leaf chunk. Chunks use the smallest code for their sizes.
+fn write_chunk(out: &mut Vec<u8>, key: &[u8], list: bool, value: Option<&[u8]>) -> Option<()> {
+    if list {
+        let code = minimal_code(true, key.len(), value.map(<[u8]>::len))?;
+        encode_chunk_into(out, code, key, value.unwrap_or_default())
+    } else {
+        // An empty leaf value is written with value class 0, not as a
+        // zero-length class-6 value.
+        let value = value.unwrap_or_default();
+        let size = (!value.is_empty()).then_some(value.len());
+        let code = minimal_code(false, key.len(), size)?;
+        encode_chunk_into(out, code, key, value)
+    }
+}
+
+/// The wire form of a subtree ([`Node::to_wire`]) written from a depth-first
+/// walk of it, one node at a time, so that the subtree need not be held as a
+/// tree: the bytes `to_wire` gives for the same nodes. The subtree's own
+/// node is not written, as `to_wire` writes only what is below it; its
+/// children are at depth 1, theirs at 2, and so on, each after its parent
+/// and in key order.
+#[derive(Debug)]
+pub struct WireWriter {
+    out: Vec<u8>,
+    /// How many lists are open: the subtree's own, and each node above the
+    /// last one written that opened a list.
+    open: usize,
+    /// A key or value no chunk code can carry was given: no wire form.
+    failed: bool,
+}
+
+impl Default for WireWriter {
+    fn default() -> Self {
+        WireWriter {
+            out: vec![BEGIN],
+            open: 1,
+            failed: false,
+        }
+    }
+}
+
+impl WireWriter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Write the node at `depth` (at least 1) below the subtree's own node:
+    /// its key `segment`, whether it opens a list (it was pushed or has
+    /// children) and its value. A depth deeper than one below the last node
+    /// that opened a list is not a walk's, and fails the whole stream.
+    pub fn node(&mut self, depth: usize, segment: &[u8], list: bool, value: Option<&[u8]>) {
+        if self.failed || depth == 0 || depth > self.open {
+            self.failed = true;
+            return;
+        }
+        while self.open > depth {
+            self.out.push(POP);
+            self.open -= 1;
+        }
+        if write_chunk(&mut self.out, segment, list, value).is_none() {
+            self.failed = true;
+            return;
+        }
+        if list {
+            self.out.push(BEGIN);
+            self.open += 1;
+        }
+    }
+
+    /// The bytes written, every list closed; `None` when a key or value
+    /// could not be written (as [`Node::to_wire`] gives `None`).
+    pub fn finish(mut self) -> Option<Vec<u8>> {
+        if self.failed {
+            return None;
+        }
+        self.out.extend(std::iter::repeat_n(POP, self.open));
+        Some(self.out)
+    }
 }
 
 /// A key tree node that owns its bytes, for trees built in memory (query
@@ -303,15 +377,27 @@ impl OwnedNode {
                 Err(i) => {
                     node.children
                         .insert(i, OwnedNode::list(segment.to_vec(), Vec::new()));
-                    node.push = true;
+                    node.become_list();
                     i
                 }
             };
             node = &mut node.children[i];
             // A node that gains children is a list, even if it was a leaf.
-            node.push = true;
+            node.become_list();
         }
         node
+    }
+
+    /// Make this node a list. A leaf's empty value goes, as a file holds a
+    /// key as a value or a list, never both (hbam-writer.md 2.2), and a
+    /// writer writes a list's empty value as nothing: memory keeps what
+    /// the file will hold. A value that is not empty stays, for the
+    /// writer to refuse (`writer::unwritable`).
+    fn become_list(&mut self) {
+        if !self.push && self.value.as_deref().is_some_and(<[u8]>::is_empty) {
+            self.value = None;
+        }
+        self.push = true;
     }
 
     /// Put `node` at `path` (renamed to the path's last segment), replacing
@@ -356,7 +442,7 @@ impl OwnedNode {
             Ok(i) => self.children[i] = node,
             Err(i) => self.children.insert(i, node),
         }
-        self.push = true;
+        self.become_list();
     }
 
     /// The node's children in the Download wire form (see [`Node::to_wire`]).
@@ -474,6 +560,14 @@ fn allocation(len: usize) -> usize {
     }
 }
 
+/// What a node with a key of `segment` bytes and a value of `value` bytes
+/// takes before it has children, as [`memory`] counts it: its place, its
+/// key and its value. For charging a node against a limit before it is
+/// built.
+pub fn node_memory(segment: usize, value: Option<usize>) -> usize {
+    size_of::<OwnedNode>() + allocation(segment) + value.map_or(0, allocation)
+}
+
 /// What one node's own allocations take: its key, its value and the list
 /// that holds its children's places.
 fn own_memory(node: &OwnedNode) -> usize {
@@ -500,6 +594,28 @@ pub fn memory(node: &OwnedNode) -> usize {
         }
     }
     total
+}
+
+/// [`memory`], counted only as far as `limit`: `None` once the tree takes
+/// more, so that measuring a large tree against a small limit stops early.
+pub fn memory_within(node: &OwnedNode, limit: usize) -> Option<usize> {
+    let mut total = size_of::<OwnedNode>() + own_memory(node);
+    let mut stack = vec![node.children.iter()];
+    while let Some(children) = stack.last_mut() {
+        if total > limit {
+            return None;
+        }
+        match children.next() {
+            Some(child) => {
+                total += own_memory(child);
+                stack.push(child.children.iter());
+            }
+            None => {
+                stack.pop();
+            }
+        }
+    }
+    (total <= limit).then_some(total)
 }
 
 /// Read a slot stream into an owned tree: what [`KeyTree::from_slots`] and
@@ -824,6 +940,94 @@ mod tests {
             let tree = KeyTree::from_slots(SlotReader::new(&wire)).unwrap();
             assert!(tree.at(&[3]).unwrap().assembled().is_none());
         }
+    }
+
+    /// A subtree written node by node from a depth-first walk gives the
+    /// bytes `to_wire` gives for it whole, for every subtree of trees read
+    /// from wire bytes (nested lists, empty lists, empty and chunked
+    /// values, a list of many leaves), and fails where `to_wire` does.
+    #[test]
+    fn a_walk_written_node_by_node_is_the_wire_form() {
+        fn walk(node: &OwnedNode, depth: usize, writer: &mut WireWriter) {
+            for child in &node.children {
+                let list = child.push || !child.children.is_empty();
+                writer.node(depth, &child.segment, list, child.value.as_deref());
+                walk(child, depth + 1, writer);
+            }
+        }
+        fn check(node: &OwnedNode) {
+            let mut writer = WireWriter::new();
+            walk(node, 1, &mut writer);
+            assert_eq!(writer.finish(), node.to_wire(), "{node:?}");
+            node.children.iter().for_each(check);
+        }
+        let mut many = vec![0x80];
+        for key in 0..300u16 {
+            many.push(0x08);
+            many.extend(key.to_be_bytes());
+        }
+        many.push(0x40);
+        let text = om_scsu::encode_scsu("a\rb");
+        let chunked = OwnedNode::list(
+            Vec::new(),
+            vec![OwnedNode::list(
+                [3],
+                vec![
+                    OwnedNode::leaf(
+                        [0],
+                        [3u32, 3]
+                            .iter()
+                            .flat_map(|w| w.to_be_bytes())
+                            .collect::<Vec<u8>>(),
+                    ),
+                    OwnedNode::leaf([1], text),
+                ],
+            )],
+        )
+        .to_wire()
+        .unwrap();
+        let cases: [&[u8]; 4] = [
+            &[
+                0x80, 0x06, 0x01, 0x02, b'a', b'b', 0x20, 0x02, 0x80, 0x06, 0x03, 0x04, b'c', b'd',
+                b'e', b'f', 0x40, 0x00, 0x04, 0x40,
+            ],
+            &[
+                0x80, 0x03, 0x03, 1, 2, 3, 4, 0x20, 0x06, 0x80, 0x40, 0x20, 0x85, 0x80, 0x01, 0x01,
+                0x07, 0x40, 0x03, 0xfe, 9, 9, 9, 9, 0x40,
+            ],
+            &many,
+            &chunked,
+        ];
+        for wire in cases {
+            check(&read_owned(SlotReader::new(wire), usize::MAX).unwrap());
+        }
+        // A key no chunk code carries: no wire form either way.
+        let long = OwnedNode::list(Vec::new(), vec![OwnedNode::leaf(vec![1; 300], [1])]);
+        check(&long);
+        assert!(long.to_wire().is_none());
+        // A node deeper than one below the last list is no walk's.
+        let mut writer = WireWriter::new();
+        writer.node(1, &[1], false, Some(&[2]));
+        writer.node(2, &[3], false, None);
+        assert_eq!(writer.finish(), None);
+    }
+
+    /// `memory_within` counts what `memory` counts, and stops past its
+    /// limit.
+    #[test]
+    fn memory_within_a_limit() {
+        let mut list = vec![0x80];
+        for key in 0..1000u16 {
+            list.push(0x08);
+            list.extend(key.to_be_bytes());
+        }
+        list.push(0x40);
+        let tree = read_owned(SlotReader::new(&list), usize::MAX).unwrap();
+        let held = memory(&tree);
+        assert_eq!(memory_within(&tree, held), Some(held));
+        assert_eq!(memory_within(&tree, usize::MAX), Some(held));
+        assert_eq!(memory_within(&tree, held - 1), None);
+        assert_eq!(memory_within(&tree, 0), None);
     }
 
     #[test]

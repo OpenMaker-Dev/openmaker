@@ -48,11 +48,20 @@
 //!
 //! Only accounts in the file's verified built-in [Full Access] set may
 //! author; every other account is refused.
+//!
+//! Each edit, and the extension's Save, is a write operation the engine
+//! runs and stores (`engine::Operation::EditDesign`, `SaveFile`;
+//! docs/server-storage.md 5): [`perform`] checks the session, reads the
+//! request and submits it, and [`edit`] is the edit's work against the
+//! engine's transaction and lock table, its stamps' time and its new UUIDs
+//! taken from the engine's environment.
 
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use log::{info, warn};
+use log::{error, info, warn};
 use om_data::field_catalog::{self, NewField, Refusal, ScalarType};
 use om_data::layout_catalog::{self, NewLayout};
 use om_data::layout_objects::{self, ObjectFrame};
@@ -61,30 +70,35 @@ use om_data::library_uses;
 use om_hbam::catalog::DataType;
 use om_hbam::slot::uint_segment;
 use om_hbam::tree::memory;
-use om_hbam::{serial, KeySegment, OwnedNode};
+use om_hbam::{serial, Catalog, KeySegment, OwnedNode};
 use om_protocol::authoring::{
-    self, catalog_revision, content_revision, status, ChangeParts, CreateField, CreateLayout,
-    Created, DeleteLayout, DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame,
-    Framed, LayoutCreated, LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton,
-    PlaceButtonStep, PlaceField, PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced,
-    Reply, Request, Revision, SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES,
-    MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT,
-    OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT,
-    OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON,
-    OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    self, catalog_revision, content_revision, layout_revision, legacy_catalog_revision,
+    legacy_content_revision, status, ChangeParts, CreateField, CreateLayout, Created, DeleteLayout,
+    DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame, Framed, LayoutCreated,
+    LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep, PlaceField,
+    PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request, Revision,
+    SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT,
+    MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT,
+    OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
+    OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP,
+    OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS, OP_SAVE,
+    OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
 
 use crate::config::Privileges;
-use crate::connection::{host_time_key, Shared};
-use crate::hosting::{save_error, FileAccount, Hosted};
+use crate::connection::{host_time_key_at, mismatched, Shared};
+use crate::derived::Derived;
+use crate::engine::{
+    self, DesignEdit, EditDesign, Edited, Environment, FileNotSaved, Locks, NotStored, ReadError,
+    Transaction, View, NO_LIMIT,
+};
+use crate::hosting::{FileAccount, Hosted};
 use crate::locks::LockUser;
-use crate::store::Store;
 use crate::transfer::Refused;
 use crate::uploads::Charge;
-use crate::writes::{self, Change};
+use crate::writes::Change;
 
 /// The script catalog `[17]`: its index `01`, the definitions under `05`,
 /// and in a definition the step list `04` and step data `05`.
@@ -201,6 +215,8 @@ pub(crate) fn perform(
         Request::PlaceButtonStep(place) => place.data.as_ref().map_or(0, memory),
         _ => 0,
     });
+    // An edit is run and stored by the engine.
+    let author = |edit| submit(shared, caller, file, account, edit);
     let reply = match request {
         Request::Unknown { version, operation } => unsupported(version, operation),
         Request::Describe => Reply::Described(Described {
@@ -228,9 +244,37 @@ pub(crate) fn perform(
             can_author: signed_in.privileges() == Privileges::FullAccess,
             max_definition_bytes: MAX_DEFINITION_BYTES as u32,
         }),
-        Request::Save => save(peer, file),
+        Request::Save => save(shared, peer, file)?,
         Request::DescribeSecurity => {
-            let catalog = crate::security::catalog(file);
+            let catalog = match crate::security::catalog(&shared.engine, file) {
+                Ok(catalog) => catalog,
+                // A member larger than one reply carries: refused as a
+                // reply past it is (below).
+                Err(ReadError::TooLarge { .. }) => {
+                    warn!(
+                        "{peer}: refusing a security catalog of {:?} with a value past one reply",
+                        file.name
+                    );
+                    return Ok(authoring::build_reply(&refused(
+                        status::UNSUPPORTED,
+                        format!(
+                            "The file's security catalog holds a value larger than one reply \
+                             carries ({} KB).",
+                            MAX_DEFINITION_BYTES / 1024
+                        ),
+                    )));
+                }
+                Err(e) => {
+                    error!(
+                        "{peer}: the security catalog of {:?} could not be read: {e}",
+                        file.name
+                    );
+                    return Ok(authoring::build_reply(&refused(
+                        status::UNREADABLE,
+                        "The file's security catalog could not be read.",
+                    )));
+                }
+            };
             // Counts only: names and keys stay out of the log.
             info!(
                 "{peer}: security catalog of {:?}: {} accounts, {} privilege sets, {} extended \
@@ -264,56 +308,26 @@ pub(crate) fn perform(
                 warn!("{peer}: refusing a script definition past what the client may hold");
                 return Err(Refused.into());
             }
-            replace_script_steps(shared, peer, caller, file, account, &request)
+            author(DesignEdit::ReplaceScriptSteps(request))?
         }
-        Request::CreateField(request) => {
-            create_field(shared, peer, caller, file, account, &request)
-        }
-        Request::PlaceField(request) => place_field(shared, peer, caller, file, account, &request),
-        Request::PlaceText(request) => place_text(shared, peer, caller, file, account, &request),
-        Request::PlacePortal(request) => {
-            place_portal(shared, peer, caller, file, account, &request)
-        }
-        Request::CreateLayout(request) => {
-            create_layout(shared, peer, caller, file, account, &request)
-        }
-        Request::DuplicateLayout(request) => {
-            duplicate_layout(shared, peer, caller, file, account, &request)
-        }
-        Request::DeleteLayout(request) => {
-            delete_layout(shared, peer, caller, file, account, &request)
-        }
-        Request::LayoutSetup(request) => {
-            layout_setup(shared, peer, caller, file, account, &request)
-        }
-        Request::LayoutWidth(request) => {
-            layout_width(shared, peer, caller, file, account, &request)
-        }
-        Request::FieldControl(request) => {
-            field_control(shared, peer, caller, file, account, &request)
-        }
-        Request::PartOptions(request) => {
-            part_options(shared, peer, caller, file, account, &request)
-        }
-        Request::ChangeParts(request) => {
-            change_parts(shared, peer, caller, file, account, &request)
-        }
-        Request::SetText(request) => set_text(shared, peer, caller, file, account, &request),
-        Request::ValueListValues(request) => {
-            value_list_values(shared, peer, caller, file, account, &request)
-        }
-        Request::PlaceButton(request) => {
-            place_button(shared, peer, caller, file, account, &request)
-        }
-        Request::PlaceButtonStep(request) => {
-            place_button_step(shared, peer, caller, file, account, &request)
-        }
-        Request::SetObjectFrames(request) => {
-            set_object_frames(shared, peer, caller, file, account, &request)
-        }
-        Request::DeleteObjects(request) => {
-            delete_objects(shared, peer, caller, file, account, &request)
-        }
+        Request::CreateField(request) => author(DesignEdit::CreateField(request))?,
+        Request::PlaceField(request) => author(DesignEdit::PlaceField(request))?,
+        Request::PlaceText(request) => author(DesignEdit::PlaceText(request))?,
+        Request::PlacePortal(request) => author(DesignEdit::PlacePortal(request))?,
+        Request::CreateLayout(request) => author(DesignEdit::CreateLayout(request))?,
+        Request::DuplicateLayout(request) => author(DesignEdit::DuplicateLayout(request))?,
+        Request::DeleteLayout(request) => author(DesignEdit::DeleteLayout(request))?,
+        Request::LayoutSetup(request) => author(DesignEdit::LayoutSetup(request))?,
+        Request::LayoutWidth(request) => author(DesignEdit::LayoutWidth(request))?,
+        Request::FieldControl(request) => author(DesignEdit::FieldControl(request))?,
+        Request::PartOptions(request) => author(DesignEdit::PartOptions(request))?,
+        Request::ChangeParts(request) => author(DesignEdit::ChangeParts(request))?,
+        Request::SetText(request) => author(DesignEdit::SetText(request))?,
+        Request::ValueListValues(request) => author(DesignEdit::ValueListValues(request))?,
+        Request::PlaceButton(request) => author(DesignEdit::PlaceButton(request))?,
+        Request::PlaceButtonStep(request) => author(DesignEdit::PlaceButtonStep(request))?,
+        Request::SetObjectFrames(request) => author(DesignEdit::SetObjectFrames(request))?,
+        Request::DeleteObjects(request) => author(DesignEdit::DeleteObjects(request))?,
     };
     Ok(authoring::build_reply(&reply))
 }
@@ -333,6 +347,256 @@ fn refused(status: u16, message: impl Into<String>) -> Reply {
         status,
         message: message.into(),
         current: None,
+    }
+}
+
+/// Submit `edit`, from the caller's session logged in as `account`, to the
+/// engine, which runs and stores it ([`edit`]), and tell the other clients
+/// registered on the file of what it changed.
+fn submit(
+    shared: &Shared,
+    caller: &Caller<'_>,
+    file: &Hosted,
+    account: &str,
+    edit: DesignEdit,
+) -> Result<Reply, PerformError> {
+    let operation = engine::Operation::EditDesign(Box::new(EditDesign {
+        connection: caller.connection,
+        session_name: caller.session_name.to_owned(),
+        account: account.to_owned(),
+        edit,
+    }));
+    let outcome = shared.engine.submit(file, operation);
+    match outcome.reply {
+        engine::Reply::EditDesign(edited) => {
+            outcome.notices.deliver(file, &shared.mailboxes);
+            Ok(edited.reply)
+        }
+        other => Err(mismatched(&other)),
+    }
+}
+
+/// An authoring edit's work on the file named `file` (`engine::run`):
+/// checked against the file, its locks taken, the members it changes
+/// planned, stamped and put into the transaction's commit, which the engine
+/// saves. Returns the reply, with what its storage error says, and the
+/// catalogs to tell the other clients of once it is stored.
+pub(crate) fn edit(
+    op: EditDesign,
+    file: &str,
+    tx: &mut Transaction<'_>,
+    locks: &mut Locks<'_>,
+    environment: &dyn Environment,
+) -> (Edited, Vec<Change>) {
+    let EditDesign {
+        connection,
+        session_name,
+        account,
+        edit,
+    } = op;
+    let mut ed = Editor {
+        file,
+        user: LockUser {
+            connection,
+            txn: AUTHORING_TXN,
+        },
+        session_name: &session_name,
+        account: &account,
+        tx,
+        locks,
+        environment,
+        changes: Vec::new(),
+        not_stored: None,
+        failed: RefCell::new(None),
+    };
+    let ed = &mut ed;
+    let reply = match &edit {
+        DesignEdit::ReplaceScriptSteps(request) => replace_script_steps(ed, request),
+        DesignEdit::CreateField(request) => create_field(ed, request),
+        DesignEdit::PlaceField(request) => place_field(ed, request),
+        DesignEdit::PlaceText(request) => place_text(ed, request),
+        DesignEdit::PlacePortal(request) => place_portal(ed, request),
+        DesignEdit::CreateLayout(request) => create_layout(ed, request),
+        DesignEdit::DuplicateLayout(request) => duplicate_layout(ed, request),
+        DesignEdit::DeleteLayout(request) => delete_layout(ed, request),
+        DesignEdit::LayoutSetup(request) => layout_setup(ed, request),
+        DesignEdit::LayoutWidth(request) => layout_width(ed, request),
+        DesignEdit::FieldControl(request) => field_control(ed, request),
+        DesignEdit::PartOptions(request) => part_options(ed, request),
+        DesignEdit::ChangeParts(request) => change_parts(ed, request),
+        DesignEdit::SetText(request) => set_text(ed, request),
+        DesignEdit::ValueListValues(request) => value_list_values(ed, request),
+        DesignEdit::PlaceButton(request) => place_button(ed, request),
+        DesignEdit::PlaceButtonStep(request) => place_button_step(ed, request),
+        DesignEdit::SetObjectFrames(request) => set_object_frames(ed, request),
+        DesignEdit::DeleteObjects(request) => delete_objects(ed, request),
+    };
+    // A read that failed refuses the edit, whatever it answered from what
+    // it could read, and keeps nothing of what it wrote.
+    let reply = match ed.failed.take() {
+        Some(error) => {
+            ed.tx
+                .refuse(format!("an authoring edit's read failed: {error}"));
+            ed.changes.clear();
+            refused(
+                status::SAVE_FAILED[0],
+                format!("The file could not be read: {error}"),
+            )
+        }
+        None => reply,
+    };
+    let edited = Edited {
+        reply,
+        not_stored: ed.not_stored.take(),
+    };
+    (edited, std::mem::take(&mut ed.changes))
+}
+
+/// What an authoring edit runs with ([`edit`]): who makes it, the file's
+/// tree and lock table as the engine holds them, the clock and random
+/// source, and what it leaves the engine once it changed the file.
+struct Editor<'e, 'a, 'l> {
+    /// The file's name, for the log.
+    file: &'e str,
+    /// The lock user the edit's locks are taken for: the connection, under
+    /// [`AUTHORING_TXN`].
+    user: LockUser,
+    /// The client's session name: the holder other users see while the
+    /// edit holds its locks, and the stamp's user name.
+    session_name: &'e str,
+    /// The account the session logged in as: the stamp's account.
+    account: &'e str,
+    tx: &'e mut Transaction<'a>,
+    locks: &'e mut Locks<'l>,
+    environment: &'e dyn Environment,
+    /// The catalogs to tell the other clients of once the edit is stored.
+    changes: Vec<Change>,
+    /// What the storage error says when the edit cannot be stored.
+    not_stored: Option<NotStored>,
+    /// The first of the edit's reads of the file that failed, which
+    /// refuses the edit ([`edit`]).
+    failed: RefCell<Option<ReadError>>,
+}
+
+/// The subtree at `path` as `view` reads it, or, when the read fails, no
+/// node, the failure kept in `failed` to refuse the edit.
+fn read_node<'v>(
+    view: &'v dyn View,
+    failed: &RefCell<Option<ReadError>>,
+    path: &[&[u8]],
+) -> Option<Cow<'v, OwnedNode>> {
+    view.subtree(path, NO_LIMIT).unwrap_or_else(|error| {
+        failed.borrow_mut().get_or_insert(error);
+        None
+    })
+}
+
+/// What an edit's checks and plan read of the file under the store guard
+/// it is saved under ([`edit_objects`]): its tree, through the edit's
+/// transaction, and its schema as derived from it.
+struct Schema<'s> {
+    view: &'s dyn View,
+    failed: &'s RefCell<Option<ReadError>>,
+    derived: Arc<Derived>,
+}
+
+impl Schema<'_> {
+    /// The subtree at `path` ([`read_node`]).
+    fn node(&self, path: &[&[u8]]) -> Option<Cow<'_, OwnedNode>> {
+        read_node(self.view, self.failed, path)
+    }
+
+    fn catalog(&self) -> &Catalog {
+        self.derived.catalog()
+    }
+}
+
+impl Editor<'_, '_, '_> {
+    /// The subtree at `path`, as the edit reads it through its transaction
+    /// ([`read_node`]).
+    fn node(&self, path: &[&[u8]]) -> Option<Cow<'_, OwnedNode>> {
+        read_node(&*self.tx, &self.failed, path)
+    }
+
+    /// What the edit's checks read ([`Schema`]).
+    fn schema(&mut self) -> Schema<'_> {
+        let derived = self.tx.derived();
+        Schema {
+            view: &*self.tx,
+            failed: &self.failed,
+            derived,
+        }
+    }
+
+    /// One change of the edit's commit, through its transaction: `node`
+    /// put at `path`, replacing whatever is there, or, with `None`, the
+    /// node there removed. A write the file cannot hold fails the commit,
+    /// so nothing of the edit is stored.
+    fn write(&mut self, path: Vec<Vec<u8>>, node: Option<OwnedNode>) {
+        self.tx.begin_commit();
+        let written = match node {
+            Some(node) => self.tx.replace(path, node),
+            None => self.tx.remove(path),
+        };
+        if let Err(reason) = written {
+            self.tx.refuse(reason);
+        }
+    }
+
+    /// Take `locks` (path, type) in order, or none of them: the holders of
+    /// the first that conflicts. They are held while the edit is stored,
+    /// and released after (`Locks::lock_while_stored`).
+    fn lock_all(&mut self, locks: &[(Vec<Vec<u8>>, u16)]) -> Result<(), String> {
+        let holder = format!("{} ({})", self.session_name, self.account);
+        self.locks.lock_while_stored(self.user, &holder, locks)
+    }
+
+    /// Release the locks [`Self::lock_all`] took: the edit is refused.
+    fn unlock_all(&mut self) {
+        self.locks.release_while_stored();
+    }
+
+    /// The host time a save stamps (schema-path.md 8.1), as a date-time
+    /// key, from the environment's clock.
+    fn time(&self) -> Vec<u8> {
+        host_time_key_at(&self.environment.now())
+    }
+
+    /// A new UUID for a member or an object, from the environment's random
+    /// source.
+    fn uuid(&self) -> Vec<u8> {
+        let mut id = [0u8; 16];
+        self.environment.fill_random(&mut id);
+        id.to_vec()
+    }
+
+    /// `member` with the modification stamp of a save by the session's user
+    /// and account at `time` ([`stamped`]).
+    fn stamped(&self, member: OwnedNode, time: &[u8]) -> OwnedNode {
+        stamped(member, self.session_name, self.account, time)
+    }
+
+    /// The edit's commit is made: once it is stored, the other clients are
+    /// told of the catalogs at `paths` (attention 2, as the releases of
+    /// their locks would tell them, schema-path.md 9) and `done` is logged;
+    /// when it is not, the storage error logs `not_done` and says the file
+    /// keeps `kept`.
+    fn once_stored(
+        &mut self,
+        paths: Vec<Vec<Vec<u8>>>,
+        done: String,
+        not_done: String,
+        kept: String,
+    ) {
+        self.changes = paths
+            .into_iter()
+            .map(|path| Change {
+                path,
+                code: ATTENTION_CATALOG,
+            })
+            .collect();
+        self.tx.once_stored(format!("{:?}: {done}", self.file));
+        self.not_stored = Some(NotStored { not_done, kept });
     }
 }
 
@@ -481,14 +745,7 @@ pub(crate) fn stamped(mut member: OwnedNode, user: &str, account: &str, time: &[
     member
 }
 
-fn replace_script_steps(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &ReplaceScriptSteps,
-) -> Reply {
+fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptSteps) -> Reply {
     let id = request.script;
     let key = serial::encode(id);
     if request.definition.segment != key {
@@ -518,8 +775,10 @@ fn replace_script_steps(
     }
     let definition_path = vec![vec![SCRIPTS], vec![DEFINITIONS], key.clone()];
     let index_path = vec![vec![SCRIPTS], vec![INDEX]];
-    let mut store = hosted.write_store();
-    let Some(current) = store.node(&[&[SCRIPTS], &[DEFINITIONS], &key]).cloned() else {
+    let Some(current) = ed
+        .node(&[&[SCRIPTS], &[DEFINITIONS], &key])
+        .map(Cow::into_owned)
+    else {
         return refused(
             status::SCRIPT_MISSING,
             format!("The file has no script {id}."),
@@ -542,164 +801,114 @@ fn replace_script_steps(
     }
     let revision = content_revision(&request.definition);
     let current_revision = content_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        content_revision,
+        legacy_content_revision,
+    );
     if current_revision == revision {
         return Reply::Replaced(Replaced {
             changed: false,
-            revision,
+            revision: answer(older, &current, content_revision, legacy_content_revision),
         });
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         return Reply::Refused {
             status: status::CONFLICT,
             message: format!("Script {id} was changed since the revision the edit was made to."),
             current: Some(current_revision),
         };
     }
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
-    {
-        let mut locks = hosted.lock_table();
-        let held = match locks.lock(&definition_path, user, LOCK_EXCLUSIVE, &holder) {
-            Ok(()) => match locks.lock(&index_path, user, LOCK_EXCLUSIVE, &holder) {
-                Ok(()) => Ok(()),
-                Err(conflict) => {
-                    locks.unlock(&definition_path, user, LOCK_EXCLUSIVE);
-                    Err(conflict)
-                }
-            },
-            Err(conflict) => Err(conflict),
-        };
-        if let Err(conflict) = held {
-            return refused(
-                status::IN_USE,
-                format!(
-                    "Script {id} or the script catalog is in use by {}.",
-                    conflict.users
-                ),
-            );
-        }
+    let locks = [
+        (definition_path.clone(), LOCK_EXCLUSIVE),
+        (index_path.clone(), LOCK_EXCLUSIVE),
+    ];
+    if let Err(users) = ed.lock_all(&locks) {
+        return refused(
+            status::IN_USE,
+            format!("Script {id} or the script catalog is in use by {users}."),
+        );
     }
-    let time = host_time_key();
+    let time = ed.time();
     let mut members = vec![(
         definition_path.clone(),
-        stamped(
-            request.definition.clone(),
-            caller.session_name,
-            account,
-            &time,
-        ),
+        ed.stamped(request.definition.clone(), &time),
     )];
     // FileMaker Pro saves the index with the same stamp; a file without
     // one (scripts listed by their definitions only) does not get a
     // partial one.
-    let index = store.node(&[&[SCRIPTS], &[INDEX]]).cloned();
+    let index = ed.node(&[&[SCRIPTS], &[INDEX]]).map(Cow::into_owned);
     if let Some(index) = &index {
-        members.push((
-            index_path.clone(),
-            stamped(index.clone(), caller.session_name, account, &time),
-        ));
+        members.push((index_path.clone(), ed.stamped(index.clone(), &time)));
     }
-    let mut journal = store.begin_commit();
-    store.replace_members_in(&mut journal, members);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    {
-        let mut locks = hosted.lock_table();
-        locks.unlock(&definition_path, user, LOCK_EXCLUSIVE);
-        locks.unlock(&index_path, user, LOCK_EXCLUSIVE);
+    for (path, member) in members {
+        ed.write(path, Some(member));
     }
-    if let Err(e) = saved {
-        warn!("{peer}: {:?}: script {id} not saved: {e}", hosted.name);
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); script {id} is unchanged."),
-        );
-    }
-    let mut changes = vec![Change {
-        path: definition_path,
-        code: ATTENTION_CATALOG,
-    }];
+    let mut changed = vec![definition_path];
     if index.is_some() {
-        changes.push(Change {
-            path: index_path,
-            code: ATTENTION_CATALOG,
-        });
+        changed.push(index_path);
     }
-    writes::notify(hosted, &shared.mailboxes, caller.connection, &changes);
-    info!(
-        "{peer}: {:?}: script {id}'s steps replaced by {account}",
-        hosted.name
+    let account = ed.account;
+    ed.once_stored(
+        changed,
+        format!("script {id}'s steps replaced by {account}"),
+        format!("script {id} not saved"),
+        format!("script {id} is unchanged"),
     );
     Reply::Replaced(Replaced {
         changed: true,
-        revision,
+        revision: answer(
+            older,
+            &request.definition,
+            content_revision,
+            legacy_content_revision,
+        ),
     })
 }
 
 /// Write the file to disk now if it has changes the disk lacks (the
 /// client's op13 uploads, whose save is only logged when it fails) and
 /// answer whether the disk holds them all: a failed save keeps them in
-/// memory, for the next save.
-fn save(peer: &str, file: &Hosted) -> Reply {
-    if file.is_read_only() {
-        return refused(
+/// memory, for the next save. The engine saves it
+/// (`engine::Operation::SaveFile`).
+fn save(shared: &Shared, peer: &str, file: &Hosted) -> Result<Reply, PerformError> {
+    let outcome = shared.engine.submit(file, engine::Operation::SaveFile);
+    Ok(match outcome.reply {
+        engine::Reply::SaveFile(Ok(())) => Reply::Saved,
+        engine::Reply::SaveFile(Err(FileNotSaved::ReadOnly)) => refused(
             status::UNSUPPORTED,
             "The file is open read-only: nothing is written to it.",
-        );
-    }
-    file.save();
-    if file.write_store().has_unsaved_changes() {
-        warn!(
-            "{peer}: {:?}: a save the client asked for failed",
-            file.name
-        );
-        return refused(
-            status::SAVE_FAILED[0],
-            "The file could not be written to disk: its changes are kept in the host's memory \
-             until a save succeeds.",
-        );
-    }
-    Reply::Saved
-}
-
-/// Take `locks` (path, type) in order for `user`, or none of them: the
-/// holders of the first that conflicts.
-fn lock_all(
-    hosted: &Hosted,
-    user: LockUser,
-    holder: &str,
-    locks: &[(Vec<Vec<u8>>, u16)],
-) -> Result<(), String> {
-    let mut table = hosted.lock_table();
-    for (n, (path, lock_type)) in locks.iter().enumerate() {
-        if let Err(conflict) = table.lock(path, user, *lock_type, holder) {
-            for (path, lock_type) in &locks[..n] {
-                table.unlock(path, user, *lock_type);
-            }
-            return Err(conflict.users);
+        ),
+        engine::Reply::SaveFile(Err(FileNotSaved::Failed(error))) => {
+            warn!(
+                "{peer}: {:?}: a save the client asked for failed: {error}",
+                file.name
+            );
+            refused(
+                error.code,
+                "The file could not be written to disk: its changes are kept in the host's \
+                 memory until a save succeeds.",
+            )
         }
-    }
-    Ok(())
+        engine::Reply::SaveFile(Err(FileNotSaved::Unknown(error))) => {
+            warn!(
+                "{peer}: {:?}: a save the client asked for could not be confirmed: {error}",
+                file.name
+            );
+            refused(
+                status::OUTCOME_UNKNOWN,
+                format!(
+                    "Whether the file on disk holds every change is unknown: {error}. The file \
+                     takes no more changes until it is hosted again."
+                ),
+            )
+        }
+        other => return Err(mismatched(&other)),
+    })
 }
 
-fn unlock_all(hosted: &Hosted, user: LockUser, locks: &[(Vec<Vec<u8>>, u16)]) {
-    let mut table = hosted.lock_table();
-    for (path, lock_type) in locks {
-        table.unlock(path, user, *lock_type);
-    }
-}
-
-fn create_field(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &CreateField,
-) -> Reply {
+fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
     let Some(data_type) = ScalarType::from_code(request.data_type) else {
         return refused(
             status::INVALID,
@@ -720,18 +929,20 @@ fn create_field(
     }
     let table = uint_segment(request.table);
     let catalog_path = vec![table.clone(), vec![FIELDS]];
-    let mut store = hosted.write_store();
-    if !store.has_table(&table) {
+    if !ed.tx.derived().has_table(&table) {
         return refused(
             status::TABLE_MISSING,
             format!("The file has no table {}.", request.table),
         );
     }
-    let current = store.node(&[&table, &[FIELDS]]).cloned();
-    let current_revision = catalog_revision(
-        current
-            .as_ref()
-            .unwrap_or(&OwnedNode::list(vec![FIELDS], Vec::new())),
+    let current = ed.node(&[&table, &[FIELDS]]).map(Cow::into_owned);
+    let empty = OwnedNode::list(vec![FIELDS], Vec::new());
+    let current_revision = catalog_revision(current.as_ref().unwrap_or(&empty));
+    let (expected, older) = expected_now(
+        &request.expected,
+        current.as_ref().unwrap_or(&empty),
+        catalog_revision,
+        legacy_catalog_revision,
     );
     let conflict = || Reply::Refused {
         status: status::CONFLICT,
@@ -746,15 +957,20 @@ fn create_field(
         .and_then(|catalog| field_catalog::same_name(catalog, &field.name))
     {
         // Made by an earlier request whose answer was lost: nothing to do.
-        if field_catalog::is_made_by(member, &field) && current_revision != request.expected {
+        if field_catalog::is_made_by(member, &field) && current_revision != expected {
             return Reply::Created(Created {
                 changed: false,
                 field: id,
-                revision: current_revision,
+                revision: answer(
+                    older,
+                    current.as_ref().unwrap_or(&empty),
+                    catalog_revision,
+                    legacy_catalog_revision,
+                ),
             });
         }
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         return conflict();
     }
     let planned = match field_catalog::plan(current.as_ref(), &field) {
@@ -769,17 +985,12 @@ fn create_field(
             return refused(code, refusal.to_string());
         }
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [
         (vec![vec![SCHEMA_LOCK]], LOCK_WRITE),
         (vec![table.clone(), vec![RECORDS]], LOCK_WRITE),
         (catalog_path.clone(), LOCK_EXCLUSIVE),
     ];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::SCHEMA_IN_USE,
             format!(
@@ -790,63 +1001,37 @@ fn create_field(
     }
     // The new member's UUIDs and who made it when (no `fc`: it is new,
     // schema-path.md 8.1); the index's stamp, counted up.
-    let time = host_time_key();
+    let time = ed.time();
     let mut catalog = planned.catalog;
     let member_path: [&[u8]; 2] = [&[5], planned.key.as_slice()];
     if let Some(member) = catalog.at_mut(&member_path) {
-        member.set_child(OwnedNode::leaf(
-            vec![UNIQUE_ID],
-            shared.random::<16>().to_vec(),
-        ));
-        member.set_child(OwnedNode::leaf(
-            vec![SOURCE_ID],
-            shared.random::<16>().to_vec(),
-        ));
-        let mut stamped = stamped(member.clone(), caller.session_name, account, &time);
+        member.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+        member.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
+        let mut stamped = ed.stamped(member.clone(), &time);
         stamped.children.retain(|c| c.segment != MOD_COUNT);
         *member = stamped;
     }
     if let Some(index) = catalog.child(&[1]).cloned() {
-        catalog.set_child(stamped(index, caller.session_name, account, &time));
+        catalog.set_child(ed.stamped(index, &time));
     }
-    let revision = catalog_revision(&catalog);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, catalog_path.clone(), catalog);
-    let saved = hosted.save_commit(&mut store, journal);
-    if saved.is_ok() {
-        store.add_field_basis(&table, planned.field);
-    }
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: field {:?} not added to table {}: {e}",
-            hosted.name, field.name, request.table
-        );
-        return refused(
-            save_error(&e),
-            format!(
-                "The file could not be saved ({e}); the fields of table {} are unchanged.",
-                request.table
-            ),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: catalog_path,
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: field {:?} ({}) added to table {} as {} by {account}",
-        hosted.name,
-        field.name,
-        data_type.name(),
-        request.table,
-        planned.field
+    let revision = answer(older, &catalog, catalog_revision, legacy_catalog_revision);
+    ed.write(catalog_path.clone(), Some(catalog));
+    ed.tx.add_field_basis_once_stored(table, planned.field);
+    let account = ed.account;
+    ed.once_stored(
+        vec![catalog_path],
+        format!(
+            "field {:?} ({}) added to table {} as {} by {account}",
+            field.name,
+            data_type.name(),
+            request.table,
+            planned.field
+        ),
+        format!(
+            "field {:?} not added to table {}",
+            field.name, request.table
+        ),
+        format!("the fields of table {} are unchanged", request.table),
     );
     Reply::Created(Created {
         changed: true,
@@ -855,15 +1040,8 @@ fn create_field(
     })
 }
 
-fn create_layout(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &CreateLayout,
-) -> Reply {
-    if hosted.is_read_only() {
+fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             "The file is open read-only; no layout was added.",
@@ -873,8 +1051,9 @@ fn create_layout(
         return refused(status::NAME_UNUSABLE, refusal.to_string());
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
-    let mut store = hosted.write_store();
-    if !store
+    if !ed
+        .tx
+        .derived()
         .catalog()
         .table_occurrences
         .iter()
@@ -886,13 +1065,16 @@ fn create_layout(
         );
     }
     let like = (request.like != 0).then_some(request.like);
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
-        let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to add a layout to.",
             );
         };
+        let layouts: &OwnedNode = &layouts;
         if let Some(like) = like {
             if layouts
                 .at(&[&[LAYOUT_MEMBERS], &uint_segment(like)])
@@ -904,11 +1086,16 @@ fn create_layout(
                 );
             }
         }
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
+        older = was_older;
         let Some((theme, width)) = layout_catalog::model(layouts, like) else {
             return refused(
                 status::UNSUPPORTED,
@@ -929,10 +1116,10 @@ fn create_layout(
             return Reply::LayoutCreated(LayoutCreated {
                 changed: false,
                 layout: om_hbam::slot::be_uint(&made.segment).unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
             });
         }
-        if current_revision != request.expected {
+        if current_revision != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: "The file's layouts were changed since the revision the request was \
@@ -952,16 +1139,11 @@ fn create_layout(
             }
         }
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [
         (vec![vec![SCHEMA_LOCK]], LOCK_WRITE),
         (index_path.clone(), LOCK_EXCLUSIVE),
     ];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::SCHEMA_IN_USE,
             format!("The file's layouts are in use by {users}."),
@@ -970,46 +1152,26 @@ fn create_layout(
     // The new member's UUIDs, the first the request's, and who made it
     // when (no `fc`: it is new, schema-path.md 8.1); the index's stamp,
     // counted up.
-    let time = host_time_key();
+    let time = ed.time();
     let mut member = planned.member;
     member.set_child(OwnedNode::leaf(vec![UNIQUE_ID], request.uuid.to_vec()));
-    member.set_child(OwnedNode::leaf(
-        vec![SOURCE_ID],
-        shared.random::<16>().to_vec(),
-    ));
-    let mut member = stamped(member, caller.session_name, account, &time);
+    member.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
+    let mut member = ed.stamped(member, &time);
     member.children.retain(|c| c.segment != MOD_COUNT);
-    let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&index);
+    let index = ed.stamped(planned.index, &time);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path, member);
-    store.replace_schema_in(&mut journal, index_path, index);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: layout {:?} not added: {e}",
-            hosted.name, request.name
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); no layout was added."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: vec![vec![LAYOUTS]],
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: layout {:?} added as {} on occurrence {} by {account}",
-        hosted.name, request.name, planned.layout, request.occurrence
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
+    let account = ed.account;
+    ed.once_stored(
+        vec![vec![vec![LAYOUTS]]],
+        format!(
+            "layout {:?} added as {} on occurrence {} by {account}",
+            request.name, planned.layout, request.occurrence
+        ),
+        format!("layout {:?} not added", request.name),
+        "no layout was added".into(),
     );
     Reply::LayoutCreated(LayoutCreated {
         changed: true,
@@ -1021,26 +1183,21 @@ fn create_layout(
 /// Set a layout's width: its member's definition planned with
 /// `layout_placement::plan_width` and saved as an object edit is
 /// ([`edit_objects`]), the member stamped.
-fn layout_width(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &LayoutWidth,
-) -> Reply {
+fn layout_width(ed: &mut Editor<'_, '_, '_>, request: &LayoutWidth) -> Reply {
     let width = request.width;
     let edit = ObjectEdit {
         layout: request.layout,
         expected: request.expected,
         objects: 0,
         done: "set to its new width",
-        already: |member: &OwnedNode, _: &Store| layout_placement::already_width(member, width),
-        plan: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_placement::already_width(member, width)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_width(member, width).map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
         Err(reply) => reply,
     }
@@ -1053,18 +1210,11 @@ fn layout_width(
 /// store guard the plan is made and saved under (`layout_objects::plan_control`,
 /// [`edit_objects`]), so a schema change in between cannot slip past; the
 /// member is stamped.
-fn field_control(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &FieldControl,
-) -> Reply {
+fn field_control(ed: &mut Editor<'_, '_, '_>, request: &FieldControl) -> Reply {
     let id = request.layout;
     {
-        let store = hosted.write_store();
-        let Some(member) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &uint_segment(id)]) else {
+        let schema = ed.schema();
+        let Some(member) = schema.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &uint_segment(id)]) else {
             return refused(
                 status::LAYOUT_MISSING,
                 format!("The file has no layout {id}."),
@@ -1072,8 +1222,14 @@ fn field_control(
         };
         // At another revision, `edit_objects` answers: already applied, or
         // a conflict (306), even when the object is gone since.
-        if catalog_revision(member) == request.expected {
-            if let Err((status, why)) = control_facts(&store, member, request) {
+        let (expected, _) = expected_now(
+            &request.expected,
+            &member,
+            layout_revision,
+            legacy_catalog_revision,
+        );
+        if layout_revision(&member) == expected {
+            if let Err((status, why)) = control_facts(&schema, &member, request) {
                 return refused(status, why);
             }
         }
@@ -1084,17 +1240,17 @@ fn field_control(
         expected: request.expected,
         objects: 1,
         done: "shown with its new control",
-        already: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::already_control(member, object, control, value_list)
         },
-        plan: |member: &OwnedNode, store: &Store| {
+        plan: |member: &OwnedNode, schema: &Schema<'_>| {
             let facts =
-                control_facts(store, member, request).map_err(|(code, why)| refused(code, why))?;
+                control_facts(schema, member, request).map_err(|(code, why)| refused(code, why))?;
             layout_objects::plan_control(member, object, (control, value_list), &facts)
                 .map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
         Err(reply) => reply,
     }
@@ -1103,28 +1259,21 @@ fn field_control(
 /// Operation 20: a text object's words, planned with
 /// `layout_placement::plan_words` and saved as an object edit is
 /// ([`edit_objects`]).
-fn set_text(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &SetText,
-) -> Reply {
+fn set_text(ed: &mut Editor<'_, '_, '_>, request: &SetText) -> Reply {
     let (object, text) = (request.object, request.text.as_str());
     let edit = ObjectEdit {
         layout: request.layout,
         expected: request.expected,
         objects: 1,
         done: "given its new words",
-        already: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::already_words(member, object, text)
         },
-        plan: |member: &OwnedNode, _: &Store| {
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_words(member, object, text).map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
         Err(reply) => reply,
     }
@@ -1135,14 +1284,7 @@ fn set_text(
 /// Add, delete or resize a layout's part (#227, operation 22), planned with
 /// `layout_placement::plan_parts` and saved as an object edit is
 /// ([`edit_objects`]).
-fn change_parts(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &ChangeParts,
-) -> Reply {
+fn change_parts(ed: &mut Editor<'_, '_, '_>, request: &ChangeParts) -> Reply {
     use layout_placement::PartChange;
     let part_type = match i32::try_from(request.part_type) {
         Ok(t) => t,
@@ -1174,12 +1316,14 @@ fn change_parts(
         expected: request.expected,
         objects: 0,
         done: "given its parts",
-        already: |member: &OwnedNode, _: &Store| layout_placement::already_parts(member, &change),
-        plan: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_placement::already_parts(member, &change)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_parts(member, &change).map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
         Err(reply) => reply,
     }
@@ -1188,14 +1332,7 @@ fn change_parts(
 /// is ([`edit_objects`]). A sub-summary's break field is looked up under
 /// the store guard the plan is saved under: the layout's own occurrence,
 /// still on the table the client chose the field of, which has the field.
-fn part_options(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &PartOptions,
-) -> Reply {
+fn part_options(ed: &mut Editor<'_, '_, '_>, request: &PartOptions) -> Reply {
     let field = request
         .break_field
         .map(|(occurrence, _, field)| (occurrence, field));
@@ -1206,8 +1343,8 @@ fn part_options(
     // The sort field the client chose, as the store has it now: the
     // layout's own occurrence, still on that table, which has the field.
     // Checked under the store guard, for the retry as for the save.
-    let field_holds = |member: &OwnedNode, store: &Store| {
-        let catalog = store.catalog();
+    let field_holds = |member: &OwnedNode, schema: &Schema<'_>| {
+        let catalog = schema.catalog();
         let own = layout_placement::definition(member)
             .ok()
             .and_then(|def| om_layout::occurrence_id(def.table_alias_key));
@@ -1228,17 +1365,17 @@ fn part_options(
         expected: request.expected,
         objects: 0,
         done: "given its part's options",
-        already: |member: &OwnedNode, store: &Store| {
+        already: |member: &OwnedNode, schema: &Schema<'_>| {
             layout_placement::already_part_options(member, part, options)
-                && (request.break_field.is_none() || field_holds(member, store))
+                && (request.break_field.is_none() || field_holds(member, schema))
         },
-        plan: |member: &OwnedNode, store: &Store| {
-            let exists = field_holds(member, store);
+        plan: |member: &OwnedNode, schema: &Schema<'_>| {
+            let exists = field_holds(member, schema);
             layout_placement::plan_part_options(member, part, options, exists)
                 .map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
         Err(reply) => reply,
     }
@@ -1249,7 +1386,7 @@ fn part_options(
 /// it will show (the one asked for, or else the one it stores) exists. Or
 /// the refusal's status and text.
 fn control_facts(
-    store: &Store,
+    schema: &Schema<'_>,
     member: &OwnedNode,
     request: &FieldControl,
 ) -> Result<layout_objects::ControlFacts, (u16, String)> {
@@ -1268,7 +1405,7 @@ fn control_facts(
             ),
         ));
     };
-    let catalog = store.catalog();
+    let catalog = schema.catalog();
     let field = om_layout::occurrence_id(spec.table_key)
         .and_then(|occurrence| {
             catalog
@@ -1288,7 +1425,7 @@ fn control_facts(
     let list = request.value_list.unwrap_or(stored_list);
     let value_list_exists = list == 0
         || serial::raw_of_id(list).is_some_and(|raw| {
-            store
+            schema
                 .node(&[&[VALUE_LISTS], &[5], &uint_segment(raw)])
                 .is_some()
         });
@@ -1300,14 +1437,7 @@ fn control_facts(
     })
 }
 
-fn set_object_frames(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &SetObjectFrames,
-) -> Reply {
+fn set_object_frames(ed: &mut Editor<'_, '_, '_>, request: &SetObjectFrames) -> Reply {
     let frames: Vec<ObjectFrame> = request
         .frames
         .iter()
@@ -1321,38 +1451,33 @@ fn set_object_frames(
         expected: request.expected,
         objects: frames.len(),
         done: "moved or resized",
-        already: |member: &OwnedNode, _: &Store| layout_objects::already_framed(member, &frames),
-        plan: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_objects::already_framed(member, &frames)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::plan(member, &frames).map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
         Err(reply) => reply,
     }
 }
 
-fn delete_objects(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &DeleteObjects,
-) -> Reply {
+fn delete_objects(ed: &mut Editor<'_, '_, '_>, request: &DeleteObjects) -> Reply {
     let edit = ObjectEdit {
         layout: request.layout,
         expected: request.expected,
         objects: request.objects.len(),
         done: "deleted",
-        already: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::already_deleted(member, &request.objects)
         },
-        plan: |member: &OwnedNode, _: &Store| {
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::plan_deletion(member, &request.objects).map_err(placement_refused)
         },
     };
-    match edit_objects(shared, peer, caller, hosted, account, edit) {
+    match edit_objects(ed, edit) {
         Ok((changed, revision)) => Reply::Deleted(Deleted { changed, revision }),
         Err(reply) => reply,
     }
@@ -1380,19 +1505,15 @@ struct ObjectEdit<A, P> {
 /// so what they read of the file holds; the plan answers a refusal with its
 /// own status.
 fn edit_objects<A, P>(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
+    ed: &mut Editor<'_, '_, '_>,
     edit: ObjectEdit<A, P>,
 ) -> Result<(bool, Revision), Reply>
 where
-    A: Fn(&OwnedNode, &Store) -> bool,
-    P: Fn(&OwnedNode, &Store) -> Result<layout_objects::Planned, Reply>,
+    A: Fn(&OwnedNode, &Schema<'_>) -> bool,
+    P: Fn(&OwnedNode, &Schema<'_>) -> Result<layout_objects::Planned, Reply>,
 {
     let id = edit.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return Err(refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -1400,17 +1521,28 @@ where
     }
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let mut store = hosted.write_store();
-    let Some(current) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
         return Err(refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
         ));
     };
-    let current_revision = catalog_revision(&current);
-    if current_revision != edit.expected {
-        if (edit.already)(&current, &store) {
-            return Ok((false, current_revision));
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &edit.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
+        if (edit.already)(&current, &ed.schema()) {
+            return Ok((
+                false,
+                answer(older, &current, layout_revision, legacy_catalog_revision),
+            ));
         }
         return Err(Reply::Refused {
             status: status::CONFLICT,
@@ -1418,54 +1550,31 @@ where
             current: Some(current_revision),
         });
     }
-    let planned = (edit.plan)(&current, &store)?;
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
+    let planned = (edit.plan)(&current, &ed.schema())?;
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return Err(refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} is in use by {users}."),
         ));
     }
-    let time = host_time_key();
-    let member = stamped(planned.member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path.clone(), member);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: objects of layout {id} not {}: {e}",
-            hosted.name, edit.done
-        );
-        return Err(refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is unchanged."),
-        ));
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: member_path,
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: {} of layout {id} {} by {account}",
-        hosted.name,
-        match edit.objects {
-            0 => "the definition".to_owned(),
-            n => format!("{n} objects"),
-        },
-        edit.done
+    let time = ed.time();
+    let member = ed.stamped(planned.member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "{} of layout {id} {} by {account}",
+            match edit.objects {
+                0 => "the definition".to_owned(),
+                n => format!("{n} objects"),
+            },
+            edit.done
+        ),
+        format!("objects of layout {id} not {}", edit.done),
+        format!("layout {id} is unchanged"),
     );
     Ok((true, revision))
 }
@@ -1475,16 +1584,9 @@ where
 /// index stamped as FileMaker Pro's Layout Setup stamps them
 /// (layout-model.md 10.11), in one commit under the catalog's write lock
 /// and the index's and the member's exclusive locks.
-fn layout_setup(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &LayoutSetup,
-) -> Reply {
+fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -1492,18 +1594,27 @@ fn layout_setup(
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
-    let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
-        let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(status::UNSUPPORTED, "The file has no layout catalog [4].");
         };
+        let layouts: &OwnedNode = &layouts;
         let Some(member) = layouts.at(&[&[LAYOUT_MEMBERS], &uint_segment(id)]) else {
             return refused(
                 status::LAYOUT_MISSING,
                 format!("The file has no layout {id}."),
             );
         };
-        let current = catalog_revision(member);
+        let current = layout_revision(member);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            member,
+            layout_revision,
+            legacy_catalog_revision,
+        );
+        older = was_older;
         let planned =
             layout_catalog::plan_setup(layouts, id, &request.name, request.flags, request.hidden);
         // A layout that holds the setup already answers it unchanged: an
@@ -1511,10 +1622,10 @@ fn layout_setup(
         if planned.as_ref().is_ok_and(|p| !p.changed) {
             return Reply::Framed(Framed {
                 changed: false,
-                revision: current,
+                revision: answer(older, member, layout_revision, legacy_catalog_revision),
             });
         }
-        if current != request.expected {
+        if current != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: format!(
@@ -1534,17 +1645,12 @@ fn layout_setup(
             }
         }
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [
         (vec![vec![SCHEMA_LOCK]], LOCK_WRITE),
         (index_path.clone(), LOCK_EXCLUSIVE),
         (member_path.clone(), LOCK_EXCLUSIVE),
     ];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} or the file's layouts are in use by {users}."),
@@ -1556,39 +1662,25 @@ fn layout_setup(
         .iter()
         .any(|n| stamp_count(n) == u64::MAX)
     {
-        unlock_all(hosted, user, &locks);
+        ed.unlock_all();
         return refused(
             status::UNSUPPORTED,
             format!("Layout {id}'s or the layouts' modification count cannot be raised."),
         );
     }
-    let time = host_time_key();
-    let member = stamped(planned.member, caller.session_name, account, &time);
-    let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path, member);
-    store.replace_schema_in(&mut journal, index_path, index);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!("{peer}: {:?}: layout {id} not set up: {e}", hosted.name);
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is unchanged."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: vec![vec![LAYOUTS]],
-            code: ATTENTION_CATALOG,
-        }],
+    let time = ed.time();
+    let member = ed.stamped(planned.member, &time);
+    let index = ed.stamped(planned.index, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
+    let account = ed.account;
+    ed.once_stored(
+        vec![vec![vec![LAYOUTS]]],
+        format!("layout {id} set up by {account}"),
+        format!("layout {id} not set up"),
+        format!("layout {id} is unchanged"),
     );
-    info!("{peer}: {:?}: layout {id} set up by {account}", hosted.name);
     Reply::Framed(Framed {
         changed: true,
         revision,
@@ -1600,17 +1692,10 @@ fn layout_setup(
 /// behind the schema's write lock and the index's and the member's
 /// exclusive locks, with both stamps, as FileMaker Pro 26.0.3 writes them
 /// (file-metadata.md 6.5).
-fn value_list_values(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &ValueListValues,
-) -> Reply {
+fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> Reply {
     use om_data::value_lists::{self, ValuesRefusal};
     let id = request.list;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; value list {id} is unchanged."),
@@ -1622,14 +1707,16 @@ fn value_list_values(
         vec![VALUE_LIST_MEMBERS],
         uint_segment(id),
     ];
-    let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
-        let Some(catalog) = store.node(&[&[VALUE_LISTS]]) else {
+        let Some(catalog) = ed.node(&[&[VALUE_LISTS]]) else {
             return refused(
                 status::VALUE_LIST_MISSING,
                 "The file has no value-list catalog [21].",
             );
         };
+        let catalog: &OwnedNode = &catalog;
         let planned = match value_lists::plan_values(catalog, id, &request.values) {
             Ok(planned) => planned,
             Err(refusal) => {
@@ -1641,19 +1728,31 @@ fn value_list_values(
                 return refused(code, refusal.to_string());
             }
         };
-        let current = catalog_revision(&planned.member);
+        let stored_member = catalog.at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)]);
+        let stored = stored_member.map(catalog_revision);
+        let (expected, was_older) = stored_member.map_or((request.expected, false), |member| {
+            expected_now(
+                &request.expected,
+                member,
+                catalog_revision,
+                legacy_catalog_revision,
+            )
+        });
+        older = was_older;
         // A list that holds the values already answers unchanged: an
         // earlier sending's, whose answer was lost, or the same values.
         if !planned.changed {
             return Reply::Framed(Framed {
                 changed: false,
-                revision: current,
+                revision: answer(
+                    older,
+                    &planned.member,
+                    catalog_revision,
+                    legacy_catalog_revision,
+                ),
             });
         }
-        let stored = catalog
-            .at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)])
-            .map(catalog_revision);
-        if stored != Some(request.expected) {
+        if stored != Some(expected) {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: format!(
@@ -1664,17 +1763,12 @@ fn value_list_values(
         }
         planned
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [
         (vec![vec![SCHEMA_LOCK]], LOCK_WRITE),
         (index_path.clone(), LOCK_EXCLUSIVE),
         (member_path.clone(), LOCK_EXCLUSIVE),
     ];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::IN_USE,
             format!("Value list {id} or the file's value lists are in use by {users}."),
@@ -1684,44 +1778,24 @@ fn value_list_values(
         .iter()
         .any(|n| stamp_count(n) == u64::MAX)
     {
-        unlock_all(hosted, user, &locks);
+        ed.unlock_all();
         return refused(
             status::UNSUPPORTED,
             format!("Value list {id}'s or the value lists' modification count cannot be raised."),
         );
     }
-    let time = host_time_key();
-    let member = stamped(planned.member, caller.session_name, account, &time);
-    let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path, member);
-    store.replace_schema_in(&mut journal, index_path, index);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: value list {id} not changed: {e}",
-            hosted.name
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); value list {id} is unchanged."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: vec![vec![VALUE_LISTS]],
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: value list {id} changed by {account}",
-        hosted.name
+    let time = ed.time();
+    let member = ed.stamped(planned.member, &time);
+    let index = ed.stamped(planned.index, &time);
+    let revision = answer(older, &member, catalog_revision, legacy_catalog_revision);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
+    let account = ed.account;
+    ed.once_stored(
+        vec![vec![vec![VALUE_LISTS]]],
+        format!("value list {id} changed by {account}"),
+        format!("value list {id} not changed"),
+        format!("value list {id} is unchanged"),
     );
     Reply::Framed(Framed {
         changed: true,
@@ -1739,16 +1813,9 @@ fn rect(frame: &Frame) -> om_layout::Rect {
     }
 }
 
-fn place_field(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &PlaceField,
-) -> Reply {
+fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -1770,17 +1837,26 @@ fn place_field(
     }
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let mut store = hosted.write_store();
-    let Some(current) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
     // The field: one of the layout's occurrence's table with a value
     // Browse edits as text in an edit box.
-    let catalog = store.catalog();
+    let derived = ed.tx.derived();
+    let catalog = derived.catalog();
     let table_id = catalog
         .table_occurrences
         .iter()
@@ -1816,7 +1892,7 @@ fn place_field(
             ),
         );
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some((field_object, label_object)) =
             layout_placement::already_placed(&current, &placement)
@@ -1825,7 +1901,7 @@ fn place_field(
                 changed: false,
                 field_object,
                 label_object: label_object.unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -1844,68 +1920,39 @@ fn place_field(
             return refused(code, refusal.to_string());
         }
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} is in use by {users}."),
         );
     }
     // Each new object's UUIDs, and the layout's stamp.
-    let time = host_time_key();
+    let time = ed.time();
     let mut member = planned.member;
     for object in std::iter::once(planned.field_object).chain(planned.label_object) {
         if let Some(record) = member.at_mut(&[&[OBJECT_ATTRIBUTES], &serial::encode(object)]) {
-            record.set_child(OwnedNode::leaf(
-                vec![UNIQUE_ID],
-                shared.random::<16>().to_vec(),
-            ));
-            record.set_child(OwnedNode::leaf(
-                vec![SOURCE_ID],
-                shared.random::<16>().to_vec(),
-            ));
+            record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+            record.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
         }
     }
-    let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path.clone(), member);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: field {} not placed on layout {id}: {e}",
-            hosted.name, request.field
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is unchanged."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: member_path,
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: field {} placed on layout {id} as object {}{} by {account}",
-        hosted.name,
-        request.field,
-        planned.field_object,
-        planned
-            .label_object
-            .map(|label| format!(" with label object {label}"))
-            .unwrap_or_default()
+    let member = ed.stamped(member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "field {} placed on layout {id} as object {}{} by {account}",
+            request.field,
+            planned.field_object,
+            planned
+                .label_object
+                .map(|label| format!(" with label object {label}"))
+                .unwrap_or_default()
+        ),
+        format!("field {} not placed on layout {id}", request.field),
+        format!("layout {id} is unchanged"),
     );
     Reply::Placed(Placed {
         changed: true,
@@ -1928,34 +1975,34 @@ const TABLE_VIEW: u8 = 0x0d;
 /// the library items its objects show counted up, all stamped and saved in
 /// one commit under the layouts' and the items' locks, or refused with
 /// nothing written.
-fn duplicate_layout(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &DuplicateLayout,
-) -> Reply {
-    if hosted.is_read_only() {
+fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> Reply {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             "The file is open read-only; no layout was added.",
         );
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
-    let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let (duplicated, items) = {
-        let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to copy a layout in.",
             );
         };
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let layouts: &OwnedNode = &layouts;
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
+        older = was_older;
         // Made by an earlier sending of this request, whose answer was
         // lost: its UUID is on the copy. Nothing to do.
         if let Some(made) = layout_catalog::members(layouts).iter().find(|m| {
@@ -1964,7 +2011,7 @@ fn duplicate_layout(
             return Reply::LayoutCreated(LayoutCreated {
                 changed: false,
                 layout: om_hbam::slot::be_uint(&made.segment).unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
             });
         }
         if layouts
@@ -1976,7 +2023,7 @@ fn duplicate_layout(
                 format!("The file has no layout {}.", request.layout),
             );
         }
-        if current_revision != request.expected {
+        if current_revision != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: "The file's layouts were changed since the revision the request was \
@@ -2003,9 +2050,10 @@ fn duplicate_layout(
         let mut items = Vec::with_capacity(duplicated.library.len());
         for (&item, &uses) in &duplicated.library {
             let key = serial::encode(item);
-            let raised = store
+            let raised = ed
                 .node(&[&[LIBRARY], &[LIBRARY_MEMBERS], &key])
                 .and_then(|member| {
+                    let mut member = member.into_owned();
                     let count = member.child(&[LIBRARY_USES])?.value.as_deref()?;
                     let count = u32::from_be_bytes(count.try_into().ok()?).checked_add(uses)?;
                     let stamp = match member.child(MOD_COUNT) {
@@ -2015,7 +2063,6 @@ fn duplicate_layout(
                     let stamp = serial::encode(stamp.checked_add(u64::from(uses))?);
                     let mut stamp_value = vec![u8::try_from(stamp.len()).ok()?];
                     stamp_value.extend(stamp);
-                    let mut member = member.clone();
                     member.set_child(OwnedNode::leaf(
                         vec![LIBRARY_USES],
                         count.to_be_bytes().to_vec(),
@@ -2037,11 +2084,6 @@ fn duplicate_layout(
         (duplicated, items)
     };
     let planned = duplicated.planned;
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let mut locks = vec![
         (vec![vec![SCHEMA_LOCK]], LOCK_WRITE),
         (index_path.clone(), LOCK_EXCLUSIVE),
@@ -2051,7 +2093,7 @@ fn duplicate_layout(
             .iter()
             .map(|(path, ..)| (path.clone(), LOCK_EXCLUSIVE)),
     );
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::SCHEMA_IN_USE,
             format!("The file's layouts are in use by {users}."),
@@ -2061,7 +2103,7 @@ fn duplicate_layout(
     // keep their source UUIDs `d9`, as FileMaker Pro's copy does); its stamp
     // keeps the source's count, as FileMaker Pro's copy did, with who
     // copied it when. The index and each library item are counted up.
-    let time = host_time_key();
+    let time = ed.time();
     let mut member = planned.member;
     member.set_child(OwnedNode::leaf(vec![UNIQUE_ID], request.uuid.to_vec()));
     // The layout's objects, and those of its stored table view `0d`
@@ -2077,60 +2119,34 @@ fn duplicate_layout(
         let mut records = records.clone();
         for record in &mut records.children {
             if record.child(&[UNIQUE_ID]).is_some() {
-                record.set_child(OwnedNode::leaf(
-                    vec![UNIQUE_ID],
-                    shared.random::<16>().to_vec(),
-                ));
+                record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
             }
         }
         member.put(&segments, records);
     }
     let count = member.child(MOD_COUNT).cloned();
-    let mut member = stamped(member, caller.session_name, account, &time);
+    let mut member = ed.stamped(member, &time);
     match count {
         Some(count) => member.set_child(count),
         None => member.children.retain(|c| c.segment != MOD_COUNT),
     }
-    let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&index);
+    let index = ed.stamped(planned.index, &time);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path, member);
-    store.replace_schema_in(&mut journal, index_path, index);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
     for (path, item) in items {
-        store.replace_schema_in(&mut journal, path, item);
+        ed.write(path, Some(item));
     }
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: layout {} not copied: {e}",
-            hosted.name, request.layout
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); no layout was added."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[
-            Change {
-                path: vec![vec![LAYOUTS]],
-                code: ATTENTION_CATALOG,
-            },
-            Change {
-                path: vec![vec![LIBRARY]],
-                code: ATTENTION_CATALOG,
-            },
-        ],
-    );
-    info!(
-        "{peer}: {:?}: layout {} copied as {} by {account}",
-        hosted.name, request.layout, planned.layout
+    let account = ed.account;
+    ed.once_stored(
+        vec![vec![vec![LAYOUTS]], vec![vec![LIBRARY]]],
+        format!(
+            "layout {} copied as {} by {account}",
+            request.layout, planned.layout
+        ),
+        format!("layout {} not copied", request.layout),
+        "no layout was added".into(),
     );
     Reply::LayoutCreated(LayoutCreated {
         changed: true,
@@ -2144,16 +2160,9 @@ fn duplicate_layout(
 /// uses its objects release with `library_uses::release`, all stamped and
 /// saved in one commit under the layouts', the member's and the items'
 /// locks, or refused with nothing written.
-fn delete_layout(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &DeleteLayout,
-) -> Reply {
+fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is kept."),
@@ -2161,29 +2170,36 @@ fn delete_layout(
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
-    let mut store = hosted.write_store();
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let (planned, released) = {
-        let Some(layouts) = store.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to delete a layout from.",
             );
         };
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let layouts: &OwnedNode = &layouts;
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
+        older = was_older;
         let exists = layouts
             .at(&[&[LAYOUT_MEMBERS], &uint_segment(id)])
             .is_some();
-        if current_revision != request.expected {
+        if current_revision != expected {
             // Deleted by an earlier sending whose answer was lost: layout
             // ids are not issued again, so a missing one stays deleted.
             if !exists {
                 return Reply::Deleted(Deleted {
                     changed: false,
-                    revision: current_revision,
+                    revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
                 });
             }
             return Reply::Refused {
@@ -2207,12 +2223,13 @@ fn delete_layout(
         let released = if planned.library.is_empty() {
             None
         } else {
-            let Some(library) = store.node(&[&[LIBRARY]]) else {
+            let Some(library) = ed.node(&[&[LIBRARY]]) else {
                 return refused(
                     status::UNSUPPORTED,
                     "The layout shows library items, but the file has no library [31].",
                 );
             };
+            let library: &OwnedNode = &library;
             match library_uses::release(library, &planned.library) {
                 Ok(released) => Some(released),
                 Err(refusal) => return refused(status::UNSUPPORTED, refusal.to_string()),
@@ -2220,11 +2237,6 @@ fn delete_layout(
         };
         (planned, released)
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let mut locks = vec![
         (vec![vec![SCHEMA_LOCK]], LOCK_WRITE),
         (index_path.clone(), LOCK_EXCLUSIVE),
@@ -2242,59 +2254,33 @@ fn delete_layout(
             locks.push((library_index.clone(), LOCK_EXCLUSIVE));
         }
     }
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} or the file's layouts are in use by {users}."),
         );
     }
-    let time = host_time_key();
-    let index = stamped(planned.index, caller.session_name, account, &time);
-    let revision = catalog_revision(&index);
-    let mut journal = store.begin_commit();
-    store.remove_schema_in(&mut journal, member_path);
-    store.replace_schema_in(&mut journal, index_path, index);
+    let time = ed.time();
+    let index = ed.stamped(planned.index, &time);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
+    ed.write(member_path, None);
+    ed.write(index_path, Some(index));
     if let Some(released) = released {
         for (key, member) in released.members {
             let path = vec![vec![LIBRARY], vec![LIBRARY_MEMBERS], key];
-            match member {
-                Some(member) => store.replace_schema_in(&mut journal, path, member),
-                None => store.remove_schema_in(&mut journal, path),
-            }
+            ed.write(path, member);
         }
         if let Some(library) = released.index {
-            let library = stamped(library, caller.session_name, account, &time);
-            store.replace_schema_in(&mut journal, library_index, library);
+            let library = ed.stamped(library, &time);
+            ed.write(library_index, Some(library));
         }
     }
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!("{peer}: {:?}: layout {id} not deleted: {e}", hosted.name);
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is kept."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[
-            Change {
-                path: vec![vec![LAYOUTS]],
-                code: ATTENTION_CATALOG,
-            },
-            Change {
-                path: vec![vec![LIBRARY]],
-                code: ATTENTION_CATALOG,
-            },
-        ],
-    );
-    info!(
-        "{peer}: {:?}: layout {id} deleted by {account}",
-        hosted.name
+    let account = ed.account;
+    ed.once_stored(
+        vec![vec![vec![LAYOUTS]], vec![vec![LIBRARY]]],
+        format!("layout {id} deleted by {account}"),
+        format!("layout {id} not deleted"),
+        format!("layout {id} is kept"),
     );
     Reply::Deleted(Deleted {
         changed: true,
@@ -2306,16 +2292,9 @@ fn delete_layout(
 /// as [`place_field`] places a field's label: checked, planned
 /// (`layout_placement::plan_text`), given its UUIDs, stamped and saved
 /// under the layout's lock, or refused with nothing written.
-fn place_text(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &PlaceText,
-) -> Reply {
+fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2330,22 +2309,30 @@ fn place_text(
     }
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let mut store = hosted.write_store();
-    let Some(current) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
-    if current_revision != request.expected {
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(text_object) = layout_placement::already_placed_text(&current, &text) {
             return Reply::Placed(Placed {
                 changed: false,
                 field_object: text_object,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2364,63 +2351,35 @@ fn place_text(
             return refused(code, refusal.to_string());
         }
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} is in use by {users}."),
         );
     }
     // The text's UUIDs, and the layout's stamp.
-    let time = host_time_key();
+    let time = ed.time();
     let mut member = planned.member;
     if let Some(record) =
         member.at_mut(&[&[OBJECT_ATTRIBUTES], &serial::encode(planned.text_object)])
     {
-        record.set_child(OwnedNode::leaf(
-            vec![UNIQUE_ID],
-            shared.random::<16>().to_vec(),
-        ));
-        record.set_child(OwnedNode::leaf(
-            vec![SOURCE_ID],
-            shared.random::<16>().to_vec(),
-        ));
+        record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+        record.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
     }
-    let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path.clone(), member);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: text not placed on layout {id}: {e}",
-            hosted.name
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is unchanged."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: member_path,
-            code: ATTENTION_CATALOG,
-        }],
-    );
+    let member = ed.stamped(member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
     // The text itself stays out of the log.
-    info!(
-        "{peer}: {:?}: a text placed on layout {id} as object {} by {account}",
-        hosted.name, planned.text_object
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "a text placed on layout {id} as object {} by {account}",
+            planned.text_object
+        ),
+        format!("text not placed on layout {id}"),
+        format!("layout {id} is unchanged"),
     );
     Reply::Placed(Placed {
         changed: true,
@@ -2432,8 +2391,8 @@ fn place_text(
 
 /// Whether table occurrences `a` and `b` are joined in the file's
 /// relationship graph `[3]`, directly or through other occurrences.
-fn related(store: &Store, a: u64, b: u64) -> bool {
-    let Some(graph) = store.node(&[&[3]]).cloned() else {
+fn related(schema: &Schema<'_>, a: u64, b: u64) -> bool {
+    let Some(graph) = schema.node(&[&[3]]).map(Cow::into_owned) else {
         return false;
     };
     let Some(wire) = OwnedNode::list(Vec::new(), vec![graph]).to_wire() else {
@@ -2471,16 +2430,9 @@ fn related(store: &Store, a: u64, b: u64) -> bool {
 /// fields checked, planned (`layout_placement::plan_portal`), its objects
 /// given their UUIDs, stamped and saved under the layout's lock, or refused
 /// with nothing written.
-fn place_portal(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &PlacePortal,
-) -> Reply {
+fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2494,17 +2446,26 @@ fn place_portal(
     };
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let mut store = hosted.write_store();
-    let Some(current) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
     // The fields: of the occurrence's table, with values Browse edits as
     // text in an edit box.
-    let catalog = store.catalog();
+    let derived = ed.tx.derived();
+    let catalog = derived.catalog();
     let table_id = catalog
         .table_occurrences
         .iter()
@@ -2542,14 +2503,14 @@ fn place_portal(
             );
         }
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some((portal, _)) = layout_placement::already_placed_portal(&current, &placement) {
             return Reply::Placed(Placed {
                 changed: false,
                 field_object: portal,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2562,7 +2523,7 @@ fn place_portal(
         .ok()
         .and_then(|def| om_layout::occurrence_id(def.table_alias_key));
     if let Some(own) = own.filter(|&own| own != request.occurrence) {
-        if !related(&store, own, request.occurrence) {
+        if !related(&ed.schema(), own, request.occurrence) {
             return refused(
                 status::UNSUPPORTED,
                 format!(
@@ -2573,77 +2534,46 @@ fn place_portal(
             );
         }
     }
-    let theme = layout_placement::theme_key(&current).and_then(|theme| {
-        store
-            .node(&[&[THEMES], &[THEME_MEMBERS]])?
-            .children
-            .iter()
-            .find(|t| om_hbam::slot::be_uint(&t.segment) == Some(theme))
+    let themes = layout_placement::theme_key(&current)
+        .and_then(|theme| Some((theme, ed.node(&[&[THEMES], &[THEME_MEMBERS]])?)));
+    let theme = themes.as_ref().and_then(|(theme, members)| {
+        (members.children.iter()).find(|t| om_hbam::slot::be_uint(&t.segment) == Some(*theme))
     });
     let planned = match layout_placement::plan_portal(&current, &placement, theme) {
         Ok(planned) => planned,
         Err(refusal) => return placement_refused(refusal),
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} is in use by {users}."),
         );
     }
     // Each new object's UUIDs, and the layout's stamp.
-    let time = host_time_key();
+    let time = ed.time();
     let mut member = planned.member;
     for object in std::iter::once(planned.portal).chain(planned.fields.iter().copied()) {
         if let Some(record) = member.at_mut(&[&[OBJECT_ATTRIBUTES], &serial::encode(object)]) {
-            record.set_child(OwnedNode::leaf(
-                vec![UNIQUE_ID],
-                shared.random::<16>().to_vec(),
-            ));
-            record.set_child(OwnedNode::leaf(
-                vec![SOURCE_ID],
-                shared.random::<16>().to_vec(),
-            ));
+            record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+            record.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
         }
     }
-    let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path.clone(), member);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: portal not placed on layout {id}: {e}",
-            hosted.name
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is unchanged."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: member_path,
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: a portal of occurrence {} placed on layout {id} as object {} with {} \
-         fields by {account}",
-        hosted.name,
-        request.occurrence,
-        planned.portal,
-        planned.fields.len()
+    let member = ed.stamped(member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "a portal of occurrence {} placed on layout {id} as object {} with {} fields by \
+             {account}",
+            request.occurrence,
+            planned.portal,
+            planned.fields.len()
+        ),
+        format!("portal not placed on layout {id}"),
+        format!("layout {id} is unchanged"),
     );
     Reply::Placed(Placed {
         changed: true,
@@ -2657,16 +2587,9 @@ fn place_portal(
 /// [`place_field`] places a field: checked, planned
 /// (`layout_placement::plan_button`), given its UUIDs, stamped and saved
 /// under the layout's lock, or refused with nothing written.
-fn place_button(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &PlaceButton,
-) -> Reply {
+fn place_button(ed: &mut Editor<'_, '_, '_>, request: &PlaceButton) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2708,31 +2631,15 @@ fn place_button(
             parameter,
         },
     };
-    place_planned_button(
-        shared,
-        peer,
-        caller,
-        hosted,
-        account,
-        id,
-        &request.expected,
-        &placement,
-    )
+    place_planned_button(ed, id, &request.expected, &placement)
 }
 
 /// Operation 8: a button whose action is one script step (Single Step),
 /// as the Script Workspace stores a step; `check_button_step` decides
 /// which steps a button may hold.
-fn place_button_step(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
-    request: &PlaceButtonStep,
-) -> Reply {
+fn place_button_step(ed: &mut Editor<'_, '_, '_>, request: &PlaceButtonStep) -> Reply {
     let id = request.layout;
-    if hosted.is_read_only() {
+    if ed.tx.is_read_only() {
         return refused(
             status::SAVE_FAILED[2],
             format!("The file is open read-only; layout {id} is unchanged."),
@@ -2756,16 +2663,7 @@ fn place_button_step(
         label: request.label.clone(),
         action: layout_placement::ButtonAction::Step(step),
     };
-    place_planned_button(
-        shared,
-        peer,
-        caller,
-        hosted,
-        account,
-        id,
-        &request.expected,
-        &placement,
-    )
+    place_planned_button(ed, id, &request.expected, &placement)
 }
 
 /// The status for a placement refusal.
@@ -2785,13 +2683,8 @@ fn placement_refused(refusal: layout_placement::Refusal) -> Reply {
 /// checked: the step (`ButtonAction::step`), the layout, the script a step names (one
 /// of the file's scripts, not a folder or separator), the revision or a
 /// retry's button, the plan, the lock, UUIDs, stamp and save.
-#[allow(clippy::too_many_arguments)]
 fn place_planned_button(
-    shared: &Shared,
-    peer: &str,
-    caller: &Caller<'_>,
-    hosted: &Arc<Hosted>,
-    account: &str,
+    ed: &mut Editor<'_, '_, '_>,
     id: u64,
     expected: &Revision,
     placement: &layout_placement::ButtonPlacement,
@@ -2802,23 +2695,27 @@ fn place_planned_button(
     };
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let mut store = hosted.write_store();
-    let Some(current) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
+    let (expected, older) =
+        expected_now(expected, &current, layout_revision, legacy_catalog_revision);
     // A script the step names: one of the file's, not a folder or
     // separator.
     if let Some(key) = step.script_key() {
         let Some(script) = key.serial_id() else {
             return refused(status::INVALID, "The step's script key is not a script id.");
         };
-        match store
+        match ed
             .node(&[&[SCRIPTS], &[DEFINITIONS], &serial::encode(script)])
-            .map(decode)
+            .map(|definition| decode(&definition))
         {
             Some(Ok(found)) if found.kind == ScriptKind::Script => {}
             Some(_) => {
@@ -2836,14 +2733,14 @@ fn place_planned_button(
         }
     }
     let action = om_scripts::step_name(step.id()).unwrap_or("a step");
-    if current_revision != *expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(button) = layout_placement::already_placed_button(&current, placement) {
             return Reply::Placed(Placed {
                 changed: false,
                 field_object: button,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2856,59 +2753,31 @@ fn place_planned_button(
         Ok(planned) => planned,
         Err(refusal) => return refused(refusal_status(&refusal), refusal.to_string()),
     };
-    let user = LockUser {
-        connection: caller.connection,
-        txn: AUTHORING_TXN,
-    };
-    let holder = format!("{} ({account})", caller.session_name);
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
-    if let Err(users) = lock_all(hosted, user, &holder, &locks) {
+    if let Err(users) = ed.lock_all(&locks) {
         return refused(
             status::LAYOUT_IN_USE,
             format!("Layout {id} is in use by {users}."),
         );
     }
-    let time = host_time_key();
+    let time = ed.time();
     let mut member = planned.member;
     if let Some(record) = member.at_mut(&[&[OBJECT_ATTRIBUTES], &serial::encode(planned.button)]) {
-        record.set_child(OwnedNode::leaf(
-            vec![UNIQUE_ID],
-            shared.random::<16>().to_vec(),
-        ));
-        record.set_child(OwnedNode::leaf(
-            vec![SOURCE_ID],
-            shared.random::<16>().to_vec(),
-        ));
+        record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+        record.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
     }
-    let member = stamped(member, caller.session_name, account, &time);
-    let revision = catalog_revision(&member);
-    let mut journal = store.begin_commit();
-    store.replace_schema_in(&mut journal, member_path.clone(), member);
-    let saved = hosted.save_commit(&mut store, journal);
-    drop(store);
-    unlock_all(hosted, user, &locks);
-    if let Err(e) = saved {
-        warn!(
-            "{peer}: {:?}: button ({action}) not placed on layout {id}: {e}",
-            hosted.name
-        );
-        return refused(
-            save_error(&e),
-            format!("The file could not be saved ({e}); layout {id} is unchanged."),
-        );
-    }
-    writes::notify(
-        hosted,
-        &shared.mailboxes,
-        caller.connection,
-        &[Change {
-            path: member_path,
-            code: ATTENTION_CATALOG,
-        }],
-    );
-    info!(
-        "{peer}: {:?}: button ({action}) placed on layout {id} as object {} by {account}",
-        hosted.name, planned.button
+    let member = ed.stamped(member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "button ({action}) placed on layout {id} as object {} by {account}",
+            planned.button
+        ),
+        format!("button ({action}) not placed on layout {id}"),
+        format!("layout {id} is unchanged"),
     );
     Reply::Placed(Placed {
         changed: true,
@@ -2916,6 +2785,42 @@ fn place_planned_button(
         label_object: 0,
         revision,
     })
+}
+
+/// The revision a request names, read as the current content's edit
+/// token when it is the token a client one version behind computes for
+/// that content: before split values were hashed as the value they join to
+/// (`om_hbam::design_paths`; docs/authoring.md, "Revisions"); and whether
+/// it was, so the answer is given in that form ([`answer`]). Any other
+/// revision is kept as sent, so a stale one is still a conflict.
+fn expected_now(
+    expected: &Revision,
+    current: &OwnedNode,
+    token: fn(&OwnedNode) -> Revision,
+    legacy: fn(&OwnedNode) -> Revision,
+) -> (Revision, bool) {
+    let now = token(current);
+    if *expected != now && *expected == legacy(current) {
+        (now, true)
+    } else {
+        (*expected, false)
+    }
+}
+
+/// A revision in the form the request was made in: the older form when
+/// its token was in that form ([`expected_now`]), so a client always reads
+/// back the token it computes itself.
+fn answer(
+    older: bool,
+    node: &OwnedNode,
+    token: fn(&OwnedNode) -> Revision,
+    legacy: fn(&OwnedNode) -> Revision,
+) -> Revision {
+    if older {
+        legacy(node)
+    } else {
+        token(node)
+    }
 }
 
 #[cfg(test)]

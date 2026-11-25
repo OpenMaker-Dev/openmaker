@@ -303,6 +303,12 @@ impl Folder {
         std::fs::rename(self.dir.join(from), self.dir.join(to))
     }
 
+    /// The folder's descriptor (search-only on Linux).
+    #[cfg(unix)]
+    pub fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.fd)
+    }
+
     /// Remove entry `name`.
     pub fn remove(&self, name: &OsStr) -> io::Result<()> {
         #[cfg(unix)]

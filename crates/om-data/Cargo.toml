@@ -19,6 +19,8 @@ om-scripts = { path = "../om-scripts" }
 om-layout = { path = "../om-layout" }
 om-sql = { path = "../om-sql" }
 om-query = { path = "../om-query" }
+# Import and export orders in script steps (design_refs).
+om-transfer = { path = "../om-transfer" }
 getrandom = "0.2.17"
 md-5 = "0.10"
 flate2 = "1.1"

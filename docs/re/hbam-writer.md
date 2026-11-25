@@ -597,6 +597,25 @@ Proven by the prototype (`rebuild()`, runs w08, w09):
 
 FileMaker's `--copyCompress` output has exactly this shape (9.3).
 
+The method streams (OpenMaker's writer, `om_hbam::writer::NodeWriter`,
+whose files are byte for byte the ones OpenMaker wrote holding the whole
+tree, on generated trees and the 66 Mac templates): the keys can come one
+at a time in key order, each leaf page is written when the next unit does
+not fit, and since a page's first key follows from its bytes (its
+re-pushed path and first item, section 1), each index level can be built
+after the level below it by reading that level back. A writer then holds
+a few pages and the open path, never an entry per page.
+
+Writing every separator as the exact first key (3.2) limits this shape. A
+page that starts deep under long segments has a first key of up to about
+3,500 bytes, and an index page holds one or two of those. In a generated
+tree of top-level lists with 219-byte segments, each over a chain of 13
+more ending in a 740-byte value, the index grew a level per top-level
+list: 16 lists took 16 levels, and 20 would have taken more than the 16
+`IsRootPageSane` allows (4.1), so OpenMaker refuses such a tree. (Observed
+on OpenMaker's writer only. A writer could shorten separators within the
+bounds of 3.2 instead; untested.)
+
 ---
 
 ## 8. What FileMaker checks (a test checklist)
