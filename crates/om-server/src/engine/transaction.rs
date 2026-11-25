@@ -358,8 +358,14 @@ impl<'a> Transaction<'a> {
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
-        self.store
-            .recover(Some(&mut self.journal), environment, unique_id)
+        let recovered = self
+            .store
+            .recover(Some(&mut self.journal), environment, unique_id);
+        #[cfg(test)]
+        if PANIC_RECOVERING.with(std::cell::Cell::get) {
+            panic!("a test's panic after finishing deferred work");
+        }
+        recovered
     }
 }
 
@@ -372,6 +378,10 @@ thread_local! {
     /// Makes [`Transaction::write_record`] panic on this thread once it
     /// wrote (`engine::tests`).
     pub(super) static PANIC_WRITING_RECORDS: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    /// Makes [`Transaction::recover`] panic on this thread once it
+    /// finished the work (`engine::tests`).
+    pub(super) static PANIC_RECOVERING: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 

@@ -1015,29 +1015,6 @@ impl ServerHandle {
         self.schedules.backups().wait_idle(left) && scripts
     }
 
-    /// Stop hosting every file of a server that has shut down
-    /// ([`ServerHandle::shutdown`]) and closed its connections
-    /// ([`ServerHandle::close_connections`]), so that another server, or a
-    /// desktop's local host, may open them in this process: each file is
-    /// closed at once, and its store, which holds the file's lock
-    /// (`crate::filelock`), goes once the last connection or run using it
-    /// has ended: the store tells once its lock's descriptor is closed.
-    /// Waits up to `timeout`, counted from the call, for every file this
-    /// server let go of, in this call or an earlier one, whose lock is still
-    /// held; returns whether all are let go of. A process that ends lets go
-    /// of its files anyway. Call it after [`ServerHandle::close_event_log`],
-    /// which records each hosted file closed.
-    pub fn release_files(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        let mut released = true;
-        for slot in self.shared.hosting.slots() {
-            for file in slot.release() {
-                released &= file.wait(deadline);
-            }
-        }
-        released
-    }
-
     /// End the event log of a server that has stopped
     /// ([`ServerHandle::shutdown`]) and whose connections have ended
     /// ([`ServerHandle::close_connections`]): wait up to `timeout` for the

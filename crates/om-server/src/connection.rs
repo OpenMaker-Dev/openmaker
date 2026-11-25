@@ -2514,7 +2514,7 @@ fn query(
             // instructions, a key it reserves. Only such a program fails
             // when what it stores is not stored.
             let changes = query_changes_file(&program);
-            let (outcome, ticket) = {
+            let (outcome, issued) = {
                 let store = file.hosted.read_store();
                 if store.is_read_only() && changes {
                     return Err(Refused.into());
@@ -2533,12 +2533,9 @@ fn query(
                         .to_result_within(max_return as usize));
                 }
                 let restricted = !full_access(file);
-                // The keys its GenerateMemberKey issues are its own, so
-                // that it learns what became of them whoever stores them.
-                let ticket = store.issue_ticket();
                 let source = QuerySource {
                     store: &store,
-                    ticket,
+                    issued: Default::default(),
                     restricted,
                     account_key: file
                         .account
@@ -2557,7 +2554,7 @@ fn query(
                 if let Some(view) = &source.view {
                     note_withheld(file, view);
                 }
-                (outcome, ticket)
+                (outcome, source.issued.into_inner())
             };
             if let Some(error) = &outcome.error {
                 info!("{peer}: query on {:?} failed: {error}", file.hosted.name);
@@ -2572,9 +2569,9 @@ fn query(
                 store.has_issued_member_keys() || store.has_indexes_on_demand()
             };
             let mut slots = outcome.slots;
-            // What became of the keys this program issued, once a write took
-            // them: this request's own below, or another request's before.
-            let mut settled = None;
+            // The FileMaker error of this request's own write, when it was
+            // not stored.
+            let mut not_stored = None;
             if pending || !outcome.writes.is_empty() {
                 let done: Vec<String> = outcome
                     .writes
@@ -2587,9 +2584,7 @@ fn query(
                 let draft = Draft::ChangeSchema {
                     writes: outcome.writes,
                 };
-                let draft = shared.engine.submit_draft(&file.hosted, draft).reply;
-                settled = Some(file.hosted.read_store().finish_ticket(ticket));
-                match draft {
+                match shared.engine.submit_draft(&file.hosted, draft).reply {
                     Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes(Ok(())) => {
                         for done in done {
                             info!("{peer}: {:?}: {done}", file.hosted.name);
@@ -2616,6 +2611,7 @@ fn query(
                             "{peer}: {:?}: query program's writes not stored: {error}",
                             file.hosted.name
                         );
+                        not_stored = Some(error.code);
                         slots = error_slot(error.code);
                     }
                     // What another request left waiting (a key it reserved)
@@ -2631,19 +2627,36 @@ fn query(
                     other => return Err(mismatched(&other)),
                 }
             }
-            // The keys this program issued may have been taken and written
-            // by another request's write before its own: its answer is how
-            // that save ended. Stored, it stands; not stored, the keys
-            // waited again and its own write above answered for them;
-            // unknown, it is the error slot, never success.
-            let settled = settled.unwrap_or_else(|| file.hosted.read_store().finish_ticket(ticket));
-            if let Some(crate::store::KeysSettled::Unknown(code)) = settled.filter(|_| changes) {
-                warn!(
-                    "{peer}: {:?}: the member keys this query reserved were written with an \
-                     unknown outcome",
-                    file.hosted.name
-                );
-                slots = error_slot(code);
+            // The keys this program issued were stored by its own write, or
+            // by another request's write that held the store first, or wait
+            // still. One look, under one hold of the store: a file that takes
+            // no more changes (a save's outcome was unknown, this one's or
+            // another's) answers that; a key its catalog's index does not
+            // hold (no save stored it, or a write dropped it) answers the
+            // error a key not stored answers; else the program's answer
+            // stands (docs/server-storage.md 5, "Keys a request issued").
+            if !issued.is_empty() {
+                use crate::store::IssuedKeysAre;
+                match file.hosted.read_store().issued_keys(&issued) {
+                    IssuedKeysAre::Stored => {}
+                    IssuedKeysAre::Unknown(why) => {
+                        warn!(
+                            "{peer}: {:?}: the member keys this query reserved may or may not \
+                             be stored: {why}",
+                            file.hosted.name
+                        );
+                        let why = std::io::Error::other(why.to_owned());
+                        slots = error_slot(crate::hosting::save_error(&why));
+                    }
+                    IssuedKeysAre::NotStored => {
+                        warn!(
+                            "{peer}: {:?}: the member keys this query reserved are not stored",
+                            file.hosted.name
+                        );
+                        // A read-only file's save answers 800 too.
+                        slots = error_slot(not_stored.unwrap_or(800));
+                    }
+                }
             }
             slots
         }
@@ -2690,9 +2703,10 @@ fn query_changes_file<E>(program: &Result<om_query::Program, E>) -> bool {
 /// behavior (query-program.md 7.1).
 struct QuerySource<'s> {
     store: &'s crate::store::Store,
-    /// The request's own, for the member keys it issues
-    /// ([`crate::store::Store::generate_member_key_for`]).
-    ticket: u64,
+    /// The member ids GenerateMemberKey issued, with their catalogs, which
+    /// the request looks for when it ends
+    /// ([`crate::store::Store::member_key_waits`]).
+    issued: std::cell::RefCell<Vec<(Vec<Vec<u8>>, u64)>>,
     restricted: bool,
     account_key: Option<&'s [u8]>,
     late: bool,
@@ -2758,7 +2772,12 @@ impl om_query::Source for QuerySource<'_> {
     }
 
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
-        self.store.generate_member_key_for(catalog, self.ticket)
+        let (id, count) = self.store.issue_member_key(catalog)?;
+        self.issued.borrow_mut().push((catalog.to_vec(), id));
+        Some((
+            crate::modcount::key_string(id),
+            crate::modcount::key_string(count),
+        ))
     }
 }
 

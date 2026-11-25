@@ -277,13 +277,8 @@ pub struct Host {
 }
 
 impl Host {
-    /// Stop the server as a process that ends would, its connections
-    /// closed and its files let go of, with their locks: the file can be
-    /// hosted again, as after a restart.
     pub fn stop(&self) {
         assert!(self.handle.shutdown(Duration::from_secs(10)));
-        self.handle.close_connections();
-        assert!(self.handle.release_files(Duration::from_secs(10)));
     }
 }
 

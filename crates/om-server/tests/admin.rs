@@ -1663,17 +1663,6 @@ fn files_anyone_could_open_with_full_access_are_not_hosted() {
         })
         .collect();
     assert_eq!(alerts, refused);
-    // The server holds the lock of each file it hosts until it closes it:
-    // closed, the next server may host them.
-    for file in handle.files() {
-        handle.close_file(file.id, &Notice::default()).unwrap();
-    }
-    wait_until("the files closed", || {
-        handle
-            .files()
-            .iter()
-            .all(|file| file.status == FileStatus::Closed)
-    });
     assert!(handle.shutdown(Duration::from_secs(5)));
     handle.close_connections();
     // A refused file is left as it was.

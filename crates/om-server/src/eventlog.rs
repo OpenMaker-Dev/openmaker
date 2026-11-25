@@ -284,8 +284,9 @@ impl Event {
         Self::new(Log::Event, Level::Error, number, message)
     }
 
-    /// Hosted file `name` is served read-only, for the reason `why` (it has
-    /// other names). OpenMaker's own message.
+    /// Hosted file `name` is served read-only, for the reason `why`
+    /// (something is at its save's copy name, its deferred work was left
+    /// part way). OpenMaker's own message.
     pub fn hosted_read_only(name: &str, why: &str) -> Self {
         Self::new(
             Log::Event,
@@ -293,38 +294,6 @@ impl Event {
             0,
             format!(
                 "Database \"{}\" is served read-only: {}.",
-                database(name),
-                value(why)
-            ),
-        )
-    }
-
-    /// Hosted file `name` was opened with the copy a save that stopped part
-    /// way left beside it (`<file>.omsave`), which it removed. OpenMaker's
-    /// own message.
-    pub fn leftover_copy_removed(name: &str) -> Self {
-        Self::new(
-            Log::Event,
-            Level::Warning,
-            0,
-            format!(
-                "Removed the copy an earlier save of database \"{}\" left beside it.",
-                database(name)
-            ),
-        )
-    }
-
-    /// Hosted file `name` was opened with an entry under the name of a
-    /// save's new copy beside it that was not removed, for the reason
-    /// `why`: its saves fail while it is there. OpenMaker's own message.
-    pub fn leftover_copy_kept(name: &str, why: &str) -> Self {
-        Self::new(
-            Log::Event,
-            Level::Error,
-            0,
-            format!(
-                "An entry named like a save's copy is beside database \"{}\" and was left as \
-                 it is ({}); the database's changes cannot be saved until it is removed.",
                 database(name),
                 value(why)
             ),

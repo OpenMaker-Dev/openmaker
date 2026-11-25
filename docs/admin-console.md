@@ -591,8 +591,12 @@ list shows them.
   the same field (`FileInfo::error`) with its status unchanged; closing it
   and opening it again clears it (docs/server-storage.md 5, "Failed
   saves"). The Admin API's and the console's database lists do not show
-  the field. Every hosted file is opened at startup; the administrator
-  closes, opens, pauses and resumes it (below).
+  the field. A file opened with something at its save's copy name
+  (`<file>.omsave`) is served read-only, and an alert names the entry,
+  which nothing removes: the administrator removes it, then closes and
+  opens the file (docs/server-storage.md 5, "A leftover copy"). Every
+  hosted file is opened at startup; the administrator closes, opens,
+  pauses and resumes it (below).
 - Each client as its entry holds it, oldest session first, and whether it is
   being disconnected (at once, or with notice during its grace time;
   FileMaker Server's Admin API lists such a client as `NORMAL`, re 9). A
@@ -693,10 +697,7 @@ notice at once (inf).
 loads from disk, with the checks the server makes at startup (the
 administrator may have replaced it), then `NORMAL`. A file still closing
 cannot be opened (`FileError::NotAllowed`). One that fails to load stays
-`CLOSED` with the reason, in `FileInfo::error` and in `FileError::Load`;
-so does one another OpenMaker has open, whose lock it holds (the server
-holds the lock of every file it hosts from opening it until it is closed,
-docs/server-storage.md 5, "The file's lock").
+`CLOSED` with the reason, in `FileInfo::error` and in `FileError::Load`.
 
 **Pausing a file.** `ServerHandle::pause_file(id)` and `resume_file(id)`
 (the Admin API's `PAUSED` and `RESUMED`). Only an open file is paused and

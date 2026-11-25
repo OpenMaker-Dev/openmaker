@@ -1074,14 +1074,17 @@ fn a_save_whose_outcome_is_unknown_leaves_the_file_taking_no_more_changes_until_
 }
 
 /// A save that stops part way leaves `<file>.omsave` beside the file,
-/// which would stop every later save. When the file is hosted, while the
-/// server holds the file's lock, a leftover that is a regular file is
-/// removed and the file saves. A folder or a link there is left as it is:
-/// the file is hosted, an alert says why its saves fail, and each change
-/// is answered with the storage error (docs/server-storage.md 5).
+/// which would stop every later save. Nothing removes it, nor anything
+/// else at that name: a file hosted with something there (a copy a save
+/// left, a folder, a link to another file) is hosted read-only, with an
+/// alert that names the entry, which is left as it is. Something put there
+/// while the file is hosted makes its next save fail: the change is not
+/// stored, the reply is the storage error, and the alert says what is in
+/// the way. Once it is removed, the file saves (docs/server-storage.md 5).
 #[cfg(unix)]
 #[test]
-fn a_copy_a_save_left_is_removed_when_the_file_is_hosted_and_anything_else_is_left() {
+fn anything_at_a_files_save_copy_name_is_left_and_keeps_the_file_from_saving() {
+    const ACCESS_DENIED: u32 = 200;
     let table = uint_segment(TABLE);
     let count = uint_segment(COUNT);
     let advance = |client: &mut om_session::Session| {
@@ -1096,60 +1099,79 @@ fn a_copy_a_save_left_is_removed_when_the_file_is_hosted_and_anything_else_is_le
         PathBuf::from(path)
     };
 
-    // A regular file: a copy a save left, removed.
-    let file = TempFile::from_tree("save-leftover", &with_photo());
-    std::fs::write(copy_of(&file), b"half a save").unwrap();
-    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
-    assert!(!copy_of(&file).exists(), "removed");
-    assert!(handle.alerts().is_empty(), "{:?}", handle.alerts());
-    let (mut client, _) = server::logged_in(port, "leftover");
-    assert_eq!(advance(&mut client), 0);
-    let hbam = HbamFile::open(&file.0).unwrap();
-    assert!(
-        hbam.subtree(&[&table, &[3], &[5], &count, &[0x0c]])
-            .unwrap()
-            .is_some(),
-        "saved"
-    );
-    client.disconnect().unwrap();
-
-    // A folder, and a link to another file: left as they are.
-    for (tag, link) in [
-        ("save-leftover-folder", false),
-        ("save-leftover-link", true),
+    for (tag, kind) in [
+        ("save-leftover", "copy"),
+        ("save-leftover-folder", "folder"),
+        ("save-leftover-link", "link"),
     ] {
         let file = TempFile::from_tree(tag, &with_photo());
+        let copy = copy_of(&file);
         let victim = file.0.with_extension("victim");
         std::fs::write(&victim, b"not to be removed").unwrap();
-        if link {
-            std::os::unix::fs::symlink(&victim, copy_of(&file)).unwrap();
-        } else {
-            std::fs::create_dir(copy_of(&file)).unwrap();
+        match kind {
+            "copy" => std::fs::write(&copy, b"half a save").unwrap(),
+            "folder" => std::fs::create_dir(&copy).unwrap(),
+            _ => std::os::unix::fs::symlink(&victim, &copy).unwrap(),
         }
         let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
-        let kept = std::fs::symlink_metadata(copy_of(&file)).unwrap();
-        assert_eq!((kept.is_symlink(), kept.is_dir()), (link, !link), "{tag}");
+        let kept = std::fs::symlink_metadata(&copy).unwrap();
+        assert_eq!(
+            (kept.is_file(), kept.is_dir(), kept.is_symlink()),
+            (kind == "copy", kind == "folder", kind == "link"),
+            "{tag}: left as it is"
+        );
+        if kind == "copy" {
+            assert_eq!(std::fs::read(&copy).unwrap(), b"half a save");
+        }
         assert_eq!(std::fs::read(&victim).unwrap(), b"not to be removed");
         let [info] = handle.files().try_into().unwrap();
         assert_eq!(info.status, om_server::FileStatus::Open, "{tag}: hosted");
         let alerts = handle.alerts();
+        let named = copy.display().to_string();
         assert!(
-            alerts.iter().any(|a| a.message.contains("left as it is")),
+            alerts
+                .iter()
+                .any(|a| a.message.contains("read-only") && a.message.contains(&named)),
             "{tag}: {alerts:?}"
         );
         let bytes = std::fs::read(&file.0).unwrap();
         let (mut client, _) = server::logged_in(port, tag);
-        assert_eq!(advance(&mut client), u32::from(CANNOT_WRITE), "{tag}");
-        assert_eq!(serial_of(&mut client), None, "{tag}: taken back");
+        assert_eq!(advance(&mut client), ACCESS_DENIED, "{tag}: read-only");
+        assert_eq!(serial_of(&mut client), None, "{tag}");
         assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
         client.disconnect().unwrap();
-        if link {
-            std::fs::remove_file(copy_of(&file)).unwrap();
+        if kind == "folder" {
+            std::fs::remove_dir(&copy).unwrap();
         } else {
-            std::fs::remove_dir(copy_of(&file)).unwrap();
+            std::fs::remove_file(&copy).unwrap();
         }
         let _ = std::fs::remove_file(&victim);
     }
+
+    // Put there while the file is hosted: the next save is not stored, and
+    // says why; the entry is left as it is.
+    let file = TempFile::from_tree("save-leftover-later", &with_photo());
+    let copy = copy_of(&file);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let (mut client, _) = server::logged_in(port, "leftover-later");
+    let bytes = std::fs::read(&file.0).unwrap();
+    std::fs::write(&copy, b"put there").unwrap();
+    assert_eq!(advance(&mut client), u32::from(CANNOT_WRITE));
+    assert_eq!(serial_of(&mut client), None, "taken back");
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
+    assert_eq!(std::fs::read(&copy).unwrap(), b"put there");
+    let alerts = handle.alerts();
+    assert!(
+        alerts
+            .iter()
+            .any(|a| a.message.contains("in the way")
+                && a.message.contains(&copy.display().to_string())),
+        "{alerts:?}"
+    );
+    std::fs::remove_file(&copy).unwrap();
+    assert_eq!(advance(&mut client), 0);
+    assert_eq!(serial_of(&mut client).as_deref(), Some("2"));
+    client.disconnect().unwrap();
 }
 
 /// A server script's end saves what it left unsaved (the record id New
@@ -1253,69 +1275,4 @@ fn a_program_that_only_reads_keeps_its_answer_when_what_waits_cannot_be_stored()
     );
     assert_eq!(client.query(&read).unwrap().slots, answer);
     client.disconnect().unwrap();
-}
-
-/// The review's P0: OpenMaker Server holds the lock of a file it hosts from
-/// opening it until it stops hosting it, through each save, which moves the
-/// lock to the new file before the rename. Meanwhile another server is
-/// refused the file (not hosted, with an alert), and so is the desktop
-/// (in use, 300). Closed, the file opens elsewhere; opened again, it is
-/// locked again.
-#[cfg(unix)]
-#[test]
-fn a_hosted_file_is_locked_while_it_is_hosted_through_its_saves() {
-    let file = TempFile::from_tree("save-locked", &with_photo());
-    let other = TempFile::from_tree("save-locked-other", &with_photo());
-    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
-    let id = handle.files()[0].id;
-    let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
-    let cert = client.cert.pem().into_bytes();
-    let desktop = || om_server::LocalHost::open(&file.0, &cert);
-    let second =
-        || server::start_hosting(&[("Tasks.fmp12", &file), ("Other.fmp12", &other)], |s| s);
-    // The second server is refused the file and hosts the other one; it
-    // then stops, letting go of that one.
-    let refused = |handle: om_server::ServerHandle| {
-        let hosted: Vec<String> = handle.files().into_iter().map(|f| f.name).collect();
-        assert_eq!(hosted, ["Other.fmp12"]);
-        let alerts = handle.alerts();
-        assert!(
-            alerts
-                .iter()
-                .any(|a| a.message.contains("open in another OpenMaker")),
-            "{alerts:?}"
-        );
-        assert!(handle.shutdown(std::time::Duration::from_secs(5)));
-        handle.close_connections();
-        assert!(handle.release_files(std::time::Duration::from_secs(5)));
-    };
-    assert_eq!(desktop().unwrap_err().code(), 300);
-    refused(second().1);
-
-    // A save moves the lock to the file it renames over the old one.
-    let (mut session, _) = server::logged_in(port, "locked");
-    let serial = session
-        .get_serial(
-            &uint_segment(TABLE),
-            &uint_segment(COUNT),
-            "",
-            1,
-            write::SERIAL_INCREMENT,
-        )
-        .unwrap();
-    assert_eq!(serial.status, 0);
-    assert_eq!(desktop().unwrap_err().code(), 300);
-    refused(second().1);
-    session.disconnect().unwrap();
-
-    // Closed, the file is let go; opened again, it is locked again.
-    handle
-        .close_file(id, &om_server::Notice::default())
-        .unwrap();
-    wait_for(&handle, id, om_server::FileStatus::Closed);
-    let opened = desktop().unwrap();
-    assert!(opened.close());
-    handle.open_file(id).unwrap();
-    wait_for(&handle, id, om_server::FileStatus::Open);
-    assert_eq!(desktop().unwrap_err().code(), 300);
 }

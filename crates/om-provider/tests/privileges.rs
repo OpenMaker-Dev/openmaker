@@ -24,10 +24,7 @@ fn connect(
     root: &om_hbam::OwnedNode,
     account: &str,
 ) -> (fixture::TempFile, NativeProvider, Result<(), DataError>) {
-    // Each file its own: a server holds the lock of the one it hosts.
-    static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file = fixture::TempFile::from_tree(&format!("desktop-privileges-{n}"), root);
+    let file = fixture::TempFile::from_tree("desktop-privileges", root);
     let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let ca = cert.cert.pem().into_bytes();
     let config = ServerConfig {

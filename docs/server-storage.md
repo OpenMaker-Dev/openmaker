@@ -551,15 +551,23 @@ save's outcome ("Failed saves", below):
   served as its disk holds it, the work list there and the stored values
   as stored, read-only, as when the work cannot be done
   (`Store::recover`), and the failure is logged and alerted. Hosting the
-  file again tries again. Whether the work is due and the work itself are
-  one step, under a lock of their own: a login that comes while another
-  login's work runs waits for it to end (finished, taken back or unknown)
-  before it is answered, so no login to a local file is answered, and no
-  record served to it, before the work ended. On the desktop a failed save
-  of the work makes the file read-only with a reason of its own
-  (`local::ReadOnly::DeferredWork`): what the desktop is told when the
-  login that opened the file ends, and at every later check, is the
-  store's state after the login (`LocalHost::read_only`). A compacted copy
+  file again tries again. Where the work stands is one state, under a
+  mutex of its own: due, begun, or ended with an outcome (saved, nothing
+  to do, taken back, or unknown). Checking it and doing the work are one
+  step under that mutex, so a login that comes while another login's work
+  runs waits for it to end before it is answered: no login to a local
+  file is answered, and no record served to it, before the work ended.
+  The work is marked ended only once the operation has an outcome. A run
+  a panic left (the engine took back what it did, so the file is as its
+  disk holds it, the work pending) leaves the state begun; the next login
+  finds it so and gets the file read-only, as when the work cannot be
+  done, logged and alerted, never as if it were recovered. On the
+  desktop a failed save of the work makes the file read-only with a
+  reason of its own (`local::ReadOnly::DeferredWork`), and a save whose
+  outcome is unknown (this one or any later one) with another
+  (`ReadOnly::NoMoreChanges`): what the desktop is told when the login
+  that opened the file ends, and at every later check, is the file's
+  state then (`LocalHost::read_only`). A compacted copy
   saved before any login (Save a Copy As, which needs no login) is the
   file as its disk holds it, its work list included, so the copy finishes
   the work when an account first logs in to it. (Before, the work was
@@ -755,7 +763,7 @@ create file on disk".
 | op73 | a system exception (MARSHAL), as its refusals | an empty reply (write-path.md 3.6) |
 | op86 with schema instructions (UploadMultiple, GenerateMemberKey, DeleteTable) | the error slot `[00] = 02 <800, 809 or 810>` alone | the error slot (query-program.md 11.2) |
 | op86 without them, a server script's find | the program's answer: what it found waiting and could not store (indexes finds built, member keys other programs reserved) waits again for the next write, logged | (a program that changes nothing stores nothing of its own) |
-| op86 whose GenerateMemberKey keys another request's write took | that save's outcome: stored, the program's answer; unknown, the error slot with its code; not stored, the keys wait again and the program's own write answers for them | the error slot |
+| op86 with GenerateMemberKey, once its own write was submitted | the file taking no more changes: the error slot with 800; a key it issued not in its catalog's index: the error slot with its own write's code (800 when it had none to fail); else the program's answer (below, "Keys a request issued") | the error slot |
 | op87 | `ffffffff` | the failure count (containers.md 5.3) |
 | op88 | status 800, 809 or 810, the save's message as the error text, no member | a status and a text (containers.md 3.2) |
 | op240, an edit | status 800, 809 or 810 with what the file keeps; unknown: status 65535 (`OUTCOME_UNKNOWN`), which `om-author` reports as `outcome_unknown` | OpenMaker's own extension (docs/authoring.md) |
@@ -765,22 +773,37 @@ create file on disk".
 | an account edit | "not written" with the save's message; unknown: an outcome-unknown error, which a script's log and the desktop's message say may or may not be in the file (3 for a script step either way) | as its refusals |
 | the desktop's found set | not kept, a warning in the log | — |
 
-*Keys another request stores.* GenerateMemberKey issues a key while the
-program reads the tree, and the key waits there until a write takes it:
-the program's own draft, or another request's write that held the store
-first, which then stores it with its own. So that a program is never
-answered as stored for a key whose save had an unknown outcome, each op86
-request holds a ticket (`Store::issue_ticket`), recorded with each key it
-issues (`Store::generate_member_key_for`). The write that takes the keys
-takes their tickets with them, and records how its save ended for each:
-stored, or unknown with the save's code (`Store::settle_key_tickets`);
-when it is not stored the keys and tickets wait again. When the request
-ends it reads, and forgets, what became of its keys
-(`Store::finish_ticket`): stored, its answer stands; unknown, it answers
-the error slot with that code, also when it has nothing of its own left to
-store; not stored, its own draft decided (its error slot when that was not
-stored either). A ticket whose keys still wait when the request ends is
-dropped from them; the keys are stored by the next write as before.
+*Keys a request issued.* GenerateMemberKey issues a key while the
+program reads the tree (`Store::issue_member_key`), and the key waits
+there until a write takes it: the program's own draft, or another
+request's write that held the store first and stores it with its own.
+The request keeps the ids it issued, with their catalogs, and once it has
+submitted its own draft it answers from one look at the store, under one
+hold of its lock (`Store::issued_keys`):
+
+- the file takes no more changes (a save's outcome was unknown, the one
+  that wrote the keys or any other): the error slot with 800, whether or
+  not its keys are on disk;
+- else a key it issued is not in its catalog's index (the index's last
+  id, `[C, 01, 00]`, is below it: no save stored it, because one failed
+  and the key waits again or because the file became read-only and no
+  write takes it; or a write dropped it, its catalog no longer able to
+  take it): the error slot a key not stored answers, with its own write's
+  code, or 800 when it had none that failed;
+- else its answer stands.
+
+This is enough because neither outcome that must not be answered as
+success can pass unseen. An unknown outcome freezes the file for good
+(until it is hosted again), so the look at the end sees it, whoever's
+save it was and whenever it came before. Any save that stored nothing
+leaves the catalog's index below the key (a save that fails puts back
+what it took), so the look sees a key not stored, whoever's write it was.
+It reads only the index and the file's state, so no state per request is
+kept in the store, and a request that ends by a panic leaves nothing
+behind. A key whose counter a later write's own catalog changes put back
+below it is answered as not stored, but another request can then be
+issued the same id
+([#736](https://github.com/OpenMaker-Dev/openmaker/issues/736)).
 
 *No more changes.* After an unknown outcome the store refuses every later
 save (`Store::writes_refused`), and `submit` refuses every operation that
@@ -805,94 +828,33 @@ state is held in the store (checked under its write lock) and once more in
 the file (`Hosted::writes_refused`, set once, read without a lock), so that
 the list of files does not wait for a busy store.
 
-*The file's lock.* OpenMaker Server holds the lock of every file it
-hosts (`crate::filelock`, `flock`, exclusive), from opening it until it
-stops hosting it, as the desktop's local host holds its file's; both open
-and lock a file the same way (`filelock::open_locked`, the one
-implementation). The lock is on the open file: a save, which renames a
-new copy over the file's name, locks the new copy before the rename and
-lets go of the old file after it (`Store::save`), so whoever opens the
-file by its name finds it locked, before the rename and after. One that
-opened the old file just before the rename gets that file's lock, freed
-after the save, and finds its descriptor no longer the file at the name;
-it opens again and finds the new file locked. So:
-
-- a file another OpenMaker has open is not hosted: at startup it is left
-  out with an alert (`HostingError::InUse`, as a file another of the
-  server's own names already hosts is, `HostingError::SameFile`), and an
-  administrator's open of it leaves it closed with that reason
-  (`FileInfo::error`); the desktop cannot open a file a server hosts (300,
-  "in use"), and a second server cannot host it;
-- a file with other names (hard links) is hosted read-only, under a shared
-  lock, with an alert, as the desktop opens it: a save would leave the
-  other names with the old contents;
-- the file is opened for reading and writing where this user may write
-  it, else for reading (`anchored::Folder::open_regular_for_lock`), still
-  without following a link, without blocking, and refused unless it is a
-  regular file; nothing is written through that descriptor. On NFS Linux
-  builds `flock` from byte-range locks, and an exclusive one needs a
-  descriptor open for writing (flock(2), "NFS details");
-- where the file cannot be locked (no `flock` on that file system or
-  platform, no lock manager, or a lock refused for the descriptor's mode,
-  `EBADF`, as NFS refuses an exclusive lock on a file this user may only
-  read), the server hosts it unlocked, as before, read-only all the same
-  when it has other names, and keeps a copy beside it (below); the desktop
-  opens it read-only (`ReadOnly::NoLocks`). Not run on NFS: the `EBADF`
-  case is tested with an injected lock error;
-- the server lets go of the lock when it stops hosting the file: an
-  administrator's close once the file is drained, a load that fails after
-  the lock was taken, and the end of the server's state (the process's
-  end, or, for a server embedded in another program, its connections
-  closed and `ServerHandle::release_files`). A shutdown alone keeps the
-  files, and their locks, for the connections it leaves open.
-  `release_files` closes every file at once; each store tells when it has
-  gone, its lock's descriptor closed (`filelock::Released`, set from the
-  store's drop, waited on without polling). The call waits, until one
-  deadline for the whole call, for every file this server let go of, in
-  this call or an earlier one, and answers true only when all of them are
-  let go of: a later call after one that timed out waits for those still
-  held.
-
 *A leftover copy.* A save that stops part way (the process or the machine
 stopped) leaves `<file>.omsave`, whose name a save creates only where
 nothing is, so every later save of the file fails while it is there.
+Nothing in OpenMaker removes it, or anything else at that name: a file
+it did not create in the same call is never unlinked. When a file is
+opened for hosting, anything at its save's copy name (a copy a save left,
+a link, a folder, any other file; looked at in the file's folder without
+following a link, and one that cannot be looked at counts) makes the file
+served read-only, with a reason of its own that names the entry:
 
-No file whose name ends in `.omsave`, compared without regard to ASCII
-case, is hosted or opened (OpenMaker's own rule, `store::is_save_copy_name`):
-opening `A.fmp12` removes a leftover `A.fmp12.omsave`, so such a file
-could otherwise be a database another host serves. A server leaves one it
-is given out with an alert, as any file it cannot host
-(`HostingError::SaveCopyName`); its database folders never find one, as
-they take only names ending in `.fmp12`. The desktop refuses one as not a
-FileMaker file (807). So the name a save writes its new copy under is
-never a database's that is open.
+- OpenMaker Server logs it and raises an alert naming the entry's path
+  (`Event::hosted_read_only`); the file is served, its writes are refused
+  as a read-only file's are (op72 answers 200, as op71 does), and the
+  administrator removes the entry, then closes and opens the file
+  (`hosting::load_hosted`, `store::copy_beside`);
+- the desktop opens the file read-only (`ReadOnly::CopyInTheWay`), says
+  why in the window and logs the entry's path.
 
-When a file is opened for hosting with its exclusive lock, before anything
-is saved, the entry is looked at once in the file's own folder without
-following a link, and (`store::clear_leftover_copy`, the one
-implementation for the server and the desktop):
+Something put there while the file is hosted makes the next save fail
+before its rename: the save's new copy is created only where nothing is,
+so the change is not stored and is taken back, the reply is the storage
+error (800), and the log line and the alert say which entry is in the way
+of the save's new copy. Once it is removed, the next save works.
 
-- a regular file with no other name, as a save creates it, is opened
-  without following a link (for writing where it may be, as the file is)
-  and locked, exclusive and without waiting; still that entry, with no
-  other name, it is removed by name through the same folder handle, which
-  never follows a link, its lock going with it, and the removal is logged
-  (on a server also in the event log). A save locks its copy before its
-  rename, so a copy whose lock another holds is one a save is writing;
-- anything else is left as it is: a link (to a file or a folder), a
-  folder, a file with other names (hard links), a copy whose lock another
-  program holds or that cannot be locked here, one that changed while it
-  was looked at, and a copy whose removal fails. A server then hosts the
-  file as it did before this rule: it is
-  served, each change is answered with the storage error while the entry
-  is there, and an alert says why; the administrator can remove the entry
-  without closing the file, and the next save works. The desktop opens
-  the file read-only (`ReadOnly::CopyInTheWay`), as it did.
-
-Removal happens only under the exclusive lock the host holds for hosting
-the file: every OpenMaker that has the file open holds its lock from
-opening to closing, its saves included, so none can be in the middle of a
-save of the file. A file hosted read-only, or unlocked, keeps its copy.
+OpenMaker Server holds no lock on the files it hosts, as before: another
+OpenMaker that opens the same file is not kept out
+([#724](https://github.com/OpenMaker-Dev/openmaker/issues/724)).
 
 ## 6. The store engine
 

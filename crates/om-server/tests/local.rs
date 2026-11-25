@@ -626,18 +626,27 @@ fn deferred_work_that_cannot_be_saved_leaves_the_file_read_only_and_says_why() {
     assert!(!pending(&copy));
 }
 
-/// A file named as a save's copy (`<file>.omsave`, in any case) is not
-/// opened, as it is not a database: opening `<file>` would remove it.
+/// A save whose outcome is unknown, here the first login's save of the
+/// deferred work (renamed over the file, its folder not flushed), leaves
+/// the file taking no more changes: the desktop is told it is read-only,
+/// with a reason of its own, from that login on (docs/server-storage.md 5).
 #[test]
-fn a_file_named_as_a_saves_copy_is_not_opened() {
-    let folder = Folder::new("copy-name");
-    let path = folder.tasks(FILE);
-    let copy = folder.0.join(format!("{FILE}.OMSAVE"));
-    std::fs::copy(&path, &copy).unwrap();
+fn a_save_whose_outcome_is_unknown_leaves_a_local_file_read_only() {
+    let folder = Folder::new("unknown-outcome");
+    let list = [uint_segment(TABLE), vec![3], vec![1], vec![0xfd]];
+    let list: Vec<&[u8]> = list.iter().map(Vec::as_slice).collect();
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(&list, OwnedNode::leaf(Vec::new(), Vec::new()));
+    });
     let client = client();
-    let refused = LocalHost::open(&copy, &client.cert).unwrap_err();
-    assert_eq!(refused.code(), 807, "{refused:?}");
-    assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&path).unwrap());
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    assert!(host.failing_saves(Some(om_server::SaveFault::FolderFlush)));
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert!(host.failing_saves(None));
+    assert_eq!(host.read_only(), Some(ReadOnly::NoMoreChanges));
+    assert!(host.is_read_only());
+    assert!(host.close());
 }
 
 #[test]
@@ -936,37 +945,24 @@ fn files_a_save_could_not_replace_safely_are_served_read_only() {
 }
 
 /// A copy a save left beside a local file when it stopped part way is
-/// removed once the open holds the file's lock for writing, and the file
-/// opens writable and saves; an entry there that a save never leaves, a
-/// file with another name, is left and the file opens read-only
+/// never removed: the file opens read-only, with the reason, and the copy
+/// is left as it is. Once the user removes it, the file opens writable
 /// (docs/server-storage.md 5).
-#[cfg(unix)]
 #[test]
-fn a_copy_a_save_left_is_removed_when_a_file_opens() {
-    const CHANGED: &str = "after a crash";
+fn a_copy_a_save_left_keeps_a_local_file_read_only() {
     let folder = Folder::new("leftover");
     let path = folder.tasks(FILE);
     let copy = folder.0.join(format!("{FILE}.omsave"));
     std::fs::write(&copy, b"half a save").unwrap();
     let client = client();
     let host = LocalHost::open(&path, &client.cert).unwrap();
-    assert_eq!(host.read_only(), None);
-    assert!(!copy.exists(), "removed");
-    host.change_password(ACCOUNT, PASSWORD, CHANGED).unwrap();
-    assert!(host.close());
-    let again = LocalHost::open(&path, &client.cert).unwrap();
-    assert_eq!(login(&again, &client, ACCOUNT, CHANGED), 0, "saved");
-    assert!(again.close());
-    assert_eq!(folder.files(), [FILE]);
-
-    // A file with another name is not a copy a save left.
-    let other = folder.0.join("other name");
-    std::fs::write(&other, b"someone's file").unwrap();
-    std::fs::hard_link(&other, &copy).unwrap();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
     assert_eq!(host.read_only(), Some(ReadOnly::CopyInTheWay));
     assert!(host.close());
-    assert_eq!(std::fs::read(&copy).unwrap(), b"someone's file");
+    assert_eq!(std::fs::read(&copy).unwrap(), b"half a save");
+    std::fs::remove_file(&copy).unwrap();
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    assert!(host.close());
 }
 
 #[test]
@@ -975,11 +971,9 @@ fn read_only_queries_refuse_schema_writes_before_execution() {
     let folder = Folder::new("readonly-schema-query");
     let path = folder.tasks(FILE);
     let before_bytes = std::fs::read(&path).unwrap();
-    // A synthetic collision makes this read-only on every supported Unix
-    // host: a folder where a save makes its copy, which an open never
-    // removes (a regular file there would be a copy a save left, removed).
+    // A synthetic collision makes this read-only on every supported Unix host.
     let copy = folder.0.join(format!("{FILE}.omsave"));
-    std::fs::create_dir(&copy).unwrap();
+    std::fs::write(&copy, b"owned review sentinel").unwrap();
     let client = client();
     let host = LocalHost::open(&path, &client.cert).unwrap();
     assert_eq!(host.read_only(), Some(ReadOnly::CopyInTheWay));
@@ -1027,7 +1021,7 @@ fn read_only_queries_refuse_schema_writes_before_execution() {
     session.disconnect().unwrap();
     assert!(host.close());
     assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
-    assert!(copy.is_dir(), "the collision is left as it was");
+    assert_eq!(std::fs::read(&copy).unwrap(), b"owned review sentinel");
     assert_eq!(
         after, before,
         "read-only op86 DeleteTable changed the live store"

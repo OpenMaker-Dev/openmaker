@@ -160,9 +160,6 @@ pub struct Entry {
     pub id: Option<FileId>,
     /// Whether it is a regular file (not a link, folder or other).
     pub regular: bool,
-    /// How many names (hard links) it has; 1 on Windows, which this does
-    /// not read.
-    pub links: u64,
     pub permissions: std::fs::Permissions,
 }
 
@@ -181,38 +178,13 @@ impl Folder {
     /// database would hold the caller): so that a file swapped in after a
     /// check cannot be read instead.
     pub fn open_regular(&self, name: &OsStr) -> io::Result<File> {
-        self.open_regular_as(name, false)
-    }
-
-    /// [`Folder::open_regular`] for an exclusive lock: open for reading and
-    /// writing, as an exclusive `flock` needs on file systems that build it
-    /// from byte-range locks (NFS on Linux, flock(2), "NFS details"), or,
-    /// when this user may not write the file (or the file system is
-    /// read-only), for reading. Nothing is written through it: saves write
-    /// a new copy and rename it.
-    pub fn open_regular_for_lock(&self, name: &OsStr) -> io::Result<File> {
-        match self.open_regular_as(name, true) {
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
-                ) =>
-            {
-                self.open_regular_as(name, false)
-            }
-            opened => opened,
-        }
-    }
-
-    fn open_regular_as(&self, name: &OsStr, write: bool) -> io::Result<File> {
         #[cfg(unix)]
         let file = {
             use rustix::fs::{Mode, OFlags};
-            let mode = if write { OFlags::RDWR } else { OFlags::RDONLY };
             File::from(rustix::fs::openat(
                 &self.fd,
                 name,
-                mode | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
             )?)
         };
@@ -228,10 +200,7 @@ impl Folder {
                     ),
                 ));
             }
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(write)
-                .open(path)?
+            File::open(path)?
         };
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(
@@ -288,8 +257,6 @@ impl Folder {
                         id: Some(identity(&stat)),
                         regular: rustix::fs::FileType::from_raw_mode(stat.st_mode)
                             == rustix::fs::FileType::RegularFile,
-                        #[allow(clippy::useless_conversion)]
-                        links: u64::from(stat.st_nlink),
                         permissions: std::fs::Permissions::from_mode(mode_bits(mode)),
                     }))
                 }
@@ -302,7 +269,6 @@ impl Folder {
             Ok(m) => Ok(Some(Entry {
                 id: None,
                 regular: m.is_file(),
-                links: 1,
                 permissions: m.permissions(),
             })),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),

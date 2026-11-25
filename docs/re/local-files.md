@@ -780,31 +780,23 @@ than a second reader and writer.
   open checks the descriptor's device and inode against the path after
   locking and opens again when they differ; a file that keeps changing, or
   is locked by another window or process, is refused with FileMaker's error
-  300. OpenMaker Server holds the same lock on every file it hosts, taken
-  the same way (`filelock::open_locked`), so a file a server hosts on this
-  computer is in use too (docs/server-storage.md 5, "The file's lock"). Its bytes are read through the locked descriptor and decoded; a file
+  300. Its bytes are read through the locked descriptor and decoded; a file
   that is not HBAM7 is refused with 807, one that does not decode (damaged
-  or encrypted) with 805. A file named as a save's copy (ending in
-  `.omsave`, in any case) is refused with 807 before it is read: opening
-  the file it would be the copy of removes it (OpenMaker's own rule,
-  docs/server-storage.md 5, "A leftover copy"). Nothing is written before
-  an admitted login.
+  or encrypted) with 805. Nothing is written before an admitted login.
 - **Read-only files.** A file is opened read-only when it cannot be written
   safely: this user or its file system may not write it, its folder does not
   allow the new copy a save writes, it has other names (hard links, which
   the renamed copy would leave with old contents), it cannot be locked here
-  (Windows; file systems without `flock`; a lock refused for the
-  descriptor's mode, as NFS refuses an exclusive lock for a descriptor open
-  only for reading), or an entry that a save does not leave has the name
-  of a save's copy (`<file>.omsave`: a link, a folder, a file with other
-  names, a copy another program holds locked). A copy a save left when it
-  stopped part way, a regular file with no other name, is removed once the
-  open holds the lock for writing and the copy's own lock, as OpenMaker
-  Server removes one (docs/server-storage.md 5, "Failed saves"). A file
-  also becomes read-only when the deferred field work it held could not be
-  saved at the first admitted login (docs/server-storage.md 5): the
-  reason the provider gives when that login ends, and at each later check,
-  is the host's state after it. The window shows why; the provider
+  (Windows; file systems without `flock`), or anything already has the
+  name of a save's copy (`<file>.omsave`), a copy an earlier save left
+  when it stopped part way included: nothing removes it, the user does
+  (docs/server-storage.md 5, "A leftover copy"). A file also becomes
+  read-only after it opened: when the deferred field work it held could
+  not be saved at the first admitted login, or was left part way, and when
+  a save's outcome was unknown, after which it takes no more changes
+  (docs/server-storage.md 5). Each has its own reason (`ReadOnly`), and
+  the reason the provider gives when the opening login ends, and at each
+  later check, is the host's state then. The window shows why; the provider
   refuses changes before sending them (FileMaker's error 6, also for the
   deletions scripts and portals make), the host refuses every write request
   (record creation, uploads, commits, serials, schema and container
@@ -887,8 +879,10 @@ than a second reader and writer.
   admitted account first logs in to a writable file: a wrong password, a
   refused account, Cancel or a failed open leave the file as it was. When
   that save fails the work is taken back and the file is served as its
-  disk holds it, read-only. OpenMaker Server's own files are recovered
-  the same way as it starts.
+  disk holds it, read-only; so it is when the work was left part way (a
+  panic), which the next login finds. A second login waits for the first
+  one's work to end. OpenMaker Server's own files are recovered the same
+  way as it starts.
 - **Closing.** Closing the file disconnects its session and gives up the
   session's hold on the host (below, "Related files and other files"). When
   no other session of the window's files has the file open, the host stops,

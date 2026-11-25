@@ -2117,84 +2117,115 @@ fn what_a_draft_took_waits_again_when_its_operation_is_not_stored() {
     );
 }
 
-/// The review's P1 on GenerateMemberKey: request A's key may be taken and
-/// written by request B's write before A's own draft runs. A learns what
-/// became of it from its ticket: stored, or written with an unknown
-/// outcome; when B's save did not store it, the key waits again, with
-/// A's ticket, and A's own draft decides.
+/// The review's P1s on GenerateMemberKey: request A's keys may be written
+/// by its own draft or by request B's write that held the store first. A
+/// answers, once it submitted its own draft, from one look at the store
+/// (`Store::issued_keys`): stored, its answer stands; the file taking no
+/// more changes (B's save's outcome was unknown), unknown; a key its
+/// catalog's index does not hold (it waits because no save stored it or
+/// the file became read-only, or the write dropped it), the error of a key
+/// not stored. Never success for a key not stored or whose save's outcome
+/// is unknown.
 #[test]
-fn a_request_learns_what_became_of_the_keys_another_write_took() {
-    use crate::store::KeysSettled;
+fn a_request_answers_from_what_became_of_the_keys_it_issued() {
+    use crate::store::IssuedKeysAre;
     let mut tree = fixture::tree(&[], true);
     fixture::add_tasks(&mut tree, 1..=3);
     let engine = engine();
-    let layouts = [vec![4]];
-    let b_draft = || Draft::ChangeSchema { writes: Vec::new() };
+    let layouts = vec![vec![4]];
+    let draft = || Draft::ChangeSchema { writes: Vec::new() };
     let issue = |file: &Hosted| {
-        let store = file.read_store();
-        let ticket = store.issue_ticket();
-        store.generate_member_key_for(&layouts, ticket).unwrap();
-        ticket
+        let (id, _) = file.read_store().issue_member_key(&layouts).unwrap();
+        vec![(layouts.clone(), id)]
     };
+    let ended =
+        |file: &Hosted, issued: &[(Vec<Vec<u8>>, u64)]| match file.read_store().issued_keys(issued)
+        {
+            IssuedKeysAre::Stored => "stored",
+            IssuedKeysAre::NotStored => "not stored",
+            IssuedKeysAre::Unknown(_) => "unknown",
+        };
 
-    // B's write stores A's key: A's answer stands.
-    let (_disk, file) = host("tickets-stored", &tree);
+    // B's write stores A's key before A's own draft, which has nothing left
+    // to store: stored. A key C issued since, which waits, is not A's.
+    let (_disk, file) = host("keys-stored", &tree);
     let a = issue(&file);
     assert_eq!(
-        engine.submit_draft(&file, b_draft()).reply,
+        engine.submit_draft(&file, draft()).reply,
         Reply::ChangeSchema(Ok(()))
     );
     assert_eq!(
-        file.read_store().finish_ticket(a),
-        Some(KeysSettled::Stored)
+        engine.submit_draft(&file, draft()).reply,
+        Reply::StoreIndexes(Ok(()))
     );
-    assert_eq!(file.read_store().finish_ticket(a), None, "asked once");
+    let c = issue(&file);
+    assert_eq!(ended(&file, &a), "stored");
+    assert_eq!(ended(&file, &c), "not stored");
 
-    // B's save is not stored: the key and A's ticket wait again, and A's
-    // own draft stores them.
-    let (_disk, file) = host("tickets-not-stored", &tree);
+    // B's save stores nothing: A's key waits again, and A's own draft
+    // stores it.
+    let (_disk, file) = host("keys-not-stored", &tree);
     let a = issue(&file);
     file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
-    let b = engine.submit_draft(&file, b_draft());
+    let b = engine.submit_draft(&file, draft());
     file.fail_saves(None);
     assert!(is_storage_error(&b.reply), "{b:?}");
-    assert_eq!(file.read_store().waiting_for_tests().1.len(), 1);
-    let own = engine.submit_draft(&file, b_draft());
-    assert_eq!(own.reply, Reply::ChangeSchema(Ok(())));
+    assert_eq!(ended(&file, &a), "not stored");
     assert_eq!(
-        file.read_store().finish_ticket(a),
-        Some(KeysSettled::Stored)
-    );
-
-    // A's own draft is not stored: A answers that, and its key, which
-    // waits, is no longer its to learn about.
-    let a = issue(&file);
-    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
-    let own = engine.submit_draft(&file, b_draft());
-    file.fail_saves(None);
-    assert!(is_storage_error(&own.reply), "{own:?}");
-    assert_eq!(file.read_store().finish_ticket(a), None);
-    assert_eq!(
-        engine.submit_draft(&file, b_draft()).reply,
+        engine.submit_draft(&file, draft()).reply,
         Reply::ChangeSchema(Ok(()))
     );
-    assert_eq!(file.read_store().finish_ticket(a), None);
+    assert_eq!(ended(&file, &a), "stored");
 
-    // B's save has an unknown outcome: A is told so, even with nothing of
-    // its own left to store.
-    let (_disk, file) = host("tickets-unknown", &tree);
+    // A's own save stores nothing: its key waits.
+    let a = issue(&file);
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    let own = engine.submit_draft(&file, draft());
+    file.fail_saves(None);
+    assert!(is_storage_error(&own.reply), "{own:?}");
+    assert_eq!(ended(&file, &a), "not stored");
+
+    // The file becomes read-only after A issued its key: A's draft takes
+    // nothing and answers as a read; the key waits.
+    let (_disk, file) = host("keys-read-only", &tree);
+    let a = issue(&file);
+    file.write_store(&super::WRITER)
+        .set_read_only(crate::store::ReadOnlyCause::DeferredWork);
+    assert_eq!(
+        engine.submit_draft(&file, draft()).reply,
+        Reply::StoreIndexes(Ok(()))
+    );
+    assert_eq!(ended(&file, &a), "not stored");
+
+    // B's draft deletes the table whose field catalog A's key is for: the
+    // key writer drops the key, which neither waits nor is stored.
+    let (_disk, file) = host("keys-dropped", &tree);
+    let table = uint_segment(fixture::TABLE);
+    let fields = vec![table.clone(), vec![3]];
+    let (id, _) = file.read_store().issue_member_key(&fields).unwrap();
+    let a = vec![(fields.clone(), id)];
+    let delete = Draft::ChangeSchema {
+        writes: vec![om_query::Write::Remove { path: vec![table] }],
+    };
+    assert_eq!(
+        engine.submit_draft(&file, delete).reply,
+        Reply::ChangeSchema(Ok(()))
+    );
+    assert_eq!(file.read_store().waiting_for_tests().1, Vec::new());
+    assert_eq!(ended(&file, &a), "not stored");
+
+    // B's save's outcome is unknown: A is told so, though nothing of its
+    // own is left to store.
+    let (_disk, file) = host("keys-unknown", &tree);
     let a = issue(&file);
     file.fail_saves(Some(crate::store::SaveFault::FolderFlush));
-    let b = engine.submit_draft(&file, b_draft());
+    let b = engine.submit_draft(&file, draft());
     file.fail_saves(None);
     assert!(
         matches!(&b.reply, Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(e))) if e.unknown),
         "{b:?}"
     );
-    assert_eq!(
-        file.read_store().finish_ticket(a),
-        Some(KeysSettled::Unknown(800))
-    );
+    assert_eq!(ended(&file, &a), "unknown");
 }
 
 /// What reads leave waiting is taken by the first write that holds the
@@ -3629,18 +3660,25 @@ fn an_upload_a_library_names_under_a_key_it_does_not_reuse_is_taken_back() {
     assert_eq!(taken_back, [0]);
 }
 
-/// The review's P1 on recovery: deferred field work a file is opened with
-/// is finished and saved as one operation, so when that save fails the
-/// work is taken back. The file is served as its disk holds it, the work
-/// list there and the stored calculation as stored, read-only, as when its
-/// work cannot be done; the file on disk is unchanged.
-#[test]
-fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_read_only() {
-    let mut tree = fixture::tree(&[], true);
-    fixture::add_tasks(&mut tree, 1..=3);
+/// The file at `file` hosted for the desktop, its deferred work not yet
+/// finished (that waits for the first admitted login, `Hosted::recover`).
+fn local(file: &fixture::TempFile) -> Arc<Hosted> {
+    let hosted = HostedFile {
+        name: fixture::FILE.into(),
+        path: file.0.clone(),
+    };
+    let hbam = om_hbam::HbamFile::open(&file.0).unwrap();
+    let hosting = Hosting::local(&hosted, &hbam, None, false).unwrap();
+    hosting.by_name(fixture::FILE).unwrap()
+}
+
+/// Tasks with deferred work pending: record 1's stored calculation
+/// Doubled as "99" and the work list that recomputes it (`[T, 03, 01,
+/// fd]`); the list's path, and the list.
+fn with_deferred_work(tree: &mut OwnedNode) -> (Vec<Vec<u8>>, OwnedNode) {
     let table = uint_segment(fixture::TABLE);
     let deferred = vec![table.clone(), vec![0x03], vec![0x01], vec![0xfd]];
-    let doubled = vec![
+    let doubled = [
         table.clone(),
         vec![0x05],
         serial::encode(1),
@@ -3657,14 +3695,35 @@ fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_r
     );
     let deferred_path: Vec<&[u8]> = deferred.iter().map(Vec::as_slice).collect();
     tree.put(&deferred_path, work.clone());
+    (deferred, work)
+}
+
+/// The review's P1 on recovery: deferred field work a file is opened with
+/// is finished and saved as one operation, so when that save fails the
+/// work is taken back. The file is served as its disk holds it, the work
+/// list there and the stored calculation as stored, read-only, as when its
+/// work cannot be done; the file on disk is unchanged.
+#[test]
+fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_read_only() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let (deferred, work) = with_deferred_work(&mut tree);
+    let doubled = vec![
+        uint_segment(fixture::TABLE),
+        vec![0x05],
+        serial::encode(1),
+        uint_segment(fixture::DOUBLED),
+    ];
     let disk = fixture::TempFile::from_tree("engine-recovery-failing", &tree);
     let bytes = std::fs::read(&disk.0).unwrap();
-    // The save's new copy cannot be made where a folder stands.
-    let blocked = crate::store::save_copy_path(&disk.0);
-    std::fs::create_dir(&blocked).unwrap();
-    let file = load(&disk);
-    std::fs::remove_dir(&blocked).unwrap();
-    assert!(file.is_read_only());
+    let file = local(&disk);
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    file.recover(&engine());
+    file.fail_saves(None);
+    assert_eq!(
+        file.read_store().read_only_cause(),
+        Some(crate::store::ReadOnlyCause::DeferredWork)
+    );
     assert_eq!(
         node_at(&file, &deferred),
         Some(work),
@@ -3686,6 +3745,35 @@ fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_r
         node_at(&file, &doubled).and_then(|n| n.value),
         text_node(&[], "2").value
     );
+}
+
+/// The review's P0 on recovery left by a panic: the engine takes back what
+/// the panicking run did, and the work is marked begun, not ended, so the
+/// next login does not get the file as if it were recovered: it is served
+/// read-only, as its disk holds it with the work pending.
+#[test]
+fn deferred_work_a_panic_left_is_not_taken_as_done() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let (deferred, work) = with_deferred_work(&mut tree);
+    let disk = fixture::TempFile::from_tree("engine-recovery-panic", &tree);
+    let bytes = std::fs::read(&disk.0).unwrap();
+    let file = local(&disk);
+    let engine = engine();
+    super::transaction::PANIC_RECOVERING.with(|panics| panics.set(true));
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.recover(&engine)));
+    super::transaction::PANIC_RECOVERING.with(|panics| panics.set(false));
+    assert!(ran.is_err());
+    assert_eq!(node_at(&file, &deferred), Some(work.clone()), "taken back");
+    assert!(!file.is_read_only());
+    // The next login.
+    file.recover(&engine);
+    assert_eq!(
+        file.read_store().read_only_cause(),
+        Some(crate::store::ReadOnlyCause::DeferredWork)
+    );
+    assert_eq!(node_at(&file, &deferred), Some(work), "still pending");
+    assert_eq!(std::fs::read(&disk.0).unwrap(), bytes);
 }
 
 /// The review's P2 on account edits: an edit whose save's outcome is
