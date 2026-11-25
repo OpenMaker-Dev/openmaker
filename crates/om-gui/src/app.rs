@@ -873,6 +873,9 @@ enum Launch {
 struct Opening {
     target: Target,
     destination: crate::file_history::SavedFile,
+    /// Open Network File's Add to Hosts: saved once the file opens, so a
+    /// failed open and a failed save never share the one alert.
+    save_host: Option<crate::file_history::SavedHost>,
 }
 
 impl Opening {
@@ -888,6 +891,7 @@ impl Opening {
                 file,
                 local: Some(path),
             },
+            save_host: None,
         }
     }
 }
@@ -3204,10 +3208,10 @@ impl OpenMakerApp {
                 self.form.password.zeroize();
                 self.form = ConnectForm::from(connection);
                 self.apply(ctx, Action::Connect);
-                // After Connect, which clears the alert: a host that could
-                // not be saved says so.
-                if let Some(host) = save_host {
-                    self.edit_file_history(crate::file_history::Change::AddHost(host));
+                // Saved once the file opens (`file_opened`); a failed open
+                // drops it, and the dialog, still ticked, asks again.
+                if let Some(opening) = &mut self.opening {
+                    opening.save_host = save_host;
                 }
             }
             connect::NetworkAction::Cancel => {
@@ -4782,6 +4786,7 @@ impl OpenMakerApp {
                                 port: connection.port,
                                 file: connection.file.clone(),
                             },
+                            save_host: None,
                         });
                         self.request(
                             ctx,
@@ -5532,9 +5537,13 @@ impl OpenMakerApp {
         let Opening {
             target,
             destination,
+            save_host,
         } = opening;
         if !self.sample_data {
             self.edit_file_history(crate::file_history::Change::Opened(destination.clone()));
+        }
+        if let Some(host) = save_host {
+            self.edit_file_history(crate::file_history::Change::AddHost(host));
         }
         self.home.reset();
         self.closed_windows.clear();
