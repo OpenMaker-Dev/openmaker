@@ -467,10 +467,11 @@ fn process_mb(pid: u32, name: &str) -> f64 {
 /// stored index (median of 5), a find on Code whose index is built on
 /// demand (the first, then once more), a sort of every record by Name, and
 /// a download of the table's records `[T, 05]` in pages (op90), and the
-/// process's peak resident memory and its resident memory after them; then
-/// an ExistsInIndex of [`BULK_KEYS`] keys no record holds, each just below
-/// the key most records hold, with the peak resident memory during it alone.
-/// `OM_TIMING_SERVER` names another `om-server` binary to measure.
+/// process's peak resident memory and its resident memory after them. After
+/// the finds on Name, an ExistsInIndex of [`BULK_KEYS`] keys no record
+/// holds, each just below the key most records hold (median of 5), with the
+/// peak resident memory during it alone. `OM_TIMING_SERVER` names another
+/// `om-server` binary to measure.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "a measurement for release builds; set OM_TIMING_FILE and OM_TIMING_STEP"]
@@ -638,6 +639,50 @@ fn engines() {
         })
         .collect();
     report("find on Name, its index stored", times);
+    // ExistsInIndex of keys no record holds, each just below the key of the
+    // value most records hold, so that each lookup misses next to its entry
+    // (the value's key is checked first: a hit, its records read once).
+    // Before the find on Code: on the file engine an index built on demand
+    // that its read-only folder cannot store is built again for each later
+    // query, which would be timed too.
+    let common = om_collate::text_key(COMMON_CREATOR);
+    let exists = |session: &mut om_session::Session, keys: &[Vec<u8>]| {
+        let reply = session
+            .query(&exists_program(file_id, fixture::CREATOR, keys))
+            .unwrap();
+        let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&reply.slots)).unwrap();
+        match tree.node(&[&[1], &[0]]).and_then(|node| node.value) {
+            Some([1, 1]) => true,
+            Some([1, 0]) => false,
+            other => panic!("ExistsInIndex answered {other:02x?}"),
+        }
+    };
+    assert!(exists(&mut session, std::slice::from_ref(&common)));
+    let last = common.iter().rposition(|&b| b > 0).unwrap();
+    let missing: Vec<Vec<u8>> = (0..BULK_KEYS)
+        .map(|i| {
+            let mut key = common[..=last].to_vec();
+            key[last] -= 1;
+            key.extend(i.to_be_bytes());
+            key
+        })
+        .collect();
+    // The peak during it alone (proc(5), clear_refs), and the process's
+    // peak so far kept for the one reported after the reads.
+    let peak = process_mb(pid, "VmHWM:");
+    std::fs::write(format!("/proc/{pid}/clear_refs"), "5").unwrap();
+    let resident = process_mb(pid, "VmRSS:");
+    let times = (0..5)
+        .map(|_| timed(&mut || assert!(!exists(&mut session, &missing))))
+        .collect();
+    report(
+        &format!("ExistsInIndex of {BULK_KEYS} missing keys below the common Creator"),
+        times,
+    );
+    println!(
+        "{engine} engine: resident {resident:.0} MB before it, peak during it {:.0} MB",
+        process_mb(pid, "VmHWM:")
+    );
     let code = format!("=={}", generated_text(456, fixture::CODE));
     let by_code = finder_program(file_id, fixture::CODE, DataType::Text, &code);
     let first = timed(&mut || assert_eq!(records(&session.query(&by_code).unwrap()), 1));
@@ -694,46 +739,7 @@ fn engines() {
     println!(
         "{engine} engine: resident {:.0} MB after the reads, peak {:.0} MB",
         process_mb(pid, "VmRSS:"),
-        process_mb(pid, "VmHWM:")
-    );
-    // ExistsInIndex of keys no record holds, each just below the key of the
-    // value most records hold, so that each lookup misses next to its entry
-    // (the value's key is checked first: a hit, its records read once).
-    let common = om_collate::text_key(COMMON_CREATOR);
-    let exists = |session: &mut om_session::Session, keys: &[Vec<u8>]| {
-        let reply = session
-            .query(&exists_program(file_id, fixture::CREATOR, keys))
-            .unwrap();
-        let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&reply.slots)).unwrap();
-        match tree.node(&[&[1], &[0]]).and_then(|node| node.value) {
-            Some([1, 1]) => true,
-            Some([1, 0]) => false,
-            other => panic!("ExistsInIndex answered {other:02x?}"),
-        }
-    };
-    assert!(exists(&mut session, std::slice::from_ref(&common)));
-    let last = common.iter().rposition(|&b| b > 0).unwrap();
-    let missing: Vec<Vec<u8>> = (0..BULK_KEYS)
-        .map(|i| {
-            let mut key = common[..=last].to_vec();
-            key[last] -= 1;
-            key.extend(i.to_be_bytes());
-            key
-        })
-        .collect();
-    // The peak from here on alone (proc(5), clear_refs).
-    std::fs::write(format!("/proc/{pid}/clear_refs"), "5").unwrap();
-    let resident = process_mb(pid, "VmRSS:");
-    let times = (0..3)
-        .map(|_| timed(&mut || assert!(!exists(&mut session, &missing))))
-        .collect();
-    report(
-        &format!("ExistsInIndex of {BULK_KEYS} missing keys below the common Creator"),
-        times,
-    );
-    println!(
-        "{engine} engine: resident {resident:.0} MB before it, peak during it {:.0} MB",
-        process_mb(pid, "VmHWM:")
+        process_mb(pid, "VmHWM:").max(peak)
     );
     session.disconnect().unwrap();
     drop(server);
