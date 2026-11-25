@@ -167,8 +167,14 @@ impl View for Copies<'_> {
         max: usize,
         out: &mut Vec<Step<'a>>,
     ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
-        // A walk reads where its node is, whether it is there or not.
+        // A walk reads where its node is, whether it is there or not, and
+        // a page resumed after a node reads where that node is.
         self.check(path)?;
+        if let Some(after) = after {
+            let mut at = path.to_vec();
+            at.extend(after.iter().map(Vec::as_slice));
+            self.check(&at)?;
+        }
         let mut page = Vec::new();
         let resume = self
             .inner
@@ -356,12 +362,12 @@ impl Switch {
                     copies.changed_since(&[], of.version()).unwrap_or(true),
                     "derived state changed without a change of the version"
                 );
-                derived::read_catalog(copies)
+                catalog_of(reading, copies)
                     .map(|catalog| Arc::new(mine.with_catalog(copies.version(), catalog)))
             }
             // The first read of this load of the file (a file closed and
             // opened again is a new store, whose versions start over).
-            _ => derived::read_catalog(copies).and_then(|catalog| {
+            _ => catalog_of(reading, copies).and_then(|catalog| {
                 let mut mine = Derived::new(copies, catalog, current.name())?;
                 if current.desktop() {
                     mine.serve_desktop();
@@ -394,6 +400,26 @@ impl Switch {
                 current.clone()
             }
         }
+    }
+}
+
+/// The catalog the test view's derived state holds: the one it decodes
+/// through `copies`, or, when the file's catalog does not decode through
+/// either view (the same error from both), the one the file engine kept.
+/// The store keeps the catalog it last decoded when a schema change leaves
+/// one it cannot decode (`Store::reread_catalog`); no view of this version
+/// can give that one, which an earlier version held, so that is no
+/// difference between the views. A catalog only the test view fails to
+/// decode is its own failure.
+fn catalog_of(reading: &Reading<'_>, copies: &Copies<'_>) -> om_hbam::Result<om_hbam::Catalog> {
+    match derived::read_catalog(copies) {
+        Ok(catalog) => Ok(catalog),
+        Err(error) => match derived::read_catalog(reading.file_view()) {
+            Err(theirs) if theirs.to_string() == error.to_string() => {
+                Ok(reading.derived().catalog().clone())
+            }
+            _ => Err(error),
+        },
     }
 }
 
@@ -467,6 +493,12 @@ mod tests {
             assert!(matches!(whole[..], [Err(_)]), "{path:02x?}");
         }
         assert!(wire(listing, &[&[9]]).is_err());
+        // A page resumed after a node below the failing one fails, though
+        // what follows that node is not below it.
+        let mut out = Vec::new();
+        let after = [vec![5], vec![0]];
+        assert!(view.walk_page(&[&[1]], Some(&after), 10, &mut out).is_err());
+        assert!(out.is_empty());
         // A read at or below it, a subtree or walk holding it, fail.
         assert!(view.node(&[&[1], &[5], &[0]]).is_err());
         assert!(view.node(&[&[1], &[4], &[0]]).is_ok());

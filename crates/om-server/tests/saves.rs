@@ -546,6 +546,27 @@ fn an_upload_the_file_cannot_hold_leaves_the_file_saveable() {
     root.put(&[&[0x41]], OwnedNode::leaf(Vec::new(), committed.clone()));
     let file = TempFile::from_tree("save-unwritable-upload", &root);
     let port = server::start(&file);
+
+    // An upload the file can hold that leaves a table's name undecodable
+    // (masked SCSU that ends inside a quote), before anything of this load
+    // is read: the store keeps the catalog it last decoded, and the first
+    // read, which a test server answers through both views and compares
+    // (`Server::checking_reads`), answers as the file engine does.
+    assert!(om_scsu::decode_scsu(&[0x5b]).is_err());
+    let (mut first, _) = server::logged_in_unread(port, "first");
+    let table = uint_segment(TABLE);
+    let entry: [&[u8]; 4] = [&[3], &[16], &[5], &table];
+    let named = |name: OwnedNode| OwnedNode::list(Vec::new(), vec![name]);
+    first
+        .upload_to_host(&entry, &named(OwnedNode::leaf(vec![16], vec![0x5b])))
+        .unwrap();
+    let reply = first.download(&[&[0x41]]).unwrap();
+    assert_eq!(reply.value, committed);
+    first
+        .upload_to_host(&entry, &named(om_scripts::text_node(&[16], "Tasks")))
+        .unwrap();
+    first.disconnect().unwrap();
+
     let (mut client, file_id) = server::logged_in(port, "uploads");
     let mut upload = |dest: Vec<Vec<u8>>, child: OwnedNode| {
         let upload = Upload {

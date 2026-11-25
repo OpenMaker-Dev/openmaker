@@ -123,6 +123,24 @@ pub fn logged_in_as(
     account: &str,
     password: &str,
 ) -> (Session, u32) {
+    logged_in_reading(port, name, file, account, password, true)
+}
+
+/// [`logged_in`], without reading the status area `[2]` before Login (the
+/// file's internal creation is the fixture's): a session that has read
+/// nothing of the file.
+pub fn logged_in_unread(port: u16, name: &str) -> (Session, u32) {
+    logged_in_reading(port, name, FILE, ACCOUNT, PASSWORD, false)
+}
+
+fn logged_in_reading(
+    port: u16,
+    name: &str,
+    file: &str,
+    account: &str,
+    password: &str,
+    read_status: bool,
+) -> (Session, u32) {
     let client = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
     let mut session = Session::connect(
         "127.0.0.1",
@@ -137,10 +155,12 @@ pub fn logged_in_as(
     )
     .unwrap();
     let open = session.open_file("127.0.0.1", file).unwrap();
-    assert_eq!(
-        session.fetch_internal_creation().unwrap(),
-        INTERNAL_CREATION
-    );
+    if read_status {
+        assert_eq!(
+            session.fetch_internal_creation().unwrap(),
+            INTERNAL_CREATION
+        );
+    }
     let environment = LoginEnvironment::for_remote_file("127.0.0.1", file);
     let login = session
         .login(account, password, INTERNAL_CREATION, &environment)

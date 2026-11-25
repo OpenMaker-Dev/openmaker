@@ -40,8 +40,14 @@ use om_scripts::text_node;
 /// The number the environment variable `name` gives, `default` without
 /// one; a value that does not parse or lies outside `range` is refused.
 fn env_number(name: &str, default: u64, range: std::ops::RangeInclusive<u64>) -> u64 {
-    let Ok(text) = std::env::var(name) else {
-        return default;
+    let text = match std::env::var(name) {
+        Ok(text) => text,
+        Err(std::env::VarError::NotPresent) => return default,
+        Err(std::env::VarError::NotUnicode(text)) => panic!(
+            "{name}={text:?}: a whole number from {} to {}",
+            range.start(),
+            range.end()
+        ),
     };
     match text.parse() {
         Ok(n) if range.contains(&n) => n,
