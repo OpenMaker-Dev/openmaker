@@ -24,9 +24,11 @@ operations' own reads still hold the file engine's store (section 5,
 (section 6.1), the entries and applying them to the state's trees (6.2,
 6.3), the page trees (6.4), the page file with its checkpoints, restore
 points and the open that chooses a checkpoint (6.7), and the simulator
-(12). Nothing in the server reaches it yet: the log's segments, the store
-behind the engine interface, groups, clones, replication and everything
-else in sections 6 to 12 are specified here and not built.
+(12); `om-server` reads a file's tree in it as a view, imports an
+`.fmp12` into one and exports it again (section 5, "The store engine's
+file"). No file is hosted on it yet: the log's segments, the store behind
+the engine interface, groups, clones, replication and everything else in
+sections 6 to 12 are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -208,7 +210,9 @@ version and walks a view otherwise, and backup schedules and the
 desktop's Save a Copy as make their copies with it. Server scripts and
 the operations' own reads still hold the store; "Moving the other
 readers" below lists them and the plan for them. `import` and
-`capabilities` are not built.
+`capabilities` are not built. Of the store engine, its view of one file,
+the import of an `.fmp12` into it and its export are ("The store engine's
+file", below); no file is hosted on it yet.
 
 **Views.** A view (`engine::View`) is one fixed version of one file's
 tree. Nothing a view returned changes later. It answers:
@@ -850,6 +854,65 @@ at any time from a running server, at a clean stop, and `om-server export`
   refused: a walk into it would put its pages in the wrong places. The
   only caller, the desktop's Save a Copy as, is Linux-only and passes its
   own unnamed file.
+
+**The store engine's file** (`engine::paged`). The store engine's first
+code in the server: one file held in a tree of `om-store`'s pages, read
+as a view, filled from an `.fmp12` and written back as one. No file is
+hosted on it, and nothing of its write side is built.
+
+- **The view** (`PagedView`) reads one version of a tree, named by its
+  root, through any page store (`om_store::page::PageStore`): the page
+  file, through the roots a pin hands over, or a store in memory. Every
+  page it reads is checked by the hash its parent holds; one that does
+  not read or check fails the read that reached it with
+  `ReadError::Unreadable`, naming the path read, and is never data. Each
+  call opens the version again from its root (the page store's cache
+  answers) and holds a page only while it reads it; what it returns is
+  owned. It answers every call as the file engine's view of the same
+  file does, page for page: the same children and walk steps in a page,
+  the same "more may follow" (a full page of children looks one child
+  further to say), and subtrees built with exactly as many places as
+  they hold, so that a limit counts them as it counts the file engine's
+  tree of the same file (`om_hbam::tree::memory` counts capacity). A
+  listing or walk that meets a page that fails partway gives what came
+  before it, and the next page fails. Its version is the index of the
+  last entry that changed the tree, its root page's stamp, read when the
+  view is made; `changed_since` is the tree's own
+  ([server-storage-format.md](server-storage-format.md) 2.8). The `View`
+  trait needed no change.
+- **Import** (`paged::import`) reads an `.fmp12` with
+  `stream::NodeStream` and puts every node, with its kind and value,
+  empty lists included, into a new tree, in batches of at most 4,096
+  nodes and 4 MiB, each one unit of work of the page store committed on
+  its own (`paged::Units`), so that what it holds does not grow with the
+  file. It goes through no log and no entry: its caller gives the entry
+  indexes its batches take. When the store's write path takes it, its
+  batches become the parts of a group whose last entry adds the file
+  (sections 6.9, 6.10). It refuses, typed (`paged::ImportError`) and with
+  the tree it made dropped again: a file that does not read, an
+  encrypted one among them, whose pages do not decode; a file holding
+  what the file writer cannot write, or whose page 0 it does not write,
+  which the file engine hosts read-only and the store is to keep as its
+  original image (section 6.10, not built); and an item past the bounds
+  of section 6.11, which no file the reader reads holds. A list that
+  carries an empty value
+  ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)) is
+  kept as a node that is both, with an empty value, as the file engine's
+  tree keeps it, so both views read it alike.
+- **Page 0** comes back with the import (`Imported::page_zero`), as read.
+  The file engine keeps it in its derived state; the store keeps it in
+  the file's row of its own tree (server-storage-format.md 5.3), which
+  the entry that adds the file writes. Until the import goes through
+  entries, its caller holds it.
+- **Export** (`paged::export`) is the file engine's written export
+  (`export::write_checked`, which `write_walked` calls with a reading's
+  view and page 0): a walk into the streaming writer with the imported
+  page 0 and the change number it holds, read back and compared with a
+  second walk. It is the file engine's compacted copy of the same file,
+  byte for byte, and a read that fails leaves nothing under the export's
+  name. A list with an empty value is written as a bare list, as the
+  file engine writes it, so such a file imported again has another root
+  hash.
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
@@ -1998,12 +2061,15 @@ its leaf pages in order without loading the file, and writes every node
 with its kind and value, empty lists included, as the parts of a group
 whose last entry makes the file visible. It refuses what the server
 refuses to host today (encrypted files, `crates/om-hbam/src/container.rs`)
-and a file with an item beyond the store's bounds (section 6.11).
+and a file with an item beyond the store's bounds (section 6.11). Built
+so far: the walk into a tree in batches, each a unit of work of the page
+store outside the log (`engine::paged::import`, section 5).
 
 A file holding content the writer cannot write (section 4) is hosted
 read-only, as today. The store keeps such a file's original image whole,
-checked by its hash, and its export is that image. A file that cannot be
-read to its end is refused.
+checked by its hash, and its export is that image. That is not built:
+import refuses such a file. A file that cannot be read to its end is
+refused.
 
 **Export** walks a view in key order into the bulk writer of
 [hbam-writer.md](re/hbam-writer.md) 7.2, which writes leaves, then index
@@ -2015,7 +2081,8 @@ comparing it with the view node by node, kinds included. `om-hbam` reads
 a file a page at a time (`stream::NodeStream`, which gives its nodes in
 key order, kinds included) and writes one a page at a time
 (`writer::NodeWriter`, which takes its nodes in key order, kinds included,
-and writes the bytes of `writer::rebuild`).
+and writes the bytes of `writer::rebuild`). Built for one file's view
+(`engine::paged::export`, section 5); none of the offers below is.
 
 Export is offered:
 
