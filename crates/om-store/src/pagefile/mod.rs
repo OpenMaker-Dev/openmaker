@@ -1742,6 +1742,7 @@ impl PageFile {
                 ));
             }
         }
+        refusal(&self.lock(), entry, &trees, keep_as)?;
         // Roots not in memory are read and checked first.
         for (name, root) in &trees {
             let in_memory = self
@@ -1846,37 +1847,9 @@ impl PageFile {
         keep_as: Option<&str>,
     ) -> Result<Plan, CheckpointError> {
         let refuse = |why| Err(CheckpointError::Refused(why));
-        if inner.failed {
-            return Err(CheckpointError::Failed);
-        }
-        let last = inner.newest.sb.entry;
-        if entry.index < inner.last_unit {
-            return refuse(
-                "units of a later entry were committed: a checkpoint is of the newest version",
-            );
-        }
-        if entry.index < last.index || (entry.index == last.index && entry != last) {
-            return refuse(
-                "an entry before the newest checkpoint's, or another entry at its index",
-            );
-        }
-        if keep_as.is_some_and(|name| inner.listed.iter().any(|rp| rp.name == name)) {
-            return refuse("a restore point of that name is listed");
-        }
-        if inner.listed.len() + usize::from(keep_as.is_some()) > MAX_RESTORE_POINTS {
-            return refuse("more restore points than a checkpoint lists");
-        }
-        // A checkpoint is of one exact version: every unit of an entry it
-        // covers is committed before it fixes its entry, and none after.
-        if inner.reservations.range(..=entry.index).next().is_some() {
-            return refuse("a reservation for an entry the checkpoint covers is open");
-        }
-        if trees.len() != inner.trees.len() || trees.iter().any(|(n, _)| !inner.trees.contains(n)) {
-            return refuse(
-                "the trees given are not the trees that exist (made and dropped through a \
-                 reservation)",
-            );
-        }
+        // Again under the same lock as the plan: other calls may have
+        // reserved or committed since the checkpoint began.
+        refusal(inner, entry, &trees, keep_as)?;
         let Some(after) = inner.next_number.checked_add(1) else {
             return refuse("checkpoint numbers are exhausted");
         };
@@ -2432,6 +2405,46 @@ struct Releasing {
     how: Release,
     /// The page's references, for a shared page that is copied.
     references: Option<Vec<(PageNo, Hash)>>,
+}
+
+/// Why a checkpoint at `entry` of `trees` cannot be taken now, from the
+/// page file's state alone: run before any page is read, so that a call the
+/// page file refuses reads, reclaims and writes nothing, and again in the
+/// plan.
+fn refusal(
+    inner: &Inner,
+    entry: EntryId,
+    trees: &[(TreeName, Root)],
+    keep_as: Option<&str>,
+) -> Result<(), CheckpointError> {
+    let refuse = |why| Err(CheckpointError::Refused(why));
+    if inner.failed {
+        return Err(CheckpointError::Failed);
+    }
+    let last = inner.newest.sb.entry;
+    if entry.index < inner.last_unit {
+        return refuse(
+            "units of a later entry were committed: a checkpoint is of the newest version",
+        );
+    }
+    if entry.index < last.index || (entry.index == last.index && entry != last) {
+        return refuse("an entry before the newest checkpoint's, or another entry at its index");
+    }
+    if keep_as.is_some_and(|name| inner.listed.iter().any(|rp| rp.name == name)) {
+        return refuse("a restore point of that name is listed");
+    }
+    if inner.listed.len() + usize::from(keep_as.is_some()) > MAX_RESTORE_POINTS {
+        return refuse("more restore points than a checkpoint lists");
+    }
+    // A checkpoint is of one exact version: every unit of an entry it
+    // covers is committed before it fixes its entry, and none after.
+    if inner.reservations.range(..=entry.index).next().is_some() {
+        return refuse("a reservation for an entry the checkpoint covers is open");
+    }
+    if trees.len() != inner.trees.len() || trees.iter().any(|(n, _)| !inner.trees.contains(n)) {
+        return refuse("the trees given are not the trees that exist (made and dropped by units)");
+    }
+    Ok(())
 }
 
 fn store_failed(why: impl Into<String>) -> StoreError {
