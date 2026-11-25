@@ -1,11 +1,13 @@
 //! A few desktop integration checks over the existing synthetic report provider.
 use super::*;
-use crate::page_setup::{tests::A4, Settings};
+use crate::page_setup::{
+    tests::{landscape, A4},
+    Settings,
+};
 use crate::scripting::Prompt;
 
-fn setup(dialog: bool, landscape: bool) -> ScriptStep {
-    let mut bytes = A4.to_vec();
-    bytes[8] = if landscape { 2 } else { 0 };
+fn setup(dialog: bool, turned: bool) -> ScriptStep {
+    let bytes = if turned { landscape(A4) } else { A4.to_vec() };
     let mut step = ScriptStep::new(42);
     step.flags = flag::RESTORE | if dialog { 0 } else { flag::NO_INTERACT };
     step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], &bytes)));
@@ -187,9 +189,7 @@ fn a_files_stored_page_setup_is_its_paper_until_another_is_accepted() {
         ],
         Vec::new(),
     );
-    let mut landscape = A4.to_vec();
-    landscape[8] = 2;
-    c.server.lock().unwrap().page_format = Some(landscape);
+    c.server.lock().unwrap().page_format = Some(landscape(A4));
     c.server.lock().unwrap().pdf_rows = vec![1, 2, 3];
     c.run();
     assert_eq!(c.result(), "0");
