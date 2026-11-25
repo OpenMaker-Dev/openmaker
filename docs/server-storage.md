@@ -410,9 +410,10 @@ read (section 6.12); the file engine never answers it.
 What a read returns borrows the view (`Cow<'v, _>` for `&'v self`): it
 never outlives the view, and a reader that keeps something past the view
 copies it. The file engine lends its tree, so it copies nothing a reader
-does not ask to own; an engine that reads pages gives owned values and
-holds a page only while a call reads it, never for as long as the view
-lives.
+does not ask to own; an engine that reads pages gives owned values, and
+between calls holds no more than its version's root page and the pages
+from it to one leaf, where its last listing or subtree read stood, never
+what it has returned.
 
 A reader takes a reading of a file (`FileEngine::read(file) ->
 engine::Reading`), which holds one version for as long as the reader
@@ -1131,10 +1132,19 @@ Nothing of its write side is built.
   file, through the roots a pin hands over, or a store in memory. Every
   page it reads is checked by the hash its parent holds; one that does
   not read or check fails the read that reached it with
-  `ReadError::Unreadable`, naming the path read, and is never data. Each
-  call opens the version again from its root (the page store's cache
-  answers) and holds a page only while it reads it; what it returns is
-  owned. It answers every call as the file engine's view of the same
+  `ReadError::Unreadable`, naming the path read, and is never data. It
+  holds its version's root page, read and checked when it opens, and the
+  pages from the root to the leaf where its last listing or subtree read
+  stood (`om_store::tree::Place`): the next is sought from there rather
+  than from the root, below the deepest page that is on the way to both,
+  so that an index entry read at a key a listing has just given, and the
+  listing's next page, read none of the pages on the way again (#767).
+  After a page of children that is the first child's place, where a
+  reader of their entries starts; after a subtree, where its walk ended,
+  at the next key. Each choice is the one a descent from the root makes,
+  so a place changes no answer and no error. Every other page is read
+  when a call needs it (the page store's cache answers); what it returns
+  is owned. It answers every call as the file engine's view of the same
   file does, page for page: the same children and walk steps in a page,
   the same "more may follow" (a full page of children looks one child
   further to say), and subtrees built with exactly as many places as

@@ -19,7 +19,7 @@ use std::fmt;
 pub use crate::page::Root;
 pub use check::{check, Report};
 pub use key::Key;
-pub use read::{Children, Cursor, Item, Tree};
+pub use read::{Children, Cursor, Item, Place, Tree};
 pub use write::apply;
 
 use crate::page::{Fault, Hash, PageFault, PageNo, StoreError, MAX_KEY, MAX_VALUE};
