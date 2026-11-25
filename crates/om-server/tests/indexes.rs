@@ -606,6 +606,14 @@ fn a_changed_record_leaves_entries_another_rule_wrote() {
             (vec![0xff, 0x80], vec![1]),
         ]
     );
+
+    // A failed save once the commits above have checked Name's index: the
+    // roll-back puts back the mark they left, exactly, which the checking
+    // transaction checks (review of #811, round 1).
+    assert!(handle.failing_commit_saves(id, true));
+    assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Write more")]).is_err());
+    assert!(handle.failing_commit_saves(id, false));
+    commit_name(&mut session, 1, "Write more");
     session.disconnect().unwrap();
 }
 

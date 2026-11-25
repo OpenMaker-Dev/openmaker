@@ -1229,9 +1229,14 @@ to empty them); a table's, a field's or an index's by a write at, above
 or below its records, its record list or its index postings
 (`Store::forget_verified`; "The operations' transaction", below); an
 index's when a save that failed took the index out
-(`Store::drop_unwritable_indexes`). A commit's own upkeep keeps them true.
-A roll-back puts back the marks from before the change, where the
-generation's advance forgot them all; nothing a client sees depends on a
+(`Store::drop_unwritable_indexes`). A commit's own upkeep keeps them true:
+the check and a commit's plan of index moves take a record's keys from
+one rule (`derived::record_keys`), which also says whether the keys
+account for its value, and a commit of a value the rules key to nothing
+(a date that does not parse, a time past the hour's minutes) leaves the
+index without the record while the check would refuse it, so it forgets
+that index's mark. A roll-back puts back the marks from before the
+change, where the generation's advance forgot them all; nothing a client sees depends on a
 mark, only whether a commit checks an index whole, which it does once per
 index after a load, before and after this change
 ([index-checks](performance/index-checks.md)). The store engine keeps
@@ -1254,9 +1259,12 @@ value removal against the old storage), and a new stored calculation is
 named by nothing. So the bases are kept by version as state of their own
 (`Store::bases`), changed only by writes of them, as the tree is by its
 writes: op73 and the deferred work set a table's when they finish its
-work (`Store::set_basis_in`, still on the store), and Create Field adds a
+work (`Store::set_basis_in`, still on the store), Create Field adds a
 new field's (op240, `Transaction::add_field_basis` through
-`Transaction::set_basis`). The journal keeps the bases from before the
+`Transaction::set_basis`), and deleting a table deletes its basis
+(`DeleteTable`, through `Transaction::set_basis`), so that a table a later
+upload creates at the same key is not compared with the deleted one's
+storage. The journal keeps the bases from before the
 change's first write of them, so a roll-back puts them back; a write that
 sets a basis to what it is changes nothing. They are taken from the file
 when it is loaded, except for a table with deferred field work, which
@@ -1620,7 +1628,8 @@ F, 00]` or word `[T, 01, F, 01]`, that index's. The agreement check reads
 the postings and the records alone, so a field's counts `[T, 01, F, 10]`
 and `[T, 01, F, 11]` touch no mark, nor does a serial value, a library
 member or the rest of a table. A commit keeps its own marks as it keeps
-the indexes, but an upload into an index or a record does not. Every write
+the indexes, but for a value the rules key to nothing, which forgets its
+index's; an upload into an index or a record does not keep them. Every write
 that changed the tree counts it as changed since its save.
 
 Before, each operation changed the tree through the store's own helpers,
@@ -1651,7 +1660,14 @@ storage error and an alert that the change was taken back, and now the
 step succeeds (with older unsaved changes the save is still tried, and a
 failed one alerts that they are kept); an op86 whose every
 put is refused counted the tree as changed and so rewrote a clean file,
-and changes nothing now; a saved found set no longer advances the
+and changes nothing now; the index a find stores, when its put is refused
+(the field's `[T, 01, F]` a leaf with a value), was kept in the journal
+before the store refused it, so with older unsaved changes and a save
+that failed the request was answered with the storage error and an alert
+that the change was taken back, and now the refused put writes nothing,
+the save of the older changes is still tried, its failure alerts that
+they are kept, and the request succeeds (the find's own result is the
+same either way); a saved found set no longer advances the
 generation (an account edit still does: the accounts catalog `[23]` is
 read by the derived state); and Delete Account removes the account's
 member and writes the index instead of rewriting the whole catalog, so a
@@ -1688,9 +1704,13 @@ verifier). It checks the version's own state and the marks too: the
 bases must be those the transaction's basis writes made; whatever of the
 bases and the verified-index marks changed, the journal must keep as it
 was, to put back; every mark that an index agrees must hold for the tree
-at the end; and after a roll-back the bases must be those the operation
-started with, and the marks those it started with but for an index the
-failed save took out (`Settled::after_roll_back`). The server's,
+at the end, and again once the change is stored, after what the save
+writes last (a commit's record ids, its sweeps, its counts;
+`Settled::after_stored`); no basis may be of a table the tree does not
+hold; and after a roll-back the bases must be those the operation started
+with, and the marks exactly those it started with, less those of the
+indexes the failed save took out, which the store lists for it
+(`Store::dropped_indexes`, debug builds; `Settled::after_roll_back`). The server's,
 `om-author`'s and `om-gui`'s tests run with it. An operation not moved at
 all (a commit's records, op73, the deferred work) has its tree writes
 left unchecked, since it changes the tree through the store's helpers
@@ -1709,7 +1729,10 @@ reply that agree with each other but are wrong (it compares the file
 engine with itself, not with the base or with FileMaker); the order of
 notices and locks; the tree a roll-back leaves (the seeded test covers
 it); the generation; a mark that an index disagrees, which may be stale
-without harm; the derived state between writes, which it compares only at the end, and not at all when the
+without harm; a mark between writes (one a commit consumed while wrong
+and forgot before the end, or one wrong in the middle of an operation and
+true again by its end), since it checks marks at the end, after the save
+and after a roll-back only; the derived state between writes, which it compares only at the end, and not at all when the
 catalog does not decode; what a store helper changed; and whatever the
 test suite does not run.
 

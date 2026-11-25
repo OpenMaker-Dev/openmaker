@@ -46,6 +46,26 @@ against its 100,000 records once, about 200 ms of its time, and no later
 commit checks it again: the mark is carried from version to version. The
 other differences are within the spread of runs.
 
+## The checking transaction's checks of the marks
+
+In debug builds with the test view on, the checking transaction checks
+every mark that says an index agrees against the tree, by checking the
+index whole again (`checking::marks_hold`), at each operation's end,
+after its save and after a roll-back. Its cost to the tests was measured
+by timing `cargo test -j 4 -p om-server -p om-author --no-fail-fast` with
+the test binaries built, alternating a build whose `marks_hold` returned
+at once when `OM_SKIP_MARK_CHECK=1` was set (a measuring patch, not
+kept) with and without the variable, twice each (load average 6 to 7):
+
+| Mark checks | Run 1 s | Run 2 s |
+| --- | ---: | ---: |
+| off | 62.0 | 62.3 |
+| on | 60.4 | 59.0 |
+
+The difference is within the spread of runs: the suites' tables are
+small, so each check is cheap, and every mark is checked rather than a
+sample.
+
 ## Limits
 
 One table and one index. A write that forgets marks (a schema change, an
