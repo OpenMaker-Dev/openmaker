@@ -1812,7 +1812,7 @@ impl<'a> WorkerHost<'a> {
     /// triggers fired before. A failure leaves the record open and is
     /// the user's message.
     pub(crate) fn save_record(&mut self) -> Result<(), String> {
-        self.s.failure = None;
+        self.forget_failures();
         let record = self
             .s
             .file
@@ -1883,9 +1883,24 @@ impl<'a> WorkerHost<'a> {
         reverted
     }
 
+    /// The words of a failure, its own (`failure`) or its provider's,
+    /// taken. A step starts without them, so one an error capture kept
+    /// from an earlier step's alert is not shown under a later one.
+    fn forget_failures(&mut self) {
+        self.s.failure = None;
+        take_provider_failure();
+    }
+
+    /// The words of the step's failure, taken: its own, else its
+    /// provider's.
+    fn take_failure(&mut self) -> Option<String> {
+        let provider = take_provider_failure();
+        self.s.failure.take().or(provider)
+    }
+
     /// The message of a step's failure: the provider's, else the error's.
     fn failure_message(&mut self, error: HostError) -> String {
-        match (self.s.failure.take(), error) {
+        match (self.take_failure(), error) {
             (Some(message), _) => message,
             (None, HostError::Error(code)) => code.to_string(),
             (None, _) => ErrorCode(3).to_string(),
@@ -3414,9 +3429,28 @@ impl WorkerHost<'_> {
     }
 }
 
-/// A provider failure as a step error: its FileMaker code, else -1.
+thread_local! {
+    /// The words of the provider failure [`data_error`] last made a step
+    /// error, for that step's alert (#818). Most of the script host
+    /// converts a `DataError` with `map_err(data_error)` while it holds
+    /// the window and the provider, where the session's `failure` is out
+    /// of reach. Each step starts without it
+    /// ([`WorkerHost::forget_failures`]).
+    static PROVIDER_FAILURE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A provider failure as a step error: its FileMaker code, else -1. Its
+/// words are kept for the step's alert.
 pub(crate) fn data_error(error: DataError) -> HostError {
-    HostError::Error(ErrorCode(error.code.unwrap_or(-1)))
+    let code = ErrorCode(error.code.unwrap_or(-1));
+    PROVIDER_FAILURE.with(|failure| *failure.borrow_mut() = Some(error.message));
+    HostError::Error(code)
+}
+
+/// The words of the provider failure that made the step's error, taken.
+pub(crate) fn take_provider_failure() -> Option<String> {
+    PROVIDER_FAILURE.with(|failure| failure.borrow_mut().take())
 }
 
 impl CalcHost for WorkerHost<'_> {
@@ -4120,6 +4154,11 @@ impl ScriptHost for WorkerHost<'_> {
         lost || self.s.abort.swap(false, Ordering::SeqCst) || self.s.interrupted || self.s.halt
     }
 
+    fn before_step(&mut self) {
+        // A step's alert gives only its own failure's words (#818).
+        self.forget_failures();
+    }
+
     fn take_triggers(&mut self) -> Vec<Trigger> {
         // The layout may have changed: names and fields follow it.
         self.sync_layout(false);
@@ -4183,7 +4222,7 @@ impl ScriptHost for WorkerHost<'_> {
             // Go to Record past the last record is silent.
             return AlertChoice::Continue;
         }
-        let detail = self.s.failure.take().unwrap_or_default();
+        let detail = self.take_failure().unwrap_or_default();
         if alert.script.is_empty()
             && matches!(alert.step, 28 | 126 | 127)
             && alert.code == ErrorCode(code::NO_MATCH)

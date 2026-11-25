@@ -813,6 +813,7 @@ impl ScriptSession {
         s.interrupted = false;
         s.halt = false;
         s.failure = None;
+        super::host::take_provider_failure();
         s.abort.store(false, Ordering::SeqCst);
         let message = if reverted {
             STOPPED.to_owned()
