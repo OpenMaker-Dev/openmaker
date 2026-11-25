@@ -2101,11 +2101,23 @@ impl Hosting {
         self.slots.iter().find(|slot| slot.id == id)
     }
 
-    /// The slot of the file clients open as `name` (case-insensitive).
+    /// The slot of the file clients open as `name`: the file of that name,
+    /// whatever its case; else, for a name without the extension, the file
+    /// of that name with `.fmp12` (FileMaker Pro opens `fmp://host/Tasks` by
+    /// sending `Tasks`; network-protocol.md 5.5). A file hosted under the
+    /// very name answers first, so one name never answers two files.
     pub fn slot_named(&self, name: &str) -> Option<&Slot> {
-        self.slots
-            .iter()
-            .find(|slot| slot.name.to_lowercase() == name.to_lowercase())
+        let wanted = name.to_lowercase();
+        let named = |wanted: &str| {
+            self.slots
+                .iter()
+                .find(|slot| slot.name.to_lowercase() == wanted)
+        };
+        named(&wanted).or_else(|| {
+            (!wanted.ends_with(".fmp12"))
+                .then(|| named(&format!("{wanted}.fmp12")))
+                .flatten()
+        })
     }
 
     /// The file clients open as `name` (case-insensitive), for a new user
@@ -2287,6 +2299,47 @@ mod tests {
         let loaded = wait.recv_timeout(std::time::Duration::from_secs(30));
         let _ = std::fs::remove_file(&fifo);
         assert!(matches!(loaded, Ok(Ok(true))), "the good file is hosted");
+    }
+
+    /// A file is opened by its name, whatever its case, or by its name
+    /// without `.fmp12`, as FileMaker Pro sends `Tasks` for
+    /// `fmp://host/Tasks` (#830 of github.com/OpenMaker-Dev/openmaker); a
+    /// file hosted under the very short name answers it first, and a name
+    /// no file has answers nothing.
+    #[test]
+    fn a_file_is_opened_by_its_name_without_the_extension() {
+        let tasks = fixture::TempFile::new("hosting-short-name", &[], true);
+        let bare = fixture::TempFile::new("hosting-short-name-bare", &[], true);
+        let host = |files: &[(&str, &fixture::TempFile)]| {
+            let files: Vec<HostedFile> = files
+                .iter()
+                .map(|(name, file)| HostedFile {
+                    name: (*name).into(),
+                    path: file.0.clone(),
+                })
+                .collect();
+            Hosting::load(&files, false, &EventLog::default(), &FileEngine::default()).unwrap()
+        };
+        let named =
+            |hosting: &Hosting, name: &str| hosting.slot_named(name).map(|s| s.name.clone());
+        let hosting = host(&[("Tasks.fmp12", &tasks)]);
+        for name in ["Tasks.fmp12", "tasks.FMP12", "Tasks", "TASKS"] {
+            assert_eq!(
+                named(&hosting, name).as_deref(),
+                Some("Tasks.fmp12"),
+                "{name}"
+            );
+        }
+        for name in ["Task", "Tasks.fp7", "Tasks.fmp12.fmp12", ""] {
+            assert_eq!(named(&hosting, name), None, "{name}");
+        }
+        drop(hosting);
+        let hosting = host(&[("Tasks.fmp12", &tasks), ("Tasks", &bare)]);
+        assert_eq!(named(&hosting, "Tasks").as_deref(), Some("Tasks"));
+        assert_eq!(
+            named(&hosting, "Tasks.fmp12").as_deref(),
+            Some("Tasks.fmp12")
+        );
     }
 
     /// The review's P0 on recovery: deferred work a local file holds is

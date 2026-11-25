@@ -1123,6 +1123,18 @@ follows it.
 |--------|----------------|------------------|
 | `0x4fb3` | `kSpecification` | Not identified in a live Open reply; the older "cannot open" gloss had no evidence. |
 | `0x4fb5` | `kFileNotFound` | FileMaker Server answered this when the requested file name was not hosted (observed in the desktop; no relay capture). Whether a hosted but closed file answers the same is unknown. |
+
+The file-path string carries the name as the client was given it:
+FileMaker Pro 26.0.3, given `fmp://<host>/Tasks`, sent `Tasks`, without the
+extension (obs: OpenMaker Server's log of the Open it decoded, in the
+FileMaker Pro run on #673, [#830](https://github.com/OpenMaker-Dev/openmaker/issues/830);
+no packet capture). That FileMaker Server finds the hosted `Tasks.fmp12` for
+it is inferred: `fmp://host/FileName` links without the extension are in
+common use. How FileMaker Server compares names (case, a file hosted under
+the short name itself) is unmeasured. OpenMaker Server compares without
+regard to case, takes a file hosted under the very name first, and else,
+for a name without `.fmp12`, the file of that name with it
+(`Hosting::slot_named`).
 | `0x507c` | `kInstallCodeConflict` | An absent or invalid license key was refused at Open without a message string in the captured reply (F26). |
 | `0x0666` | `kHostBlockNewUsersEnabled` | Block New Users refusal captured in 5.6.4. |
 | `0x0004` | `kUnknownCommand` | No observed Open reply; it is not "file missing". |
