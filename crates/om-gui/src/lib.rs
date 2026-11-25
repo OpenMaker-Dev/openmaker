@@ -142,10 +142,13 @@ pub fn native_options() -> eframe::NativeOptions {
 /// OpenMaker's logo as the app's icon: the favicon's tile at 412 pixels in
 /// a 512-pixel canvas, the macOS icon grid eframe's default icon also
 /// follows (docs/assets/README.md). eframe shows the root window's icon in
-/// the Dock on macOS; each window's is its title bar and taskbar icon
-/// elsewhere. Decoded once and shared, so a viewport builder made every
-/// frame keeps the same icon (egui compares it by pointer). `None` only
-/// when the bundled PNG does not decode, which leaves eframe's default.
+/// the Dock on macOS and as its large taskbar icon on Windows; each
+/// window's is its window icon on Windows and X11. Wayland has no window
+/// icons (winit ignores them), so the shell uses the desktop entry the app
+/// id names (docs/desktop-client.md). Decoded once and shared, so a
+/// viewport builder made every frame keeps the same icon (egui compares it
+/// by pointer). `None` only when the bundled PNG does not decode, which
+/// leaves eframe's default.
 pub(crate) fn app_icon() -> Option<std::sync::Arc<egui::IconData>> {
     static ICON: std::sync::OnceLock<Option<std::sync::Arc<egui::IconData>>> =
         std::sync::OnceLock::new();
