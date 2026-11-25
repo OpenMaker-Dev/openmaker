@@ -175,12 +175,16 @@ impl ViewFilter {
         }))
     }
 
-    /// A filter whose account may view no record of each of `never`, and
-    /// not the cells `hidden` names, for tests that need no set.
+    /// A filter whose account may view each table's records as `limits`
+    /// says (`None`: none of them), and not the cells `hidden` names, for
+    /// tests that need no set.
     #[cfg(test)]
-    pub(crate) fn of(never: &[Vec<u8>], hidden: HiddenFields) -> Self {
+    pub(crate) fn of(
+        limits: impl IntoIterator<Item = (Vec<u8>, Option<RecordLimit>)>,
+        hidden: HiddenFields,
+    ) -> Self {
         Self {
-            limits: never.iter().map(|table| (table.clone(), None)).collect(),
+            limits: limits.into_iter().collect(),
             hidden,
             environment: crate::recalc::record_environment("test", crate::recalc::random_uuid()),
             withheld: RefCell::default(),
@@ -221,9 +225,18 @@ impl ViewFilter {
     /// `None` where the filter answers `None`, the head without its value
     /// where it empties the node, and the head as it is where it removes or
     /// withholds children only (a node with children is a pushed list in
-    /// either engine, so it stays one). Below a record of a view-limited
-    /// table, as the filter does, the record is read to evaluate the limit
-    /// ([`ViewFilter::viewable`]); nothing else is read.
+    /// either engine, so it stays one). At or below a record of a
+    /// view-limited table, as the filter does, the record is read to
+    /// evaluate the limit ([`ViewFilter::viewable`]); nothing else is read.
+    ///
+    /// A record is noted withheld ([`Withheld`]) when the session is served
+    /// that record without its values: a read of the record, or of anything
+    /// below it, whose limit is false, a head read of the record included
+    /// (its own node is what it is served). A head read of the records
+    /// list, the table or the root serves no record and notes none, where
+    /// the whole read the filter makes notes each record it withholds.
+    /// OpenMaker's choice: the note guards an edit of a record whose client
+    /// holds it without its values (#670), and a head serves none.
     pub(crate) fn head<'h>(
         &self,
         read: Read<'_>,
@@ -241,6 +254,12 @@ impl ViewFilter {
             [table, rest @ ..] if self.limits(table) => match rest {
                 [[INDEXES]] | [[LIBRARY]] => Some(emptied(head)),
                 [[INDEXES], ..] | [[LIBRARY], ..] => None,
+                [[RECORDS], record] => {
+                    if !self.viewable(read, table, record)? {
+                        self.note(table, record);
+                    }
+                    Some(head)
+                }
                 [[RECORDS], record, field, ..] => {
                     let viewable = self.viewable(read, table, record)?;
                     if !viewable {

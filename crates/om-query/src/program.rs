@@ -143,6 +143,13 @@ impl Size {
         bytes: usize::MAX,
     };
 
+    /// A node and everything below it, as a program's work counts what it
+    /// reads ([`measure`]): one node each, and the bytes of each one's
+    /// segment and value.
+    pub fn of_tree(node: &OwnedNode) -> Self {
+        measure(node).0
+    }
+
     /// One node, without its children.
     pub(crate) fn of(node: &OwnedNode) -> Self {
         Self {

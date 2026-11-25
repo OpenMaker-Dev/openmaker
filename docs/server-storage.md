@@ -463,17 +463,25 @@ The readers that read through views:
   from what the filter would leave of it (`ViewFilter::head`: missing, or
   without its value where the filter empties it; a node with children is
   a pushed list in either engine, so removing children leaves it one),
-  never from its subtree, but for the record a view limit below a record
-  is evaluated on. `om_query::Index` reads a field's index so: a lookup by
-  key is one page of one key and reads no entry's records, a range or a
-  full read pages through the keys it passes (8 a page, growing to 256),
-  an entry's records are read only when an instruction takes that entry,
-  within the work the program has left (`View::subtree` within
-  `om_query::memory_limit` of it, so that the store engine refuses an
-  entry past it before building it whole, and the program fails at its
-  work limit; `Noted` keeps no such refusal as a failed read), and no
-  instruction needs an entry by its position (the module doc of
-  `om-query`'s `index`). An index held
+  never from its subtree, but for the record a view limit at or below a
+  record is evaluated on. A record is noted withheld for the session (the
+  guard of #670 on its later edits, `views::Withheld`) when it is served
+  that record without its values: by a read of the record or of anything
+  below it whose limit is false, a head read of the record included (its
+  own node is what it is served). A head read of the records list, the
+  table or the root serves no record and notes none, where a whole read
+  of them notes each record it withholds; OpenMaker's choice.
+  `om_query::Index` reads a field's index so: a lookup by key is one page
+  of one key and reads no entry's records, a range or a full read pages
+  through the keys it passes (8 a page, growing to 256), an entry's
+  records are read only when an instruction takes that entry, within the
+  work the program has left (`View::subtree_within`: the store engine
+  counts each node as the program counts it and refuses at the first past
+  either counter, so that an entry past the work left is never built
+  whole, and the program fails at its work limit; the file engine lends
+  the entry and the program's count refuses it; `Noted` keeps no such
+  refusal as a failed read), and no instruction needs an entry by its
+  position (the module doc of `om-query`'s `index`). An index held
   whole (a file on disk, a source without listings, an index built on
   demand) is read as before, its order checked once, its keys found by
   binary search, and its work counted as before, instruction for

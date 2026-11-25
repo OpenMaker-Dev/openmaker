@@ -41,32 +41,14 @@ pub trait Listing {
 
     /// The child under `key` and everything below it (an index entry and
     /// its RID list), `None` when there is none. `limit` is what the reader
-    /// may still read ([`Size`], nodes and the bytes of their keys and
-    /// values, as `crate::program::measure` counts a subtree; or
-    /// [`Size::UNLIMITED`]): a listing that builds the entry refuses one
-    /// past it with [`om_hbam::Error::TooLarge`] rather than build it
-    /// whole, for instance by asking its source within [`memory_limit`].
+    /// may still read ([`Size`], nodes and the bytes of their segments and
+    /// values, as [`Size::of_tree`] counts a subtree; or
+    /// [`Size::UNLIMITED`]): a listing that builds the entry counts each
+    /// node so and refuses with [`om_hbam::Error::TooLarge`] before it keeps
+    /// the first past either counter, never more or less than the reader's
+    /// count would refuse; one that lends it may give it unchecked, for the
+    /// reader to count.
     fn entry<'a>(&'a self, key: &[u8], limit: Size) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>>;
-}
-
-/// The memory a subtree within `limit` takes at most, as
-/// [`om_hbam::tree::memory`] counts it: the root's place, and for each node
-/// its place in its parent's list, its key, its value and its list of
-/// children, each allocation at most 32 bytes over what it holds, and each
-/// list, key and value holding at most twice its length in places (as one
-/// built by pushes does). A source that refuses a subtree past this memory
-/// refuses only one past `limit` too, so that a reader's refusal is never
-/// more than its own count would make it; `usize::MAX` (no limit) for
-/// [`Size::UNLIMITED`].
-pub fn memory_limit(limit: Size) -> usize {
-    if limit == Size::UNLIMITED {
-        return usize::MAX;
-    }
-    let place = std::mem::size_of::<OwnedNode>();
-    let per_node = 2 * place + 3 * 32;
-    place
-        .saturating_add(limit.nodes.saturating_mul(per_node))
-        .saturating_add(limit.bytes.saturating_mul(2))
 }
 
 /// A listing that gave a key out of the order every listing keeps (or
@@ -308,55 +290,5 @@ impl Source for HbamFile {
         Ok(self
             .subtree(path)?
             .map(|node| Cow::Owned(node.to_owned_node())))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Over generated subtrees (index entries of a few to many RID list
-    /// nodes, and lists built by pushes, holding room past their length),
-    /// what a subtree takes in memory is within [`memory_limit`] of what
-    /// counts as its work, so that a source asked within that memory never
-    /// refuses a subtree the work left would admit.
-    #[test]
-    fn a_subtree_within_its_work_is_within_its_memory_limit() {
-        let mut state = 11u64;
-        let mut next = move || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1);
-            state >> 33
-        };
-        for _ in 0..300 {
-            let node = match next() % 2 {
-                0 => {
-                    let step = 1 + next() % 40;
-                    let ids: RidList = (0..next() % 20_000).map(|i| 1 + i * step).collect();
-                    ids.to_node(vec![1; 1 + (next() % 219) as usize])
-                }
-                _ => {
-                    let mut node = OwnedNode::list(Vec::new(), Vec::new());
-                    for i in 0..next() % 300 {
-                        let mut segment = Vec::new();
-                        segment.extend((0..1 + next() % 40).map(|b| b as u8));
-                        segment.extend((i as u32).to_be_bytes());
-                        let mut child = OwnedNode::leaf(segment, Vec::new());
-                        for b in 0..next() % 50 {
-                            child.value.get_or_insert_with(Vec::new).push(b as u8);
-                        }
-                        node.children.push(child);
-                    }
-                    node
-                }
-            };
-            let work = crate::program::measure(&node).0;
-            assert!(
-                om_hbam::tree::memory(&node) <= memory_limit(work),
-                "{work:?}"
-            );
-        }
-        assert_eq!(memory_limit(Size::UNLIMITED), usize::MAX);
     }
 }

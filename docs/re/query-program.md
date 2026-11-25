@@ -1008,7 +1008,9 @@ A source gives an index either whole (a file on disk, a source that
 cannot list, an index built on demand) or listed (OpenMaker Server's hosted
 files, `om_query::Listing`): its keys a page at a time from a bound in
 either direction, nothing below them, and an entry's RID list only when an
-instruction takes that entry. A lookup is then one seek, a miss reads no
+instruction takes that entry, within the work the program has left: a
+source that builds the list refuses it at the first node past either of
+the work's counters (11.4). A lookup is then one seek, a miss reads no
 RID list, and a scan reads the keys it passes (8 a page, growing to 256).
 
 The first time a program reads an index held whole, om-query checks that
@@ -1996,9 +1998,14 @@ its bytes (a page can hold keys a scan that stops never takes, at most a
 page of them, fetched and not counted; OpenMaker Server's store engine
 also reads one child past a full page to say whether more follow); and
 each RID list read, a node more, read within the work the program has
-left, so that a list past it fails the program at the work limit before
-it is read whole. The read of an index's own node that finds whether the
-field has the index is not counted (one per index a program opens).
+left: a source that builds the list counts each node as the program
+counts it (one node, and the bytes of its segment and value) and refuses
+it at the first node past either counter, so that a list past the work
+left fails the program at the work limit before it is read whole, and
+never one that fits; a source that lends it (OpenMaker Server's file
+engine) gives it, and the program's count refuses it the same. The read
+of an index's own node that finds whether the field has the index is not
+counted (one per index a program opens).
 Either way, each index entry whose RID list is read, with that list; a
 node of eight bytes per 64 records each time an instruction combines with
 the table's record list; each stored value read; and each node on an

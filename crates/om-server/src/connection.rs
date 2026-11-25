@@ -3031,10 +3031,12 @@ impl om_query::Listing for ViewListing<'_> {
         Ok(more)
     }
 
-    /// The entry within the memory no subtree within `limit` passes
-    /// (`om_query::memory_limit`), so that the store engine refuses an
-    /// entry past what the program may still read before it builds it
-    /// whole (`PagedView::build` counts as it builds).
+    /// The entry within the work its reader has left
+    /// ([`crate::engine::View::subtree_within`]): the store engine counts
+    /// each node as the reader counts it and refuses at the first past
+    /// either counter, so that an entry past what the program may still read
+    /// is never built whole; the file engine lends it, and the reader counts
+    /// it.
     fn entry<'a>(
         &'a self,
         key: &[u8],
@@ -3042,7 +3044,7 @@ impl om_query::Listing for ViewListing<'_> {
     ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
         let mut path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
         path.push(key);
-        Ok(self.view.subtree(&path, om_query::memory_limit(limit))?)
+        Ok(self.view.subtree_within(&path, limit)?)
     }
 }
 
@@ -4425,9 +4427,8 @@ mod tests {
             restricted,
             account_key: Some(&[3][..]),
             late: false,
-            view: view.then(|| {
-                crate::views::ViewFilter::of(std::slice::from_ref(&tasks), hidden.clone())
-            }),
+            view: view
+                .then(|| crate::views::ViewFilter::of([(tasks.clone(), None)], hidden.clone())),
             built: Default::default(),
             failed: Default::default(),
         };
@@ -4447,6 +4448,75 @@ mod tests {
             }
         }
         assert!(compared > 200, "{compared}");
+    }
+
+    /// A head read of a record a view limit withholds notes the record
+    /// withheld, as a read of it does (its own node is what the session is
+    /// served); a head read of the records list, the table or the root
+    /// serves no record and notes none (OpenMaker's choice,
+    /// `views::ViewFilter::head`). The limit is a formula, `Count = 3`, true
+    /// for record 1 and false for record 2.
+    #[test]
+    fn a_head_of_a_withheld_record_notes_it_and_one_of_its_table_does_not() {
+        use crate::scripts::fixture;
+        use crate::views::{ViewFilter, Withheld};
+        use om_hbam::slot::uint_segment;
+        let root = fixture::tree(&[], true);
+        let bytes =
+            om_hbam::writer::rebuild(&root, &om_hbam::new_superblock("Tasks").unwrap()).unwrap();
+        let store = crate::store::Store::load(
+            &om_hbam::HbamFile::from_bytes(bytes).unwrap(),
+            fixture::FILE,
+        )
+        .unwrap();
+        let tree = store.tree_view();
+        let read = FileRead {
+            view: &tree,
+            derived: store.derived(),
+            waiting: store.waiting(),
+            read_only: false,
+            writes_refused: None,
+        };
+        let tasks = uint_segment(fixture::TABLE);
+        let code = fixture::calculated_calc("Count = 3").polish.unwrap();
+        let limit = crate::derived::record_limit(&tree, store.derived(), &tasks, &code)
+            .unwrap()
+            .unwrap();
+        let source = QuerySource {
+            read,
+            issued: Default::default(),
+            restricted: false,
+            account_key: Some(&[3][..]),
+            late: false,
+            view: Some(ViewFilter::of(
+                [(tasks.clone(), Some(limit))],
+                Default::default(),
+            )),
+            built: Default::default(),
+            failed: Default::default(),
+        };
+        let noted = |path: &[&[u8]]| {
+            assert!(
+                om_query::Source::head(&source, path).unwrap().is_some(),
+                "{path:02x?}"
+            );
+            let mut withheld = Withheld::default();
+            withheld.note(source.view.as_ref().unwrap());
+            [1u64, 2].map(|id| withheld.contains(&tasks, &om_hbam::serial::encode(id)))
+        };
+        let (one, two) = (om_hbam::serial::encode(1), om_hbam::serial::encode(2));
+        assert_eq!(noted(&[]), [false, false]);
+        assert_eq!(noted(&[&tasks]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5]]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5], &one]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5], &two]), [false, true]);
+        // A whole read of the records notes the one it withholds, as before.
+        assert!(om_query::Source::node(&source, &[&tasks, &[5]])
+            .unwrap()
+            .is_some());
+        let mut withheld = Withheld::default();
+        withheld.note(source.view.as_ref().unwrap());
+        assert!(withheld.contains(&tasks, &two) && !withheld.contains(&tasks, &one));
     }
 
     #[test]

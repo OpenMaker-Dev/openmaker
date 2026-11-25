@@ -448,6 +448,20 @@ impl View for Overlay<'_> {
         }
     }
 
+    /// The base's where the overlay holds nothing at or below `path`;
+    /// otherwise what the overlay holds or builds, unchecked, for the reader
+    /// to count.
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        match self.place(path) {
+            Place::Base => self.base.subtree_within(path, work),
+            _ => self.subtree(path, NO_LIMIT),
+        }
+    }
+
     fn children_page<'a>(
         &'a self,
         path: &[&[u8]],
