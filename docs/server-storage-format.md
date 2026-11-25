@@ -959,75 +959,85 @@ rebuilt for them when those entries are applied again (4.7).
   write or flush that fails makes the page file refuse every later write
   until it is opened again (section 6.12); a refusal writes nothing.
 - **An open** (section 6.7, step 2) flushes the store folder and reads
-  the four slots one at a time. Of the two highest numbers with a valid
-  copy, newest first, it
-  takes the first checkpoint whose meta stream reads back, decodes, and
-  agrees with its superblock (number, entry, tree format), and whose
-  tree roots read back with the hashes it names, are not overflow pages,
-  were written at or before its entry, and are in use in its map, no
-  root page named by more trees than its map counts sharing it (a clone
-  shares its root; a table #719 wrote from roots its caller gave could
-  name one page for two trees with no share, and dropping one of them
-  would mark the page dying while the other still names it). It does not
-  look for a root that is a page inside another tree, which a table #719
-  wrote could hold too: that would take a walk of every tree. A unit
-  cannot make one (rule 6). In such a table, dropping the tree whose
+  the four slots one at a time. It opens on the checkpoint with the
+  highest-numbered valid copy when that checkpoint's meta stream reads
+  back, decodes, and agrees with its superblock (number, entry, tree
+  format), and its tree roots read back with the hashes it names, are not
+  overflow pages, were written at or before its entry, and are in use in
+  its map, no root page named by more trees than its map counts sharing
+  it (a clone shares its root; a table #719 wrote from roots its caller
+  gave could name one page for two trees with no share, and dropping one
+  of them would mark the page dying while the other still names it). It
+  does not look for a root that is a page inside another tree, which a
+  table #719 wrote could hold too: that would take a walk of every tree. A
+  unit cannot make one (rule 6). In such a table, dropping the tree whose
   root is the inner page frees that page while the other tree still
-  reaches it; once the page is taken again, the other tree's reads
-  under it fail their hash check (reported as damaged or stale, never
-  returned as good), and if the other tree is then dropped too, the map
-  takes the page down by its number under the old hash: whatever now
-  holds it is marked dying and never freed (its bytes never check), a
-  unit releasing it is refused, and a checkpoint is refused when it is a
-  root or a page of the newest meta stream. Dropping the outer tree
-  first leaves the inner tree's root dying and refuses every later
-  checkpoint.
+  reaches it; once the page is taken again, the other tree's reads under
+  it fail their hash check (reported as damaged or stale, never returned
+  as good), and if the other tree is then dropped too, the map takes the
+  page down by its number under the old hash: whatever now holds it is
+  marked dying and never freed (its bytes never check), a unit releasing
+  it is refused, and a checkpoint is refused when it is a root or a page
+  of the newest meta stream. Dropping the outer tree first leaves the
+  inner tree's root dying and refuses every later checkpoint.
 
-  Bytes that are not there or do not check pass the checkpoint over, with
-  the reason and the restore points given up with it: those it listed
-  that the checkpoint taken does not, when its own table of restore points
-  was read, and otherwise that they are unknown (`PassedOver::lost`). A
-  read the device fails is not taken for such bytes: it says nothing of
-  them, and a later read may return them whole. So when the device fails
-  a read of a checkpoint's meta stream or roots, or of a slot that could
-  hold a checkpoint newer than the newest the open read, the open fails
-  with an error that names the checkpoint (or the slot) and the page,
-  writes nothing, and leaves every slot as it was; it is opened again
-  later. A slot whose pair's other slot holds the newest copy read holds
-  that checkpoint or an older one, since the pairs take checkpoints in
-  turn, and does not stop the open. When the read keeps failing, an
-  explicit call (`PageFile::open_falling_back`) opens as an open did
-  before #750: it passes over what the device fails to read, overwrites
-  a slot it cannot read, and reports both. It is refused, writing
-  nothing, when the device fails no read that would stop the open. Any
-  other failure of a read (the process stopping) fails the open. Then,
+  **An open gives nothing up** (#750). Whatever would make it give
+  something up stops it, with an error, before it writes anything, and
+  leaves every slot as it was:
+  - a read the device fails, of any slot (it could hold a checkpoint
+    newer than any read, even when the other slot of its pair shows an
+    older one: the checkpoint between can have lost both of its copies)
+    or of the newest checkpoint's meta stream or roots
+    (`OpenError::Unreadable`, naming the slot, or the checkpoint and the
+    page). A read the device fails says nothing of the bytes, which a
+    later read may return whole; the store opens again later;
+  - the newest checkpoint's bytes that are not there or do not check
+    (`OpenError::Damaged`).
+
+  Either error says what giving it up would lose: the restore points the
+  checkpoint lists that were kept after the checkpoint the open would fall
+  back to (the next valid copy), which that one cannot list, or that they
+  are unknown when its own table could not be read. Each checkpoint lists
+  the points of the one before it that were not dropped and the one it
+  keeps, so that is exactly what it lists and the older one does not.
+  Giving up is an explicit call (`PageFile::open_giving_up`) for damage
+  and for a read that keeps failing alike. It is given what to give up,
+  from the errors the open returned (`OpenError::give_up`); its caller
+  records those errors durably first, so that a stop during the call
+  loses no report. It tries the two newest checkpoints with a valid copy,
+  passing over one it was given that the device fails to read or that
+  does not check, and writes over a slot it was given that the device
+  fails to read; it reports each (`Opened::passed_over` with what was
+  lost, `Opened::given_up_slots`). Anything else that stops it returns
+  the open's error, and when nothing it was given stops it (the read
+  works again), it is refused; either way it writes nothing. Any other
+  failure of a read (the process stopping) fails either call. Then,
   before it returns:
   1. the checkpoint's copy is written into both slots of its pair, each
      flushed: the device may not hold a copy the system's cache showed
      (an earlier process's failed write or flush), and a crash during a
-     checkpoint's step 5 leaves an older copy in the second slot;
+     checkpoint's step 5 leaves an older copy in the second slot. An open
+     never writes over a copy of the predecessor here (a file this code
+     wrote never holds one in this pair: pairs take checkpoints in turn);
   2. in the other pair, if a slot holds a valid copy of the predecessor
      its meta stream names, that copy is written into the other slot of
      the pair when that slot does not hold it already, and flushed;
      otherwise each slot that is not blank is cleared (zeros over a
      copy's length), and flushed. Either way a slot that held anything
-     else (a newer checkpoint passed over, whose pages the store will now
-     reuse; a stale copy; bytes that could not be read) is overwritten
-     before any page is: such a checkpoint must never be taken later.
-     Clearing a checkpoint passed over gives up nothing exactly when its
-     bytes do not check: bytes that do not check against the hashes the
-     superblock and the parents name are taken as damage that stays, so
-     the checkpoint could never be used. Clearing one the device only
-     failed to read would give up a checkpoint a later read could use,
-     and the restore points only it lists, which is why that stops the
-     open instead, and only the explicit call clears it. If the process
-     stops while that call writes, after it has cleared the slots and
-     before it returns its report, the report is lost: the error of the
-     open it followed named the checkpoint, and the restore points given
-     up are those kept at that checkpoint (for a slot, at any checkpoint
-     newer than the one taken);
+     else is overwritten before any page is: a checkpoint whose pages the
+     store may now reuse must never be taken later;
   3. if the file is shorter than the map's `end`, it is extended to it
      and flushed.
+
+  For an open these writes lose nothing. Every slot was read and no
+  checkpoint with a valid copy was passed over, so what they write over is
+  the opened checkpoint's own copy, a blank slot, bytes that do not check
+  (taken as damage that stays: they will not check on a later read
+  either), or a copy of a checkpoint other than the opened one and its
+  predecessor: one older than the predecessor, or one given up before,
+  whose pages are free in the opened checkpoint's map. For the explicit
+  call they also write over what it was given: the slots of a checkpoint
+  passed over and a slot it could not read, which is what it reports.
 
   The predecessor is the checkpoint whose number and meta stream the
   chosen one names, and is kept only when a copy of it was found. The
@@ -1047,8 +1057,10 @@ rebuilt for them when those entries are applied again (4.7).
 - **The two checkpoints on disk are whole**, and so is every restore
   point a superblock on disk lists: a page is reused only when no kept
   version reaches it (4.5), and a checkpoint's own meta stream is kept by
-  its version. When the newest checkpoint's superblock or roots cannot be
-  checked, the open takes the one before it, whose pages and whose log
+  its version. When the newest checkpoint's superblock copies do not
+  check, the open takes the one before it; when its meta stream or roots
+  do not, the open reports it and the explicit call that gives it up
+  takes the one before it (4.6). Either way that one's pages and its log
   (section 6.7, "What is kept") are all there.
 - **Pins are gone after a restart**; what the superblocks on disk name is
   what is kept. The pages a pin kept are free or dying in the maps on
@@ -1137,9 +1149,9 @@ rebuilt for them when those entries are applied again (4.7).
   not covered ([#734](https://github.com/OpenMaker-Dev/openmaker/issues/734));
   recovery may take the reserve (256 pages by default) for them, and
   beyond it a replay is refused as full:
-  - a reopen that falls back to the older checkpoint because the newest
-    cannot be read: the older one can list restore points the newest
-    retired, which the running floor no longer counted;
+  - a reopen on the older checkpoint because the newest was given up
+    (4.6): the older one can list restore points the newest retired,
+    which the running floor no longer counted;
   - an entry that was extended (`Reservation::extend`): the replay
     reserves the entry's whole count at its start, while the first run
     was judged for the extension later, after the entry's own units had
