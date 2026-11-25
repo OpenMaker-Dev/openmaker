@@ -511,6 +511,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             hi: hi.map(<[u8]>::to_vec),
             direction,
             stack: Vec::new(),
+            leaf_within: None,
             state: State::Start,
         }
     }
@@ -531,6 +532,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             hi: end.map_or(Bound::Unbounded, Bound::Excluded),
             direction: Direction::Forward,
             stack: Vec::new(),
+            leaf_within: None,
             state: State::Start,
         }
     }
@@ -672,6 +674,9 @@ pub struct Cursor<'t, 's, S: ?Sized> {
     /// The pages from the root to the current leaf, with the child (or item)
     /// each is at.
     stack: Vec<(Arc<Page>, usize)>,
+    /// Whether every item of the current leaf is within the far bound, as
+    /// its last item (first, going backward) is: `None` until compared.
+    leaf_within: Option<bool>,
     state: State,
 }
 
@@ -683,6 +688,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         let bound = if forward { &self.lo } else { &self.hi };
         let mut page = self.tree.top.clone();
         self.stack.clear();
+        self.leaf_within = None;
         while page.kind() == PageKind::Index {
             let c = match bound {
                 Bound::Unbounded if forward => 0,
@@ -737,6 +743,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     fn next_leaf(&mut self) -> Result<bool> {
         let forward = self.direction == Direction::Forward;
         self.stack.pop();
+        self.leaf_within = None;
         loop {
             let Some((page, c)) = self.stack.last_mut() else {
                 return Ok(false);
@@ -771,28 +778,48 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     }
 
     /// The item the cursor is at, if it is within the far bound. Reads no
-    /// more of the item than the comparison with the bound needs.
-    fn within(&self) -> Result<Option<(Arc<Page>, usize)>> {
+    /// more of an item than the comparison with the bound needs. A leaf's
+    /// keys are in order, so when its last item (first, going backward) is
+    /// within the bound, every item of it is: that item is compared once,
+    /// on the leaf's first step, and each item alone only when it is not
+    /// within, or the comparison failed (the failure is then the item's own,
+    /// if its comparison fails too).
+    fn within(&mut self) -> Result<Option<(Arc<Page>, usize)>> {
         let Some((leaf, i)) = self.stack.last() else {
             return Ok(None);
         };
         let pages = &self.tree.pages;
-        let within = match (self.direction, &self.hi, &self.lo) {
-            (Direction::Forward, Bound::Included(k), _) => {
-                pages.cmp_item(leaf, *i, k)? != Ordering::Greater
-            }
-            (Direction::Forward, Bound::Excluded(k), _) => {
-                pages.cmp_item(leaf, *i, k)? == Ordering::Less
-            }
-            (Direction::Backward, _, Bound::Included(k)) => {
-                pages.cmp_item(leaf, *i, k)? != Ordering::Less
-            }
-            (Direction::Backward, _, Bound::Excluded(k)) => {
-                pages.cmp_item(leaf, *i, k)? == Ordering::Greater
-            }
-            _ => true,
+        let compare = |at: usize| -> Result<bool> {
+            Ok(match (self.direction, &self.hi, &self.lo) {
+                (Direction::Forward, Bound::Included(k), _) => {
+                    pages.cmp_item(leaf, at, k)? != Ordering::Greater
+                }
+                (Direction::Forward, Bound::Excluded(k), _) => {
+                    pages.cmp_item(leaf, at, k)? == Ordering::Less
+                }
+                (Direction::Backward, _, Bound::Included(k)) => {
+                    pages.cmp_item(leaf, at, k)? != Ordering::Less
+                }
+                (Direction::Backward, _, Bound::Excluded(k)) => {
+                    pages.cmp_item(leaf, at, k)? == Ordering::Greater
+                }
+                _ => true,
+            })
         };
-        Ok(within.then(|| (leaf.clone(), *i)))
+        let leaf_within = match self.leaf_within {
+            Some(known) => known,
+            None => {
+                let edge = match self.direction {
+                    Direction::Forward => leaf.count().saturating_sub(1),
+                    Direction::Backward => 0,
+                };
+                compare(edge).unwrap_or(false)
+            }
+        };
+        let within = leaf_within || compare(*i)?;
+        let at = within.then(|| (leaf.clone(), *i));
+        self.leaf_within = Some(leaf_within);
+        Ok(at)
     }
 
     /// Moves to the next item within the bounds and returns its leaf and
