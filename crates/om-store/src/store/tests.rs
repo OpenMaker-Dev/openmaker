@@ -924,8 +924,16 @@ impl Run {
                 .map(|b| (u64::from_le_bytes(b[48..56].try_into().unwrap()), b))
         };
         let run = store.log_segments();
+        // A give-up in this open made its fence after the walk.
+        let fence = match &opened.gave_up {
+            Some(GaveUp::UnreadableEnd {
+                done: Some(done), ..
+            }) => done.fence,
+            _ => None,
+        };
         let anchor = (run.first..run.first + run.count)
             .rev()
+            .filter(|n| Some(*n) != fence)
             .find_map(|n| header_first(n).filter(|(first, _)| *first <= start.index + 1));
         let stops = anchor
             .as_ref()
