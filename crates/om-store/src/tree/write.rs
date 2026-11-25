@@ -1552,16 +1552,27 @@ mod tests {
             for _ in 0..n / 10 {
                 let i = rng.below(n);
                 let j = rng.below(n);
-                match rng.below(3) {
+                match rng.below(4) {
                     0 => edits.swap(i, j),
                     1 => {
                         let again = edits[i].clone();
                         edits.insert(j, again);
                     }
-                    _ => {
+                    2 => {
                         if let Edit::Put { path, .. } = &edits[i] {
                             let delete = Edit::delete(path.clone());
                             edits.insert(j, delete);
+                        }
+                    }
+                    _ => {
+                        // An ancestor of the next key put again just before
+                        // it: its subtree so far goes, the greatest key
+                        // with it, and the next keys come below it.
+                        if let Edit::Put { path, .. } = &edits[j] {
+                            if path.len() > 1 {
+                                let ancestor = path[..1 + rng.below(path.len() - 1)].to_vec();
+                                edits.insert(j, Edit::list(ancestor));
+                            }
                         }
                     }
                 }
