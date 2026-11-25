@@ -484,8 +484,8 @@ impl<'a> Scanner<'a> {
             return Ok(match self.entry(place, limit)? {
                 Some(found) => {
                     self.offset += found.size;
-                    // An entry's index is at most `MAX_INDEX`, one below
-                    // the largest number.
+                    // An entry's index is at most `MAX_INDEX`, far below
+                    // the largest number: the next index never wraps.
                     self.next = found.index + 1;
                     self.prev = found.hash;
                     self.prev_term = found.term;
