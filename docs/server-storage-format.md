@@ -400,9 +400,11 @@ holds each tree's name and root and changes them only then. Within one
 unit a tree's root is given at most once (made, or given a new root),
 and only a page the unit wrote; a tree dropped is one that existed when
 the unit began and that the unit gave no root; the old root of a tree
-given a new one is released by the unit, either way. A unit that breaks
-any of this is refused whole, by the page file and by the store in
-memory alike. A failure at
+given a new one is released by the unit, either way. One unit is open
+at a time: a second is refused while one is open, so nothing changes the
+trees between a unit's begin and its commit. A unit that breaks any of
+this is refused whole, by the page file and by the store in memory
+alike. A failure at
 any point leaves the store as it was once the unit is dropped, so the
 entry can be applied again. An entry that changes an existing tree in
 nothing writes nothing and keeps its root. An entry's index must be
@@ -773,13 +775,23 @@ rebuilt for them when those entries are applied again (4.7).
   checkpoints on disk (and the one being written), every restore point a
   superblock on disk lists (a checkpoint's own list and, while its
   predecessor is on disk, the retiring list), and the pins. A pin is of
-  the trees at an entry, `(entry, 0)`: it keeps no meta page (birth step
-  above 0), so it takes the roots of its version as it is taken and
-  keeps them: from memory for the newest version, the newest
-  checkpoint's and a version another pin holds; from the meta stream of
-  an older checkpoint or a restore point, read while the I/O lock is
-  held, which a reclaim, a checkpoint and a restore point's drop hold
-  too, so that none of them frees, reuses or retires those pages first. A pin whose roots cannot be had (the
+  the trees at an entry, `(entry, 0)`, and only of a version the page
+  file has: the newest (its entry is the last entry whose unit
+  committed, or the newest checkpoint's when that is later), a
+  checkpoint or restore point on disk, or a version another pin keeps. A
+  pin of any other entry is refused: an entry that changed nothing has
+  no version of its own, and the page file cannot tell it from an entry
+  whose unit has not committed yet, whose commit could free the pages
+  such a pin had been handed. A reader of such an entry pins the newest
+  version (`PageFile::pin_newest`, which reports the entry it pinned).
+  A pin keeps no meta page (birth step above 0), so it takes the roots
+  of its version as it is taken and keeps them: from memory for the
+  newest version, the newest checkpoint's and a version another pin
+  holds; from the meta stream of an older checkpoint or a restore
+  point, read while the I/O lock is held, which a reclaim, a checkpoint
+  and a restore point's drop hold too, so that none of them frees,
+  reuses or retires those pages first. Two pins of one entry are of one
+  version and carry the same roots; a pin whose roots cannot be had (the
   version a checkpoint is writing, a meta stream that does not read
   back) is refused. A birth not known yet counts as the earliest.
 - **Settling** needs the page's bytes: its birth is its stamp (section
@@ -888,13 +900,19 @@ rebuilt for them when those entries are applied again (4.7).
   applier does not pause.
 - **A checkpoint** of the newest version, at entry `E` (every unit
   committed so far is of `E` or earlier), of the trees as the page file
-  holds them: it takes no roots from its caller. Before it writes
-  anything it reads back from the file every tree's root that is not in
+  holds them: it takes no roots from its caller. Its copies replace the
+  older checkpoint's, so the newest must be usable first, or both
+  checkpoints left on disk would be refused at open. So before it reads
+  or writes anything it refuses a root the reader would refuse: one not
+  in use in the newest version (free, dying, or a page of the newest
+  checkpoint's meta stream), and one page named by more trees than the
+  map counts sharing it. A unit cannot leave either, but a table #719
+  wrote from roots its caller gave can (a tree's root that is a page
+  inside another tree passes the open, which would have to walk every
+  tree to see it, and dies when that tree is dropped and taken down).
+  Then it reads back from the file every tree's root that is not in
   memory, and checks it, and is refused, naming the tree, when one does
-  not read back: its copies replace the older checkpoint's, so the
-  newest must be usable first, or both checkpoints left on disk would
-  name a root that does not read back. The writer keeps every limit the
-  reader enforces
+  not read back. The writer keeps every limit the reader enforces
   (trees, restore points, names, numbers), and the meta stream goes
   through the reader's own decoding before any byte of it is written.
   Short of free pages for its meta stream, it reclaims first.
@@ -929,7 +947,11 @@ rebuilt for them when those entries are applied again (4.7).
   takes the first checkpoint whose meta stream reads back, decodes, and
   agrees with its superblock (number, entry, tree format), and whose
   tree roots read back with the hashes it names, are not overflow pages,
-  were written at or before its entry, and are in use in its map. A
+  were written at or before its entry, and are in use in its map, no
+  root page named by more trees than its map counts sharing it (a clone
+  shares its root; a table #719 wrote from roots its caller gave could
+  name one page for two trees with no share, and dropping one of them
+  would mark the page dying while the other still names it). A
   device read error or bytes that do not check pass the checkpoint over,
   with the reason; any other failure of a read (the process stopping)
   fails the open. Then, before it returns:
