@@ -351,6 +351,7 @@ pub(super) fn compare_reads(
     let catalog = derived::read_catalog(view).expect("the catalog reads");
     let mut mine = Derived::new(view, catalog, store.derived().name()).expect("derived state");
     mine.set_page_zero(page_zero);
+    #[cfg(debug_assertions)]
     assert!(
         mine.same_as(store.derived(), true),
         "the derived state differs"
@@ -1099,5 +1100,200 @@ fn filemakers_templates_through_the_store_engine() {
         "{} files, {} refused, {nodes} nodes, {calls} calls compared: {refused:?}",
         found.len(),
         refused.len()
+    );
+}
+
+/// A measurement, not a test: the store engine's import, export and reads
+/// of a generated file against the file engine's, one step per process so
+/// that each peak is its own. The file is one `export_measurement`
+/// generates (`engine::export`: one table of `OM_EXPORT_RECORDS` records,
+/// eight 64-byte text cells each). Every step reports its time and the
+/// peak resident memory above the process's own before it began (`VmHWM`,
+/// reset through `clear_refs`). For a release build, one run at a time:
+///
+/// ```sh
+/// OM_PAGED_FILE=target/m/f.fmp12 OM_PAGED_STORE=target/m/store OM_PAGED_STEP=import \
+///   cargo test --release -p om-server --lib -- --ignored paged_measurement --nocapture
+/// ```
+///
+/// The steps: `import`, the file into a new page file at `OM_PAGED_STORE`
+/// on the disk (a 64 MiB cache, at most 4,096 pages waiting for a
+/// checkpoint), checkpointed, with the page file's size; `export`, the
+/// page file opened, its checkpoint pinned and the tree exported beside the
+/// file; `reads`, the same opened view's walk of the table's records and
+/// 1,000 record subtrees read at seeded places; `file-reads`, the file
+/// engine's load and the same reads through its view; `file-export`, the
+/// file engine's load and its written export of the same file.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "a measurement for release builds; set OM_PAGED_FILE, OM_PAGED_STORE and OM_PAGED_STEP"]
+fn paged_measurement() {
+    use std::time::Instant;
+
+    use om_store::os::OsFs;
+
+    fn var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"))
+    }
+    /// The field `name` of this process's status, in MB.
+    fn status(name: &str) -> f64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
+            .unwrap()
+            / 1024.0
+    }
+    let config = Config {
+        cache_bytes: 64 << 20,
+        dirty_budget: 4096,
+        reserve: 256,
+        growth: 256,
+    };
+    let file = PathBuf::from(var("OM_PAGED_FILE"));
+    let folder = PathBuf::from(var("OM_PAGED_STORE"));
+    let step = var("OM_PAGED_STEP");
+    let size = std::fs::metadata(&file).unwrap().len() as f64 / 1e6;
+    let page_zero_at = folder.with_extension("page0");
+    let table = [om_hbam::slot::uint_segment(fixture::TABLE), vec![5]];
+    let table: Vec<&[u8]> = refs(&table);
+    /// The whole-table walk and 1,000 record reads: their times in ms,
+    /// and the nodes walked.
+    fn reads(view: &dyn View, table: &[&[u8]]) -> (f64, f64, usize) {
+        let started = Instant::now();
+        let walked = view.walk(table).map(Result::unwrap).count();
+        let walk = started.elapsed().as_secs_f64() * 1e3;
+        let records = view
+            .children(table, Bound::Unbounded, Direction::Backward)
+            .next();
+        let last = records.unwrap().unwrap().segment.into_owned();
+        let count = om_hbam::serial::decode(&last).unwrap_or(1);
+        let mut rng = Rng(7);
+        let started = Instant::now();
+        for _ in 0..1_000 {
+            let id = 1 + rng.next() % count;
+            let record = om_hbam::serial::encode(id);
+            let mut path = table.to_vec();
+            path.push(&record);
+            assert!(view.subtree(&path, NO_LIMIT).unwrap().is_some());
+        }
+        let scattered = started.elapsed().as_secs_f64() * 1e3;
+        (walk, scattered, walked)
+    }
+    std::fs::write("/proc/self/clear_refs", "5").unwrap();
+    let base = status("VmRSS:");
+    let started = Instant::now();
+    let report = match step.as_str() {
+        "import" => {
+            std::fs::create_dir_all(&folder).unwrap();
+            let fs = OsFs::new(&folder);
+            let lock = fs.lock().unwrap();
+            let pf = PageFile::create(&fs, &lock, config).unwrap();
+            let mut units = OnPageFile {
+                pf: &pf,
+                checkpoints: 0,
+            };
+            let source = std::io::BufReader::with_capacity(64 << 10, File::open(&file).unwrap());
+            let imported = import(source, &mut units, &tree_name(), 1, Batch::default()).unwrap();
+            units.checkpoint().unwrap();
+            let took = started.elapsed().as_secs_f64() * 1e3;
+            let checkpoints = units.checkpoints;
+            // What the file holds: the tree's pages, and the rest.
+            let tree = om_store::tree::check(&pf, imported.root).unwrap();
+            let in_tree = tree.pages.len() as f64 * PAGE_SIZE as f64 / 1e6;
+            let space = pf.space();
+            drop(pf);
+            std::fs::write(&page_zero_at, &imported.page_zero).unwrap();
+            let pages = std::fs::metadata(folder.join(om_store::pagefile::FILE))
+                .unwrap()
+                .len() as f64
+                / 1e6;
+            format!(
+                "imported in {took:.0} ms: {} nodes in {} batches, {checkpoints} checkpoints; \
+                 page file {pages:.1} MB ({:.2} times the file), of it the tree's {} pages \
+                 {in_tree:.1} MB ({:.2} times; {} leaves, {} index pages, height {}), {} pages \
+                 free and {} dying",
+                imported.nodes,
+                imported.entries.1,
+                pages / size,
+                tree.pages.len(),
+                in_tree / size,
+                tree.leaves,
+                tree.index_pages,
+                tree.height,
+                space.free,
+                space.dying,
+            )
+        }
+        "export" | "reads" => {
+            let fs = OsFs::new(&folder);
+            let lock = fs.lock().unwrap();
+            let (pf, _) = PageFile::open(&fs, &lock, config).unwrap();
+            let pin = pf.pin(pf.checkpoint_entry().1.index).unwrap();
+            let view = PagedView::open(&pf, pin.roots()[0].1).unwrap();
+            if step == "export" {
+                let page_zero = std::fs::read(&page_zero_at).unwrap();
+                let out = file.with_file_name("exported.fmp12");
+                let mut into = File::options()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&out)
+                    .unwrap();
+                let exported =
+                    export(&view, &page_zero, Target::File(&mut into), Progress::none()).unwrap();
+                std::fs::remove_file(&out).unwrap();
+                format!("{:.1} MB written and checked", exported.size as f64 / 1e6)
+            } else {
+                let (walk, scattered, walked) = reads(&view, &table);
+                format!(
+                    "walk of the table {walk:.0} ms ({walked} nodes), 1,000 records {scattered:.1} ms"
+                )
+            }
+        }
+        "file-reads" | "file-export" => {
+            let hbam = HbamFile::open(&file).unwrap();
+            let store = Store::load(&hbam, "Measured.fmp12").unwrap();
+            drop(hbam);
+            let loaded = started.elapsed().as_secs_f64() * 1e3;
+            if step == "file-reads" {
+                let (walk, scattered, walked) = reads(&store.tree_view(), &table);
+                format!(
+                    "load {loaded:.0} ms; walk of the table {walk:.0} ms ({walked} nodes), 1,000 \
+                     records {scattered:.1} ms"
+                )
+            } else {
+                let Source::Written { change_number } = store.compacted_source() else {
+                    unreachable!()
+                };
+                let out = file.with_file_name("file-exported.fmp12");
+                let mut into = File::options()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&out)
+                    .unwrap();
+                let started = Instant::now();
+                write_checked(
+                    &store.tree_view(),
+                    store.derived().page_zero(),
+                    change_number,
+                    &mut into,
+                    Progress::none(),
+                )
+                .unwrap();
+                let written = started.elapsed().as_secs_f64() * 1e3;
+                std::fs::remove_file(&out).unwrap();
+                format!("load {loaded:.0} ms; export written and checked in {written:.0} ms")
+            }
+        }
+        other => panic!("unknown step {other}"),
+    };
+    println!(
+        "{step} {size:.1} MB file: {:.0} ms in all, peak {:.1} MB above the process's {base:.0} \
+         MB; {report}",
+        started.elapsed().as_secs_f64() * 1e3,
+        status("VmHWM:") - base,
     );
 }
