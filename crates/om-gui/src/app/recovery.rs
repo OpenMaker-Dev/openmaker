@@ -678,7 +678,7 @@ impl OpenMakerApp {
         let job = ReconnectJob {
             password,
             typed_for,
-            use_saved_license: self.hosts.use_saved_license,
+            use_saved_license: self.use_saved_license,
             records: records.into_iter().collect(),
             current,
             related,

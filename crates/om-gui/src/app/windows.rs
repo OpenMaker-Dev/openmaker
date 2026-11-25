@@ -630,6 +630,8 @@ impl OpenMakerApp {
         let window = response.window;
         match response.reply {
             Reply::License { id, result } => self.license_reply(id, result),
+            // A host's listing is Home's, whatever window asked for it.
+            Reply::Files(listed) => self.on_listed(listed),
             // Related files opened on demand grew the file's schema while
             // the provider answered: every window of the file takes it
             // before the answer, which may read the new files' tables.

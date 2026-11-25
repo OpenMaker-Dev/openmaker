@@ -112,11 +112,13 @@ fn a_script_opens_a_cold_related_file_after_explicit_reconnect() {
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
     );
     let mut app = common::harness(Box::new(host.provider().with_related_on_demand(true)));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "Root", |a| a.state().is_settled());
@@ -228,11 +230,13 @@ fn related_container_reads_survive_root_window_close_and_last_close_reopens_fres
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
     );
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the root file", |app| app.state().is_settled());
@@ -261,10 +265,12 @@ fn related_container_reads_survive_root_window_close_and_last_close_reopens_fres
             .iter()
             .all(|client| client.files.is_empty())
     });
-    hosted::replace(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    hosted::replace(&mut app, "File", "Root.fmp12");
-    hosted::replace(&mut app, "Account", ACCOUNT);
+    hosted::replace(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    hosted::replace(&mut app, "Account Name", ACCOUNT);
     hosted::replace(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the reopened file", |app| {
@@ -333,11 +339,13 @@ fn script_calculations_keep_the_related_files_context() {
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
     );
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the file", |app| {
@@ -433,11 +441,13 @@ fn cross_file_related_navigation_uses_native_peer_layouts_and_window_found_sets(
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
     );
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the generated root file", |app| {
@@ -586,11 +596,13 @@ fn related_navigation_into_another_file_then_its_own_script() {
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
     );
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the generated root file", |app| {
@@ -719,11 +731,13 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -970,11 +984,13 @@ fn imported_layout_delete_menu_and_scripts_preserve_caller_and_omitted_peers() {
         vec![("Root.fmp12", root), ("Related.fmp12", peer)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -1247,11 +1263,13 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         vec![("Root.fmp12", root), ("Related.fmp12", peer)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -1645,11 +1663,13 @@ fn imported_layout_find_menu_and_scripts_keep_the_caller_and_peer_record_identit
         vec![("Root.fmp12", root), ("Related.fmp12", peer)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -1832,11 +1852,13 @@ fn imported_layout_sort_script_and_menu_unsort_keep_root_context_and_current_rec
         vec![("Root.fmp12", root), ("Related.fmp12", peer)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -1964,17 +1986,19 @@ fn a_related_file_that_refuses_the_account_is_asked_for_when_a_layout_needs_it()
             .any(|node| node.accesskit_node().value().as_deref() == Some(text))
     };
     let open = |app: &mut common::App| {
-        hosted::replace(app, "Host", "127.0.0.1");
-        hosted::replace(app, "Port", &host.port.to_string());
-        hosted::replace(app, "File", "Root.fmp12");
-        hosted::replace(app, "Account", ACCOUNT);
+        hosted::replace(
+            app,
+            "Path",
+            &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+        );
+        hosted::replace(app, "Account Name", ACCOUNT);
         hosted::replace(app, "Password", PASSWORD);
         common::click(app, "Open");
     };
     const TEXT: &str = "Sign in to open “Related”.";
 
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
+    common::click(&mut app, "Use saved FileMaker license");
     open(&mut app);
     common::wait_for_label(&mut app, TEXT);
     assert_eq!(logins(), 1, "the refused Login, at open");
@@ -2080,11 +2104,13 @@ fn go_to_related_record_into_a_file_that_refused_the_account_asks_for_another() 
     };
 
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the root file", |app| app.state().is_settled());
@@ -2187,11 +2213,13 @@ fn open_file_of_a_related_file_that_refuses_the_account_asks_for_another() {
     };
 
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the root file", |app| app.state().is_settled());
@@ -2307,11 +2335,13 @@ fn a_partly_saved_record_is_checked_and_resumed_from_its_bar() {
         vec![("Root.fmp12", root), ("Related.fmp12", related_file)],
     );
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -2541,11 +2571,13 @@ fn set_field_creates_and_edits_another_files_related_record() {
         ],
     );
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
@@ -3099,11 +3131,13 @@ fn a_scripts_first_stored_copy_reconnects_without_a_root_upload() {
         host.provider()
             .with_keepalive(Some(std::time::Duration::from_millis(100))),
     ));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "source Root", |a| a.state().is_settled());
@@ -3489,11 +3523,13 @@ fn mixed_attachment_caller(existing_root: bool) {
             .with_related_on_demand(true)
             .with_keepalive(Some(std::time::Duration::from_millis(100))),
     ));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "Root loaded", |a| a.state().is_settled());
@@ -3654,11 +3690,13 @@ fn mixed_attachment_caller(existing_root: bool) {
             host.provider()
                 .with_keepalive(Some(std::time::Duration::from_millis(100))),
         ));
-        common::click(&mut app, "Use saved license");
-        common::fill(&mut app, "Host", "127.0.0.1");
-        hosted::replace(&mut app, "Port", &host.port.to_string());
-        common::fill(&mut app, "File", "Root.fmp12");
-        common::fill(&mut app, "Account", ACCOUNT);
+        common::click(&mut app, "Use saved FileMaker license");
+        common::fill(
+            &mut app,
+            "Path",
+            &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+        );
+        common::fill(&mut app, "Account Name", ACCOUNT);
         common::fill(&mut app, "Password", PASSWORD);
         common::click(&mut app, "Open");
         common::wait_until(&mut app, "fresh Root caller", |a| a.state().is_settled());
@@ -3871,11 +3909,13 @@ fn keyboard_commit_logs_an_active_portal_edit_in_an_unopened_third_file() {
         Box::new(host.provider().with_related_on_demand(true)),
         egui::vec2(1600.0, 900.0),
     );
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "Root open", |a| a.state().is_settled());
@@ -4180,11 +4220,13 @@ fn refused_log_correction(reconnect: bool, changed: bool, new_root: bool) {
         .as_ref()
         .map_or_else(|| host.provider(), |peer| host.provider_trusting(peer));
     let mut app = common::harness_sized(Box::new(provider), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "Root open", |a| a.state().is_settled());
@@ -4643,11 +4685,13 @@ fn a_frozen_portal_shows_what_its_partly_applied_save_would_write() {
     use om_data::DataProvider;
     let host = related::Host::new("frozen-portal", portal_save_log_files(None, false, true));
     let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1600.0, 900.0));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "Root open", |a| a.state().is_settled());
@@ -4842,11 +4886,13 @@ fn a_script_transaction_partly_saved_names_each_files_outcome() {
     };
     let root_before = names("Root.fmp12");
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the root file", |app| app.state().is_settled());
@@ -4919,11 +4965,13 @@ fn settings_user_name_lets_a_script_guarded_on_it_open_another_file() {
         .build_eframe(move |_| {
             om_gui::OpenMakerApp::new(Box::new(provider)).with_settings_file(file)
         });
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
     common::fill(&mut app, "Password", PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the root file", |app| app.state().is_settled());

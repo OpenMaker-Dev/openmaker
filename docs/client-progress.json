@@ -50,8 +50,8 @@
       "feature": "Hosted-file discovery UI",
       "previous_status": "Partial",
       "status": "Partial",
-      "scope": "The Hosts dialog lists a host's files with FileMaker's file-list request (op77) or OpenMaker Server's own listing, searches them, and tells empty, unsupported and unreachable hosts apart; a file name can also be typed ([Hosts dialog file list](desktop-client.md#hosts-dialog-file-list), [hosted file list](hosted-file-list.md#hosted-file-list)).",
-      "remaining": "The dialog has not been checked against FileMaker Server since the op77 reader was written [#14](https://github.com/OpenMaker-Dev/openmaker/issues/14), a host that lists files only after a sign-in is not asked, and how FileMaker Server pages a long list is unmeasured [#4](https://github.com/OpenMaker-Dev/openmaker/issues/4). OpenMaker Server shows every client the same names [#15](https://github.com/OpenMaker-Dev/openmaker/issues/15). No LAN discovery; Favorites and Recent are disabled [#56](https://github.com/OpenMaker-Dev/openmaker/issues/56).",
+      "scope": "Home's saved hosts list their files with FileMaker's file-list request (op77) or OpenMaker Server's own listing, search them, and tell empty, unsupported and unreachable hosts apart; Open Network File opens a file by its `fmnet:` path ([Hosts and their files](desktop-client.md#hosts-and-their-files), [hosted file list](hosted-file-list.md#hosted-file-list)).",
+      "remaining": "Listing has not been checked against FileMaker Server since the op77 reader was written [#14](https://github.com/OpenMaker-Dev/openmaker/issues/14), a host that lists files only after a sign-in is not asked, and how FileMaker Server pages a long list is unmeasured [#4](https://github.com/OpenMaker-Dev/openmaker/issues/4). OpenMaker Server shows every client the same names [#15](https://github.com/OpenMaker-Dev/openmaker/issues/15). No LAN discovery; Favorites and Recent are disabled [#56](https://github.com/OpenMaker-Dev/openmaker/issues/56).",
       "issues": [
         4,
         14,
@@ -59,7 +59,7 @@
         56
       ],
       "docs": [
-        "desktop-client.md#hosts-dialog-file-list",
+        "desktop-client.md#hosts-and-their-files",
         "hosted-file-list.md#hosted-file-list"
       ]
     },

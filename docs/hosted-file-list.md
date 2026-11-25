@@ -1,10 +1,10 @@
 # Hosted-file list
 
-The Hosts dialog's **List files** needs a host's published files before
-any file opens. The client asks a host without this extension, FileMaker
+A saved host's page on Home lists the host's published files before any
+file opens. The client asks a host without this extension, FileMaker
 Server above all, with FileMaker's own op77 GetFileList
 (`docs/re/network-protocol.md` 5.3; [desktop client](desktop-client.md),
-"Hosts dialog file list"). OpenMaker Server answers op77 with the same
+"Hosts and their files"). OpenMaker Server answers op77 with the same
 published files, for FileMaker Pro's Hosts window (network-protocol.md 5.3,
 "Implementation notes"). OpenMaker Server and the OpenMaker client also use
 an extension of their own (`om_protocol::hosted_files`), which the client
