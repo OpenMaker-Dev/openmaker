@@ -553,10 +553,11 @@ settled (server-storage-format.md 4.5).
    before it does not. A read the device fails says nothing of the bytes,
    which a later read may return whole, so the server is started again
    later. Giving a checkpoint up and opening on the one before it is a
-   separate, explicit call, given what the report named and refused when
-   the situation has changed; the server records the report durably
-   before it makes that call, so that a stop during the call loses
-   nothing it would have reported. The server is to make that call by
+   separate, explicit call, given the approval the report carries: what
+   to give up and the checkpoint to land on, each named by an identity
+   that does not come again when a number does. The call does exactly
+   that or nothing, so the server records the report durably before it
+   makes the call, and the loss it recorded is the loss that can happen. The server is to make that call by
    itself for damage, and leave it to an administrator for a read that
    keeps failing; that part of the store is not built yet, so a store
    whose newest checkpoint does not check does not start by itself. The

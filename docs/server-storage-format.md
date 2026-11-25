@@ -1000,19 +1000,29 @@ rebuilt for them when those entries are applied again (4.7).
   are unknown when its own table could not be read. Each checkpoint lists
   the points of the one before it that were not dropped and the one it
   keeps, so that is exactly what it lists and the older one does not.
-  Giving up is an explicit call (`PageFile::open_giving_up`) for damage
-  and for a read that keeps failing alike. It is given what to give up,
-  from the errors the open returned (`OpenError::give_up`); its caller
-  records those errors durably first, so that a stop during the call
-  loses no report. It tries the two newest checkpoints with a valid copy,
-  passing over one it was given that the device fails to read or that
-  does not check, and writes over a slot it was given that the device
-  fails to read; it reports each (`Opened::passed_over` with what was
-  lost, `Opened::given_up_slots`). Anything else that stops it returns
-  the open's error, and when nothing it was given stops it (the read
-  works again), it is refused; either way it writes nothing. Any other
-  failure of a read (the process stopping) fails either call. Then,
-  before it returns:
+  Either error also carries the approval that gets past it
+  (`OpenError::give_up`, a `GiveUp`): the checkpoints to give up and the
+  slots to write over unread, and the checkpoint the open would then be
+  on. Each checkpoint in it is named by its identity: its number and its
+  meta stream's first page and hash, from its superblock copy. The hash
+  covers the whole stream, so a checkpoint whose number comes again (the
+  next checkpoint after one is given up takes the given-up one's number)
+  has another identity. Giving up is an explicit call
+  (`PageFile::open_giving_up`) for damage and for a read that keeps
+  failing alike, given such an approval; its caller records the error
+  durably first. The call learns, writing nothing, what it would give up
+  (every slot the device fails to read, and the two newest checkpoints
+  with a valid copy until one opens) and where it would land, and goes on
+  only when that is exactly the approval. Otherwise it writes nothing: it
+  is refused when nothing stops the open any more, and otherwise returns
+  the error for what the approval does not cover (or for the last
+  checkpoint it would give up), carrying the approval for what is so now.
+  So the loss the caller recorded is the loss that can happen, whatever
+  was damaged in between (another landing) and whatever was written since
+  (a number that came again), and a stop during the call loses no report.
+  It reports what it gave up (`Opened::passed_over` with what was lost,
+  `Opened::given_up_slots`). Any other failure of a read (the process
+  stopping) fails either call. Then, before it returns:
   1. the checkpoint's copy is written into both slots of its pair, each
      flushed: the device may not hold a copy the system's cache showed
      (an earlier process's failed write or flush), and a crash during a
@@ -1029,15 +1039,20 @@ rebuilt for them when those entries are applied again (4.7).
   3. if the file is shorter than the map's `end`, it is extended to it
      and flushed.
 
-  For an open these writes lose nothing. Every slot was read and no
-  checkpoint with a valid copy was passed over, so what they write over is
-  the opened checkpoint's own copy, a blank slot, bytes that do not check
-  (taken as damage that stays: they will not check on a later read
-  either), or a copy of a checkpoint other than the opened one and its
-  predecessor: one older than the predecessor, or one given up before,
-  whose pages are free in the opened checkpoint's map. For the explicit
-  call they also write over what it was given: the slots of a checkpoint
-  passed over and a slot it could not read, which is what it reports.
+  What an open's writes keep: the checkpoint opened and the predecessor
+  its meta stream names keep every copy they have. What goes is what the
+  opened checkpoint had already retired: bytes that do not check (taken as
+  damage that stays: they will not check on a later read either), and
+  copies of older checkpoints, such as the one a crash between the opened
+  checkpoint's two copies leaves in its second slot. Such an older
+  checkpoint's pages may still check, and its table may list a restore
+  point the opened one dropped; but the opened checkpoint no longer keeps
+  them and its map frees them, which is why it must never be taken later.
+  Every slot was read and no checkpoint with a valid copy is newer than
+  the one opened, so nothing written over is newer than it. The explicit
+  call writes over what it was approved to give up too: the slots of the
+  checkpoints passed over and the slots it could not read, which is what
+  it reports.
 
   The predecessor is the checkpoint whose number and meta stream the
   chosen one names, and is kept only when a copy of it was found. The
@@ -1057,11 +1072,14 @@ rebuilt for them when those entries are applied again (4.7).
 - **The two checkpoints on disk are whole**, and so is every restore
   point a superblock on disk lists: a page is reused only when no kept
   version reaches it (4.5), and a checkpoint's own meta stream is kept by
-  its version. When the newest checkpoint's superblock copies do not
-  check, the open takes the one before it; when its meta stream or roots
-  do not, the open reports it and the explicit call that gives it up
-  takes the one before it (4.6). Either way that one's pages and its log
-  (section 6.7, "What is kept") are all there.
+  its version. When the newest checkpoint's meta stream or roots do not
+  check, the open reports it, with the approval to give it up, and the
+  explicit call given that approval takes the one before it (4.6). When
+  both of its superblock copies do not check, the open takes the one
+  before it as the newest, and nothing reports the restore points only
+  the newest listed: the open cannot tell those copies from a checkpoint
+  that never finished writing them. Either way that one's pages and its
+  log (section 6.7, "What is kept") are all there.
 - **Pins are gone after a restart**; what the superblocks on disk name is
   what is kept. The pages a pin kept are free or dying in the maps on
   disk, and are reused once no kept version reaches them.
