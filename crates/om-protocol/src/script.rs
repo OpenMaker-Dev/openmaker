@@ -3,12 +3,15 @@
 //! the host, and RCSendPSOSRetToClient (op105), the result of a Perform
 //! Script on Server with Callback that the host sends back.
 //!
-//! No capture of either exchange exists. The fields and their push order
-//! are the spec's tables (11.2, 11.4, read from FileMaker's `Call` and
-//! `Perform` methods). Details the spec leaves open are marked *inferred*
-//! here and listed in script-runtime.md "Implementation notes (PSOS)":
-//! the parameter's Text push taken as a plain unistring, the script key as
-//! the catalog key segment, the order and zero values of the callback ids,
+//! No packet capture of either exchange exists. The fields and their push
+//! order are the spec's tables (11.2, 11.4, read from FileMaker's `Call`
+//! and `Perform` methods). The script key's bytes were seen once, for two
+//! scripts, as OpenMaker Server logged the op30 FileMaker Pro 26.0.3 sent
+//! it (`01 0a` for script 10); the counted form for every id is inferred
+//! from those two. Details the spec leaves open are marked *inferred* here
+//! and listed in script-runtime.md "Implementation notes (PSOS)": the
+//! parameter's Text push taken as a plain unistring, the script key's form
+//! beyond the two seen, the order and zero values of the callback ids,
 //! op105's transaction header and the client's answer to it.
 
 use om_rctransaction::{Builder, Reader, ResultBuilder, ResultReader};
@@ -93,7 +96,7 @@ impl PerformScript {
 /// catalog stores it under, its serial key alone (`80 0d` for script 141,
 /// file-metadata.md 1). FileMaker Pro sends the counted key instead, a
 /// length byte before it (script-runtime.md 11.2); whether FileMaker Server
-/// reads this form is unmeasured
+/// reads the bare serial key this sends is unmeasured
 /// ([#831](https://github.com/OpenMaker-Dev/openmaker/issues/831)), and
 /// OpenMaker Server reads both ([`script_id`]). `None` when it does not fit an `HBSerialKey<7>`.
 pub fn script_key(id: u64) -> Option<Vec<u8>> {
@@ -104,15 +107,17 @@ pub fn script_key(id: u64) -> Option<Vec<u8>> {
 /// The script id an op30 script key names, in either form a client sends
 /// (script-runtime.md 11.2): FileMaker Pro's counted key, one byte of
 /// length and then the serial key (`01 0a` for script 10, observed), or
-/// the serial key alone, as [`script_key`] sends it. A counted key starts
-/// with its length, 1 to 7, and is at least two bytes long; a serial key
-/// of one byte is one byte long, and one of two bytes or more starts with
-/// a byte of `80` or more: no key reads as both. A key that is neither
+/// the serial key alone, as [`script_key`] sends it, at most
+/// [`SCRIPT_KEY_MAX`] bytes, as `HBSerialKey<7>` holds. A counted key
+/// starts with its length, 1 to 7, and is at least two bytes long; a serial
+/// key of one byte is one byte long, and one of two bytes or more starts
+/// with a byte of `80` or more: no key reads as both. A key that is neither
 /// names no script.
 pub fn script_id(key: &[u8]) -> Option<u64> {
     let serial = match key {
         [length @ 1..=7, counted @ ..] if usize::from(*length) == counted.len() => counted,
-        _ => key,
+        _ if key.len() <= SCRIPT_KEY_MAX => key,
+        _ => return None,
     };
     om_hbam::serial::decode(serial).filter(|id| *id != 0)
 }
@@ -362,6 +367,10 @@ mod tests {
         assert_eq!(script_id(&[0x03, 0x0a]), None);
         assert_eq!(script_id(&[0x01, 0x80]), None);
         assert_eq!(script_id(&[0x02, 0x0a, 0x0b]), None);
+        // A bare key past HBSerialKey<7>'s seven bytes, which the serial
+        // decoder alone would read.
+        assert_eq!(script_id(&[0xfe, 0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(script_id(&[0xff, 0, 0, 0, 0, 0, 0, 0, 0]), None);
         assert_eq!(script_key(0), None);
         assert_eq!(script_key(u64::MAX), None);
         assert_eq!(script_key(0x2_0408_1020_407f).unwrap().len(), 7);

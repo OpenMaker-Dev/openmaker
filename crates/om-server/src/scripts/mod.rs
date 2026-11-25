@@ -1039,31 +1039,22 @@ mod tests {
     /// FileMaker Pro 26.0.3 names the script by a counted key, a length
     /// byte before its serial key (`01 0a` for script 10; #828 of
     /// github.com/OpenMaker-Dev/openmaker), OpenMaker's client by the serial
-    /// key alone: both run it. A key that is neither names no script.
+    /// key alone: both run it (the other keys are `script_id`'s tests).
     #[test]
     fn a_counted_script_key_runs_its_script() {
         let ten = fixture::script(10, "PM Navigate", vec![fixture::exit_with("\"ten\"")]);
-        let eleven = fixture::script(11, "PM Set", vec![fixture::exit_with("\"eleven\"")]);
-        let file = TempFile::new("counted-keys", &[ten, eleven], true);
+        let file = TempFile::new("counted-keys", &[ten], true);
         let shared = shared(&file);
-        let with_key = |key: &[u8]| {
+        for key in [&[0x01, 0x0a][..], &[0x0a]] {
             let mut request = request(&shared, 10, "", 0);
             request.script.script = key.to_vec();
-            perform(&shared, request)
-        };
-        for (key, result) in [
-            (&[0x01, 0x0a][..], "ten"),
-            (&[0x01, 0x0b], "eleven"),
-            (&[0x0a], "ten"),
-        ] {
-            let reply = with_key(key);
+            let reply = perform(&shared, request);
             assert_eq!(
                 (reply.error, reply.result.as_str()),
-                (0, result),
+                (0, "ten"),
                 "{key:02x?}"
             );
         }
-        assert_eq!(with_key(&[0x03, 0x0a]).error, 104);
     }
 
     #[test]
