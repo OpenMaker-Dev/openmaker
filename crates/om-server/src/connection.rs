@@ -3114,14 +3114,19 @@ fn request_notification(
 
 /// The open file a write names, if this session is logged in to it and
 /// the file may be written (a local file that cannot be is refused here,
-/// before the write changes anything, `Hosted::read_only`).
-fn writable<'s>(peer: &str, session: &'s Session, header: &Header) -> Option<&'s OpenFile> {
+/// before the write changes anything, [`file_read_only`]).
+fn writable<'s>(
+    shared: &Shared,
+    peer: &str,
+    session: &'s Session,
+    header: &Header,
+) -> Option<&'s OpenFile> {
     let file = session.open.get(&header.file_id)?;
     if set_access(file).is_none() {
         info!("{peer}: refusing a write before Login");
         return None;
     }
-    if file.hosted.is_read_only() {
+    if file_read_only(shared, file) {
         info!(
             "{peer}: refusing a write to read-only {:?}",
             file.hosted.name
@@ -3273,7 +3278,7 @@ fn create_record(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let request = write::parse_create_record_request(txn)?;
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         return Ok(write::CreateRecordReply {
             conflict: None,
             status: u32::from(ACCESS_DENIED),
@@ -3331,7 +3336,7 @@ fn get_serial(
         .get(&header.file_id)
         // Reserving a value and Set Next Serial Value both save the field:
         // a record write, refused to [Read-Only Access] as `writable` does.
-        .filter(|f| f.account.is_some() && !f.hosted.is_read_only() && !views_records_only(f))
+        .filter(|f| f.account.is_some() && !file_read_only(shared, f) && !views_records_only(f))
         // A serial is taken for a new record of its table.
         .filter(|f| {
             may_ever(
@@ -3401,7 +3406,7 @@ fn upload(
     // was dropped with its session in the file (closed, logged out of): it
     // fails, as a dropped transfer does, rather than answer that the upload
     // completed (the reply has no status to carry an error, spec 3.3).
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         if request.resume.has_more() {
             return Err(Refused.into());
         }
@@ -3537,7 +3542,7 @@ fn update_table(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let table = schema::parse_update_table_request(txn)?;
-    if let (Some(file), [table]) = (writable(peer, session, header), table.as_slice()) {
+    if let (Some(file), [table]) = (writable(shared, peer, session, header), table.as_slice()) {
         let account = file.account.as_deref().map_or("", |account| &account.name);
         let update = UpdateTable {
             table: table.clone(),
@@ -3633,7 +3638,7 @@ fn commit(
     let request = write::parse_commit_request(txn)?;
     let done = write::upload_reply(&Resume::no_stream(), max_return as usize);
     // Each part is held only for a request that may write.
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         return Ok(done);
     };
     let hosted = file.hosted.clone();
@@ -3810,7 +3815,7 @@ fn upload_binary(
     if !session.open.contains_key(&header.file_id) {
         return Ok(failed(FILE_NOT_OPEN));
     }
-    let Some(file) = writable(peer, session, header) else {
+    let Some(file) = writable(shared, peer, session, header) else {
         return Ok(failed(ACCESS_DENIED));
     };
     if !views_every_record(file) {
@@ -3879,7 +3884,7 @@ fn adjust_reference_count(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let request = container::parse_adjust_reference_count_request(txn)?;
-    let count = match writable(peer, session, header) {
+    let count = match writable(shared, peer, session, header) {
         Some(file)
             if !views_every_record(file) || !container_member_editable(file, &request.path) =>
         {
