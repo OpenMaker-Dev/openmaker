@@ -184,6 +184,14 @@
 mod copies;
 pub(crate) mod export;
 mod file;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the store engine's first code (docs/server-storage.md 5): no file is hosted on it yet"
+    )
+)]
+pub(crate) mod paged;
 mod reading;
 mod schema;
 mod state;
