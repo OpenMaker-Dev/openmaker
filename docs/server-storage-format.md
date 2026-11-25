@@ -197,6 +197,13 @@ The seeded tests (`crates/om-store/src/state/tests.rs`) check each of
 these: every open against the copies each slot can hold, and every
 confirmed value against what the open returns.
 
+This section describes the format and code as they are. The design asks
+for two things they do not have yet (server-storage.md 6.1 and 7.5): a
+mark, written when an open passes over a copy and kept until it is
+settled, and a repair record whose required end is not yet known. Until
+they are built, an open that passed over a copy writes the same values
+back with no mark, as 1.3 says.
+
 ## 3. The log
 
 `<store>/log/` (server-storage.md section 6.3), read and written by

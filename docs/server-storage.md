@@ -60,8 +60,9 @@ Both engines keep these, and a difference between them is a bug:
 3. **Nothing dropped.** Keys and values the server does not understand are
    kept and exported as they came.
 4. **Stored means durable.** A reply that says a change is stored is sent
-   only after the change is on disk (on a cluster: on a majority of
-   servers). An operation has one of three outcomes: stored, and the reply
+   only after the change is on disk (on a cluster: once it is committed,
+   which rests on a majority of servers each having acknowledged it
+   durable, section 7.1). An operation has one of three outcomes: stored, and the reply
    says so; not stored, with nothing of it left, and the reply says so; or
    unknown to the client, when the server stopped, lost its place in the
    cluster or could not confirm a flush before it could answer. In the
@@ -274,12 +275,14 @@ marker. After the flush above, which leaves the copy it read as it was,
 it writes into the slot it passed over a copy that says one was passed
 over, flushes it, and then writes the same into the first slot. Every
 later start honors that mark, however whole the two copies then are,
-until the update of `state` that settles it: the marker moved over a
-whole batch that followed it in the log, or, when the log holds none,
-the server recorded in repair on a cluster (section 7.5) and the loss
-reported on a single server (section 6.12). The open changes nothing in
-the log before the mark is durable. A crash therefore cannot hide that a
-copy was lost. A server
+until the update of `state` that settles it, which is written to both
+slots: the marker moved over the whole batch that followed it in the
+log, or, when the log holds none, the server recorded in repair on a
+cluster (section 7.5) and the loss reported on a single server (section
+6.12). The open changes nothing in the log before the mark is durable. A
+crash therefore cannot hide that a copy was lost. The mark is a
+requirement of this design: the `state` format and code do not have it
+yet (server-storage-format.md section 1.5). A server
 without a valid copy does not know what it confirmed, and does not start
 (section 7.5). The format and what the copies protect against are in
 [server-storage-format.md](server-storage-format.md) section 1
@@ -418,7 +421,8 @@ whole, every entry through the marker has lost something confirmed,
 however cleanly it ends. Whatever follows the marker was never
 acknowledged to anyone, unless the marker itself is one advance behind,
 which a lost copy of `state` can make it (section 6.1): the batch after
-it was then acknowledged, whether or not the log still holds it.
+it may then have been acknowledged, whether or not the log still holds
+it.
 
 Segments are written with synchronous writes (`O_DSYNC` on Linux;
 elsewhere each write is followed by a flush of the file's data), and that
@@ -562,8 +566,8 @@ since a checkpoint are rebuilt by applying the log.
    cut; a place after the marker that cannot be read ends the log there
    for this start instead, with nothing cut (section 6.3). A cluster
    member whose log ended so, or whose start had passed over a copy of
-   `state` and found no whole batch after the marker, is in repair
-   (section 7.5).
+   `state` (or found the mark of an earlier start that had) and found no
+   whole batch after the marker, is in repair (section 7.5).
 4. Apply the entries after the checkpoint, each once, in order, as far as
    the committed position. On one server that is every durable entry. A
    member of a cluster applies as far as the committed position its
@@ -710,10 +714,10 @@ store take unbounded memory or disk:
 
 | Fault | Found by | Response |
 |---|---|---|
-| The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged, unless the same start passed over a copy of `state` (below) |
+| The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged, unless the same start passed over a copy of `state`, or found the mark of an earlier start that did (below) |
 | The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
 | The log cannot be read at a place after the marker | the device's error | the log ends there for that start, cuts nothing and takes no appends (section 6.3). A cluster member is in repair and is cut there by its leader (sections 7.1 and 7.5). A single server stops the store and reports; the administrator opens it again, restores (section 11), or explicitly accepts the loss of what may follow |
-| One copy of `state` is damaged or cannot be read, and the other is valid | its hash, the device's error | the valid copy counts and is written to both slots with a mark that one was passed over (section 6.1). Its marker can be one advance behind, which the server cannot tell. When the log holds a whole batch after the marker, the marker is moved over it and nothing is lost. Otherwise, whether the log's tail was cut or it ends at the marker, a cluster member is in repair (section 7.5), and a single server reports that the last batch it confirmed may be lost |
+| One copy of `state` is damaged or cannot be read, and the other is valid | its hash, the device's error | the valid copy counts and is written to both slots with a mark that one was passed over (section 6.1). Its marker can be one advance behind, which the server cannot tell. When the log holds a whole batch after the marker, the marker is moved over it, and no entry the lost advance can have covered is lost (a committed position recorded alone can still be forgotten, and is learned again). Otherwise, whether the log's tail was cut or it ends at the marker, a cluster member is in repair (section 7.5), and a single server reports that the last batch it confirmed may be lost |
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
@@ -965,27 +969,33 @@ it.
   - or the log ended at a place it could not read (section 6.3),
     whatever `state` showed.
 
-  Neither sign says that an entry was lost. A crash while a copy of
-  `state` was being written for something other than a marker advance (a
-  term, a vote, a start count, a committed position alone) leaves a
-  damaged copy beside a log that ends at the marker, with nothing lost.
+  Neither sign says that an entry was lost. A crash that tears a write of
+  `state` which covers no new batch (a term, a vote, a start count, a
+  committed position recorded alone) can leave a damaged copy beside a
+  log that ends at the marker, with nothing lost.
   So does damage to the older of the two copies, and so can an earlier
   start's cut tail whose bytes are still in the segment. A place that
   cannot be read may be one where nothing was written. The server cannot
   tell these from a lost advance whose batch is damaged, gone, or reads
   as never written, so it is fenced in all of them. That costs
   availability, never an entry: one fenced server of three recovers from
-  the other two without anyone's help, and with two of three fenced the
-  cluster waits for an administrator.
+  the other two without anyone's help when they can reach each other and
+  it, and with two of three fenced the cluster waits for an
+  administrator.
 
   A batch that was flushed and is gone without a trace, with both copies
   of `state` whole and agreeing with the shortened log, shows no sign.
   That is the loss section 6.12 says cannot be found.
 
-  The marker of such a server does not give its required end, and the
-  signs must outlast a crash. The mark in `state` is durable before the
-  open changes anything in the log (section 6.1), every later start
-  honors it, and the server is fenced, as below, from that open on. The
+  The marker of such a server does not give its required end. A server
+  is fenced, as below, from the open that finds a sign, and what must
+  outlast a crash differs for the two. A passed-over copy would leave no
+  trace once the copies are whole again, so its mark in `state` is
+  durable before the open changes anything in the log (section 6.1), and
+  every later start honors it. A place that cannot be read is still
+  there for the next start to find; if a crash comes before the record
+  below is durable and the place then reads, that start judges the log
+  as it reads it, and nothing was passed over unseen. The
   update of `state` that removes the mark is the one that settles it: it
   moves the marker over a whole batch the log held, or records the server
   in repair with its required end not yet known. A log that ended at a
@@ -997,11 +1007,12 @@ it.
   leader's log at the answer. It records that as its required end before
   it stores anything from the leader. The answer follows this start, so
   whatever this server acknowledged in an earlier start and that was
-  committed by then is in that log: a leader's log holds every entry
-  committed before its term or by it, and this server, fenced since the
-  start, gave no vote that could elect one that does not. An entry
-  committed later, by this leader or another, is protected by the servers
-  that acknowledged it then. What this server acknowledged and was never
+  committed before that leader's term, or by that leader, is in that log:
+  a leader's log holds every such entry, and this server, fenced since
+  the start, gave no vote that could elect one that does not. The answer
+  proves no more than that. An entry committed later, or by a leader of
+  a higher term that neither of the two has heard of yet, is protected by
+  the servers that acknowledged it to that leader, not by this one. What this server acknowledged and was never
   committed needs no protection, so the end can lie before entries it
   once acknowledged.
 - **Nothing the server does lowers it.** Installing a checkpoint,
@@ -1025,8 +1036,10 @@ it.
   required end counts for the entries it covers. The check is made
   against the leader of the term the server is in when it leaves, not
   the one that gave the required end. Whatever was committed with its
-  acknowledgement is in that leader's log, so it then holds everything
-  its vote must protect.
+  acknowledgement before that leader's term, or by that leader, is in
+  that leader's log, so it then holds what its vote must protect; what a
+  leader of a higher term has committed since is protected by that
+  leader's own majority.
 - **No valid `state`.** A server without a valid copy of `state` does not
   know its required end, and no evidence on its own disk can establish
   it. It does not start. It comes back only when an administrator removes
@@ -1347,8 +1360,9 @@ failing seed replays exactly. After every step it checks:
 8. a group is seen whole or not at all, and its result agrees with what
    it depended on at the entry that closed it;
 9. a restore to an entry equals the reference model at that entry;
-10. a server in repair never votes or acknowledges, from the open that
-    saw the sign on, across a crash at any point of that open, and it
+10. a server in repair never votes or acknowledges: from the open that
+    found the sign, and across a crash from the moment the mark of a
+    passed-over copy or the repair record is durable (section 7.5). It
     leaves repair only as section 7.5 says, also when the leader changes
     after its required end was given. No leader is ever elected whose log
     lacks a committed entry;
@@ -1361,9 +1375,13 @@ failing seed replays exactly. After every step it checks:
 Clusters with a witness, members joining and leaving, state copies, and a
 leader lost at each step of each of these are part of the generated
 schedules. Checks 2 and 10 are promised for the faults the store finds
-(section 6.12). A schedule that injects one it cannot find (a flushed
-write that leaves no trace, together with the marker that recorded it)
-is checked only against what section 6.12 says of it.
+(section 6.12), and check 2 only while a copy of the change survives on
+a server that the others can reach: finding a loss does not bring an
+entry back. When too few copies survive, what is checked is that no
+leader is elected without the entry and that the servers concerned stay
+in repair and say why. A schedule that injects a fault the store cannot
+find (a flushed write that leaves no trace, together with the marker
+that recorded it) is checked only against what section 6.12 says of it.
 
 **Both engines behind one server.** Every server test runs against both
 engines, and generated request sequences are sent to both through the real
