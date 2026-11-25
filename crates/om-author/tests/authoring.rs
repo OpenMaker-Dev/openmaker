@@ -543,6 +543,11 @@ fn authoring_does_not_require_desktop_layouts_or_tables() {
     }
 }
 
+/// A catalog upload (op13) from an account without [Full Access] is
+/// refused, whatever catalog node it names, and stores nothing: the file's
+/// bytes and the script's steps are as they were, also after a restart. The
+/// server fails the request with a system exception; its reply carries no
+/// status, so answering it as done would read as stored.
 #[test]
 fn native_catalog_uploads_cannot_bypass_authoring_permissions() {
     use om_protocol::{write, Resume};
@@ -563,9 +568,8 @@ fn native_catalog_uploads_cannot_bypass_authoring_permissions() {
             flags: write::UPLOAD_VALUE,
             dest,
         };
-        clerk
-            .perform(&write::build_upload_to_host(9902, file_id, &upload))
-            .unwrap();
+        let answer = clerk.perform(&write::build_upload_to_host(9902, file_id, &upload));
+        assert!(answer.is_err(), "{:02x?}: {answer:02x?}", upload.dest);
         assert_eq!(std::fs::read(&file.0).unwrap(), original);
     }
     clerk.disconnect().unwrap();
