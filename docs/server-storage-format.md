@@ -509,9 +509,11 @@ error, never a panic. Each item decoded takes at least one byte of the
 payload, so the memory a payload decodes to is a fixed multiple of its
 size: at most about 28 times for edits that delete the root, about 12
 times for paths of empty segments, and close to the payload's size for
-values. Encoding is held to the same bounds, checks all of them and the
-payload's whole size before it writes anything, and what decodes
-encodes to the same bytes.
+values. Encoding is held to the same bounds, and what decodes encodes to
+the same bytes. `Payload::size` checks each part's bound and returns the
+size the parts would take, which can be past the payload's bound;
+`Payload::encode` refuses a payload past it before it allocates
+anything.
 
 ### 5.3 The state's trees
 
@@ -732,10 +734,12 @@ stands for everything under it, which the unit does not count.
 ### 5.8 What one entry costs
 
 What applying one entry reads and holds, at the bounds of 5.2. A listing
-of rows takes them one at a time and holds one at once, so what an entry
-holds does not grow with the rows it looks through, and no listing reads
-a value it then deletes. `Applied::listed` reports the rows the listings
-visited and the most held at once.
+of rows takes them one at a time and holds one row at once per level of
+listing, so the scratch space of looking through rows does not grow with
+their number, and no listing reads a value it then deletes. What an
+entry keeps beyond that, for the edits it makes and what it returns, is
+stated for each case below. `Applied::listed` reports the rows the
+listings visited and the most held at once.
 
 - **Decoding** holds the payload's items: at most about 28 times the
   payload's size (5.2), and the payload is at most 64 MiB.
