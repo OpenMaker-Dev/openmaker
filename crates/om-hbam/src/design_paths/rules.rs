@@ -216,16 +216,15 @@ const fn derived(key: &'static [u8], holds: &'static str, spec: &'static str) ->
 }
 
 /// An index key `07` holding an empty leaf per member, keyed by the
-/// member's key, in every file observed: [I] a member list, by its form
-/// (file-format.md 3.7). It is grouped Derived, not Design entries as the
-/// themes' `07` is: the inference rests on the form alone, and if it is
-/// wrong a difference there is reported as Derived when it is Design, and
-/// nothing is hashed or shown. As Design entries, a wrong inference would
-/// put unidentified content into each member's design revision.
+/// member's key: in every catalog instance of the starter files its keys
+/// are exactly the members' keys and its leaves empty (file-format.md 3.7),
+/// so it holds nothing the members do not. It is grouped Derived, not
+/// Design entries as the themes' `07` is: that FileMaker rebuilds it from
+/// the members rather than reading it is inferred.
 const MEMBER_LIST: Key = derived(
     &[0x07],
-    "a member list, an empty leaf per member [I]",
-    "file-format.md 3.7 [I]",
+    "a member list: an empty leaf per member, keyed by its key",
+    "file-format.md 3.7",
 );
 
 /// A catalog: a node with an index `01` and members `05` (file-format.md
@@ -610,7 +609,11 @@ pub const CATALOGS: &[Catalog] = &[
         kind: Some(Kind::Font),
         spec: "layout-model.md 8",
         index: &[MEMBER_LIST],
-        member: &[],
+        member: &[design(
+            &[0x03],
+            "the font's PostScript name",
+            "layout-model.md 8",
+        )],
     },
     Catalog {
         name: "file library",
@@ -663,8 +666,9 @@ pub const CATALOGS: &[Catalog] = &[
         index: &[
             derived(
                 &[0x06],
-                "a second name list, by type as the field catalog's [I]",
-                "file-format.md 3.7 [I]; schema-path.md 5.5",
+                "the name list by type: the list's type, then its name's sort key, holding \
+                 its key",
+                "file-metadata.md 6.1; file-format.md 3.7",
             ),
             MEMBER_LIST,
             design(
