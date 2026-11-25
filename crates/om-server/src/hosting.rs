@@ -2,6 +2,7 @@
 //! by the administrator (`ServerHandle::close_file`, `open_file`), each in a
 //! [`Slot`] that keeps its id, name and path meanwhile.
 
+use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
@@ -16,9 +17,10 @@ use crate::admin::FileStatus;
 use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
 use crate::connection::host_time_key_at;
+use crate::derived::Derived;
 use crate::engine::{
-    AccountStamp, ChangePassword, DeleteAccount, EnableAccount, Environment, FileEngine, Operation,
-    Password, Reply, ResetPassword, Transaction, Writer,
+    AccountStamp, ChangePassword, DeleteAccount, Direction, EnableAccount, Environment, FileEngine,
+    Operation, Password, ReadError, Reply, ResetPassword, Transaction, View, Writer, NO_LIMIT,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -225,7 +227,7 @@ pub struct Hosted {
     pub(crate) at: FileAt,
     /// The file's contents: every download, query and write goes here.
     /// Taken through [`Hosted::read_store`] and [`Hosted::write_store`],
-    /// which keeps `accounts` following it.
+    /// which keeps `published` following it.
     store: RwLock<Store>,
     /// The locks clients hold on it: changed only by the engine
     /// ([`Hosted::locks`]), read by anyone ([`Hosted::lock_table`]).
@@ -236,9 +238,14 @@ pub struct Hosted {
     pub thumbnails: Mutex<thumbnail::Cache>,
     /// `mInternalCreation` (`[2, 254]`), the second half of the Login nonce.
     pub internal_creation: u32,
-    /// The accounts in the file's security catalog as the store holds it
-    /// at a schema generation ([`Hosted::accounts`]).
-    accounts: RwLock<Accounts>,
+    /// The store's derived state as the last writer left it
+    /// ([`StoreWriteGuard`]), the accounts with it: for the readers of the
+    /// accounts that do not take the store ([`Hosted::accounts`]), which
+    /// may hold it already, as a server script's calculation does when it
+    /// asks for the session's account (`Get ( AccountType )`), and must not
+    /// take its lock twice (#421). A login reads the accounts through a
+    /// view instead (`engine::Read::derived`).
+    published: RwLock<Arc<Derived>>,
     /// Where the deferred field work the file records as pending stands
     /// ([`Hosted::recover`]): finished and saved, a server's file's as it
     /// is loaded, a local file's when an account it admits first logs in,
@@ -267,28 +274,11 @@ enum Recovery {
     Ended,
 }
 
-/// A file's accounts, decoded from its store at the store's schema
-/// generation `generation` ([`Store::schema_generation`]): a change of the
-/// security catalog (an op13 upload, a catalog member replaced, one put
-/// back) moves the generation, and [`StoreWriteGuard`] decodes them again.
-struct Accounts {
-    generation: u64,
-    list: Arc<[Arc<FileAccount>]>,
-}
-
-impl Accounts {
-    fn of(store: &Store) -> Self {
-        Accounts {
-            generation: store.schema_generation(),
-            list: file_accounts(store).into_iter().map(Arc::new).collect(),
-        }
-    }
-}
-
 /// The store of a [`Hosted`] file held for writing ([`Hosted::write_store`]).
-/// When it is let go, the file's accounts are decoded again if the write
-/// changed the schema, so a password or account changed over the wire
-/// counts from the next login on.
+/// When it is let go, the file's accounts follow a write that changed the
+/// schema and did not decode them itself, as an operation does
+/// (`Store::follow_accounts`), and the store's derived state is published
+/// for the readers that do not take the store (`Hosted::published`).
 pub struct StoreWriteGuard<'a> {
     hosted: &'a Hosted,
     store: RwLockWriteGuard<'a, Store>,
@@ -309,15 +299,18 @@ impl std::ops::DerefMut for StoreWriteGuard<'_> {
 
 impl Drop for StoreWriteGuard<'_> {
     fn drop(&mut self) {
-        // Under the store's write lock still, so no login sees the store
-        // and the accounts disagree.
-        let mut accounts = self
+        // Under the store's write lock still, so that no reader sees the
+        // store and the accounts disagree: a write outside an operation
+        // (the setup of a file, a test's) has its accounts decoded here.
+        self.store.follow_accounts(None);
+        let derived = self.store.derived();
+        let mut published = self
             .hosted
-            .accounts
+            .published
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if accounts.generation != self.store.schema_generation() {
-            *accounts = Accounts::of(&self.store);
+        if !Arc::ptr_eq(&published, derived) {
+            *published = derived.clone();
         }
     }
 }
@@ -387,7 +380,7 @@ impl Hosted {
                 store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
-        let accounts = RwLock::new(Accounts::of(&store));
+        let published = RwLock::new(store.derived().clone());
         Ok(Hosted {
             id,
             name: hosted.name.clone(),
@@ -398,7 +391,7 @@ impl Hosted {
             registrations: Mutex::new(Vec::new()),
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
-            accounts,
+            published,
             recovery: Mutex::new(Recovery::Due),
             unknown: std::sync::OnceLock::new(),
             events: events.clone(),
@@ -550,13 +543,18 @@ impl Hosted {
     }
 
     /// The accounts in the file's security catalog, as its store holds
-    /// it now.
+    /// it now, read without taking the store (`Hosted::published`): none
+    /// when they could not be read, which on the file engine they always
+    /// can.
     pub fn accounts(&self) -> Arc<[Arc<FileAccount>]> {
-        self.accounts
+        let published = self
+            .published
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .list
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match published.accounts() {
+            Ok(accounts) => accounts.clone(),
+            Err(_) => Arc::new([]),
+        }
     }
 
     /// The file's lock table, to read, also after a request panicked
@@ -659,43 +657,59 @@ impl Hosted {
         saved
     }
 
-    /// The file's account named `name` (case-insensitive, as FileMaker matches).
+    /// The file's account named `name` ([`account_named`]), read without
+    /// taking the store ([`Hosted::accounts`]).
     pub fn account(&self, name: &str) -> Option<Arc<FileAccount>> {
-        let name = name.to_lowercase();
-        self.accounts()
-            .iter()
-            .find(|a| a.name.to_lowercase() == name)
-            .cloned()
+        account_named(&self.accounts(), name)
     }
 
-    /// The file's account named `name` if `password` is the password the
-    /// file stores for it. An account whose password this server cannot
-    /// check is refused, as is one without a name ([Guest]'s is a
-    /// reference to localized text, not text). A password is hashed once
-    /// whatever the name, so that the time a login takes does not tell
-    /// whether the name is an account. Whether the account may log in is
-    /// [`FileAccount::eligibility`].
+    /// [`check_password`] of the account named `name`
+    /// ([`Hosted::account`]).
+    #[cfg(test)]
     pub fn verify_password(&self, name: &str, password: &str) -> Option<Arc<FileAccount>> {
-        /// What a password is checked against when there is no stored one.
-        static NONE: std::sync::LazyLock<StoredPassword> = std::sync::LazyLock::new(|| {
-            StoredPassword::parse(&StoredPassword::encode("", [0; 10]))
-                .expect("an encoded password reads back")
-        });
-        let account = self.account(name);
-        let stored = match account.as_ref().map(|account| &account.password) {
-            Some(Ok(stored)) => stored,
-            Some(Err(reason)) => {
-                info!(
-                    "{:?}: account {name:?}: its password cannot be checked ({reason:?})",
-                    self.name
-                );
-                &NONE
-            }
-            None => &NONE,
-        };
-        let matched = std::hint::black_box(stored.verify(password));
-        account.filter(|account| matched && account.password.is_ok())
+        check_password(&self.name, name, self.account(name), password)
     }
+}
+
+/// The account of `accounts` named `name`, matched case-insensitively, as
+/// FileMaker matches account names: the first in key order when two names
+/// differ only in case.
+pub fn account_named(accounts: &[Arc<FileAccount>], name: &str) -> Option<Arc<FileAccount>> {
+    let name = name.to_lowercase();
+    accounts
+        .iter()
+        .find(|a| a.name.to_lowercase() == name)
+        .cloned()
+}
+
+/// `account`, the account of the file named `file` that a login named
+/// `name` ([`account_named`]), if `password` is the password the file
+/// stores for it. An account whose password this server cannot check is
+/// refused, as is one without a name ([Guest]'s is a reference to
+/// localized text, not text). A password is hashed once whatever the name,
+/// so that the time a login takes does not tell whether the name is an
+/// account. Whether the account may log in is [`FileAccount::eligibility`].
+pub fn check_password(
+    file: &str,
+    name: &str,
+    account: Option<Arc<FileAccount>>,
+    password: &str,
+) -> Option<Arc<FileAccount>> {
+    /// What a password is checked against when there is no stored one.
+    static NONE: std::sync::LazyLock<StoredPassword> = std::sync::LazyLock::new(|| {
+        StoredPassword::parse(&StoredPassword::encode("", [0; 10]))
+            .expect("an encoded password reads back")
+    });
+    let stored = match account.as_ref().map(|account| &account.password) {
+        Some(Ok(stored)) => stored,
+        Some(Err(reason)) => {
+            info!("{file:?}: account {name:?}: its password cannot be checked ({reason:?})");
+            &NONE
+        }
+        None => &NONE,
+    };
+    let matched = std::hint::black_box(stored.verify(password));
+    account.filter(|account| matched && account.password.is_ok())
 }
 
 /// What [`Hosted::save_change`] stores.
@@ -1513,19 +1527,28 @@ fn insecurity(file: &HbamFile) -> om_hbam::Result<Option<Insecure>> {
     Ok(None)
 }
 
-/// The accounts in `store`'s security catalog.
-fn file_accounts(store: &Store) -> Vec<FileAccount> {
-    let Some(node) = store.node(&ACCOUNTS_PATH).map(crate::store::view) else {
-        return Vec::new();
-    };
-    let sets = store.node(&PRIVILEGE_SETS_PATH).map(crate::store::view);
-    node.children
-        .iter()
+/// The accounts in the security catalog of the file `view` reads, in key
+/// order: each account record of `[23, 1, 5]`, read whole one at a time,
+/// with the privilege set it names from `[23, 2, 5]`, read whole once.
+pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadError> {
+    let sets = view.subtree(&PRIVILEGE_SETS_PATH, NO_LIMIT)?;
+    let sets = sets.as_deref().map(crate::store::view);
+    let mut accounts = Vec::new();
+    for account in view.subtrees(
+        &ACCOUNTS_PATH,
+        Bound::Unbounded,
+        Direction::Forward,
+        NO_LIMIT,
+    ) {
+        let account = account?;
         // A Login reply names the account by its record key as a key path
         // with one-byte lengths (`[len][key]`, network-protocol.md 5.6.5):
         // an account whose key is too long for that is not admitted.
-        .filter(|account| account.segment.0.len() < usize::from(u8::MAX))
-        .filter_map(|account| {
+        if account.segment.len() >= usize::from(u8::MAX) {
+            continue;
+        }
+        let account = crate::store::view(&account);
+        let decoded = (|| {
             let name = account.child(ACCOUNT_NAME)?.text()?.ok()?;
             let password = match account.child(ACCOUNT_PASSWORD).and_then(|n| n.assembled()) {
                 Some(bytes) => {
@@ -1535,7 +1558,7 @@ fn file_accounts(store: &Store) -> Vec<FileAccount> {
             };
             // The set the account names: its reference is a key string, a
             // length and then the set's record key.
-            let reference = member(account, ACCOUNT_PRIVILEGES);
+            let reference = member(&account, ACCOUNT_PRIVILEGES);
             let set = reference
                 .and_then(|r| r.split_first())
                 .filter(|(length, key)| usize::from(**length) == key.len())
@@ -1544,13 +1567,15 @@ fn file_accounts(store: &Store) -> Vec<FileAccount> {
                 name,
                 key: account.segment.0.to_vec(),
                 password,
-                kind: AccountKind::decode(member(account, ACCOUNT_KIND)),
-                status: AccountStatus::decode(member(account, ACCOUNT_STATUS)),
+                kind: AccountKind::decode(member(&account, ACCOUNT_KIND)),
+                status: AccountStatus::decode(member(&account, ACCOUNT_STATUS)),
                 access: set.and_then(|set| set_access(set).ok()),
                 password_days: set.and_then(password_days),
             })
-        })
-        .collect()
+        })();
+        accounts.extend(decoded);
+    }
+    Ok(accounts)
 }
 
 /// Errors loading the hosted files.

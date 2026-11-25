@@ -340,14 +340,17 @@ impl Switch {
     }
 
     /// The derived state of the file `reading` reads, computed through
-    /// `copies`: once for each load of the file, and the catalog again each
-    /// time the file engine's changes, as the file engine reads it again
-    /// after a schema change. With `check` it must equal the file engine's,
-    /// and failing to compute it fails the check. Without (a test told the
-    /// view to fail paths), a failure gives the file engine's state: derived
-    /// state is computed when a file is loaded and when its schema changes,
-    /// not by the read that fails, so a damaged part of the catalog fails
-    /// the reads that reach it but leaves the state readers were given.
+    /// `copies`: once for each load of the file, and the catalog or the
+    /// accounts again each time the file engine reads them again (after a
+    /// schema change; after an operation moved the schema generation). With
+    /// `check` it must equal the file engine's, and failing to compute it
+    /// fails the check. Without (a test told the view to fail paths), a
+    /// failure gives the file engine's state: derived state is computed when
+    /// a file is loaded and when its schema changes, not by the read that
+    /// fails, so a damaged part of the catalog fails the reads that reach it
+    /// but leaves the state readers were given. Accounts that cannot be read
+    /// are not such a failure: the state holds them as unreadable
+    /// (`Derived::accounts`), and every login is refused.
     fn derived_of(&self, reading: &Reading<'_>, copies: &Copies<'_>, check: bool) -> Arc<Derived> {
         let current = reading.derived();
         let id = reading.file().id;
@@ -362,8 +365,16 @@ impl Switch {
                     copies.changed_since(&[], of.version()).unwrap_or(true),
                     "derived state changed without a change of the version"
                 );
-                catalog_of(reading, copies)
-                    .map(|catalog| Arc::new(mine.with_catalog(copies.version(), catalog)))
+                (|| -> om_hbam::Result<Arc<Derived>> {
+                    let mut next = Derived::clone(mine);
+                    if !of.shares_catalog(current) {
+                        next = next.with_catalog(copies.version(), catalog_of(reading, copies)?);
+                    }
+                    if !of.shares_accounts(current) {
+                        next = next.with_accounts(copies.version(), derived::read_accounts(copies));
+                    }
+                    Ok(Arc::new(next))
+                })()
             }
             // The first read of this load of the file (a file closed and
             // opened again is a new store, whose versions start over).

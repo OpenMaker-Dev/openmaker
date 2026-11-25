@@ -3919,6 +3919,67 @@ fn an_account_edit_whose_outcome_is_unknown_says_so() {
     assert!(file.writes_refused().is_some());
 }
 
+/// An account edit whose save is not written puts back the accounts from
+/// before it with the rest of the derived state (`Store::follow_accounts`,
+/// `Store::roll_back`): the accounts a login reads through a view
+/// (`engine::Read::derived`) and those published for readers that do not
+/// take the store (`Hosted::account`) take the old password and not the
+/// new one. One whose outcome is unknown keeps the edit, as the renamed
+/// file holds it, and the accounts follow it.
+#[test]
+fn a_failed_save_of_an_account_edit_puts_back_the_accounts() {
+    const CLERK_NEW: &str = "clerk's new secret";
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_local_accounts(&mut tree);
+    index_accounts(&mut tree);
+    let (_disk, file) = host("engine-account-taken-back", &tree);
+    let engine = engine();
+    let reset = |fault| {
+        file.fail_saves(Some(fault));
+        let reset = ResetPassword {
+            account: fixture::CLERK.into(),
+            expire: false,
+            stamp: None,
+        };
+        let given = Given::Reset(CLERK_NEW).credentials();
+        let reply = engine
+            .submit_with(&file, Operation::ResetPassword(reset), given)
+            .reply;
+        file.fail_saves(None);
+        reply
+    };
+    // Whether `password` opens Clerk, by the accounts a login reads and by
+    // the published ones, which agree.
+    let opens = |password: &str| {
+        let found = engine.read(&file).read().derived.account(fixture::CLERK);
+        let read =
+            crate::hosting::check_password(&file.name, fixture::CLERK, found.unwrap(), password);
+        let published = file.verify_password(fixture::CLERK, password);
+        assert_eq!(read, published);
+        read.is_some()
+    };
+    let reply = reset(crate::store::SaveFault::BeforeRename);
+    assert!(
+        matches!(
+            reply,
+            Reply::ResetPassword(Err(AccountEditError::Unwritten(_)))
+        ),
+        "{reply:?}"
+    );
+    assert!(opens(fixture::CLERK_PASSWORD));
+    assert!(!opens(CLERK_NEW));
+    let reply = reset(crate::store::SaveFault::FolderFlush);
+    assert!(
+        matches!(
+            reply,
+            Reply::ResetPassword(Err(AccountEditError::OutcomeUnknown(_)))
+        ),
+        "{reply:?}"
+    );
+    assert!(opens(CLERK_NEW));
+    assert!(!opens(fixture::CLERK_PASSWORD));
+}
+
 /// The review's P2 on panics: a record commit that panics part way, inside
 /// its own guard, on a file without unsaved changes is put back by that
 /// guard and then by the engine's, and the file is left as it was, without

@@ -59,7 +59,7 @@ use crate::engine::{
     UpgradeLock, UploadToCatalog, NO_LIMIT,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
-use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
+use crate::hosting::{check_password, Eligibility, FileAccount, Hosted, Hosting, Registration};
 use crate::locks::LockUser;
 use crate::login_limits::{Attempt, LoginLimits, LOGIN_TOO_MANY_ATTEMPTS};
 use crate::record::{Recorder, Recordings};
@@ -122,18 +122,29 @@ pub const LOGIN_PASSWORD_CHANGE_DUE: u16 = 211;
 pub const LOGIN_UNREADABLE_ACCOUNT: u16 = 3;
 pub const LOGIN_UNSUPPORTED_PRIVILEGES: u16 = 9;
 
+/// Login error for a file whose accounts could not be read
+/// (`derived::Derived::accounts`; `engine::ReadError`): FileMaker's 802,
+/// "unable to open file". Neither a wrong password (212, which a client
+/// counts toward locking the account out and the server counts toward its
+/// login limits) nor a success: the password is not checked.
+/// OpenMaker's choice; what FileMaker Server answers when it cannot read
+/// its file is unmeasured.
+pub const LOGIN_UNREADABLE_FILE: u16 = 802;
+
 /// The CORBA system exception for a request refused at a limit on what one
 /// connection holds (transfer.rs): the client reports an error instead of
 /// reading a result. OpenMaker's choice; FileMaker Server's limits are
 /// unmeasured.
 const LIMIT_EXCEPTION: &str = "IMP_LIMIT";
 
-/// The CORBA system exception for a download whose file could not be read
-/// (`engine::ReadError`: storage failed, or found what it read damaged,
-/// docs/server-storage.md 6.12). A download reply has no field that says
-/// so: its lock error is reported apart from its data, and a missing node
-/// tells the client the key does not exist. OpenMaker's choice; what
-/// FileMaker Server answers when its file cannot be read is unmeasured.
+/// The CORBA system exception for a download (op90, op15, op92) or a
+/// thumbnail (op96) whose file could not be read (`engine::ReadError`:
+/// storage failed, or found what it read damaged, docs/server-storage.md
+/// 6.12). A download reply has no field that says so: its lock error is
+/// reported apart from its data, and a missing node tells the client the
+/// key does not exist; a thumbnail's status says only that there is no
+/// thumbnail (`THUMBNAIL_MISSING`). OpenMaker's choice; what FileMaker
+/// Server answers when its file cannot be read is unmeasured.
 const UNREADABLE_EXCEPTION: &str = "PERSIST_STORE";
 
 /// Download lock error for a key the session may not read yet (FileMaker
@@ -1402,7 +1413,7 @@ impl Connection {
                 adjust_reference_count(shared, peer, session, &header, txn)
             }
             code if code == Opcode::DownloadThumbnail as u8 => {
-                thumbnail(session, &header, txn, perform.max_return)
+                thumbnail(shared, peer, session, &header, txn, perform.max_return)
             }
             code if code == Opcode::HostCommit as u8 => {
                 commit(shared, peer, session, &header, txn, perform.max_return)
@@ -1945,8 +1956,24 @@ fn login(
             // the session's privileges from it). The file admits only
             // accounts it may (an active FileMaker-file account, no password
             // change due, in a set the host enforces), with a correct
-            // password, before any session exists.
-            let account = file.hosted.verify_password(&login.account, &login.password);
+            // password, before any session exists. The account is looked
+            // up in the accounts derived from the version read, and its
+            // password checked once the reading is let go.
+            let found = shared
+                .engine
+                .read(&file.hosted)
+                .serve(|read| read.derived.account(&login.account));
+            let found = match found {
+                Ok(found) => found,
+                Err(error) => {
+                    error!(
+                        "{peer}: login to {:?} as {:?}: its accounts could not be read: {error}",
+                        file.hosted.name, login.account
+                    );
+                    return Ok(unreadable_login(shared, attempt));
+                }
+            };
+            let account = check_password(&file.hosted.name, &login.account, found, &login.password);
             let checked = account.ok_or(LOGIN_REJECTED).and_then(|account| {
                 let today = jiff::Zoned::now().date();
                 let eligibility = if shared.local {
@@ -2068,6 +2095,18 @@ fn login(
         }
         Err(code) => rejected_login(code),
     })
+}
+
+/// The reply to a Login whose file's accounts could not be read
+/// ([`LOGIN_UNREADABLE_FILE`]): its attempt is not counted toward the
+/// login limits, as its password was not checked, and no failed login is
+/// recorded, as none was refused for its credentials (the read is logged
+/// as an error).
+fn unreadable_login(shared: &Shared, attempt: Option<Attempt>) -> Vec<u8> {
+    if let Some(attempt) = attempt {
+        shared.login_limits.passed(attempt, false);
+    }
+    rejected_login(LOGIN_UNREADABLE_FILE)
 }
 
 /// A refused Login's reply: the version and an empty key under the error,
@@ -3165,21 +3204,23 @@ fn container_member_editable(file: &OpenFile, path: &[Vec<u8>]) -> bool {
 /// its set denies is unmeasured; it is refused as op88's other privilege
 /// refusals are. A request that names no table library is refused by the
 /// upload itself.
-fn container_library_writable(file: &OpenFile, table: &[Vec<u8>]) -> bool {
+fn container_library_writable(shared: &Shared, file: &OpenFile, table: &[Vec<u8>]) -> bool {
     let Some(access) = set_access(file) else {
         return false;
     };
     let actions = [RecordAction::Create, RecordAction::Edit];
     match table {
         [] => {
-            let tables: Vec<Vec<u8>> = file
-                .hosted
-                .read_store()
-                .catalog()
-                .tables
-                .iter()
-                .map(|t| om_hbam::slot::uint_segment(t.id))
-                .collect();
+            // The base tables of the derived state's catalog, which no
+            // read of the view can fail.
+            let tables: Vec<Vec<u8>> = shared.engine.read(&file.hosted).serve(|read| {
+                read.derived
+                    .catalog()
+                    .tables
+                    .iter()
+                    .map(|t| om_hbam::slot::uint_segment(t.id))
+                    .collect()
+            });
             access.may_any_in_tables(tables.iter().map(Vec::as_slice), &actions)
         }
         [table] => actions.iter().any(|a| access.may(table, *a)),
@@ -3776,7 +3817,7 @@ fn upload_binary(
         info!("{peer}: refusing container data from an account with a view limit");
         return Ok(failed(ACCESS_DENIED));
     }
-    if !container_library_writable(file, &request.table) {
+    if !container_library_writable(shared, file, &request.table) {
         info!(
             "{peer}: refusing container data for a table its privilege set does not let it write"
         );
@@ -3860,9 +3901,14 @@ fn adjust_reference_count(
     Ok(container::adjust_reference_count_reply(count))
 }
 
-/// op96 DownloadThumbnail: a container image scaled to a box, in chunks
-/// (containers.md 6.3).
+/// op96 DownloadThumbnail: one chunk of a library member's image scaled
+/// to a box (containers.md 6.3), read through a view of one version of the
+/// file: whether the account's view limits withhold the table's container
+/// data, the member, and its image when no thumbnail of it in that box is
+/// cached. A read that fails is answered with [`UNREADABLE_EXCEPTION`].
 fn thumbnail(
+    shared: &Shared,
+    peer: &str,
     session: &Session,
     header: &Header,
     txn: &[u8],
@@ -3871,30 +3917,54 @@ fn thumbnail(
     /// Room for the reply's other fields.
     const REPLY_OVERHEAD: usize = 64;
     let request = container::parse_download_thumbnail_request(txn)?;
-    let reply = match session
+    let missing = container::ThumbnailReply::Status(container::THUMBNAIL_MISSING);
+    let Some(file) = session
         .open
         .get(&header.file_id)
         .filter(|f| f.account.is_some())
-    {
-        // A view-limited table's container data is withheld (its library
-        // is per table, not per record).
-        Some(file)
-            if file.hosted.read_store().with_read(|read| {
-                // The store's own tree: its reads do not fail.
-                view_filter(file, read)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|view| request.table.last().is_none_or(|table| view.limits(table)))
-            }) =>
-        {
-            container::ThumbnailReply::Status(container::THUMBNAIL_MISSING)
-        }
-        Some(file) => containers::thumbnail(
+    else {
+        return Ok(missing.to_result());
+    };
+    let read = {
+        let reading = shared.engine.read(&file.hosted);
+        let key = reading.serve(|read| {
+            // A view-limited table's container data is withheld (its
+            // library is per table, not per record).
+            let withheld = view_filter(file, read)?
+                .is_some_and(|view| request.table.last().is_none_or(|table| view.limits(table)));
+            if withheld {
+                return Ok(None);
+            }
+            containers::thumbnail_key(read, &request)
+        });
+        key.and_then(|key| {
+            let Some(key) = key else {
+                return Ok(None);
+            };
+            let cached = file
+                .hosted
+                .thumbnails
+                .lock()
+                .expect("thumbnail lock")
+                .get(&key);
+            let image = match cached {
+                Some(_) => None,
+                None => reading.serve(|read| containers::thumbnail_image(read, &key))?,
+            };
+            Ok(Some((key, cached, image)))
+        })
+    };
+    let reply = match read {
+        Ok(Some((key, cached, image))) => containers::thumbnail_reply(
             &file.hosted,
             &request,
+            key,
+            cached,
+            image,
             page_limit(max_return).saturating_sub(REPLY_OVERHEAD),
         ),
-        None => container::ThumbnailReply::Status(container::THUMBNAIL_MISSING),
+        Ok(None) => missing,
+        Err(error) => return Err(unreadable(peer, file, &request.table, &error)),
     };
     Ok(reply.to_result())
 }

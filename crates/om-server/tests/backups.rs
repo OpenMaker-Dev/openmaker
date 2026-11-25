@@ -538,7 +538,12 @@ fn server_for(file: &Path) -> om_server::Server {
         record_dir: None,
     };
     let identity = om_server::Identity::self_signed(vec!["localhost".into()]).unwrap();
-    om_server::Server::bind("127.0.0.1:0", config, identity).unwrap()
+    let server = om_server::Server::bind("127.0.0.1:0", config, identity).unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
+    server
 }
 
 /// A finished backup of schedule `name` at `minute` on 2026-10-28, as

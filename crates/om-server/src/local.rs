@@ -354,6 +354,18 @@ impl LocalHost {
         })
     }
 
+    /// Answer every read of the file that goes through a view through the
+    /// test view as well as the file engine's (`Server::checking_reads`).
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn checking_reads(self) -> Self {
+        if let Some(handle) = &self.handle {
+            handle.shared.engine.check_reads();
+        }
+        self
+    }
+
     /// The loopback port the file is served on.
     pub fn port(&self) -> u16 {
         self.port

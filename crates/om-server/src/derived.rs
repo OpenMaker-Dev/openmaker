@@ -2,14 +2,16 @@
 //! need of a hosted file besides its tree, computed from a view of it
 //! ([`crate::engine::View`]) and kept by the version it was computed from.
 //!
-//! [`Derived`] holds the decoded schema catalog, the file's locale and the
-//! order of its stored dates, and two facts about the file that are not in
-//! its tree but that compiling its calculations needs: its name and
-//! whether it is served to a desktop client. How each engine keeps it is
-//! its own: the file engine computes it when it loads a file and reads the
-//! catalog again after each change of the schema, as its store always did
-//! (`Store::load`, `Store::reread_catalog`), and hands the same value to
-//! every reader until then.
+//! [`Derived`] holds the decoded schema catalog, the file's accounts, the
+//! file's locale and the order of its stored dates, and two facts about
+//! the file that are not in its tree but that compiling its calculations
+//! needs: its name and whether it is served to a desktop client. How each
+//! engine keeps it is its own: the file engine computes it when it loads a
+//! file, reads the catalog again after each change of the schema, as its
+//! store always did (`Store::load`, `Store::reread_catalog`), and decodes
+//! the accounts again when an operation moved the schema generation
+//! (`Store::follow_accounts`), and hands the same value to every reader
+//! until then.
 //!
 //! The functions below read a file through a view and derived state: the
 //! schema catalogs, the keys an index on demand holds, the next member key
@@ -20,6 +22,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
+use std::sync::Arc;
 
 use log::warn;
 use om_calc::Locale;
@@ -32,6 +35,7 @@ use om_hbam::{
 use om_query::keys::{record_value_entries, value_keys, word_entries, Reading, TextKeys};
 
 use crate::engine::{Direction, ReadError, Version, View, Waiting, NO_LIMIT};
+use crate::hosting::FileAccount;
 use crate::modcount::{self, MOD_COUNT};
 use crate::store::{keys, IssuedKeysAre};
 
@@ -61,6 +65,10 @@ pub(crate) fn counts_key(index: u8) -> u8 {
     }
 }
 
+/// A file's accounts as [`read_accounts`] decodes them, in key order, or
+/// why they could not be read. Shared: replacing them copies none.
+pub type Accounts = Result<Arc<[Arc<FileAccount>]>, ReadError>;
+
 /// What readers need of a file besides its tree (the module doc).
 #[derive(Clone, Debug)]
 pub struct Derived {
@@ -68,7 +76,14 @@ pub struct Derived {
     instance: u64,
     /// The version of the view it was computed from.
     version: Version,
-    catalog: Catalog,
+    /// Shared, so that replacing the accounts copies no catalog.
+    catalog: Arc<Catalog>,
+    /// The accounts of the file's security catalog ([`read_accounts`]).
+    /// Accounts that could not be read refuse every login, as neither a
+    /// wrong password nor a success (docs/server-storage.md 5, "Views");
+    /// they are not kept from an earlier version, which could let in an
+    /// account since deleted or changed.
+    accounts: Accounts,
     /// The file's locale and formats (`[2, 0d]`), when it decodes.
     locale: Option<Locale>,
     /// The order of the parts of the file's stored dates (om-collate).
@@ -83,10 +98,13 @@ pub struct Derived {
 
 impl Derived {
     /// The state of the file named `name` at `view`'s version, its schema
-    /// `catalog` read already: the locale its record `[2, 0d]` gives, and
-    /// the date order of that locale, or for a file without one the order
-    /// its date indexes are keyed in ([`detect_date_order`]).
+    /// `catalog` read already: its accounts ([`read_accounts`]), the
+    /// locale its record `[2, 0d]` gives, and the date order of that
+    /// locale, or for a file without one the order its date indexes are
+    /// keyed in ([`detect_date_order`]). Accounts that cannot be read are
+    /// kept as such ([`Derived::accounts`]).
     pub fn new(view: &dyn View, catalog: Catalog, name: &str) -> Result<Self, ReadError> {
+        let accounts = read_accounts(view);
         let locale = view
             .subtree(&LOCALE, NO_LIMIT)?
             .and_then(|node| node.assembled().map(Cow::into_owned))
@@ -103,7 +121,8 @@ impl Derived {
         Ok(Derived {
             instance: LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             version: view.version(),
-            catalog,
+            catalog: Arc::new(catalog),
+            accounts,
             locale,
             date_order,
             name: name.to_string(),
@@ -117,7 +136,16 @@ impl Derived {
     pub fn with_catalog(&self, version: Version, catalog: Catalog) -> Self {
         Derived {
             version,
-            catalog,
+            catalog: Arc::new(catalog),
+            ..self.clone()
+        }
+    }
+
+    /// This state with `accounts`, read again at `version`.
+    pub fn with_accounts(&self, version: Version, accounts: Accounts) -> Self {
+        Derived {
+            version,
+            accounts,
             ..self.clone()
         }
     }
@@ -144,6 +172,19 @@ impl Derived {
     /// The file's schema.
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    /// The file's accounts, or why they could not be read.
+    pub fn accounts(&self) -> &Accounts {
+        &self.accounts
+    }
+
+    /// The file's account named `name`, matched as FileMaker matches
+    /// account names ([`crate::hosting::account_named`]); an error when the
+    /// accounts could not be read.
+    pub fn account(&self, name: &str) -> Result<Option<Arc<FileAccount>>, ReadError> {
+        let accounts = self.accounts.as_ref().map_err(ReadError::clone)?;
+        Ok(crate::hosting::account_named(accounts, name))
     }
 
     /// The file's name.
@@ -309,19 +350,44 @@ impl Derived {
     /// The catalog, to change in a test.
     #[cfg(test)]
     pub(crate) fn catalog_mut(&mut self) -> &mut Catalog {
-        &mut self.catalog
+        Arc::make_mut(&mut self.catalog)
     }
 
     /// Whether `other` is the same state, whatever version each was
-    /// computed at (the test view's check, `engine::copies`).
+    /// computed at (the test view's check, `engine::copies`). Passwords
+    /// compare as they are stored; their `Debug` form, in the check's
+    /// message, is redacted (`om_crypto::account::StoredPassword`).
     #[cfg(debug_assertions)]
     pub(crate) fn same_as(&self, other: &Derived) -> bool {
         self.catalog == other.catalog
+            && self.accounts == other.accounts
             && self.locale == other.locale
             && self.date_order == other.date_order
             && self.name == other.name
             && self.desktop == other.desktop
     }
+
+    /// Whether `other` holds the catalog this state holds, the same one
+    /// and not only an equal one: whether it was read again between them
+    /// (the test view's, `engine::copies`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn shares_catalog(&self, other: &Derived) -> bool {
+        Arc::ptr_eq(&self.catalog, &other.catalog)
+    }
+
+    /// [`Self::shares_catalog`] for the accounts.
+    #[cfg(debug_assertions)]
+    pub(crate) fn shares_accounts(&self, other: &Derived) -> bool {
+        match (&self.accounts, &other.accounts) {
+            (Ok(mine), Ok(theirs)) => Arc::ptr_eq(mine, theirs),
+            _ => false,
+        }
+    }
+}
+
+/// The accounts of the file `view` reads ([`crate::hosting::read_accounts`]).
+pub fn read_accounts(view: &dyn View) -> Accounts {
+    crate::hosting::read_accounts(view).map(|accounts| accounts.into_iter().map(Arc::new).collect())
 }
 
 /// The schema catalogs of the tree `view` reads: the catalogs `[3]` and

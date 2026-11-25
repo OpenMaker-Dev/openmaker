@@ -61,6 +61,10 @@ fn start(
         .with_clock(clock.clone())
         .with_schedules(schedules)
         .unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let handle = server.handle().unwrap();
     std::thread::spawn(move || server.serve());
     assert!(
@@ -553,6 +557,10 @@ fn runs_are_recorded_in_the_event_log() {
         .with_clock(clock.clone())
         .with_schedules(vec![schedule("Every quarter hour", "Server Work"), ghost])
         .unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let handle = server.handle().unwrap();
     std::thread::spawn(move || server.serve());
     assert!(handle.wait_for_schedules(WAIT));

@@ -19,12 +19,15 @@ use om_protocol::container::{
 use om_protocol::write::KeyPath;
 use om_protocol::Resume;
 
+use image::ImageFormat;
+use om_data::containers::keys::MEMBERS;
+
 use crate::connection::ACCESS_DENIED;
-use crate::engine::{Environment, StoreContainerData, Transaction};
+use crate::derived::Derived;
+use crate::engine::{Environment, Read, ReadError, StoreContainerData, Transaction};
 use crate::hosting::Hosted;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
-use crate::store::Store;
-use crate::thumbnail::{self, Key, MAX_SIDE};
+use crate::thumbnail::{self, Key, Thumbnail, MAX_SIDE};
 
 /// FileMaker's error for a missing table.
 const TABLE_MISSING: u16 = 106;
@@ -35,10 +38,10 @@ const BAD_DATA: u16 = 3;
 
 /// The library a table key names: `[T, 1f]` for a table of the file, the
 /// file's own `[1f]` for an empty key.
-fn library_path(store: &Store, table: Option<&[u8]>) -> Option<Vec<Vec<u8>>> {
+fn library_path(derived: &Derived, table: Option<&[u8]>) -> Option<Vec<Vec<u8>>> {
     match table {
         None => Some(vec![vec![LIBRARY]]),
-        Some(t) if store.has_table(t) => Some(vec![t.to_vec(), vec![LIBRARY]]),
+        Some(t) if derived.has_table(t) => Some(vec![t.to_vec(), vec![LIBRARY]]),
         Some(_) => None,
     }
 }
@@ -107,7 +110,8 @@ pub fn store_upload(
     if tx.is_read_only() {
         return upload_reply(ACCESS_DENIED, Vec::new(), String::new());
     }
-    let Some(path) = table_segment(&table).and_then(|t| library_path(tx.view(), t)) else {
+    let Some(path) = table_segment(&table).and_then(|t| library_path(tx.view().derived(), t))
+    else {
         return upload_reply(TABLE_MISSING, Vec::new(), String::new());
     };
     let unique_id = || {
@@ -155,7 +159,7 @@ pub fn adjust_reference_count(
     if tx.is_read_only() {
         return COUNT_FAILED;
     }
-    let Some(path) = library_path(tx.view(), table) else {
+    let Some(path) = library_path(tx.view().derived(), table) else {
         return COUNT_FAILED;
     };
     match tx.adjust_reference_count(&segments(&path), member, req.delta) {
@@ -176,36 +180,62 @@ pub fn adjust_reference_count(
     }
 }
 
-/// op96: one chunk of a member's image scaled to the requested box
-/// (containers.md 6.3), at most `max_bytes` long. Thumbnails are returned
-/// unencrypted (return flags 0).
-pub fn thumbnail(hosted: &Hosted, req: &DownloadThumbnail, max_bytes: usize) -> ThumbnailReply {
-    let missing = ThumbnailReply::Status(THUMBNAIL_MISSING);
+/// op96's thumbnail `req` asks for, read from `read`: which one it is (the
+/// member's library and key, and the box), `None` for a box no thumbnail
+/// is made at or a member the library does not hold (containers.md 6.3).
+pub fn thumbnail_key(read: Read<'_>, req: &DownloadThumbnail) -> Result<Option<Key>, ReadError> {
     if !(1..=MAX_SIDE).contains(&req.width) || !(1..=MAX_SIDE).contains(&req.height) {
-        return missing;
+        return Ok(None);
     }
     let [member] = req.member.as_slice() else {
-        return missing;
+        return Ok(None);
     };
-    let (key, cached, image) = {
-        let store = hosted.read_store();
-        let Some(path) = table_segment(&req.table).and_then(|t| library_path(&store, t)) else {
-            return missing;
-        };
-        let Some(node) = store.library_member(&segments(&path), member) else {
-            return missing;
-        };
-        let key = Key {
-            library: path,
-            member: member.clone(),
-            width: req.width,
-            height: req.height,
-        };
-        let cached = hosted.thumbnails.lock().expect("thumbnail lock").get(&key);
-        let image = cached.is_none().then(|| thumbnail::master(node)).flatten();
-        (key, cached, image)
+    let Some(library) = table_segment(&req.table).and_then(|t| library_path(read.derived, t))
+    else {
+        return Ok(None);
     };
-    // Rendering happens outside the store lock.
+    if read.view.node(&member_path(&library, member))?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Key {
+        library,
+        member: member.clone(),
+        width: req.width,
+        height: req.height,
+    }))
+}
+
+/// The image of the member `key` names, read from `read`
+/// ([`thumbnail::master`]): `None` for a member that holds no image the
+/// server can scale.
+pub fn thumbnail_image(
+    read: Read<'_>,
+    key: &Key,
+) -> Result<Option<(ImageFormat, Vec<u8>)>, ReadError> {
+    thumbnail::master(read.view, &member_path(&key.library, &key.member))
+}
+
+/// The path of `member` in the library at `library`.
+fn member_path<'a>(library: &'a [Vec<u8>], member: &'a [u8]) -> Vec<&'a [u8]> {
+    let mut path = segments(library);
+    path.extend([&[MEMBERS][..], member]);
+    path
+}
+
+/// op96: one chunk, at most `max_bytes` long, of the thumbnail `key` of
+/// `hosted` (containers.md 6.3): `cached`, or else rendered from `image`
+/// and cached; both were read under the store's lock, the rendering
+/// happens outside it. Thumbnails are returned unencrypted (return flags
+/// 0).
+pub fn thumbnail_reply(
+    hosted: &Hosted,
+    req: &DownloadThumbnail,
+    key: Key,
+    cached: Option<Arc<Thumbnail>>,
+    image: Option<(ImageFormat, Vec<u8>)>,
+    max_bytes: usize,
+) -> ThumbnailReply {
+    let missing = ThumbnailReply::Status(THUMBNAIL_MISSING);
     let rendered = match (cached, image) {
         (Some(cached), _) => cached,
         (None, Some((format, bytes))) => {
@@ -221,8 +251,8 @@ pub fn thumbnail(hosted: &Hosted, req: &DownloadThumbnail, max_bytes: usize) -> 
                 }
                 Err(e) => {
                     warn!(
-                        "{:?}: no thumbnail of member {member:02x?}: {e}",
-                        hosted.name
+                        "{:?}: no thumbnail of member {:02x?}: {e}",
+                        hosted.name, key.member
                     );
                     return missing;
                 }

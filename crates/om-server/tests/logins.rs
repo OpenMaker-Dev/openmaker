@@ -190,3 +190,30 @@ fn an_account_failing_from_many_addresses_is_refused_only_from_new_ones() {
     handle.advance_login_clock(Duration::from_secs(30));
     assert_eq!(login(&mut new, ACCOUNT, PASSWORD), 0);
 }
+
+/// A login to a file whose accounts could not be read (the test view
+/// failing reads of `[23, 1, 5]` from the start, as a damaged page would,
+/// docs/server-storage.md 5) is answered 802, "unable to open file",
+/// whatever its password: neither 212, which a client counts toward
+/// locking the account out, nor a success. It is not counted toward the
+/// login limits either: seven from one address, which may fail five at
+/// once, are all answered so, none 214.
+#[cfg(debug_assertions)]
+#[test]
+fn a_login_whose_accounts_cannot_be_read_is_answered_unable_to_open() {
+    let (_file, port, handle) = start("logins-unreadable");
+    handle.failing_reads(FILE, &[&[23], &[1], &[5]]);
+    let mut session = opened(port);
+    for password in [PASSWORD, "wrong", PASSWORD, "", "wrong", PASSWORD, "wrong"] {
+        assert_eq!(
+            login(&mut session, ACCOUNT, password),
+            om_server::LOGIN_UNREADABLE_FILE,
+            "{password:?}"
+        );
+    }
+    assert_eq!(
+        login(&mut session, "Nobody", PASSWORD),
+        om_server::LOGIN_UNREADABLE_FILE
+    );
+    session.disconnect().unwrap();
+}

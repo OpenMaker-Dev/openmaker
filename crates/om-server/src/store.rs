@@ -46,7 +46,7 @@ use crate::derived::{
     self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
     LOCALE,
 };
-use crate::engine::{Read, TreeView, Version, Waiting};
+use crate::engine::{TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
@@ -172,6 +172,9 @@ pub struct Store {
     /// what was read from the schema before a change is stale after it
     /// ([`Store::schema_generation`]).
     generation: u64,
+    /// The schema generation the derived state's accounts were decoded at
+    /// ([`Store::follow_accounts`]).
+    accounts_at: u64,
     /// What reads left waiting for a write ([`Waiting`]): the member ids
     /// and modification counts GenerateMemberKey issued per catalog while
     /// the tree was shared for reading, until
@@ -300,11 +303,12 @@ pub struct Journal {
     /// commit changed or deleted in it and the keys each keeps: when the
     /// commit finishes they leave every other entry ([`Store::sweep_index`]).
     sweep: BTreeMap<IndexId, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
-    /// The derived state (`derived::Derived`, the decoded catalog with it)
-    /// as the store held it before the commit's first change to the
-    /// catalogs it reads ([`Journal::schema_from`]): a roll-back puts it
-    /// back as it was. Reading the tree put back instead could fail (a
-    /// catalog that does not decode, which the store served with the
+    /// The derived state (`derived::Derived`, the decoded catalog and the
+    /// accounts with it) as the store held it before the commit's first
+    /// change to the catalogs it reads or to its accounts
+    /// ([`Journal::schema_from`], [`Store::follow_accounts`]): a roll-back
+    /// puts it back as it was. Reading the tree put back instead could fail
+    /// (a catalog that does not decode, which the store served with the
     /// schema it last read) and keep the schema the commit decoded.
     schema: Option<Arc<Derived>>,
     /// Why a write of the commit was refused (for example, a posting
@@ -639,6 +643,7 @@ impl Store {
             save_fault: None,
             unknown: None,
             generation: 0,
+            accounts_at: 0,
             waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
@@ -1680,8 +1685,13 @@ impl Store {
             };
         }
         // Catalog members put back are a change readers of them must see,
-        // as their replacement was (the accounts, `hosting::Accounts`).
+        // as their replacement was (a server script session's schema).
         self.generation += 1;
+        // The accounts are those of the tree put back: the derived state
+        // put back holds the ones from before the change, decoded before
+        // its first change of them; one that kept none never had its
+        // accounts replaced (`Store::follow_accounts`).
+        self.accounts_at = self.generation;
         self.dirty = journal.was_dirty;
         self.root.push = journal.root_push;
     }
@@ -1704,20 +1714,6 @@ impl Store {
     /// What reads left waiting for a write ([`Waiting`]).
     pub(crate) fn waiting(&self) -> &Waiting {
         &self.waiting
-    }
-
-    /// `f` of a read of the store as it is, through its tree's view: for a
-    /// reader that holds the store and reads what views serve (a reader
-    /// not moved onto `engine::FileEngine::read` yet).
-    pub(crate) fn with_read<R>(&self, f: impl FnOnce(Read<'_>) -> R) -> R {
-        let tree = self.tree_view();
-        f(Read {
-            view: &tree,
-            derived: &self.derived,
-            waiting: &self.waiting,
-            read_only: self.read_only.is_some(),
-            writes_refused: self.writes_refused(),
-        })
     }
 
     /// The store is being taken for writing: views from now on read a new
@@ -2450,6 +2446,27 @@ impl Store {
             }
             Err(e) => warn!("re-reading the schema after a change: {e}"),
         }
+    }
+
+    /// Decode the file's accounts again ([`derived::read_accounts`]) when
+    /// the schema generation moved since they were: a change of the
+    /// security catalog moves it, as every schema change does, and the
+    /// accounts are decoded again at the end of the operation that moved
+    /// it, before its save, as the store's write lock is still held
+    /// (`FileEngine::submit`; `hosting::StoreWriteGuard` for a write
+    /// outside an operation). The derived state that held the accounts is
+    /// kept in `journal` first, so that a roll-back puts back the accounts
+    /// from before the operation with the rest of it ([`Store::roll_back`]).
+    pub(crate) fn follow_accounts(&mut self, journal: Option<&mut Journal>) {
+        if self.accounts_at == self.generation {
+            return;
+        }
+        if let Some(journal) = journal {
+            journal.schema_from(&self.derived);
+        }
+        let accounts = derived::read_accounts(&self.tree_view());
+        self.derived = Arc::new(self.derived.with_accounts(self.version, accounts));
+        self.accounts_at = self.generation;
     }
 
     /// How many times the schema changed while the file was hosted: a
@@ -3555,6 +3572,7 @@ impl Store {
             save_fault: None,
             unknown: None,
             generation: 0,
+            accounts_at: 0,
             waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
@@ -4361,6 +4379,7 @@ mod tests {
             save_fault: None,
             unknown: None,
             generation: 0,
+            accounts_at: 0,
             waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,

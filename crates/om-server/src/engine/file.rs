@@ -424,6 +424,10 @@ impl FileEngine {
             field_bases,
             ..
         } = tx;
+        // The accounts follow the change in the same step, before its save
+        // (an account edit's, an op13 upload of the security catalog's):
+        // a save that is not written puts back those from before with it.
+        store.follow_accounts(Some(&mut journal));
         let effects = journal.changed();
         let lines = journal.take_lines();
         let saves = match save {

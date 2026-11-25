@@ -158,7 +158,7 @@ pub use config::{
 pub use connection::ScriptGate;
 pub use connection::{
     LOGIN_INACTIVE_ACCOUNT, LOGIN_PASSWORD_CHANGE_DUE, LOGIN_UNREADABLE_ACCOUNT,
-    LOGIN_UNSUPPORTED_PRIVILEGES,
+    LOGIN_UNREADABLE_FILE, LOGIN_UNSUPPORTED_PRIVILEGES,
 };
 pub use eventlog::{
     Alert, Level, LogEntry, LogFileInfo, LogPage, LogReadError, MAX_ALERTS, MAX_LOG_LINE,
