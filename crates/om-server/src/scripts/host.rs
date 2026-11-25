@@ -11,8 +11,13 @@
 //! desktop client's) and op70's machinery (`writes::commit_records`, which
 //! keeps the record list and indexes current), so every client registered
 //! on the file is told of the change as for any client's commit
-//! (write-path.md 6). Inside Open Transaction the changes wait in an
-//! overlay that reads, finds and found sets see, and Commit Transaction
+//! (write-path.md 6). The session changes the file and its locks through
+//! the engine's operations (`crate::engine`: a commit, a lock and its
+//! release, Set Next Serial Value, a reserved record id, a serial number,
+//! the indexes a find built, the account steps' edits, the session's end
+//! and the save after it) and delivers the notices they raise. Inside Open
+//! Transaction the changes wait in an overlay that reads, finds and found
+//! sets see, and Commit Transaction
 //! writes them all or none. Calculations read the stored values, decoded
 //! per field type in the file's formats ([`super::values`], every
 //! repetition), related records through the file's relationships
@@ -61,7 +66,9 @@ use om_hbam::{
     serial, Catalog, DataType, Field, FieldKind, FieldOptions, KeyTree, OwnedNode, RidList,
     SlotReader,
 };
-use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_INCREMENT};
+use om_protocol::write::{
+    Conflict, CreateRecord, CreateRecordReply, GetSerial, KeyPath, KillAllLocks, SERIAL_INCREMENT,
+};
 use om_query::keys::TextKeys;
 use om_scripts::runtime::serial_text;
 use om_scripts::runtime::Fields as FieldSteps;
@@ -79,6 +86,11 @@ use super::find::{self, FindError, Request};
 use super::{values, Control};
 use crate::config::{Privileges, SCRIPT_CALC_LIMITS};
 use crate::connection::Shared;
+use crate::engine::{
+    AccountStamp, AdvanceSerial, ChangePassword, CommitScriptRecords, Credentials, DeleteAccount,
+    Draft, EnableAccount, FileNotSaved, Operation, Password, ReleaseLocks, ReleaseScriptLock,
+    ReleaseSessionLocks, Reply, ReserveRecordIds, ResetPassword, SetNextSerial, TakeScriptLock,
+};
 use crate::hosting::Hosted;
 use crate::locks::LockUser;
 use crate::modcount;
@@ -980,8 +992,11 @@ impl ServerHost {
 
     /// End the session: revert an unfinished transaction, commit the open
     /// record as closing the window does (revert it when the script was
-    /// aborted or the commit fails) and release every lock.
-    pub fn close(&mut self) {
+    /// aborted or the commit fails), release every lock and save what the
+    /// session left unsaved. Returns the save's FileMaker error (800, 809
+    /// or 810) when that save did not confirm that the file on disk holds
+    /// it, which the script's result reports (`scripts::run`).
+    pub fn close(&mut self) -> Option<u16> {
         self.refresh_schema();
         if self.transaction.is_some() {
             let _ = Records::revert_transaction(self);
@@ -996,7 +1011,25 @@ impl ServerHost {
             self.drop_open();
         }
         self.release_locks();
-        self.hosted.save();
+        // The record ids the session reserved for records it did not
+        // commit wait unsaved for a commit; with none left to come they are
+        // saved now, with anything else the file holds unsaved, as op240's
+        // Save saves them (`engine::Save::Requested`).
+        let saved = match self
+            .shared
+            .engine
+            .submit(&self.hosted, Operation::SaveFile)
+            .reply
+        {
+            Reply::SaveFile(Err(FileNotSaved::Failed(error) | FileNotSaved::Unknown(error))) => {
+                warn!(
+                    "{:?}: the save at the script's end failed: {error}",
+                    self.hosted.name
+                );
+                Some(error.code)
+            }
+            _ => None,
+        };
         self.data_files.close_all();
         self.remove_temporary_folder();
         self.log.flush();
@@ -1007,14 +1040,61 @@ impl ServerHost {
                 self.log.total()
             );
         }
+        saved
     }
 
     /// Release every lock of the session (also those of a transaction or
-    /// record it did not end).
+    /// record it did not end): its end, as a client session's.
     fn release_locks(&self) {
-        self.hosted
-            .lock_table()
-            .release_connection(self.user.connection);
+        let release = ReleaseSessionLocks {
+            connection: self.user.connection,
+        };
+        self.shared
+            .engine
+            .submit(&self.hosted, Operation::ReleaseSessionLocks(release));
+    }
+
+    /// op65 for the session's transaction: release its locks.
+    fn release_transaction_locks(&self) {
+        let release = ReleaseLocks {
+            connection: self.user.connection,
+            request: KillAllLocks {
+                host_file: 0,
+                txn: self.user.txn,
+                all: false,
+            },
+        };
+        self.shared
+            .engine
+            .submit(&self.hosted, Operation::ReleaseLocks(release));
+    }
+
+    /// op71 for the session: reserve one record id of `table` and lock it
+    /// for the session's transaction ([`writes::create_record`]). The file
+    /// is saved with the script's commit.
+    fn reserve_record_id(&self, table: u64) -> CreateRecordReply {
+        let reserve = ReserveRecordIds {
+            user: self.user,
+            holder: self.holder.clone(),
+            request: CreateRecord {
+                table: vec![uint_segment(table)],
+                count: 1,
+                txn: self.user.txn,
+            },
+            room: writes::UNCAPPED,
+            durable: false,
+        };
+        let operation = Operation::ReserveRecordIds(reserve);
+        match self.shared.engine.submit(&self.hosted, operation).reply {
+            Reply::ReserveRecordIds(reply) => reply,
+            other => {
+                warn!(
+                    "{:?}: the engine answered op71 with {other:?}",
+                    self.hosted.name
+                );
+                writes::refused_ids(writes::UNAVAILABLE)
+            }
+        }
     }
 
     /// Whether the session has full access: an account with [Full
@@ -1406,22 +1486,58 @@ impl ServerHost {
     }
 
     fn lock_record(&self, table: u64, id: u64) -> HostResult {
-        self.hosted
-            .lock_table()
-            .lock(&record_path(table, id), self.user, LOCK_WRITE, &self.holder)
-            .map_err(|conflict| {
-                info!(
-                    "{:?}: script session refused record {id}: in use by {}",
-                    self.hosted.name, conflict.users
-                );
-                HostError::Error(RECORD_IN_USE)
-            })
+        self.lock_path(record_path(table, id)).map_err(|conflict| {
+            info!(
+                "{:?}: script session refused record {id}: in use by {}",
+                self.hosted.name, conflict.users
+            );
+            HostError::Error(RECORD_IN_USE)
+        })
     }
 
     fn unlock_record(&self, table: u64, id: u64) {
-        self.hosted
-            .lock_table()
-            .release_path(&record_path(table, id), self.user);
+        self.unlock_path(record_path(table, id), Vec::new());
+    }
+
+    /// The session's write lock on `path`, or the holders that keep it
+    /// from it ([`TakeScriptLock`]).
+    fn lock_path(&self, path: KeyPath) -> Result<(), Conflict> {
+        let lock = TakeScriptLock {
+            user: self.user,
+            holder: self.holder.clone(),
+            path,
+        };
+        let operation = Operation::TakeScriptLock(lock);
+        match self.shared.engine.submit(&self.hosted, operation).reply {
+            Reply::TakeScriptLock(result) => result,
+            other => {
+                warn!(
+                    "{:?}: the engine answered a script's lock with {other:?}",
+                    self.hosted.name
+                );
+                Err(Conflict {
+                    self_conflict: false,
+                    users: String::new(),
+                })
+            }
+        }
+    }
+
+    /// Release the session's locks on `path`, then tell the clients
+    /// registered on the file of `changes` ([`ReleaseScriptLock`]).
+    fn unlock_path(&self, path: KeyPath, changes: Vec<writes::Change>) {
+        let release = ReleaseScriptLock {
+            user: self.user,
+            path,
+            changes,
+        };
+        let outcome = self
+            .shared
+            .engine
+            .submit(&self.hosted, Operation::ReleaseScriptLock(release));
+        outcome
+            .notices
+            .deliver(&self.hosted, &self.shared.mailboxes);
     }
 
     /// The current record, opened for editing: locked for the session.
@@ -2016,23 +2132,37 @@ impl ServerHost {
             field, increment, ..
         } in serials
         {
-            let reply = writes::get_serial(
-                &self.hosted,
-                &GetSerial {
-                    table: vec![uint_segment(table)],
-                    field: vec![uint_segment(field)],
-                    value: String::new(),
-                    increment,
-                    flags: SERIAL_INCREMENT,
-                },
-            );
-            self.hosted.save();
+            let request = GetSerial {
+                table: vec![uint_segment(table)],
+                field: vec![uint_segment(field)],
+                value: String::new(),
+                increment,
+                flags: SERIAL_INCREMENT,
+            };
+            let operation = Operation::AdvanceSerial(AdvanceSerial { request });
+            let reply = match self.shared.engine.submit(&self.hosted, operation).reply {
+                Reply::AdvanceSerial(reply) => reply,
+                other => {
+                    warn!(
+                        "{:?}: the engine answered op72 with {other:?}",
+                        self.hosted.name
+                    );
+                    return Err(ErrorCode::UNAVAILABLE.into());
+                }
+            };
             if reply.status != 0 {
                 info!(
                     "{:?}: no serial number for field {field} of table {table:#x}: error {}",
                     self.hosted.name, reply.status
                 );
-                return Err(ErrorCode::UNAVAILABLE.into());
+                // A serial that could not be saved fails the step with the
+                // save's error, as the record's own commit would.
+                let saved = u16::try_from(reply.status)
+                    .ok()
+                    .filter(|code| om_protocol::authoring::status::SAVE_FAILED.contains(code));
+                return Err(saved
+                    .map_or(ErrorCode::UNAVAILABLE, |code| ErrorCode(i32::from(code)))
+                    .into());
             }
             reserved.insert(field, reply.value);
         }
@@ -2243,19 +2373,32 @@ impl ServerHost {
             );
             return Err(ErrorCode::UNAVAILABLE.into());
         }
-        match writes::commit_records(&self.hosted, self.user, records, bulk_delete) {
-            Ok(changes) => {
-                writes::notify(
-                    &self.hosted,
-                    &self.shared.mailboxes,
-                    self.user.connection,
-                    &changes,
-                );
+        let commit = CommitScriptRecords {
+            user: self.user,
+            records,
+            bulk_delete,
+        };
+        let outcome = self
+            .shared
+            .engine
+            .submit(&self.hosted, Operation::CommitScriptRecords(commit));
+        match outcome.reply {
+            Reply::CommitScriptRecords(Ok(())) => {
+                outcome
+                    .notices
+                    .deliver(&self.hosted, &self.shared.mailboxes);
                 Ok(())
             }
-            Err((code, reason)) => {
+            Reply::CommitScriptRecords(Err((code, reason))) => {
                 warn!("{:?}: script commit refused: {reason}", self.hosted.name);
                 Err(ErrorCode(code as i32).into())
+            }
+            other => {
+                warn!(
+                    "{:?}: the engine answered a script's commit with {other:?}",
+                    self.hosted.name
+                );
+                Err(ErrorCode::UNAVAILABLE.into())
             }
         }
     }
@@ -2281,7 +2424,7 @@ impl ServerHost {
     /// records leave its found set, `deleted` ones return; the
     /// transaction's locks are released.
     fn undo(&mut self, created: Vec<(u64, u64)>, deleted: Vec<(u64, u64)>) {
-        self.hosted.lock_table().release_txn(self.user);
+        self.release_transaction_locks();
         if let Some(window) = self.window.as_mut() {
             // The restored records go back in creation order (a sorted
             // found set is then partly sorted, which is not tracked).
@@ -2832,8 +2975,9 @@ impl ServerHost {
         if built {
             // Indexes the find built on demand are stored (query-program.md
             // 7.1), as for a client's find.
-            self.hosted.write_store().store_indexes_on_demand();
-            self.hosted.save();
+            self.shared
+                .engine
+                .submit_draft(&self.hosted, Draft::StoreIndexes);
         }
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
@@ -3981,18 +4125,7 @@ impl Records for ServerHost {
         // Rules the server cannot enforce refuse the record before an id
         // is reserved.
         let plan = self.plan(table)?;
-        let reply = writes::create_record(
-            &self.hosted,
-            self.user,
-            &self.holder,
-            &CreateRecord {
-                table: vec![uint_segment(table)],
-                count: 1,
-                txn: self.user.txn,
-            },
-            writes::UNCAPPED,
-            false,
-        );
+        let reply = self.reserve_record_id(table);
         let id = match reply.status {
             0 => reply
                 .record
@@ -4000,6 +4133,8 @@ impl Records for ServerHost {
                 .and_then(|key| serial::decode(key))
                 .ok_or(ErrorCode::UNKNOWN)?,
             106 => return Err(TABLE_MISSING.into()),
+            // The file takes no more changes (docs/server-storage.md 5).
+            code @ (800 | 809 | 810) => return Err(ErrorCode(code as i32).into()),
             _ => return Err(RECORD_IN_USE.into()),
         };
         // Its serial numbers generated on creation are taken now, as
@@ -4302,7 +4437,7 @@ impl Records for ServerHost {
             self.undo(created, deleted);
             return result;
         }
-        self.hosted.lock_table().release_txn(self.user);
+        self.release_transaction_locks();
         Ok(())
     }
 
@@ -4488,19 +4623,28 @@ impl FieldSteps for ServerHost {
         }
         let (table, _) = self.target(field)?;
         let text = value.to_text(&self.cx()).into_string();
-        let mut store = self.hosted.write_store();
-        let mut journal = store.begin_commit();
-        store
-            .set_serial_in(
-                &mut journal,
-                &uint_segment(table),
-                &uint_segment(field.field),
-                &text,
-            )
-            .ok_or(ErrorCode::FIELD_MISSING)?;
-        self.hosted
-            .save_commit(&mut store, journal)
-            .map_err(|e| HostError::Error(ErrorCode(i32::from(crate::hosting::save_error(&e)))))
+        let set = SetNextSerial {
+            table: uint_segment(table),
+            field: uint_segment(field.field),
+            value: text,
+        };
+        match self
+            .shared
+            .engine
+            .submit(&self.hosted, Operation::SetNextSerial(set))
+            .reply
+        {
+            Reply::SetNextSerial(result) => {
+                result.map_err(|code| HostError::Error(ErrorCode(code as i32)))
+            }
+            other => {
+                warn!(
+                    "{:?}: the engine answered Set Next Serial Value with {other:?}",
+                    self.hosted.name
+                );
+                Err(ErrorCode::UNAVAILABLE.into())
+            }
+        }
     }
 
     /// Replace Field Contents (91) in a server script
@@ -5479,22 +5623,24 @@ fn utf16_prefix(text: &str, units: usize) -> &str {
 }
 
 impl ServerHost {
-    /// Run `edit` while the session holds the write lock FileMaker Pro's
-    /// Manage Security takes on the account catalog `[23, 1]`
-    /// (local-files.md 2.4), so that a client saving accounts and a script
-    /// do not change them at once: 310 while another user holds it
-    /// (FileMaker's code for Reset Account Password, inferred for the
-    /// other account steps). `edit` gets the modification stamp to write
-    /// and says whether it wrote; once it has, the other clients are told
-    /// the catalog changed, as a
-    /// client's commit tells them. A file the server hosts read-only
-    /// changes nothing: 3 (OpenMaker's choice).
+    /// Submit the account edit `edit` makes for the session's stamp, with
+    /// the passwords it was given beside it, while the session holds the
+    /// write lock FileMaker Pro's Manage Security takes on the account
+    /// catalog `[23, 1]` (local-files.md 2.4), so that a client saving
+    /// accounts and a script do not change them at once: 310 while another
+    /// user holds it (FileMaker's code for Reset Account Password, inferred
+    /// for the other account steps). The edit's reply, once the lock is
+    /// released and, when the edit wrote, the other clients are told the
+    /// catalog changed, as a client's commit tells them: the release
+    /// carries the two notices ([`ReleaseScriptLock`]), the edit none. A
+    /// file the server hosts read-only changes nothing: 3 (OpenMaker's
+    /// choice).
     fn edit_accounts(
         &self,
         step: &str,
-        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
-    ) -> HostResult {
-        if self.hosted.is_read_only() {
+        edit: impl FnOnce(AccountStamp) -> (Operation, Credentials),
+    ) -> HostResult<Reply> {
+        if self.shared.engine.read_only(&self.hosted).is_some() {
             info!(
                 "{:?}: {step} changed nothing: the file is hosted read-only",
                 self.hosted.name
@@ -5502,44 +5648,58 @@ impl ServerHost {
             return Err(ErrorCode::UNAVAILABLE.into());
         }
         let catalog = vec![vec![23], vec![1]];
-        self.hosted
-            .lock_table()
-            .lock(&catalog, self.user, LOCK_WRITE, &self.holder)
-            .map_err(|conflict| {
-                info!(
-                    "{:?}: {step} refused: the accounts are in use by {}",
-                    self.hosted.name, conflict.users
-                );
-                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
-            })?;
-        let time = crate::connection::host_time_key();
+        // What the release tells the other clients once the edit wrote,
+        // and the edit itself, made before the catalog is locked so that
+        // the lock is held for the edit alone: another account step that
+        // asks for it meanwhile is refused with 310.
+        let mut changed = vec![
+            writes::Change {
+                path: catalog.clone(),
+                code: ATTENTION_CATALOG,
+            },
+            writes::Change {
+                path: vec![vec![23], vec![1], vec![1]],
+                code: ATTENTION_CATALOG,
+            },
+        ];
         // `Get ( UserName )` of a server script is its account's name.
-        let stamp = crate::hosting::ModStamp {
-            user: &self.account,
-            account: &self.account,
-            time: &time,
+        let stamp = AccountStamp {
+            user: self.account.clone(),
+            account: self.account.clone(),
         };
-        let result = edit(&stamp);
-        self.hosted.lock_table().release_path(&catalog, self.user);
-        if result == Ok(true) {
-            writes::notify(
-                &self.hosted,
-                &self.shared.mailboxes,
-                self.user.connection,
-                &[
-                    writes::Change {
-                        path: catalog.clone(),
-                        code: ATTENTION_CATALOG,
-                    },
-                    writes::Change {
-                        path: vec![vec![23], vec![1], vec![1]],
-                        code: ATTENTION_CATALOG,
-                    },
-                ],
+        let (operation, credentials) = edit(stamp);
+        self.lock_path(catalog.clone()).map_err(|conflict| {
+            info!(
+                "{:?}: {step} refused: the accounts are in use by {}",
+                self.hosted.name, conflict.users
             );
-        }
-        result.map(|_| ())
+            HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+        })?;
+        let reply = self
+            .shared
+            .engine
+            .submit_with(&self.hosted, operation, credentials)
+            .reply;
+        let changes = if wrote(&reply) {
+            std::mem::take(&mut changed)
+        } else {
+            Vec::new()
+        };
+        self.unlock_path(catalog, changes);
+        Ok(reply)
     }
+}
+
+/// Whether an account edit's reply says it changed the account catalog:
+/// what the other clients are told of ([`ServerHost::edit_accounts`]).
+fn wrote(reply: &Reply) -> bool {
+    matches!(
+        reply,
+        Reply::ChangePassword(Ok(()))
+            | Reply::ResetPassword(Ok(()))
+            | Reply::EnableAccount(Ok(true))
+            | Reply::DeleteAccount(Ok(()))
+    )
 }
 
 impl Accounts for ServerHost {
@@ -5548,13 +5708,13 @@ impl Accounts for ServerHost {
     /// logged in with, found by its record key so that a rename since
     /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
     /// and 3 for [Guest] or an account of another kind. Then
-    /// [`crate::hosting::Hosted::change_password`] sets it with
-    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
-    /// does not allow it, 208 shorter than the set's minimum, 209 the same
-    /// password, 210 an inactive account), skipping the set's checks for a
-    /// step with full access, and saves it before the step ends. With its
-    /// dialog the step is refused with 3: FileMaker Server's handling of
-    /// that dialog is not measured.
+    /// [`Operation::ChangePassword`] sets it with `SetPassword`'s errors
+    /// (212 a wrong old password, 206 a set that does not allow it, 208
+    /// shorter than the set's minimum, 209 the same password, 210 an
+    /// inactive account), skipping the set's checks for a step with full
+    /// access, and saves it before the step ends. With its dialog the step
+    /// is refused with 3: FileMaker Server's handling of that dialog is not
+    /// measured.
     fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
         if with_dialog {
             return Err(HostError::Unsupported);
@@ -5571,36 +5731,45 @@ impl Accounts for ServerHost {
         }
         let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
         let manager = self.privileged();
-        self.edit_accounts("Change Password", |stamp| {
-            let now = jiff::Zoned::now().datetime();
-            self.hosted
-                .change_password(
-                    crate::hosting::AccountRef::Key(&key),
-                    old,
-                    new,
-                    manager,
-                    Some(stamp),
-                    now,
-                )
-                .map(|()| true)
-                .map_err(|e| {
-                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
-                        warn!(
-                            "{:?}: Change Password changed nothing: {reason}",
-                            self.hosted.name
-                        );
-                    }
-                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
-                })
-        })
+        let reply = self.edit_accounts("Change Password", |stamp| {
+            let change = ChangePassword {
+                account: crate::hosting::AccountRef::Key(key),
+                manager,
+                stamp: Some(stamp),
+            };
+            let passwords = Credentials::Change {
+                old: Password::new(old),
+                new: Password::new(new),
+            };
+            (Operation::ChangePassword(change), passwords)
+        })?;
+        match reply {
+            Reply::ChangePassword(Ok(())) => Ok(()),
+            Reply::ChangePassword(Err(e)) => {
+                match &e {
+                    crate::hosting::PasswordChangeError::Unwritten(reason) => warn!(
+                        "{:?}: Change Password changed nothing: {reason}",
+                        self.hosted.name
+                    ),
+                    crate::hosting::PasswordChangeError::OutcomeUnknown(reason) => warn!(
+                        "{:?}: Change Password may or may not have changed the password: \
+                         {reason}",
+                        self.hosted.name
+                    ),
+                    _ => {}
+                }
+                Err(ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into())
+            }
+            other => Err(self.unexpected_reply("Change Password", &other)),
+        }
     }
 
     /// Reset Account Password (136): only a session with full access
     /// privileges (9), as FileMaker's `DoResetAccount`;
-    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
-    /// "Expire password" it is refused (3) before anything changes: the
-    /// account could then sign in to a hosted file only with a new
-    /// password, which this server does not take at login yet
+    /// [`Operation::ResetPassword`] writes it. With "Expire password" it is
+    /// refused (3) before anything changes: the account could then sign in
+    /// to a hosted file only with a new password, which this server does
+    /// not take at login yet
     /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
     fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
         self.require_full_access()?;
@@ -5611,50 +5780,92 @@ impl Accounts for ServerHost {
             );
             return Err(HostError::Unsupported);
         }
-        self.edit_accounts("Reset Account Password", |stamp| {
-            let now = jiff::Zoned::now().datetime();
-            self.hosted
-                .reset_account_password(name, password, false, Some(stamp), now)
-                .map(|()| true)
-                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
-        })
+        let reply = self.edit_accounts("Reset Account Password", |stamp| {
+            let reset = ResetPassword {
+                account: name.to_owned(),
+                expire: false,
+                stamp: Some(stamp),
+            };
+            let new = Password::new(password);
+            (Operation::ResetPassword(reset), Credentials::Reset { new })
+        })?;
+        match reply {
+            Reply::ResetPassword(result) => {
+                result.map_err(|e| self.account_edit_error("Reset Account Password", &e))
+            }
+            other => Err(self.unexpected_reply("Reset Account Password", &other)),
+        }
     }
 
     /// Delete Account (135): only a session with full access privileges
-    /// (9), as FileMaker's `DoDeleteAccount`;
-    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    /// (9), as FileMaker's `DoDeleteAccount`; [`Operation::DeleteAccount`]
+    /// removes it.
     fn delete_account(&mut self, name: &str) -> HostResult {
         self.require_full_access()?;
-        self.edit_accounts("Delete Account", |stamp| {
-            self.hosted
-                .delete_account(name, Some(stamp))
-                .map(|()| true)
-                .map_err(|e| self.account_edit_error("Delete Account", &e))
-        })
+        let reply = self.edit_accounts("Delete Account", |stamp| {
+            let delete = DeleteAccount {
+                account: name.to_owned(),
+                stamp: Some(stamp),
+            };
+            (Operation::DeleteAccount(delete), Credentials::None)
+        })?;
+        match reply {
+            Reply::DeleteAccount(result) => {
+                result.map_err(|e| self.account_edit_error("Delete Account", &e))
+            }
+            other => Err(self.unexpected_reply("Delete Account", &other)),
+        }
     }
 
     /// Enable Account (137): only a session with full access privileges
-    /// (9), as FileMaker's `DoEnableAccount`;
-    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    /// (9), as FileMaker's `DoEnableAccount`; [`Operation::EnableAccount`]
+    /// writes it.
     fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
         self.require_full_access()?;
-        self.edit_accounts("Enable Account", |stamp| {
-            self.hosted
-                .enable_account(name, active, Some(stamp))
-                .map_err(|e| self.account_edit_error("Enable Account", &e))
-        })
+        let reply = self.edit_accounts("Enable Account", |stamp| {
+            let enable = EnableAccount {
+                account: name.to_owned(),
+                active,
+                stamp: Some(stamp),
+            };
+            (Operation::EnableAccount(enable), Credentials::None)
+        })?;
+        match reply {
+            Reply::EnableAccount(result) => result
+                .map(|_| ())
+                .map_err(|e| self.account_edit_error("Enable Account", &e)),
+            other => Err(self.unexpected_reply("Enable Account", &other)),
+        }
     }
 }
 
 impl ServerHost {
     /// The step error for Reset Account Password's or Enable Account's
     /// `e`: its FileMaker code, or 3 for an account or file that could not
-    /// be written, logged.
+    /// be written or whose save could not be confirmed, each logged as what
+    /// it is.
     fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
-        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
-            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        match e {
+            crate::hosting::AccountEditError::Unwritten(reason) => {
+                warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name)
+            }
+            crate::hosting::AccountEditError::OutcomeUnknown(reason) => warn!(
+                "{:?}: {step} may or may not have changed the account: {reason}",
+                self.hosted.name
+            ),
+            _ => {}
         }
         ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+    }
+
+    /// The step error for an engine's reply of another operation's shape:
+    /// a mistake, 3 and logged.
+    fn unexpected_reply(&self, step: &str, reply: &Reply) -> HostError {
+        warn!(
+            "{:?}: {step} changed nothing: the engine answered {reply:?}",
+            self.hosted.name
+        );
+        ErrorCode::UNAVAILABLE.into()
     }
 }
 impl Platform for ServerHost {}

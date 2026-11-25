@@ -105,7 +105,13 @@ pub fn decode_scsu(masked: &[u8]) -> Result<String, DecodeError> {
 /// and the text is wiped when it is.
 pub fn decode_scsu_secret(masked: &[u8]) -> Result<zeroize::Zeroizing<String>, DecodeError> {
     use zeroize::Zeroize;
-    let (mut units, _) = expand(masked, None, masked.len() * 2)?;
+    // The code units are this function's, so that a run that stops part
+    // way (a truncated command) has its decoded prefix wiped too.
+    let mut units = Vec::with_capacity(masked.len() * 2);
+    if let Err(error) = expand_into(masked, None, &mut units) {
+        units.zeroize();
+        return Err(error);
+    }
     let mut text = zeroize::Zeroizing::new(String::with_capacity(units.len() * 3));
     let mut malformed = false;
     for c in char::decode_utf16(units.iter().copied()) {
@@ -149,6 +155,17 @@ fn expand(
     // the bytes present (`reserve`); a byte that yields a surrogate pair
     // grows the buffer beyond it.
     let mut units: Vec<u16> = Vec::with_capacity(limit.map_or(reserve, |n| n.min(reserve)));
+    let used = expand_into(bytes, limit, &mut units)?;
+    Ok((units, used))
+}
+
+/// [`expand`] into `units`, which the caller owns, also when it fails part
+/// way: the bytes consumed.
+fn expand_into(
+    bytes: &[u8],
+    limit: Option<usize>,
+    units: &mut Vec<u16>,
+) -> Result<usize, DecodeError> {
     let mut dynamic = DEFAULT_DYNAMIC;
     let mut window = 0usize;
     let mut i = 0usize;
@@ -170,7 +187,7 @@ fn expand(
                     let w = (b - SQ0) as usize;
                     let c = byte(i)?;
                     i += 1;
-                    push_from_window(&mut units, c, STATIC_OFFSETS[w], dynamic[w]);
+                    push_from_window(units, c, STATIC_OFFSETS[w], dynamic[w]);
                 }
                 SQU => {
                     let hi = byte(i)?;
@@ -195,7 +212,7 @@ fn expand(
                 }
                 _ => {
                     // 0x80..=0xFF: emit from the current dynamic window.
-                    push_from_window(&mut units, b, 0, dynamic[window]);
+                    push_from_window(units, b, 0, dynamic[window]);
                 }
             }
         } else {
@@ -234,7 +251,7 @@ fn expand(
             }
         }
     }
-    Ok((units, i))
+    Ok(i)
 }
 
 fn push_from_window(units: &mut Vec<u16>, byte: u8, static_off: u32, dynamic_off: u32) {

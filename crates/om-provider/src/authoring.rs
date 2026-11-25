@@ -1310,7 +1310,17 @@ impl NativeProvider {
         let result = session
             .perform(&transaction)
             .map_err(|e| AuthoringError::OutcomeUnknown(e.to_string()))?;
-        authoring::parse_reply(request, &result)
-            .map_err(|e| AuthoringError::OutcomeUnknown(format!("unreadable reply: {e}")))
+        match authoring::parse_reply(request, &result) {
+            // The host wrote the change and could not confirm it is on disk.
+            Ok(Reply::Refused {
+                status: authoring::status::OUTCOME_UNKNOWN,
+                message,
+                ..
+            }) => Err(AuthoringError::OutcomeUnknown(message)),
+            Ok(reply) => Ok(reply),
+            Err(e) => Err(AuthoringError::OutcomeUnknown(format!(
+                "unreadable reply: {e}"
+            ))),
+        }
     }
 }

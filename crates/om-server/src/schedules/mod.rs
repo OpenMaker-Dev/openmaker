@@ -54,6 +54,7 @@ pub use file::{parse_schedules, ScheduleFileError};
 
 use crate::backups::{self, Backups};
 use crate::connection::Shared;
+use crate::engine::ReadError;
 use crate::eventlog::{Event, ScheduleAbort};
 use crate::hosting::{Eligibility, FileAccount, Hosted};
 use crate::scripts::{self, AbortReason, ScriptRef, Slot};
@@ -64,6 +65,9 @@ const FILE_UNOPENABLE: i32 = 802;
 /// "Invalid user account and/or password": the account cannot log in to
 /// the file; also a disabled account (script oracle s36).
 const LOGIN_FAILED: i32 = 212;
+/// Why a run whose file's accounts could not be read is aborted, with
+/// [`FILE_UNOPENABLE`] (OpenMaker's choice).
+const UNREADABLE_ACCOUNTS: &str = "its file's accounts could not be read";
 /// "Unknown error": the run's thread failed (a bug), or could not start.
 const UNKNOWN_ERROR: i32 = -1;
 /// The server is shutting down (FileMaker's 820, as for scripts).
@@ -398,11 +402,17 @@ impl Scheduler {
                         "schedule {:?}: the server does not host {:?}",
                         schedule.name, task.file
                     ),
-                    Some(hosted) if log_in(shared, &hosted, &task.account).is_none() => warn!(
-                        "schedule {:?}: the account {:?} cannot log in to {:?}",
-                        schedule.name, task.account, task.file
-                    ),
-                    Some(_) => {}
+                    Some(hosted) => match log_in(shared, &hosted, &task.account) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => warn!(
+                            "schedule {:?}: the account {:?} cannot log in to {:?}",
+                            schedule.name, task.account, task.file
+                        ),
+                        Err(e) => warn!(
+                            "schedule {:?}: the accounts of {:?} could not be read: {e}",
+                            schedule.name, task.file
+                        ),
+                    },
                 },
                 ScheduleTask::Backup(task) => {
                     let folder = task.folder.clone().or_else(|| self.backups.folder());
@@ -851,14 +861,25 @@ fn next_run(schedule: &Schedule, now: &Zoned) -> Option<Zoned> {
 /// stored password cannot be checked, which no client signs in as; nor an
 /// inactive account (212, script oracle s36), one whose password must be
 /// changed, or one in a set the server does not enforce. A run keeps the
-/// account as it was at this login, as a client's session does.
-fn log_in(shared: &Shared, hosted: &Hosted, account: &str) -> Option<Arc<FileAccount>> {
-    hosted.account(account).filter(|account| {
+/// account as it was at this login, as a client's session does. The
+/// account is looked up in the accounts of a reading of the file
+/// (`engine::Read::derived`); accounts that could not be read are an
+/// error.
+fn log_in(
+    shared: &Shared,
+    hosted: &Hosted,
+    account: &str,
+) -> Result<Option<Arc<FileAccount>>, ReadError> {
+    let found = shared
+        .engine
+        .read(hosted)
+        .serve_with_accounts(|read| read.derived.account(account))?;
+    Ok(found.filter(|account| {
         let custom_sets = shared.custom_sets.load(Ordering::Relaxed);
         account.password.is_ok()
             && account.server_eligibility(jiff::Zoned::now().date(), custom_sets)
                 == Eligibility::Eligible
-    })
+    }))
 }
 
 /// What a run's thread does, with what it took to start.
@@ -917,14 +938,29 @@ fn run(shared: &Arc<Shared>, name: &str, schedule: &ScriptTask, slot: Slot) -> E
         events.record(Event::schedule_aborted(name, why));
         return Ended::failed(FILE_UNOPENABLE);
     };
-    let Some(account) = log_in(shared, &hosted, &schedule.account) else {
-        error!(
-            "Schedule {name:?} aborted; the account {:?} cannot log in to {:?} (error \
-             {LOGIN_FAILED}).",
-            schedule.account, hosted.name
-        );
-        events.record(Event::schedule_aborted(name, ScheduleAbort::Account));
-        return Ended::failed(LOGIN_FAILED);
+    let account = match log_in(shared, &hosted, &schedule.account) {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            error!(
+                "Schedule {name:?} aborted; the account {:?} cannot log in to {:?} (error \
+                 {LOGIN_FAILED}).",
+                schedule.account, hosted.name
+            );
+            events.record(Event::schedule_aborted(name, ScheduleAbort::Account));
+            return Ended::failed(LOGIN_FAILED);
+        }
+        // As a client's login to it is answered (`LOGIN_UNREADABLE_FILE`):
+        // not as an account that cannot log in. OpenMaker's choice.
+        Err(e) => {
+            error!(
+                "Schedule {name:?} aborted; the accounts of {:?} could not be read ({e}) \
+                 (error {FILE_UNOPENABLE}).",
+                hosted.name
+            );
+            let why = ScheduleAbort::Refused(UNREADABLE_ACCOUNTS, FILE_UNOPENABLE);
+            events.record(Event::schedule_aborted(name, why));
+            return Ended::failed(FILE_UNOPENABLE);
+        }
     };
     info!(
         "Schedule {name:?} has started FileMaker script {:?}.",

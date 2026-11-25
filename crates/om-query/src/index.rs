@@ -26,8 +26,6 @@ use crate::Source;
 
 use crate::QueryError;
 
-/// Key of a table's record-id list.
-const RECORD_IDS: u8 = 13;
 /// Key of a table's records.
 const RECORDS: u8 = 5;
 /// Key of a table's indexes.
@@ -335,13 +333,10 @@ impl<'f> Indexes<'f> {
         }
     }
 
-    /// Every record id of `table` (`[T, 13]`).
+    /// Every record id of `table` (`[T, 13]`, [`Source::record_ids`]).
     pub fn all_records(&mut self, table: &[u8]) -> Result<&RidList, QueryError> {
         if !self.records.contains_key(table) {
-            let list = match self.source.node(&[table, &[RECORD_IDS]])? {
-                Some(node) => RidList::from_owned(&node)?,
-                None => RidList::new(),
-            };
+            let list = self.source.record_ids(table)?;
             self.records.insert(table.to_vec(), list);
         }
         Ok(&self.records[table])

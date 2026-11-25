@@ -82,6 +82,16 @@ fn client() -> Client {
     }
 }
 
+/// [`LocalHost::open`], its reads through views answered through the test
+/// view too and checked against the file engine's
+/// (`LocalHost::checking_reads`, docs/server-storage.md 5, "Views").
+fn open_host(path: &Path, client_certificate_pem: &[u8]) -> Result<LocalHost, LocalHostError> {
+    let host = LocalHost::open(path, client_certificate_pem)?;
+    #[cfg(debug_assertions)]
+    let host = host.checking_reads();
+    Ok(host)
+}
+
 fn connect(host: &LocalHost, client: &Client) -> Result<Session, om_session::SessionError> {
     Session::connect_verified(
         "127.0.0.1",
@@ -148,10 +158,10 @@ fn only_verified_accounts_log_in_and_refusals_leave_the_file_unchanged() {
     let path = folder.tasks(FILE);
     let before = std::fs::read(&path).unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(host.file_name(), FILE);
     assert_eq!(host.read_only(), None);
-    assert_eq!(host.suggested_account().as_deref(), Some(ACCOUNT));
+    assert_eq!(host.suggested_account().unwrap().as_deref(), Some(ACCOUNT));
     // Wrong passwords, unknown accounts and [Guest] are wrong credentials.
     for (account, password) in [
         (ACCOUNT, ""),
@@ -180,11 +190,58 @@ fn only_verified_accounts_log_in_and_refusals_leave_the_file_unchanged() {
     assert!(host.close());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     // Names match in any case, passwords exactly.
     assert_eq!(login(&host, &client, "admin", PASSWORD), 0);
     assert!(host.close());
     assert_eq!(folder.files(), [FILE]);
+}
+
+/// The local host reads the file through a reading of one version
+/// (docs/server-storage.md 5): the suggested account and the stored login
+/// from the account catalog's header `[23, 1, 1]` (the account through the
+/// reading's accounts), the logged-in account's facts from the accounts.
+/// Answered through both views, they are as the file holds them. With the
+/// test view failing what one reads, it is an error, never an answer that
+/// looks whole ("no suggestion", "no stored login", an account with no
+/// facts); the others go on. Whether the file is read-only is the
+/// engine's state of the file, not a version's: it reads no view, and
+/// stays answered.
+#[cfg(debug_assertions)]
+#[test]
+fn the_local_hosts_failed_reads_are_errors() {
+    let folder = Folder::new("failed-reads");
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(
+            &[&[23], &[1], &[1], &[6]],
+            om_scripts::text_node(&[], PASSWORD),
+        );
+    });
+    let client = client();
+    let host = open_host(&path, &client.cert).unwrap();
+    // Admin's record key 2, as a Login reply frames it.
+    let admin = [1, 2];
+    assert_eq!(host.suggested_account().unwrap().as_deref(), Some(ACCOUNT));
+    let (account, password) = host.stored_login().unwrap().unwrap();
+    assert_eq!((account.as_str(), password.as_str()), (ACCOUNT, PASSWORD));
+    assert!(host
+        .authenticated_account(&admin)
+        .unwrap()
+        .set_access
+        .is_some());
+
+    assert!(host.failing_reads(&[&[23], &[1], &[1]]));
+    assert!(host.suggested_account().is_err());
+    assert!(host.stored_login().is_err());
+    assert!(host
+        .authenticated_account(&admin)
+        .unwrap()
+        .set_access
+        .is_some());
+    assert!(host.failing_reads(&[&[23], &[1], &[5]]));
+    assert!(host.authenticated_account(&admin).is_err());
+    assert_eq!(host.read_only(), None);
+    assert!(host.close());
 }
 
 #[test]
@@ -198,7 +255,7 @@ fn accounts_log_in_only_while_active_with_no_password_change_due() {
         let path = folder.tasks_with(&format!("{tag}.fmp12"), |root| {
             set_status(root, 2, status);
         });
-        let host = LocalHost::open(&path, &client.cert).unwrap();
+        let host = open_host(&path, &client.cert).unwrap();
         assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0, "{tag}");
         assert!(host.close());
     }
@@ -207,7 +264,7 @@ fn accounts_log_in_only_while_active_with_no_password_change_due() {
     // wrong; the file is left as it was.
     let path = folder.tasks(FILE);
     let before = std::fs::read(&path).unwrap();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(
         login(&host, &client, FORMER, FORMER_PASSWORD),
         LOGIN_INACTIVE_ACCOUNT
@@ -238,7 +295,7 @@ fn an_account_due_a_change_sets_a_new_password_and_logs_in_with_it() {
     let folder = Folder::new("change");
     let client = client();
     let path = folder.tasks(FILE);
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(
         host.change_password(NEWCOMER, "not it", NEW),
         Err(PasswordChangeError::Refused)
@@ -256,7 +313,7 @@ fn an_account_due_a_change_sets_a_new_password_and_logs_in_with_it() {
     assert_eq!(login(&host, &client, NEWCOMER, NEW), 0);
     assert_eq!(login(&host, &client, NEWCOMER, NEWCOMER_PASSWORD), 212);
     assert!(host.close());
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(login(&host, &client, NEWCOMER, NEW), 0);
     assert!(host.close());
 
@@ -299,7 +356,7 @@ fn a_password_that_hashes_as_the_current_one_is_unchanged() {
     let folder = Folder::new("unchanged");
     let client = client();
     let path = folder.tasks_with(FILE, fixture::put_data_entry_only);
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     host.change_password(CLERK, CLERK_PASSWORD, "caf\u{e9}")
         .unwrap();
     for same in ["caf\u{e9}", "cafe\u{301}"] {
@@ -322,7 +379,7 @@ fn admin_password_changed_for_filemaker_pro() {
     let path = PathBuf::from(std::env::var_os("OM_CHANGE_PASSWORD_FILE").expect("a file"));
     let new = std::env::var("OM_NEW_PASSWORD").expect("a password");
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     host.change_password("Admin", "", &new).unwrap();
     assert!(host.close());
 }
@@ -343,7 +400,7 @@ fn filemaker_made_accounts_log_in() {
     let path = folder.0.join("made.fmp12");
     std::fs::copy(&source, &path).unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     // `login` checks the synthetic file's creation stamp; this file has its
     // own.
     let login = |account: &str, password: &str| {
@@ -435,7 +492,7 @@ fn guest_external_expired_and_unreadable_accounts_are_refused() {
     for (tag, change, account, password, code) in cases {
         let path = folder.tasks_with(&format!("{tag}.fmp12"), change);
         let before = std::fs::read(&path).unwrap();
-        let host = LocalHost::open(&path, &client.cert).unwrap();
+        let host = open_host(&path, &client.cert).unwrap();
         assert_eq!(login(&host, &client, account, password), code, "{tag}");
         assert!(host.close());
         assert_eq!(std::fs::read(&path).unwrap(), before, "{tag}");
@@ -517,7 +574,7 @@ fn a_built_in_set_that_is_not_the_verified_one_is_refused() {
     ];
     for (tag, change, account, password) in changes {
         let path = folder.tasks_with(&format!("{tag}.fmp12"), change);
-        let host = LocalHost::open(&path, &client.cert).unwrap();
+        let host = open_host(&path, &client.cert).unwrap();
         assert_eq!(
             login(&host, &client, account, password),
             LOGIN_UNSUPPORTED_PRIVILEGES,
@@ -538,8 +595,8 @@ fn an_account_without_a_stored_password_cannot_log_in() {
     }
     fixture::write_tree(&path, &root);
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
-    assert_eq!(host.suggested_account(), None);
+    let host = open_host(&path, &client.cert).unwrap();
+    assert_eq!(host.suggested_account().unwrap(), None);
     assert_eq!(login(&host, &client, ACCOUNT, ""), 212);
     assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 212);
 }
@@ -558,15 +615,15 @@ fn deferred_work_recovered_on_opening_waits_for_an_admitted_login() {
     let before = std::fs::read(&path).unwrap();
     let client = client();
     for (account, password) in [(ACCOUNT, "wrong"), (CLERK, CLERK_PASSWORD)] {
-        let host = LocalHost::open(&path, &client.cert).unwrap();
+        let host = open_host(&path, &client.cert).unwrap();
         assert_ne!(login(&host, &client, account, password), 0);
         assert!(host.close());
         assert_eq!(std::fs::read(&path).unwrap(), before, "{account}");
     }
     // Opened and closed without any login: nothing either.
-    assert!(LocalHost::open(&path, &client.cert).unwrap().close());
+    assert!(open_host(&path, &client.cert).unwrap().close());
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
     assert!(host.close());
     let after = om_hbam::HbamFile::open(&path).unwrap();
@@ -577,12 +634,84 @@ fn deferred_work_recovered_on_opening_waits_for_an_admitted_login() {
     assert_eq!(folder.files(), [FILE]);
 }
 
+/// A compacted copy saved before any login is the file as its disk holds
+/// it, its deferred work list included, so the copy finishes the work when
+/// an account first logs in to it. When the first login's save of the work
+/// fails, the work is taken back, and the desktop is told from then on that
+/// the file is read-only, and why (docs/server-storage.md 5).
+#[cfg(target_os = "linux")]
+#[test]
+fn deferred_work_that_cannot_be_saved_leaves_the_file_read_only_and_says_why() {
+    use om_data::CopyKind;
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("recovery-failing");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let list = [uint_segment(TABLE), vec![3], vec![1], vec![0xfd]];
+    let list: Vec<&[u8]> = list.iter().map(Vec::as_slice).collect();
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(&list, OwnedNode::leaf(Vec::new(), Vec::new()));
+    });
+    let pending = |path: &Path| {
+        om_hbam::HbamFile::open(path)
+            .unwrap()
+            .subtree(&list)
+            .unwrap()
+            .is_some()
+    };
+    let before = std::fs::read(&path).unwrap();
+    let client = client();
+    let host = open_host(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    let copy = folder.0.join("Compacted.fmp12");
+    host.save_copy(&copy, CopyKind::Compacted).unwrap();
+    assert!(pending(&copy), "the copy holds the work list");
+
+    // The save of the work fails: a folder stands where it makes its copy.
+    let blocked = folder.0.join(format!("{FILE}.omsave"));
+    std::fs::create_dir(&blocked).unwrap();
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert_eq!(host.read_only(), Some(ReadOnly::DeferredWork));
+    assert!(host.is_read_only());
+    assert!(host.close());
+    std::fs::remove_dir(&blocked).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // The copy finishes the work.
+    let host = open_host(&copy, &client.cert).unwrap();
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert!(host.close());
+    assert!(!pending(&copy));
+}
+
+/// A save whose outcome is unknown, here the first login's save of the
+/// deferred work (renamed over the file, its folder not flushed), leaves
+/// the file taking no more changes: the desktop is told it is read-only,
+/// with a reason of its own, from that login on (docs/server-storage.md 5).
+#[test]
+fn a_save_whose_outcome_is_unknown_leaves_a_local_file_read_only() {
+    let folder = Folder::new("unknown-outcome");
+    let list = [uint_segment(TABLE), vec![3], vec![1], vec![0xfd]];
+    let list: Vec<&[u8]> = list.iter().map(Vec::as_slice).collect();
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(&list, OwnedNode::leaf(Vec::new(), Vec::new()));
+    });
+    let client = client();
+    let host = open_host(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    assert!(host.failing_saves(Some(om_server::SaveFault::FolderFlush)));
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert!(host.failing_saves(None));
+    assert_eq!(host.read_only(), Some(ReadOnly::NoMoreChanges));
+    assert!(host.is_read_only());
+    assert!(host.close());
+}
+
 #[test]
 fn only_the_opening_clients_certificate_is_accepted() {
     let folder = Folder::new("pinned");
     let path = folder.tasks(FILE);
     let owner = client();
-    let host = LocalHost::open(&path, &owner.cert).unwrap();
+    let host = open_host(&path, &owner.cert).unwrap();
     let other = client();
     assert!(connect(&host, &other).is_err());
     assert_eq!(login(&host, &owner, ACCOUNT, PASSWORD), 0);
@@ -593,16 +722,16 @@ fn a_file_opens_once_through_any_of_its_paths_until_it_is_closed() {
     let folder = Folder::new("once");
     let path = folder.tasks(FILE);
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     let port = host.port();
-    let again = LocalHost::open(&path, &client.cert).unwrap_err();
+    let again = open_host(&path, &client.cert).unwrap_err();
     assert!(matches!(again, LocalHostError::InUse(_)), "{again:?}");
     assert_eq!(again.code(), 300);
     #[cfg(unix)]
     {
         let alias = folder.0.join("alias.fmp12");
         std::os::unix::fs::symlink(&path, &alias).unwrap();
-        let through_alias = LocalHost::open(&alias, &client.cert).unwrap_err();
+        let through_alias = open_host(&alias, &client.cert).unwrap_err();
         assert!(
             matches!(&through_alias, LocalHostError::InUse(p) if p == &host.path().to_path_buf()),
             "{through_alias:?}"
@@ -611,7 +740,7 @@ fn a_file_opens_once_through_any_of_its_paths_until_it_is_closed() {
     assert!(host.close());
     // Closed: the port is free and the file opens again.
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
-    let reopened = LocalHost::open(&path, &client.cert).unwrap();
+    let reopened = open_host(&path, &client.cert).unwrap();
     assert_eq!(login(&reopened, &client, ACCOUNT, PASSWORD), 0);
 }
 
@@ -629,7 +758,7 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
     let original = std::fs::read(&path).unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
 
     let copy = folder.0.join("Copy.fmp12");
     match host.prepare_copy(&copy, CopyKind::Copy) {
@@ -723,7 +852,7 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
 
     // Each copy is a file of its own, with the file's accounts.
     for (made, password) in [(&copy, PASSWORD), (&compacted, PASSWORD), (&saved, CHANGED)] {
-        let opened = LocalHost::open(made, &client.cert).unwrap();
+        let opened = open_host(made, &client.cert).unwrap();
         assert_eq!(opened.read_only(), None);
         assert_eq!(login(&opened, &client, ACCOUNT, password), 0);
         assert!(opened.close());
@@ -735,7 +864,7 @@ fn a_connection_stalled_before_its_handshake_does_not_keep_the_file() {
     let folder = Folder::new("stalled");
     let path = folder.tasks(FILE);
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     // Accepted, then silent: no TLS handshake, no session.
     let stalled = std::net::TcpStream::connect(("127.0.0.1", host.port())).unwrap();
     std::thread::sleep(Duration::from_millis(200));
@@ -747,7 +876,7 @@ fn a_connection_stalled_before_its_handshake_does_not_keep_the_file() {
         started.elapsed()
     );
     // Released: the file opens (and locks) again at once.
-    let reopened = LocalHost::open(&path, &client.cert).unwrap();
+    let reopened = open_host(&path, &client.cert).unwrap();
     assert_eq!(login(&reopened, &client, ACCOUNT, PASSWORD), 0);
     drop(stalled);
 }
@@ -772,13 +901,13 @@ fn files_it_cannot_read_are_refused_and_left_as_they_were() {
     for (name, bytes, code) in cases {
         let path = folder.0.join(name);
         std::fs::write(&path, &bytes).unwrap();
-        let error = LocalHost::open(&path, &client.cert).unwrap_err();
+        let error = open_host(&path, &client.cert).unwrap_err();
         assert_eq!(error.code(), code, "{name}: {error}");
         assert_eq!(std::fs::read(&path).unwrap(), bytes, "{name} changed");
     }
-    let missing = LocalHost::open(&folder.0.join("missing.fmp12"), &client.cert).unwrap_err();
+    let missing = open_host(&folder.0.join("missing.fmp12"), &client.cert).unwrap_err();
     assert!(matches!(missing, LocalHostError::Missing(_)), "{missing:?}");
-    let folder_path = LocalHost::open(&folder.0, &client.cert).unwrap_err();
+    let folder_path = open_host(&folder.0, &client.cert).unwrap_err();
     assert!(
         matches!(folder_path, LocalHostError::NotAFile(_)),
         "{folder_path:?}"
@@ -816,10 +945,10 @@ fn a_file_it_may_not_write_is_served_read_only_and_refuses_write_requests() {
     }
     let before = std::fs::read(&path).unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(host.read_only(), Some(ReadOnly::NotWritable));
     // Read-only files can be read by others at the same time.
-    let reader = LocalHost::open(&path, &client.cert).unwrap();
+    let reader = open_host(&path, &client.cert).unwrap();
     assert!(reader.is_read_only());
     let mut session = logged_in(&host, &client, ACCOUNT, PASSWORD).unwrap();
     // The write requests themselves are refused, before they change
@@ -841,7 +970,7 @@ fn files_a_save_could_not_replace_safely_are_served_read_only() {
     // Another name for the file: a save's new copy would leave it behind.
     let linked = folder.tasks("linked.fmp12");
     std::fs::hard_link(&linked, folder.0.join("other name.fmp12")).unwrap();
-    let host = LocalHost::open(&linked, &client.cert).unwrap();
+    let host = open_host(&linked, &client.cert).unwrap();
     assert_eq!(host.read_only(), Some(ReadOnly::OtherNames));
     assert!(host.close());
     // An entry where the save's new copy goes, here a link to another file.
@@ -850,7 +979,7 @@ fn files_a_save_could_not_replace_safely_are_served_read_only() {
     std::fs::write(&victim, b"not to be truncated").unwrap();
     std::os::unix::fs::symlink(&victim, folder.0.join("crowded.fmp12.omsave")).unwrap();
     let before = std::fs::read(&crowded).unwrap();
-    let host = LocalHost::open(&crowded, &client.cert).unwrap();
+    let host = open_host(&crowded, &client.cert).unwrap();
     assert_eq!(host.read_only(), Some(ReadOnly::CopyInTheWay));
     let mut session = logged_in(&host, &client, ACCOUNT, PASSWORD).unwrap();
     assert_eq!(
@@ -872,6 +1001,27 @@ fn files_a_save_could_not_replace_safely_are_served_read_only() {
     );
 }
 
+/// A copy a save left beside a local file when it stopped part way is
+/// never removed: the file opens read-only, with the reason, and the copy
+/// is left as it is. Once the user removes it, the file opens writable
+/// (docs/server-storage.md 5).
+#[test]
+fn a_copy_a_save_left_keeps_a_local_file_read_only() {
+    let folder = Folder::new("leftover");
+    let path = folder.tasks(FILE);
+    let copy = folder.0.join(format!("{FILE}.omsave"));
+    std::fs::write(&copy, b"half a save").unwrap();
+    let client = client();
+    let host = open_host(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), Some(ReadOnly::CopyInTheWay));
+    assert!(host.close());
+    assert_eq!(std::fs::read(&copy).unwrap(), b"half a save");
+    std::fs::remove_file(&copy).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    assert!(host.close());
+}
+
 #[test]
 fn read_only_queries_refuse_schema_writes_before_execution() {
     use om_query::program::{leaf, opcode};
@@ -882,7 +1032,7 @@ fn read_only_queries_refuse_schema_writes_before_execution() {
     let copy = folder.0.join(format!("{FILE}.omsave"));
     std::fs::write(&copy, b"owned review sentinel").unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(host.read_only(), Some(ReadOnly::CopyInTheWay));
     let mut session = logged_in(&host, &client, ACCOUNT, PASSWORD).unwrap();
     let table = uint_segment(TABLE);
@@ -965,7 +1115,7 @@ fn one_day_password_lifetime_accepts_its_set_date() {
     });
     let before = std::fs::read(&path).unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     let code = login(&host, &client, ACCOUNT, PASSWORD);
     assert_eq!(login(&host, &client, ACCOUNT, "wrong"), 212);
     assert!(host.close());
@@ -1063,6 +1213,10 @@ fn hosted_file_accounts_obey_state_and_notification_boundaries() {
         Identity::self_signed(vec!["localhost".into()]).unwrap(),
     )
     .unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let port = server.local_addr().unwrap().port();
     let handle = server.handle().unwrap();
     let thread = std::thread::spawn(move || server.serve());
@@ -1410,6 +1564,10 @@ fn a_session_keeps_the_privileges_it_logged_in_with() {
     };
     let identity = Identity::self_signed(vec!["localhost".into()]).unwrap();
     let server = Server::bind("127.0.0.1:0", config, identity).unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let port = server.local_addr().unwrap().port();
     let handle = server.handle().unwrap();
     let thread = std::thread::spawn(move || server.serve());
@@ -1507,7 +1665,7 @@ fn accounts_filemaker_put_in_the_built_in_sets_open_with_their_limits() {
     let path = folder.0.join("Contacts.fmp12");
     std::fs::copy(&fixture, &path).unwrap();
     let client = client();
-    let host = LocalHost::open(&path, &client.cert).unwrap();
+    let host = open_host(&path, &client.cert).unwrap();
     // The Contacts table: a new record is reserved under [Data Entry Only]
     // and refused with 200 under [Read-Only Access].
     let contacts = uint_segment(0x8002);
@@ -1526,7 +1684,9 @@ fn accounts_filemaker_put_in_the_built_in_sets_open_with_their_limits() {
             .unwrap();
         assert_eq!(reply.error_code, 0, "{account}");
         assert_eq!(
-            host.authenticated_account(&reply.result_key).set_access,
+            host.authenticated_account(&reply.result_key)
+                .unwrap()
+                .set_access,
             Some(SetAccess::BuiltIn(set)),
             "{account}"
         );

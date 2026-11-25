@@ -284,14 +284,51 @@ impl Event {
         Self::new(Log::Event, Level::Error, number, message)
     }
 
+    /// Hosted file `name` is served read-only, for the reason `why` (its
+    /// deferred work was left part way). OpenMaker's own message.
+    pub fn hosted_read_only(name: &str, why: &str) -> Self {
+        Self::new(
+            Log::Event,
+            Level::Warning,
+            0,
+            format!(
+                "Database \"{}\" is served read-only: {}.",
+                database(name),
+                value(why)
+            ),
+        )
+    }
+
+    /// Hosted file `name` was opened with something at `entry`, the name
+    /// its saves write their new copy under (an earlier save's leftover, or
+    /// anything else): its saves fail, each change taken back, until that is
+    /// removed. OpenMaker's own message.
+    pub fn save_copy_in_the_way(name: &str, entry: &str) -> Self {
+        Self::new(
+            Log::Event,
+            Level::Error,
+            0,
+            format!(
+                "Something is at \"{}\", where database \"{}\"'s saves write their new \
+                 copy (an earlier save's leftover?); its changes are not saved until that is \
+                 removed.",
+                value(entry),
+                database(name)
+            ),
+        )
+    }
+
     /// Saving hosted file `name` failed with `error`; `outcome` says what
     /// became of the changes. OpenMaker's own message: FileMaker Server
     /// writes its files a page at a time and has no such event.
     pub fn save_failed(name: &str, error: &dyn fmt::Display, outcome: SaveOutcome) -> Self {
         let outcome = match outcome {
             SaveOutcome::Kept => "Its unsaved changes are kept in memory.",
-            SaveOutcome::Unwritable => "What the file cannot hold is kept in memory and not saved.",
-            SaveOutcome::TakenBack => "The commit was taken back.",
+            SaveOutcome::TakenBack => "The change was taken back.",
+            SaveOutcome::Unknown => {
+                "The file may or may not keep the change, and takes no more changes until it \
+                 is hosted again."
+            }
         };
         Self::new(
             Log::Event,
@@ -684,10 +721,11 @@ impl Event {
 pub(crate) enum SaveOutcome {
     /// They stay in memory for the next save.
     Kept,
-    /// The file cannot hold some of them, which stay in memory unsaved.
-    Unwritable,
-    /// The commit that made them was taken back.
+    /// The change that made them was taken back.
     TakenBack,
+    /// The new copy was renamed over the file, but the folder could not be
+    /// flushed: the file keeps the change in memory and takes no more.
+    Unknown,
 }
 
 /// How a client's session ended, for its last line in `Access.log`.

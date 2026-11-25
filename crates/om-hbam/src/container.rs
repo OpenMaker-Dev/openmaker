@@ -94,6 +94,12 @@ impl PageHeader {
     pub fn is_free(&self) -> bool {
         self.level == FREE_LEVEL
     }
+
+    /// Whether this is the head of the leaf chain: a level-0 page with no
+    /// previous page (file-format.md 1.3). The first such page is the head.
+    pub(crate) fn is_leaf_head(&self) -> bool {
+        self.level == 0 && self.prev == 0
+    }
 }
 
 /// One page of the file. `header + used + slack` is the page byte for byte.
@@ -110,6 +116,37 @@ pub struct Page<'a> {
 }
 
 impl<'a> Page<'a> {
+    /// Page `number` from its bytes `raw` (header included): its header, and
+    /// its body split into the chunk stream and the slack after it. Both
+    /// readers parse pages here ([`HbamFile::page`],
+    /// [`crate::stream::NodeStream`]).
+    pub(crate) fn parse(number: u32, raw: &'a [u8]) -> Result<Self> {
+        let header = PageHeader::parse(raw.first_chunk::<PAGE_HEADER_LEN>().ok_or(
+            Error::BadPageHeader {
+                page: number,
+                reason: "page shorter than its header",
+            },
+        )?);
+        let body = &raw[PAGE_HEADER_LEN..];
+        let used_len = if header.is_free() {
+            0
+        } else {
+            body.len()
+                .checked_sub(usize::from(header.free_space))
+                .ok_or(Error::BadPageHeader {
+                    page: number,
+                    reason: "free space exceeds page body",
+                })?
+        };
+        Ok(Page {
+            number,
+            header,
+            raw,
+            used: &body[..used_len],
+            slack: &body[used_len..],
+        })
+    }
+
     /// The raw chunks of this page (leaf or index).
     pub fn chunks(&self) -> Chunks<'a> {
         Chunks::new(self.used)
@@ -207,6 +244,36 @@ fn ascii_runs(bytes: &[u8], min: usize) -> Vec<String> {
         .collect()
 }
 
+/// The bytes of page 0 [`page_size_of`] reads: the magic and the page size.
+pub(crate) const HEADER_LEN: usize = PAGE_SIZE_OFFSET + 4;
+
+/// The page size of a file `len` bytes long whose first bytes are `head`
+/// (at least [`HEADER_LEN`] of them, or the whole file when it is shorter),
+/// checked as both readers check it ([`HbamFile::from_bytes`],
+/// [`crate::stream::NodeStream`]): the `HBAM7` magic, a page size that
+/// holds a page header and page 0's version record, and a file of whole
+/// pages (file-format.md 1.1, 1.2). A file too short to hold the page size
+/// has an unusable one, 0.
+pub(crate) fn page_size_of(head: &[u8], len: u64) -> Result<u32> {
+    if head.get(MAGIC_OFFSET..MAGIC_OFFSET + MAGIC.len()) != Some(&MAGIC[..]) {
+        return Err(Error::NotHbam);
+    }
+    let page_size = head
+        .get(PAGE_SIZE_OFFSET..HEADER_LEN)
+        .map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    let min = (VERSION_LEN_OFFSET + 2).max(PAGE_HEADER_LEN + 1);
+    if (page_size as usize) < min {
+        return Err(Error::BadPageSize(page_size));
+    }
+    if len % u64::from(page_size) != 0 {
+        return Err(Error::PartialPage {
+            len: usize::try_from(len).unwrap_or(usize::MAX),
+            page_size,
+        });
+    }
+    Ok(page_size)
+}
+
 /// An opened HBAM7 file. Holds the bytes unchanged; every view borrows them,
 /// so [`HbamFile::as_bytes`] always round-trips the original file.
 #[derive(Clone, Debug)]
@@ -223,20 +290,7 @@ impl HbamFile {
     /// Validate the superblock and page geometry. Encrypted (EAR) files are not
     /// supported: their reserved page tail makes chunk decoding fail.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
-        if data.get(MAGIC_OFFSET..MAGIC_OFFSET + MAGIC.len()) != Some(&MAGIC[..]) {
-            return Err(Error::NotHbam);
-        }
-        let page_size = Superblock { raw: &data }.page_size();
-        let min = (VERSION_LEN_OFFSET + 2).max(PAGE_HEADER_LEN + 1);
-        if (page_size as usize) < min {
-            return Err(Error::BadPageSize(page_size));
-        }
-        if data.len() % page_size as usize != 0 {
-            return Err(Error::PartialPage {
-                len: data.len(),
-                page_size,
-            });
-        }
+        let page_size = page_size_of(&data, data.len() as u64)?;
         Ok(HbamFile { data, page_size })
     }
 
@@ -277,50 +331,22 @@ impl HbamFile {
             });
         }
         let size = self.page_size as usize;
-        let raw = &self.data[number as usize * size..(number as usize + 1) * size];
-        let mut hdr = [0u8; PAGE_HEADER_LEN];
-        hdr.copy_from_slice(&raw[..PAGE_HEADER_LEN]);
-        let header = PageHeader::parse(&hdr);
-        let body = &raw[PAGE_HEADER_LEN..];
-        let used_len = if header.is_free() {
-            0
-        } else {
-            body.len()
-                .checked_sub(usize::from(header.free_space))
-                .ok_or(Error::BadPageHeader {
-                    page: number,
-                    reason: "free space exceeds page body",
-                })?
-        };
-        Ok(Page {
+        Page::parse(
             number,
-            header,
-            raw,
-            used: &body[..used_len],
-            slack: &body[used_len..],
-        })
+            &self.data[number as usize * size..(number as usize + 1) * size],
+        )
     }
 
     /// The first level-0 page (`PrevPage == 0`); page 2 in every sample.
     pub fn leaf_head(&self) -> Result<u32> {
-        for n in 1..self.page_count() {
-            let page = self.page(n)?;
-            if page.header.level == 0 && page.header.prev == 0 {
-                return Ok(n);
-            }
-        }
-        Err(Error::BrokenChain {
-            page: 0,
-            reason: "no level-0 chain head",
-        })
+        find_leaf_head(self.page_count(), |n| Ok(self.page(n)?.header))
     }
 
     /// Walk the leaf chain from its head, validating links (file-format.md 2.2, 5).
     pub fn leaf_pages(&self) -> LeafPages<'_> {
         LeafPages {
             file: self,
-            next: None,
-            prev: 0,
+            links: ChainLinks::default(),
             seen: vec![false; self.page_count() as usize],
             done: false,
         }
@@ -368,21 +394,122 @@ pub fn path_has_prefix(path: &[KeySegment<'_>], prefix: &[u64]) -> bool {
         .all(|(seg, want)| seg.as_uint() == Some(*want))
 }
 
+/// The head of the leaf chain in a file of `page_count` pages: the first
+/// page, from page 1 on, whose header (read by `header`) is a level-0 page
+/// with no previous page (file-format.md 1.3). Both readers find it here.
+pub(crate) fn find_leaf_head(
+    page_count: u32,
+    mut header: impl FnMut(u32) -> Result<PageHeader>,
+) -> Result<u32> {
+    for n in 1..page_count {
+        if header(n)?.is_leaf_head() {
+            return Ok(n);
+        }
+    }
+    Err(Error::BrokenChain {
+        page: 0,
+        reason: "no level-0 chain head",
+    })
+}
+
+/// The walk of the level-0 leaf chain from its head, checked one page at a
+/// time (file-format.md 2.2, 5): each page must be in the file, a leaf, and
+/// link back to the page before it. Both readers walk the chain with it
+/// ([`LeafPages`], [`crate::stream::NodeStream`]).
+///
+/// The back links alone keep a walk from reading a page twice, so it needs
+/// no record of the pages it has read. The head must link back to 0 and
+/// every later page to the page read before it. Take the first page the
+/// walk reaches a second time. If it was the head, its back link is 0, but
+/// must now be the page read before it, which is never 0. Otherwise its
+/// back link is the page read before its first visit, and must now be the
+/// page read before this one: that page would be reached twice, earlier.
+/// Either way the check fails, so a walk ends, with an error or at the
+/// tail, within the file's page count.
+///
+/// That holds for a source that gives the same bytes each time a page is
+/// read. One that changes under the walk (a file another process is
+/// writing) could pass every back link and still lead it round, so the
+/// walk also counts its pages and stops when it has read as many as the
+/// file holds.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ChainLinks {
+    /// The page the walk reads next: `None` before the head, `Some(0)`
+    /// after the tail.
+    next: Option<u32>,
+    /// The page read last (0 before the head).
+    prev: u32,
+    /// How many pages the walk has read.
+    read: u32,
+}
+
+impl ChainLinks {
+    /// The page to read next, in a file of `page_count` pages, or `None`
+    /// after the tail. `head` finds the head, the first time.
+    pub(crate) fn next_page(
+        &self,
+        page_count: u32,
+        head: impl FnOnce() -> Result<u32>,
+    ) -> Result<Option<u32>> {
+        let number = match self.next {
+            Some(0) => return Ok(None),
+            Some(n) => n,
+            None => head()?,
+        };
+        if number >= page_count {
+            return Err(Error::BrokenChain {
+                page: number,
+                reason: "link out of range",
+            });
+        }
+        // Page 0 is no leaf, so a chain has fewer pages than the file.
+        if self.read >= page_count.saturating_sub(1) {
+            return Err(Error::BrokenChain {
+                page: number,
+                reason: "the chain has more pages than the file",
+            });
+        }
+        Ok(Some(number))
+    }
+
+    /// Check page `number`, the one [`Self::next_page`] named, with its
+    /// `header`, as the next page of the chain, and follow its link.
+    pub(crate) fn follow(&mut self, number: u32, header: &PageHeader) -> Result<()> {
+        let broken = |reason| Error::BrokenChain {
+            page: number,
+            reason,
+        };
+        if header.level != 0 {
+            return Err(broken("non-leaf page in leaf chain"));
+        }
+        if header.prev != self.prev {
+            return Err(broken("prev link does not match"));
+        }
+        self.prev = number;
+        self.next = Some(header.next);
+        self.read = self.read.saturating_add(1);
+        Ok(())
+    }
+}
+
 /// Iterator over the level-0 leaf chain.
 pub struct LeafPages<'a> {
     file: &'a HbamFile,
-    next: Option<u32>,
-    prev: u32,
+    links: ChainLinks,
+    /// The pages read, so a cycle is reported as one (the back links
+    /// would stop it anyway, [`ChainLinks`]).
     seen: Vec<bool>,
     done: bool,
 }
 
 impl<'a> LeafPages<'a> {
     fn step(&mut self) -> Result<Option<Page<'a>>> {
-        let number = match self.next {
-            Some(0) => return Ok(None),
-            Some(n) => n,
-            None => self.file.leaf_head()?,
+        let file = self.file;
+        let Some(number) = self
+            .links
+            .next_page(file.page_count(), || file.leaf_head())?
+        else {
+            return Ok(None);
         };
         let broken = |reason| Error::BrokenChain {
             page: number,
@@ -395,15 +522,8 @@ impl<'a> LeafPages<'a> {
         if std::mem::replace(slot, true) {
             return Err(broken("cycle"));
         }
-        let page = self.file.page(number)?;
-        if page.header.level != 0 {
-            return Err(broken("non-leaf page in leaf chain"));
-        }
-        if page.header.prev != self.prev {
-            return Err(broken("prev link does not match"));
-        }
-        self.prev = number;
-        self.next = Some(page.header.next);
+        let page = file.page(number)?;
+        self.links.follow(number, &page.header)?;
         Ok(Some(page))
     }
 }
@@ -450,6 +570,39 @@ impl<'a> Iterator for FileSlots<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source that changes under the walk can satisfy every back link
+    /// and still lead it round: here pages 2 and 3 each name the other as
+    /// both neighbours on every read after the head's first. The walk ends
+    /// once it has read as many pages as the file has leaves to give.
+    #[test]
+    fn a_chain_walk_ends_within_the_files_pages_whatever_the_headers_say() {
+        let header = |prev, next| PageHeader {
+            log_seq_num: 0,
+            prev,
+            next,
+            level: 0,
+            free_space: 0,
+            mod_count: 0,
+        };
+        let page_count = 4;
+        let mut links = ChainLinks::default();
+        let mut read = 0;
+        let ended = loop {
+            let number = match links.next_page(page_count, || Ok(2)) {
+                Ok(Some(number)) => number,
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e),
+            };
+            let other = if number == 2 { 3 } else { 2 };
+            let prev = if read == 0 { 0 } else { other };
+            links.follow(number, &header(prev, other)).unwrap();
+            read += 1;
+            assert!(read < 100, "the walk does not end");
+        };
+        assert!(matches!(ended, Err(Error::BrokenChain { .. })), "{ended:?}");
+        assert_eq!(read, page_count - 1);
+    }
 
     #[test]
     fn header_round_trip() {

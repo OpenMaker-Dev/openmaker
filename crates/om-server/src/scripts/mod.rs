@@ -612,8 +612,12 @@ pub(crate) fn run(
     host.set_calc_limits(slot.calc_limits);
     host.set_account_key(account_key);
     host.set_access(access);
-    let outcome = execute(&mut host, script, parameter, slot);
-    host.close();
+    let mut outcome = execute(&mut host, script, parameter, slot);
+    // A save at the script's end that failed is the script's error: what
+    // it left unsaved is not on disk (docs/server-storage.md 5).
+    if let Some(error) = host.close() {
+        outcome.error = error;
+    }
     // (The session's locks go with it, before another can get its id.)
     drop(host);
     drop(session);
@@ -749,6 +753,7 @@ mod tests {
     const CLIENT: u32 = 0x77;
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
+        let engine = crate::engine::FileEngine::default();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),
@@ -756,6 +761,7 @@ mod tests {
             }],
             false,
             &Default::default(),
+            &engine,
         )
         .unwrap();
         let shared = Arc::new(Shared {
@@ -773,6 +779,7 @@ mod tests {
             connection_ids: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
+            engine: std::sync::Arc::new(engine),
             scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
             refused_downloads: Default::default(),
             omitted_list_paths: Default::default(),
@@ -882,7 +889,7 @@ mod tests {
         // Manage Database replaces the layout catalog without layout 2.
         {
             let hosted = hosted(&shared);
-            let mut store = hosted.write_store();
+            let mut store = hosted.write_store(&crate::engine::Writer::for_tests());
             let mut layouts = store.node(&[&[4], &[5]]).unwrap().clone();
             layouts.remove(&[&[2]]);
             store.put_subtree(&[vec![4], vec![5]], layouts);
@@ -908,7 +915,7 @@ mod tests {
             let hosted = hosted.clone();
             let t = t.clone();
             std::thread::spawn(move || {
-                let mut store = hosted.write_store();
+                let mut store = hosted.write_store(&crate::engine::Writer::for_tests());
                 let mut journal = store.begin_commit();
                 store.guarded(&mut journal, |store, journal| {
                     store.write_record_in(journal, &t, 1, None);
@@ -1004,7 +1011,7 @@ mod tests {
             ]
         );
         // Every lock of the session is released, and its id with it.
-        assert!(!hosted(&shared).locks.lock().unwrap().held_by_other(
+        assert!(!hosted(&shared).lock_table().held_by_other(
             &[uint_segment(fixture::TABLE), vec![5], serial::encode(1)],
             LockUser {
                 connection: CLIENT,
@@ -1244,7 +1251,7 @@ mod tests {
             stored(&shared, 1, fixture::NAME).as_deref(),
             Some("Write tests")
         );
-        assert!(!hosted(&shared).locks.lock().unwrap().held_by_other(
+        assert!(!hosted(&shared).lock_table().held_by_other(
             &[uint_segment(fixture::TABLE), vec![5], serial::encode(1)],
             LockUser {
                 connection: CLIENT,
@@ -1440,7 +1447,7 @@ mod tests {
             txn: 5,
         };
         hosted(&shared)
-            .locks
+            .locks(&crate::engine::Writer::for_tests())
             .lock()
             .unwrap()
             .lock(
@@ -1466,6 +1473,52 @@ mod tests {
             .map(|n| n.code)
             .collect();
         assert_eq!(codes, [attention::DELETE | attention::RECORD]);
+        host.close();
+    }
+
+    /// A script's account step tells each client registered on the file
+    /// that the account catalog changed, once, when its edit wrote: the
+    /// catalog `[23, 1]` and its index `[23, 1, 1]`, after its lock on the
+    /// catalog is released (the release carries them,
+    /// `engine::ReleaseScriptLock`), as before the engine interface. An
+    /// edit that was refused, or changed nothing, tells no one, and the
+    /// catalog's lock is released either way.
+    #[test]
+    fn a_scripts_account_edit_tells_of_the_catalog_once_and_only_when_it_wrote() {
+        use om_scripts::runtime::Accounts as _;
+        let mut root = fixture::tree(&[], true);
+        // The account catalog's index, which a stamped edit stamps.
+        root.put(
+            &[&[23], &[1], &[1], &[4]],
+            om_hbam::OwnedNode::leaf(Vec::new(), 2u32.to_be_bytes().to_vec()),
+        );
+        let file = TempFile::from_tree("script-account-notices", &root);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let told = |shared: &Shared| -> Vec<u32> {
+            let taken = shared.mailboxes.take(CLIENT, usize::MAX);
+            taken.iter().map(|n| n.code).collect()
+        };
+        host.reset_account_password(fixture::CLERK, "fresh", false)
+            .unwrap();
+        assert_eq!(told(&shared), [2, 2], "the catalog and its index");
+        assert!(host
+            .reset_account_password("Nobody", "fresh", false)
+            .is_err());
+        assert!(told(&shared).is_empty(), "a refused edit tells no one");
+        host.enable_account(fixture::CLERK, true).unwrap();
+        assert!(told(&shared).is_empty(), "an edit that changed nothing");
+        host.enable_account(fixture::CLERK, false).unwrap();
+        assert_eq!(told(&shared), [2, 2]);
+        let catalog = [vec![23], vec![1]];
+        assert_eq!(hosted(&shared).lock_table().held_by(0x55), 0);
+        assert!(!hosted(&shared).lock_table().held_by_other(
+            &catalog,
+            LockUser {
+                connection: CLIENT,
+                txn: 1
+            }
+        ));
         host.close();
     }
 }

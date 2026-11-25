@@ -91,6 +91,61 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     assert!(name_index_on_disk(&file).is_empty());
 }
 
+/// A read that fails, as reads that reach a damaged page fail
+/// (docs/server-storage.md 5, "Views", and 6.12), reaches the client as an
+/// error, never as a reply that looks whole: a download that reaches it
+/// (op90, op92) is answered with a CORBA system exception (`PERSIST_STORE`),
+/// a find that reads it fails with the error slot's code `ffff`, and what
+/// does not reach it is served as before, on the same connection.
+#[cfg(debug_assertions)]
+#[test]
+fn a_failed_read_reaches_the_client_as_an_error() {
+    use om_hbam::serial;
+    use om_hbam::slot::uint_segment;
+    let file = fixture::TempFile::new("failed-reads", &[], true);
+    let (port, handle) = server::start_configured_with_handle(&file, |server| server);
+    let table = uint_segment(fixture::TABLE);
+    let (one, ship) = (serial::encode(1), serial::encode(2));
+    // Record 2, "Ship", and what is below it cannot be read.
+    handle.failing_reads(fixture::FILE, &[&table, &[5], &ship]);
+    let (mut session, file_id) = server::logged_in(port, "failed-reads");
+    let first = session.download(&[&table, &[5], &one]).unwrap();
+    assert!(!first.slots.is_empty());
+    let paths: [&[&[u8]]; 3] = [&[&table, &[5]], &[&table, &[5], &ship], &[&table]];
+    for path in paths {
+        let error = session.download(path).unwrap_err();
+        assert!(error.to_string().contains("SystemException"), "{error}");
+    }
+    let keys: [&[u8]; 2] = [&one, &ship];
+    let error = session
+        .download_list(&[&table, &[5]], &keys, 0)
+        .unwrap_err();
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    let listed = session.download_list(&[&table, &[5]], &[&one], 0).unwrap();
+    assert!(!listed.slots.is_empty());
+    // A find on Name reads every record to build the index on demand.
+    let finders: Vec<Vec<u8>> = find::finders(
+        fixture::TABLE,
+        fixture::NAME,
+        DataType::Text,
+        "==Ship",
+        DateOrder::MonthDayYear,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|finder| finder.bytes)
+    .collect();
+    let program = find::program(file_id, fixture::TABLE, &finders, None);
+    let reply = session.query(&program).unwrap();
+    assert_eq!(
+        reply.slots,
+        [0x80, 0x06, 0x00, 0x03, 0x02, 0xff, 0xff, 0x40],
+        "the find fails"
+    );
+    assert!(session.download(&[&table, &[5], &one]).is_ok());
+    session.disconnect().unwrap();
+}
+
 /// Two finds of Tasks::Name `ship` (read from the word index) and Count
 /// `5` (the value index) in a row, each checking both indexes first
 /// (`find::checked_find_program`): which existed, and what the find found.

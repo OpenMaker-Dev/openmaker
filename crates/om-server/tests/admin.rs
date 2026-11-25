@@ -921,6 +921,16 @@ fn closing_a_file_asks_its_clients_and_opening_it_loads_it_again() {
         Err(FileError::NotAllowed(FileStatus::Open))
     );
 
+    // Schema changes move the store's version past what the file opened
+    // again starts at, and a download reads the new catalog: the test view
+    // (`Server::checking_reads`) must take the file opened again for a new
+    // load, not for a later version of this one.
+    for key in 1..=3u8 {
+        let node = OwnedNode::list(Vec::new(), vec![OwnedNode::leaf(vec![key], vec![key])]);
+        front.upload_to_host(&[&[0x40]], &node).unwrap();
+    }
+    front.download(&[&[2]]).unwrap();
+
     // A grace time Back Office closes the file well within, however loaded
     // the machine.
     let text = "Closing Tasks";
@@ -991,6 +1001,7 @@ fn closing_a_file_asks_its_clients_and_opening_it_loads_it_again() {
     let info = &handle.files()[0];
     assert_eq!((info.status, info.error.as_ref()), (FileStatus::Open, None));
     assert_eq!(late.open_file("127.0.0.1", FILE).unwrap().status, 0);
+    late.download(&[&[2]]).unwrap();
     late.disconnect().unwrap();
     back.disconnect().unwrap();
 }

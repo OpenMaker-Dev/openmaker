@@ -13,16 +13,17 @@
 //! encoding. The renders in progress together hold at most [`BUDGET`]:
 //! each step waits for room before it starts, and one above it is refused.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{self, Cursor, Write};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
+use crate::engine::{ReadError, View, NO_LIMIT};
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{
     ColorType, DynamicImage, ImageBuffer, ImageDecoder, ImageFormat, ImageReader, Limits, Pixel,
 };
-use om_hbam::OwnedNode;
 
 /// The largest box side served; FileMaker Pro asks for display sizes.
 pub const MAX_SIDE: u32 = 4096;
@@ -64,12 +65,23 @@ pub struct Thumbnail {
     pub height: u32,
 }
 
-/// A member's master image stream: its format and bytes.
-pub fn master(member: &OwnedNode) -> Option<(ImageFormat, Vec<u8>)> {
-    MASTERS.iter().find_map(|(kind, format)| {
-        let bytes = member.child(kind.as_slice())?.assembled()?;
-        Some((*format, bytes.into_owned()))
-    })
+/// The master image stream of the library member at `member` in the
+/// version `view` reads: its format and bytes. Each stream is read whole,
+/// in [`MASTERS`]' order, until one assembles.
+pub fn master(
+    view: &dyn View,
+    member: &[&[u8]],
+) -> Result<Option<(ImageFormat, Vec<u8>)>, ReadError> {
+    for (kind, format) in MASTERS {
+        let path: Vec<&[u8]> = member.iter().copied().chain([kind.as_slice()]).collect();
+        if let Some(bytes) = view
+            .subtree(&path, NO_LIMIT)?
+            .and_then(|n| n.assembled().map(Cow::into_owned))
+        {
+            return Ok(Some((format, bytes)));
+        }
+    }
+    Ok(None)
 }
 
 /// Decode `bytes` and scale them to `width` x `height`, within the memory
@@ -803,6 +815,7 @@ impl Cache {
 mod tests {
     use super::*;
     use image::{GenericImageView, Rgb, RgbImage};
+    use om_hbam::OwnedNode;
 
     fn encoded(format: ImageFormat) -> Vec<u8> {
         let image = RgbImage::from_fn(48, 48, |x, y| Rgb([x as u8 * 5, y as u8 * 5, 128]));
@@ -863,12 +876,14 @@ mod tests {
                 OwnedNode::leaf(b"PNGf".to_vec(), png.clone()),
             ],
         );
-        assert_eq!(master(&member), Some((ImageFormat::Png, png)));
         let file = OwnedNode::list(
-            vec![1],
+            vec![2],
             vec![OwnedNode::leaf(b"FILE".to_vec(), b"x".to_vec())],
         );
-        assert_eq!(master(&file), None);
+        let root = OwnedNode::list(Vec::new(), vec![member, file]);
+        let view = crate::engine::TreeView::new(&root, 0);
+        assert_eq!(master(&view, &[&[1]]), Ok(Some((ImageFormat::Png, png))));
+        assert_eq!(master(&view, &[&[2]]), Ok(None));
     }
 
     #[test]

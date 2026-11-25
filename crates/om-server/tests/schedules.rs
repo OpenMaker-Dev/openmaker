@@ -61,6 +61,10 @@ fn start(
         .with_clock(clock.clone())
         .with_schedules(schedules)
         .unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let handle = server.handle().unwrap();
     std::thread::spawn(move || server.serve());
     assert!(
@@ -303,6 +307,27 @@ fn runs_that_cannot_start_keep_their_error() {
     let last = run_now(&handle, "Work");
     assert_eq!((last.ran, last.error), (false, 812));
     assert_eq!(record_count(&file), 2);
+}
+
+/// A run whose file's accounts cannot be read (the test view failing
+/// `[23, 1, 5]`, as a damaged page would, docs/server-storage.md 5) is
+/// aborted with 802, as a client's login to that file is answered, not as
+/// an account that cannot log in (212); nothing of its script runs.
+#[cfg(debug_assertions)]
+#[test]
+fn a_run_whose_accounts_cannot_be_read_is_aborted_unable_to_open() {
+    let file = TempFile::new("sched-unreadable", &[fixture::server_work()], true);
+    let clock = ManualClock::new(at(8, 0));
+    let handle = start(
+        &file,
+        vec![schedule("Work", "Server Work")],
+        &clock,
+        ScriptLimits::DEFAULT,
+    );
+    handle.failing_reads(fixture::FILE, &[&[23], &[1], &[5]]);
+    let last = run_now(&handle, "Work");
+    assert_eq!((last.ran, last.error), (false, 802), "{last:?}");
+    assert_eq!(stored(&file, 1, COUNT).as_deref(), Some("3"));
 }
 
 #[test]
@@ -553,6 +578,10 @@ fn runs_are_recorded_in_the_event_log() {
         .with_clock(clock.clone())
         .with_schedules(vec![schedule("Every quarter hour", "Server Work"), ghost])
         .unwrap();
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let handle = server.handle().unwrap();
     std::thread::spawn(move || server.serve());
     assert!(handle.wait_for_schedules(WAIT));

@@ -687,3 +687,26 @@ fn security_is_read_without_credentials_by_the_files_full_access_account() {
     assert_eq!(denied["kind"], "permission_denied", "{denied:#}");
     host.stop();
 }
+
+/// The security catalog is read through a reading of the file
+/// (docs/server-storage.md 5). With the test view failing the extended
+/// privileges `[23, 3, 5]`, as a damaged page would, Describe Security is
+/// refused with 802, "Unable to open file", never answered with a catalog
+/// that lacks them.
+#[cfg(debug_assertions)]
+#[test]
+fn security_that_cannot_be_read_is_refused() {
+    let file = TempFile::from_tree("author-security-unreadable", &indexed_tree());
+    let host = host(&file, "OpenMaker Server test");
+    // Logged in first: a login reads the accounts, not this.
+    let (mut session, file_id) = session(&host, "Admin desk", ACCOUNT, PASSWORD);
+    host.handle.failing_reads(FILE, &[&[23], &[3], &[5]]);
+    let reply = session
+        .perform(&authoring::build_request(9, file_id, &Request::DescribeSecurity).unwrap())
+        .unwrap();
+    match authoring::parse_reply(&Request::DescribeSecurity, &reply).unwrap() {
+        Reply::Refused { status, .. } => assert_eq!(status, authoring::status::UNREADABLE),
+        other => panic!("{other:?}"),
+    }
+    host.stop();
+}
