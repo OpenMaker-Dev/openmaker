@@ -1,52 +1,58 @@
 //! The store's incident journal (`docs/server-storage.md` sections 6.1 and
-//! 6.12): what the store is about to give up, recorded before it gives it
-//! up, reported by every open until an administrator acknowledges it. The
-//! byte format is section 7 of `docs/server-storage-format.md`.
+//! 6.12): what the store is approved to give up and is about to, recorded
+//! before it acts, reported by every open that succeeds until an
+//! administrator acknowledges it. The byte format is section 7 of
+//! `docs/server-storage-format.md`.
 //!
 //! `<store>/incidents` is the store's own file, apart from the log, the page
 //! file and `state`, and read without them: a store whose log or page file
 //! cannot be read still says what it gave up. It is a sequence of records,
 //! each at an offset that is a multiple of [`ALIGN`], each with a kind, a
 //! bounded payload, its number and the start count of the open that wrote
-//! it, and a SHA-256 hash over all of it.
+//! it, and a SHA-256 hash over all of it. One act is one record: a record
+//! checks or it does not, and none needs another to be read with it.
 //!
-//! - **Record, flush, then act.** [`Journal::record_all`] writes the records
-//!   of one act, after checking that all of them fit, and flushes the file
-//!   before it returns; a caller acts only on records it returned. A write
-//!   or flush that fails leaves the journal refusing every later call: what
-//!   reached the device is unknown, and the store stops.
-//! - **The name holds a record.** A journal is made, or made again after it
-//!   was lost, under [`NEW_FILE`], its first record flushed, then renamed to
-//!   [`FILE`] and the store folder flushed: a file named `incidents` that
-//!   holds no record that checks was not finished, and reads as lost.
+//! - **Record, flush, then act.** The store's [`Journal::record`] writes a
+//!   record after everything the file holds and flushes the file before it
+//!   returns; the store acts only on a record it returned. A write or flush
+//!   that fails leaves the journal refusing every later call: what reached
+//!   the device is unknown, and the store stops. A record says what was
+//!   approved and about to be done: a crash, or a call that then does
+//!   nothing, leaves it describing what may never have run.
+//! - **The name holds a record.** A journal is made (a new store's, with a
+//!   base record) or made again when its file is missing, under
+//!   [`NEW_FILE`]: its first record written and flushed, then renamed to
+//!   [`FILE`] and the store folder flushed. A file named `incidents` that
+//!   holds no record that checks (one whose writer did not finish, or whose
+//!   records are damaged or cannot be read now) reads as lost; the next
+//!   record goes after what it holds, which stays.
 //! - **Nothing is written over.** A record goes after everything the file
 //!   holds, at the next multiple of [`ALIGN`]: a record a crash cut short,
 //!   or bytes damaged since, stay where they are and are reported.
 //! - **A journal that cannot be read in full does not stop the store.** A
-//!   missing file, a short one, or bytes that do not check are what the read
-//!   found ([`Found`]); every record that checks is read, wherever it is.
-//!   Everything read is bounded ([`MAX_FILE`], [`MAX_PAYLOAD`],
-//!   [`MAX_RECORDS`], [`MAX_FILES`]).
-//! - **Numbers never come again**: an open's records are numbered from its
-//!   start count times [`PER_START`], checked, and refused when spent.
-//! - **Acknowledging** ([`Journal::acknowledge`]) names the last record the
-//!   caller was shown and what the read it was shown found: refused unless
-//!   the journal reads so now; then the records after it are kept and the
-//!   places that read named are dropped, written to [`NEW_FILE`] after a
-//!   base record that carries the next number, flushed, renamed over the
-//!   journal, the store folder flushed.
+//!   missing file, a short one, or bytes that do not check are what the
+//!   read found ([`Found`]); every record that checks is read, wherever it
+//!   is. What is read is bounded: at most [`MAX_FILE`] bytes, which decode
+//!   to at most [`DECODED_PER_BYTE`] bytes of memory each (a plan's rows
+//!   stay rows: [`PlanRecord`]).
+//! - **Numbers never come again** ([`Journal::open`]).
+//! - **Acknowledging is all or nothing.** A read gives its caller a
+//!   [`Shown`], a hash of exactly what it read. Acknowledging it reads the
+//!   journal again and is refused, with nothing written, unless the hash is
+//!   the same; then the journal is replaced by one that holds only a base
+//!   record carrying the next number (under [`NEW_FILE`], flushed, renamed
+//!   over [`FILE`], the store folder flushed).
 
 use std::fmt;
 
 use ring::digest;
 
 use crate::log::{
-    self, ChainFault, Cut, CutWhy, DamagePlan, Earlier, Fate, FileFate, UnreadableEnd,
-    SET_ASIDE_REASONS,
+    self, ChainFault, DamagePlan, Earlier, Fate, FileFate, UnreadableEnd, SET_ASIDE_REASONS,
 };
 use crate::page::Hash;
 use crate::pagefile::{CheckpointId, GiveUp, GivenUp, Lost, MAX_RESTORE_NAME, SLOTS};
-use crate::state::{Marker, Segments};
+use crate::state::Segments;
 use crate::sys::{self, ErrorKind, File, FileOptions, Fs};
 
 /// The journal's name in the store folder.
@@ -72,13 +78,23 @@ pub const MAX_PAYLOAD: usize = 64 * 1024;
 pub const MAX_RECORDS: usize = 256;
 
 /// The most bytes of the file that are read: the base record and
-/// [`MAX_RECORDS`] records of the largest size, aligned. Bytes past it are
-/// not read, and the read says so.
+/// [`MAX_RECORDS`] records of the largest size, aligned (16,974,336). Bytes
+/// past it are not read, and the read says so.
 pub const MAX_FILE: u64 = (MAX_RECORDS as u64 + 1) * record_room(MAX_PAYLOAD);
 
+/// What a read decodes, at most, for each byte it read: a plan's row takes
+/// at least [`MIN_ROW`] bytes in the file and a [`Row`] in memory (at most
+/// 80 bytes, with its text, when it has one, no longer than in the file); a
+/// restore point at least 10 bytes, and 32 in memory with its name's bytes;
+/// each record's own part less than the [`ALIGN`] bytes a record takes at
+/// least; everything else no more memory than file.
+pub const DECODED_PER_BYTE: usize = std::mem::size_of::<Row>().div_ceil(MIN_ROW) + 1;
+
+/// The fewest bytes a plan's row takes in a record.
+pub const MIN_ROW: usize = 8 + 4 + 1 + 1 + 1;
+
 /// The most segment files a plan's record holds: a plan of more is refused
-/// before anything is changed (it is also bounded by [`MAX_PAYLOAD`], its
-/// runs of segments with one fate taking a row each).
+/// before anything is changed (it is also bounded by [`MAX_PAYLOAD`]).
 pub const MAX_FILES: usize = 1 << 16;
 
 /// The restore points a `Checkpoints` record names for each checkpoint it
@@ -86,10 +102,12 @@ pub const MAX_FILES: usize = 1 << 16;
 /// approval.
 pub const NAMES_KEPT: usize = 128;
 
-/// An open's records are numbered from its start count times this: `state`
-/// never issues a start count twice, and an open records fewer, so a number
-/// is never used twice, whatever happened to the journal.
+/// An open's records are numbered from its start count times this
+/// ([`Journal::open`]).
 pub const PER_START: u64 = 1 << 20;
+
+/// The most damaged places a read lists.
+pub const MAX_REPORTED: usize = 16;
 
 const MAGIC: [u8; 8] = *b"OMINCID\0";
 const HEADER: usize = 32;
@@ -103,12 +121,16 @@ const MAX_TEXT: usize = 2048;
 /// out.
 const CHECKPOINT_ROOM: usize = 48 + 1 + 4 + NAMES_KEPT * (2 + MAX_RESTORE_NAME + 8) + 8;
 
-// Any approval the page file gives fits a record: it gives up at most one
-// checkpoint for each superblock slot, and writes over at most every slot.
+// Any approval the page file gives fits a record: it gives up at most two
+// checkpoints (counted here as one for each superblock slot), and writes
+// over at most every slot.
 const _: () = assert!(
     2 + 2 + MAX_TEXT + 4 + SLOTS * CHECKPOINT_ROOM + 4 + SLOTS * 8 + 48 + 4 + SLOTS * 8 + 32
         <= MAX_PAYLOAD
 );
+
+// A row in memory, for the bound `DECODED_PER_BYTE` states.
+const _: () = assert!(std::mem::size_of::<Row>() <= 80);
 
 /// The room a record with `payload` bytes takes, aligned.
 const fn record_room(payload: usize) -> u64 {
@@ -150,30 +172,27 @@ pub enum What {
         by_administrator: bool,
         why: String,
     },
-    /// An acceptance of the log's damage, its plan (what is kept, each
-    /// file's fate with its entries and where it goes,
-    /// [`DamagePlan::prefix`]), before the acceptance changes anything. A
-    /// record holds a run of consecutive kept, lengthened or missing
-    /// segments with one fate as one row, with the first entry of its first
-    /// segment and the last of its last: read back, the segments inside such
-    /// a run say no entries of their own. A segment set aside keeps its own.
-    LogDamage(Box<DamagePlan>),
+    /// An acceptance of the log's damage, its plan ([`PlanRecord`]: what is
+    /// kept, each file's fate with its entries and where it goes), before
+    /// the acceptance changes anything; and, when `state` carried a mark the
+    /// plan does not make up for, `last_batch_after`: whatever this server
+    /// confirmed after that entry may be lost too.
+    LogDamage {
+        plan: Box<PlanRecord>,
+        last_batch_after: Option<u64>,
+    },
     /// Whatever may follow the log's unreadable end `end`, after `last`
     /// (the log's own last entry), before it is given up.
     UnreadableEnd {
         last: log::Position,
         end: UnreadableEnd,
     },
-    /// A copy of `state` was passed over and the log holds no whole batch
-    /// after the marker: the last batch this server confirmed may be lost.
-    /// `marker` is the marker read; `cut` and `unreadable_end` what the
-    /// open is about to do to the log. Recorded before `state`'s mark is
-    /// settled.
-    LastBatch {
-        marker: Marker,
-        cut: Option<Cut>,
-        unreadable_end: Option<UnreadableEnd>,
-    },
+    /// A copy of `state` was passed over and the log held no whole batch
+    /// after entry `after`, the later of the marker and the checkpoint's
+    /// entry: whatever this server confirmed after it may be lost. Recorded
+    /// before the open writes `state`; it covers whatever that open then
+    /// finds after `after`.
+    LastBatch { after: u64 },
     /// The journal was missing, or held no record that checks, at an open:
     /// incidents recorded before and not acknowledged are unknown.
     JournalLost,
@@ -230,6 +249,126 @@ fn cut_text(v: &str) -> &str {
     &v[..end]
 }
 
+/// An acceptance's plan as its record holds it: [`DamagePlan`]'s fields,
+/// with its files as rows of consecutive segments, which stay rows when
+/// read ([`PlanRecord::files`] walks them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanRecord {
+    pub start: log::Position,
+    pub kept: log::Position,
+    pub marker: u64,
+    pub cut_count_before: u64,
+    pub cut_count: Option<u64>,
+    pub listed_before: Segments,
+    pub listed: Segments,
+    pub opens_at: log::Position,
+    pub rows: Vec<Row>,
+    pub tail_copied: Option<u64>,
+    pub before_start: Option<ChainFault>,
+    pub prefix: Option<String>,
+}
+
+/// `count` consecutive segments from `number` with one fate: the first
+/// entry of the first, and the last of the last, when known. Kept,
+/// lengthened (to one size) and missing segments of any run take one row;
+/// segments set aside for one reason only where neither says an entry at
+/// the join (each says what its file holds); a segment set aside earlier
+/// always takes a row of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub number: u64,
+    pub count: u32,
+    pub fate: Fate,
+    pub first: Option<u64>,
+    pub last: Option<u64>,
+}
+
+impl PlanRecord {
+    /// The record of `plan`; refused when it names more than [`MAX_FILES`]
+    /// files.
+    pub fn of(plan: &DamagePlan) -> Result<PlanRecord, JournalError> {
+        let files = &plan.files;
+        if files.len() > MAX_FILES {
+            return Err(JournalError::TooLarge { len: files.len() });
+        }
+        let mut rows: Vec<Row> = Vec::new();
+        for (i, file) in files.iter().enumerate() {
+            if let Some(row) = rows.last_mut() {
+                let prev = &files[i - 1];
+                if file.number == prev.number + 1 && one_row(prev, file) {
+                    row.count += 1;
+                    row.last = file.last;
+                    continue;
+                }
+            }
+            rows.push(Row {
+                number: file.number,
+                count: 1,
+                fate: file.fate.clone(),
+                first: file.first,
+                last: file.last,
+            });
+        }
+        Ok(PlanRecord {
+            start: plan.start,
+            kept: plan.kept,
+            marker: plan.marker,
+            cut_count_before: plan.cut_count_before,
+            cut_count: plan.cut_count,
+            listed_before: plan.listed_before,
+            listed: plan.listed,
+            opens_at: plan.opens_at,
+            rows,
+            tail_copied: plan.tail_copied,
+            before_start: plan.before_start,
+            prefix: plan.prefix.clone(),
+        })
+    }
+
+    /// Each file, in order: a segment inside a row says no entries of its
+    /// own.
+    pub fn files(&self) -> impl Iterator<Item = FileFate> + '_ {
+        self.rows.iter().flat_map(|row| {
+            let count = u64::from(row.count);
+            (0..count).map(move |i| FileFate {
+                number: row.number + i,
+                first: row.first.filter(|_| i == 0),
+                last: row.last.filter(|_| i + 1 == count),
+                fate: row.fate.clone(),
+            })
+        })
+    }
+}
+
+/// Whether segment `b`, after `a` in a plan, joins `a`'s row: the same
+/// fate, and nothing of their own lost. Kept, lengthened and missing
+/// segments give their run's entries; segments set aside keep their own
+/// (where each went, and what it holds), so they join a row only where
+/// neither says one.
+fn one_row(a: &FileFate, b: &FileFate) -> bool {
+    match (&a.fate, &b.fate) {
+        (Fate::Kept, Fate::Kept) | (Fate::Missing, Fate::Missing) => true,
+        (Fate::Lengthened { size: x }, Fate::Lengthened { size: y }) => x == y,
+        (Fate::SetAside { reason: x }, Fate::SetAside { reason: y }) => {
+            x == y && a.last.is_none() && b.first.is_none()
+        }
+        _ => false,
+    }
+}
+
+/// "segment n" or "segments n to m".
+fn segments_named(row: &Row) -> String {
+    if row.count == 1 {
+        format!("segment {}", row.number)
+    } else {
+        format!(
+            "segments {} to {}",
+            row.number,
+            row.number + u64::from(row.count) - 1
+        )
+    }
+}
+
 /// A record of the journal: its number (never used again), the start count
 /// of the open that wrote it, and what.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,32 +401,41 @@ impl fmt::Display for Incident {
                 }
                 Ok(())
             }
-            What::LogDamage(plan) => {
+            What::LogDamage {
+                plan,
+                last_batch_after,
+            } => {
                 write!(
                     f,
                     "approved: accepting the loss of the log's damage, keeping through entry {} \
                      (the marker was at {})",
                     plan.kept.index, plan.marker
                 )?;
-                for file in &plan.files {
-                    match &file.fate {
+                for row in &plan.rows {
+                    let named = segments_named(row);
+                    match &row.fate {
                         Fate::SetAside { .. } => {
                             if let Some(prefix) = &plan.prefix {
                                 write!(
                                     f,
-                                    "; segment {} to be set aside as {}/{prefix}{:016x}",
-                                    file.number,
-                                    log::FOLDER,
-                                    file.number
+                                    "; {named} to be set aside as {}/{prefix}<number>",
+                                    log::FOLDER
                                 )?;
                             }
                         }
-                        Fate::Missing => write!(f, "; segment {} missing", file.number)?,
+                        Fate::Missing => write!(f, "; {named} missing")?,
                         Fate::MovedEarlier { to } => {
-                            write!(f, "; segment {} set aside earlier as {to}", file.number)?
+                            write!(f, "; {named} set aside earlier as {to}")?
                         }
                         Fate::Kept | Fate::Lengthened { .. } => {}
                     }
+                }
+                if let Some(after) = last_batch_after {
+                    write!(
+                        f,
+                        "; and a copy of the state file was passed over: whatever this server \
+                         confirmed after entry {after} may be lost"
+                    )?;
                 }
                 Ok(())
             }
@@ -297,11 +445,10 @@ impl fmt::Display for Incident {
                  (offset {}) the device could not read",
                 last.index, end.segment, end.offset
             ),
-            What::LastBatch { marker, .. } => write!(
+            What::LastBatch { after } => write!(
                 f,
                 "a copy of the state file was passed over and the log held no whole batch after \
-                 entry {}: the last batch this server confirmed may be lost",
-                marker.index
+                 entry {after}: whatever this server confirmed after entry {after} may be lost"
             ),
             What::JournalLost => f.write_str(
                 "the incident journal was missing or held no record: incidents recorded before, \
@@ -315,7 +462,8 @@ impl fmt::Display for Incident {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     /// There was no journal, or it held no record that checks (a file the
-    /// writer did not finish): lost.
+    /// writer did not finish, or one whose records are damaged or cannot be
+    /// read now): lost.
     pub missing: bool,
     /// Offsets of places that are not zero and begin no record that checks
     /// (the first [`MAX_REPORTED`] of them), and how many in all.
@@ -336,20 +484,22 @@ impl Found {
     pub fn is_clean(&self) -> bool {
         *self == Found::default()
     }
-
-    /// Whether two reads found the same places an acknowledgement drops:
-    /// those that do not check, those the device failed to read, and a file
-    /// too long to read.
-    pub fn same_places(&self, other: &Found) -> bool {
-        self.damaged == other.damaged
-            && self.damaged_count == other.damaged_count
-            && self.unreadable == other.unreadable
-            && self.too_long == other.too_long
-    }
 }
 
-/// The most damaged places a read lists.
-pub const MAX_REPORTED: usize = 16;
+/// What a read showed its caller, to acknowledge: a hash over the bytes it
+/// read (the places it could not read as zeros), those places, and the
+/// file's size. Opaque.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown([u8; 32]);
+
+/// A read of the journal: its records, what it found besides, and what it
+/// showed ([`Shown`]).
+#[derive(Clone, Debug)]
+pub struct Reading {
+    pub incidents: Vec<Incident>,
+    pub found: Found,
+    pub shown: Shown,
+}
 
 /// Why the journal could not be read or written.
 #[derive(Debug)]
@@ -358,12 +508,12 @@ pub enum JournalError {
     NewerFormat { version: u16 },
     /// [`MAX_RECORDS`] records are not acknowledged, or the file would pass
     /// [`MAX_FILE`]: nothing more is recorded, so nothing more is given up,
-    /// until an administrator acknowledges them.
+    /// until an administrator reads the journal and acknowledges it.
     Full,
     /// The record would be larger than [`MAX_PAYLOAD`], or a plan names more
     /// than [`MAX_FILES`] segment files: nothing is given up.
     TooLarge { len: usize },
-    /// The numbers this start may give are spent (format section 7.3).
+    /// The numbers this start may give are spent ([`Journal::open`]).
     NumbersSpent,
     /// The disk failed.
     Disk(sys::Error),
@@ -382,8 +532,8 @@ impl fmt::Display for JournalError {
                  this server reads ({VERSION})"
             ),
             JournalError::Full => f.write_str(
-                "the incident journal is full of incidents no administrator has acknowledged: \
-                 nothing more can be recorded, so nothing more is given up",
+                "the incident journal is full: nothing more can be recorded, so nothing more is \
+                 given up, until an administrator reads it and acknowledges what it holds",
             ),
             JournalError::TooLarge { len } => write!(
                 f,
@@ -412,9 +562,9 @@ impl From<sys::Error> for JournalError {
     }
 }
 
-/// The open journal. The caller holds the store folder's lock for as long
-/// as it lives.
-pub struct Journal {
+/// The store's open journal, opened once for each start by the store, which
+/// holds the store folder's lock for as long as it lives.
+pub(crate) struct Journal {
     file: Option<Box<dyn File>>,
     /// The records not acknowledged, in order.
     incidents: Vec<Incident>,
@@ -443,29 +593,42 @@ impl fmt::Debug for Journal {
 }
 
 /// A journal as read: its file (none when missing), its records, what the
-/// read found, the next number its records allow, and its size.
-struct Read {
+/// read found, what it showed, its size, and the numbers its records
+/// allow: none below `floor`, and `skip` more for the places after the last
+/// record that could have begun one.
+struct Scanned {
     file: Option<Box<dyn File>>,
     incidents: Vec<Incident>,
     found: Found,
-    next: u64,
+    shown: Shown,
     size: u64,
+    floor: u64,
+    skip: u64,
+}
+
+impl Scanned {
+    /// The next number the records read allow.
+    fn next(&self) -> u64 {
+        self.floor.saturating_add(self.skip)
+    }
 }
 
 /// Read the journal of the store folder `fs`.
-fn read(fs: &dyn Fs) -> Result<Read, JournalError> {
+fn read(fs: &dyn Fs) -> Result<Scanned, JournalError> {
     let file = match fs.open(FILE, FileOptions::PLAIN) {
         Ok(file) => file,
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Ok(Read {
+            return Ok(Scanned {
                 file: None,
                 incidents: Vec::new(),
                 found: Found {
                     missing: true,
                     ..Found::default()
                 },
-                next: 1,
+                shown: shown(None, &[], &[]),
                 size: 0,
+                floor: 1,
+                skip: 0,
             })
         }
         Err(e) => return Err(e.into()),
@@ -481,16 +644,40 @@ fn read(fs: &dyn Fs) -> Result<Read, JournalError> {
             .damaged
             .last()
             .is_some_and(|&at| scan.last_record.is_none_or(|last| at > last)),
-        unreadable,
         too_long: size > MAX_FILE,
+        unreadable,
     };
-    Ok(Read {
+    Ok(Scanned {
+        shown: shown(Some(size), &bytes, &found.unreadable),
         file: Some(file),
         incidents: scan.incidents,
         found,
-        next: scan.next,
         size,
+        floor: scan.floor,
+        skip: scan.skip,
     })
+}
+
+/// The hash a read shows: whether there was a file and its size, the bytes
+/// read, and the places the device failed to read.
+fn shown(size: Option<u64>, bytes: &[u8], unreadable: &[(u64, u64)]) -> Shown {
+    let mut ctx = digest::Context::new(&digest::SHA256);
+    ctx.update(b"OMINCID shown\0");
+    match size {
+        Some(size) => {
+            ctx.update(&[1]);
+            ctx.update(&size.to_le_bytes());
+        }
+        None => ctx.update(&[0]),
+    }
+    ctx.update(&(bytes.len() as u64).to_le_bytes());
+    ctx.update(bytes);
+    ctx.update(&(unreadable.len() as u64).to_le_bytes());
+    for (at, len) in unreadable {
+        ctx.update(&at.to_le_bytes());
+        ctx.update(&len.to_le_bytes());
+    }
+    Shown(ctx.finish().as_ref().try_into().expect("32 bytes"))
 }
 
 /// Write `bytes` as the whole journal: under [`NEW_FILE`] (one left by a
@@ -523,130 +710,146 @@ fn range_of(start_count: u64) -> Result<(u64, u64), JournalError> {
     Ok((first.max(1), limit))
 }
 
+/// Read the journal of the store folder `fs` (its lock held by the caller):
+/// its records, what the read found, and what it showed, to acknowledge.
+pub(crate) fn look(fs: &dyn Fs) -> Result<Reading, JournalError> {
+    let read = read(fs)?;
+    Ok(Reading {
+        incidents: read.incidents,
+        found: read.found,
+        shown: read.shown,
+    })
+}
+
+/// Acknowledge, with the store closed (its folder's lock held by the
+/// caller), everything a read showed ([`Journal::acknowledge`]).
+pub(crate) fn acknowledge_closed(fs: &dyn Fs, shown: &Shown) -> Result<usize, JournalError> {
+    let now = read(fs)?;
+    if now.shown != *shown {
+        return Err(CHANGED);
+    }
+    replace(fs, &base_record(now.next(), 0))?;
+    Ok(now.incidents.len())
+}
+
+const CHANGED: JournalError =
+    JournalError::Refused("the journal changed since it was read: read it again");
+
 impl Journal {
     /// Make the journal of a new store: a base record, written under
     /// [`NEW_FILE`], flushed, and renamed into place.
-    pub fn create(fs: &dyn Fs, start_count: u64) -> Result<(), JournalError> {
+    pub(crate) fn create(fs: &dyn Fs, start_count: u64) -> Result<(), JournalError> {
         let (first, _) = range_of(start_count)?;
         replace(fs, &base_record(first, start_count))?;
         Ok(())
     }
 
-    /// Read the journal of the store folder `fs` (its lock held by the
-    /// caller), for an open whose start count is `start_count`. A missing
-    /// file, or one that holds no record that checks, reads as lost
+    /// Open the journal of the store folder `fs` (its lock held by the
+    /// caller) for the start whose count is `start_count`. A missing file,
+    /// or one that holds no record that checks, reads as lost
     /// ([`Found::missing`]); nothing is written.
-    pub fn open(fs: &dyn Fs, start_count: u64) -> Result<Journal, JournalError> {
+    ///
+    /// **Numbers.** The store opens the journal once for each start, with
+    /// that start's count. Its records take the numbers from the start count
+    /// times [`PER_START`] up to the next start's, and none below what the
+    /// records read allow: one past the last record's, the base record's
+    /// next number, and then one more for each place after the last record
+    /// that does not check or that the device failed to read (each could
+    /// have begun one). A record that would take a number past the range is
+    /// refused ([`JournalError::NumbersSpent`]), and so is a start count
+    /// whose range does not fit in 8 bytes. `state` never issues a start
+    /// count twice, so a number is never used twice, whatever happened to
+    /// the journal. Two opens in one start could give a number twice: the
+    /// store makes one, and with the store closed it only acknowledges
+    /// (which writes a base record carrying the next number).
+    pub(crate) fn open(fs: &dyn Fs, start_count: u64) -> Result<Journal, JournalError> {
         let (first, limit) = range_of(start_count)?;
         let read = read(fs)?;
         Ok(Journal {
+            next: read.floor.max(first).saturating_add(read.skip),
             end: align_up(read.size),
             file: read.file,
             incidents: read.incidents,
             found: read.found,
-            next: read.next.max(first),
             limit,
             start_count,
             failed: false,
         })
     }
 
-    /// What the journal holds now, read again: its records and what the
-    /// read found, to show an administrator before an acknowledgement.
-    pub fn look(fs: &dyn Fs) -> Result<(Vec<Incident>, Found), JournalError> {
-        let read = read(fs)?;
-        Ok((read.incidents, read.found))
-    }
-
     /// The records not acknowledged, in order, as this journal read them
     /// and has written since.
-    pub fn incidents(&self) -> &[Incident] {
+    pub(crate) fn incidents(&self) -> &[Incident] {
         &self.incidents
     }
 
     /// What the read found besides its records.
-    pub fn found(&self) -> &Found {
+    pub(crate) fn found(&self) -> &Found {
         &self.found
     }
 
     /// Whether a write or flush failed: every later call fails.
-    pub fn is_failed(&self) -> bool {
+    pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }
 
     /// The segment files acceptances not acknowledged set aside, as their
     /// records say, with the `state` each plan was made against: what a new
     /// plan names when it finds them missing, if `state` is still that.
-    pub fn earlier_moves(&self) -> Vec<Earlier> {
+    pub(crate) fn earlier_moves(&self) -> Vec<Earlier> {
         let mut out = Vec::new();
         for incident in &self.incidents {
-            if let What::LogDamage(plan) = &incident.what {
-                let Some(prefix) = &plan.prefix else { continue };
-                for file in &plan.files {
-                    if matches!(file.fate, Fate::SetAside { .. }) {
-                        out.push(Earlier {
-                            number: file.number,
-                            first: file.first,
-                            last: file.last,
-                            moved_to: format!("{}/{prefix}{:016x}", log::FOLDER, file.number),
-                            run: plan.listed_before,
-                            marker: plan.marker,
-                            cut_count: plan.cut_count_before,
-                        });
-                    }
+            let What::LogDamage { plan, .. } = &incident.what else {
+                continue;
+            };
+            let Some(prefix) = &plan.prefix else { continue };
+            for row in &plan.rows {
+                if matches!(row.fate, Fate::SetAside { .. }) {
+                    out.push(Earlier {
+                        number: row.number,
+                        count: u64::from(row.count),
+                        first: row.first,
+                        last: row.last,
+                        prefix: format!("{}/{prefix}", log::FOLDER),
+                        run: plan.listed_before,
+                        marker: plan.marker,
+                        cut_count: plan.cut_count_before,
+                    });
                 }
             }
         }
         out
     }
 
-    /// Append `what` and make it durable ([`Journal::record_all`]).
-    pub fn record(&mut self, fs: &dyn Fs, what: What) -> Result<Incident, JournalError> {
-        let mut recorded = self.record_all(fs, vec![what])?;
-        Ok(recorded.pop().expect("one record"))
-    }
-
-    /// Append the records of one act and make them durable, or none of them:
-    /// first every record is checked to fit (the number of records not
-    /// acknowledged, the numbers this start may give, each record's size,
-    /// the file's), then all are written in one write and the file flushed.
-    /// A journal that was missing is written under [`NEW_FILE`], flushed and
-    /// renamed into place, the store folder flushed. Only then does it
-    /// return the incidents (as they read back), and only then may the
-    /// caller act. Refused, with nothing written, when anything does not
-    /// fit. After a write or flush fails every later call fails.
-    pub fn record_all(
-        &mut self,
-        fs: &dyn Fs,
-        whats: Vec<What>,
-    ) -> Result<Vec<Incident>, JournalError> {
+    /// Append `what` and make it durable: refused, with nothing written,
+    /// when the records not acknowledged are [`MAX_RECORDS`], the numbers
+    /// are spent, the record is too large, or the file would pass
+    /// [`MAX_FILE`]. A journal whose file is missing is made again under
+    /// [`NEW_FILE`], flushed and renamed into place, the store folder
+    /// flushed; otherwise the record goes after what the file holds and the
+    /// file is flushed. Only then does it return the incident (as it reads
+    /// back), and only then may the caller act. After a write or flush fails
+    /// every later call fails.
+    pub(crate) fn record(&mut self, fs: &dyn Fs, what: What) -> Result<Incident, JournalError> {
         if self.failed {
             return Err(JournalError::Failed);
         }
-        if self.incidents.len() + whats.len() > MAX_RECORDS {
+        if self.incidents.len() >= MAX_RECORDS {
             return Err(JournalError::Full);
         }
-        let mut incidents = Vec::with_capacity(whats.len());
-        let mut bytes = Vec::new();
-        let mut number = self.next;
-        for what in whats {
-            if number >= self.limit {
-                return Err(JournalError::NumbersSpent);
-            }
-            let incident = Incident {
-                number,
-                start_count: self.start_count,
-                what,
-            };
-            let encoded = encode_record(&incident)?;
-            // As it reads back: a plan's runs say entries only at their ends.
-            let Ok(Decoded::Record(read, _)) = decode_record(&encoded) else {
-                return Err(JournalError::Refused("a record does not read back"));
-            };
-            bytes.extend_from_slice(&encoded);
-            incidents.push(read);
-            number += 1;
+        if self.next >= self.limit {
+            return Err(JournalError::NumbersSpent);
         }
+        let incident = Incident {
+            number: self.next,
+            start_count: self.start_count,
+            what,
+        };
+        let bytes = encode_record(&incident)?;
+        // As it reads back (a text cut to its bound).
+        let Ok(Decoded::Record(incident, _)) = decode_record(&bytes) else {
+            return Err(JournalError::Refused("a record does not read back"));
+        };
         let made = self.file.is_none();
         let end = if made { 0 } else { self.end };
         if end + bytes.len() as u64 > MAX_FILE {
@@ -663,62 +866,41 @@ impl Journal {
             return Err(e.into());
         }
         self.end = end + bytes.len() as u64;
-        self.next = number;
-        self.incidents.extend(incidents.iter().cloned());
-        Ok(incidents)
+        self.next += 1;
+        self.incidents.push(incident.clone());
+        Ok(incident)
     }
 
-    /// Acknowledge every record numbered up to `through`, the last record
-    /// the caller was shown, and the places of the journal the read it was
-    /// shown found (`shown`: those that do not check, those the device
-    /// failed to read, a file too long to read), whose incidents cannot be
-    /// known. Refused, with nothing written, unless the journal read again
-    /// now holds a record numbered `through` and finds exactly those places.
-    /// Then it is written again holding every record after `through`, after
-    /// a base record that carries the next number: under [`NEW_FILE`],
-    /// flushed, renamed over [`FILE`], the store folder flushed. A crash
-    /// leaves the journal as it was or as it is now. Returns how many
-    /// records were acknowledged.
-    pub fn acknowledge(
+    /// Acknowledge everything a read showed (`shown`, [`look`]): the journal
+    /// is read again, and the call is refused with nothing written unless
+    /// that read shows the same (an append, a place that starts or stops
+    /// reading, or bytes that change since refuse it). Then the journal is
+    /// replaced by one holding only a base record carrying the next number:
+    /// under [`NEW_FILE`], flushed, renamed over [`FILE`], the store folder
+    /// flushed. A crash leaves the journal as it was or as it is now.
+    /// Returns how many records were acknowledged.
+    pub(crate) fn acknowledge(
         &mut self,
         fs: &dyn Fs,
-        through: u64,
-        shown: &Found,
+        shown: &Shown,
     ) -> Result<usize, JournalError> {
         if self.failed {
             return Err(JournalError::Failed);
         }
         let now = read(fs)?;
-        if !now.incidents.iter().any(|i| i.number == through) {
-            return Err(JournalError::Refused(
-                "the journal holds no record of that number: look at it again",
-            ));
+        if now.shown != *shown {
+            return Err(CHANGED);
         }
-        if !now.found.same_places(shown) {
-            return Err(JournalError::Refused(
-                "the journal reads differently from what was shown: look at it again",
-            ));
-        }
-        let keep: Vec<Incident> = now
-            .incidents
-            .iter()
-            .filter(|i| i.number > through)
-            .cloned()
-            .collect();
-        let acknowledged = now.incidents.len() - keep.len();
-        let next = now.next.max(self.next);
-        let mut bytes = base_record(next, self.start_count);
-        for incident in &keep {
-            bytes.extend_from_slice(&encode_record(incident)?);
-        }
+        let next = now.next().max(self.next);
+        let bytes = base_record(next, self.start_count);
         match replace(fs, &bytes) {
             Ok(file) => {
                 self.file = Some(file);
-                self.incidents = keep;
+                self.incidents.clear();
                 self.found = Found::default();
                 self.end = bytes.len() as u64;
                 self.next = next;
-                Ok(acknowledged)
+                Ok(now.incidents.len())
             }
             Err(e) => {
                 self.failed = true;
@@ -789,7 +971,8 @@ fn read_exact(file: &dyn File, offset: u64, buf: &mut [u8]) -> sys::Result<usize
 /// What a scan of the journal's bytes found.
 struct Scan {
     incidents: Vec<Incident>,
-    next: u64,
+    floor: u64,
+    skip: u64,
     damaged: Vec<u64>,
     last_record: Option<u64>,
     /// A record that checks, base or incident, was found.
@@ -797,12 +980,11 @@ struct Scan {
 }
 
 /// Every record that checks, in order, wherever it begins; places that are
-/// not zero and begin none are damaged. The next number is one past the
-/// last record's, or the base record's (which is the next number itself),
-/// and past one more for each damaged place, and each place the device
+/// not zero and begin none are damaged. The numbers the records allow are
+/// none below one past the last record's, or the base record's next number,
+/// and one more skipped for each damaged place, and each place the device
 /// failed to read (`unreadable`, read as zeros), after the last record
-/// (each could have begun one): a number is never used twice, though some
-/// are skipped.
+/// (each could have begun one).
 fn scan(bytes: &[u8], unreadable: &[(u64, u64)]) -> Result<Scan, JournalError> {
     let mut incidents: Vec<Incident> = Vec::new();
     let mut base = 1u64;
@@ -842,20 +1024,20 @@ fn scan(bytes: &[u8], unreadable: &[(u64, u64)]) -> Result<Scan, JournalError> {
         }
     }
     let after = |at: u64| last_record.is_none_or(|last| at > last);
-    let after_last = damaged.iter().filter(|&&at| after(at)).count() as u64
+    let skip = damaged.iter().filter(|&&at| after(at)).count() as u64
         + unreadable
             .iter()
             .filter(|(at, _)| after(*at))
             .map(|(_, len)| len.div_ceil(ALIGN))
             .sum::<u64>();
-    let next = incidents
+    let floor = incidents
         .last()
         .map_or(1, |i| i.number.saturating_add(1))
-        .max(base)
-        .saturating_add(after_last);
+        .max(base);
     Ok(Scan {
         incidents,
-        next,
+        floor,
+        skip,
         damaged,
         last_record,
         any,
@@ -868,8 +1050,8 @@ enum Decoded {
     Newer(u16),
 }
 
-/// The record at the start of `bytes`, with the bytes its hash covers and
-/// the hash; `Err` when there is none that checks there.
+/// The record at the start of `bytes`, and the bytes it takes before its
+/// padding; `Err` when there is none that checks there.
 fn decode_record(bytes: &[u8]) -> Result<Decoded, ()> {
     if bytes.len() < HEADER + HASH || bytes[..8] != MAGIC {
         return Err(());
@@ -907,24 +1089,20 @@ fn decode_record(bytes: &[u8]) -> Result<Decoded, ()> {
             });
         }
         CHECKPOINTS => decode_checkpoints(&mut payload),
-        LOG_DAMAGE => decode_plan(&mut payload).map(|p| What::LogDamage(Box::new(p))),
+        LOG_DAMAGE => (|| {
+            let plan = decode_plan(&mut payload)?;
+            Some(What::LogDamage {
+                plan: Box::new(plan),
+                last_batch_after: payload.opt(In::u64)?,
+            })
+        })(),
         UNREADABLE_END => (|| {
             Some(What::UnreadableEnd {
                 last: payload.position()?,
                 end: payload.unreadable_end()?,
             })
         })(),
-        LAST_BATCH => (|| {
-            Some(What::LastBatch {
-                marker: Marker {
-                    index: payload.u64()?,
-                    hash: payload.hash()?,
-                    committed: payload.u64()?,
-                },
-                cut: payload.opt(|p| p.cut())?,
-                unreadable_end: payload.opt(|p| p.unreadable_end())?,
-            })
-        })(),
+        LAST_BATCH => payload.u64().map(|after| What::LastBatch { after }),
         JOURNAL_LOST => Some(What::JournalLost),
         _ => None,
     }
@@ -986,8 +1164,12 @@ fn encode_record(incident: &Incident) -> Result<Vec<u8>, JournalError> {
             out.bytes(digest);
             CHECKPOINTS
         }
-        What::LogDamage(plan) => {
+        What::LogDamage {
+            plan,
+            last_batch_after,
+        } => {
             out.plan(plan)?;
+            out.opt_u64(*last_batch_after);
             LOG_DAMAGE
         }
         What::UnreadableEnd { last, end } => {
@@ -995,16 +1177,8 @@ fn encode_record(incident: &Incident) -> Result<Vec<u8>, JournalError> {
             out.unreadable_end(end);
             UNREADABLE_END
         }
-        What::LastBatch {
-            marker,
-            cut,
-            unreadable_end,
-        } => {
-            out.u64(marker.index);
-            out.bytes(&marker.hash);
-            out.u64(marker.committed);
-            out.opt(cut.as_ref(), Out::cut);
-            out.opt(unreadable_end.as_ref(), Out::unreadable_end);
+        What::LastBatch { after } => {
+            out.u64(*after);
             LAST_BATCH
         }
         What::JournalLost => JOURNAL_LOST,
@@ -1044,24 +1218,9 @@ fn decode_checkpoints(p: &mut In) -> Option<What> {
     })
 }
 
-/// Whether segment `b`, after `a` in a plan, joins `a`'s row: the same
-/// fate, and nothing of their own lost. A row keeps the first entry of its
-/// first segment and the last of its last: kept, lengthened and missing
-/// segments give their run's entries; segments set aside keep their own
-/// (where each went, and what it holds), so they join a row only where
-/// neither says one.
-fn one_row(a: &FileFate, b: &FileFate) -> bool {
-    match (&a.fate, &b.fate) {
-        (Fate::Kept, Fate::Kept) | (Fate::Missing, Fate::Missing) => true,
-        (Fate::Lengthened { size: x }, Fate::Lengthened { size: y }) => x == y,
-        (Fate::SetAside { reason: x }, Fate::SetAside { reason: y }) => {
-            x == y && a.last.is_none() && b.first.is_none()
-        }
-        _ => false,
-    }
-}
-
-fn decode_plan(p: &mut In) -> Option<DamagePlan> {
+/// A plan's record, its rows as rows: what it decodes is bounded by the
+/// bytes it takes ([`DECODED_PER_BYTE`]).
+fn decode_plan(p: &mut In) -> Option<PlanRecord> {
     let start = p.position()?;
     let kept = p.position()?;
     let marker = p.u64()?;
@@ -1070,15 +1229,15 @@ fn decode_plan(p: &mut In) -> Option<DamagePlan> {
     let listed_before = p.segments()?;
     let listed = p.segments()?;
     let opens_at = p.position()?;
-    let rows = p.u32()? as usize;
-    // Each row takes at least its number, count, fate and two flags.
-    if rows > p.left() / 15 {
+    let count = p.u32()? as usize;
+    if count > p.left() / MIN_ROW {
         return None;
     }
-    let mut files: Vec<FileFate> = Vec::new();
-    for _ in 0..rows {
+    let mut rows = Vec::with_capacity(count);
+    let mut files = 0u64;
+    for _ in 0..count {
         let number = p.u64()?;
-        let count = p.u32()? as usize;
+        let count = p.u32()?;
         let fate = match p.u8()? {
             0 => Fate::Kept,
             1 => Fate::Lengthened { size: p.u64()? },
@@ -1091,20 +1250,21 @@ fn decode_plan(p: &mut In) -> Option<DamagePlan> {
         };
         let first = p.opt(In::u64)?;
         let last = p.opt(In::u64)?;
+        files += u64::from(count);
         if count == 0
-            || files.len() + count > MAX_FILES
+            || files > MAX_FILES as u64
+            || number.checked_add(u64::from(count)).is_none()
             || (matches!(fate, Fate::MovedEarlier { .. }) && count != 1)
         {
             return None;
         }
-        for i in 0..count {
-            files.push(FileFate {
-                number: number.checked_add(i as u64)?,
-                first: if i == 0 { first } else { None },
-                last: if i + 1 == count { last } else { None },
-                fate: fate.clone(),
-            });
-        }
+        rows.push(Row {
+            number,
+            count,
+            fate,
+            first,
+            last,
+        });
     }
     let tail_copied = p.opt(In::u64)?;
     let before_start = p.opt(|p| {
@@ -1116,7 +1276,7 @@ fn decode_plan(p: &mut In) -> Option<DamagePlan> {
         })
     })?;
     let prefix = p.opt(In::text)?;
-    Some(DamagePlan {
+    Some(PlanRecord {
         start,
         kept,
         marker,
@@ -1125,7 +1285,7 @@ fn decode_plan(p: &mut In) -> Option<DamagePlan> {
         listed_before,
         listed,
         opens_at,
-        files,
+        rows,
         tail_copied,
         before_start,
         prefix,
@@ -1186,18 +1346,6 @@ impl Out {
         self.u64(e.index);
     }
 
-    fn cut(&mut self, c: &Cut) {
-        self.u64(c.index);
-        self.u64(c.segment);
-        self.u64(c.offset);
-        self.u64(c.dropped);
-        self.u8(match c.why {
-            CutWhy::NotWhole => 0,
-            CutWhy::OlderCut => 1,
-            CutWhy::Segments => 2,
-        });
-    }
-
     fn segments(&mut self, s: &Segments) {
         self.u64(s.first);
         self.u64(s.count);
@@ -1232,10 +1380,11 @@ impl Out {
         self.checkpoint(&g.onto);
     }
 
-    fn plan(&mut self, plan: &DamagePlan) -> Result<(), JournalError> {
-        if plan.files.len() > MAX_FILES {
+    fn plan(&mut self, plan: &PlanRecord) -> Result<(), JournalError> {
+        let files: u64 = plan.rows.iter().map(|r| u64::from(r.count)).sum();
+        if files > MAX_FILES as u64 {
             return Err(JournalError::TooLarge {
-                len: plan.files.len(),
+                len: files as usize,
             });
         }
         self.position(&plan.start);
@@ -1246,27 +1395,11 @@ impl Out {
         self.segments(&plan.listed_before);
         self.segments(&plan.listed);
         self.position(&plan.opens_at);
-        // Runs of consecutive segments with one fate, a row each.
-        let files = &plan.files;
-        let mut rows = Vec::new();
-        let mut i = 0;
-        while i < files.len() {
-            let mut j = i;
-            while j + 1 < files.len()
-                && files[j + 1].number == files[j].number + 1
-                && one_row(&files[j], &files[j + 1])
-            {
-                j += 1;
-            }
-            rows.push((i, j));
-            i = j + 1;
-        }
-        self.u32(rows.len() as u32);
-        for (i, j) in rows {
-            let file = &files[i];
-            self.u64(file.number);
-            self.u32((j - i + 1) as u32);
-            match &file.fate {
+        self.u32(plan.rows.len() as u32);
+        for row in &plan.rows {
+            self.u64(row.number);
+            self.u32(row.count);
+            match &row.fate {
                 Fate::Kept => self.u8(0),
                 Fate::Lengthened { size } => {
                     self.u8(1);
@@ -1285,8 +1418,8 @@ impl Out {
                     self.text(to);
                 }
             }
-            self.opt_u64(file.first);
-            self.opt_u64(files[j].last);
+            self.opt_u64(row.first);
+            self.opt_u64(row.last);
             if self.0.len() > MAX_PAYLOAD {
                 return Err(JournalError::TooLarge { len: self.0.len() });
             }
@@ -1386,21 +1519,6 @@ impl<'a> In<'a> {
             segment: self.u64()?,
             offset: self.u64()?,
             index: self.u64()?,
-        })
-    }
-
-    fn cut(&mut self) -> Option<Cut> {
-        Some(Cut {
-            index: self.u64()?,
-            segment: self.u64()?,
-            offset: self.u64()?,
-            dropped: self.u64()?,
-            why: match self.u8()? {
-                0 => CutWhy::NotWhole,
-                1 => CutWhy::OlderCut,
-                2 => CutWhy::Segments,
-                _ => return None,
-            },
         })
     }
 

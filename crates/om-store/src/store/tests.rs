@@ -923,9 +923,12 @@ impl Run {
             .new_incidents
             .iter()
             .filter_map(|i| match &i.what {
-                What::LogDamage(plan) => Some(plan.kept.index),
+                What::LogDamage {
+                    plan,
+                    last_batch_after,
+                } => Some(plan.kept.index.min(last_batch_after.unwrap_or(u64::MAX))),
                 What::UnreadableEnd { last, .. } => Some(last.index),
-                What::LastBatch { marker, .. } => Some(marker.index),
+                What::LastBatch { after } => Some(*after),
                 _ => None,
             })
             .min();
@@ -1127,7 +1130,7 @@ impl Run {
             let prefixes: Vec<String> = incidents
                 .iter()
                 .filter_map(|i| match &i.what {
-                    What::LogDamage(plan) => plan.prefix.clone(),
+                    What::LogDamage { plan, .. } => plan.prefix.clone(),
                     _ => None,
                 })
                 .collect();
@@ -1162,7 +1165,7 @@ impl Run {
                     ..
                 } => "page file damage given up by the store",
                 What::Checkpoints { .. } => "page file reads given up by the administrator",
-                What::LogDamage(_) => "log damage accepted",
+                What::LogDamage { .. } => "log damage accepted",
                 What::UnreadableEnd { .. } => "unreadable ends given up",
                 What::LastBatch { .. } => "last batches possibly lost",
                 What::JournalLost => "journals lost",
@@ -1203,29 +1206,26 @@ impl Run {
         let Some(store) = self.store.as_mut() else {
             return;
         };
-        // What a fresh read shows, acknowledged as shown.
-        let Ok((shown, found)) = store.incidents() else {
+        // What a fresh read shows, acknowledged as shown: all of it.
+        let Ok(reading) = store.incidents() else {
             return;
         };
-        let Some(last) = shown.last().map(|i| i.number) else {
+        if reading.incidents.is_empty() && reading.found.is_clean() {
             return;
-        };
-        let done = store.acknowledge(last, &found);
-        self.note(format!("acknowledge through {last}: {done:?}"));
+        }
+        let done = store.acknowledge(&reading.shown);
+        self.note(format!(
+            "acknowledge {} incidents: {done:?}",
+            reading.incidents.len()
+        ));
         if matches!(done, Err(WriteError::Rule(_))) {
             // Refused, with nothing written: the journal reads otherwise.
             return;
         }
         // Done, or (a failed call) perhaps done: its rename may have landed
-        // before the failure. Either way those incidents may be gone, and
-        // so may any the read did not show, in the places it named.
-        let places = !found.same_places(&incident::Found::default());
-        let acked: Vec<u64> = self
-            .incidents
-            .keys()
-            .copied()
-            .filter(|&n| n <= last || (places && !shown.iter().any(|i| i.number == n)))
-            .collect();
+        // before the failure. Either way every incident may be gone: those
+        // the read showed, and any hidden in the places it found.
+        let acked: Vec<u64> = self.incidents.keys().copied().collect();
         for number in acked {
             let incident = self.incidents.remove(&number).expect("listed");
             self.acknowledged.push(incident);
@@ -1423,12 +1423,11 @@ impl Run {
                 // administrator acknowledges them.
                 Err(OpenError::Journal(incident::JournalError::Full)) => {
                     // What a fresh read shows, acknowledged as shown.
-                    let Ok((shown, found)) = Store::read_incidents(&self.fs) else {
+                    let Ok(reading) = Store::read_incidents(&self.fs) else {
                         continue;
                     };
-                    let through = shown.last().map_or(0, |i| i.number);
                     // Done, or perhaps done when it failed.
-                    match Store::acknowledge_incidents(&self.fs, through, &found) {
+                    match Store::acknowledge_incidents(&self.fs, &reading.shown) {
                         Ok(_) => self.reached.acknowledged += 1,
                         Err(OpenError::Journal(incident::JournalError::Refused(_))) => continue,
                         Err(_) => {}
@@ -2829,7 +2828,11 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     // so.
     let recorded = failed.as_ref().err().map_or(&[][..], OpenError::recorded);
     assert!(
-        matches!(&recorded, [Incident { what: What::LogDamage(p), .. }] if **p == plan),
+        matches!(
+            &recorded,
+            [Incident { what: What::LogDamage { plan: p, .. }, .. }]
+                if **p == PlanRecord::of(&plan).unwrap()
+        ),
         "{failed:?}"
     );
     let Some(OpenError::AfterGivingUp(after)) = failed.as_ref().err().map(peel) else {
@@ -2875,7 +2878,7 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
         .incidents
         .iter()
         .filter_map(|i| match &i.what {
-            What::LogDamage(p) => Some(p.kept.index),
+            What::LogDamage { plan, .. } => Some(plan.kept.index),
             _ => None,
         })
         .collect();
@@ -3060,6 +3063,23 @@ impl Shaped {
             .find(|(_, (i, _, _))| *i == index)
             .expect("an entry of the shape")
             .0
+    }
+
+    /// Damage the newest copy of `state`: the next open passes it over.
+    fn damage_newest_state(&self) {
+        let state = self.bytes(crate::state::FILE).unwrap();
+        let number = |slot: usize| {
+            let at = slot * crate::state::SLOT + 16;
+            u64::from_le_bytes(state[at..at + 8].try_into().unwrap())
+        };
+        let newest = usize::from(number(1) > number(0));
+        self.sim
+            .damage(
+                crate::state::FILE,
+                (newest * crate::state::SLOT + 40) as u64,
+                4,
+            )
+            .unwrap();
     }
 
     fn remove(&self, at: usize) {
@@ -3621,13 +3641,9 @@ fn a_damaged_newest_checkpoint_is_given_up_by_the_store_with_its_incident() {
     let (mut store, opened) = Store::open(fs.clone(), CONFIG).unwrap();
     assert_eq!(opened.incidents, std::slice::from_ref(incident));
     // Acknowledged as a fresh read shows it.
-    let (shown, found) = store.incidents().unwrap();
-    assert_eq!(shown, std::slice::from_ref(incident));
-    assert!(matches!(
-        store.acknowledge(incident.number + 1, &found),
-        Err(WriteError::Rule(_))
-    ));
-    assert_eq!(store.acknowledge(incident.number, &found).unwrap(), 1);
+    let reading = store.incidents().unwrap();
+    assert_eq!(reading.incidents, std::slice::from_ref(incident));
+    assert_eq!(store.acknowledge(&reading.shown).unwrap(), 1);
     drop(store);
     sim.restart();
     let (_, opened) = Store::open(fs, CONFIG).unwrap();
@@ -3657,7 +3673,7 @@ fn a_read_that_keeps_failing_is_given_up_only_by_the_explicit_call() {
         approval = p.give_up().cloned();
     }
     sim.restart();
-    let (recorded, _) = Store::read_incidents(&fs).unwrap();
+    let recorded = Store::read_incidents(&fs).unwrap().incidents;
     assert!(recorded.is_empty(), "nothing given up, nothing recorded");
     sim.restart();
     let (store, opened) =
@@ -3777,11 +3793,10 @@ fn a_number_listed_again_is_not_taken_for_one_set_aside_earlier() {
     fs.remove(&format!("{}/{after:016x}", log::FOLDER)).unwrap();
     fs.flush_folder(log::FOLDER).unwrap();
     s.sim.restart();
-    let (incidents, _) = Store::read_incidents(&s.fs()).unwrap();
+    let incidents = Store::read_incidents(&s.fs()).unwrap().incidents;
     let recorded = incidents.iter().any(|i| match &i.what {
-        What::LogDamage(p) => p
-            .files
-            .iter()
+        What::LogDamage { plan, .. } => plan
+            .files()
             .any(|f| f.number == after && matches!(f.fate, log::Fate::SetAside { .. })),
         _ => false,
     });
@@ -3809,21 +3824,35 @@ struct GivingUp {
     /// The incident the path records: every open after a crash reports
     /// one of it.
     kind: fn(&What) -> bool,
-    /// The files that, once the call has read the journal, it changes
-    /// nothing of before its first record is durable: none for the
-    /// unreadable end, given up after an ordinary open (section 6.12); the
-    /// log and `state` where the page file's ordinary open comes first.
-    guarded: Option<fn(&str) -> bool>,
+    /// The changes (call, path) the call makes only once a record is
+    /// durable, from its open of the journal on, and never while a record
+    /// is being written: the log, `state` and the page file; the log and
+    /// `state` where the page file's ordinary open comes first; for the
+    /// unreadable end, given up after an ordinary open (section 6.12), the
+    /// fence's new segment file.
+    guarded: fn(&str, &str) -> bool,
 }
 
-/// The log, `state` and the page file.
-fn all_three(path: &str) -> bool {
-    path == pagefile::FILE || log_and_state(path)
+/// A change of the log, `state` or the page file.
+fn all_three(op: &str, path: &str) -> bool {
+    log_and_state(op, path) || (is_change(op) && path == pagefile::FILE)
 }
 
-/// The log and `state`.
-fn log_and_state(path: &str) -> bool {
-    path == crate::state::FILE || path.starts_with(log::FOLDER)
+/// A change of the log or `state`.
+fn log_and_state(op: &str, path: &str) -> bool {
+    is_change(op) && (path == crate::state::FILE || path.starts_with(log::FOLDER))
+}
+
+/// A segment file made: the fence after an unreadable end.
+fn fence(op: &str, path: &str) -> bool {
+    op == "create"
+        && path
+            .strip_prefix(&format!("{}/", log::FOLDER))
+            .is_some_and(|name| name.len() == 16 && name.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn is_change(op: &str) -> bool {
+    matches!(op, "write" | "create" | "remove")
 }
 
 /// A call that opens the store.
@@ -3862,28 +3891,74 @@ impl GivingUp {
     }
 }
 
-/// Whether, after the first open of the journal in `ops`, nothing
-/// `guarded` was changed before the journal's first record was durable:
-/// its file flushed, or, for a journal made again, renamed into place and
-/// the folder flushed.
+/// Whether, from the first open of the journal in `ops`, nothing
+/// `guarded` was changed before a record was durable, nor while one was
+/// being written. A record appended is durable once the journal's file is
+/// flushed; a journal made, once `incidents.new` was flushed after its
+/// write, renamed to `incidents`, and the store folder flushed.
 fn recorded_before_acting(
     ops: &[(&'static str, String)],
-    guarded: fn(&str) -> bool,
+    guarded: fn(&str, &str) -> bool,
 ) -> Result<(), String> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Record {
+        /// None being written.
+        Durable,
+        /// Written after what the journal holds, not flushed yet.
+        Appended,
+        /// Written under the new name; flushed or not; renamed or not.
+        Made { flushed: bool, renamed: bool },
+    }
     let Some(read) = ops
         .iter()
         .position(|(op, path)| *op == "open" && path == incident::FILE)
     else {
         return Ok(());
     };
-    let mut renamed = false;
+    let mut any = false;
+    let mut record = Record::Durable;
     for (op, path) in &ops[read..] {
         match (*op, path.as_str()) {
-            ("flush", incident::FILE) => return Ok(()),
-            ("create", incident::FILE) => renamed = true,
-            ("flush_folder", "") if renamed => return Ok(()),
-            ("write" | "create" | "remove", path) if guarded(path) => {
-                return Err(format!("{op} {path} before the record was durable"))
+            ("write", incident::FILE) => record = Record::Appended,
+            ("flush", incident::FILE) if record == Record::Appended => {
+                record = Record::Durable;
+                any = true;
+            }
+            ("write", incident::NEW_FILE) => {
+                record = Record::Made {
+                    flushed: false,
+                    renamed: false,
+                }
+            }
+            ("flush", incident::NEW_FILE) => {
+                if let Record::Made { renamed, .. } = record {
+                    record = Record::Made {
+                        flushed: true,
+                        renamed,
+                    };
+                }
+            }
+            ("create", incident::FILE) => {
+                if let Record::Made { flushed, .. } = record {
+                    record = Record::Made {
+                        flushed,
+                        renamed: true,
+                    };
+                }
+            }
+            ("flush_folder", "") => {
+                if record
+                    == (Record::Made {
+                        flushed: true,
+                        renamed: true,
+                    })
+                {
+                    record = Record::Durable;
+                    any = true;
+                }
+            }
+            (op, path) if guarded(op, path) && (!any || record != Record::Durable) => {
+                return Err(format!("{op} {path} before the record was durable"));
             }
             _ => {}
         }
@@ -3947,7 +4022,7 @@ fn long_every_give_up_names_what_it_gave_up_after_a_crash_at_every_step() {
 
 fn give_ups_crashed_at_every_step(every_fate: bool) {
     type Build = fn() -> GivingUp;
-    let paths: [(&str, Build); 6] = [
+    let paths: [(&str, Build); 7] = [
         ("the page file's damage, by the store", || {
             let (sim, _, meta, number, acked) = with_a_point(72);
             sim.damage(pagefile::FILE, meta_place(meta), 8).unwrap();
@@ -3959,7 +4034,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: acked.index,
                 call: Box::new(|fs| Store::open(fs, CONFIG)),
                 kind: |w| matches!(w, What::Checkpoints { damaged: true, .. }),
-                guarded: Some(all_three),
+                guarded: all_three,
             }
         }),
         ("a read of the page file, by the administrator", || {
@@ -3987,7 +4062,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                         }
                     )
                 },
-                guarded: Some(all_three),
+                guarded: all_three,
             }
         }),
         ("the log's damage, accepted", || {
@@ -4003,8 +4078,8 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 point: None,
                 acked: s.durable.index,
                 call: Box::new(move |fs| Store::accept_damage(fs, SHAPE_CONFIG, &plan)),
-                kind: |w| matches!(w, What::LogDamage(_)),
-                guarded: Some(log_and_state),
+                kind: |w| matches!(w, What::LogDamage { .. }),
+                guarded: log_and_state,
             }
         }),
         ("the log's unreadable end", || {
@@ -4025,26 +4100,14 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(move |fs| Store::give_up_unreadable_end(fs, SHAPE_CONFIG, last)),
                 kind: |w| matches!(w, What::UnreadableEnd { .. }),
-                guarded: None,
+                guarded: fence,
             }
         }),
         ("the last batch after a passed-over copy of state", || {
             let s = Shaped::new();
             // The newest copy of `state` damaged: the marker read is one
             // advance behind; and the batch after it damaged too.
-            let state = s.bytes(crate::state::FILE).unwrap();
-            let number = |slot: usize| {
-                let at = slot * crate::state::SLOT + 16;
-                u64::from_le_bytes(state[at..at + 8].try_into().unwrap())
-            };
-            let newest = usize::from(number(1) > number(0));
-            s.sim
-                .damage(
-                    crate::state::FILE,
-                    (newest * crate::state::SLOT + 40) as u64,
-                    4,
-                )
-                .unwrap();
+            s.damage_newest_state();
             let last = *s.entries.keys().last().unwrap();
             s.damage(last, 100, 4);
             s.sim.restart();
@@ -4056,9 +4119,38 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
                 kind: |w| matches!(w, What::LastBatch { .. }),
-                guarded: Some(log_and_state),
+                guarded: log_and_state,
             }
         }),
+        (
+            "the log's damage accepted after a passed-over copy of state",
+            || {
+                let s = Shaped::new();
+                s.remove(1);
+                s.damage_newest_state();
+                s.sim.restart();
+                let plan = Store::plan_damage(s.fs(), SHAPE_CONFIG).unwrap();
+                s.sim.restart();
+                GivingUp {
+                    image: s.sim.image(),
+                    bad: None,
+                    config: SHAPE_CONFIG,
+                    point: None,
+                    acked: s.durable.index,
+                    call: Box::new(move |fs| Store::accept_damage(fs, SHAPE_CONFIG, &plan)),
+                    kind: |w| {
+                        matches!(
+                            w,
+                            What::LogDamage {
+                                last_batch_after: Some(_),
+                                ..
+                            }
+                        )
+                    },
+                    guarded: log_and_state,
+                }
+            },
+        ),
         ("a lost journal, made again", || {
             let s = Shaped::new();
             s.sim.fs().remove(incident::FILE).unwrap();
@@ -4072,7 +4164,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
                 kind: |w| *w == What::JournalLost,
-                guarded: Some(all_three),
+                guarded: all_three,
             }
         }),
     ];
@@ -4101,14 +4193,27 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 let crashed = (g.call)(fs.clone());
                 assert!(crashed.is_err(), "{name}, step {step}: the crash fired");
                 let case = format!("{name}, step {step}, {fates:?}");
-                if let Some(guarded) = g.guarded {
+                {
                     let ops = ops.lock().unwrap().clone();
-                    if let Err(e) = recorded_before_acting(&ops, guarded) {
+                    if let Err(e) = recorded_before_acting(&ops, g.guarded) {
                         panic!("{case}: {e}: {ops:?}");
                     }
                 }
+                // What the journal holds after the stop, each record the
+                // next open reports as it is, number and all.
+                sim.restart();
+                let before = Store::read_incidents(&fs).unwrap().incidents;
                 let (store, opened) = settle_open(&sim, &fs, g.config);
                 reported += opened.incidents.len();
+                for incident in &before {
+                    assert!(
+                        opened.incidents.contains(incident),
+                        "{case}: incident {} was in the journal after the stop and is not \
+                         reported: {:?}",
+                        incident.number,
+                        opened.incidents
+                    );
+                }
                 assert!(
                     opened.incidents.iter().any(|i| (g.kind)(&i.what)),
                     "{case}: no incident of the path: {:?}",
@@ -4131,9 +4236,12 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 if at < g.acked {
                     missing += 1;
                     let named = opened.incidents.iter().any(|i| match &i.what {
-                        What::LogDamage(plan) => plan.kept.index <= at,
+                        What::LogDamage {
+                            plan,
+                            last_batch_after,
+                        } => plan.kept.index.min(last_batch_after.unwrap_or(u64::MAX)) <= at,
                         What::UnreadableEnd { last, .. } => last.index <= at,
-                        What::LastBatch { marker, .. } => marker.index <= at,
+                        What::LastBatch { after } => *after <= at,
                         _ => false,
                     });
                     assert!(

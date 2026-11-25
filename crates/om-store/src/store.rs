@@ -67,10 +67,14 @@
 //! the page file that keeps failing, given up by the administrator's call
 //! ([`Store::give_up_pages`]); an accepted loss of the log, with where each
 //! file goes; an unreadable end; and the last batch after a copy of
-//! `state` passed over, before its mark is settled. Every open reports the
-//! incidents no administrator has acknowledged ([`Opened::incidents`]); an
-//! open that fails after recording one says so
-//! ([`OpenError::AfterIncidents`]); [`Store::acknowledge`] acknowledges.
+//! `state` passed over, before its mark is settled. One act is one record,
+//! which says what was approved and about to be done. Every open that
+//! succeeds reports the incidents no administrator has acknowledged
+//! ([`Opened::incidents`]); an open that fails after recording one says so
+//! ([`OpenError::AfterIncidents`]); [`Store::incidents`] reads the journal
+//! and [`Store::acknowledge`] acknowledges everything that read showed (or,
+//! with the store closed, [`Store::read_incidents`] and
+//! [`Store::acknowledge_incidents`]).
 //! The store keeps no restore points of its own: those the page file gives
 //! up go with the checkpoint, named by its incident.
 
@@ -82,7 +86,7 @@ use std::sync::Arc;
 
 use crate::apply::{self, Applied, Position, StoreTree, TreeId};
 use crate::entry::{entry_hash, Entry, Payload, PayloadError, ServerId, SessionEvent};
-use crate::incident::{self, Incident, Journal, JournalError, What};
+use crate::incident::{self, Incident, Journal, JournalError, PlanRecord, What};
 use crate::log::{self, CutDone, DamageAccepted, Log, LogError, Recorded, UnreadableEnd};
 use crate::page::{Hash, StoreError, TreeName};
 use crate::pagefile::{
@@ -416,8 +420,8 @@ impl OpenError {
             OpenError::Config(_) => "correct the store's configuration",
             OpenError::AfterGivingUp(failed) => failed.error.remedy(),
             OpenError::Journal(JournalError::Full) => {
-                "acknowledge the incidents (Store::acknowledge_incidents), then open the store \
-                 again"
+                "read the incidents (Store::read_incidents) and acknowledge them \
+                 (Store::acknowledge_incidents), then open the store again"
             }
             OpenError::Journal(JournalError::NewerFormat { .. }) => {
                 "open the store with a server that reads its incident journal"
@@ -555,10 +559,12 @@ pub struct Opened {
     /// when it did.
     pub passed_over_state: Option<SlotFault>,
     /// `state` marked a copy passed over (by this open or an earlier one)
-    /// and the log held no whole batch after the marker: the marker can
-    /// have been one advance behind, and the last batch this server
-    /// confirmed may be lost (section 6.12). This open recorded it as an
-    /// incident ([`incident::What::LastBatch`]) before it settled the mark.
+    /// and the log held no whole batch after the later of the marker and
+    /// the checkpoint's entry: the marker can have been one advance behind,
+    /// and whatever this server confirmed after that entry may be lost
+    /// (section 6.12). This open recorded it as an incident
+    /// ([`incident::What::LastBatch`], or the field of an acceptance's
+    /// [`incident::What::LogDamage`]) before it settled the mark.
     pub last_batch_may_be_lost: bool,
     /// What an explicit call gave up to open the store.
     pub gave_up: Option<GaveUp>,
@@ -573,8 +579,8 @@ pub struct Opened {
     /// past it, which design 6.7 counts on.
     pub fallback_cannot_replay: bool,
     /// Every incident of the journal no administrator has acknowledged,
-    /// those this open recorded among them, in order: what the store gave
-    /// up, each recorded before it was given up
+    /// those this open recorded among them, in order: what the store was
+    /// approved to give up, each recorded before it acted
     /// ([`Store::acknowledge`]).
     pub incidents: Vec<Incident>,
     /// What the read of the journal found besides its records (a missing
@@ -613,11 +619,6 @@ enum How<'a> {
 /// The most approvals an open records and gives the page file in turn,
 /// each one the answer of the call before (the damage changed meanwhile).
 const PAGE_ROUNDS: usize = 8;
-
-/// How many times an open records a possible loss of the last batch and
-/// tries to settle it, when each settling open reads a different loss
-/// ([`Log::open_settling`]).
-const LOSS_ROUNDS: usize = 4;
 
 /// A view of a published version (section 6.6): its entry, and the roots of
 /// its trees, kept by a pin for as long as the view lives. It holds the
@@ -1042,28 +1043,23 @@ impl Store {
     /// store folder's lock (so not while the store is open: then see
     /// [`Store::incidents`]). It needs nothing but the journal: a store whose
     /// log or page file cannot be read says what it gave up.
-    pub fn read_incidents(fs: &Arc<dyn Fs>) -> Result<(Vec<Incident>, incident::Found), OpenError> {
+    pub fn read_incidents(fs: &Arc<dyn Fs>) -> Result<incident::Reading, OpenError> {
         let _lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
-        Journal::look(&**fs).map_err(OpenError::Journal)
+        incident::look(&**fs).map_err(OpenError::Journal)
     }
 
-    /// Acknowledge, for the store in the folder, every incident numbered up
-    /// to `through`, the last one the administrator was shown, and the
-    /// places of the journal the read they were shown found (`shown`)
-    /// ([`Journal::acknowledge`]: refused, with nothing written, unless the
-    /// journal reads so now), with the store folder's lock (so not while the
-    /// store is open: then see [`Store::acknowledge`]). Returns how many
-    /// incidents were acknowledged.
+    /// Acknowledge, for the store in the folder, everything a read showed
+    /// the administrator ([`Store::read_incidents`]): refused, with nothing
+    /// written, unless the journal reads the same now; then it holds only a
+    /// base record carrying the next number (format section 7.5). With the
+    /// store folder's lock, so not while the store is open: then see
+    /// [`Store::acknowledge`]. Returns how many incidents were acknowledged.
     pub fn acknowledge_incidents(
         fs: &Arc<dyn Fs>,
-        through: u64,
-        shown: &incident::Found,
+        shown: &incident::Shown,
     ) -> Result<usize, OpenError> {
         let _lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
-        let mut journal = Journal::open(&**fs, 0).map_err(OpenError::Journal)?;
-        journal
-            .acknowledge(&**fs, through, shown)
-            .map_err(OpenError::Journal)
+        incident::acknowledge_closed(&**fs, shown).map_err(OpenError::Journal)
     }
 
     /// An open's first steps: the configuration checked, the lock and
@@ -1208,23 +1204,24 @@ impl Store {
                 // Why the journal refused, kept typed for the caller.
                 let mut refused: Option<JournalError> = None;
                 let mut record = |plan: &log::DamagePlan| -> Result<(), String> {
-                    // A mark the acceptance does not make up for: the last
-                    // batch may be lost too (section 6.12). Both records
-                    // are one act: written together, or neither.
-                    let made_up = plan.opens_at.index > plan.marker.max(plan.start.index);
-                    let mut whats = Vec::new();
-                    if values.mark.is_some() && !made_up {
-                        whats.push(What::LastBatch {
-                            marker: values.marker,
-                            cut: None,
-                            unreadable_end: None,
-                        });
-                    }
-                    whats.push(What::LogDamage(Box::new(plan.clone())));
-                    match journal.record_all(&*fs, whats) {
-                        Ok(incidents) => {
-                            last_batch_may_be_lost |= incidents.len() > 1;
-                            recorded.extend(incidents);
+                    // A mark the acceptance does not make up for: whatever
+                    // was confirmed after the later of the marker and the
+                    // start may be lost too (section 6.12), a fact of the
+                    // one record.
+                    let firm = plan.marker.max(plan.start.index);
+                    let last_batch_after =
+                        (values.mark.is_some() && plan.opens_at.index <= firm).then_some(firm);
+                    let recording = PlanRecord::of(plan).and_then(|plan| {
+                        let what = What::LogDamage {
+                            plan: Box::new(plan),
+                            last_batch_after,
+                        };
+                        journal.record(&*fs, what)
+                    });
+                    match recording {
+                        Ok(incident) => {
+                            last_batch_may_be_lost |= last_batch_after.is_some();
+                            recorded.push(incident);
                             Ok(())
                         }
                         Err(e) => {
@@ -1267,51 +1264,18 @@ impl Store {
                 let (log, opened) = match Log::open(fs.clone(), state, config.log, start) {
                     Ok(opened) => opened,
                     Err(f) => match f.error {
-                        // `state`'s mark, no whole batch after the marker:
-                        // the possible loss recorded, then the open goes on
-                        // and settles the mark.
-                        // A settling open that reads another loss returns
-                        // it, having written nothing: recorded in turn.
-                        LogError::LossNotRecorded(loss) => {
-                            let (mut loss, mut state) = (loss, f.state);
-                            let mut rounds = 0;
-                            loop {
-                                rounds += 1;
-                                if rounds > LOSS_ROUNDS {
-                                    return Err(OpenError::Refused(
-                                        "the log read differently at every attempt to record \
-                                         what its open gives up",
-                                    ));
-                                }
-                                let incident = journal
-                                    .record(
-                                        &*fs,
-                                        What::LastBatch {
-                                            marker: loss.marker,
-                                            cut: loss.cut,
-                                            unreadable_end: loss.unreadable_end,
-                                        },
-                                    )
-                                    .map_err(OpenError::Journal)?;
-                                recorded.push(incident);
-                                last_batch_may_be_lost = true;
-                                match Log::open_settling(
-                                    fs.clone(),
-                                    state,
-                                    config.log,
-                                    start,
-                                    &loss,
-                                ) {
-                                    Ok(opened) => break opened,
-                                    Err(f) => match f.error {
-                                        LogError::LossNotRecorded(found) => {
-                                            loss = found;
-                                            state = f.state;
-                                        }
-                                        e => return Err(failed(e)),
-                                    },
-                                }
-                            }
+                        // `state`'s mark, no whole batch after the later of
+                        // the marker and the start: the possible loss
+                        // recorded, once, and the open goes on whatever it
+                        // finds after that entry, settling the mark.
+                        LogError::LossNotRecorded { after } => {
+                            let incident = journal
+                                .record(&*fs, What::LastBatch { after })
+                                .map_err(OpenError::Journal)?;
+                            recorded.push(incident);
+                            last_batch_may_be_lost = true;
+                            Log::open_settling(fs.clone(), f.state, config.log, start)
+                                .map_err(|f| failed(f.error))?
                         }
                         e => return Err(failed(e)),
                     },
@@ -1568,27 +1532,23 @@ impl Store {
     }
 
     /// The incidents no administrator has acknowledged, in order (what the
-    /// store gave up, each recorded before it did), and what the read found
-    /// besides: the journal read again now, to show an administrator before
-    /// [`Store::acknowledge`].
-    pub fn incidents(&self) -> Result<(Vec<Incident>, incident::Found), WriteError> {
-        Journal::look(&*self.fs)
+    /// store was approved to give up, each recorded before it acted), what
+    /// the read found besides, and what it showed: the journal read again
+    /// now, to show an administrator before [`Store::acknowledge`].
+    pub fn incidents(&self) -> Result<incident::Reading, WriteError> {
+        incident::look(&*self.fs)
             .map_err(|e| WriteError::Failed(format!("reading the incident journal: {e}")))
     }
 
-    /// Acknowledge every incident numbered up to `through`, the last one
-    /// shown, and the places of the journal the read shown found (`shown`:
-    /// those that do not check, whose incidents cannot be known): no open
-    /// reports them again ([`Journal::acknowledge`]). Refused, with nothing
-    /// written, unless the journal reads so now. Returns how many incidents
-    /// were acknowledged. A failed write or flush stops the store.
-    pub fn acknowledge(
-        &mut self,
-        through: u64,
-        shown: &incident::Found,
-    ) -> Result<usize, WriteError> {
+    /// Acknowledge everything a read showed ([`Store::incidents`]): refused,
+    /// with nothing written, unless the journal reads the same now (an
+    /// incident recorded since, or a place that changed, refuses it); then
+    /// the journal holds only a base record carrying the next number, and no
+    /// open reports those incidents again. Returns how many incidents were
+    /// acknowledged. A failed write or flush stops the store.
+    pub fn acknowledge(&mut self, shown: &incident::Shown) -> Result<usize, WriteError> {
         self.usable()?;
-        match self.journal.acknowledge(&*self.fs, through, shown) {
+        match self.journal.acknowledge(&*self.fs, shown) {
             Ok(n) => Ok(n),
             Err(JournalError::Refused(why)) => Err(WriteError::Rule(why)),
             Err(e) if self.journal.is_failed() => {
