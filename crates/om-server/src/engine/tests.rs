@@ -4324,3 +4324,21 @@ fn a_member_key_draft_that_writes_nothing_leaves_the_file_as_it_was() {
     assert_eq!(file.read_store().saves(), saves, "not saved");
     assert_eq!(std::fs::read(&disk.0).unwrap(), bytes, "the file as it was");
 }
+
+/// The review of #751 (P2): the test view reads the accounts, password
+/// verifiers and all, only for a reader of them
+/// (`Reading::serve_with_accounts`). Another reader that read them would
+/// get none through it, so its two answers differ and the check fails; a
+/// reader of them gets them through both views, the same.
+#[test]
+fn the_test_view_reads_the_accounts_only_for_a_reader_of_them() {
+    let (_disk, file) = host("engine-accounts-asked", &fixture::tree(&[], true));
+    let engine = engine();
+    engine.check_reads();
+    let has_accounts = |read: Read<'_>| read.derived.accounts().is_ok();
+    assert!(engine.read(&file).serve_with_accounts(has_accounts));
+    let unasked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.read(&file).serve(has_accounts)
+    }));
+    assert!(unasked.is_err(), "the test view read the accounts unasked");
+}
