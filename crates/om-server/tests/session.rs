@@ -259,16 +259,14 @@ fn holds_uploads_only_for_requests_that_may_run() {
             flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
             txn: 1,
         };
+        // Their replies have no status: each fails, rather than answer
+        // that it was done with nothing stored.
         for txn in [
             write::build_upload(1, file_id, &records(write::UPLOAD_FLAGS)),
             write::build_upload_to_host(1, file_id, &records(write::UPLOAD_NODE)),
             write::build_commit(1, file_id, &commit),
         ] {
-            let reply = session.perform(&txn).unwrap();
-            assert_eq!(
-                write::parse_upload_reply(&reply).unwrap(),
-                Resume::no_stream()
-            );
+            assert!(session.perform(&txn).is_err());
         }
         let binary = UploadBinary {
             payload: payload.clone(),

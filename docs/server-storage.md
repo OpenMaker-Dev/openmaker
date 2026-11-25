@@ -1337,38 +1337,56 @@ either leaves it (a commit's staged records stay staged: the engine checks
 before the commit takes any, `writes::commit`). A request whose reply has
 no status to carry the refusal fails with the system exception a write
 whose save failed gets (MARSHAL, COMPLETED_NO): op13 and op14 into the
-file, whatever the part; op70; op73. An upload into a session's own
-temporary area (op14, or op13 with the flag) changes no file: it is
-refused with that exception on a file already read-only at admission, to
-save the work, and staged when the file becomes read-only after, as its
-reply says; the op70 that would commit it is where the file would change,
-and is refused. The engine refuses an op13 upload on a read-only file with
-its own error (`Reply::UploadToCatalog(Err(..))`), not as an upload that
-had nothing to change, and so it refuses one the file cannot hold where it
-is sent (what the file writer cannot write there, or a change to a value
-the upload does not name), on any file. The others answer their own
-refusal: op71, op72 and op88 status 200 (access denied), op87 a failed
-count, op86 with schema instructions or a key it reserves the error slot
-with 200 (at admission, when the program runs, and when the engine refuses
-its draft; a key-only program whose file becomes read-only after it issued
-its key and before its draft is submitted answers 800 when the key stayed
-waiting, which stays queued, or the program's own answer when another
-writer had saved it before), op240's edits a save error (810, or 800 when
-the edit was made and taken back) and its Save status 3, a server script's
-step that would open, create or delete a record 3 where the script sees
-it, and a script whose last record is not stored when it ends that
-commit's error as the run's result, never 0 (op30's reply when it waits;
-one that does not wait answers only that the script started); on the
-desktop, Change Password an unwritten error and a window's saved found set
-is not kept, which only the log says. A later part of an upload refused so
-(op13, op14, op70, op88) ends the upload it belongs to, the parts held and
-their charge given back. These answers are OpenMaker's choice; what
-FileMaker Server answers for a file it serves read-only, and what FileMaker
-Pro does with each, is unmeasured
-([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)). Two
-refusals that are the session's, not the file's, still answer the
-completion reply: an op70 whose record the account's privilege set refuses,
-and the cases of [#801](https://github.com/OpenMaker-Dev/openmaker/issues/801).
+file; op70; op73. A part of an upload (op13, op14, op70's list, op88)
+admitted before its file became read-only is held as any part is and
+answered with its continuation, still charged; the refusal comes with the
+next part, or with the last, whose request the engine refuses. A later
+part refused so ends the upload it belongs to, the parts held and their
+charge given back. An upload into a session's own temporary area (op14,
+or op13 with the flag) changes no file: it is refused with that exception
+on a file already read-only at admission, to save the work, and staged
+when the file becomes read-only after, as its reply says; the op70 that
+would commit it is where the file would change, and is refused. The
+engine refuses an op13 upload on a read-only file with its own error
+(`Reply::UploadToCatalog(Err(..))`), not as an upload that had nothing to
+change, and so it refuses one the file cannot hold where it is sent (what
+the file writer cannot write there, a change to a value the upload does
+not name, or the whole file, an empty destination), on any file. The
+others answer their own refusal: op71, op72 and op88 status 200 (access
+denied), op87 a failed count, op86 with schema instructions or a key it
+reserves the error slot with 200 (at admission, when the program runs,
+and when the engine refuses its draft; a key-only program whose file
+becomes read-only after it issued its key and before its draft is
+submitted answers 800 when the key stayed waiting, which stays queued, or
+the program's own answer when another writer had saved it before),
+op240's edits a save error (810, or 800 when the edit was made and taken
+back) and its Save status 3. In a server script, a step that would open,
+create or delete a record answers 3 where the script sees it, before it
+holds anything for the edit (a container's data, a lock); Set Next Serial
+Value answers 3 before anything is written, and the engine refuses it
+first too, so no save is tried and none fails; a script whose last record
+is not stored when it ends has that commit's error as the run's result,
+never 0 (op30's reply when it waits; one that does not wait answers only
+that the script started). A script sets a global field all the same: its
+value is the session's, and needs no record, lock or save. On the
+desktop, Change Password answers an unwritten error and a window's saved
+found set is not kept, which only the log says. These answers are
+OpenMaker's choice; what FileMaker Server answers for a file it serves
+read-only, and what FileMaker Pro does with each, is unmeasured
+([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)).
+
+Nor do op13, op14 and op70 answer done for what they did not store or
+stage, on any file: a request refused for the session (the file not open
+in it, no Login, a set that reads records only, op13 into the file without
+[Full Access], op70 with no privilege set or for a record its set
+refuses), a list that is not a slot list, and a continuation of an upload
+the connection does not hold each fail with the system exception. For the
+last, FileMaker Server's code answers an empty last page, as for a
+download (network-protocol.md 5.6.6c, step 1, derived and not exercised
+live), which an upload's client reads as done: OpenMaker's choice differs,
+unverified against FileMaker. op73 refused for the session still answers
+its empty reply
+([#801](https://github.com/OpenMaker-Dev/openmaker/issues/801)).
 `tests/recalc.rs` sends each request first to a writable copy, where it
 makes its change, read back, then to a file hosted read-only, and each that
 reaches the engine also to a file made read-only between its admission and

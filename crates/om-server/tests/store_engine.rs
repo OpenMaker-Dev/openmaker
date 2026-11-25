@@ -338,7 +338,9 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
 /// none: Set Field and New Record fail with 3, "Command is unavailable",
 /// where the script sees it, and a script that sets a field and ends with
 /// the record open reports 3 too, never 0 with its edit dropped at the
-/// session's end. Nothing changes.
+/// session's end. Set Next Serial Value fails with 3 before anything is
+/// written. A global, the session's own value, is set and read in the
+/// next step. Nothing changes.
 #[test]
 fn server_scripts_that_would_write_fail_alike_on_both_engines() {
     let edit = fixture::script(
@@ -368,9 +370,48 @@ fn server_scripts_that_would_write_fail_alike_on_both_engines() {
             fixture::set_field(fixture::COUNT, "99"),
         ],
     );
-    let (file, _) = read_only_tasks("store-engine-scripts", &[edit, add, left_open]);
+    let mut serial = fixture::with_calc(116, "40");
+    serial.set_field_spec(
+        0,
+        Some(om_scripts::FieldSpec::new(
+            om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+            om_scripts::StoredKey::from_id(fixture::COUNT).unwrap(),
+            0,
+        )),
+    );
+    let serial = fixture::script(
+        7,
+        "Serial",
+        vec![
+            fixture::on(86, true),
+            serial,
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    );
+    let global = fixture::script(
+        8,
+        "Global",
+        vec![
+            fixture::on(86, true),
+            fixture::set_field(fixture::SETTING, "\"kept\""),
+            fixture::exit_with("Get ( LastError ) & \"|\" & Tasks::Setting"),
+        ],
+    );
+    let (file, _) = read_only_tasks(
+        "store-engine-scripts",
+        &[edit, add, left_open, serial, global],
+    );
     let mut both = Both::host("scripts", file);
-    for script in [4, 5, 6] {
+    let [by_file, by_store] = [0, 1].map(|i| {
+        let reply = both.sessions[i]
+            .0
+            .perform_script_on_server(8, "", true)
+            .unwrap();
+        (reply.error, reply.result)
+    });
+    assert_eq!(by_store, by_file, "the global");
+    assert_eq!(by_store, (0, "0|kept".to_owned()));
+    for script in [4, 5, 6, 7] {
         let [by_file, by_store] = [0, 1].map(|i| {
             let reply = both.sessions[i]
                 .0
