@@ -60,6 +60,19 @@ pub fn apply<S: PageStore + ?Sized, E: EntryPages>(
     entry: u64,
     edits: &[Edit],
 ) -> Result<Root> {
+    apply_with(store, out, root, entry, edits, true)
+}
+
+/// [`apply`], with the append path ([`append`]) or without it: the same
+/// tree either way, which the tests check.
+pub(crate) fn apply_with<S: PageStore + ?Sized, E: EntryPages>(
+    store: &S,
+    out: &mut E,
+    root: Option<Root>,
+    entry: u64,
+    edits: &[Edit],
+    appends: bool,
+) -> Result<Root> {
     check_edits(edits)?;
     let pages = Pages { store };
     let mut tree = match root {
@@ -89,14 +102,28 @@ pub fn apply<S: PageStore + ?Sized, E: EntryPages>(
         pages,
         released: Vec::new(),
         changed: root.is_none(),
+        last: if root.is_none() {
+            Last::Empty
+        } else {
+            Last::Unknown
+        },
     };
+    // An entry of one put pays nothing for the append path; one of more
+    // finds the greatest key once.
+    let appends = appends && edits.len() > 1;
     for edit in edits {
         match edit {
-            Edit::Put { path, node } => put(&mut cx, &mut tree, path, node)?,
+            Edit::Put { path, node } => {
+                if !(appends && append(&mut cx, &mut tree, path, node)?) {
+                    put(&mut cx, &mut tree, path, node)?;
+                    cx.last.after_put(&key::encode(path), node);
+                }
+            }
             Edit::Delete { path } => {
                 let lo = key::encode(path);
                 let hi = key::subtree_end(&lo);
                 delete(&mut cx, &mut tree, &lo, hi.as_deref())?;
+                cx.last = Last::Unknown;
             }
         }
     }
@@ -122,6 +149,38 @@ struct Cx<'s, S: ?Sized> {
     /// before what it refers to.
     released: Vec<(PageNo, Hash, Release)>,
     changed: bool,
+    /// The greatest key the working tree holds, while it is known.
+    last: Last,
+}
+
+/// The greatest key the working tree holds and its node's kind
+/// ([`append`]): unknown, none (an empty tree), or a key.
+enum Last {
+    Unknown,
+    Empty,
+    Key(Vec<u8>, u8),
+}
+
+impl Last {
+    /// What the greatest key is after a put of `node` at `key` (the edit
+    /// rules of format section 2.6): the put's key when it is greater, or
+    /// when the greatest was under it (a put replaces what was under its
+    /// node); otherwise as it was.
+    fn after_put(&mut self, key: &[u8], node: &Node) {
+        let kind = node.kind();
+        *self = match std::mem::replace(self, Last::Unknown) {
+            Last::Unknown => Last::Unknown,
+            Last::Empty => Last::Key(key.to_vec(), kind),
+            Last::Key(last, last_kind) => {
+                let under = key::subtree_end(key).is_some_and(|end| last < end);
+                if last.as_slice() <= key || under {
+                    Last::Key(key.to_vec(), kind)
+                } else {
+                    Last::Key(last, last_kind)
+                }
+            }
+        };
+    }
 }
 
 /// The working copy of the tree: its root and the root's level.
@@ -584,6 +643,89 @@ fn has_keys<S: PageStore + ?Sized>(
 }
 
 // The edits.
+
+/// The greatest key of the working tree and its node's kind: one descent
+/// to the last key, and a lookup of it.
+fn last_of<S: PageStore + ?Sized>(cx: &Cx<'_, S>, tree: &Work) -> Result<Last> {
+    let Some(at) = last_before(cx, &tree.slot, tree.level, true, None)? else {
+        return Ok(Last::Empty);
+    };
+    let key = cx.pages.key_at(&at)?;
+    match existing(cx, &tree.slot, tree.level, true, &key)? {
+        Some(node) => Ok(Last::Key(key, node.kind())),
+        None => Err(internal("the last key is not in the tree")),
+    }
+}
+
+/// A put of a key greater than every key of the tree (the greatest kept in
+/// `cx.last`), as an import's are, applied with the primitives [`put`]
+/// would apply and without the lookups that decide them; false, with
+/// nothing done, for any other put. [`put`] would look up each ancestor,
+/// delete the range under the key and look the key up. Here:
+///
+/// - an ancestor at or below the greatest key is that key or one of its
+///   ancestors (the greatest key lies between the ancestor and the put's
+///   key, so under the ancestor), and a tree [`apply`] makes holds every
+///   ancestor of every key: it exists, and is a list, but for the greatest
+///   key itself, whose kind is kept; when that holds a value, [`put`]
+///   changes it, and this declines;
+/// - an ancestor above the greatest key does not exist, and is set as an
+///   empty list, shallowest first, as [`put`] sets it;
+/// - nothing is under the key and the key is not there, so the range
+///   delete changes nothing (and [`put`]'s skips it) and the node is set.
+///
+/// So it applies the same primitives in the same order, and the tree is
+/// the one [`put`] leaves, shape and hash included.
+fn append<S: PageStore + ?Sized>(
+    cx: &mut Cx<'_, S>,
+    tree: &mut Work,
+    path: &[Vec<u8>],
+    node: &Node,
+) -> Result<bool> {
+    if matches!(cx.last, Last::Unknown) {
+        cx.last = last_of(cx, tree)?;
+    }
+    let Some((_, ancestors)) = path.split_last() else {
+        return Ok(false);
+    };
+    let key = key::encode(path);
+    let (last, last_kind) = match &cx.last {
+        Last::Key(last, kind) => (Some(last.as_slice()), Some(*kind)),
+        _ => (None, None),
+    };
+    if last.is_some_and(|last| key.as_slice() <= last) {
+        return Ok(false);
+    }
+    let mut ancestor = Vec::new();
+    let mut missing = Vec::new();
+    for segment in ancestors {
+        key::push_segment(&mut ancestor, segment);
+        match last {
+            Some(last) if ancestor.as_slice() < last => {}
+            Some(last) if ancestor.as_slice() == last => {
+                if last_kind == Some(KIND_VALUE) {
+                    return Ok(false);
+                }
+            }
+            _ => missing.push(ancestor.clone()),
+        }
+    }
+    for ancestor in missing {
+        set(
+            cx,
+            tree,
+            Op::Set(WItem::new(ancestor, KIND_LIST, Vec::new())),
+        )?;
+    }
+    let value = node.value().to_vec();
+    set(
+        cx,
+        tree,
+        Op::Set(WItem::new(key.clone(), node.kind(), value)),
+    )?;
+    cx.last = Last::Key(key, node.kind());
+    Ok(true)
+}
 
 fn put<S: PageStore + ?Sized>(
     cx: &mut Cx<'_, S>,
@@ -1303,6 +1445,274 @@ fn write_slot<E: EntryPages>(entry: u64, out: &mut E, slot: Slot, level: u8) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod appends {
+        //! The append path ([`super::append`]) leaves the tree the edits
+        //! leave without it, shape and hash included, for ordered inputs
+        //! and for the inputs on which it must decline, in every split of
+        //! the edits into entries, on `MemStore` and on the page file.
+
+        use super::super::apply_with;
+        use crate::page::{EntryPages, MemStore, Numbering, PageStore, Root, TreeName};
+        use crate::pagefile::{Config, EntryId, PageFile, Purpose};
+        use crate::sim::Sim;
+        use crate::sys::Fs;
+        use crate::tree::{Edit, Node};
+
+        struct Rng(u64);
+
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                self.0 = x;
+                x
+            }
+
+            fn below(&mut self, n: usize) -> usize {
+                (self.next() % n.max(1) as u64) as usize
+            }
+        }
+
+        /// A random key tree's nodes, parents first and siblings in key
+        /// order, as an import puts them: lists, values (some empty, some
+        /// long enough to spill) and nodes that are both; some a value
+        /// with children put under it, which a put turns into both or a
+        /// list.
+        fn ordered(rng: &mut Rng, size: usize) -> Vec<Edit> {
+            fn node(rng: &mut Rng) -> Node {
+                let kind = rng.below(5);
+                let value = match rng.below(6) {
+                    0 => Vec::new(),
+                    1 => vec![9; 2000 + rng.below(3000)],
+                    n => vec![n as u8; rng.below(40)],
+                };
+                match kind {
+                    0 | 1 => Node::List,
+                    2 => Node::Both(value),
+                    _ => Node::Value(value),
+                }
+            }
+            fn children(
+                rng: &mut Rng,
+                path: &mut Vec<Vec<u8>>,
+                out: &mut Vec<Edit>,
+                budget: &mut usize,
+            ) {
+                let mut segments: Vec<Vec<u8>> = (0..1 + rng.below(6))
+                    .map(|_| {
+                        (0..1 + rng.below(3))
+                            .map(|_| [0, 1, 0xff, 7][rng.below(4)])
+                            .collect()
+                    })
+                    .collect();
+                segments.sort();
+                segments.dedup();
+                for segment in segments {
+                    if *budget == 0 {
+                        return;
+                    }
+                    *budget -= 1;
+                    path.push(segment);
+                    let node = node(rng);
+                    out.push(Edit::Put {
+                        path: path.clone(),
+                        node,
+                    });
+                    if path.len() < 6 && rng.below(3) > 0 {
+                        children(rng, path, out, budget);
+                    }
+                    path.pop();
+                }
+            }
+            // Top-level keys numbered in order, each with a subtree below.
+            let mut out = Vec::new();
+            let mut budget = size;
+            let mut top = 0u16;
+            while budget > 0 {
+                budget -= 1;
+                let mut path = vec![top.to_be_bytes().to_vec()];
+                top += 1;
+                let node = node(rng);
+                out.push(Edit::Put {
+                    path: path.clone(),
+                    node,
+                });
+                children(rng, &mut path, &mut out, &mut budget);
+            }
+            out
+        }
+
+        /// `edits` with some disorder: a few puts moved earlier, replaced,
+        /// or deleted, so that the append path meets what it declines.
+        fn disordered(rng: &mut Rng, mut edits: Vec<Edit>) -> Vec<Edit> {
+            let n = edits.len();
+            for _ in 0..n / 10 {
+                let i = rng.below(n);
+                let j = rng.below(n);
+                match rng.below(3) {
+                    0 => edits.swap(i, j),
+                    1 => {
+                        let again = edits[i].clone();
+                        edits.insert(j, again);
+                    }
+                    _ => {
+                        if let Edit::Put { path, .. } = &edits[i] {
+                            let delete = Edit::delete(path.clone());
+                            edits.insert(j, delete);
+                        }
+                    }
+                }
+            }
+            edits
+        }
+
+        /// The root of the tree `edits` make in `MemStore`, entry by entry
+        /// as `cuts` split them.
+        fn on_memory(edits: &[Edit], cuts: &[usize], appends: bool) -> Root {
+            let store = MemStore::new(Numbering::Sequential);
+            let name = TreeName::new(b"t".to_vec()).unwrap();
+            let mut root = None;
+            for (entry, batch) in (1..).zip(batches(edits, cuts)) {
+                let mut unit = store.begin().unwrap();
+                let new = apply_with(&store, &mut unit, root, entry, batch, appends).unwrap();
+                match root {
+                    None => unit.add_tree(&name, new),
+                    Some(old) if old != new => unit.set_root(&name, new),
+                    Some(_) => {}
+                }
+                unit.commit().unwrap();
+                root = Some(new);
+            }
+            root.unwrap()
+        }
+
+        /// The same on the page file on the simulated disk, with the append
+        /// path: each entry reserved for, and checkpointed when the pages
+        /// waiting for one reach the budget.
+        fn on_page_file(edits: &[Edit], cuts: &[usize]) -> Root {
+            let sim = Sim::new(5);
+            let fs = sim.fs();
+            let lock = fs.lock().unwrap();
+            let config = Config {
+                cache_bytes: 64 << 10,
+                dirty_budget: 16,
+                reserve: 16,
+                growth: 64,
+            };
+            let pf = PageFile::create(&fs, &lock, config).unwrap();
+            let name = TreeName::new(b"t".to_vec()).unwrap();
+            let mut root = None;
+            for (entry, batch) in (1..).zip(batches(edits, cuts)) {
+                let mut pages = 64;
+                let new = loop {
+                    let res = match pf.reserve(entry, pages, Purpose::Entry) {
+                        Ok(res) => res,
+                        Err(crate::pagefile::SpaceError::CheckpointNeeded { .. }) => {
+                            let id = EntryId {
+                                index: pf.newest_entry(),
+                                term: 0,
+                                hash: crate::page::Hash::default(),
+                            };
+                            pf.checkpoint(id, None).unwrap();
+                            continue;
+                        }
+                        Err(e) => panic!("{e}"),
+                    };
+                    let mut unit = res.begin().unwrap();
+                    match apply_with(&res, &mut unit, root, entry, batch, true) {
+                        Ok(new) => {
+                            match root {
+                                None => unit.add_tree(&name, new),
+                                Some(old) if old != new => unit.set_root(&name, new),
+                                Some(_) => {}
+                            }
+                            unit.commit().unwrap();
+                            break new;
+                        }
+                        Err(crate::tree::Error::Store(crate::page::StoreError::Full)) => {
+                            pages *= 4;
+                        }
+                        Err(e) => panic!("{e}"),
+                    }
+                };
+                root = Some(new);
+            }
+            root.unwrap()
+        }
+
+        fn batches<'e>(edits: &'e [Edit], cuts: &[usize]) -> Vec<&'e [Edit]> {
+            let mut out = Vec::new();
+            let mut start = 0;
+            for &cut in cuts.iter().chain(std::iter::once(&edits.len())) {
+                if cut > start {
+                    out.push(&edits[start..cut]);
+                    start = cut;
+                }
+            }
+            out
+        }
+
+        /// Every split of short sequences, ordered and not, into entries:
+        /// the append path's tree is the other's, root hash for root hash.
+        #[test]
+        fn every_split_of_short_sequences() {
+            let mut splits = 0;
+            for seed in 1..=12u64 {
+                let mut rng = Rng(seed * 0x2545_f491);
+                let ordered = ordered(&mut rng, 11);
+                let edits = if seed % 3 == 0 {
+                    disordered(&mut rng, ordered)
+                } else {
+                    ordered
+                };
+                let n = edits.len();
+                for mask in 0..1u32 << (n - 1).min(12) {
+                    let cuts: Vec<usize> = (1..n).filter(|i| mask & (1 << (i - 1)) != 0).collect();
+                    assert_eq!(
+                        on_memory(&edits, &cuts, true).hash,
+                        on_memory(&edits, &cuts, false).hash,
+                        "seed {seed}, cuts {cuts:?}"
+                    );
+                    splits += 1;
+                }
+            }
+            assert!(splits > 10_000, "{splits}");
+        }
+
+        /// Long sequences, deep enough for splits and index levels, in
+        /// random splits: the same on `MemStore` and on the page file.
+        #[test]
+        fn random_splits_of_long_sequences_on_memory_and_the_page_file() {
+            for seed in 1..=6u64 {
+                let mut rng = Rng(seed * 0x9e37_79b9);
+                let ordered = ordered(&mut rng, 3_000);
+                let edits = if seed % 2 == 0 {
+                    disordered(&mut rng, ordered)
+                } else {
+                    ordered
+                };
+                for _ in 0..4 {
+                    let mut cuts: Vec<usize> =
+                        (0..rng.below(20)).map(|_| rng.below(edits.len())).collect();
+                    cuts.sort();
+                    let expected = on_memory(&edits, &cuts, false);
+                    assert_eq!(
+                        on_memory(&edits, &cuts, true).hash,
+                        expected.hash,
+                        "seed {seed}"
+                    );
+                    assert_eq!(
+                        on_page_file(&edits, &cuts).hash,
+                        expected.hash,
+                        "seed {seed}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn separators_are_the_shortest_that_separate() {
