@@ -29,26 +29,20 @@ use std::sync::Arc;
 use log::{error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
+use om_data::containers::{self, MemberInfo};
 use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::slot::{be_uint, uint_segment};
-use om_hbam::writer::{
-    holds_value, put_refusals, unwritable, unwritable_in_tree, value_on_path, Unwritable,
-};
+use om_hbam::writer::{holds_value, put_refusals, unwritable_in_tree, value_on_path, Unwritable};
 use om_hbam::{serial, Catalog, DataType, HbamFile, KeyTree, OwnedNode, RidList};
 use om_query::keys::{record_value_entries, word_entries, Reading, TextKeys};
-use om_query::Write;
-
-use om_data::containers::{self, MemberInfo};
 
 use crate::anchored::{FileAt, FileId, Folder};
-use crate::derived::{
-    self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
-};
+use crate::derived::{self, cell_text, counts_key, field_texts, Derived, ENGLISH};
 use crate::engine::{OnDisk, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
-use crate::modcount::{self, MOD_COUNT};
+use crate::modcount;
 use crate::recalc::{self, TableBasis};
 
 /// Keys under a base table `T` (query-program.md 7.1, write-path.md 5).
@@ -177,9 +171,11 @@ pub struct Store {
     /// keeps the change is unknown ([`SaveError::Unknown`]). Every later
     /// save is refused; hosting the file again clears it.
     unknown: Option<String>,
-    /// Counts the schema changes (catalogs replaced, op73's field work):
-    /// what was read from the schema before a change is stale after it
-    /// ([`Store::schema_generation`]).
+    /// Counts the changes of what the derived state reads (a write the
+    /// derived state reads, op73's field work, a roll-back): the
+    /// verified-index marks ([`Store::index_agrees`]) and the accounts
+    /// ([`Store::follow_accounts`]) read before a change are stale after
+    /// it.
     generation: u64,
     /// The schema generation the derived state's accounts were decoded at
     /// ([`Store::follow_accounts`]).
@@ -544,6 +540,13 @@ impl Journal {
         self.lines.extend(inner.lines);
     }
 
+    /// A write of the change was refused, `reason` for the log: the rest
+    /// of the change is taken back and its save fails
+    /// ([`Store::save_commit`]).
+    pub(crate) fn refuse(&mut self, reason: String) {
+        self.refused.get_or_insert(reason);
+    }
+
     /// Note a log line that says what the change did, written once it is
     /// stored.
     fn note(&mut self, line: String) {
@@ -564,6 +567,55 @@ impl Journal {
             || self.refused.is_some()
             || !self.ids.is_empty()
     }
+}
+
+/// Whether the node at `path`, or anything under it, is part of what the
+/// store's derived state reads ([`Derived`]): the schema catalogs and every
+/// other catalog at the top of the tree (its preferences and locale, the
+/// layouts, scripts, value lists, custom functions, the security catalog),
+/// a table's node and its field catalog `[T, 03]`. Not a table's records,
+/// record ids, last issued id, indexes or library, the file's library
+/// `[1f]`, a field's next serial value `[T, 03, 05, F, 0c]` or the deferred
+/// field work `[T, 03, 01, fd]`, which change without the schema; a table
+/// occurrence's saved found set `[TO, 07]` is under a key of a table's
+/// range and counts as data the same way.
+fn feeds_derived(path: &[Vec<u8>]) -> bool {
+    let Some((first, rest)) = path.split_first() else {
+        return true;
+    };
+    match be_uint(first) {
+        Some(table) if table >= 0x8000 => match rest {
+            [] => true,
+            [fields, ..] if fields.as_slice() == [keys::FIELDS] => {
+                !matches!(
+                    rest,
+                    [_, definitions, _, serial, ..]
+                        if definitions.as_slice() == [keys::FIELD_DEFINITIONS]
+                            && serial.as_slice() == [keys::SERIAL_VALUE]
+                ) && !matches!(
+                    rest,
+                    [_, work, deferred, ..]
+                        if work.as_slice() == [0x01] && deferred.as_slice() == [keys::DEFERRED]
+                )
+            }
+            _ => false,
+        },
+        Some(library) if library == u64::from(LIBRARY) => false,
+        _ => true,
+    }
+}
+
+/// What a write of an operation's transaction changed
+/// ([`Store::write_in`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Written {
+    /// It reaches what the derived state reads ([`feeds_derived`]), which
+    /// the caller then reads again ([`Store::schema_changed_in`]).
+    pub feeds: bool,
+    /// The length of the shortest prefix of the written path whose node
+    /// changed: a parent the put created or turned into a list, or the
+    /// path itself.
+    pub from: usize,
 }
 
 /// Write `line` about the file named `name` into `journal`'s log lines, or
@@ -1575,39 +1627,6 @@ impl Store {
         self.derived.container_cell(table, cell)
     }
 
-    /// [`Store::serial_value`] replacing a field's next serial value within
-    /// a commit: the old node goes into `journal`.
-    pub fn set_serial_in(
-        &mut self,
-        journal: &mut Journal,
-        table: &[u8],
-        field: &[u8],
-        value: &str,
-    ) -> Option<String> {
-        let path: Vec<Vec<u8>> = vec![
-            table.to_vec(),
-            vec![keys::FIELDS],
-            vec![keys::FIELD_DEFINITIONS],
-            field.to_vec(),
-            vec![keys::SERIAL_VALUE],
-        ];
-        let kept = self.kept_before(path);
-        let current = self.serial_value(table, field, Some(value), None)?;
-        journal.absorb(kept);
-        Some(current)
-    }
-
-    /// A journal that keeps the node at `path` and what a put there changes
-    /// besides it ([`Journal::save_node`]: the first parent it creates, or
-    /// one that is not a list, which the put makes one, whole), as the tree
-    /// is now: for a write that knows only afterwards whether it changed
-    /// anything, which absorbs it into its own journal when it did.
-    fn kept_before(&self, path: Vec<Vec<u8>>) -> Journal {
-        let mut kept = self.begin_commit();
-        kept.save_node(&self.root, path);
-        kept
-    }
-
     /// Write a commit to `path` ([`Store::save`]). When the file cannot be
     /// written, everything the commit changed is put back, newest first,
     /// and the error returned: the tree never holds a commit the file
@@ -1847,6 +1866,18 @@ impl Store {
         &self.derived
     }
 
+    /// The tree itself, for the engine's check of an operation's writes
+    /// (`engine::checking`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn tree(&self) -> &OwnedNode {
+        &self.root
+    }
+
+    /// The store's version, which views of it read at.
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
     /// The tree as a view (`engine::TreeView`), at the store's version.
     pub(crate) fn tree_view(&self) -> TreeView<'_> {
         TreeView::new(&self.root, self.version)
@@ -1935,62 +1966,14 @@ impl Store {
             .unwrap_or(0)
     }
 
-    /// Reserve `count` record ids in `table` (op71): returns the first and
-    /// stores the new last issued id, its old node kept in `journal`.
-    /// `None`, changing nothing, for a count of 0, when the ids would pass
-    /// the largest a serial key holds (the last issued id comes from the
-    /// file, and a catalog upload can set it: ids must not wrap around to
-    /// those records have), and when the table's node holds a value, which
-    /// the id cannot go beneath.
-    pub fn reserve_record_ids(
-        &mut self,
-        journal: &mut Journal,
-        table: &[u8],
-        count: u32,
-    ) -> Option<u64> {
-        // The count and the arithmetic first, from the values alone; then
-        // the write against the tree as it is. Neither changes anything, so
-        // either refusal leaves the table as it was.
-        if count == 0 {
-            return None;
-        }
-        let last = self.last_record_id(table);
-        let Some(new_last) = last.checked_add(u64::from(count)) else {
-            warn!(
-                "{}: no record ids reserved: {count} do not fit after the last issued id \
-                 {last} of table {table:02x?}",
-                self.name
-            );
-            return None;
-        };
-        let leaf = OwnedNode::leaf(vec![keys::LAST_RECORD_ID], vec![0; 10]);
-        let refused = put_refusals(&self.root, &[table], &leaf, 1);
-        if !refused.is_empty() {
-            warn!(
-                "{}: no record ids reserved: {}",
-                self.name,
-                describe(&refused)
-            );
-            return None;
-        }
-        let segment = serial::encode(new_last);
-        let mut value = vec![segment.len() as u8];
-        value.extend(segment);
-        journal.save_path(&self.root, vec![table.to_vec(), vec![keys::LAST_RECORD_ID]]);
-        self.root.put(
-            &[table, &[keys::LAST_RECORD_ID]],
-            OwnedNode::leaf(Vec::new(), value),
-        );
-        self.dirty = true;
-        // At most `new_last`, as `count` is at least 1.
-        Some(last + 1)
-    }
-
     /// A field's next serial value (op72), read and possibly replaced or
-    /// advanced; returns the value before the update. `None` when the field
+    /// advanced, outside a journal (a test's; op72 itself goes through its
+    /// transaction, `writes::get_serial`); returns the value before the
+    /// update. `None` when the field
     /// does not exist, or when the new value cannot go beneath its
     /// definition as the tree is (a definition that holds a value), which
     /// changes nothing.
+    #[cfg(test)]
     pub fn serial_value(
         &mut self,
         table: &[u8],
@@ -2039,183 +2022,18 @@ impl Store {
         Some(current)
     }
 
-    /// [`Store::serial_value`] (op72), its serial node as it was kept in
-    /// `journal` when it changes.
-    pub fn serial_value_in(
-        &mut self,
-        journal: &mut Journal,
-        table: &[u8],
-        field: &[u8],
-        replace: Option<&str>,
-        increment: Option<i32>,
-    ) -> Option<String> {
-        let path: Vec<Vec<u8>> = vec![
-            table.to_vec(),
-            vec![keys::FIELDS],
-            vec![keys::FIELD_DEFINITIONS],
-            field.to_vec(),
-            vec![keys::SERIAL_VALUE],
-        ];
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let old = self.node(&segments).cloned();
-        // Only an existing field definition gets a serial node; one held as
-        // a value becomes a list under it, so it is kept whole.
-        let kept = self.kept_before(path.clone());
-        let current = self.serial_value(table, field, replace, increment)?;
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        if self.node(&segments) != old.as_ref() {
-            journal.absorb(kept);
-        }
-        Some(current)
-    }
-
-    /// op88: store binary data in the library at `path` (`[T, 1f]` or
-    /// `[1f]`), creating the library on first use (containers.md 3.4).
-    #[cfg(test)]
-    pub fn store_binary(
-        &mut self,
-        path: &[&[u8]],
-        data: BinaryData,
-        unique_id: impl FnMut() -> [u8; 16],
-    ) -> Option<Stored> {
-        let mut journal = self.begin_commit();
-        self.store_binary_in(&mut journal, path, data, unique_id)
-    }
-
-    /// [`Store::store_binary`] within `journal`, which keeps what the store
-    /// changes ([`library::store_keys`]): the member that counts one more
-    /// reference, or the header and the new member, or, for a new library,
-    /// the library's absence.
-    pub fn store_binary_in(
-        &mut self,
-        journal: &mut Journal,
-        path: &[&[u8]],
-        data: BinaryData,
-        unique_id: impl FnMut() -> [u8; 16],
-    ) -> Option<Stored> {
-        if let Some(reason) = self.library_refusal(path, Some(&data), None) {
-            warn!("{}: container data not stored: {reason}", self.name);
-            return None;
-        }
-        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-        // One decision, which the journal keeps and the store carries out.
-        let plan = library::store_plan(self.node(path), &data.md5);
-        match plan.keys(self.node(path)) {
-            None => journal.save_path(&self.root, base),
-            Some(keys) => {
-                for keys in keys {
-                    let mut at = base.clone();
-                    at.extend(keys);
-                    journal.save_path(&self.root, at);
-                }
-            }
-        }
-        let stored = library::store_as(self.root.ensure(path), data, &plan, unique_id)?;
-        self.dirty = true;
-        Some(stored)
-    }
-
     /// Why a store of `data` into the library at `path` (or, with `member`,
-    /// an adjustment of that member's count by its delta) would change a
-    /// value it does not name, add what the file cannot hold, or advance a
-    /// counter past the largest a serial key holds: a node on the library's
-    /// path, its header, lists, members or the member that holds a value
-    /// ([`library::store_refusal`], [`library::adjust_refusal`]), a last
-    /// member id or modification count the file holds at the largest
-    /// ([`library::store_counter_refusal`],
-    /// [`library::adjust_counter_refusal`]), or an uploaded key the new
-    /// member could not hold (`om_hbam::writer::unwritable`). For a log
-    /// line; `None` when the write is safe.
+    /// an adjustment of that member's count by its delta) is refused in the
+    /// tree as it is ([`library::refusal`]), for a log line; `None` when
+    /// the write is safe.
     fn library_refusal(
         &self,
         path: &[&[u8]],
         data: Option<&BinaryData>,
         member: Option<(&[u8], i32)>,
     ) -> Option<String> {
-        if let Some(found) = value_on_path(&self.root, path) {
-            return Some(describe_value(&found));
-        }
-        let library = self.node(path);
-        let inner = match (member, data) {
-            (Some((member, _)), _) => library.and_then(|l| library::adjust_refusal(l, member)),
-            (None, Some(data)) => library.and_then(|l| library::store_refusal(l, &data.md5)),
-            (None, None) => None,
-        };
-        if let Some(inner) = inner {
-            let mut found: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-            found.extend(inner);
-            return Some(describe_value(&found));
-        }
-        let counters = match (member, data) {
-            (Some((member, delta)), _) => {
-                library.and_then(|l| library::adjust_counter_refusal(l, member, delta))
-            }
-            (None, Some(data)) => {
-                library.and_then(|l| library::store_counter_refusal(l, &data.md5))
-            }
-            (None, None) => None,
-        };
-        if let Some(reason) = counters {
-            return Some(format!("{path:02x?}: {reason}"));
-        }
-        let data = data?;
-        if library.is_some_and(|l| {
-            library::reused_member(l, &data.md5)
-                .is_some_and(|existing| library::member(l, &existing).is_some())
-        }) {
-            return None;
-        }
-        let Some(new_member) = library::next_member(library) else {
-            return Some(format!("{path:02x?}: no member id is left"));
-        };
-        let mut parents = path.to_vec();
-        parents.push(&[library::MEMBERS]);
-        parents.push(&new_member);
-        data.keys
-            .iter()
-            .map(|key| unwritable(&parents, key, 3))
-            .find(|refused| !refused.is_empty())
-            .map(|refused| describe(&refused))
-    }
-
-    /// op87: add `delta` to a member's reference count in the library at
-    /// `path`, deleting it at 0 (containers.md 5.3). `None` when there is no
-    /// such member.
-    #[cfg(test)]
-    pub fn adjust_reference_count(
-        &mut self,
-        path: &[&[u8]],
-        member: &[u8],
-        delta: i32,
-    ) -> Option<u32> {
-        let mut journal = self.begin_commit();
-        self.adjust_reference_count_in(&mut journal, path, member, delta)
-    }
-
-    /// [`Store::adjust_reference_count`] within `journal`, which keeps the
-    /// member's count keys, or the member and the header when it goes.
-    pub fn adjust_reference_count_in(
-        &mut self,
-        journal: &mut Journal,
-        path: &[&[u8]],
-        member: &[u8],
-        delta: i32,
-    ) -> Option<u32> {
-        if let Some(reason) = self.library_refusal(path, None, Some((member, delta))) {
-            warn!("{}: reference count not changed: {reason}", self.name);
-            return None;
-        }
-        // The decision the adjustment makes; none for a delta of 0.
-        let changed = library::adjust_keys(self.node(path)?, member, delta)?;
-        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-        for keys in changed {
-            let mut at = base.clone();
-            at.extend(keys);
-            journal.save_node(&self.root, at);
-        }
-        let count = library::adjust(self.root.at_mut(path)?, member, delta)?;
-        self.dirty |= delta != 0;
-        Some(count)
+        library::refusal(&self.tree_view(), path, data, member)
+            .expect("the file engine's tree never fails a read")
     }
 
     /// A member of the library at `path`.
@@ -2276,7 +2094,7 @@ impl Store {
     }
 
     /// Issue the next member id and modification count of the catalog at
-    /// `catalog` ([`derived::issue_member_key`]); [`Store::write_member_keys`]
+    /// `catalog` ([`derived::issue_member_key`]); op86 (`engine::schema`)
     /// stores them.
     pub fn issue_member_key(&self, catalog: &[Vec<u8>]) -> Option<(u64, u64)> {
         derived::issue_member_key(&self.tree_view(), &self.waiting, &self.name, catalog)
@@ -2290,7 +2108,7 @@ impl Store {
 
     /// Take the member ids and modification counts GenerateMemberKey
     /// issued and nobody wrote yet, by catalog, for
-    /// [`Store::write_member_keys`]: they are no longer waiting.
+    /// op86 (`engine::schema`): they are no longer waiting.
     pub fn take_issued_member_keys(&mut self) -> Vec<MemberKey> {
         self.waiting.take_member_keys()
     }
@@ -2302,217 +2120,156 @@ impl Store {
         self.waiting.put_back_member_keys(keys);
     }
 
-    /// Write member ids and modification counts GenerateMemberKey issued
-    /// ([`Store::take_issued_member_keys`]) into their catalogs' indexes, as
-    /// FileMaker Server does (schema-path.md 3.4). A value the index
-    /// already passed stays.
-    #[cfg(test)]
-    pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
-        let mut journal = self.begin_commit();
-        self.write_member_keys_in(&mut journal, keys);
-    }
-
-    /// [`Store::write_member_keys`] within `journal`, which keeps each
-    /// index key it advances.
-    pub fn write_member_keys_in(&mut self, journal: &mut Journal, keys: Vec<MemberKey>) {
-        for (catalog, (id, count)) in keys {
-            let mut path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
-            // Checked again here: the tree may have changed since the key
-            // was issued.
-            if let Some(reason) = self.member_key_refusal(&path) {
-                warn!(
-                    "{}: member keys issued for {path:02x?} are not written: {reason}",
-                    self.name
-                );
-                continue;
-            }
-            path.push(&[CATALOG_INDEX]);
-            // Each key the index has passed already stays; one that
-            // advances is kept in the journal, with the index it creates,
-            // as it is changed.
-            for (key, value) in [(LAST_MEMBER_ID, id), (MOD_COUNT, count)] {
-                let current = self.root.at(&path).and_then(|index| index.child(&[key]));
-                if modcount::serial_value(current) < value {
-                    let mut at: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-                    at.push(vec![key]);
-                    journal.save_path(&self.root, at);
-                    self.root
-                        .ensure(&path)
-                        .set_child(modcount::serial_leaf(key, value));
-                    // Changed only when a counter advances: keys a write
-                    // already passed change nothing to save.
-                    self.dirty = true;
-                }
-            }
-        }
-    }
-
-    /// Why putting `node` at `path` would change a value it does not name
-    /// or leave what the file cannot hold, in the tree as it is
-    /// (`put_refusals`), for a log line.
-    fn replacement_refusal(&self, path: &[Vec<u8>], node: &OwnedNode) -> Option<String> {
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let (last, parents) = segments.split_last()?;
-        let placed = OwnedNode {
-            segment: last.to_vec(),
-            ..node.clone()
-        };
-        let refused = put_refusals(&self.root, parents, &placed, 3);
+    /// Why putting `placed` (named by its own segment) beneath `parents`
+    /// would change a value it does not name or leave what the file cannot
+    /// hold, in the tree as it is (`put_refusals`), for a log line. The node
+    /// is checked where it is, not copied.
+    fn put_refusal(&self, parents: &[&[u8]], placed: &OwnedNode) -> Option<String> {
+        let refused = put_refusals(&self.root, parents, placed, 3);
         (!refused.is_empty()).then(|| describe(&refused))
     }
 
-    /// Why `[catalog, 01, 00]` and `[catalog, 01, fc]` (a catalog's last
-    /// member id and count, schema-path.md 3.4) cannot be written in the
-    /// tree as it is (`put_refusals`), for a log line.
-    fn member_key_refusal(&self, catalog: &[&[u8]]) -> Option<String> {
-        derived::member_key_refusal(&self.tree_view(), catalog)
-            .expect("the file engine's tree never fails a read")
-    }
-
-    /// Apply the changes of an op86 program's schema instructions
-    /// (UploadMultiple, DeleteTable; schema-path.md 3.4) and re-read the
-    /// schema. Returns the libraries a deleted table took with it: its
-    /// container data goes with `[T]` (`[T, 1f]`, containers.md 1.1), every
-    /// member at once, so no reference is left to release; the caller
-    /// forgets what it derived from them (thumbnails).
-    #[cfg(test)]
-    pub fn apply(&mut self, writes: Vec<Write>) -> Vec<Vec<Vec<u8>>> {
-        let mut journal = self.begin_commit();
-        self.apply_in(&mut journal, writes)
-    }
-
-    /// [`Store::apply`] within `journal`, which keeps what each write
-    /// replaces or removes (moved, not copied) and the parents it creates,
-    /// and reads the schema again when it is taken back.
-    pub fn apply_in(&mut self, journal: &mut Journal, writes: Vec<Write>) -> Vec<Vec<Vec<u8>>> {
-        let mut released = Vec::new();
-        if writes.is_empty() {
-            return released;
-        }
-        journal.schema_from(&self.derived);
-        for write in writes {
-            match write {
-                Write::Put { path: owned, node } => {
-                    let path: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
-                    let Some((last, parents)) = path.split_last() else {
-                        warn!("{}: refusing a write over the whole file", self.name);
-                        continue;
-                    };
-                    let placed = OwnedNode {
-                        segment: last.to_vec(),
-                        ..node
-                    };
-                    let refused = put_refusals(&self.root, parents, &placed, 3);
-                    if !refused.is_empty() {
-                        // om-query refuses these before they get here.
-                        warn!(
-                            "{}: refusing a write to {path:02x?} the file cannot hold: {}",
-                            self.name,
-                            describe(&refused)
-                        );
-                        continue;
-                    }
-                    journal.replace(&mut self.root, owned, placed);
-                }
-                Write::Remove { path } => {
-                    let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-                    if let [table] = segments.as_slice() {
-                        let members = self
-                            .node(&[table, &[LIBRARY], &[containers::keys::MEMBERS]])
-                            .map_or(0, |m| m.children.len());
-                        if members > 0 {
-                            note(
-                                &self.name,
-                                Some(journal),
-                                format!(
-                                    "table {table:02x?} deleted with its {members} container \
-                                     library member(s)"
-                                ),
-                            );
-                        }
-                        released.push(vec![table.to_vec(), vec![LIBRARY]]);
-                    }
-                    journal.take(&mut self.root, path);
-                }
-            }
-        }
-        self.schema_changed();
-        released
-    }
-
-    /// Replace catalog members within a commit ([`Store::begin_commit`]):
-    /// each node's old version goes into `journal`, so a failed save puts
-    /// it back ([`Store::save_commit`]). For catalogs the schema
-    /// ([`Store::catalog`]) does not hold, such as the scripts `[17]`,
-    /// which server script sessions read with it: the derived state is
-    /// computed again, as after any change of the schema, so that a session
-    /// keyed by its version reads them again, and the journal keeps the one
-    /// from before.
-    pub fn replace_members_in(
+    /// One write of an operation's transaction (`engine::Transaction`):
+    /// `node` put at `path`, replacing whatever is there and everything
+    /// under it, as `OwnedNode::put` puts it, or, with `None`, the node at
+    /// `path` and everything under it removed. What it replaces, and the
+    /// parents a put creates, go into `journal`. A put the file cannot hold
+    /// there (`put_refusals`) is refused, for a log line, and changes
+    /// nothing; so is a write at the empty path. A write that would leave
+    /// the tree as it is (the same node put where it is, a missing node
+    /// removed) is no change: nothing goes into `journal`, and the tree
+    /// does not count as changed for it. Otherwise the tree then has
+    /// changes the file on disk lacks, the verified-index marks the write
+    /// can affect are forgotten ([`Store::forget_verified`]), and the
+    /// result ([`Written`]) says what changed; `None` for no change.
+    pub(crate) fn write_in(
         &mut self,
         journal: &mut Journal,
-        members: Vec<(Vec<Vec<u8>>, OwnedNode)>,
-    ) {
-        journal.schema_from(&self.derived);
-        for (path, node) in members {
-            if let Some(reason) = self.replacement_refusal(&path, &node) {
-                journal.refused.get_or_insert(reason);
-                continue;
+        path: &[Vec<u8>],
+        node: Option<OwnedNode>,
+    ) -> Result<Option<Written>, String> {
+        let Some(last) = path.last() else {
+            return Err("a write at the root".into());
+        };
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let mut feeds = feeds_derived(path);
+        let mut from = path.len();
+        match node {
+            Some(node) => {
+                let placed = OwnedNode {
+                    segment: last.clone(),
+                    ..node
+                };
+                if let Some(reason) = self.put_refusal(&segments[..segments.len() - 1], &placed) {
+                    return Err(reason);
+                }
+                // The same node where it is, with every parent a list
+                // already. The root's own list flag is not content: the
+                // writer writes its children only, and a file loaded from
+                // disk has it clear, as no slot names the root.
+                let ancestor = self.changed_ancestor(path);
+                if ancestor.is_none() && self.root.at(&segments) == Some(&placed) {
+                    return Ok(None);
+                }
+                // A put below what the derived state leaves out (a field's
+                // deferred work) still changes what it reads when it
+                // creates a parent, or turns one into a list.
+                if let Some(depth) = ancestor {
+                    feeds |= feeds_derived(&path[..depth]);
+                    from = depth;
+                }
+                journal.replace(&mut self.root, path.to_vec(), placed);
             }
-            journal.save_path(&self.root, path.clone());
-            let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-            self.root.put(&segments, node);
+            None => {
+                if self.root.at(&segments).is_none() {
+                    return Ok(None);
+                }
+                journal.take(&mut self.root, path.to_vec());
+            }
         }
-        self.schema_changed();
-    }
-
-    /// Replace the schema catalog at `path`, such as a table's fields
-    /// `[T, 03]`, within a commit ([`Store::begin_commit`]) and read the
-    /// schema again, so writes and queries see the change; a failed save
-    /// puts the catalog back and reads the schema again
-    /// ([`Store::save_commit`]).
-    pub fn replace_schema_in(
-        &mut self,
-        journal: &mut Journal,
-        path: Vec<Vec<u8>>,
-        node: OwnedNode,
-    ) {
-        if let Some(reason) = self.replacement_refusal(&path, &node) {
-            journal.refused.get_or_insert(reason);
-            return;
-        }
-        journal.save_path(&self.root, path.clone());
-        journal.schema_from(&self.derived);
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        self.root.put(&segments, node);
-        self.schema_changed();
-    }
-
-    /// Replace the node at `path` within a commit ([`Store::begin_commit`]):
-    /// a node no record or schema reader holds, such as a table
-    /// occurrence's saved found set `[TO, 07]`. A failed save puts it back
-    /// ([`Store::save_commit`]).
-    pub fn replace_node_in(&mut self, journal: &mut Journal, path: Vec<Vec<u8>>, node: OwnedNode) {
-        if let Some(reason) = self.replacement_refusal(&path, &node) {
-            journal.refused.get_or_insert(reason);
-            return;
-        }
-        journal.save_path(&self.root, path.clone());
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        self.root.put(&segments, node);
         self.dirty = true;
-        self.generation += 1;
+        self.forget_verified(path);
+        if feeds {
+            // Who read what the schema derives from reads it again: the
+            // verified-index marks and the accounts follow the count.
+            self.generation += 1;
+        }
+        Ok(Some(Written { feeds, from }))
     }
 
-    /// Remove the schema node at `path` (a layout member Delete Layout
-    /// removes) in `journal`'s commit, which puts it back if the file is not
-    /// written.
-    pub fn remove_schema_in(&mut self, journal: &mut Journal, path: Vec<Vec<u8>>) {
-        journal.save_node(&self.root, path.clone());
+    /// The length of the shortest proper prefix of `path` whose node a put
+    /// at `path` creates or changes, if any: as `OwnedNode::ensure` passes
+    /// through, a missing parent is created and one that is not a list yet
+    /// becomes one (as [`Journal`]'s `save_parents` keeps them).
+    fn changed_ancestor(&self, path: &[Vec<u8>]) -> Option<usize> {
+        let mut node = &self.root;
+        for (depth, segment) in path.iter().enumerate().take(path.len().saturating_sub(1)) {
+            match node.child(segment) {
+                Some(child) if child.push => node = child,
+                _ => return Some(depth + 1),
+            }
+        }
+        None
+    }
+
+    /// Forget the verified-index marks ([`Store::index_agrees`]) a write at
+    /// `path` that is not a commit's own upkeep can make wrong: at, above or
+    /// below a table's records `[T, 05]` or its record list `[T, 0d]`, or
+    /// at or above its indexes `[T, 01]` and a field's `[T, 01, F]`, a mark
+    /// of that table or field; at or below a field's postings, value
+    /// `[T, 01, F, 00]` or word `[T, 01, F, 01]`, a mark of that index. The
+    /// agreement check reads the postings and the records alone, so a
+    /// field's counts `[T, 01, F, 10]` and `[T, 01, F, 11]`, a serial value,
+    /// a library member and the rest of a table touch no mark. A commit
+    /// keeps its marks itself, and a change of the schema forgets them all
+    /// through the generation.
+    fn forget_verified(&mut self, path: &[Vec<u8>]) {
+        let Some((table, rest)) = path.split_first() else {
+            self.verified.1.clear();
+            return;
+        };
+        /// What a write can make wrong: a table's marks, a field's, one
+        /// index's.
+        enum Scope<'p> {
+            Table,
+            Field(&'p [u8]),
+            Index(&'p [u8], u8),
+        }
+        let is = |segment: &[u8], key: u8| segment == [key];
+        let scope = match rest {
+            [] => Scope::Table,
+            [list, ..] if is(list, keys::RECORDS) || is(list, keys::RECORD_IDS) => Scope::Table,
+            [indexes] if is(indexes, keys::INDEXES) => Scope::Table,
+            [indexes, field] if is(indexes, keys::INDEXES) => Scope::Field(field),
+            [indexes, field, index, ..] if is(indexes, keys::INDEXES) => match index.as_slice() {
+                [kind @ (keys::VALUE_INDEX | keys::WORD_INDEX)] => Scope::Index(field, *kind),
+                // The counts, `10` and `11`, and anything else under the
+                // field's index node.
+                _ => return,
+            },
+            // A serial value, a library member, the field catalog (the
+            // generation forgets all for that) and the rest of a table.
+            _ => return,
+        };
+        // Only a table has marks.
+        if self.verified.1.is_empty() || !be_uint(table).is_some_and(|t| t >= 0x8000) {
+            return;
+        }
+        self.verified.1.retain(|(t, f, kind), _| {
+            t != table
+                || match scope {
+                    Scope::Table => false,
+                    Scope::Field(field) => f.as_slice() != field,
+                    Scope::Index(field, index) => f.as_slice() != field || *kind != index,
+                }
+        });
+    }
+
+    /// The derived state read again after writes that reach it
+    /// ([`Store::write_in`]), the state before them kept in `journal`.
+    pub(crate) fn schema_changed_in(&mut self, journal: &mut Journal) {
         journal.schema_from(&self.derived);
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        self.root.remove(&segments);
-        self.schema_changed();
+        self.reread_catalog();
     }
 
     /// Count field `field` of `table`, which was just added, as computed
@@ -2533,56 +2290,18 @@ impl Store {
         }
     }
 
-    /// op13: replace the subtree at `path` with `node` (schema-path.md 3.3),
-    /// creating missing parents, and re-read the schema. A subtree the file
-    /// cannot hold there (hbam-writer.md 2.2, 2.3) is refused and logged, as
-    /// op13 refuses an upload it cannot store, and the tree is unchanged.
-    /// Returns whether it was stored.
+    /// Put `node` at `path` as op13 does, for tests that set a tree up:
+    /// whether it was stored (`Self::write_in`).
+    #[cfg(test)]
     pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
         let mut journal = self.begin_commit();
-        self.put_subtree_in(&mut journal, path, node)
-    }
-
-    /// [`Store::put_subtree`] within `journal`, which keeps the subtree it
-    /// replaces (moved, not copied) and the parents it creates, and reads
-    /// the schema again when it is taken back.
-    pub fn put_subtree_in(
-        &mut self,
-        journal: &mut Journal,
-        path: &[Vec<u8>],
-        node: OwnedNode,
-    ) -> bool {
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let Some((last, parents)) = segments.split_last() else {
-            warn!("{}: refusing an upload over the whole file", self.name);
-            return false;
-        };
-        let placed = OwnedNode {
-            segment: last.to_vec(),
-            ..node
-        };
-        let refused = put_refusals(&self.root, parents, &placed, 3);
-        if !refused.is_empty() {
-            warn!(
-                "{}: refusing an upload to {segments:02x?} the file cannot hold: {}",
-                self.name,
-                describe(&refused)
-            );
-            return false;
+        let stored = self.write_in(&mut journal, path, Some(node)).is_ok();
+        if stored {
+            // Read again, as after any upload, whatever the path.
+            self.generation += 1;
+            self.schema_changed_in(&mut journal);
         }
-        journal.replace(&mut self.root, path.to_vec(), placed);
-        journal.schema_from(&self.derived);
-        self.schema_changed();
-        true
-    }
-
-    /// Re-read the schema catalogs after the client changed them, so writes
-    /// and queries see new tables and fields, and tell those who read them
-    /// earlier ([`Store::schema_generation`]).
-    fn schema_changed(&mut self) {
-        self.dirty = true;
-        self.generation += 1;
-        self.reread_catalog();
+        stored
     }
 
     fn reread_catalog(&mut self) {
@@ -2619,15 +2338,6 @@ impl Store {
         let accounts = derived::read_accounts(&self.tree_view());
         self.derived = Arc::new(self.derived.with_accounts(self.version, accounts));
         self.accounts_at = self.generation;
-    }
-
-    /// How many times the schema changed while the file was hosted: a
-    /// server script session that read the schema (record rules, the SQL
-    /// catalog, layouts, scripts) at another count reads it again before
-    /// it uses it. op73's field work counts too, since it changes stored
-    /// values and indexes under records a session may hold.
-    pub fn schema_generation(&self) -> u64 {
-        self.generation
     }
 
     /// op73: do the field work the client listed in `[T, 03, 01, fd]` and
@@ -3752,32 +3462,6 @@ impl Store {
             .is_some()
     }
 
-    /// The modification count of the node at `path` as op60 returns it: its
-    /// `fc` child, `01 00` when it has none, empty when the node does not
-    /// exist. A record (`[T, 05, R]`, write-path.md 4.2, 5.4), a layout or a
-    /// catalog index alike (schema-path.md 4.1). An `fc` that is not a count
-    /// ([`modcount::is_count`]: a file written before commits were checked,
-    /// or by another program) is `01 00` too, the 0 the server's scripts
-    /// read for it; so the value is at most 10 bytes and op60's reply can
-    /// always carry it.
-    pub fn mod_count(&self, path: &[Vec<u8>]) -> Vec<u8> {
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let Some(node) = self.node(&segments) else {
-            return Vec::new();
-        };
-        match node.child(&[MOD_COUNT]) {
-            Some(count) if modcount::is_count(count) => count.value.clone().unwrap_or_default(),
-            Some(_) => {
-                warn!(
-                    "{}: {path:02x?} holds a modification count that is not one; reported as none",
-                    self.name
-                );
-                modcount::key_string(0)
-            }
-            None => modcount::key_string(0),
-        }
-    }
-
     /// Write `record` (a new or modified record node, as uploaded) as record
     /// `id` of `table`, or delete the record when `record` is `None`, keeping
     /// `[T, 0d]` and the field indexes current (write-path.md 5.2-5.5).
@@ -4385,7 +4069,7 @@ fn member_key(value: &OwnedNode) -> Option<Vec<u8>> {
 /// Advance a serial number's text by `by`: the rightmost run of digits is
 /// incremented keeping its width ("INV0099" + 1 = "INV0100"); text without
 /// digits gets the number appended (write-path.md 3.2, Med).
-fn increment_serial(text: &str, by: i32) -> String {
+pub(crate) fn increment_serial(text: &str, by: i32) -> String {
     let bytes = text.as_bytes();
     let Some(end) = bytes.iter().rposition(u8::is_ascii_digit).map(|i| i + 1) else {
         return format!("{text}{by}");
@@ -4452,7 +4136,7 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The #137 fixture's `limited` set (FileMaker Pro 26.0.3, out of git):
@@ -4510,7 +4194,7 @@ mod tests {
     }
 
     /// A store holding `root`, with nothing unsaved and no lock.
-    fn store_of(root: OwnedNode) -> Store {
+    pub(crate) fn store_of(root: OwnedNode) -> Store {
         let derived = Derived::new(&TreeView::new(&root, 0), Catalog::default(), "")
             .expect("the file engine's tree never fails a read");
         Store {
@@ -4745,31 +4429,6 @@ mod tests {
     }
 
     #[test]
-    fn deleted_tables_take_their_libraries() {
-        // A table with a container library member, and another table.
-        let mut root = OwnedNode::default();
-        let member = [&[0x80, 0x02][..], &[LIBRARY], &[5], &[1], &[0x12]];
-        root.put(&member, OwnedNode::leaf(Vec::new(), vec![0, 0, 0, 1]));
-        root.put(
-            &[&[0x80, 0x03], &[0]],
-            OwnedNode::leaf(Vec::new(), vec![1, 1]),
-        );
-        let mut store = store_of(root);
-        // DeleteTable (schema-path.md 3.4): the library goes with [T].
-        let released = store.apply(vec![Write::Remove {
-            path: vec![vec![0x80, 0x02]],
-        }]);
-        assert_eq!(released, vec![vec![vec![0x80, 0x02], vec![LIBRARY]]]);
-        assert!(store.node(&member).is_none());
-        assert!(store.node(&[&[0x80, 0x03]]).is_some());
-        // Removing a catalog member is no table's deletion.
-        let released = store.apply(vec![Write::Remove {
-            path: vec![vec![3], vec![0x10], vec![5], vec![0x80, 0x02]],
-        }]);
-        assert!(released.is_empty());
-    }
-
-    #[test]
     fn member_keys_are_issued_from_the_catalog() {
         use om_query::Source;
         // live:s4: [4, 1, 00] = 01 04 and fc = 01 0d give 05/0e, then 06/0f;
@@ -4799,19 +4458,11 @@ mod tests {
             (vec![2, 0x80, 0x06], vec![1, 3])
         );
         assert_eq!(generate(&layouts), (vec![1, 7], vec![1, 0x10]));
-        // The issued values go into the indexes (live:s4 g_41_after, s5).
+        // Taken, they are no longer waiting (op86 writes them into the
+        // indexes: `engine::schema`'s test).
         assert!(store.has_issued_member_keys());
-        let issued = store.take_issued_member_keys();
-        store.write_member_keys(issued);
+        store.take_issued_member_keys();
         assert!(!store.has_issued_member_keys());
-        let value = |path: &[&[u8]]| store.node(path).unwrap().value.clone().unwrap();
-        assert_eq!(value(&[&[4], &[1], &[0]]), [1, 7]);
-        assert_eq!(value(&[&[4], &[1], &[0xfc]]), [1, 0x10]);
-        assert_eq!(value(&[&[3], &[0x10], &[1], &[0]]), [2, 0x80, 0x06]);
-        assert_eq!(
-            store.generate_member_key(&layouts).unwrap(),
-            (vec![1, 8], vec![1, 0x11])
-        );
         // A catalog whose last issued id is the largest has no next one.
         let scripts: [&[u8]; 3] = [&[0x11], &[1], &[0]];
         let largest = modcount::serial_leaf(0, u64::MAX);
@@ -4823,7 +4474,7 @@ mod tests {
 
     /// A library whose last member id or member count the file holds at the
     /// largest a serial key holds (#361): op88 and op87 are refused through
-    /// `library_refusal`, as the script's container store and its reference
+    /// `library::refusal`, as the script's container store and its reference
     /// counting are, and change nothing.
     #[test]
     fn library_counters_at_the_largest_are_refused() {
@@ -4831,13 +4482,18 @@ mod tests {
         let table: &[u8] = &[0x80, 0x01];
         let path: [&[u8]; 2] = [table, &[LIBRARY]];
         let mut store = store_of(OwnedNode::default());
-        let stored = store.store_binary(&path, data(b"a"), || [1; 16]);
+        let store_binary = |store: &mut Store, data, id: u8| {
+            crate::engine::written(store, |tx| {
+                crate::containers::store_binary(tx, "", &path, data, || [id; 16])
+            })
+        };
+        let stored = store_binary(&mut store, data(b"a"), 1);
         assert_eq!(stored, Some(Stored::New(vec![1])));
         let largest = |key: u8| modcount::serial_leaf(key, u64::MAX);
         store.root.put(&[table, &[LIBRARY], &[1], &[0]], largest(0));
         // Reusing data advances its member's counters, not the last issued id.
         assert_eq!(
-            store.store_binary(&path, data(b"a"), || [2; 16]),
+            store_binary(&mut store, data(b"a"), 2),
             Some(Stored::Existing(vec![1]))
         );
         assert_eq!(
@@ -4845,14 +4501,17 @@ mod tests {
             2
         );
         store.root.put(
-            &[table, &[LIBRARY], &[5], &[1], &[MOD_COUNT]],
-            largest(MOD_COUNT),
+            &[table, &[LIBRARY], &[5], &[1], &[modcount::MOD_COUNT]],
+            largest(modcount::MOD_COUNT),
         );
         let before = store.root.clone();
         // A new member, the member reused, its count adjusted.
-        assert_eq!(store.store_binary(&path, data(b"b"), || [2; 16]), None);
-        assert_eq!(store.store_binary(&path, data(b"a"), || [2; 16]), None);
-        assert_eq!(store.adjust_reference_count(&path, &[1], 1), None);
+        assert_eq!(store_binary(&mut store, data(b"b"), 2), None);
+        assert_eq!(store_binary(&mut store, data(b"a"), 2), None);
+        let adjusted = crate::engine::written(&mut store, |tx| {
+            crate::containers::adjust_count(tx, "", &path, &[1], 1)
+        });
+        assert_eq!(adjusted, None);
         assert_eq!(store.root, before);
     }
 
@@ -4881,7 +4540,9 @@ mod tests {
         let path: [&[u8]; 2] = [table, &[LIBRARY]];
         let mut store = store_of(OwnedNode::default());
         for _ in 0..2 {
-            store.store_binary(&path, file_data(b"a"), || [1; 16]);
+            crate::engine::written(&mut store, |tx| {
+                crate::containers::store_binary(tx, "", &path, file_data(b"a"), || [1; 16])
+            });
         }
         let count =
             |store: &Store| library::reference_count(store.library_member(&path, &[1]).unwrap());

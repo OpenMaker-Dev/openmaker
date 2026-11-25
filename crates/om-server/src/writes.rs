@@ -29,13 +29,15 @@ use om_protocol::write::{
 
 use crate::connection::ACCESS_DENIED;
 use crate::engine::{
-    CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReleaseLock, ReleaseLocks,
-    ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
+    CommitRecords, CommitReply, CommitScriptRecords, Environment, Locks, ReadError, ReleaseLock,
+    ReleaseLocks, ReserveRecordIds, SetNextSerial, Staged, TakeLock, Transaction, UpgradeLock,
+    View, NO_LIMIT,
 };
 use crate::hosting::Hosted;
 use crate::library::BinaryData;
 use crate::locks::LockUser;
 use crate::modcount;
+use crate::store::keys::{FIELDS, FIELD_DEFINITIONS, LAST_RECORD_ID, SERIAL_VALUE};
 use crate::store::Store;
 use crate::uploads::Charge;
 
@@ -324,13 +326,13 @@ pub(crate) fn create_record(
     if tx.is_read_only() {
         return refused_ids(u32::from(ACCESS_DENIED));
     }
-    let Some(table) = single(&req.table).filter(|t| tx.has_table(t)) else {
+    let Some(table) = single(&req.table).filter(|t| tx.derived().has_table(t)) else {
         return refused_ids(TABLE_MISSING);
     };
     // Each refusal comes before anything changes, in this order: the count,
     // the connection's lock room, then the reservation's own (a count of 0,
     // ids past the largest, a table node the last issued id cannot go
-    // beneath; `Store::reserve_record_ids`), then (`durable`) the engine's
+    // beneath; `reserve_record_ids`), then (`durable`) the engine's
     // save of the new last issued id, which a refusal takes back. Only a
     // lock another user holds on a reserved id refuses after the ids are
     // reserved, as FileMaker Server does (write-path.md 3.1, step 4).
@@ -345,7 +347,7 @@ pub(crate) fn create_record(
         );
         return refused_ids(u32::from(LOCK_CONFLICT));
     }
-    let Some(first) = tx.reserve_record_ids(table, req.count) else {
+    let Some(first) = reserve_record_ids(tx, file, table, req.count) else {
         return refused_ids(UNAVAILABLE);
     };
     // Inclusive: the last id may be the largest a serial key holds.
@@ -368,7 +370,7 @@ pub(crate) fn create_record(
 
 /// op72: read a field's next serial value, replacing or advancing it as the
 /// flags ask (write-path.md 3.2).
-pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerialReply {
+pub(crate) fn get_serial(req: &GetSerial, file: &str, tx: &mut Transaction<'_>) -> GetSerialReply {
     if tx.is_read_only() {
         return GetSerialReply {
             conflict: None,
@@ -377,7 +379,9 @@ pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerial
         };
     }
     let value = match (single(&req.table), single(&req.field)) {
-        (Some(table), Some(field)) => tx.serial_value(
+        (Some(table), Some(field)) => serial_value(
+            tx,
+            file,
             table,
             field,
             (req.flags & SERIAL_REPLACE != 0).then_some(req.value.as_str()),
@@ -404,15 +408,119 @@ pub(crate) fn get_serial(req: &GetSerial, tx: &mut Transaction<'_>) -> GetSerial
 /// within a commit, which the engine saves before it counts and takes back
 /// when it cannot, as a record commit. 102 for a table without the field,
 /// which changes nothing.
-pub(crate) fn set_next_serial(op: SetNextSerial, tx: &mut Transaction<'_>) -> Result<(), u32> {
+pub(crate) fn set_next_serial(
+    op: SetNextSerial,
+    file: &str,
+    tx: &mut Transaction<'_>,
+) -> Result<(), u32> {
     let SetNextSerial {
         table,
         field,
         value,
     } = op;
-    tx.set_serial(&table, &field, &value)
-        .map(|_| ())
-        .ok_or(FIELD_MISSING)
+    serial_value(tx, file, &table, &field, Some(&value), None).ok_or(FIELD_MISSING)?;
+    // Saved as a commit, as a record's is (`Save::Commit`).
+    tx.begin_commit();
+    Ok(())
+}
+
+/// The last record id issued in `table` (`[T, 00]`), 0 when none is.
+fn last_record_id(view: &dyn View, table: &[u8]) -> u64 {
+    view.node(&[table, &[LAST_RECORD_ID]])
+        .ok()
+        .flatten()
+        .and_then(|head| head.value)
+        .as_deref()
+        .and_then(<[u8]>::split_first)
+        .filter(|(&len, segment)| usize::from(len) == segment.len())
+        .and_then(|(_, segment)| serial::decode(segment))
+        .unwrap_or(0)
+}
+
+/// Reserve `count` record ids in `table` (op71): returns the first and
+/// stores the new last issued id. `None`, changing nothing, for a count of
+/// 0, when the ids would pass the largest a serial key holds (the last
+/// issued id comes from the file, and a catalog upload can set it: ids must
+/// not wrap around to those records have), and when the table's node holds
+/// a value, which the id cannot go beneath (the transaction refuses the
+/// write). The reservation is not a commit: the engine saves it before the
+/// ids are answered, or takes it back byte for byte when the save fails.
+fn reserve_record_ids(
+    tx: &mut Transaction<'_>,
+    file: &str,
+    table: &[u8],
+    count: u32,
+) -> Option<u64> {
+    if count == 0 {
+        return None;
+    }
+    let last = last_record_id(tx, table);
+    let Some(new_last) = last.checked_add(u64::from(count)) else {
+        warn!(
+            "{file}: no record ids reserved: {count} do not fit after the last issued id \
+             {last} of table {table:02x?}"
+        );
+        return None;
+    };
+    let segment = serial::encode(new_last);
+    let mut value = vec![segment.len() as u8];
+    value.extend(segment);
+    let path = vec![table.to_vec(), vec![LAST_RECORD_ID]];
+    if let Err(reason) = tx.put(path, OwnedNode::leaf(Vec::new(), value)) {
+        warn!("{file}: no record ids reserved: {reason}");
+        return None;
+    }
+    tx.reserved_ids();
+    // At most `new_last`, as `count` is at least 1.
+    Some(last + 1)
+}
+
+/// A field's next serial value (op72, Set Next Serial Value), read and
+/// possibly replaced or advanced; returns the value before the update.
+/// `None` when the field does not exist, or when the new value cannot go
+/// beneath its definition as the tree is (a definition that holds a
+/// value), which changes nothing. Only an existing field definition gets a
+/// serial node.
+fn serial_value(
+    tx: &mut Transaction<'_>,
+    file: &str,
+    table: &[u8],
+    field: &[u8],
+    replace: Option<&str>,
+    increment: Option<i32>,
+) -> Option<String> {
+    tx.derived().field_type(table, field)?;
+    let path: [&[u8]; 5] = [
+        table,
+        &[FIELDS],
+        &[FIELD_DEFINITIONS],
+        field,
+        &[SERIAL_VALUE],
+    ];
+    // The node whole, as the value may be stored in pieces: the file
+    // engine holds it in memory already.
+    let current = tx
+        .subtree(&path, NO_LIMIT)
+        .ok()
+        .flatten()
+        .and_then(|node| crate::derived::cell_text(&node))
+        .unwrap_or_else(|| "1".to_string());
+    let next = match (replace, increment) {
+        (Some(value), _) => Some(value.to_string()),
+        (None, Some(by)) => Some(crate::store::increment_serial(&current, by)),
+        (None, None) => None,
+    };
+    if let Some(next) = next {
+        if View::node(tx, &path[..4]).ok().flatten().is_some() {
+            let at = path.iter().map(|segment| segment.to_vec()).collect();
+            let leaf = OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(&next));
+            if let Err(reason) = tx.put(at, leaf) {
+                warn!("{file}: serial value not set: {reason}");
+                return None;
+            }
+        }
+    }
+    Some(current)
 }
 
 /// One file's temporary area on a connection (write-path.md 3.3): the
@@ -820,7 +928,7 @@ fn commit_list(
                 }
                 let existed = tx.has_record(t, id);
                 let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-                if let (Some(fields), Some(stored)) = (hidden.get(t), tx.node(&segments)) {
+                if let (Some(fields), Some(stored)) = (hidden.get(t), tx.store_node(&segments)) {
                     let stored = stored.clone();
                     crate::views::keep_hidden(&mut record, &stored, fields);
                 }
@@ -1003,7 +1111,7 @@ fn write_records(
         // op87 counts a client's: a deleted record releases its values, a
         // new one takes a reference to those it copied.
         let old = tx
-            .node(&[&path[0], RECORDS, &path[2]])
+            .store_node(&[&path[0], RECORDS, &path[2]])
             .cloned()
             .filter(|_| !record.new);
         tx.count_containers(&path[0], old.as_ref(), record.record.as_ref(), &counted);
@@ -1057,34 +1165,46 @@ fn over_cap(file: &str, holder: &str, path: &[Vec<u8>]) -> LockReply {
 }
 
 /// op60: take a lock without waiting, answering with the locked node's
-/// modification count in `store` when asked (write-path.md 4.2,
+/// modification count `view` reads when asked (write-path.md 4.2,
 /// schema-path.md 4.1). The grant is framed before the lock is taken, so a
 /// lock is only held by a client the reply tells of it: a grant that cannot
-/// be framed (a count longer than 255 bytes, which [`Store::mod_count`]
-/// does not return) is refused with error 3 and takes nothing. A new lock
+/// be framed (a count longer than 255 bytes, which [`mod_count`] does not
+/// return) is refused with error 3 and takes nothing. A new lock
 /// is refused when `room`, the locks the connection may still take
 /// ([`MAX_LOCKS`]), is 0.
-pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_>) -> LockReply {
+pub(crate) fn lock(op: TakeLock, file: &str, view: &dyn View, locks: &mut Locks<'_>) -> LockReply {
     let TakeLock {
         user,
         holder,
         request: req,
         room,
     } = op;
-    let mod_count = req.want_mod_count.then(|| store.mod_count(&req.path));
+    let unavailable = || LockReply::Refused {
+        status: LOCK_UNAVAILABLE,
+        conflict: Conflict {
+            self_conflict: false,
+            users: String::new(),
+        },
+    };
+    let mod_count = match req.want_mod_count.then(|| mod_count(view, file, &req.path)) {
+        None => None,
+        Some(Ok(count)) => Some(count),
+        Some(Err(error)) => {
+            warn!(
+                "{file:?}: lock of {:02x?} refused: its modification count cannot be read: \
+                 {error}",
+                req.path
+            );
+            return unavailable();
+        }
+    };
     let granted = LockReply::Granted { mod_count };
     if let Err(e) = granted.to_result() {
         warn!(
             "{file:?}: lock of {:02x?} refused: its modification count cannot be sent: {e}",
             req.path
         );
-        return LockReply::Refused {
-            status: LOCK_UNAVAILABLE,
-            conflict: Conflict {
-                self_conflict: false,
-                users: String::new(),
-            },
-        };
+        return unavailable();
     }
     if room == 0 && !locks.holds(&req.path, user, req.lock_type) {
         return over_cap(file, &holder, &req.path);
@@ -1095,6 +1215,34 @@ pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_
             status: LOCK_CONFLICT,
             conflict,
         },
+    }
+}
+
+/// The modification count of the node at `path` as op60 returns it: its
+/// `fc` child, `01 00` when it has none, empty when the node does not
+/// exist. A record (`[T, 05, R]`, write-path.md 4.2, 5.4), a layout or a
+/// catalog index alike (schema-path.md 4.1). An `fc` that is not a count
+/// (`modcount::is_count`: a file written before commits were checked, or
+/// by another program) is `01 00` too, the 0 the server's scripts read for
+/// it; so the value is at most 10 bytes and op60's reply can always carry
+/// it.
+fn mod_count(view: &dyn View, file: &str, path: &[Vec<u8>]) -> Result<Vec<u8>, ReadError> {
+    let mut segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    if view.node(&segments)?.is_none() {
+        return Ok(Vec::new());
+    }
+    segments.push(&[modcount::MOD_COUNT]);
+    let Some(count) = view.node(&segments)? else {
+        return Ok(modcount::key_string(0));
+    };
+    match count.value.filter(|_| !count.list) {
+        Some(value) if modcount::parse(&value).is_some() => Ok(value.into_owned()),
+        _ => {
+            warn!(
+                "{file}: {path:02x?} holds a modification count that is not one; reported as none"
+            );
+            Ok(modcount::key_string(0))
+        }
     }
 }
 
