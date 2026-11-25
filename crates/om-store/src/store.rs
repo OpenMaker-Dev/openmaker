@@ -753,6 +753,10 @@ pub struct Store {
     /// A member of a cluster ([`Store::open_member`]): entries reach its log
     /// through consensus, and only what is committed is applied.
     member: bool,
+    /// A member's entries applied since the simulator last looked
+    /// ([`Store::take_applied`]).
+    #[cfg(test)]
+    applied: Vec<member::Applied>,
 }
 
 /// The bytes the log keeps at the end of its segment while `groups` groups
@@ -1675,6 +1679,8 @@ impl Store {
             journal,
             groups: 0,
             member,
+            #[cfg(test)]
+            applied: Vec::new(),
         };
         if member {
             // A member writes no entry of its own: its leader appends (section
@@ -1808,6 +1814,7 @@ impl Store {
     /// acknowledged. A failed write or flush stops the store.
     pub fn acknowledge(&mut self, shown: &incident::Shown) -> Result<usize, WriteError> {
         self.usable()?;
+        self.not_member()?;
         match self.journal.acknowledge(&*self.fs, shown) {
             Ok(n) => Ok(n),
             Err(JournalError::Refused(why)) => Err(WriteError::Rule(why)),
@@ -2153,6 +2160,7 @@ impl Store {
     /// retired by the next checkpoint.
     pub fn drop_restore_point(&mut self, name: &str) -> Result<(), WriteError> {
         self.usable()?;
+        self.not_member()?;
         self.pages
             .drop_restore_point(name)
             .map_err(WriteError::Rule)
@@ -2164,6 +2172,16 @@ impl Store {
     /// what the page file can. Refused while entries are applied past the
     /// published one: flush first. A failed write stops the store.
     pub fn checkpoint(&mut self, keep_as: Option<&str>) -> Result<Checkpoint, CheckpointFailed> {
+        if self.member {
+            return Err(CheckpointFailed::Refused(
+                "a member of a cluster checkpoints through its consensus core".into(),
+            ));
+        }
+        self.checkpoint_as(keep_as)
+    }
+
+    /// [`Store::checkpoint`], on a single server or a member.
+    fn checkpoint_as(&mut self, keep_as: Option<&str>) -> Result<Checkpoint, CheckpointFailed> {
         if let Some(why) = &self.stopped {
             return Err(CheckpointFailed::Stopped(why.clone()));
         }
@@ -2238,6 +2256,7 @@ impl Store {
     /// Frees what the page file can among `budget` dying pages.
     pub fn reclaim(&mut self, budget: usize) -> Result<Reclaimed, WriteError> {
         self.usable()?;
+        self.not_member()?;
         Ok(self.pages.reclaim(budget))
     }
 
