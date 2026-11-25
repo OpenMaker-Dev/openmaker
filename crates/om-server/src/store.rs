@@ -2119,54 +2119,6 @@ impl Store {
         (!refused.is_empty()).then(|| describe(&refused))
     }
 
-    /// Replace catalog members within a commit ([`Store::begin_commit`]):
-    /// each node's old version goes into `journal`, so a failed save puts
-    /// it back ([`Store::save_commit`]). For catalogs the schema
-    /// ([`Store::catalog`]) does not hold, such as the scripts `[17]`,
-    /// which server script sessions read with it: the derived state is
-    /// computed again, as after any change of the schema, so that a session
-    /// keyed by its version reads them again, and the journal keeps the one
-    /// from before.
-    pub fn replace_members_in(
-        &mut self,
-        journal: &mut Journal,
-        members: Vec<(Vec<Vec<u8>>, OwnedNode)>,
-    ) {
-        journal.schema_from(&self.derived);
-        for (path, node) in members {
-            if let Some(reason) = self.replacement_refusal(&path, &node) {
-                journal.refused.get_or_insert(reason);
-                continue;
-            }
-            journal.save_path(&self.root, path.clone());
-            let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-            self.root.put(&segments, node);
-        }
-        self.schema_changed();
-    }
-
-    /// Replace the schema catalog at `path`, such as a table's fields
-    /// `[T, 03]`, within a commit ([`Store::begin_commit`]) and read the
-    /// schema again, so writes and queries see the change; a failed save
-    /// puts the catalog back and reads the schema again
-    /// ([`Store::save_commit`]).
-    pub fn replace_schema_in(
-        &mut self,
-        journal: &mut Journal,
-        path: Vec<Vec<u8>>,
-        node: OwnedNode,
-    ) {
-        if let Some(reason) = self.replacement_refusal(&path, &node) {
-            journal.refused.get_or_insert(reason);
-            return;
-        }
-        journal.save_path(&self.root, path.clone());
-        journal.schema_from(&self.derived);
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        self.root.put(&segments, node);
-        self.schema_changed();
-    }
-
     /// One write of an operation's transaction (`engine::Transaction`):
     /// `node` put at `path`, replacing whatever is there and everything
     /// under it, as `OwnedNode::put` puts it, or, with `None`, the node at
@@ -2239,17 +2191,6 @@ impl Store {
         self.reread_catalog();
     }
 
-    /// Remove the schema node at `path` (a layout member Delete Layout
-    /// removes) in `journal`'s commit, which puts it back if the file is not
-    /// written.
-    pub fn remove_schema_in(&mut self, journal: &mut Journal, path: Vec<Vec<u8>>) {
-        journal.save_node(&self.root, path.clone());
-        journal.schema_from(&self.derived);
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        self.root.remove(&segments);
-        self.schema_changed();
-    }
-
     /// Count field `field` of `table`, which was just added, as computed
     /// with its definition ([`recalc`]): a new field has no stored values
     /// to recompute.
@@ -2275,19 +2216,11 @@ impl Store {
         let mut journal = self.begin_commit();
         let stored = self.write_in(&mut journal, path, Some(node)).is_ok();
         if stored {
-            journal.schema_from(&self.derived);
-            self.schema_changed();
+            // Read again, as after any upload, whatever the path.
+            self.generation += 1;
+            self.schema_changed_in(&mut journal);
         }
         stored
-    }
-
-    /// Re-read the schema catalogs after the client changed them, so writes
-    /// and queries see new tables and fields, and tell those who read them
-    /// earlier ([`Store::schema_generation`]).
-    fn schema_changed(&mut self) {
-        self.dirty = true;
-        self.generation += 1;
-        self.reread_catalog();
     }
 
     fn reread_catalog(&mut self) {

@@ -367,31 +367,6 @@ impl<'a> Transaction<'a> {
         self.store.store_indexes_in(&mut self.journal, indexes);
     }
 
-    /// Replace catalog members the schema does not hold, such as a script
-    /// and the script catalog's index, within the commit
-    /// (`Store::replace_members_in`).
-    pub fn replace_members(&mut self, members: Vec<(Vec<Vec<u8>>, OwnedNode)>) {
-        self.by_store();
-        self.committing = true;
-        self.store.replace_members_in(&mut self.journal, members);
-    }
-
-    /// Replace the schema node at `path` within the commit, the schema read
-    /// again (`Store::replace_schema_in`).
-    pub fn replace_schema(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
-        self.by_store();
-        self.committing = true;
-        self.store.replace_schema_in(&mut self.journal, path, node);
-    }
-
-    /// Remove the schema node at `path` within the commit
-    /// (`Store::remove_schema_in`).
-    pub fn remove_schema(&mut self, path: Vec<Vec<u8>>) {
-        self.by_store();
-        self.committing = true;
-        self.store.remove_schema_in(&mut self.journal, path);
-    }
-
     /// Count field `field` of `table`, which the commit adds, as computed
     /// once the commit is stored (`Store::add_field_basis`), and not if it
     /// is not.

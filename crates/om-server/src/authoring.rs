@@ -56,6 +56,8 @@
 //! engine's transaction and lock table, its stamps' time and its new UUIDs
 //! taken from the engine's environment.
 
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -68,7 +70,7 @@ use om_data::library_uses;
 use om_hbam::catalog::DataType;
 use om_hbam::slot::uint_segment;
 use om_hbam::tree::memory;
-use om_hbam::{serial, KeySegment, OwnedNode};
+use om_hbam::{serial, Catalog, KeySegment, OwnedNode};
 use om_protocol::authoring::{
     self, catalog_revision, content_revision, status, ChangeParts, CreateField, CreateLayout,
     Created, DeleteLayout, DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame,
@@ -86,13 +88,13 @@ use om_scripts::{Script, ScriptKind};
 
 use crate::config::Privileges;
 use crate::connection::{host_time_key_at, mismatched, Shared};
+use crate::derived::Derived;
 use crate::engine::{
     self, DesignEdit, EditDesign, Edited, Environment, FileNotSaved, Locks, NotStored, ReadError,
-    Transaction,
+    Transaction, View, NO_LIMIT,
 };
 use crate::hosting::{FileAccount, Hosted};
 use crate::locks::LockUser;
-use crate::store::Store;
 use crate::transfer::Refused;
 use crate::uploads::Charge;
 use crate::writes::Change;
@@ -404,6 +406,7 @@ pub(crate) fn edit(
         environment,
         changes: Vec::new(),
         not_stored: None,
+        failed: RefCell::new(None),
     };
     let ed = &mut ed;
     let reply = match &edit {
@@ -426,6 +429,20 @@ pub(crate) fn edit(
         DesignEdit::PlaceButtonStep(request) => place_button_step(ed, request),
         DesignEdit::SetObjectFrames(request) => set_object_frames(ed, request),
         DesignEdit::DeleteObjects(request) => delete_objects(ed, request),
+    };
+    // A read that failed refuses the edit, whatever it answered from what
+    // it could read, and keeps nothing of what it wrote.
+    let reply = match ed.failed.take() {
+        Some(error) => {
+            ed.tx
+                .refuse(format!("an authoring edit's read failed: {error}"));
+            ed.changes.clear();
+            refused(
+                status::SAVE_FAILED[0],
+                format!("The file could not be read: {error}"),
+            )
+        }
+        None => reply,
     };
     let edited = Edited {
         reply,
@@ -455,9 +472,76 @@ struct Editor<'e, 'a, 'l> {
     changes: Vec<Change>,
     /// What the storage error says when the edit cannot be stored.
     not_stored: Option<NotStored>,
+    /// The first of the edit's reads of the file that failed, which
+    /// refuses the edit ([`edit`]).
+    failed: RefCell<Option<ReadError>>,
+}
+
+/// The subtree at `path` as `view` reads it, or, when the read fails, no
+/// node, the failure kept in `failed` to refuse the edit.
+fn read_node<'v>(
+    view: &'v dyn View,
+    failed: &RefCell<Option<ReadError>>,
+    path: &[&[u8]],
+) -> Option<Cow<'v, OwnedNode>> {
+    view.subtree(path, NO_LIMIT).unwrap_or_else(|error| {
+        failed.borrow_mut().get_or_insert(error);
+        None
+    })
+}
+
+/// What an edit's checks and plan read of the file under the store guard
+/// it is saved under ([`edit_objects`]): its tree, through the edit's
+/// transaction, and its schema as derived from it.
+struct Schema<'s> {
+    view: &'s dyn View,
+    failed: &'s RefCell<Option<ReadError>>,
+    derived: Arc<Derived>,
+}
+
+impl Schema<'_> {
+    /// The subtree at `path` ([`read_node`]).
+    fn node(&self, path: &[&[u8]]) -> Option<Cow<'_, OwnedNode>> {
+        read_node(self.view, self.failed, path)
+    }
+
+    fn catalog(&self) -> &Catalog {
+        self.derived.catalog()
+    }
 }
 
 impl Editor<'_, '_, '_> {
+    /// The subtree at `path`, as the edit reads it through its transaction
+    /// ([`read_node`]).
+    fn node(&self, path: &[&[u8]]) -> Option<Cow<'_, OwnedNode>> {
+        read_node(&*self.tx, &self.failed, path)
+    }
+
+    /// What the edit's checks read ([`Schema`]).
+    fn schema(&mut self) -> Schema<'_> {
+        let derived = self.tx.derived();
+        Schema {
+            view: &*self.tx,
+            failed: &self.failed,
+            derived,
+        }
+    }
+
+    /// One change of the edit's commit, through its transaction: `node`
+    /// put at `path`, replacing whatever is there, or, with `None`, the
+    /// node there removed. A write the file cannot hold fails the commit,
+    /// so nothing of the edit is stored.
+    fn write(&mut self, path: Vec<Vec<u8>>, node: Option<OwnedNode>) {
+        self.tx.begin_commit();
+        let written = match node {
+            Some(node) => self.tx.replace(path, node),
+            None => self.tx.remove(path),
+        };
+        if let Err(reason) = written {
+            self.tx.refuse(reason);
+        }
+    }
+
     /// Take `locks` (path, type) in order, or none of them: the holders of
     /// the first that conflicts. They are held while the edit is stored,
     /// and released after (`Locks::lock_while_stored`).
@@ -691,9 +775,8 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
     let definition_path = vec![vec![SCRIPTS], vec![DEFINITIONS], key.clone()];
     let index_path = vec![vec![SCRIPTS], vec![INDEX]];
     let Some(current) = ed
-        .tx
-        .store_node(&[&[SCRIPTS], &[DEFINITIONS], &key])
-        .cloned()
+        .node(&[&[SCRIPTS], &[DEFINITIONS], &key])
+        .map(Cow::into_owned)
     else {
         return refused(
             status::SCRIPT_MISSING,
@@ -748,12 +831,13 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
     // FileMaker Pro saves the index with the same stamp; a file without
     // one (scripts listed by their definitions only) does not get a
     // partial one.
-    let index = ed.tx.store_node(&[&[SCRIPTS], &[INDEX]]).cloned();
+    let index = ed.node(&[&[SCRIPTS], &[INDEX]]).map(Cow::into_owned);
     if let Some(index) = &index {
         members.push((index_path.clone(), ed.stamped(index.clone(), &time)));
     }
-    ed.tx.begin_commit();
-    ed.tx.replace_members(members);
+    for (path, member) in members {
+        ed.write(path, Some(member));
+    }
     let mut changed = vec![definition_path];
     if index.is_some() {
         changed.push(index_path);
@@ -833,13 +917,13 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
     }
     let table = uint_segment(request.table);
     let catalog_path = vec![table.clone(), vec![FIELDS]];
-    if !ed.tx.has_table(&table) {
+    if !ed.tx.derived().has_table(&table) {
         return refused(
             status::TABLE_MISSING,
             format!("The file has no table {}.", request.table),
         );
     }
-    let current = ed.tx.store_node(&[&table, &[FIELDS]]).cloned();
+    let current = ed.node(&[&table, &[FIELDS]]).map(Cow::into_owned);
     let current_revision = catalog_revision(
         current
             .as_ref()
@@ -911,8 +995,7 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
         catalog.set_child(ed.stamped(index, &time));
     }
     let revision = catalog_revision(&catalog);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(catalog_path.clone(), catalog);
+    ed.write(catalog_path.clone(), Some(catalog));
     ed.tx.add_field_basis_once_stored(table, planned.field);
     let account = ed.account;
     ed.once_stored(
@@ -950,7 +1033,7 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     if !ed
         .tx
-        .view()
+        .derived()
         .catalog()
         .table_occurrences
         .iter()
@@ -963,12 +1046,13 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
     }
     let like = (request.like != 0).then_some(request.like);
     let planned = {
-        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to add a layout to.",
             );
         };
+        let layouts: &OwnedNode = &layouts;
         if let Some(like) = like {
             if layouts
                 .at(&[&[LAYOUT_MEMBERS], &uint_segment(like)])
@@ -1050,9 +1134,8 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
     let index = ed.stamped(planned.index, &time);
     let revision = catalog_revision(&index);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path, member);
-    ed.tx.replace_schema(index_path, index);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
     let account = ed.account;
     ed.once_stored(
         vec![vec![vec![LAYOUTS]]],
@@ -1080,8 +1163,10 @@ fn layout_width(ed: &mut Editor<'_, '_, '_>, request: &LayoutWidth) -> Reply {
         expected: request.expected,
         objects: 0,
         done: "set to its new width",
-        already: |member: &OwnedNode, _: &Store| layout_placement::already_width(member, width),
-        plan: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_placement::already_width(member, width)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_width(member, width).map_err(placement_refused)
         },
     };
@@ -1101,8 +1186,8 @@ fn layout_width(ed: &mut Editor<'_, '_, '_>, request: &LayoutWidth) -> Reply {
 fn field_control(ed: &mut Editor<'_, '_, '_>, request: &FieldControl) -> Reply {
     let id = request.layout;
     {
-        let store = ed.tx.view();
-        let Some(member) = store.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &uint_segment(id)]) else {
+        let schema = ed.schema();
+        let Some(member) = schema.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &uint_segment(id)]) else {
             return refused(
                 status::LAYOUT_MISSING,
                 format!("The file has no layout {id}."),
@@ -1110,8 +1195,8 @@ fn field_control(ed: &mut Editor<'_, '_, '_>, request: &FieldControl) -> Reply {
         };
         // At another revision, `edit_objects` answers: already applied, or
         // a conflict (306), even when the object is gone since.
-        if catalog_revision(member) == request.expected {
-            if let Err((status, why)) = control_facts(store, member, request) {
+        if catalog_revision(&member) == request.expected {
+            if let Err((status, why)) = control_facts(&schema, &member, request) {
                 return refused(status, why);
             }
         }
@@ -1122,12 +1207,12 @@ fn field_control(ed: &mut Editor<'_, '_, '_>, request: &FieldControl) -> Reply {
         expected: request.expected,
         objects: 1,
         done: "shown with its new control",
-        already: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::already_control(member, object, control, value_list)
         },
-        plan: |member: &OwnedNode, store: &Store| {
+        plan: |member: &OwnedNode, schema: &Schema<'_>| {
             let facts =
-                control_facts(store, member, request).map_err(|(code, why)| refused(code, why))?;
+                control_facts(schema, member, request).map_err(|(code, why)| refused(code, why))?;
             layout_objects::plan_control(member, object, (control, value_list), &facts)
                 .map_err(placement_refused)
         },
@@ -1148,10 +1233,10 @@ fn set_text(ed: &mut Editor<'_, '_, '_>, request: &SetText) -> Reply {
         expected: request.expected,
         objects: 1,
         done: "given its new words",
-        already: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::already_words(member, object, text)
         },
-        plan: |member: &OwnedNode, _: &Store| {
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_words(member, object, text).map_err(placement_refused)
         },
     };
@@ -1198,8 +1283,10 @@ fn change_parts(ed: &mut Editor<'_, '_, '_>, request: &ChangeParts) -> Reply {
         expected: request.expected,
         objects: 0,
         done: "given its parts",
-        already: |member: &OwnedNode, _: &Store| layout_placement::already_parts(member, &change),
-        plan: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_placement::already_parts(member, &change)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_parts(member, &change).map_err(placement_refused)
         },
     };
@@ -1223,8 +1310,8 @@ fn part_options(ed: &mut Editor<'_, '_, '_>, request: &PartOptions) -> Reply {
     // The sort field the client chose, as the store has it now: the
     // layout's own occurrence, still on that table, which has the field.
     // Checked under the store guard, for the retry as for the save.
-    let field_holds = |member: &OwnedNode, store: &Store| {
-        let catalog = store.catalog();
+    let field_holds = |member: &OwnedNode, schema: &Schema<'_>| {
+        let catalog = schema.catalog();
         let own = layout_placement::definition(member)
             .ok()
             .and_then(|def| om_layout::occurrence_id(def.table_alias_key));
@@ -1245,12 +1332,12 @@ fn part_options(ed: &mut Editor<'_, '_, '_>, request: &PartOptions) -> Reply {
         expected: request.expected,
         objects: 0,
         done: "given its part's options",
-        already: |member: &OwnedNode, store: &Store| {
+        already: |member: &OwnedNode, schema: &Schema<'_>| {
             layout_placement::already_part_options(member, part, options)
-                && (request.break_field.is_none() || field_holds(member, store))
+                && (request.break_field.is_none() || field_holds(member, schema))
         },
-        plan: |member: &OwnedNode, store: &Store| {
-            let exists = field_holds(member, store);
+        plan: |member: &OwnedNode, schema: &Schema<'_>| {
+            let exists = field_holds(member, schema);
             layout_placement::plan_part_options(member, part, options, exists)
                 .map_err(placement_refused)
         },
@@ -1266,7 +1353,7 @@ fn part_options(ed: &mut Editor<'_, '_, '_>, request: &PartOptions) -> Reply {
 /// it will show (the one asked for, or else the one it stores) exists. Or
 /// the refusal's status and text.
 fn control_facts(
-    store: &Store,
+    schema: &Schema<'_>,
     member: &OwnedNode,
     request: &FieldControl,
 ) -> Result<layout_objects::ControlFacts, (u16, String)> {
@@ -1285,7 +1372,7 @@ fn control_facts(
             ),
         ));
     };
-    let catalog = store.catalog();
+    let catalog = schema.catalog();
     let field = om_layout::occurrence_id(spec.table_key)
         .and_then(|occurrence| {
             catalog
@@ -1305,7 +1392,7 @@ fn control_facts(
     let list = request.value_list.unwrap_or(stored_list);
     let value_list_exists = list == 0
         || serial::raw_of_id(list).is_some_and(|raw| {
-            store
+            schema
                 .node(&[&[VALUE_LISTS], &[5], &uint_segment(raw)])
                 .is_some()
         });
@@ -1331,8 +1418,10 @@ fn set_object_frames(ed: &mut Editor<'_, '_, '_>, request: &SetObjectFrames) -> 
         expected: request.expected,
         objects: frames.len(),
         done: "moved or resized",
-        already: |member: &OwnedNode, _: &Store| layout_objects::already_framed(member, &frames),
-        plan: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_objects::already_framed(member, &frames)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::plan(member, &frames).map_err(placement_refused)
         },
     };
@@ -1348,10 +1437,10 @@ fn delete_objects(ed: &mut Editor<'_, '_, '_>, request: &DeleteObjects) -> Reply
         expected: request.expected,
         objects: request.objects.len(),
         done: "deleted",
-        already: |member: &OwnedNode, _: &Store| {
+        already: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::already_deleted(member, &request.objects)
         },
-        plan: |member: &OwnedNode, _: &Store| {
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_objects::plan_deletion(member, &request.objects).map_err(placement_refused)
         },
     };
@@ -1387,8 +1476,8 @@ fn edit_objects<A, P>(
     edit: ObjectEdit<A, P>,
 ) -> Result<(bool, Revision), Reply>
 where
-    A: Fn(&OwnedNode, &Store) -> bool,
-    P: Fn(&OwnedNode, &Store) -> Result<layout_objects::Planned, Reply>,
+    A: Fn(&OwnedNode, &Schema<'_>) -> bool,
+    P: Fn(&OwnedNode, &Schema<'_>) -> Result<layout_objects::Planned, Reply>,
 {
     let id = edit.layout;
     if ed.tx.is_read_only() {
@@ -1400,9 +1489,8 @@ where
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
     let Some(current) = ed
-        .tx
-        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
-        .cloned()
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
     else {
         return Err(refused(
             status::LAYOUT_MISSING,
@@ -1411,7 +1499,7 @@ where
     };
     let current_revision = catalog_revision(&current);
     if current_revision != edit.expected {
-        if (edit.already)(&current, ed.tx.view()) {
+        if (edit.already)(&current, &ed.schema()) {
             return Ok((false, current_revision));
         }
         return Err(Reply::Refused {
@@ -1420,7 +1508,7 @@ where
             current: Some(current_revision),
         });
     }
-    let planned = (edit.plan)(&current, ed.tx.view())?;
+    let planned = (edit.plan)(&current, &ed.schema())?;
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
     if let Err(users) = ed.lock_all(&locks) {
         return Err(refused(
@@ -1431,8 +1519,7 @@ where
     let time = ed.time();
     let member = ed.stamped(planned.member, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path.clone(), member);
+    ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
         vec![member_path],
@@ -1466,9 +1553,10 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
     let planned = {
-        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(status::UNSUPPORTED, "The file has no layout catalog [4].");
         };
+        let layouts: &OwnedNode = &layouts;
         let Some(member) = layouts.at(&[&[LAYOUT_MEMBERS], &uint_segment(id)]) else {
             return refused(
                 status::LAYOUT_MISSING,
@@ -1533,9 +1621,8 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
     let member = ed.stamped(planned.member, &time);
     let index = ed.stamped(planned.index, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path, member);
-    ed.tx.replace_schema(index_path, index);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
     let account = ed.account;
     ed.once_stored(
         vec![vec![vec![LAYOUTS]]],
@@ -1570,12 +1657,13 @@ fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> 
         uint_segment(id),
     ];
     let planned = {
-        let Some(catalog) = ed.tx.store_node(&[&[VALUE_LISTS]]) else {
+        let Some(catalog) = ed.node(&[&[VALUE_LISTS]]) else {
             return refused(
                 status::VALUE_LIST_MISSING,
                 "The file has no value-list catalog [21].",
             );
         };
+        let catalog: &OwnedNode = &catalog;
         let planned = match value_lists::plan_values(catalog, id, &request.values) {
             Ok(planned) => planned,
             Err(refusal) => {
@@ -1635,9 +1723,8 @@ fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> 
     let member = ed.stamped(planned.member, &time);
     let index = ed.stamped(planned.index, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path, member);
-    ed.tx.replace_schema(index_path, index);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
     let account = ed.account;
     ed.once_stored(
         vec![vec![vec![VALUE_LISTS]]],
@@ -1686,9 +1773,8 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
     let Some(current) = ed
-        .tx
-        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
-        .cloned()
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
     else {
         return refused(
             status::LAYOUT_MISSING,
@@ -1698,7 +1784,8 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
     let current_revision = catalog_revision(&current);
     // The field: one of the layout's occurrence's table with a value
     // Browse edits as text in an edit box.
-    let catalog = ed.tx.view().catalog();
+    let derived = ed.tx.derived();
+    let catalog = derived.catalog();
     let table_id = catalog
         .table_occurrences
         .iter()
@@ -1780,8 +1867,7 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
     }
     let member = ed.stamped(member, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path.clone(), member);
+    ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
         vec![member_path],
@@ -1827,12 +1913,13 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let (duplicated, items) = {
-        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to copy a layout in.",
             );
         };
+        let layouts: &OwnedNode = &layouts;
         let current_revision = catalog_revision(
             layouts
                 .child(&[INDEX])
@@ -1886,9 +1973,9 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
         for (&item, &uses) in &duplicated.library {
             let key = serial::encode(item);
             let raised = ed
-                .tx
-                .store_node(&[&[LIBRARY], &[LIBRARY_MEMBERS], &key])
+                .node(&[&[LIBRARY], &[LIBRARY_MEMBERS], &key])
                 .and_then(|member| {
+                    let mut member = member.into_owned();
                     let count = member.child(&[LIBRARY_USES])?.value.as_deref()?;
                     let count = u32::from_be_bytes(count.try_into().ok()?).checked_add(uses)?;
                     let stamp = match member.child(MOD_COUNT) {
@@ -1898,7 +1985,6 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
                     let stamp = serial::encode(stamp.checked_add(u64::from(uses))?);
                     let mut stamp_value = vec![u8::try_from(stamp.len()).ok()?];
                     stamp_value.extend(stamp);
-                    let mut member = member.clone();
                     member.set_child(OwnedNode::leaf(
                         vec![LIBRARY_USES],
                         count.to_be_bytes().to_vec(),
@@ -1969,11 +2055,10 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
     let index = ed.stamped(planned.index, &time);
     let revision = catalog_revision(&index);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path, member);
-    ed.tx.replace_schema(index_path, index);
+    ed.write(member_path, Some(member));
+    ed.write(index_path, Some(index));
     for (path, item) in items {
-        ed.tx.replace_schema(path, item);
+        ed.write(path, Some(item));
     }
     let account = ed.account;
     ed.once_stored(
@@ -2008,12 +2093,13 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
     let (planned, released) = {
-        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to delete a layout from.",
             );
         };
+        let layouts: &OwnedNode = &layouts;
         let current_revision = catalog_revision(
             layouts
                 .child(&[INDEX])
@@ -2052,12 +2138,13 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
         let released = if planned.library.is_empty() {
             None
         } else {
-            let Some(library) = ed.tx.store_node(&[&[LIBRARY]]) else {
+            let Some(library) = ed.node(&[&[LIBRARY]]) else {
                 return refused(
                     status::UNSUPPORTED,
                     "The layout shows library items, but the file has no library [31].",
                 );
             };
+            let library: &OwnedNode = &library;
             match library_uses::release(library, &planned.library) {
                 Ok(released) => Some(released),
                 Err(refusal) => return refused(status::UNSUPPORTED, refusal.to_string()),
@@ -2091,20 +2178,16 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
     let time = ed.time();
     let index = ed.stamped(planned.index, &time);
     let revision = catalog_revision(&index);
-    ed.tx.begin_commit();
-    ed.tx.remove_schema(member_path);
-    ed.tx.replace_schema(index_path, index);
+    ed.write(member_path, None);
+    ed.write(index_path, Some(index));
     if let Some(released) = released {
         for (key, member) in released.members {
             let path = vec![vec![LIBRARY], vec![LIBRARY_MEMBERS], key];
-            match member {
-                Some(member) => ed.tx.replace_schema(path, member),
-                None => ed.tx.remove_schema(path),
-            }
+            ed.write(path, member);
         }
         if let Some(library) = released.index {
             let library = ed.stamped(library, &time);
-            ed.tx.replace_schema(library_index, library);
+            ed.write(library_index, Some(library));
         }
     }
     let account = ed.account;
@@ -2142,9 +2225,8 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
     let Some(current) = ed
-        .tx
-        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
-        .cloned()
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
     else {
         return refused(
             status::LAYOUT_MISSING,
@@ -2196,8 +2278,7 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
     }
     let member = ed.stamped(member, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path.clone(), member);
+    ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     // The text itself stays out of the log.
     ed.once_stored(
@@ -2219,8 +2300,8 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
 
 /// Whether table occurrences `a` and `b` are joined in the file's
 /// relationship graph `[3]`, directly or through other occurrences.
-fn related(store: &Store, a: u64, b: u64) -> bool {
-    let Some(graph) = store.node(&[&[3]]).cloned() else {
+fn related(schema: &Schema<'_>, a: u64, b: u64) -> bool {
+    let Some(graph) = schema.node(&[&[3]]).map(Cow::into_owned) else {
         return false;
     };
     let Some(wire) = OwnedNode::list(Vec::new(), vec![graph]).to_wire() else {
@@ -2275,9 +2356,8 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
     let Some(current) = ed
-        .tx
-        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
-        .cloned()
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
     else {
         return refused(
             status::LAYOUT_MISSING,
@@ -2287,7 +2367,8 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
     let current_revision = catalog_revision(&current);
     // The fields: of the occurrence's table, with values Browse edits as
     // text in an edit box.
-    let catalog = ed.tx.view().catalog();
+    let derived = ed.tx.derived();
+    let catalog = derived.catalog();
     let table_id = catalog
         .table_occurrences
         .iter()
@@ -2345,7 +2426,7 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
         .ok()
         .and_then(|def| om_layout::occurrence_id(def.table_alias_key));
     if let Some(own) = own.filter(|&own| own != request.occurrence) {
-        if !related(ed.tx.view(), own, request.occurrence) {
+        if !related(&ed.schema(), own, request.occurrence) {
             return refused(
                 status::UNSUPPORTED,
                 format!(
@@ -2356,12 +2437,10 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
             );
         }
     }
-    let theme = layout_placement::theme_key(&current).and_then(|theme| {
-        ed.tx
-            .store_node(&[&[THEMES], &[THEME_MEMBERS]])?
-            .children
-            .iter()
-            .find(|t| om_hbam::slot::be_uint(&t.segment) == Some(theme))
+    let themes = layout_placement::theme_key(&current)
+        .and_then(|theme| Some((theme, ed.node(&[&[THEMES], &[THEME_MEMBERS]])?)));
+    let theme = themes.as_ref().and_then(|(theme, members)| {
+        (members.children.iter()).find(|t| om_hbam::slot::be_uint(&t.segment) == Some(*theme))
     });
     let planned = match layout_placement::plan_portal(&current, &placement, theme) {
         Ok(planned) => planned,
@@ -2385,8 +2464,7 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
     }
     let member = ed.stamped(member, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path.clone(), member);
+    ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
         vec![member_path],
@@ -2521,9 +2599,8 @@ fn place_planned_button(
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
     let Some(current) = ed
-        .tx
-        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
-        .cloned()
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
     else {
         return refused(
             status::LAYOUT_MISSING,
@@ -2538,9 +2615,8 @@ fn place_planned_button(
             return refused(status::INVALID, "The step's script key is not a script id.");
         };
         match ed
-            .tx
-            .store_node(&[&[SCRIPTS], &[DEFINITIONS], &serial::encode(script)])
-            .map(decode)
+            .node(&[&[SCRIPTS], &[DEFINITIONS], &serial::encode(script)])
+            .map(|definition| decode(&definition))
         {
             Some(Ok(found)) if found.kind == ScriptKind::Script => {}
             Some(_) => {
@@ -2593,8 +2669,7 @@ fn place_planned_button(
     }
     let member = ed.stamped(member, &time);
     let revision = catalog_revision(&member);
-    ed.tx.begin_commit();
-    ed.tx.replace_schema(member_path.clone(), member);
+    ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
         vec![member_path],
