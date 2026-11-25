@@ -25,7 +25,7 @@
 //! With `OM_STARTER_FINDS_HOSTED` set, each copy is hosted instead by
 //! OpenMaker Server, a separate `om-server` process on loopback
 //! (`scorecard/server.rs`; build it with `cargo build -p om-server`), and
-//! the window opens it through the Hosts dialog as the file's own Admin.
+//! the window opens it through Open Network File as the file's own Admin.
 mod common;
 #[path = "../src/scorecard/server.rs"]
 mod server;
@@ -133,7 +133,7 @@ struct Opened {
 }
 
 /// File > Open `path` as Admin, whose password is empty (or, hosted, the
-/// Hosts dialog's Open as the server's Admin), then its list layout
+/// Open Network File's Open as the server's Admin), then its list layout
 /// through the details layout's `back` button (Go to Layout).
 fn open(path: &Path, back: &str) -> Opened {
     let hosted = std::env::var_os("OM_STARTER_FINDS_HOSTED").is_some();
@@ -162,14 +162,16 @@ fn open(path: &Path, back: &str) -> Opened {
         });
     match &host {
         Some(server) => {
-            common::fill(&mut app, "Host", "127.0.0.1");
-            replace(&mut app, "Port", &server.port.to_string());
             common::fill(
                 &mut app,
-                "File",
-                &path.file_name().unwrap().to_string_lossy(),
+                "Path",
+                &format!(
+                    "fmnet:/127.0.0.1:{}/{}",
+                    server.port,
+                    path.file_name().unwrap().to_string_lossy()
+                ),
             );
-            common::fill(&mut app, "Account", server::ACCOUNT);
+            common::fill(&mut app, "Account Name", server::ACCOUNT);
             common::fill(&mut app, "Password", server::PASSWORD);
             common::click(&mut app, "Open");
         }

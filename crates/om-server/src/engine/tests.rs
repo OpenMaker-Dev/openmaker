@@ -88,7 +88,7 @@ impl Environment for Rewound {
 struct Untouched {
     tree: OwnedNode,
     catalog: om_hbam::Catalog,
-    basis: std::collections::HashMap<Vec<u8>, crate::recalc::TableBasis>,
+    basis: crate::store::Bases,
     accounts: Vec<crate::hosting::FileAccount>,
     waiting: (Vec<crate::store::IndexId>, Vec<crate::store::MemberKey>),
     locks: Vec<(KeyPath, LockUser, u16, u32, String)>,
@@ -338,10 +338,12 @@ fn set_formula(catalog: &mut OwnedNode, field: u64, text: &str) {
 /// recorded with its outcomes replays against a fresh load of the same
 /// file to the same replies, notices and tree. The sequence covers each
 /// operation: op71 reserves ids 4 and 5, which another user then cannot
-/// lock; op72 advances a serial; op70 creates record 4 and deletes 2 and
-/// leaves record 1, which the other user holds, staged; that user
-/// upgrades and releases its lock, telling of a change; op65 ends the
-/// first user's locks; a second op72 reads the serial the first advanced.
+/// lock; op72 advances a serial; op70 creates record 4 and deletes 2, and
+/// the edit of record 1, which the other user holds and the list does not
+/// name, stays staged (a list naming it is refused whole,
+/// `writes::unstorable`); that user upgrades and releases its lock,
+/// telling of a change; op65 ends the first user's locks; a second op72
+/// reads the serial the first advanced.
 #[test]
 fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
     let mut tree = fixture::tree(&[], true);
@@ -382,10 +384,6 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
         ],
     );
     let entries = vec![
-        OwnedNode::list(
-            serial::encode(1),
-            vec![OwnedNode::leaf(uint_segment(fixture::NAME), Vec::new())],
-        ),
         OwnedNode::leaf(serial::encode(2), vec![COMMIT_DELETED]),
         OwnedNode::leaf(serial::encode(4), vec![COMMIT_NEW]),
     ];
@@ -4158,6 +4156,80 @@ fn an_export_after_a_failed_save_holds_what_memory_holds() {
     exported_from_disk_as_memory(&engine, &file, &disk);
 }
 
+/// The review of #811, round 2: a commit of a value its field's rules key
+/// to nothing (a date that does not parse) leaves the value index marked
+/// as disagreeing with them (`derived::record_keys`), which the check would
+/// find with the record holding it, so the next such edit sweeps without
+/// checking the index whole again.
+#[test]
+fn a_value_without_a_key_marks_its_index_disagreeing() {
+    let (_disk, file) = host("engine-unkeyed-value", &fixture::tree(&[], true));
+    let engine = engine();
+    engine.check_writes();
+    let table = uint_segment(fixture::TABLE);
+    let due = uint_segment(fixture::DUE);
+    let index = (table.clone(), due.clone(), 0);
+    engine.submit(
+        &file,
+        Operation::StoreIndexes(StoreIndexes {
+            indexes: vec![index.clone()],
+        }),
+    );
+    assert!(
+        node_at(&file, &[table.clone(), vec![1], due.clone(), vec![0]]).is_some(),
+        "Due's value index is stored"
+    );
+    let access = file
+        .account(fixture::ACCOUNT)
+        .unwrap()
+        .access
+        .clone()
+        .unwrap();
+    let id = serial::encode(1);
+    let commit = |value: &str, count: u64| {
+        let changed = OwnedNode::list(id.clone(), vec![OwnedNode::leaf(due.clone(), Vec::new())]);
+        Operation::CommitRecords(CommitRecords {
+            user: LockUser {
+                connection: 1,
+                txn: 7,
+            },
+            account: fixture::ACCOUNT.into(),
+            access: access.clone(),
+            list: OwnedNode::list(
+                Vec::new(),
+                vec![OwnedNode::list(
+                    table.clone(),
+                    vec![OwnedNode::list(vec![0x05], vec![changed])],
+                )],
+            ),
+            staged: Staged::from([(
+                vec![table.clone(), vec![0x05], id.clone()],
+                OwnedNode::list(
+                    id.clone(),
+                    vec![text_node(&due, value), serial_leaf(MOD_COUNT, count)],
+                ),
+            )]),
+            withheld: Withheld::default(),
+        })
+    };
+    let mark = || file.read_store().derived().marks().get(&index).copied();
+    for (count, unkeyed) in [(2, "99/99/2026"), (3, "98/98/2026")] {
+        let reply = engine.submit(&file, commit(unkeyed, count)).reply;
+        assert!(
+            matches!(
+                &reply,
+                Reply::CommitRecords(CommitReply { result: Ok(()), .. })
+            ),
+            "{reply:?}"
+        );
+        assert_eq!(
+            mark(),
+            Some(false),
+            "{unkeyed} leaves Due's index disagreeing"
+        );
+    }
+}
+
 /// An export of the version `file` holds now is a copy of its file on disk
 /// (`disk`), byte for byte, and holds exactly the tree in memory.
 fn exported_from_disk_as_memory(engine: &FileEngine, file: &Hosted, disk: &fixture::TempFile) {
@@ -5375,4 +5447,94 @@ fn the_calculation_schema_follows_the_schema_and_is_put_back_with_it() {
         calc.schema.field(fixture::OCCURRENCE, PRIORITY).is_some(),
         "the new field"
     );
+}
+
+/// The review of #811, round 2: a table the catalog names whose tree the
+/// file does not hold (FileMaker Pro's DeleteTable sends the physical
+/// delete before the catalog write, and a stop between them leaves the
+/// catalog's entry) gets no basis of stored calculations, from the load or
+/// from op73: a basis is only of a table the version holds, which the
+/// checking transaction checks at the end of every write, here one that
+/// has nothing to do with the table.
+#[test]
+fn a_table_only_the_catalog_names_has_no_basis() {
+    let mut tree = fixture::tree(&[], true);
+    let t = uint_segment(fixture::TABLE);
+    tree.remove(&[&t]);
+    let (_disk, file) = host("engine-catalog-only-table", &tree);
+    assert!(file
+        .read_store()
+        .derived()
+        .catalog()
+        .table(fixture::TABLE)
+        .is_some());
+    let engine = engine();
+    engine.check_writes();
+    let unrelated = engine.submit(
+        &file,
+        Operation::UploadToCatalog(UploadToCatalog {
+            path: vec![vec![0x40]],
+            node: OwnedNode::leaf(vec![0x40], b"unrelated".to_vec()),
+        }),
+    );
+    assert_eq!(unrelated.reply, Reply::UploadToCatalog(Ok(true)));
+    assert!(file.read_store().bases().get(&t).is_none(), "from the load");
+    engine.submit(
+        &file,
+        Operation::UpdateTable(UpdateTable {
+            table: t.clone(),
+            account: fixture::ACCOUNT.into(),
+        }),
+    );
+    assert!(file.read_store().bases().get(&t).is_none(), "from op73");
+}
+
+/// The review of #811, round 2: an upload (op13) that replaces a table's
+/// subtree whole, here with a field more, leaves the table as one an
+/// upload makes, without a basis of stored calculations until op73 or a
+/// load makes one: the stored values are no longer those the basis says.
+/// Taken back by a save that fails, the basis is there again.
+#[test]
+fn a_table_replaced_whole_takes_its_basis_with_it() {
+    const PRIORITY: u64 = 40;
+    let tree = fixture::tree(&[], true);
+    let (_disk, file) = host("engine-table-replaced", &tree);
+    let t = uint_segment(fixture::TABLE);
+    let before = file.read_store().bases().get(&t).cloned();
+    assert!(before.is_some(), "a basis from the load");
+    let mut replaced = tree.clone();
+    fixture::add_field(
+        &mut replaced,
+        fixture::TABLE,
+        PRIORITY,
+        "Priority",
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
+    let upload = Operation::UploadToCatalog(UploadToCatalog {
+        path: vec![t.clone()],
+        node: replaced.at(&[&t]).cloned().expect("the table"),
+    });
+    let engine = engine();
+    engine.check_writes();
+    file.fail_saves(Some(SaveFault::BeforeRename));
+    let failed = engine.submit(&file, upload.clone());
+    file.fail_saves(None);
+    assert!(is_storage_error(&failed.reply), "{:?}", failed.reply);
+    assert_eq!(
+        file.read_store().bases().get(&t),
+        before.as_ref(),
+        "taken back"
+    );
+    let stored = engine.submit(&file, upload);
+    assert_eq!(stored.reply, Reply::UploadToCatalog(Ok(true)));
+    assert!(node_at(
+        &file,
+        &[t.clone(), vec![3], vec![5], uint_segment(PRIORITY)]
+    )
+    .is_some());
+    assert!(file.read_store().bases().get(&t).is_none(), "stored");
 }

@@ -189,7 +189,11 @@ impl File for RecordedFile {
 
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
         assert!(
-            offset as usize % SLOT == 0 && (data.len() == COPY_V1 || data.len() % SLOT == 0),
+            offset as usize % SLOT == 0
+                && (data.len() == COPY
+                    || data.len() == HEADER + BODY_V1 + HASH
+                    || data.len() == HEADER + BODY_V2 + HASH
+                    || data.len() % SLOT == 0),
             "state writes copies at the start of slots"
         );
         let slots = data
@@ -197,7 +201,7 @@ impl File for RecordedFile {
             .enumerate()
             .map(|(i, bytes)| {
                 let copy = match decode(bytes) {
-                    Ok(Decoded::Valid(number, values)) => Some(Written { number, values }),
+                    Ok(Decoded::Valid(number, values, _)) => Some(Written { number, values }),
                     _ => None,
                 };
                 (offset as usize / SLOT + i, copy)
@@ -421,7 +425,7 @@ impl Slots {
                 path, offset, len, ..
             } if watched(path) => {
                 for (i, slot) in self.file(path).iter_mut().enumerate() {
-                    let hashed = (i * SLOT) as u64..(i * SLOT + COPY_V1) as u64;
+                    let hashed = (i * SLOT) as u64..(i * SLOT + COPY) as u64;
                     if *offset < hashed.end && offset + len > hashed.start {
                         slot.damaged();
                     }
@@ -555,6 +559,7 @@ struct Confirmed {
 struct Reached {
     opens: u64,
     other_slot_lost: u64,
+    settled: u64,
     no_copy: u64,
     refused: u64,
     failed_updates: u64,
@@ -610,6 +615,9 @@ struct Run<'a> {
     trusted_from: usize,
     /// Every copy the state code wrote.
     written: Vec<Written>,
+    /// An open returned a mark, and no update has begun to settle it since:
+    /// every open returns one.
+    marked: bool,
     state: Option<State>,
     reached: &'a mut Reached,
     /// What the run did, for a failure's report.
@@ -652,6 +660,7 @@ impl<'a> Run<'a> {
             issued: 0,
             trusted_from: 0,
             written: Vec::new(),
+            marked: false,
             state: None,
             reached,
             log: Vec::new(),
@@ -758,6 +767,7 @@ impl<'a> Run<'a> {
         match opened {
             Ok(state) => {
                 self.check_open(&state);
+                self.check_mark(&state);
                 self.reached.opens += 1;
                 if state.opened().is_some_and(|o| o.other.is_err()) {
                     self.reached.other_slot_lost += 1;
@@ -838,7 +848,7 @@ impl<'a> Run<'a> {
             let damaged = sim.events()[self.trusted_from..].iter().any(|event| {
                 matches!(event, Event::Damaged { path, offset, len, .. }
                 if watched(path) && (0..2).any(|i| {
-                    *offset < (i * SLOT + COPY_V1) as u64 && offset + len > (i * SLOT) as u64
+                    *offset < (i * SLOT + COPY) as u64 && offset + len > (i * SLOT) as u64
                 }))
             });
             assert!(
@@ -858,6 +868,7 @@ impl<'a> Run<'a> {
             number: opened.number,
             values: Values {
                 start_count: values.start_count - 1,
+                mark: opened.mark_read,
                 ..values
             },
         };
@@ -885,6 +896,7 @@ impl<'a> Run<'a> {
                     hash: [0; 32],
                     committed: 0,
                 },
+                cut_count: 0,
                 repair: None,
                 ..read.values
             };
@@ -897,6 +909,37 @@ impl<'a> Run<'a> {
             assert_eq!(read.values, confirmed.values, "seed {seed}");
         }
         self.check_record(&read.values, &confirmed);
+    }
+
+    /// The mark (module docs): an open that passed over a copy returns one;
+    /// and once an open returned one, every open returns it until an update
+    /// that settles it begins. (A mark whose write was lost whole, after a
+    /// read of the slot failed for a while, leaves both copies to be read:
+    /// nothing was passed over, and nothing is required.)
+    fn check_mark(&mut self, state: &State) {
+        let seed = self.seed;
+        if self.device == Device::Lying {
+            return;
+        }
+        let opened = state.opened().expect("an open");
+        let mark = state.values().mark;
+        if opened.other.is_err() {
+            assert!(
+                mark.is_some(),
+                "seed {seed}: an open passed over a copy and left no mark"
+            );
+        }
+        if self.marked {
+            assert!(
+                mark.is_some(),
+                "seed {seed}: an open returned a mark, nothing settled it, and this open \
+                 returned none"
+            );
+        }
+        if let Some(read) = opened.mark_read {
+            assert_eq!(mark, Some(read), "seed {seed}: the mark changed at an open");
+        }
+        self.marked |= mark.is_some();
     }
 
     /// The slot oracle (module docs).
@@ -965,6 +1008,12 @@ impl<'a> Run<'a> {
             c.repair
         );
         assert!(
+            read.cut_count == c.cut_count || attempted(&|a| a.cut_count == read.cut_count),
+            "seed {seed}: cut count {} after {}",
+            read.cut_count,
+            c.cut_count
+        );
+        assert!(
             read.segments == c.segments || attempted(&|a| a.segments == read.segments),
             "seed {seed}: segments {:?} after {:?}",
             read.segments,
@@ -1007,6 +1056,10 @@ impl<'a> Run<'a> {
             self.reached.refused += 1;
         }
         let next = self.change(&before);
+        if before.mark.is_some() && next.mark.is_none() {
+            self.marked = false;
+            self.reached.settled += 1;
+        }
         self.attempts.push(next);
         let calls = self.machine.sim().map(|(_, log)| log.lock().unwrap().len());
         let state = self.state.as_mut().expect("open");
@@ -1056,6 +1109,11 @@ impl<'a> Run<'a> {
     /// A change a running server could make: mostly the marker moving on.
     fn change(&mut self, before: &Values) -> Values {
         let mut v = *before;
+        // A mark is settled, in both slots, once what it asks for is done.
+        if v.mark.is_some() && self.plan.below(3) == 0 {
+            v.mark = None;
+            return v;
+        }
         let id = |plan: &mut Rng| {
             let mut id = [0u8; 16];
             plan.fill(&mut id);
@@ -1092,9 +1150,11 @@ impl<'a> Run<'a> {
                 }
             }
             8 => {
-                // A follower cuts entries: the marker goes back.
+                // A follower cuts entries: the marker goes back, and the
+                // cut count goes up.
                 v.marker.index = v.marker.index.saturating_sub(1 + self.plan.below(5));
                 self.plan.fill(&mut v.marker.hash);
+                v.cut_count += 1;
             }
             9 => {
                 // A new segment listed with the batch that needed it.
@@ -1127,7 +1187,9 @@ fn copies(before: &Values, after: &Values) -> usize {
         && before.term == after.term
         && before.vote == after.vote
         && before.segments == after.segments
-        && before.repair == after.repair;
+        && before.cut_count == after.cut_count
+        && before.repair == after.repair
+        && before.mark == after.mark;
     let forward = now.index >= was.index
         && now.committed >= was.committed
         && (now.index != was.index || now.hash == was.hash);
@@ -1165,6 +1227,7 @@ fn state_survives_drawn_crashes_and_faults() {
     if seeds(300).len() >= 100 {
         reached.assert_fired(&FAULTS);
         assert!(reached.other_slot_lost > 0, "{reached:?}");
+        assert!(reached.settled > 0, "{reached:?}");
         assert!(reached.failed_updates > 0, "{reached:?}");
         assert!(reached.refused > 0, "{reached:?}");
         assert!(ends[0] > ends[1], "{ends:?}");
@@ -1286,8 +1349,9 @@ fn open_refuses_what_it_cannot_trust() {
     let fs = sim.fs();
     drop(State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap());
     let at = sim.steps() + 1;
-    sim.place(at, Fault::FailRead);
-    sim.place(at, Fault::FailRead);
+    for _ in 0..2 * READ_ATTEMPTS {
+        sim.place(at, Fault::FailRead);
+    }
     assert!(matches!(
         open(&sim),
         Err(StateError::Unreadable {
@@ -1298,8 +1362,8 @@ fn open_refuses_what_it_cannot_trust() {
 
     // A copy of a newer format, whole: refused rather than passed over.
     let mut copy = encode(99, state_values());
-    copy[8] = 2;
-    let end = HEADER + BODY_V1;
+    copy[8] = 4;
+    let end = HEADER + BODY_V3;
     let hash = digest::digest(&digest::SHA256, &copy[..end]);
     copy[end..end + HASH].copy_from_slice(hash.as_ref());
     let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
@@ -1307,8 +1371,203 @@ fn open_refuses_what_it_cannot_trust() {
     drop(file);
     assert!(matches!(
         open(&sim),
-        Err(StateError::NewerFormat { version: 2 })
+        Err(StateError::NewerFormat { version: 4 })
     ));
+}
+
+/// An open that passes over a copy writes the mark into the slot it passed
+/// over, flushed, before it writes over the copy it read: a crash at any of
+/// its steps, settled three ways, leaves a copy that the next open reads,
+/// and that open returns the mark (with the marker of the copy read). Then
+/// an update settles it in both slots.
+#[test]
+fn a_crash_at_every_step_of_an_open_that_passed_over_a_copy_keeps_the_mark() {
+    // Copy 3, the marker at 5, in slot 0; copy 2, the marker at 0, in
+    // slot 1. Damaging slot 1 leaves the marker at 5; damaging slot 0, the
+    // marker at 0, one advance lost.
+    let build = |seed: u64, damaged: usize| {
+        let sim = Sim::new(seed);
+        let fs = sim.fs();
+        let mut state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        state
+            .update(|v| {
+                v.marker = Marker {
+                    index: 5,
+                    hash: [5; 32],
+                    committed: 5,
+                }
+            })
+            .unwrap();
+        drop(state);
+        damage(&sim, damaged);
+        sim.restart();
+        sim
+    };
+    for damaged in 0..2 {
+        let mark = Some(Mark {
+            marker: if damaged == 1 { 5 } else { 0 },
+        });
+        let steps = {
+            let sim = build(0, damaged);
+            let begin = sim.steps();
+            let state = open(&sim).unwrap();
+            assert_eq!(state.values().mark, mark);
+            sim.steps() - begin
+        };
+        for step in 1..=steps {
+            for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+                for seed in 0..4 {
+                    let sim = build(seed, damaged);
+                    sim.set_crash_fates(fates);
+                    sim.place(sim.steps() + step, Fault::Crash);
+                    assert!(open(&sim).is_err());
+                    sim.restart();
+                    let case = format!("slot {damaged}, step {step}, {fates:?}, seed {seed}");
+                    let mut state = open(&sim).unwrap_or_else(|e| panic!("{case}: {e}"));
+                    assert_eq!(state.values().mark, mark, "{case}");
+                    // Settled: both slots hold copies without it.
+                    state.update(|v| v.mark = None).unwrap();
+                    drop(state);
+                    let file = sim.fs().open(FILE, FileOptions::PLAIN).unwrap();
+                    for slot in 0..2 {
+                        let mut bytes = vec![0u8; SLOT];
+                        file.read_at((slot * SLOT) as u64, &mut bytes).unwrap();
+                        let Ok(Decoded::Valid(_, values, _)) = decode(&bytes) else {
+                            panic!("{case}: slot {slot} holds no copy after the settling update")
+                        };
+                        assert_eq!(values.mark, None, "{case}: slot {slot}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A copy of version 1, before the cut count, is read with a cut count of
+/// 0, and the next update writes the current version; a copy of version 2,
+/// before the mark, is read with none. No update sets a mark.
+#[test]
+fn a_version_1_copy_is_read_with_no_cuts() {
+    let sim = Sim::new(12);
+    let fs = sim.fs();
+    let state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+    let values = *state.values();
+    drop(state);
+    // Version 1: the same fields without the cut count.
+    let copy = copy_v1(5, &values);
+    let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+    file.write_at(0, &copy).unwrap();
+    file.write_at(SLOT as u64, &copy).unwrap();
+    drop(file);
+    let mut state = open(&sim).unwrap();
+    assert_eq!(state.values().cut_count, 0);
+    assert_eq!(state.values().mark, None);
+    assert_eq!(state.values().server_id, values.server_id);
+    state.update(|v| v.cut_count = 1).unwrap();
+    assert!(matches!(
+        state.update(|v| v.cut_count = 0),
+        Err(StateError::Refused(_))
+    ));
+    drop(state);
+    let mut state = open(&sim).unwrap();
+    assert_eq!(state.values().cut_count, 1);
+    assert!(matches!(
+        state.update(|v| v.mark = Some(Mark { marker: 1 })),
+        Err(StateError::Refused(_))
+    ));
+    // Version 2: the same fields without the mark.
+    let values = *state.values();
+    drop(state);
+    let mut copy = encode(9, &values);
+    copy.truncate(HEADER + BODY_V2);
+    copy[8..10].copy_from_slice(&2u16.to_le_bytes());
+    copy[12..16].copy_from_slice(&(BODY_V2 as u32).to_le_bytes());
+    let hash = digest::digest(&digest::SHA256, &copy);
+    copy.extend_from_slice(hash.as_ref());
+    let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+    file.write_at(0, &copy).unwrap();
+    file.write_at(SLOT as u64, &copy).unwrap();
+    drop(file);
+    let state = open(&sim).unwrap();
+    assert_eq!(state.values().mark, None);
+    assert_eq!(state.values().cut_count, 1);
+}
+
+/// A copy of version 1, as the device holds it: `values`, numbered
+/// `number`, without the cut count.
+fn copy_v1(number: u64, values: &Values) -> Vec<u8> {
+    let mut copy = encode(number, values);
+    copy.truncate(HEADER + BODY_V1);
+    copy[8..10].copy_from_slice(&1u16.to_le_bytes());
+    copy[12..16].copy_from_slice(&(BODY_V1 as u32).to_le_bytes());
+    let hash = digest::digest(&digest::SHA256, &copy);
+    copy.extend_from_slice(hash.as_ref());
+    copy
+}
+
+/// The second review's second finding: the first open of a version 1
+/// `state` by this code writes the copy it chose back as the bytes it
+/// read, and version 2 only as new copies, so that a crash at any step of
+/// it leaves a valid copy and loses nothing.
+#[test]
+fn a_version_1_state_survives_a_crash_at_every_step_of_its_first_open() {
+    // Two valid copies: the newer recording committed position 4, the
+    // older 1.
+    let build = |seed: u64| {
+        let sim = Sim::new(seed);
+        let fs = sim.fs();
+        let state = State::create(&fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        let mut older = *state.values();
+        drop(state);
+        older.term = 2;
+        older.marker = Marker {
+            index: 10,
+            hash: [5; 32],
+            committed: 1,
+        };
+        let newer = Values {
+            marker: Marker {
+                committed: 4,
+                ..older.marker
+            },
+            ..older
+        };
+        let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
+        file.write_at(0, &copy_v1(5, &older)).unwrap();
+        file.write_at(SLOT as u64, &copy_v1(6, &newer)).unwrap();
+        file.flush().unwrap();
+        drop(file);
+        sim.restart();
+        (sim, newer)
+    };
+    let steps = {
+        let (sim, _) = build(0);
+        let begin = sim.steps();
+        open(&sim).unwrap();
+        sim.steps() - begin
+    };
+    for seed in 0..6 {
+        for step in 1..=steps {
+            for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+                let (sim, newer) = build(seed);
+                sim.set_crash_fates(fates);
+                sim.place(sim.steps() + step, Fault::Crash);
+                assert!(open(&sim).is_err());
+                assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
+                sim.restart();
+                let state = open(&sim)
+                    .unwrap_or_else(|e| panic!("seed {seed}, step {step}, {fates:?}: {e}"));
+                let values = state.values();
+                assert_eq!(
+                    values.marker, newer.marker,
+                    "seed {seed}, step {step}, {fates:?}: the newest copy was lost"
+                );
+                assert_eq!(values.term, newer.term);
+                assert_eq!(values.cut_count, 0);
+                assert!(values.start_count > newer.start_count);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1356,14 +1615,23 @@ fn one_lost_slot_costs_at_most_one_marker_advance() {
     assert_eq!(state.values().marker.index, 10);
     drop(state);
 
-    // One slot unreadable: the other is used.
+    // A read that fails is tried again: both slots are read.
     sim.place(sim.steps() + 1, Fault::FailRead);
+    let state = open(&sim).unwrap();
+    assert!(state.opened().unwrap().other.is_ok());
+    assert_eq!(state.values().start_count, 5);
+    drop(state);
+
+    // One slot that fails every read: the other is used.
+    for _ in 0..READ_ATTEMPTS {
+        sim.place(sim.steps() + 1, Fault::FailRead);
+    }
     let state = open(&sim).unwrap();
     assert!(matches!(
         state.opened().unwrap().other,
         Err(SlotFault::Unreadable(ErrorKind::Read))
     ));
-    assert_eq!(state.values().start_count, 5);
+    assert_eq!(state.values().start_count, 6);
 }
 
 /// The sequence the first review found (seed 5): an update cut short by a
@@ -1534,7 +1802,9 @@ fn state_values() -> &'static Values {
             hash: [0; 32],
             committed: 0,
         },
+        cut_count: 0,
         repair: None,
+        mark: None,
     };
     &VALUES
 }

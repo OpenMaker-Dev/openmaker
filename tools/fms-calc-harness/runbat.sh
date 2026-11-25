@@ -9,11 +9,12 @@
 #        FILES     directory holding the .fmp12 copies (mounted read-only)
 set -e
 H=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$H/../.." && pwd)
 : "${FMS_ROOT:?set FMS_ROOT to the unpacked opt/FileMaker directory}"
 : "${FILES:?set FILES to a directory with .fmp12 copies}"
 MODE=()
 while case "$1" in -*) true;; *) false;; esac; do MODE+=("$1"); shift; done
-B=$1; F=$2; OUT=${3:-$H/results}; CTX=${4:-}
+B=$1; F=$2; OUT=${3:-$ROOT/re/work/fms-calc-harness}; CTX=${4:-}
 mkdir -p "$OUT"
 out="$OUT/$(basename "$B" .txt).${F%.fmp12}.tsv"
 # One container at a time on this machine: parallel runs are killed for

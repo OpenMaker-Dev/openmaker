@@ -49,6 +49,8 @@ pub const MAX_LOCK_VALUE: usize = MAX_VALUE;
 /// The most lock edits and tree edits one change carries.
 pub const MAX_LOCK_EDITS: usize = 1 << 20;
 pub const MAX_EDITS: usize = 1 << 20;
+/// The most paths a group declares (`docs/server-storage.md` section 6.9).
+pub const MAX_GROUP_PATHS: usize = 64;
 
 /// A file's flag: it is hosted read-only.
 pub const READ_ONLY: u32 = 1;
@@ -64,16 +66,18 @@ pub enum Kind {
     Members = 4,
     Mark = 5,
     Empty = 6,
+    Group = 7,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::Change,
         Kind::Session,
         Kind::File,
         Kind::Members,
         Kind::Mark,
         Kind::Empty,
+        Kind::Group,
     ];
 
     pub fn code(self) -> u16 {
@@ -157,11 +161,15 @@ pub enum Payload {
     Members(Members),
     Mark(Mark),
     Empty,
+    Group(GroupEvent),
 }
 
 /// One write operation's effects on one file (the entry's file).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Change {
+    /// The group the change is part of, and its place in it (section 6.9):
+    /// none for a change that takes effect on its own.
+    pub group: Option<Group>,
     /// The operation's id: its session and sequence number. None for work
     /// no session asked for.
     pub op: Option<Op>,
@@ -175,6 +183,61 @@ pub struct Change {
     pub locks: Vec<LockEdit>,
     /// Edits of the file's tree, in order.
     pub edits: Vec<Edit>,
+}
+
+/// A change's place in a group (`docs/server-storage.md` section 6.9):
+/// work too large for one entry that must appear all at once. A part's
+/// edits go to the group's staging, not to the file's tree; the entry that
+/// closes the group applies them all, in order, in one step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    /// The group's id: the index of the part that opened it (never 0).
+    pub id: u64,
+    pub step: Step,
+}
+
+/// What a change does in its group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The first part: it opens the group, whose id is this entry's own
+    /// index, and declares the paths the group changes. While the group is
+    /// open no other entry changes them, or anything above or below them.
+    Open(Vec<GroupPath>),
+    /// A later part.
+    Part,
+    /// The entry that closes the group. It carries no edits of its own: it
+    /// applies the staged ones, and carries the operation's reply.
+    Close,
+}
+
+/// A path a group changes, in one file: everything at it and below it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupPath {
+    pub file: u64,
+    pub path: Vec<Vec<u8>>,
+}
+
+/// A `group` entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupEvent {
+    /// The group is discarded: its staging, or the file it was making,
+    /// goes, and nothing of it shows.
+    Discard { id: u64 },
+    /// A group that makes a new file opens (`docs/server-storage.md`
+    /// section 6.9): the file's id, and the group's, is this entry's own
+    /// index. The file's tree is made empty, in no catalog: only the
+    /// group's parts change it, straight, and nothing shows it until the
+    /// group is published.
+    NewFile,
+    /// The group that is making file `id` closes: the file takes its place
+    /// in the catalog, with this name, flags and page 0 (as a `file`
+    /// entry's *added*).
+    Publish {
+        id: u64,
+        name: Vec<u8>,
+        flags: u32,
+        page0: Vec<u8>,
+    },
 }
 
 /// An operation's id.
@@ -274,9 +337,6 @@ pub enum Purpose {
 /// What the formats leave room for and this build refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
-    /// A change that is part of a group (`docs/server-storage.md`
-    /// section 6.9).
-    Group,
     /// A file made as a clone of another (section 6.8).
     Clone,
     /// The cluster's members (section 7.6).
@@ -319,6 +379,11 @@ pub enum PayloadError {
     Edit { edit: usize, why: Refusal },
     /// Something the format leaves room for and this build refuses.
     Unsupported(Feature),
+    /// A change's place in a group does not fit what it carries: a part
+    /// with an operation, a reply, notices or lock edits; a close with
+    /// edits or lock edits; an opening part that declares no path; a group
+    /// of id 0.
+    Group(&'static str),
 }
 
 impl fmt::Display for PayloadError {
@@ -344,6 +409,7 @@ impl fmt::Display for PayloadError {
             PayloadError::ReplyWithoutOp => f.write_str("a reply without an operation"),
             PayloadError::Edit { edit, why } => write!(f, "edit {edit} refused: {why:?}"),
             PayloadError::Unsupported(what) => write!(f, "{what:?} is not supported yet"),
+            PayloadError::Group(why) => write!(f, "a group's entry: {why}"),
         }
     }
 }
@@ -359,6 +425,7 @@ impl Payload {
             Payload::Members(_) => Kind::Members,
             Payload::Mark(_) => Kind::Mark,
             Payload::Empty => Kind::Empty,
+            Payload::Group(_) => Kind::Group,
         }
     }
 
@@ -388,6 +455,32 @@ impl Payload {
             Kind::Members => Payload::Members(decode_members(&mut r)?),
             Kind::Mark => Payload::Mark(decode_mark(&mut r)?),
             Kind::Empty => Payload::Empty,
+            Kind::Group => Payload::Group(match r.u8()? {
+                1 => GroupEvent::Discard {
+                    id: group_id(r.u64()?)?,
+                },
+                2 => GroupEvent::NewFile,
+                3 => {
+                    let id = group_id(r.u64()?)?;
+                    let name = r.name()?;
+                    let flags = r.u32()?;
+                    if flags & !KNOWN_FLAGS != 0 {
+                        return Err(PayloadError::Flags(flags));
+                    }
+                    GroupEvent::Publish {
+                        id,
+                        name,
+                        flags,
+                        page0: r.bytes16("page 0", MAX_PAGE0)?,
+                    }
+                }
+                tag => {
+                    return Err(PayloadError::Tag {
+                        field: "group event",
+                        tag,
+                    })
+                }
+            }),
         };
         r.done()?;
         Ok(payload)
@@ -454,6 +547,23 @@ impl Payload {
                 w.extend_from_slice(&[VERSION, mark.purpose as u8]);
                 put_name(&mut w, &mark.name)?;
             }
+            Payload::Group(GroupEvent::Discard { id }) => {
+                w.extend_from_slice(&[VERSION, 1]);
+                w.extend_from_slice(&group_id(*id)?.to_le_bytes());
+            }
+            Payload::Group(GroupEvent::NewFile) => w.extend_from_slice(&[VERSION, 2]),
+            Payload::Group(GroupEvent::Publish {
+                id,
+                name,
+                flags,
+                page0,
+            }) => {
+                w.extend_from_slice(&[VERSION, 3]);
+                w.extend_from_slice(&group_id(*id)?.to_le_bytes());
+                put_name(&mut w, name)?;
+                w.extend_from_slice(&flags.to_le_bytes());
+                put16(&mut w, "page 0", page0, MAX_PAGE0)?;
+            }
         }
         debug_assert_eq!(w.len(), len, "size and encode agree");
         Ok(w)
@@ -478,6 +588,21 @@ impl Payload {
             }
             Ok(2 + name.len())
         }
+        /// A file's catalog row: its name, flags and page 0.
+        fn row(n: &[u8], flags: u32, page0: &[u8]) -> Result<usize, PayloadError> {
+            let n = name(n)?;
+            if flags & !KNOWN_FLAGS != 0 {
+                return Err(PayloadError::Flags(flags));
+            }
+            if page0.len() > MAX_PAGE0 {
+                return Err(PayloadError::TooLong {
+                    field: "page 0",
+                    len: page0.len(),
+                    max: MAX_PAGE0,
+                });
+            }
+            Ok(n + 4 + 2 + page0.len())
+        }
         Ok(match self {
             Payload::Empty => 0,
             Payload::Change(c) => change_size(c)?.saturating_add(1),
@@ -486,25 +611,26 @@ impl Payload {
             Payload::File(FileEvent::Added {
                 name: n,
                 flags,
-                page0,
-            }) => {
-                let n = name(n)?;
-                if flags & !KNOWN_FLAGS != 0 {
-                    return Err(PayloadError::Flags(*flags));
-                }
-                if page0.len() > MAX_PAGE0 {
-                    return Err(PayloadError::TooLong {
-                        field: "page 0",
-                        len: page0.len(),
-                        max: MAX_PAGE0,
-                    });
-                }
-                2 + n + 4 + 2 + page0.len()
-            }
+                page0: p,
+            }) => 2 + row(n, *flags, p)?,
             Payload::File(FileEvent::Removed) => 2,
             Payload::File(FileEvent::Renamed { name: n }) => 2 + name(n)?,
             Payload::Members(_) => 3,
             Payload::Mark(mark) => 2 + name(&mark.name)?,
+            Payload::Group(GroupEvent::Discard { id }) => {
+                group_id(*id)?;
+                2 + 8
+            }
+            Payload::Group(GroupEvent::NewFile) => 2,
+            Payload::Group(GroupEvent::Publish {
+                id,
+                name: n,
+                flags,
+                page0: p,
+            }) => {
+                group_id(*id)?;
+                2 + 8 + row(n, *flags, p)?
+            }
         })
     }
 }
@@ -574,6 +700,24 @@ impl<'a> Reader<'a> {
         Ok(count)
     }
 
+    /// A group's path: its number of segments (1, at most 64), then each
+    /// segment `len2`.
+    fn path(&mut self) -> Result<Vec<Vec<u8>>, PayloadError> {
+        let depth = usize::from(self.u8()?);
+        if depth > MAX_DEPTH {
+            return Err(PayloadError::TooLong {
+                field: "group path",
+                len: depth,
+                max: MAX_DEPTH,
+            });
+        }
+        let mut path = Vec::new();
+        for _ in 0..depth {
+            path.push(self.bytes16("segment", usize::from(u16::MAX))?);
+        }
+        Ok(path)
+    }
+
     fn session(&mut self) -> Result<Session, PayloadError> {
         let mut server = [0u8; 16];
         server.copy_from_slice(self.take(16)?);
@@ -601,9 +745,33 @@ impl<'a> Reader<'a> {
 }
 
 fn decode_change(r: &mut Reader<'_>) -> Result<Change, PayloadError> {
-    if r.u64()? != 0 {
-        return Err(PayloadError::Unsupported(Feature::Group));
-    }
+    let group = match r.u64()? {
+        0 => None,
+        id => {
+            let step = match r.u8()? {
+                1 => {
+                    let mut paths = Vec::new();
+                    for _ in 0..r.count("group paths", MAX_GROUP_PATHS)? {
+                        let file = r.u64()?;
+                        paths.push(GroupPath {
+                            file,
+                            path: r.path()?,
+                        });
+                    }
+                    Step::Open(paths)
+                }
+                2 => Step::Part,
+                3 => Step::Close,
+                tag => {
+                    return Err(PayloadError::Tag {
+                        field: "group step",
+                        tag,
+                    })
+                }
+            };
+            Some(Group { id, step })
+        }
+    };
     let op = match r.u8()? {
         0 => None,
         1 => Some(Op {
@@ -645,6 +813,87 @@ fn decode_change(r: &mut Reader<'_>) -> Result<Change, PayloadError> {
             }
         });
     }
+    let edits = read_edits(r)?;
+    let change = Change {
+        group,
+        op,
+        reply,
+        notices,
+        locks,
+        edits,
+    };
+    check_group(&change)?;
+    Ok(change)
+}
+
+/// A group's id is never 0: 0 is "no group".
+fn group_id(id: u64) -> Result<u64, PayloadError> {
+    if id == 0 {
+        return Err(PayloadError::Group("a group's id is never 0"));
+    }
+    Ok(id)
+}
+
+/// What a change's place in a group allows it to carry (format section
+/// 5.2): a part carries edits and nothing else, and an opening part
+/// declares at least one path, each within the tree's bounds; a close
+/// carries no edits.
+fn check_group(c: &Change) -> Result<(), PayloadError> {
+    let Some(group) = &c.group else {
+        return Ok(());
+    };
+    group_id(group.id)?;
+    match &group.step {
+        Step::Open(_) | Step::Part
+            if c.op.is_some() || !c.notices.is_empty() || !c.locks.is_empty() =>
+        {
+            Err(PayloadError::Group(
+                "a part carries edits only: no operation, notices or lock edits",
+            ))
+        }
+        Step::Open(paths) if paths.is_empty() => {
+            Err(PayloadError::Group("an opening part declares no path"))
+        }
+        Step::Open(paths) => {
+            if paths.len() > MAX_GROUP_PATHS {
+                return Err(PayloadError::TooMany {
+                    field: "group paths",
+                    count: paths.len(),
+                    max: MAX_GROUP_PATHS,
+                });
+            }
+            for p in paths {
+                if p.path.len() > MAX_DEPTH {
+                    return Err(PayloadError::TooLong {
+                        field: "group path",
+                        len: p.path.len(),
+                        max: MAX_DEPTH,
+                    });
+                }
+                let len = tree::key::encoded_len(&p.path);
+                if len > crate::page::MAX_KEY {
+                    return Err(PayloadError::TooLong {
+                        field: "group path",
+                        len,
+                        max: crate::page::MAX_KEY,
+                    });
+                }
+            }
+            Ok(())
+        }
+        Step::Close if !c.edits.is_empty() => Err(PayloadError::Group(
+            "a closing entry carries no edits: its parts stage them",
+        )),
+        Step::Close if !c.locks.is_empty() => Err(PayloadError::Group(
+            "a closing entry carries no lock edits in this build",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Tree edits as a change carries them (format section 5.2): their count,
+/// then each.
+fn read_edits(r: &mut Reader<'_>) -> Result<Vec<Edit>, PayloadError> {
     let mut edits = Vec::new();
     for i in 0..r.count("edits", MAX_EDITS)? {
         let tag = r.u8()?;
@@ -683,13 +932,23 @@ fn decode_change(r: &mut Reader<'_>) -> Result<Change, PayloadError> {
         });
     }
     check_edits(&edits)?;
-    Ok(Change {
-        op,
-        reply,
-        notices,
-        locks,
-        edits,
-    })
+    Ok(edits)
+}
+
+/// Tree edits in a change's form (format section 5.2): the bytes a group's
+/// staging keeps of a part (section 5.3).
+pub fn encode_edits(edits: &[Edit]) -> Result<Vec<u8>, PayloadError> {
+    let mut w = Vec::new();
+    put_edits(&mut w, edits)?;
+    Ok(w)
+}
+
+/// The edits [`encode_edits`] wrote, checked as a change's are.
+pub fn decode_edits(bytes: &[u8]) -> Result<Vec<Edit>, PayloadError> {
+    let mut r = Reader { bytes, at: 0 };
+    let edits = read_edits(&mut r)?;
+    r.done()?;
+    Ok(edits)
 }
 
 /// The tree's bounds, as a payload error.
@@ -855,9 +1114,22 @@ fn change_size(c: &Change) -> Result<usize, PayloadError> {
     if c.op.is_none() && !c.reply.is_empty() {
         return Err(PayloadError::ReplyWithoutOp);
     }
+    check_group(c)?;
     // Group, op tag and op, reply, and the three counts.
     let mut n: usize = 8 + 1 + if c.op.is_some() { 40 } else { 0 } + 4 + 12;
     let add = |n: usize, more: usize| n.saturating_add(more);
+    if let Some(group) = &c.group {
+        n = add(n, 1);
+        if let Step::Open(paths) = &group.step {
+            n = add(n, 4);
+            for p in paths {
+                n = add(n, 8 + 1);
+                for segment in &p.path {
+                    n = add(n, 2 + segment.len());
+                }
+            }
+        }
+    }
     n = add(n, bounded("reply", c.reply.len(), MAX_REPLY)?);
     counted("notices", c.notices.len(), MAX_NOTICES)?;
     for notice in &c.notices {
@@ -893,8 +1165,25 @@ fn change_size(c: &Change) -> Result<usize, PayloadError> {
 }
 
 fn encode_change(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {
-    // The group the change is part of: none. Section 5.4 reserves it.
-    w.extend_from_slice(&0u64.to_le_bytes());
+    check_group(c)?;
+    match &c.group {
+        None => w.extend_from_slice(&0u64.to_le_bytes()),
+        Some(group) => {
+            w.extend_from_slice(&group.id.to_le_bytes());
+            match &group.step {
+                Step::Open(paths) => {
+                    w.push(1);
+                    put_count(w, "group paths", paths.len(), MAX_GROUP_PATHS)?;
+                    for p in paths {
+                        w.extend_from_slice(&p.file.to_le_bytes());
+                        put_path(w, &p.path)?;
+                    }
+                }
+                Step::Part => w.push(2),
+                Step::Close => w.push(3),
+            }
+        }
+    }
     match &c.op {
         None => w.push(0),
         Some(op) => {
@@ -938,9 +1227,23 @@ fn encode_change(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {
             }
         }
     }
-    check_edits(&c.edits)?;
-    put_count(w, "edits", c.edits.len(), MAX_EDITS)?;
-    for edit in &c.edits {
+    put_edits(w, &c.edits)
+}
+
+/// A path: its number of segments (1), then each segment `len2`.
+/// `check_group` and `check_edits` hold it to the tree's bounds.
+fn put_path(w: &mut Vec<u8>, path: &[Vec<u8>]) -> Result<(), PayloadError> {
+    w.push(path.len() as u8);
+    for segment in path {
+        put16(w, "segment", segment, usize::from(u16::MAX))?;
+    }
+    Ok(())
+}
+
+fn put_edits(w: &mut Vec<u8>, edits: &[Edit]) -> Result<(), PayloadError> {
+    check_edits(edits)?;
+    put_count(w, "edits", edits.len(), MAX_EDITS)?;
+    for edit in edits {
         let (tag, path, value) = match edit {
             Edit::Put {
                 path,
@@ -959,10 +1262,7 @@ fn encode_change(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {
         w.push(tag);
         // `check_edits` holds the depth to 64 and each segment, inside a
         // path of at most 64 KiB, to 2 bytes of length.
-        w.push(path.len() as u8);
-        for segment in path {
-            put16(w, "segment", segment, usize::from(u16::MAX))?;
-        }
+        put_path(w, path)?;
         if let Some(v) = value {
             put32(w, "value", v, MAX_VALUE)?;
         }

@@ -150,9 +150,14 @@ impl Server {
         let events = EventLog::new(crate::eventlog::host_name(&config.identity.name));
         let engine = match settings {
             EngineSettings::File => Engine::default(),
-            EngineSettings::Store { dir, cache_bytes } => {
-                let folder = crate::engine::StoreFolder::open_dir(dir, *cache_bytes)
-                    .map_err(StartError::Store)?;
+            EngineSettings::Store {
+                dir,
+                cache_bytes,
+                database_folders,
+            } => {
+                let folder =
+                    crate::engine::StoreFolder::open_dir(dir, database_folders, *cache_bytes)
+                        .map_err(StartError::Store)?;
                 info!("the store engine hosts the files, from {}", dir.display());
                 Engine::Store(crate::engine::StoreEngine::new(Arc::new(folder)))
             }

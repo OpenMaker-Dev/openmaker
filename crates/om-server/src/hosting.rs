@@ -1724,6 +1724,49 @@ fn owned_member<'a>(record: &'a OwnedNode, key: &[u8]) -> Option<&'a [u8]> {
     })
 }
 
+/// What decoding the accounts of the file `view` reads keeps
+/// ([`read_accounts`]), counted as `om_hbam::tree::memory` counts an owned
+/// tree: each account's record, and with it the privilege set it names,
+/// whose rules each account decodes and keeps for itself. Many small
+/// accounts on one large set keep that set once for each. The store engine
+/// holds it under its limit (`engine::store::derived_of`); the file engine
+/// has none.
+pub(crate) fn kept_by_accounts(view: &dyn View) -> Result<usize, ReadError> {
+    let sets = view.subtree(&PRIVILEGE_SETS_PATH, NO_LIMIT)?;
+    let mut set_sizes: std::collections::HashMap<Vec<u8>, usize> = Default::default();
+    let mut kept = 0usize;
+    for child in view.children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward) {
+        let segment = child?.segment;
+        // As read_accounts: an account whose key a Login reply cannot carry
+        // is not decoded.
+        if segment.len() >= usize::from(u8::MAX) {
+            continue;
+        }
+        let path = [
+            ACCOUNTS_PATH[0],
+            ACCOUNTS_PATH[1],
+            ACCOUNTS_PATH[2],
+            &segment,
+        ];
+        let Some(account) = view.subtree(&path, NO_LIMIT)? else {
+            continue;
+        };
+        let account = crate::engine::Wiped(account);
+        kept = kept.saturating_add(om_hbam::tree::memory(&account.0));
+        let named = member(&crate::store::view(&account.0), ACCOUNT_PRIVILEGES)
+            .and_then(|r| r.split_first())
+            .filter(|(length, key)| usize::from(**length) == key.len())
+            .map(|(_, key)| key.to_vec());
+        if let (Some(key), Some(sets)) = (named, sets.as_deref()) {
+            let size = *set_sizes
+                .entry(key)
+                .or_insert_with_key(|key| sets.child(key).map_or(0, om_hbam::tree::memory));
+            kept = kept.saturating_add(size);
+        }
+    }
+    Ok(kept)
+}
+
 /// The accounts in the security catalog of the file `view` reads, in key
 /// order: each account record of `[23, 1, 5]`, read whole one at a time,
 /// with the privilege set it names from `[23, 2, 5]`, read whole once.

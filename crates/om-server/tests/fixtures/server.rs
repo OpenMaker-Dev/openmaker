@@ -78,6 +78,7 @@ pub fn start_on_store(
     let settings = EngineSettings::Store {
         dir: store.to_path_buf(),
         cache_bytes: 8 << 20,
+        database_folders: Vec::new(),
     };
     serve(configure(bind_files_on(files, &settings)))
 }

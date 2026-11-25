@@ -35,17 +35,14 @@ fn dismiss(app: &mut App) {
 
 #[test]
 fn screenshots() {
+    // Without Home, Open Network File is the window's launcher.
     let mut app = mock();
     app.run_steps(3);
-    save(&mut app, "01-hosts");
-
-    fill(&mut app, "Host", "fms.example.com");
-    fill(&mut app, "Account", "admin");
+    save(&mut app, "01-open-network-file");
+    fill(&mut app, "Path", "fmnet:/fms.example.com/Contacts");
+    fill(&mut app, "Account Name", "admin");
     fill(&mut app, "Password", "secret");
-    click(&mut app, "List files");
-    wait_for_label(&mut app, "Contacts.fmp12");
-    click(&mut app, "Contacts.fmp12");
-    save(&mut app, "02-hosts-files");
+    save(&mut app, "02-open-network-file-filled");
 
     let mut app = mock();
     connect_to_mock(&mut app);
@@ -106,8 +103,7 @@ fn screenshots() {
     click(&mut app, "Cancel");
 
     let mut app = harness(Box::new(common::FailingProvider));
-    fill(&mut app, "Host", "fms.example.com");
-    fill(&mut app, "File", "Contacts.fmp12");
+    fill(&mut app, "Path", "fmnet:/fms.example.com/Contacts.fmp12");
     click(&mut app, "Open");
     wait_for_label(
         &mut app,
@@ -175,8 +171,7 @@ fn script_workspace_screenshots() {
         .with_size(egui::vec2(1672.0, 900.0))
         .renderer(common::renderer())
         .build_eframe(move |_cc| om_gui::OpenMakerApp::new(Box::new(Provider(state))));
-    fill(&mut app, "Host", "fmhost");
-    fill(&mut app, "File", "test project.fmp12");
+    fill(&mut app, "Path", "fmnet:/fmhost/test project.fmp12");
     click(&mut app, "Open");
     common::wait_until(&mut app, "the file", |app| {
         app.query_by_label("Scripts").is_some()
@@ -222,8 +217,7 @@ fn script_workspace_paste_screenshot() {
         .with_size(egui::vec2(1672.0, 900.0))
         .renderer(common::renderer())
         .build_eframe(move |_cc| om_gui::OpenMakerApp::new(Box::new(Provider(state))));
-    fill(&mut app, "Host", "fmhost");
-    fill(&mut app, "File", "test project.fmp12");
+    fill(&mut app, "Path", "fmnet:/fmhost/test project.fmp12");
     click(&mut app, "Open");
     common::wait_until(&mut app, "the file", |app| {
         app.query_by_label("Scripts").is_some()
@@ -278,8 +272,7 @@ fn script_workspace_option_dialogs_screenshots() {
         .with_size(egui::vec2(1672.0, 900.0))
         .renderer(common::renderer())
         .build_eframe(move |_cc| om_gui::OpenMakerApp::new(Box::new(Provider(state))));
-    fill(&mut app, "Host", "fmhost");
-    fill(&mut app, "File", "test project.fmp12");
+    fill(&mut app, "Path", "fmnet:/fmhost/test project.fmp12");
     click(&mut app, "Open");
     common::wait_until(&mut app, "the file", |app| {
         app.query_by_label("Scripts").is_some()
@@ -364,8 +357,7 @@ fn specify_calculation_screenshot() {
         .with_size(egui::vec2(1672.0, 900.0))
         .renderer(common::renderer())
         .build_eframe(move |_cc| om_gui::OpenMakerApp::new(Box::new(Provider(state))));
-    fill(&mut app, "Host", "fmhost");
-    fill(&mut app, "File", "test project.fmp12");
+    fill(&mut app, "Path", "fmnet:/fmhost/test project.fmp12");
     click(&mut app, "Open");
     common::wait_until(&mut app, "the file", |app| {
         app.query_by_label("Scripts").is_some()
@@ -449,6 +441,63 @@ fn home_screenshots() {
     dismiss(&mut app);
     click(&mut app, "Favorites");
     save(&mut app, "home-favorites");
+}
+
+/// Home's saved hosts on the mock provider, which lists its file for any
+/// host: a host's page, its context menu, its sign-in, Add Host, Open
+/// Network File, and Hosts with nothing saved. Sample data keeps Home's
+/// lists in memory, so the hosts are added as a user adds them.
+#[test]
+fn home_hosts_screenshots() {
+    use egui_kittest::Harness;
+
+    common::use_svg_worker();
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.json");
+    let mut app = Harness::builder()
+        .with_size(egui::vec2(1101.0, 697.0 + 24.0))
+        .renderer(common::renderer())
+        .build_eframe(move |_| {
+            om_gui::OpenMakerApp::new(Box::new(om_data::mock::MockProvider::new()))
+                .with_settings_file(settings)
+                .with_home()
+        });
+    app.run_steps(3);
+    open_menu(&mut app, "File");
     click(&mut app, "Hosts");
-    save(&mut app, "home-hosts");
+    click(&mut app, "Show Hosts...");
+    save(&mut app, "home-hosts-empty");
+    click(&mut app, "Add Host...");
+    fill(&mut app, "Address", "staging.example.com");
+    common::replace(&mut app, "Port", "5004");
+    fill(&mut app, "Name", "Staging");
+    save(&mut app, "home-add-host");
+    click(&mut app, "Add");
+    for (address, name) in [("fms.example.com", "Production"), ("files.example.org", "")] {
+        click(&mut app, "Add Host");
+        fill(&mut app, "Address", address);
+        fill(&mut app, "Name", name);
+        click(&mut app, "Add");
+    }
+    click(&mut app, "Production");
+    wait_for_label(&mut app, "Contacts");
+    click(&mut app, "Contacts");
+    save(&mut app, "home-host");
+    app.get_by_label("Staging").click_secondary();
+    app.run_steps(3);
+    save(&mut app, "home-host-menu");
+    dismiss(&mut app);
+    fill(&mut app, "Search Files", "Payroll");
+    save(&mut app, "home-host-no-match");
+    click(&mut app, "Open “Payroll”...");
+    save(&mut app, "home-open-network-file");
+    click(&mut app, "Cancel");
+    // Another host's page and back: a page shows with no search.
+    click(&mut app, "Staging");
+    click(&mut app, "Production");
+    wait_for_label(&mut app, "Contacts");
+    let at = app.get_by_label("Contacts").rect().center();
+    common::workspace::double_click_at(&mut app, at);
+    wait_for_label(&mut app, "Open “Contacts”");
+    save(&mut app, "home-sign-in");
 }

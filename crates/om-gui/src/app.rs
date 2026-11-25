@@ -13,7 +13,7 @@ use om_data::found::FindRequest;
 use om_data::scripts::save_records::{Format as SaveFormat, SaveRecords};
 use om_data::{DataError, DataProvider, LocalOpen};
 
-use crate::connect::{self, ConnectForm, ConnectStatus, HostsView};
+use crate::connect::{self, ConnectForm, ConnectStatus};
 use crate::content;
 use crate::content::PartsSent;
 use crate::icons::{self, Icon};
@@ -471,14 +471,18 @@ pub(crate) const DELETE_RECORD_MESSAGE: &str = "Permanently delete this ENTIRE r
 /// Something the user asked for during a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
-    ListFiles,
+    /// List the files of the host at this address and port (Home's host
+    /// pages).
+    ListFiles((String, u16)),
     ManageLicense,
     /// The app menu's Settings...: the Settings dialog.
     ShowSettings,
     /// The Window menu's list: bring window `id` to the front.
     SelectWindow(u32),
-    PickFile(String),
+    /// Open the hosted file the connection form names (a sign-in's or Open
+    /// Network File's Open, a launch's file).
     Connect,
+    /// Stop the hosted file opening.
     CancelConnect,
     /// File > Open: choose a file on this computer (the file open
     /// closes first).
@@ -491,10 +495,15 @@ pub(crate) enum Action {
     /// Home on this list (Home's tabs, File > Favorites > Show Favorites,
     /// File > Recent > Show Recent); the file open closes first.
     ShowHome(crate::file_history::Tab),
-    /// File > Hosts > Show Hosts, and Home's Hosts: the Hosts dialog.
+    /// File > Hosts > Show Hosts: Home's saved hosts.
     ShowHosts,
-    /// Open a Recent or Favorites file: one on this computer opens, and a
-    /// hosted one fills in the Hosts dialog for its sign-in.
+    /// File > Hosts > Open Network File..., and Home's ways to open a file
+    /// a host does not list: the dialog, its path filled in with this.
+    OpenNetworkFile(String),
+    /// Home's Add Host (`None`) and Edit Host...: the host dialog.
+    EditHost(Option<crate::file_history::SavedHost>),
+    /// Open a Recent, Favorites or listed file: one on this computer opens,
+    /// and a hosted one asks for its sign-in.
     OpenSaved(crate::file_history::SavedFile),
     /// Pin, unpin or forget a Recent or Favorites file.
     EditHistory(crate::file_history::Change),
@@ -732,6 +741,8 @@ impl Action {
             Action::CloseFile
                 | Action::CloseWindow
                 | Action::ShowHosts
+                | Action::OpenNetworkFile(_)
+                | Action::EditHost(_)
                 | Action::ShowHome(_)
                 | Action::OpenSaved(_)
                 | Action::EditHistory(_)
@@ -831,29 +842,16 @@ const OTHER_FILES_OPEN: &str = "Other files are open. Close them first.";
 /// What the window shows while no file is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Launcher {
-    /// The Hosts dialog alone: an app built without Home (embedding hosts,
-    /// most tests).
-    Hosts,
-    /// Home ([`OpenMakerApp::with_home`]); `hosts` shows the Hosts dialog in
-    /// its place until the dialog is canceled or a file opens.
-    Home { hosts: bool },
+    /// Open Network File alone: an app built without Home (embedding
+    /// hosts, most tests).
+    Network,
+    /// Home ([`OpenMakerApp::with_home`]), with its saved hosts.
+    Home,
 }
 
 impl Launcher {
-    fn showing_hosts(self) -> bool {
-        matches!(self, Launcher::Hosts | Launcher::Home { hosts: true })
-    }
-
     fn has_home(self) -> bool {
-        matches!(self, Launcher::Home { .. })
-    }
-
-    /// Show or close the Hosts dialog over Home; without Home it always
-    /// shows.
-    fn set_hosts(&mut self, show: bool) {
-        if let Launcher::Home { hosts } = self {
-            *hosts = show;
-        }
+        self == Launcher::Home
     }
 }
 
@@ -865,6 +863,7 @@ enum Launch {
     CreateNew,
     Home(crate::file_history::Tab),
     Hosts,
+    NetworkFile(String),
     Saved(crate::file_history::SavedFile),
 }
 
@@ -923,8 +922,15 @@ pub struct OpenMakerApp {
     /// Bumped whenever a session is abandoned; replies from older epochs are
     /// dropped.
     epoch: u64,
+    /// The hosted file to open, or last opened, and its account.
     form: ConnectForm,
-    hosts: HostsView,
+    /// Open the next hosted file with the saved FileMaker license, as its
+    /// sign-in last chose.
+    use_saved_license: bool,
+    /// Open Network File, or a hosted file's sign-in.
+    network: Option<connect::NetworkDialog>,
+    /// Home's Add Host or Edit Host.
+    host_dialog: Option<connect::HostDialog>,
     launcher: Launcher,
     home: crate::home::Home,
     /// Recent and Favorites (file_history.rs), from the settings file once
@@ -935,7 +941,7 @@ pub struct OpenMakerApp {
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
     opening: Option<Opening>,
-    /// The Hosts dialog's file list, for the host it was asked of.
+    /// A host page's file list, for the host it was asked of.
     listing: connect::Listing,
     /// The token of the last listing asked for.
     listings: u64,
@@ -1080,8 +1086,10 @@ impl OpenMakerApp {
             worker: Worker::with_print_dispatcher(provider, store, dispatcher),
             epoch: 0,
             form: ConnectForm::default(),
-            hosts: HostsView::default(),
-            launcher: Launcher::Hosts,
+            use_saved_license: true,
+            network: None,
+            host_dialog: None,
+            launcher: Launcher::Network,
             home: Default::default(),
             file_history: Default::default(),
             history_error: None,
@@ -1153,14 +1161,18 @@ impl OpenMakerApp {
     }
 
     /// Start the desktop launcher on Home. An explicit host prefill opens
-    /// Hosts directly, as in earlier versions of the desktop client.
+    /// Open Network File over it, filled in.
     pub(crate) fn with_desktop_startup(self) -> Self {
         let mut app = self.with_home();
         if !app.sample_data {
             app.form = ConnectForm::from_env();
         }
-        let prefilled = !app.form.host.trim().is_empty();
-        app.launcher.set_hosts(prefilled);
+        if !app.form.host.trim().is_empty() {
+            app.network = Some(connect::NetworkDialog::from_form(
+                &app.form,
+                app.use_saved_license,
+            ));
+        }
         app
     }
 
@@ -1168,7 +1180,7 @@ impl OpenMakerApp {
     /// Favorites. Call after [`Self::with_settings_file`] to isolate history.
     #[must_use]
     pub fn with_home(mut self) -> Self {
-        self.launcher = Launcher::Home { hosts: false };
+        self.launcher = Launcher::Home;
         if let Some(path) = self.history_path() {
             match crate::file_history::History::load(path) {
                 Ok(history) => self.file_history = history,
@@ -1186,17 +1198,11 @@ impl OpenMakerApp {
         self
     }
 
-    /// Open `connection`'s file when the app first draws, as the Hosts
-    /// dialog's Open does (embedding hosts, scripted launches, tests).
+    /// Open `connection`'s file when the app first draws, as Open Network
+    /// File's Open does (embedding hosts, scripted launches, tests).
     #[must_use]
     pub fn open_on_launch(mut self, connection: om_data::Connection) -> Self {
-        self.form = ConnectForm {
-            host: connection.host,
-            port: connection.port.to_string(),
-            account: connection.account,
-            password: connection.password,
-            file: connection.file,
-        };
+        self.form = ConnectForm::from(connection);
         self.open_on_launch = true;
         self
     }
@@ -1367,7 +1373,14 @@ impl OpenMakerApp {
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
-            self.launcher.set_hosts(true);
+            // Over Home, the launch's file shows in Open Network File,
+            // which waits with Cancel and stays filled in if it fails.
+            if self.launcher.has_home() {
+                self.network = Some(connect::NetworkDialog::from_form(
+                    &self.form,
+                    self.use_saved_license,
+                ));
+            }
             self.apply(&ctx, Action::Connect);
         }
         self.poll_worker(&ctx);
@@ -2319,42 +2332,63 @@ impl OpenMakerApp {
                 ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
                 content_rect = Some(shown.response.rect);
             }
-            None if self.launcher.showing_hosts()
-                && (self.open_file.is_some()
+            None if !self.launcher.has_home() => {
+                // Without Home, Open Network File is the launcher, drawn in
+                // the window, until another dialog takes its place.
+                let other = self.open_file.is_some()
                     || self.create_new.is_some()
-                    || self.local_login.is_some()) =>
-            {
+                    || self.local_login.is_some()
+                    || self.change_password.is_some();
+                // Not while a local file opens: its sign-in may follow. A
+                // hosted file opening (a launch's) shows here, with Cancel.
+                let hosted_opening = self
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.target.local.is_none());
+                if self.network.is_none()
+                    && !other
+                    && (self.status == ConnectStatus::Idle || hosted_opening)
+                {
+                    self.network = Some(
+                        connect::NetworkDialog::from_form(&self.form, self.use_saved_license)
+                            .closable(false),
+                    );
+                }
+                let mut network = self
+                    .network
+                    .take_if(|dialog| !dialog.is_closable() && !other);
+                let mut action = None;
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(theme::PASTEBOARD))
-                    .show(ui, |_| {});
-            }
-            None if self.launcher.showing_hosts() => {
-                let closable = self.launcher.has_home();
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::new())
                     .show(ui, |ui| {
-                        connect::hosts_dialog(
-                            ui,
-                            &mut self.form,
-                            &mut self.hosts,
-                            self.status,
-                            self.client_license,
-                            &self.listing,
-                            closable,
-                            &mut actions,
-                        );
+                        if let Some(dialog) = &mut network {
+                            action = dialog.show_inline(ui, self.network_view());
+                        }
                     });
-                self.forget_other_hosts();
+                if network.is_some() {
+                    self.network = network;
+                }
+                if let Some(action) = action {
+                    self.network_action(&ctx, action);
+                }
             }
             None => {
                 let view = crate::home::HomeView {
                     history: &self.file_history,
+                    listing: &self.listing,
                     busy: self.status == ConnectStatus::Connecting,
                     in_front: !self.dialog_over_document(),
                     history_error: self.history_error.as_deref(),
                 };
                 self.home.show(ui, view, &mut actions);
             }
+        }
+        // A listing goes on only while its host's page shows.
+        let shown_host = (self.w.session.is_none() && self.launcher.has_home())
+            .then(|| self.home.shown_host().cloned())
+            .flatten();
+        if front {
+            self.forget_other_hosts(shown_host.as_ref());
         }
         #[cfg(target_os = "macos")]
         crate::system_menu::clear_field_edit(&ctx);
@@ -2911,6 +2945,28 @@ impl OpenMakerApp {
                 None => {}
             }
         }
+        if let Some(dialog) = &mut self.host_dialog {
+            match dialog.show(ctx) {
+                Some(connect::HostAction::Save { replacing, host }) => {
+                    self.host_dialog = None;
+                    let server = host.server();
+                    self.edit_file_history(crate::file_history::Change::SaveHost {
+                        replacing,
+                        host,
+                    });
+                    self.home.show_host(server);
+                }
+                Some(connect::HostAction::Cancel) => self.host_dialog = None,
+                None => {}
+            }
+        }
+        if let Some(mut dialog) = self.network.take_if(|dialog| dialog.is_closable()) {
+            let action = dialog.show(ctx, self.network_view());
+            self.network = Some(dialog);
+            if let Some(action) = action {
+                self.network_action(ctx, action);
+            }
+        }
         let Some(dialog) = &mut self.local_login else {
             return;
         };
@@ -3122,6 +3178,53 @@ impl OpenMakerApp {
         }
     }
 
+    /// What Open Network File or a sign-in shows this frame.
+    fn network_view(&self) -> connect::NetworkView<'_> {
+        connect::NetworkView {
+            client_license: self.client_license,
+            connecting: self.status == ConnectStatus::Connecting,
+            saved: self.launcher.has_home().then(|| self.file_history.hosts()),
+            covered: self.error.is_some() || self.host_message_shown(),
+        }
+    }
+
+    /// Open Network File's or a sign-in's Open opens its file, which the
+    /// dialog waits for; its Cancel stops the file opening, and closes it
+    /// when it is not the window's launcher.
+    fn network_action(&mut self, ctx: &egui::Context, action: connect::NetworkAction) {
+        match action {
+            connect::NetworkAction::Open {
+                connection,
+                save_host,
+            } => {
+                if let Some(dialog) = &self.network {
+                    self.use_saved_license = dialog.use_saved_license;
+                }
+                use zeroize::Zeroize;
+                self.form.password.zeroize();
+                self.form = ConnectForm::from(connection);
+                self.apply(ctx, Action::Connect);
+                // After Connect, which clears the alert: a host that could
+                // not be saved says so.
+                if let Some(host) = save_host {
+                    self.edit_file_history(crate::file_history::Change::AddHost(host));
+                }
+            }
+            connect::NetworkAction::Cancel => {
+                if self.status == ConnectStatus::Connecting {
+                    self.apply(ctx, Action::CancelConnect);
+                }
+                if self
+                    .network
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.is_closable())
+                {
+                    self.network = None;
+                }
+            }
+        }
+    }
+
     /// Open `file`, a file on this computer, in this window.
     fn open_local(&mut self, ctx: &egui::Context, file: om_data::LocalFile) {
         self.open_local_with(ctx, file, false);
@@ -3258,9 +3361,9 @@ impl OpenMakerApp {
             self.error = Some(OTHER_FILES_OPEN.into());
             return;
         }
-        // Without Home (an embedding with the Hosts dialog alone) there is
-        // no list to show, and nothing closes for one.
-        if matches!(launch, Launch::Home(_)) && !self.launcher.has_home() {
+        // Without Home (an embedding with Open Network File alone) there
+        // is no list to show, and nothing closes for one.
+        if matches!(launch, Launch::Home(_) | Launch::Hosts) && !self.launcher.has_home() {
             return;
         }
         if front.is_some() {
@@ -3285,6 +3388,13 @@ impl OpenMakerApp {
             self.apply(ctx, Action::CloseFile);
             return;
         }
+        // One dialog opens a file at a time: the command's takes the place
+        // of Open Network File or a sign-in.
+        if self.network.take().is_some() {
+            connect::forget_password(ctx);
+        }
+        self.host_dialog = None;
+        let license = self.use_saved_license;
         match launch {
             Launch::CreateNew => {
                 self.open_file = None;
@@ -3294,27 +3404,23 @@ impl OpenMakerApp {
                 self.open_file = Some(crate::open_file::OpenFileDialog::new());
             }
             Launch::Home(tab) => {
-                self.launcher.set_hosts(false);
+                self.home.show_files();
                 if self.file_history.tab() != tab {
-                    self.home = Default::default();
+                    self.home.forget_selection();
                     self.edit_file_history(Change::Select(tab));
                 }
             }
-            Launch::Hosts => self.launcher.set_hosts(true),
+            Launch::Hosts => self.home.show_hosts(self.file_history.hosts()),
+            Launch::NetworkFile(path) => {
+                self.network = Some(
+                    connect::NetworkDialog::path(path, license).closable(self.launcher.has_home()),
+                );
+            }
             Launch::Saved(SavedFile::Local { path }) => {
-                self.launcher.set_hosts(false);
                 self.apply(ctx, Action::OpenLocal(path));
             }
             Launch::Saved(SavedFile::Hosted { host, port, file }) => {
-                use zeroize::Zeroize;
-                self.form.password.zeroize();
-                self.form = ConnectForm {
-                    host,
-                    port: port.to_string(),
-                    file,
-                    ..Default::default()
-                };
-                self.launcher.set_hosts(true);
+                self.network = Some(connect::NetworkDialog::sign_in(host, port, file, license));
             }
         }
     }
@@ -3372,6 +3478,10 @@ impl OpenMakerApp {
             || self.open_file.is_some()
             || self.create_new.is_some()
             || self.local_login.is_some()
+            || self.host_dialog.is_some()
+            // Not the launcher without Home, which leaves the window's
+            // commands working.
+            || self.network.as_ref().is_some_and(|dialog| dialog.is_closable())
             || self.change_password.is_some()
             || self.own_password.is_some()
             || self
@@ -4622,38 +4732,36 @@ impl OpenMakerApp {
                     self.request(ctx, Request::Scripts { workspace: None });
                 }
             }
-            Action::ListFiles => match self.form.server() {
-                Ok(_) if self.status != ConnectStatus::Idle => {}
-                Ok((host, port)) => {
-                    self.error = None;
-                    self.listing.forget();
-                    self.listings += 1;
-                    let canceled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    self.listing = connect::Listing::Pending {
-                        token: self.listings,
-                        server: (host.clone(), port),
-                        canceled: canceled.clone(),
+            Action::ListFiles((host, port)) => {
+                self.listing.forget();
+                self.listings += 1;
+                let canceled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.listing = connect::Listing::Pending {
+                    token: self.listings,
+                    server: (host.clone(), port),
+                    canceled: canceled.clone(),
+                };
+                // Apart from the open file, if any, and its requests.
+                let sent = self.worker.list_files(
+                    ctx,
+                    self.epoch,
+                    self.w.id,
+                    self.listings,
+                    host.clone(),
+                    port,
+                    canceled,
+                );
+                // The page says why, and asks again only when told to.
+                if let Err(err) = sent {
+                    self.listing = connect::Listing::Listed {
+                        server: (host, port),
+                        result: Err(om_data::ListingError::new(
+                            om_data::ListingFailure::Other,
+                            err.message,
+                        )),
                     };
-                    self.status = ConnectStatus::ListingFiles;
-                    // Apart from the open file, if any, and its requests.
-                    let sent = self.worker.list_files(
-                        ctx,
-                        self.epoch,
-                        self.w.id,
-                        self.listings,
-                        host,
-                        port,
-                        canceled,
-                    );
-                    if let Err(err) = sent {
-                        self.listing.forget();
-                        self.status = ConnectStatus::Idle;
-                        self.error = Some(err.message);
-                    }
                 }
-                Err(message) => self.error = Some(message),
-            },
-            Action::PickFile(name) => self.form.file = name,
+            }
             Action::Connect => {
                 if self.status != ConnectStatus::Idle || self.w.session.is_some() {
                     return;
@@ -4679,7 +4787,7 @@ impl OpenMakerApp {
                             ctx,
                             Request::Open {
                                 connection,
-                                use_saved_license: self.hosts.use_saved_license,
+                                use_saved_license: self.use_saved_license,
                             },
                         );
                     }
@@ -4692,19 +4800,6 @@ impl OpenMakerApp {
                 let quit = self.closing.as_ref().is_some_and(|closing| closing.quit);
                 self.closing = Some(self.closing_front(quit));
                 self.apply(ctx, Action::CloseWindow);
-            }
-            // Stops the listing; nothing goes to the provider.
-            Action::CancelConnect if self.status == ConnectStatus::ListingFiles => {
-                self.listing.cancel();
-                self.status = ConnectStatus::Idle;
-            }
-            // Cancel with nothing under way closes Hosts opened from Home.
-            Action::CancelConnect
-                if self.status == ConnectStatus::Idle
-                    && self.w.session.is_none()
-                    && self.launcher.has_home() =>
-            {
-                self.launcher.set_hosts(false);
             }
             Action::CancelConnect | Action::CloseFile => self.close_file(ctx),
             Action::Reconnect => self.open_reconnect(),
@@ -4721,6 +4816,15 @@ impl OpenMakerApp {
             Action::ShowOpenFile => self.launch(ctx, Launch::OpenFile),
             Action::ShowHome(tab) => self.launch(ctx, Launch::Home(tab)),
             Action::ShowHosts => self.launch(ctx, Launch::Hosts),
+            Action::OpenNetworkFile(path) => self.launch(ctx, Launch::NetworkFile(path)),
+            Action::EditHost(host) => {
+                if self.launcher.has_home() && self.can_launch() {
+                    self.host_dialog = Some(match host {
+                        None => connect::HostDialog::add(),
+                        Some(host) => connect::HostDialog::edit(&host),
+                    });
+                }
+            }
             Action::OpenSaved(file) => self.launch(ctx, Launch::Saved(file)),
             Action::EditHistory(change) => self.edit_file_history(change),
             Action::OpenLocal(path) => {
@@ -5432,8 +5536,7 @@ impl OpenMakerApp {
         if !self.sample_data {
             self.edit_file_history(crate::file_history::Change::Opened(destination.clone()));
         }
-        self.launcher.set_hosts(false);
-        self.home = Default::default();
+        self.home.reset();
         self.closed_windows.clear();
         self.window_files = std::collections::HashMap::from([(windows::FIRST, 0)]);
         self.presentation = None;
@@ -6349,33 +6452,17 @@ impl OpenMakerApp {
     }
 
     /// A listing of a host's files came back. One no longer waited for is
-    /// dropped: nothing about the dialog, an opening file or a window
-    /// changes for it. A failure shows in the file list, for its host.
+    /// dropped: nothing about Home, an opening file or a window changes for
+    /// it. A failure shows on the host's page.
     fn on_listed(&mut self, listed: worker::Listed) {
-        if !self.listing.accept(listed) {
-            return;
-        }
-        if self.status == ConnectStatus::ListingFiles {
-            self.status = ConnectStatus::Idle;
-        }
-        let server = self.listing.server().cloned();
-        if let Some(listing) = self.listing.files_for(server.as_ref()) {
-            if self.form.file.trim().is_empty() {
-                if let [only] = listing.files.as_slice() {
-                    self.form.file = only.name.clone();
-                }
-            }
-        }
+        self.listing.accept(listed);
     }
 
-    /// Forget a listing of a host or port the form no longer names,
-    /// stopping one under way.
-    fn forget_other_hosts(&mut self) {
-        let server = self.form.server().ok();
-        if self.listing.server().is_some() && self.listing.server() != server.as_ref() {
-            if self.listing.pending() && self.status == ConnectStatus::ListingFiles {
-                self.status = ConnectStatus::Idle;
-            }
+    /// Stop a listing under way of a host whose page is not shown (`shown`
+    /// is the one that is, if any). One that came back stays, for when its
+    /// page shows again.
+    fn forget_other_hosts(&mut self, shown: Option<&(String, u16)>) {
+        if self.listing.pending() && self.listing.server() != shown {
             self.listing.forget();
         }
     }
@@ -6386,10 +6473,12 @@ impl OpenMakerApp {
         }
         loop {
             match self.worker.poll() {
-                // A License dialog answer is the app's, of any session.
+                // A License dialog answer is the app's, of any session; a
+                // listing's is its token's, which a new session leaves
+                // waited for.
                 Ok(response)
                     if response.epoch == self.epoch
-                        || matches!(response.reply, Reply::License { .. }) =>
+                        || matches!(response.reply, Reply::License { .. } | Reply::Files(_)) =>
                 {
                     self.on_response(ctx, response)
                 }
@@ -6610,6 +6699,7 @@ impl OpenMakerApp {
                 self.status = ConnectStatus::Idle;
                 match (result, opening) {
                     (Ok(opened), Some(opening)) => {
+                        self.network = None;
                         self.form.password.clear();
                         let account = self.form.account.clone();
                         self.file_opened(ctx, opening, opened, account);
@@ -8252,7 +8342,7 @@ mod tests {
     fn a_launch_command_closes_the_front_file_only_when_nothing_else_is_lost() {
         let ctx = egui::Context::default();
         let mut app = two_record_windows();
-        app.launcher = Launcher::Home { hosts: false };
+        app.launcher = Launcher::Home;
         app.w.file_id = 1;
         app.windows[0].file_id = 2;
         app.windows[0].hidden = true;
@@ -8303,10 +8393,10 @@ mod tests {
 
         // Without Home, Show Recent has nothing to show and closes nothing.
         app.error = None;
-        app.launcher = Launcher::Hosts;
+        app.launcher = Launcher::Network;
         app.apply(&ctx, Action::ShowHome(crate::file_history::Tab::Recent));
         assert!(app.error.is_none() && app.w.session.is_some() && app.closing.is_none());
-        app.launcher = Launcher::Home { hosts: false };
+        app.launcher = Launcher::Home;
 
         app.error = None;
         app.apply(&ctx, Action::ShowHosts);
@@ -8316,7 +8406,7 @@ mod tests {
         }
         assert!(app.w.session.is_none(), "{:?}", app.error);
         assert!(app.windows.is_empty());
-        assert_eq!(app.launcher, Launcher::Home { hosts: true });
+        assert!(app.home.on_hosts());
     }
 
     /// File > Close closes the windows its file had when it began, one at
