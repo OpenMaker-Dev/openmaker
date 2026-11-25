@@ -271,6 +271,9 @@ fn apply_logged(res: &Reservation<'_>, model: &mut Model, logged: &Logged) -> Re
     Ok(())
 }
 
+/// What a schedule's failed `Reservation::extend` reports.
+const EXTEND_REFUSED: &str = "extend refused";
+
 /// Whether `op` changes the set of trees.
 fn names_trees(op: &Op) -> bool {
     !matches!(op, Op::Edits(_))
@@ -412,6 +415,8 @@ struct Reached {
     keeps_stopped_raising_the_floor: u64,
     /// Trees with an overflow page for a root, refused by a checkpoint.
     bad_roots: u64,
+    /// Entries reserved short and extended before their last tree.
+    extended: u64,
     leak_checks: u64,
     /// Dying pages found held for a map on disk at a leak check.
     held: u64,
@@ -432,6 +437,7 @@ impl Reached {
             self.races,
             self.keeps_stopped,
             self.bad_roots,
+            self.extended,
         ];
         assert!(reached.iter().all(|&n| n > 0), "{self:?}");
     }
@@ -512,6 +518,9 @@ struct Run<'r> {
     trace: Vec<String>,
     /// The faults the schedule draws.
     rates: Rates,
+    /// Which entries are reserved short and extended: a stream of its own,
+    /// so that the rest of a schedule does not depend on it.
+    splits: Rng,
 }
 
 impl Drop for Run<'_> {
@@ -573,6 +582,7 @@ impl<'r> Run<'r> {
             reached,
             trace: Vec::new(),
             rates: Rates::default(),
+            splits: Rng::stream(seed, 13),
         };
         let first = Logged {
             entry: entry_id(1),
@@ -693,10 +703,18 @@ impl<'r> Run<'r> {
                 return self.fail();
             }
         };
-        let outcome = match pf.reserve(index, pages, purpose) {
+        // Some entries of several trees are reserved short of their last
+        // tree, and extended for it once the others are applied.
+        let n = logged.ops.len();
+        let split = if n >= 2 && self.splits.one_in(3) {
+            bound(pf, &self.newest, &logged.ops[n - 1..]).ok()
+        } else {
+            None
+        };
+        let outcome = match pf.reserve(index, pages - split.unwrap_or(0), purpose) {
             Ok(res) => {
                 self.trace.push(format!(
-                    "entry {index}: {} trees, {pages} pages reserved",
+                    "entry {index}: {} trees, {pages} pages reserved (extended by {split:?})",
                     logged.ops.len()
                 ));
                 self.log.push(logged.clone());
@@ -726,15 +744,42 @@ impl<'r> Run<'r> {
                     .find_map(|(name, op)| {
                         matches!(op, Op::Rename(_) | Op::Recreate | Op::Drop).then_some(name)
                     })
+                    .filter(|_| split.is_none())
                     .and_then(|name| {
                         let mut unit = res.begin().ok()?;
                         unit.rename_tree(name, &TreeName::new(b"probe".to_vec()).unwrap());
                         Some(unit)
                     });
-                match apply_logged(&res, &mut self.newest, &logged) {
+                let applied = match split {
+                    None => apply_logged(&res, &mut self.newest, &logged),
+                    Some(last) => {
+                        let part = |ops: &[(TreeName, Op)]| Logged {
+                            entry: logged.entry,
+                            ops: ops.to_vec(),
+                            taken: None,
+                        };
+                        let head =
+                            apply_logged(&res, &mut self.newest, &part(&logged.ops[..n - 1]));
+                        match head.and_then(|()| {
+                            res.extend(last)
+                                .map_err(|e| format!("{EXTEND_REFUSED}: {e}"))
+                        }) {
+                            Ok(()) => {
+                                self.reached.extended += 1;
+                                apply_logged(&res, &mut self.newest, &part(&logged.ops[n - 1..]))
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                };
+                match applied {
                     Ok(()) => {
                         if let Some(unit) = probe {
-                            assert!(unit.commit().is_err(), "a stale change to the trees");
+                            let refused = unit.commit();
+                            assert!(
+                                matches!(&refused, Err(StoreError::Failed(why)) if why.contains("set of trees changed")),
+                                "a stale change to the trees: {refused:?}"
+                            );
                             self.reached.stale_names += 1;
                         }
                         if let Some(last) = self.log.last_mut() {
@@ -750,6 +795,12 @@ impl<'r> Run<'r> {
         match outcome {
             Ok(()) => {}
             Err(Ok(refused)) => self.refused(index, refused),
+            Err(Err(e)) if e.starts_with(EXTEND_REFUSED) => {
+                // Half applied: the process stops, and the entry is
+                // applied again whole from the log.
+                self.trace.push(format!("entry {index}: {e}"));
+                self.fail();
+            }
             Err(Err(e)) => {
                 self.trace.push(format!("entry {index} failed: {e}"));
                 self.allow_read_failure(&e);
@@ -3467,6 +3518,8 @@ fn a_checkpoint_fixes_its_entry_at_its_first_check() {
         fs.paused();
         let gate = Opens(&fs);
         let refused = pf.reserve(2, 3 * TABLE_ROOM, Purpose::Entry);
+        let cutoff =
+            matches!(&refused, Err(SpaceError::Refused(why)) if why.contains("checkpoint's"));
         let swapped = refused.is_ok();
         if let Ok(res) = refused {
             // What the page file must not allow: A and B swap names.
@@ -3480,6 +3533,7 @@ fn a_checkpoint_fixes_its_entry_at_its_first_check() {
         drop(gate);
         let written = writing.join().unwrap();
         assert!(!swapped, "a reservation of the entry being checkpointed");
+        assert!(cutoff, "refused for the entry the checkpoint fixed");
         written.unwrap();
     });
     drop(pf);
@@ -3512,7 +3566,11 @@ fn a_stale_drop_is_refused_whole() {
     stale.remove_tree(&a);
     res.rename_tree(&a, &b).unwrap();
     let new = res.create_tree(&a).unwrap();
-    assert!(stale.commit().is_err(), "the stale drop committed");
+    let refused = stale.commit();
+    assert!(
+        matches!(&refused, Err(StoreError::Failed(why)) if why.contains("set of trees changed")),
+        "the stale drop: {refused:?}"
+    );
     assert_eq!(pf.tree_names(), vec![a.clone(), b.clone()]);
     assert!(!pf.is_free(root.page) && !pf.dying_pages().contains(&root.page));
     drop(res);
@@ -3810,4 +3868,77 @@ fn one_unit_carries_a_whole_entry() {
     assert_eq!(pf.checkpoint_trees(), expected);
     let read = Tree::open(&pf, changed).unwrap().get(&[b"k"]).unwrap();
     assert_eq!(read, Some(Node::Value(vec![7; 10])));
+}
+
+/// Check of round 3 (P0): a unit that drops a page, or changes the set of
+/// trees, acts on the set as it was when the unit began. In the order
+/// `Reservation::drop_tree` stages its calls (begin, release the root as
+/// dropped, then name the tree), with another unit's rename of A to B and
+/// make of a new A committed between the release and the name, the drop is
+/// refused whole: the new A keeps its name and B's root is not released.
+/// (`drop_tree` runs exactly these calls in one call; another thread's
+/// units can commit only in that window, which a test cannot pause in, so
+/// the unit is driven by hand.)
+#[test]
+fn a_drop_released_before_the_rename_is_refused_whole() {
+    let sim = Sim::new(59);
+    let (a, b) = (tree_name(0), tree_name(1));
+    let (_fs, pf, trees) = gated(&sim, config(), std::slice::from_ref(&a));
+    let root = trees[0].1;
+    let res = pf.reserve(2, 32, Purpose::Entry).unwrap();
+    let mut stale = res.begin().unwrap();
+    stale
+        .release(root.page, &root.hash, Release::Dropped)
+        .unwrap();
+    res.rename_tree(&a, &b).unwrap();
+    let new = res.create_tree(&a).unwrap();
+    stale.remove_tree(&a);
+    let refused = stale.commit();
+    assert!(
+        matches!(&refused, Err(StoreError::Failed(why)) if why.contains("set of trees changed")),
+        "the stale drop: {refused:?}"
+    );
+    assert_eq!(pf.tree_names(), vec![a.clone(), b.clone()]);
+    assert!(!pf.is_free(root.page) && !pf.dying_pages().contains(&root.page));
+    drop(res);
+    let trees = vec![(a, new), (b, root)];
+    pf.checkpoint(entry_id(2), &trees, None).unwrap();
+}
+
+/// Check of round 3 (P1): `Reservation::extend` is not judged against the
+/// budget of pages waiting for a checkpoint. An entry whose first unit
+/// takes the pages in memory past the budget extends its reservation,
+/// commits the rest, and a checkpoint of it is then taken. (Judged against
+/// the budget, the extension was refused, and no checkpoint could be taken
+/// while the entry was half applied.)
+#[test]
+fn an_entry_extended_past_the_budget_finishes() {
+    let sim = Sim::new(60);
+    let config = Config {
+        dirty_budget: 16,
+        ..config()
+    };
+    let names = [tree_name(0), tree_name(1)];
+    let (_fs, pf, trees) = gated(&sim, config, &names);
+    let edits = |from: u32, n: u32| -> Vec<Edit> {
+        (from..from + n)
+            .map(|i| Edit::leaf(vec![i.to_be_bytes().to_vec()], vec![7; 1500]))
+            .collect()
+    };
+    let (first, second) = (edits(0, 400), edits(1000, 3));
+    let height = |root| Tree::open(&pf, root).unwrap().height();
+    let res = pf
+        .reserve(2, entry_bound(&first, height(trees[0].1)), Purpose::Entry)
+        .unwrap();
+    // The first tree's unit takes the pages in memory past the budget.
+    let one = tree::apply(&res, trees[0].1, 2, &first).unwrap();
+    assert!(pf.space().dirty >= 16, "the first unit passed the budget");
+    res.extend(entry_bound(&second, height(trees[1].1)))
+        .expect("an extension is not judged against the budget");
+    let two = tree::apply(&res, trees[1].1, 2, &second).unwrap();
+    drop(res);
+    let given = vec![(names[0].clone(), one), (names[1].clone(), two)];
+    pf.checkpoint(entry_id(2), &given, None).unwrap();
+    let tree = Tree::open(&pf, two).unwrap();
+    assert!(tree.get(&[&1000u32.to_be_bytes()]).unwrap().is_some());
 }
