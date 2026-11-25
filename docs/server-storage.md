@@ -1432,8 +1432,8 @@ slot serves it, are the hosting's (`Slot`), as before.
 file and renames it over the file, which needs write access to the folder
 only, so a file the server's user may not write (mode 444 in a writable
 folder) would be replaced all the same. An engine that saves to the file
-it loaded (the file engine, `FileEngine::saves_to_source`) asks, as it
-hosts a file and before anything is saved (deferred work included), the
+it loaded (the file engine; `EngineRef::saves_to_source`) asks, as it hosts
+a file and before anything is saved (deferred work included), the
 two questions the desktop's host asks as it opens one
 (`store::save_refused`, `local::open_file`), of the file's folder and its
 entry as a save finds them, never through a link and without opening the
@@ -1474,7 +1474,11 @@ its user with event 18 `Opened database "<name>" read only.`, listed it
 with status `Normal`, and left its bytes unchanged, where the same file
 writable opened with event 184 (re/server-logs.md 4,
 [#790](https://github.com/OpenMaker-Dev/openmaker/issues/790#issuecomment-7176757453)).
-The folder cause (`FolderNotWritable`) and the `Unchecked` cause are
+The store engine never writes its source (section 11): it answers no, so a
+source the server's user may not write raises no alert there, nothing at
+the save's copy name is warned about, and its files keep their own cause
+(`ReadOnlyCause::StoreEngine`), which the list shows the same way. The
+folder cause (`FolderNotWritable`) and the `Unchecked` cause are
 OpenMaker's own, for its own way of saving, a new copy renamed over the
 file: FileMaker Server writes a file in place, so a folder it may not write
 may not matter to it (unmeasured). The Read-only mark in the Admin

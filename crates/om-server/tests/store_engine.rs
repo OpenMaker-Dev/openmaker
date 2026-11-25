@@ -681,3 +681,30 @@ fn a_refused_start_makes_nothing() {
     assert_eq!(list(), expected);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// The store engine never writes its source (#842 of
+/// github.com/OpenMaker-Dev/openmaker): a source the server's user may not
+/// write (mode 444) is no reason to hold the file read-only for that, so it
+/// raises no alert and the file keeps the store engine's own cause, which
+/// the administrator's list of files gives (read without the store's lock,
+/// `Hosted::read_only_cause`).
+#[cfg(unix)]
+#[test]
+fn a_source_the_server_may_not_write_keeps_the_store_engines_cause() {
+    use std::os::unix::fs::PermissionsExt;
+    let file = TempFile::new("store-engine-mode-444", &[], true);
+    let mode = |mode: u32| {
+        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    mode(0o444);
+    let store = StoreDir::new("mode-444");
+    let (_port, handle) = start_on_store(&[(FILE, &file)], &store.0, |s| s);
+    let alerts: Vec<String> = handle.alerts().into_iter().map(|a| a.message).collect();
+    mode(0o644);
+    assert!(alerts.is_empty(), "{alerts:?}");
+    let listed = handle.files().into_iter().find(|f| f.name == FILE).unwrap();
+    assert_eq!(
+        listed.read_only,
+        Some("the store engine hosts it, which takes no changes yet")
+    );
+}
