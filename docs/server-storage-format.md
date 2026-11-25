@@ -829,7 +829,11 @@ lengths of entries and batches; not the chain, since nothing before the
 start is needed after it. The start's entry takes the start's hash and
 term, whatever its bytes say, and the entry after it is checked by the
 chain from that hash: a batch that begins there names the start's index
-and hash, which anchors it without the start's own bytes. The open, a
+and hash, which anchors it without the start's own bytes. On the way, the
+entries before the start are still checked by the chain from the
+segment's header, through each batch header, as far as it holds; where it
+stops is noted, and a read the device fails of an entry's bytes past its
+fixed fields is noted the same way rather than ending the walk. The open, a
 read and a cut walk so; so does accepting a loss (6.2), which refuses when
 the framing breaks before the start, so that where the start's successor
 begins cannot be established (`LogError::FramingBroken`).
@@ -864,7 +868,16 @@ the marker.
    the first segment walked are read through by their framing alone, since
    the log keeps no index of where entries are (3.5, "Anchored walks"):
    the checkpoint covers them, and damage to them does not stop the open
-   unless it breaks the framing.
+   unless it breaks the framing. They are still checked by the chain from
+   that segment's header, and the first place it stops holding, bytes that
+   do not check or a read the device fails past an entry's fixed fields,
+   is reported (`Opened::before_start`: the segment, the offset, the first
+   entry from which it does not hold, and whether the read failed): an open
+   from a checkpoint before that place could not replay past it. Nothing
+   is given up for it. Segments listed wholly before that segment are not
+   read at open beyond their headers (step 1); damage in them is found when
+   they are read, or by the background check of server-storage.md 6.12
+   ("Slow damage"), which is not built.
 4. After the firm position, an entry counts only once its whole batch has
    been read, found whole (3.3), and found to carry the cut count `state`
    holds. What its header settles is settled before anything else is
@@ -2370,7 +2383,12 @@ part way, and the next open shows which (it ends the log where the
 decision does, or reports the damage again). When the open passed over a
 copy of `state` and the log kept no whole batch after the marker, the
 open succeeds and says that the last batch confirmed may be lost
-(`Opened::last_batch_may_be_lost`).
+(`Opened::last_batch_may_be_lost`). When the chain of entries before the
+checkpoint's entry, in the segment that holds the one after it, stops
+checking (3.6, step 3), the open succeeds and says where
+(`Opened::before_start`), and whether the checkpoint on disk before the
+one it used comes before that place, so that an open falling back to it
+could not replay past it (`Opened::fallback_cannot_replay`).
 
 ### 6.3 Writing one entry
 

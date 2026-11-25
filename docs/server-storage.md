@@ -583,7 +583,14 @@ are in memory, so after a restart only what the superblocks on disk name
 is kept. The log is kept from the oldest
 kept checkpoint, and further back while another server needs it
 (section 7.5). So when the newest checkpoint cannot be used, the one
-before it still has every page it names and every entry after it. The
+before it still has every page it names and every entry after it, as far
+as the device kept them. An open on the newest checkpoint does not need
+the entries before it, and reaches it past them; it checks those it walks
+(the ones in the segment that holds the entry after it) and reports where
+they stop checking, and whether the checkpoint before could replay past
+that place, without failing (server-storage-format.md 3.6). The segments
+wholly before that one are not read at open: the background check of
+section 6.12 ("Slow damage") is what finds damage there. The
 page file keeps a reserve that only recovery, checkpoints and the discard
 of a group may use, so that a store whose writes have run out of space can
 still start, checkpoint and free space; the room a checkpoint's meta

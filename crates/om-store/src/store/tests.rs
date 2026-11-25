@@ -515,6 +515,69 @@ fn model_at(record: &[Built], index: u64, from: Option<&Model>) -> Model {
     model
 }
 
+/// Where the chain of entries up to `start` stops checking in a segment's
+/// bytes, by the format's description (sections 3.2 to 3.5): from the
+/// header's previous hash (bytes 64 to 96), through each batch header
+/// that continues it (its mark, its first index at 16, its length at 24,
+/// its count at 12, its previous hash at 40), a batch ending early where
+/// such a header stands instead of an entry (a cut), and each entry's
+/// hash, SHA-256 over the hash before it and its bytes before its own;
+/// `start` must have `start_hash`. `None` when it checks through `start`.
+fn chain_stops(bytes: &[u8], start: u64, start_hash: &[u8; 32]) -> Option<u64> {
+    let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let header = |at: usize, next: u64, prev: &[u8; 32]| -> Option<(u32, usize)> {
+        let fits = at + 136 <= bytes.len()
+            && &bytes[at..at + 8] == b"OMBATCH\0"
+            && u64_at(at + 16) == next
+            && bytes[at + 40..at + 72] == prev[..];
+        fits.then(|| (u32_at(at + 12), u64_at(at + 24) as usize))
+    };
+    if bytes.len() < 128 {
+        return Some(0);
+    }
+    let mut next = u64_at(48);
+    let mut prev: [u8; 32] = bytes[64..96].try_into().unwrap();
+    let mut at = 128usize;
+    while next <= start {
+        let Some((count, length)) = header(at, next, &prev) else {
+            return Some(next);
+        };
+        let mut entry = at + 136;
+        at = entry + length;
+        for _ in 0..count {
+            if next > start {
+                return None;
+            }
+            if header(entry, next, &prev).is_some() {
+                at = entry;
+                break;
+            }
+            if entry + 32 > bytes.len() {
+                return Some(next);
+            }
+            let len = u32_at(entry + 28) as usize;
+            let content = 32 + len;
+            if u64_at(entry) != next || entry + content + 32 > bytes.len() {
+                return Some(next);
+            }
+            let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+            digest.update(&prev);
+            digest.update(&bytes[entry..entry + content]);
+            let hash: [u8; 32] = digest.finish().as_ref().try_into().unwrap();
+            if hash[..] != bytes[entry + content..entry + content + 32]
+                || (next == start && hash != *start_hash)
+            {
+                return Some(next);
+            }
+            prev = hash;
+            next += 1;
+            entry += content + 32;
+        }
+    }
+    None
+}
+
 /// Counts over many runs, to show the schedules reach what they test.
 #[derive(Debug, Default)]
 struct Reached {
@@ -548,6 +611,10 @@ struct Reached {
     damaged_reads: u64,
     ended_unopenable: u64,
     space_freed: u64,
+    fallback_reported: u64,
+    chain_reported: u64,
+    chain_damaged: u64,
+    chain_excused: u64,
     kinds: BTreeMap<u16, u64>,
     fired: BTreeMap<Fault, u64>,
 }
@@ -598,6 +665,8 @@ struct Run {
     unopenable: bool,
     /// The disk's size, when the run gives it one.
     capacity: Option<u64>,
+    /// The step the current attempt to open began at.
+    opening: u64,
 }
 
 /// A failing run prints what it did, to read with the seed.
@@ -664,6 +733,7 @@ impl Run {
             rates,
             unopenable: false,
             capacity,
+            opening: 0,
         };
         run.opened(store, &opened);
         run
@@ -841,6 +911,79 @@ impl Run {
         self.acked = opened.started.index;
         self.before_last_flush = durable.index;
         self.viewed = self.viewed.min(self.acked);
+        // The chain before the checkpoint's entry, in the segment that holds
+        // the entry after it, as a read shows it: what the open reports
+        // must be where it stops checking (or, for a read the device failed,
+        // no later), and nothing when it checks.
+        let start = opened.checkpoint.entry;
+        let header_first = |number: u64| {
+            let path = format!("{}/{number:016x}", log::FOLDER);
+            self.sim
+                .visible(&path)
+                .filter(|b| b.len() >= 128)
+                .map(|b| (u64::from_le_bytes(b[48..56].try_into().unwrap()), b))
+        };
+        let run = store.log_segments();
+        let anchor = (run.first..run.first + run.count)
+            .rev()
+            .find_map(|n| header_first(n).filter(|(first, _)| *first <= start.index + 1));
+        let stops = anchor
+            .as_ref()
+            .and_then(|(_, bytes)| chain_stops(bytes, start.index, &start.hash.0));
+        // The device's damage shows in a read once the cache drops what it
+        // held: a segment whose cache was dropped during this open may have
+        // been read before it was.
+        let changed = anchor.as_ref().is_some_and(|(first, _)| {
+            let segment = (run.first..run.first + run.count)
+                .find(|n| header_first(*n).is_some_and(|(f, _)| f == *first));
+            let path = segment.map(|n| format!("{}/{n:016x}", log::FOLDER));
+            self.sim.events().iter().any(|e| {
+                matches!(e, sim::Event::Evicted { step, path: p }
+                    if *step >= self.opening && Some(p) == path.as_ref())
+            })
+        });
+        match opened.before_start {
+            Some(found) if found.unreadable => self.reached.chain_reported += 1,
+            Some(_) => self.reached.chain_damaged += 1,
+            None => {}
+        }
+        match (opened.before_start, stops) {
+            _ if changed => self.reached.chain_excused += 1,
+            (None, None) => {}
+            (Some(found), _) if found.unreadable => {
+                assert!(
+                    stops.is_none_or(|at| found.index <= at),
+                    "seed {seed}: a read failed at entry {}, after where the chain stops, {stops:?}",
+                    found.index
+                );
+            }
+            (Some(found), Some(at)) => assert_eq!(
+                found.index, at,
+                "seed {seed}: where the chain before the checkpoint's entry stops"
+            ),
+            (None, Some(at)) => {
+                panic!(
+                "seed {seed}: the chain before the checkpoint's entry {} stops checking at entry \
+                 {at}, and the open reported nothing (the segment begins at {:?})",
+                start.index,
+                anchor.as_ref().map(|(first, _)| *first)
+            )
+            }
+            (Some(found), None) => panic!(
+                "seed {seed}: the open reported the chain stopping at {found:?}, and it checks"
+            ),
+        }
+        let older = store.checkpoints().get(1).map(|c| c.entry.index);
+        assert_eq!(
+            opened.fallback_cannot_replay,
+            opened
+                .before_start
+                .is_some_and(|f| older.is_some_and(|older| older < f.index)),
+            "seed {seed}: the older checkpoint"
+        );
+        if opened.fallback_cannot_replay {
+            self.reached.fallback_reported += 1;
+        }
         // Restore points: every one a checkpoint at or before the one the
         // open used wrote is listed; those of a checkpoint it passed over
         // are gone with it.
@@ -924,6 +1067,7 @@ impl Run {
                 self.sim.set_rates(Rates::default());
             }
             self.sim.restart();
+            self.opening = self.sim.steps();
             let opened = Store::open(self.fs.clone(), CONFIG);
             if let Err(e) = &opened {
                 self.note(format!("open: {e}"));
@@ -1423,7 +1567,11 @@ fn add(into: &mut Reached, from: Reached) {
         last_batch_may_be_lost,
         damaged_reads,
         ended_unopenable,
-        space_freed
+        space_freed,
+        fallback_reported,
+        chain_reported,
+        chain_damaged,
+        chain_excused
     );
     for (k, n) in from.kinds {
         *into.kinds.entry(k).or_default() += n;
@@ -1493,6 +1641,18 @@ fn the_store_survives_drawn_faults_against_the_model() {
             ("unreadable ends given up", reached.unreadable_given_up),
             ("copies of state passed over", reached.passed_over_state),
             ("last batches reported lost", reached.last_batch_may_be_lost),
+            (
+                "chains before the start reported damaged",
+                reached.chain_damaged,
+            ),
+            (
+                "reads failed before the start reported",
+                reached.chain_reported,
+            ),
+            (
+                "older checkpoints reported unable to replay",
+                reached.fallback_reported,
+            ),
         ] {
             assert!(n > 0, "no {what}: {reached:?}");
         }
@@ -2660,8 +2820,11 @@ impl Shaped {
 
 /// What a shape of damage leads to.
 enum Want {
-    /// The ordinary open opens the store, with nothing lost.
-    Opens,
+    /// The ordinary open opens the store, with nothing lost, and reports
+    /// that the chain before the checkpoint's entry stops checking at entry
+    /// `stops` (in the segment that holds the entry after it), past which
+    /// the older checkpoint could not replay.
+    Opens { stops: u64 },
     /// The ordinary open reports damage, and accepting the loss keeps
     /// through entry `kept`, the segments `listed` (by place), lengthens
     /// the segments `lengthened`, and copies the one whose tail it gives
@@ -2744,12 +2907,14 @@ fn accepting_the_loss_over_every_shape_of_damage() {
         (
             "an entry that does not verify before the checkpoint's",
             |s| s.damage(s.tags_in(1)[0], 100, 4),
-            |_| Want::Opens,
+            |s| Want::Opens {
+                stops: s.index(s.tags_in(1)[0]),
+            },
         ),
         (
             "the checkpoint's entry does not verify",
             |s| s.damage(s.tag_at(s.start), 100, 4),
-            |_| Want::Opens,
+            |s| Want::Opens { stops: s.start },
         ),
         (
             "an entry after the checkpoint's does not verify",
@@ -2817,9 +2982,20 @@ fn accepting_the_loss_over_every_shape_of_damage() {
         s.sim.restart();
         let ordinary = Store::open(s.fs(), SHAPE_CONFIG);
         match want {
-            Want::Opens => {
+            Want::Opens { stops } => {
                 let (store, opened) = ordinary.unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert_eq!(opened.recovered, s.durable, "{name}");
+                assert!(opened.gave_up.is_none(), "{name}");
+                let reported = opened
+                    .before_start
+                    .expect("the chain before the start reported");
+                assert_eq!(reported.index, stops, "{name}: where the chain stops");
+                assert_eq!(reported.segment, s.number(1), "{name}");
+                assert!(!reported.unreadable, "{name}");
+                assert!(
+                    opened.fallback_cannot_replay,
+                    "{name}: the older checkpoint"
+                );
                 let view = store.view().unwrap();
                 for &tag in s.entries.keys() {
                     let value = read(&view, s.file, &[tag]);

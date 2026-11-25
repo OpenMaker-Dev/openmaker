@@ -484,6 +484,15 @@ pub struct Opened {
     pub last_batch_may_be_lost: bool,
     /// What an explicit call gave up to open the store.
     pub gave_up: Option<GaveUp>,
+    /// Where the chain of entries before the checkpoint's entry stops
+    /// checking, in the segment the log's open walked to reach it
+    /// ([`log::Opened::before_start`]): nothing was given up and the open
+    /// went on, since this checkpoint does not need them.
+    pub before_start: Option<log::ChainFault>,
+    /// The checkpoint on disk before the one used comes before that place:
+    /// an open that falls back to it (the newest not readable) could not
+    /// replay past it, which design 6.7 counts on.
+    pub fallback_cannot_replay: bool,
 }
 
 /// What an open found before the replay.
@@ -1048,6 +1057,14 @@ impl Store {
                 "the replay did not end at the durable entry",
             ));
         }
+        // What an open from the checkpoint before this one would meet.
+        let before_start = log_opened.before_start;
+        let fallback_cannot_replay = before_start.is_some_and(|stop| {
+            pages
+                .kept_checkpoints()
+                .get(1)
+                .is_some_and(|older| older.entry.index < stop.index)
+        });
         // 5. The recovered version, pinned and published.
         let pin = pin_version(&pages, PinOf::Newest(last.index))
             .map_err(|e| OpenError::Disk(format!("the recovered version: {e}")))?;
@@ -1118,6 +1135,8 @@ impl Store {
                 passed_over_state,
                 last_batch_may_be_lost,
                 gave_up,
+                before_start,
+                fallback_cannot_replay,
             },
         ))
     }

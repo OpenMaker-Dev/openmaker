@@ -130,6 +130,18 @@ pub(crate) struct Found {
     pub first_in_batch: bool,
 }
 
+/// Where the chain of entries before a walk's anchor stopped holding: the
+/// segment (an index into the run), the offset, the first entry from which
+/// it does not hold, and whether the device failed to read there (else the
+/// bytes do not check).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChainStop {
+    pub seg: usize,
+    pub offset: u64,
+    pub index: u64,
+    pub unreadable: bool,
+}
+
 /// What the walk met next.
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -227,6 +239,10 @@ pub(crate) struct Scanner<'a> {
     /// The walk ended where a batch still had an entry to come, or where a
     /// batch's mark is and no valid header continues the log.
     broke: bool,
+    /// Before the anchor, the hash of the last entry taken while the chain
+    /// from the segment's header still holds; `None` once it stopped.
+    chain: Option<[u8; 32]>,
+    chain_fault: Option<ChainStop>,
     /// A buffer for the next place.
     spare: Vec<u8>,
 }
@@ -250,6 +266,8 @@ impl<'a> Scanner<'a> {
             judge: None,
             anchor: None,
             broke: false,
+            chain: None,
+            chain_fault: None,
             spare: Vec::new(),
         }
     }
@@ -264,6 +282,7 @@ impl<'a> Scanner<'a> {
     pub fn anchored_at(mut self, index: u64, hash: [u8; 32], term: u64) -> Self {
         if self.next <= index {
             self.anchor = Some((index, hash, term));
+            self.chain = Some(self.prev);
         }
         self
     }
@@ -391,31 +410,20 @@ impl<'a> Scanner<'a> {
         };
         let size = head.size();
         let content = (ENTRY_FIXED + u64::from(head.len)) as usize;
+        if let Some(anchor) = self.anchor.filter(|(at, _, _)| head.index <= *at) {
+            return self.framed(place, &head, offset, size, content, anchor);
+        }
         let bytes = self.get(&mut place, size)?;
         if (bytes.len() as u64) < size {
             self.recycle(place);
             return Ok(None);
         }
-        let framed = self.anchor.filter(|(at, _, _)| head.index <= *at);
-        let (hash, term, verified) = match framed {
-            // Taken by its framing: the anchor is the checkpoint's entry,
-            // with the checkpoint's hash and term; an entry before it is
-            // passed with the hash its bytes name.
-            Some((at, hash, term)) if head.index == at => (hash, term, false),
-            Some(_) => {
-                let mut stored = [0u8; 32];
-                stored.copy_from_slice(&bytes[content..]);
-                (stored, head.term, false)
-            }
-            None => {
-                let hash = entry_hash(&self.prev, &bytes[..content]);
-                if hash[..] != bytes[content..] {
-                    self.recycle(place);
-                    return Ok(None);
-                }
-                (hash, head.term, true)
-            }
-        };
+        let hash = entry_hash(&self.prev, &bytes[..content]);
+        if hash[..] != bytes[content..] {
+            self.recycle(place);
+            return Ok(None);
+        }
+        let (term, verified) = (head.term, true);
         let (payload, bytes) = match self.keep {
             Keep::Payloads => {
                 let mut buf = std::mem::take(&mut place.buf);
@@ -452,6 +460,96 @@ impl<'a> Scanner<'a> {
             batch_offset: batch.offset,
             first_in_batch: batch.read == 0,
         }))
+    }
+
+    /// An entry at or before the anchor, taken by its framing: its fixed
+    /// fields placed it. Its bytes are still read and checked by the chain
+    /// as far as the chain holds from the segment's header, and the first
+    /// place it does not hold (bytes that do not check, a read the device
+    /// fails) is noted ([`Scanner::chain_fault`]); the walk goes on either
+    /// way. The anchor takes the anchor's hash and term; an entry before it,
+    /// the hash its bytes name.
+    fn framed(
+        &mut self,
+        mut place: Place,
+        head: &EntryHead,
+        offset: u64,
+        size: u64,
+        content: usize,
+        (at, anchor_hash, anchor_term): (u64, [u8; 32], u64),
+    ) -> Result<Option<Found>, ReadFault> {
+        let read = match self.get(&mut place, size) {
+            Ok(bytes) if (bytes.len() as u64) < size => None,
+            Ok(bytes) => {
+                let mut stored = [0u8; 32];
+                stored.copy_from_slice(&bytes[content..]);
+                let computed = self.chain.map(|prev| entry_hash(&prev, &bytes[..content]));
+                Some(Ok((stored, computed)))
+            }
+            Err(fault) => Some(Err(fault)),
+        };
+        self.recycle(place);
+        let stored = match read {
+            // The file ends inside it: not whole, and nothing after it.
+            None => return Ok(None),
+            Some(Err(fault)) => {
+                self.chain_stops(fault.offset, head.index, true);
+                [0u8; 32]
+            }
+            Some(Ok((stored, computed))) => {
+                let holds = computed == Some(stored) && (head.index != at || stored == anchor_hash);
+                if holds {
+                    self.chain = Some(stored);
+                } else {
+                    self.chain_stops(offset, head.index, false);
+                }
+                stored
+            }
+        };
+        let (hash, term) = if head.index == at {
+            (anchor_hash, anchor_term)
+        } else {
+            (stored, head.term)
+        };
+        let batch = self
+            .batch
+            .as_ref()
+            .expect("entries are read inside a batch");
+        Ok(Some(Found {
+            seg: self.seg,
+            offset,
+            size,
+            index: head.index,
+            term,
+            kind: head.kind,
+            file: head.file,
+            hash,
+            payload: Vec::new(),
+            bytes: Vec::new(),
+            verified: false,
+            batch_offset: batch.offset,
+            first_in_batch: batch.read == 0,
+        }))
+    }
+
+    /// The chain before the anchor stops holding at `offset`, at entry
+    /// `index`: noted, the first time.
+    fn chain_stops(&mut self, offset: u64, index: u64, unreadable: bool) {
+        if self.chain.take().is_some() {
+            self.chain_fault = Some(ChainStop {
+                seg: self.seg,
+                offset,
+                index,
+                unreadable,
+            });
+        }
+    }
+
+    /// Where the chain of the entries the walk took by their framing, before
+    /// its anchor, stopped holding from the segment's header: `None` when it
+    /// held through the anchor, or when the walk took none so.
+    pub fn chain_fault(&self) -> Option<ChainStop> {
+        self.chain_fault
     }
 
     /// Whether the next listed segment's header continues the chain from
@@ -585,6 +683,11 @@ impl<'a> Scanner<'a> {
         let firm = self.judge.map(|j| j.firm);
         match begin {
             (Probe::Header(header, bytes), offset) => {
+                // Before the anchor, the chain also runs through the
+                // batch's header.
+                if self.anchor.is_some() && self.chain.is_some_and(|prev| prev != header.prev) {
+                    self.chain_stops(offset, header.first, false);
+                }
                 let stale = self.judge.is_some_and(|j| header.cut_count != j.cut_count);
                 self.batch = Some(OpenBatch {
                     offset,

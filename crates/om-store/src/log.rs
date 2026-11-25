@@ -189,6 +189,26 @@ pub struct Opened {
     /// removed: segments retired or cut by a process that stopped before
     /// removing them, and spares.
     pub removed: Vec<u64>,
+    /// Where the chain of the entries before the start stops checking, in
+    /// the segment the open walked to reach it (it reaches the start by
+    /// their framing, and checks them by the chain from the segment's
+    /// header as it goes): nothing was given up, and the open went on, since
+    /// the start does not need them; an open from a checkpoint before that
+    /// place could not replay past it. Segments wholly before that one are
+    /// not read (format section 3.6).
+    pub before_start: Option<ChainFault>,
+}
+
+/// Where the chain of entries before an open's start stops checking
+/// ([`Opened::before_start`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainFault {
+    pub segment: u64,
+    pub offset: u64,
+    /// The first entry from which the chain does not check.
+    pub index: u64,
+    /// The device failed to read there; else the bytes do not check.
+    pub unreadable: bool,
 }
 
 /// Where an open cut the log (section 6.12: "cut from the first bad entry,
@@ -977,6 +997,7 @@ impl Log {
         let mut kept = 0u64;
         let mut why: Option<CutWhy> = None;
         let mut unreadable_end: Option<UnreadableEnd> = None;
+        let mut before_start: Option<ChainFault> = None;
         if let Some(first) = segs.first() {
             if first.header.first > after_start {
                 return Err(damage(
@@ -1125,6 +1146,13 @@ impl Log {
                     }
                 }
             };
+            // The chain before the start, checked on the way to it.
+            before_start = scanner.chain_fault().map(|stop| ChainFault {
+                segment: segs[stop.seg].number,
+                offset: stop.offset,
+                index: stop.index,
+                unreadable: stop.unreadable,
+            });
             if last.index < marker.index {
                 return Err(damage(
                     DamageKind::EndsEarly,
@@ -1217,6 +1245,7 @@ impl Log {
                 cut,
                 unreadable_end,
                 removed,
+                before_start,
             },
         })
     }
