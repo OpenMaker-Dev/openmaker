@@ -370,20 +370,30 @@ impl Gen {
         }
     }
 
-    /// A group's entry (`docs/server-storage.md` section 6.9): an opening
-    /// part declaring one or two paths under `[e0, k]` and `[e1, k]` that
-    /// no open group declared; a part with edits under a declared path; a
-    /// close; or a discard.
+    /// A group's entry (`docs/server-storage.md` section 6.9), of either
+    /// kind, up to six open: a staged group's opening part declaring one or
+    /// two paths under `[e0, k]` and `[e1, k]` that no open group declared,
+    /// or a new file's opening; a part (a staged part now and then larger
+    /// than a staging chunk); a close or a publication; a discard. Now and
+    /// then an entry that is refused (`refused`).
     fn group(&mut self, model: &Model, next_index: u64) -> Option<(u64, Payload)> {
         let ids: Vec<u64> = model.files.keys().copied().collect();
-        let roll = self.rng.below(10);
-        if model.groups.is_empty() || (roll < 2 && model.groups.len() < 3) {
+        let roll = self.rng.below(20);
+        if roll >= 18 {
+            if let Some(drawn) = self.refused(model, next_index) {
+                return Some(drawn);
+            }
+        }
+        if model.groups.is_empty() || (roll < 8 && model.groups.len() < 6) {
+            if self.rng.below(3) == 0 {
+                return Some((next_index, Payload::Group(GroupEvent::NewFile)));
+            }
             let taken: Vec<&GroupPath> = model.groups.values().flat_map(|g| &g.paths).collect();
             let file = ids[self.rng.below(ids.len() as u64) as usize];
-            let k = (0..4u8).find(|&k| {
-                !taken.iter().any(|p| {
-                    p.file == file && p.path.first() == Some(&vec![0xe0]) && p.path[1] == [k]
-                })
+            let k = (0..6u8).find(|&k| {
+                !taken
+                    .iter()
+                    .any(|p| p.file == file && p.path == [vec![0xe0], vec![k]])
             })?;
             let mut paths = vec![GroupPath {
                 file,
@@ -416,22 +426,40 @@ impl Gen {
         }
         let open: Vec<(&u64, &crate::model::Group)> = model.groups.iter().collect();
         let (&id, group) = open[self.rng.below(open.len() as u64) as usize];
+        let part = |id: u64, edits: Vec<Edit>| {
+            Payload::Change(Change {
+                group: Some(Group {
+                    id,
+                    step: Step::Part,
+                }),
+                edits,
+                ..Change::default()
+            })
+        };
+        if group.making.is_some() {
+            return Some(match roll % 10 {
+                0..=5 => {
+                    let base = vec![vec![0xd0], vec![self.rng.below(4) as u8]];
+                    (id, part(id, self.group_edits(&base)))
+                }
+                6..=8 => {
+                    self.names += 1;
+                    let mut page0 = vec![0u8; self.rng.below(64) as usize];
+                    self.rng.fill(&mut page0);
+                    let publish = GroupEvent::Publish {
+                        id,
+                        name: format!("made {}", self.names).into_bytes(),
+                        flags: self.rng.below(2) as u32,
+                        page0,
+                    };
+                    (id, Payload::Group(publish))
+                }
+                _ => (0, Payload::Group(GroupEvent::Discard { id })),
+            });
+        }
         let declared = &group.paths[self.rng.below(group.paths.len() as u64) as usize];
-        Some(match roll {
-            0..=5 => {
-                let edits = self.group_edits(&declared.path);
-                (
-                    declared.file,
-                    Payload::Change(Change {
-                        group: Some(Group {
-                            id,
-                            step: Step::Part,
-                        }),
-                        edits,
-                        ..Change::default()
-                    }),
-                )
-            }
+        Some(match roll % 10 {
+            0..=5 => (declared.file, part(id, self.group_edits(&declared.path))),
             6..=8 => {
                 let mut close = self.change(model, declared.file);
                 close.edits.clear();
@@ -446,10 +474,116 @@ impl Gen {
         })
     }
 
+    /// An entry the open groups make the store refuse, as the model does:
+    /// a change at, above or below a staged group's declared path, a part
+    /// outside its group's paths, an overlapping open, a staged close or a
+    /// change for a file a group is still making, a publication under a
+    /// name taken, or the removal of a file with declared paths.
+    fn refused(&mut self, model: &Model, next_index: u64) -> Option<(u64, Payload)> {
+        let open: Vec<(&u64, &crate::model::Group)> = model.groups.iter().collect();
+        let (&id, group) = *open.get(self.rng.below(open.len().max(1) as u64) as usize)?;
+        if group.making.is_some() {
+            return Some(match self.rng.below(3) {
+                0 => {
+                    let mut change = Change {
+                        edits: vec![Edit::leaf(vec![vec![0xd1]], vec![1])],
+                        ..Change::default()
+                    };
+                    if self.rng.below(2) == 0 {
+                        change.group = Some(Group {
+                            id,
+                            step: Step::Close,
+                        });
+                        change.edits.clear();
+                    }
+                    (id, Payload::Change(change))
+                }
+                1 => {
+                    let name = model.files.values().next()?.name.clone();
+                    let publish = GroupEvent::Publish {
+                        id,
+                        name,
+                        flags: 0,
+                        page0: Vec::new(),
+                    };
+                    (id, Payload::Group(publish))
+                }
+                _ => (
+                    id,
+                    Payload::File(FileEvent::Renamed {
+                        name: b"x".to_vec(),
+                    }),
+                ),
+            });
+        }
+        let declared = &group.paths[self.rng.below(group.paths.len() as u64) as usize];
+        let at = match self.rng.below(3) {
+            0 => declared.path.clone(),
+            1 => declared.path[..1].to_vec(),
+            _ => {
+                let mut below = declared.path.clone();
+                below.push(vec![self.rng.below(8) as u8]);
+                below
+            }
+        };
+        Some(match self.rng.below(4) {
+            0 => {
+                let edit = if self.rng.below(2) == 0 {
+                    Edit::delete(at)
+                } else {
+                    Edit::leaf(at, vec![7; 10])
+                };
+                let change = Change {
+                    edits: vec![edit],
+                    ..Change::default()
+                };
+                (declared.file, Payload::Change(change))
+            }
+            1 => {
+                let mut outside = declared.path.clone();
+                outside[0] = vec![0xe2];
+                let change = Change {
+                    group: Some(Group {
+                        id,
+                        step: Step::Part,
+                    }),
+                    edits: vec![Edit::leaf(outside, vec![1])],
+                    ..Change::default()
+                };
+                (declared.file, Payload::Change(change))
+            }
+            2 => {
+                let change = Change {
+                    group: Some(Group {
+                        id: next_index,
+                        step: Step::Open(vec![GroupPath {
+                            file: declared.file,
+                            path: at,
+                        }]),
+                    }),
+                    ..Change::default()
+                };
+                (declared.file, Payload::Change(change))
+            }
+            _ => (declared.file, Payload::File(FileEvent::Removed)),
+        })
+    }
+
     /// Edits under `base`: puts of small values or, now and then, of
-    /// values in overflow pages, and a delete.
+    /// values in overflow pages, a delete, and now and then a batch of
+    /// values larger than a staging chunk (16,344 bytes) together.
     fn group_edits(&mut self, base: &Path) -> Vec<Edit> {
         let mut edits = Vec::new();
+        if self.rng.below(8) == 0 {
+            for i in 0..4 + self.rng.below(2) {
+                let mut path = base.clone();
+                path.push(vec![0x80 | i as u8]);
+                let mut value = vec![0u8; 4300 + self.rng.below(200) as usize];
+                self.rng.fill(&mut value);
+                edits.push(Edit::leaf(path, value));
+            }
+            return edits;
+        }
         for _ in 0..1 + self.rng.below(2) {
             let mut path = base.clone();
             path.push(vec![self.rng.below(8) as u8]);
@@ -687,6 +821,47 @@ fn compare(view: &View, model: &Model, at: &str) -> Result<(), String> {
             group.staged.len() as u64,
             "{at}: group {id}'s parts"
         );
+        assert_eq!(
+            row.kind == crate::apply::GroupKind::NewFile,
+            group.making.is_some(),
+            "{at}: group {id}'s kind"
+        );
+        assert_eq!(row.staged, group.staged_bytes, "{at}: group {id}'s bytes");
+    }
+    // The trees the view holds: the catalog's files, the files groups are
+    // making, and the staged groups' staging trees, no other. A file a
+    // group is making is in no catalog and holds the group's parts.
+    let mut want: Vec<TreeId> = vec![TreeId::Store];
+    want.extend(model.files.keys().map(|id| TreeId::File(*id)));
+    for (id, group) in &model.groups {
+        want.push(match group.making {
+            Some(_) => TreeId::File(*id),
+            None => TreeId::Group(*id),
+        });
+    }
+    want.sort();
+    let mut trees: Vec<TreeId> = view
+        .roots()
+        .iter()
+        .map(|(name, _)| TreeId::from_name(name.as_bytes()).expect("a tree the state names"))
+        .collect();
+    trees.sort();
+    assert_eq!(trees, want, "{at}: the view's trees");
+    for (id, group) in &model.groups {
+        let Some(nodes) = &group.making else { continue };
+        assert!(
+            view.file_tree(*id).map_err(|e| fail(&e))?.is_none(),
+            "{at}: file {id}, still being made, opened through the view"
+        );
+        let root = view.root(TreeId::File(*id)).expect("listed");
+        let tree = Tree::open(&*view.pages, root).map_err(|e| fail(&e))?;
+        let mut got = Vec::new();
+        for item in tree.walk(&[] as &[Vec<u8>]) {
+            let item = item.map_err(|e| fail(&e))?;
+            got.push((item.key.path(), item.node));
+        }
+        let want: Vec<(Path, Node)> = nodes.iter().map(|(p, n)| (p.clone(), n.clone())).collect();
+        assert!(got == want, "{at}: the file group {id} is making");
     }
     Ok(())
 }
@@ -830,9 +1005,18 @@ struct Reached {
     chain_reported: u64,
     chain_damaged: u64,
     chain_excused: u64,
-    /// Groups closed by an entry, and those a restart discarded.
+    /// Groups closed by an entry, and those a restart discarded; files
+    /// published by their groups; staged parts that span staging chunks;
+    /// the most groups open at once; entries the store refused as the
+    /// model did; `empty` entries a failed start left in the log without
+    /// its own.
     groups_closed: u64,
     groups_discarded_by_a_restart: u64,
+    groups_published: u64,
+    parts_spanning_chunks: u64,
+    most_groups_open: u64,
+    refused: u64,
+    discards_left_by_a_failed_start: u64,
     /// Incidents seen, by path; acknowledgements; places of the journal
     /// that did not check.
     incidents: BTreeMap<&'static str, u64>,
@@ -1576,17 +1760,23 @@ impl Run {
                     self.opened(store, &opened);
                     return true;
                 }
-                Err(OpenError::Start(failed)) if failed.written.is_some() => {
-                    let (at, payload) = failed.written.expect("written");
-                    // The start's own entry is in the log, and may be found
-                    // durable by the next open; so may the `empty` entry
-                    // before it that discarded the groups left open.
-                    let index = at.index as usize - usize::from(failed.discarded.is_some());
-                    if self.lying && index > self.record.len() + 1 {
+                // The open's `empty` entry, the start's own entry, or both,
+                // reached the log: the next open may find them durable.
+                Err(OpenError::Start(failed))
+                    if failed.written.is_some() || failed.discarded.is_some() =>
+                {
+                    let StartFailed {
+                        discarded, written, ..
+                    } = *failed;
+                    let first = discarded
+                        .map(|d| d.index)
+                        .or(written.as_ref().map(|(at, _)| at.index))
+                        .expect("one of them") as usize;
+                    if self.lying && first > self.record.len() + 1 {
                         continue;
                     }
-                    assert!(index >= 1 && index <= self.record.len() + 1, "seed {seed}");
-                    self.record.truncate(index - 1);
+                    assert!(first >= 1 && first <= self.record.len() + 1, "seed {seed}");
+                    self.record.truncate(first - 1);
                     let last = |record: &[Built]| {
                         record.last().map_or(Position::START, |b| Position {
                             index: b.index,
@@ -1594,7 +1784,7 @@ impl Run {
                             hash: b.hash,
                         })
                     };
-                    if let Some(discarded) = failed.discarded {
+                    if let Some(discarded) = discarded {
                         let empty =
                             Built::new(&last(&self.record), discarded.term, 0, &Payload::Empty);
                         assert!(
@@ -1602,14 +1792,17 @@ impl Run {
                             "seed {seed}: the open's discard"
                         );
                         self.record.push(empty);
+                        self.reached.discards_left_by_a_failed_start +=
+                            u64::from(written.is_none());
                     }
-                    let prev = last(&self.record);
-                    let built = Built::new(&prev, at.term, 0, &payload);
-                    assert!(
-                        self.lying || built.hash == at.hash,
-                        "seed {seed}: the start's entry"
-                    );
-                    self.record.push(built);
+                    if let Some((at, payload)) = written {
+                        let built = Built::new(&last(&self.record), at.term, 0, &payload);
+                        assert!(
+                            self.lying || built.hash == at.hash,
+                            "seed {seed}: the start's entry"
+                        );
+                        self.record.push(built);
+                    }
                     continue;
                 }
                 // A full disk: the administrator frees space, as the
@@ -1739,10 +1932,54 @@ impl Run {
         let next = store.next_index();
         let (file, payload) = self.gen.next(&self.appended, next);
         let built = Built::new(&self.appended.applied, store.term(), file, &payload);
-        if self.appended.clone().apply(&built.entry()).is_err() {
+        // An entry the model refuses goes to the store too, which must
+        // refuse it the same way and change nothing.
+        let refused = self.appended.clone().apply(&built.entry()).err();
+        // A device that lies can leave the store's state otherwise than
+        // the model's: there the model's refusals are not the store's.
+        if refused.is_some() && self.lying {
             return true;
         }
+        let before = (store.next_index(), store.space().groups);
         let appended = store.append(file, &payload);
+        if let Some(why) = refused {
+            match appended {
+                Ok(_) => panic!("seed {seed}: the store took an entry the model refuses: {why}"),
+                Err(WriteError::Refused(r)) => {
+                    assert_eq!(r, why, "seed {seed}: the store's refusal");
+                    let store = self.store.as_ref().expect("open");
+                    assert_eq!(
+                        (store.next_index(), store.space().groups),
+                        before,
+                        "seed {seed}: a refused entry changed the store"
+                    );
+                    self.reached.refused += 1;
+                    self.note(format!("refused {}: {why}", built.index));
+                    return true;
+                }
+                // Refused for space, or stopped, before it was judged.
+                _ => {}
+            }
+        }
+        if appended.is_ok() {
+            match &payload {
+                Payload::Change(Change {
+                    group: Some(_),
+                    edits,
+                    ..
+                }) => {
+                    let bytes = crate::entry::encode_edits(edits).map_or(0, |b| b.len());
+                    self.reached.parts_spanning_chunks +=
+                        u64::from(bytes > crate::page::OVERFLOW_DATA);
+                }
+                Payload::Group(GroupEvent::Publish { .. }) => self.reached.groups_published += 1,
+                _ => {}
+            }
+        }
+        self.reached.most_groups_open = self
+            .reached
+            .most_groups_open
+            .max(self.appended.groups.len() as u64);
         self.note(format!(
             "append {}: {:?}",
             built.index,
@@ -2081,9 +2318,14 @@ fn add(into: &mut Reached, from: Reached) {
         chain_excused,
         groups_closed,
         groups_discarded_by_a_restart,
+        groups_published,
+        parts_spanning_chunks,
+        refused,
+        discards_left_by_a_failed_start,
         acknowledged,
         journal_damaged
     );
+    into.most_groups_open = into.most_groups_open.max(from.most_groups_open);
     for (k, n) in from.incidents {
         *into.incidents.entry(k).or_default() += n;
     }
@@ -2173,6 +2415,16 @@ fn the_store_survives_drawn_faults_against_the_model() {
                 "groups discarded by a restart",
                 reached.groups_discarded_by_a_restart,
             ),
+            ("new files published", reached.groups_published),
+            (
+                "parts spanning staging chunks",
+                reached.parts_spanning_chunks,
+            ),
+            (
+                "more than three groups open",
+                reached.most_groups_open.saturating_sub(3),
+            ),
+            ("entries refused as the model refuses them", reached.refused),
         ] {
             assert!(n > 0, "no {what}: {reached:?}");
         }
@@ -2369,18 +2621,26 @@ fn the_store_survives_a_crash_at_every_step() {
 /// How a group's life in [`a_group_survives_a_crash_at_every_step`] ends.
 #[derive(Clone, Copy, Debug)]
 enum Ending {
+    /// A staged group closed.
     Close,
+    /// A staged group discarded.
     Discard,
+    /// A group making a new file published.
+    Publish,
+    /// A group making a new file discarded.
+    DiscardNew,
 }
 
-/// One group's life (section 6.9), with a crash placed at each of its
-/// steps in turn, settled as drawn: the group opened with a part,
-/// a change beside it, a flush, a checkpoint with the group open, a part
-/// that spills and a batch, a flush, and the group closed or discarded,
-/// flushed and checkpointed. After any stop the store answers as the
-/// model at its durable entry with the open's discard taken; no view, at
-/// any point, shows a part of the group; and nothing stays held for it,
-/// across a second reopen too.
+/// One group's life (section 6.9), of each kind, with a crash placed at
+/// each of its steps in turn, settled as drawn: the group opened with a
+/// part (a staged group's, or a new file's and its first part), a change
+/// beside it, a flush, a checkpoint with the group open, a part over two
+/// staging chunks and a batch, a flush, and the group closed (or the new
+/// file published) or discarded, flushed and checkpointed. After any stop
+/// the store answers as the model at its durable entry with the open's
+/// discard taken; no view, at any point, shows a part of the group or the
+/// file it is making; and nothing stays held for it, and no tree of it is
+/// left, across a second reopen too.
 #[test]
 fn a_group_survives_a_crash_at_every_step() {
     group_crashed_at_every_step(false);
@@ -2456,6 +2716,9 @@ fn group_crashed_at_every_step(every_fate: bool) {
         append(&mut store, &mut model, record, file, added)?;
         append(&mut store, &mut model, record, file, put(b"a", &[1; 300]))?;
         let group = store.next_index();
+        let new_file = matches!(ending, Ending::Publish | Ending::DiscardNew);
+        // The file the parts change: the existing one, or the new one.
+        let parts_in = if new_file { group } else { file };
         let declared = vec![b"g".to_vec()];
         let at = |i: u8| vec![b"g".to_vec(), vec![i]];
         let part = |step: Step, edits: Vec<Edit>| {
@@ -2465,20 +2728,34 @@ fn group_crashed_at_every_step(every_fate: bool) {
                 ..Change::default()
             })
         };
-        let open = part(
-            Step::Open(vec![GroupPath {
-                file,
-                path: declared.clone(),
-            }]),
-            vec![Edit::leaf(at(0), vec![2; 300])],
-        );
-        append(&mut store, &mut model, record, file, open)?;
+        let first = vec![Edit::leaf(at(0), vec![2; 300])];
+        if new_file {
+            let open = Payload::Group(GroupEvent::NewFile);
+            append(&mut store, &mut model, record, group, open)?;
+            append(
+                &mut store,
+                &mut model,
+                record,
+                group,
+                part(Step::Part, first),
+            )?;
+        } else {
+            let open = part(
+                Step::Open(vec![GroupPath {
+                    file,
+                    path: declared.clone(),
+                }]),
+                first,
+            );
+            append(&mut store, &mut model, record, file, open)?;
+        }
         append(&mut store, &mut model, record, file, put(b"b", &[3; 300]))?;
         flushed(&mut store, &model)?;
         *acked = record.len();
         store.checkpoint(None).map_err(|e| e.to_string())?;
+        // A value past a staging chunk: two chunks.
         let spill = part(Step::Part, vec![Edit::leaf(at(1), vec![4; 20_000])]);
-        append(&mut store, &mut model, record, file, spill)?;
+        append(&mut store, &mut model, record, parts_in, spill)?;
         let batch = part(
             Step::Part,
             (2..60u8)
@@ -2486,10 +2763,25 @@ fn group_crashed_at_every_step(every_fate: bool) {
                 .chain([Edit::delete(at(0))])
                 .collect(),
         );
-        append(&mut store, &mut model, record, file, batch)?;
+        append(&mut store, &mut model, record, parts_in, batch)?;
         flushed(&mut store, &model)?;
         *acked = record.len();
         match ending {
+            Ending::Publish => {
+                let publish = GroupEvent::Publish {
+                    id: group,
+                    name: b"made".to_vec(),
+                    flags: 0,
+                    page0: vec![5; 40],
+                };
+                append(
+                    &mut store,
+                    &mut model,
+                    record,
+                    group,
+                    Payload::Group(publish),
+                )?
+            }
             Ending::Close => append(
                 &mut store,
                 &mut model,
@@ -2497,7 +2789,7 @@ fn group_crashed_at_every_step(every_fate: bool) {
                 file,
                 part(Step::Close, Vec::new()),
             )?,
-            Ending::Discard => append(
+            Ending::Discard | Ending::DiscardNew => append(
                 &mut store,
                 &mut model,
                 record,
@@ -2559,15 +2851,25 @@ fn group_crashed_at_every_step(every_fate: bool) {
         compare(&store.view().unwrap(), &model, what).unwrap();
         let space = store.space();
         assert_eq!((space.groups, space.promised), (0, 0), "{what}: held");
+        // No staging tree, and no file a group was making, is left.
         assert!(
-            !crate::page::PageStore::trees(&*store.pages)
+            crate::page::PageStore::trees(&*store.pages)
                 .iter()
-                .any(|(name, _)| name.as_bytes().starts_with(b"group:")),
-            "{what}: a staging tree left"
+                .all(|(name, _)| match TreeId::from_name(name.as_bytes()) {
+                    Some(TreeId::Store) => true,
+                    Some(TreeId::File(id)) => model.files.contains_key(&id),
+                    _ => false,
+                }),
+            "{what}: a group's tree left"
         );
         model
     };
-    for ending in [Ending::Close, Ending::Discard] {
+    for ending in [
+        Ending::Close,
+        Ending::Discard,
+        Ending::Publish,
+        Ending::DiscardNew,
+    ] {
         let base = {
             let sim = Sim::new(41);
             let mut record = setup(&sim);
@@ -2665,6 +2967,197 @@ fn a_restart_discards_groups_when_the_replay_leaves_pages_past_their_budget() {
     assert_eq!((space.groups, space.promised), (0, 0));
 }
 
+/// Review of #796, finding 1: a discard never fails for space. A group
+/// left open in a checkpoint, a disk that cannot grow, older versions kept
+/// by a restore point, and no reserve: what is free outside the group's
+/// hold cannot fund an ordinary reservation, and the open's `empty` entry
+/// takes the hold it is about to release instead.
+#[test]
+fn a_restart_discards_a_group_on_a_disk_that_cannot_grow() {
+    const TIGHT: Config = Config {
+        log: CONFIG.log,
+        pages: pagefile::Config {
+            reserve: 0,
+            ..CONFIG.pages
+        },
+    };
+    let sim = Sim::new(44);
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let (mut store, _) = Store::create(fs.clone(), &sim.random(), TIGHT).unwrap();
+    let file = add_file(&mut store, "f");
+    store.flush().unwrap();
+    store.checkpoint(Some("kept")).unwrap();
+    let open = Payload::Change(Change {
+        group: Some(Group {
+            id: store.next_index(),
+            step: Step::Open(vec![GroupPath {
+                file,
+                path: vec![b"g".to_vec()],
+            }]),
+        }),
+        edits: vec![Edit::leaf(vec![b"g".to_vec(), vec![0]], vec![1; 300])],
+        ..Change::default()
+    });
+    store.append(file, &open).unwrap();
+    store.flush().unwrap();
+    let used: u64 = sim
+        .image()
+        .iter()
+        .map(|(_, b)| b.as_ref().map_or(0, |b| b.len() as u64))
+        .sum();
+    sim.set_capacity(used + (256 << 10));
+    // Changes beside the group, each flushed and checkpointed as a restore
+    // point, so that every version stays and no reclaim makes room, until
+    // the disk refuses one.
+    let mut full = false;
+    for i in 0u16..2000 {
+        match store.append(file, &put(&i.to_be_bytes(), &[2; 3000])) {
+            Ok(_) => {}
+            Err(WriteError::Full(_) | WriteError::Log(_) | WriteError::CheckpointNeeded(_)) => {
+                full = true;
+                break;
+            }
+            Err(e) => panic!("change {i}: {e}"),
+        }
+        store.flush().unwrap();
+        if store.checkpoint(Some(&format!("p{i}"))).is_err() {
+            full = true;
+            break;
+        }
+    }
+    assert!(full, "the disk never filled");
+    assert!(store.space().groups > 0);
+    drop(store);
+    let (store, opened) = reopened_with(&sim, TIGHT).unwrap_or_else(|e| panic!("{e}"));
+    assert!(opened.discarded.is_some());
+    let space = store.space();
+    assert_eq!((space.groups, space.promised), (0, 0));
+    assert!(StoreTree::of(&*store.pages)
+        .unwrap()
+        .groups()
+        .unwrap()
+        .is_empty());
+}
+
+/// Review of #796, finding 2: an entry that ends a group, which takes what
+/// the group holds as its reservation, is judged by the budget of pages
+/// waiting for a checkpoint as any entry is: with the budget filled beside
+/// an open group, its close is refused until a checkpoint, and then taken.
+#[test]
+fn a_close_waits_for_a_checkpoint_as_any_entry_does() {
+    let sim = Sim::new(46);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    store.flush().unwrap();
+    store.checkpoint(None).unwrap();
+    let group = store.next_index();
+    let part = |step: Step, edits: Vec<Edit>| {
+        Payload::Change(Change {
+            group: Some(Group { id: group, step }),
+            edits,
+            ..Change::default()
+        })
+    };
+    let open = part(
+        Step::Open(vec![GroupPath {
+            file,
+            path: vec![b"g".to_vec()],
+        }]),
+        vec![Edit::leaf(vec![b"g".to_vec(), vec![0]], vec![1; 300])],
+    );
+    store.append(file, &open).unwrap();
+    store.flush().unwrap();
+    for i in 0u16.. {
+        match store.append(file, &put(&i.to_be_bytes(), &[2; 3000])) {
+            Ok(_) => store.flush().map(drop).unwrap(),
+            Err(WriteError::CheckpointNeeded(_)) => break,
+            Err(e) => panic!("change {i}: {e}"),
+        }
+    }
+    let close = part(Step::Close, Vec::new());
+    let held = store.space().groups;
+    match store.append(file, &close) {
+        Err(WriteError::CheckpointNeeded(_)) => {}
+        other => panic!("the close, past the budget: {other:?}"),
+    }
+    assert_eq!(store.space().groups, held, "the hold stays the group's");
+    store.checkpoint(None).unwrap();
+    store.append(file, &close).unwrap();
+    store.flush().unwrap();
+    assert_eq!(store.space().groups, 0);
+}
+
+/// Review of #796, finding 4: an open whose `empty` entry the log took and
+/// flushed, and whose start's entry then needed a checkpoint that failed,
+/// says the `empty` entry is in the log and not the start's; the next open
+/// finds it durable. The store's tree is grown past one leaf, so that the
+/// group's rows are on a leaf of their own, which only the `empty` entry
+/// changes after the checkpoint; the changes before the stop, one new page
+/// each, leave the replay one page under the budget of pages waiting for a
+/// checkpoint, and the page file's first write after its open fails.
+#[test]
+fn a_failed_start_says_when_its_empty_entry_alone_is_in_the_log() {
+    let mut found = None;
+    'search: for n in 0..60u16 {
+        for k in 4..8u64 {
+            let sim = Sim::new(45);
+            let flaky = Flaky::new(&sim);
+            let fs: Arc<dyn Fs> = Arc::new(flaky.clone());
+            let (mut store, _) = Store::create(fs.clone(), &sim.random(), CONFIG).unwrap();
+            for i in 0..40u8 {
+                add_file(&mut store, &format!("{i:0>300}"));
+                store.flush().unwrap();
+                if i % 8 == 7 {
+                    store.checkpoint(None).unwrap();
+                }
+            }
+            let file = add_file(&mut store, "f");
+            let open = Payload::Change(Change {
+                group: Some(Group {
+                    id: store.next_index(),
+                    step: Step::Open(vec![GroupPath {
+                        file,
+                        path: vec![b"g".to_vec()],
+                    }]),
+                }),
+                edits: vec![Edit::leaf(vec![b"g".to_vec(), vec![0]], vec![1; 300])],
+                ..Change::default()
+            });
+            store.append(file, &open).unwrap();
+            store.flush().unwrap();
+            store.checkpoint(None).unwrap();
+            for i in 0..n {
+                if store
+                    .append(file, &put(&i.to_be_bytes(), &[2; 5000]))
+                    .is_err()
+                {
+                    break 'search;
+                }
+                store.flush().unwrap();
+            }
+            drop(store);
+            *flaky.fail_writes.lock().unwrap() =
+                Some((pagefile::FILE.to_owned(), k, ErrorKind::Write));
+            sim.restart();
+            let failed = Store::open(fs.clone(), CONFIG);
+            *flaky.fail_writes.lock().unwrap() = None;
+            let Err(OpenError::Start(failed)) = failed else {
+                continue;
+            };
+            if let (Some(discarded), None) = (failed.discarded, &failed.written) {
+                found = Some((sim, fs, discarded));
+                break 'search;
+            }
+        }
+    }
+    let (sim, fs, discarded) = found.expect("an open that failed after its empty entry alone");
+    sim.restart();
+    let (store, opened) = Store::open(fs, CONFIG).unwrap();
+    assert_eq!(opened.recovered, discarded, "the empty entry, durable");
+    assert!(opened.discarded.is_none());
+    assert_eq!(store.space().groups, 0);
+}
+
 /// A group left open by every stop, through checkpoints and reopens: each
 /// open discards it, gives back what its parts held and its staging pages,
 /// and the page file does not grow from cycle to cycle.
@@ -2736,8 +3229,12 @@ fn made(sim: &Sim) -> (Store, Opened) {
 }
 
 fn reopened(sim: &Sim) -> Result<(Store, Opened), OpenError> {
+    reopened_with(sim, CONFIG)
+}
+
+fn reopened_with(sim: &Sim, config: Config) -> Result<(Store, Opened), OpenError> {
     sim.restart();
-    Store::open(Arc::new(sim.fs()), CONFIG)
+    Store::open(Arc::new(sim.fs()), config)
 }
 
 /// A change of file `file` putting `value` at `path`.

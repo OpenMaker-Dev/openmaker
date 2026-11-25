@@ -681,11 +681,17 @@ impl View {
         }
     }
 
-    /// A file's tree as the view holds it, if the file exists.
-    pub fn file_tree(&self, id: u64) -> Result<Option<Tree<'_, PageFile>>, tree::Error> {
+    /// A file's tree as the view holds it, if the view's catalog has the
+    /// file. A file a group is still making has a tree, but no catalog row
+    /// until the group is published (section 6.9): no view opens it.
+    pub fn file_tree(&self, id: u64) -> Result<Option<Tree<'_, PageFile>>, apply::Error> {
+        let listed = match self.store_tree()? {
+            Some(state) => state.file(id)?.is_some(),
+            None => false,
+        };
         match self.root(TreeId::File(id)) {
-            Some(root) => Tree::open(&*self.pages, root).map(Some),
-            None => Ok(None),
+            Some(root) if listed => Ok(Some(Tree::open(&*self.pages, root)?)),
+            _ => Ok(None),
         }
     }
 }
@@ -820,12 +826,14 @@ enum NotApplied {
 /// the entry runs short (the unit that ran short changed nothing, and is
 /// begun again): the entry's unit is committed when this returns `Ok`.
 ///
-/// A group's entries (section 6.9) move the space its parts hold
-/// ([`apply::group_space`]): a part holds the room for its later
-/// application before it is applied; the close's reservation is what its
-/// group holds, extended like any entry's for the rest; a discard, and an
-/// `empty` entry, give the holds back once committed. An entry not applied
-/// leaves the holds as they were.
+/// A group's entries (section 6.9) move the space its groups hold
+/// ([`apply::group_space`]): the entry that opens a group holds the room
+/// for its end, and a staged group's part the room for its later
+/// application, before it is applied; the entry that ends groups (a close,
+/// a publication, a discard, an `empty` entry) takes what they hold as its
+/// reservation, extended like any entry's for the rest, and what it does
+/// not take goes back to the free pages. An entry not applied leaves the
+/// holds as they were.
 fn apply_entry(
     pages: &PageFile,
     entry: &Entry<'_>,
@@ -860,10 +868,7 @@ fn apply_entry(
     let mut size = FIRST_RESERVATION;
     loop {
         match apply::apply(&res, entry) {
-            Ok(applied) => {
-                pages.unhold(space.release);
-                return Ok((applied, extended, res.taken()));
-            }
+            Ok(applied) => return Ok((applied, extended, res.taken())),
             Err(apply::Error::Tree(tree::Error::Store(StoreError::Full))) => {
                 res.extend(size)
                     .map_err(|e| not_applied(NotApplied::Space(e)))?;

@@ -2168,38 +2168,74 @@ OpenMaker's own design. The entries and what they do to the state are
 built (format sections 5.2 to 5.8, and 4.8 for space); which operations
 use a group, and what is marked *not built* below, are not.
 
-- **Entries.** The first part opens the group: the group's id is the
-  part's own index, and the part declares the paths the group changes,
-  one or more, in one or more files. Later parts add edits. Parts carry
-  tree edits only. The closing entry carries no edits of its own: it
-  applies the staged ones and may carry the operation it completes, with
-  its reply and notices. A `group` entry discards a group, and an `empty`
-  entry discards every open group.
-- **Staged, then applied.** A part is written, replicated and committed
-  like any entry. Applying it adds its edits to the group's staging tree
-  in the state, not to the file's tree. The close applies each file's
-  staged edits, in order, with one tree apply, and drops the staging
-  tree, all in its one unit of work. Every view shows the file as it was
-  before the group or as it is after it. Because the parts are in the
-  state, a checkpoint taken while a group is open has all of it, and a
-  reopen finds the group whole or not at all.
+- **Two kinds.** A group either changes existing files, a **staged**
+  group, or makes a new file, a **new file** group. Changes inside an
+  existing file cannot show before the group ends unless they are kept
+  aside, so the first kind stages them and its close applies them. A new
+  file is shown by nothing until it is published, so the second kind
+  writes its parts straight into the file's tree and its close only
+  publishes the file. An import (6.10), a restore and a clone are of the
+  second kind; op73's field work, an index built for a find and a
+  deploy's changes to records are of the first.
+- **Entries.** A staged group's first part opens it: the group's id is
+  the part's own index, and the part declares the paths the group
+  changes, one or more, in one or more files. Later parts add edits.
+  Parts carry tree edits only. The closing entry carries no edits of its
+  own: it applies the staged ones and may carry the operation it
+  completes, with its reply and notices. A new file group is opened by a
+  `group` entry (*new file*) whose index is the id of the group and of
+  the file; its parts are changes to that file; a `group` entry
+  (*publish*) closes it, giving the file its name, flags and page 0. A
+  `group` entry discards a group of either kind, and an `empty` entry
+  discards every open group.
+- **Staged, then applied.** A staged group's part is written, replicated
+  and committed like any entry. Applying it adds its edits to the
+  group's staging tree in the state, not to the file's tree. The close
+  applies each file's staged edits, in order, with one tree apply, and
+  drops the staging tree, all in its one unit of work. Every view shows
+  the file as it was before the group or as it is after it. Because the
+  parts are in the state, a checkpoint taken while a group is open has
+  all of it, and a reopen finds the group whole or not at all. A staged
+  group stages at most 64 MiB of edits (as they encode), the largest
+  payload of one entry, so that its close holds no more in memory than
+  the largest entry decodes to; a part past that is refused, typed
+  (format 5.6).
+- **Written in place, then published.** A new file group's open makes
+  the file's tree, empty, and no catalog row: no view lists the file or
+  opens its tree (`View::file_tree` answers only for files in the
+  view's catalog), and no entry but the group's parts reaches it. Each
+  part is applied to the tree as any change is, reserving only its own
+  application, and keys that arrive in order take the append path. The
+  publication writes the catalog rows and the name in one unit, a fixed
+  amount of work whatever the group's size; a name taken refuses it,
+  typed, with nothing changed. A discard, by an entry or a restart, drops
+  the tree, whose pages go back to the free pages. The group's declared
+  path is the whole new file.
 - **The staging is the parts' edits.** The staging tree, `group:` and the
   group's id, keeps each part's edits as the change carries them, keyed
-  by file, part and chunk (format 5.3): a part appends at the tree's end,
-  and the close reads them back in order. A staged copy of each file's
-  tree, to which the parts would apply their edits and whose declared
-  subtrees the close would put in place of the file's, would make the
-  close cheapest: it would write only the paths down to those subtrees.
-  It needs one tree to share pages with another (a clone, 6.8, whose
-  shared pages no entry records yet) and a graft of key ranges between
-  trees, and neither is built; clones are outside this work. So the close
-  applies every staged edit. It writes what one entry with all of the
-  group's edits writes, each page once (format 2.7), which is less than
-  the parts' edits applied one entry at a time would write, and it holds
-  them all in memory while it does. For a group of N parts of one 4 KiB
-  put each, the close wrote 3 pages for N = 1, 109 for 100 and 10,672 for
-  10,000 (about one page a part;
-  [performance/store-groups.md](performance/store-groups.md)).
+  by file, part and chunk (format 5.3): a part appends at the end of its
+  file's items, and the close reads them back in order. A staged copy of
+  each file's tree, to which the parts would apply their edits and whose
+  declared subtrees the close would put in place of the file's, would
+  make the close cheapest: it would write only the paths down to those
+  subtrees. It needs one tree to share pages with another (a clone, 6.8,
+  whose shared pages no entry records yet) and a graft of key ranges
+  between trees, and neither is built; clones are outside this work. So
+  the close applies every staged edit. It writes what one entry with all
+  of the group's edits writes, each page once (format 2.7), which is
+  less than the parts' edits applied one entry at a time would write,
+  and it holds them all in memory while it does.
+- **Cost, measured** ([performance/store-groups.md](performance/store-groups.md)).
+  For N parts of one 4 KiB put each, a staged group's close wrote 3
+  pages for N = 1, 109 for 100 and 10,672 for 10,000, about one page a
+  part, in 1.1, 10 and 338 ms, and its parts held 148, 5,989 and 590,089
+  pages. A new file group's publication wrote 1 page in under 21 ms at
+  every size up to 10,000 parts, and 623 ms at 110 MB (26,856 parts),
+  and it held 505 pages whatever its size. Its parts wrote what the same
+  changes to an existing file write: the page file at 110 MB was 132 MiB
+  with 4,000-byte values, and 482 MiB with 4 KiB values, each of which
+  takes an overflow page of its own
+  ([#802](https://github.com/OpenMaker-Dev/openmaker/issues/802)).
 - **What it changes.** A group declares the paths it changes. While it is
   open, an entry that changes one of them, or anything above or below
   one, is refused when it is applied, with a typed refusal, the same on
@@ -2243,24 +2279,31 @@ use a group, and what is marked *not built* below, are not.
   pending: for op73, the deferred list at `[T, 3, 1, fd]`, which the
   group's last entry removes. The close's reply is built; the operations
   are not.
-- **Space.** Each part holds, before it is appended, the room for its
-  later application (format 4.8); its own staging is reserved as any
-  entry's is. The close takes what its group holds as its reservation,
-  and what it writes besides (its rows, its reply) may take the reserve,
-  as a discard's may. A discard, and an `empty` entry, give the holds
-  back, and the staging tree's pages go back to the free map as any
-  dropped tree's do. The holds are recorded in the group's row, so a
+- **Space.** The entry that opens a group holds the room for the entry
+  that will end it, and a staged group's part holds the room for its
+  later application (format 4.8), before it is appended; a part's own
+  writes are reserved as any entry's are. The entry that ends a group (a
+  close, a publication, a discard, an `empty` entry) takes what the group
+  holds as its reservation, so a discard is funded by what it releases
+  and runs on a disk that cannot grow; what it writes past that may take
+  the reserve. What it does not take, and the dropped tree's pages, go
+  back to the free pages. The holds are recorded in the group's row, so a
   reopen holds them again before it replays, and the accounting holds
-  across checkpoints and reopens with a group left open. The bound held
-  is `entry_bound` of each part's edits at the file tree's height plus
-  one: our own choice, loose, and not a proof. It covers the close while
-  the file's tree grows at most a level beyond what the parts' own edits
-  are counted to add; a close that needs more extends from free pages
-  and the reserve as any entry does, and can be refused as full. One
-  4 KiB put holds 59 pages, about 55 times what its share of the close
-  writes, so a group of 10,000 such parts grows the page file to
-  9.9 GiB while it is open, and staging it took 18.4 s against 6.3 s
-  with no holds ([performance/store-groups.md](performance/store-groups.md)).
+  across checkpoints and reopens with a group left open. The bound a
+  staged part holds is `entry_bound` of its edits at the file tree's
+  height plus one: our own choice, loose, and not a proof
+  ([#787](https://github.com/OpenMaker-Dev/openmaker/issues/787)). It
+  covers the close while the file's tree grows at most a level beyond
+  what the parts' own edits are counted to add; a close that needs more
+  extends from free pages and the reserve as any entry does, and can be
+  refused as full. One 4 KiB put holds 59 pages, about 55 times what its
+  share of the close writes
+  ([#786](https://github.com/OpenMaker-Dev/openmaker/issues/786)), so a
+  staged group of 10,000 such parts grows the page file to 9.9 GiB while
+  it is open, and staging it took 18 to 21 s against 6.3 s with no holds.
+  The close holds the staged edits in memory, within the 64 MiB bound
+  ([#788](https://github.com/OpenMaker-Dev/openmaker/issues/788)). A new
+  file group holds only the room for its publication or discard.
 
 FileMaker Server commits such a walk every 512 records under an exclusive
 lock (schema-path.md 7.2), so a crash can leave a table partly converted
@@ -2278,7 +2321,9 @@ separate operations, and other operations run between them.
 **Import** reads an `.fmp12` through `om-hbam`, walking the slot stream of
 its leaf pages in order without loading the file, and writes every node
 with its kind and value, empty lists included, as the parts of a group
-whose last entry makes the file visible. It refuses what the server
+that makes a new file (6.9, the second kind), whose publication makes the
+file visible: the parts write the file's tree in key order, on the append
+path, and nothing is staged or written twice. It refuses what the server
 refuses to host today (encrypted files, `crates/om-hbam/src/container.rs`)
 and a file with an item beyond the store's bounds (section 6.11). Built
 so far: the walk into a tree in batches, each a unit of work of the page

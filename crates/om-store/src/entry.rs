@@ -218,10 +218,26 @@ pub struct GroupPath {
 }
 
 /// A `group` entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupEvent {
-    /// The group is discarded: its staging goes, and nothing of it shows.
+    /// The group is discarded: its staging, or the file it was making,
+    /// goes, and nothing of it shows.
     Discard { id: u64 },
+    /// A group that makes a new file opens (`docs/server-storage.md`
+    /// section 6.9): the file's id, and the group's, is this entry's own
+    /// index. The file's tree is made empty, in no catalog: only the
+    /// group's parts change it, straight, and nothing shows it until the
+    /// group is published.
+    NewFile,
+    /// The group that is making file `id` closes: the file takes its place
+    /// in the catalog, with this name, flags and page 0 (as a `file`
+    /// entry's *added*).
+    Publish {
+        id: u64,
+        name: Vec<u8>,
+        flags: u32,
+        page0: Vec<u8>,
+    },
 }
 
 /// An operation's id.
@@ -443,6 +459,21 @@ impl Payload {
                 1 => GroupEvent::Discard {
                     id: group_id(r.u64()?)?,
                 },
+                2 => GroupEvent::NewFile,
+                3 => {
+                    let id = group_id(r.u64()?)?;
+                    let name = r.name()?;
+                    let flags = r.u32()?;
+                    if flags & !KNOWN_FLAGS != 0 {
+                        return Err(PayloadError::Flags(flags));
+                    }
+                    GroupEvent::Publish {
+                        id,
+                        name,
+                        flags,
+                        page0: r.bytes16("page 0", MAX_PAGE0)?,
+                    }
+                }
                 tag => {
                     return Err(PayloadError::Tag {
                         field: "group event",
@@ -520,6 +551,19 @@ impl Payload {
                 w.extend_from_slice(&[VERSION, 1]);
                 w.extend_from_slice(&group_id(*id)?.to_le_bytes());
             }
+            Payload::Group(GroupEvent::NewFile) => w.extend_from_slice(&[VERSION, 2]),
+            Payload::Group(GroupEvent::Publish {
+                id,
+                name,
+                flags,
+                page0,
+            }) => {
+                w.extend_from_slice(&[VERSION, 3]);
+                w.extend_from_slice(&group_id(*id)?.to_le_bytes());
+                put_name(&mut w, name)?;
+                w.extend_from_slice(&flags.to_le_bytes());
+                put16(&mut w, "page 0", page0, MAX_PAGE0)?;
+            }
         }
         debug_assert_eq!(w.len(), len, "size and encode agree");
         Ok(w)
@@ -544,6 +588,21 @@ impl Payload {
             }
             Ok(2 + name.len())
         }
+        /// A file's catalog row: its name, flags and page 0.
+        fn row(n: &[u8], flags: u32, page0: &[u8]) -> Result<usize, PayloadError> {
+            let n = name(n)?;
+            if flags & !KNOWN_FLAGS != 0 {
+                return Err(PayloadError::Flags(flags));
+            }
+            if page0.len() > MAX_PAGE0 {
+                return Err(PayloadError::TooLong {
+                    field: "page 0",
+                    len: page0.len(),
+                    max: MAX_PAGE0,
+                });
+            }
+            Ok(n + 4 + 2 + page0.len())
+        }
         Ok(match self {
             Payload::Empty => 0,
             Payload::Change(c) => change_size(c)?.saturating_add(1),
@@ -552,21 +611,8 @@ impl Payload {
             Payload::File(FileEvent::Added {
                 name: n,
                 flags,
-                page0,
-            }) => {
-                let n = name(n)?;
-                if flags & !KNOWN_FLAGS != 0 {
-                    return Err(PayloadError::Flags(*flags));
-                }
-                if page0.len() > MAX_PAGE0 {
-                    return Err(PayloadError::TooLong {
-                        field: "page 0",
-                        len: page0.len(),
-                        max: MAX_PAGE0,
-                    });
-                }
-                2 + n + 4 + 2 + page0.len()
-            }
+                page0: p,
+            }) => 2 + row(n, *flags, p)?,
             Payload::File(FileEvent::Removed) => 2,
             Payload::File(FileEvent::Renamed { name: n }) => 2 + name(n)?,
             Payload::Members(_) => 3,
@@ -574,6 +620,16 @@ impl Payload {
             Payload::Group(GroupEvent::Discard { id }) => {
                 group_id(*id)?;
                 2 + 8
+            }
+            Payload::Group(GroupEvent::NewFile) => 2,
+            Payload::Group(GroupEvent::Publish {
+                id,
+                name: n,
+                flags,
+                page0: p,
+            }) => {
+                group_id(*id)?;
+                2 + 8 + row(n, *flags, p)?
             }
         })
     }

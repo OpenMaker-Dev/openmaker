@@ -15,10 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::apply::{Position, Refusal, MAX_OPEN_GROUPS};
+use crate::apply::{Position, Refusal, MAX_GROUP_STAGED, MAX_OPEN_GROUPS};
 use crate::entry::{
-    entry_hash, Entry, FileEvent, Group as GroupOf, GroupEvent, GroupPath, Kind, LockEdit, Members,
-    Payload, ServerId, Session, SessionEvent, Step,
+    encode_edits, entry_hash, Change, Entry, FileEvent, Group as GroupOf, GroupEvent, GroupPath,
+    Kind, LockEdit, Members, Payload, ServerId, Session, SessionEvent, Step,
 };
 use crate::page::FORMAT_VERSION;
 use crate::tree::Node;
@@ -61,11 +61,24 @@ pub struct Model {
 }
 
 /// An open group: the paths it declared, and its parts' edits, each with
-/// its file, in order.
+/// its file, in order. A group making a new file declared the whole file,
+/// stages nothing, and holds the file's nodes until it is published.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
     pub paths: Vec<GroupPath>,
     pub staged: Vec<(u64, Vec<crate::tree::Edit>)>,
+    /// The bytes its parts staged, as their edits encode.
+    pub staged_bytes: u64,
+    pub making: Option<BTreeMap<Path, Node>>,
+}
+
+/// The bytes a part's edits encode to: what it stages.
+fn encoded(edits: &[crate::tree::Edit]) -> u64 {
+    if edits.is_empty() {
+        0
+    } else {
+        encode_edits(edits).map_or(0, |b| b.len() as u64)
+    }
 }
 
 impl Group {
@@ -186,6 +199,20 @@ impl Model {
                 }
             }
         }
+        // What a staged group's parts stage, held to its bound.
+        if let Some(GroupOf { id, step }) = &change.group {
+            if *step != Step::Close {
+                let before = self.groups.get(id).map_or(0, |g| g.staged_bytes);
+                let staged = before + encoded(&change.edits);
+                if staged > MAX_GROUP_STAGED {
+                    return Err(Refusal::GroupTooLarge {
+                        group: *id,
+                        staged,
+                        max: MAX_GROUP_STAGED,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -262,6 +289,32 @@ impl Model {
     fn effect(&mut self, entry: &Entry<'_>, payload: &Payload) -> Result<Outcome, Refusal> {
         let mut out = Outcome::default();
         match payload {
+            // A part of a group making a new file: its edits go to that
+            // file's nodes at once.
+            Payload::Change(Change {
+                group: Some(GroupOf { id, step }),
+                edits,
+                ..
+            }) if self.groups.get(id).is_some_and(|g| g.making.is_some()) => {
+                if *step != Step::Part {
+                    return Err(Refusal::GroupKind { group: *id });
+                }
+                if entry.file != *id {
+                    return Err(Refusal::GroupFile {
+                        group: *id,
+                        file: entry.file,
+                    });
+                }
+                let group = self.groups.get_mut(id).expect("checked");
+                group.staged.push((*id, Vec::new()));
+                let nodes = group.making.as_mut().expect("checked");
+                for edit in edits {
+                    match edit {
+                        crate::tree::Edit::Put { path, node } => put(nodes, path, node.clone()),
+                        crate::tree::Edit::Delete { path } => delete(nodes, path),
+                    }
+                }
+            }
             Payload::Change(change) => {
                 let file = self.the_file(entry, Kind::Change)?;
                 if let Some(op) = &change.op {
@@ -386,6 +439,8 @@ impl Model {
                             Group {
                                 paths: paths.clone(),
                                 staged: vec![(file, change.edits.clone())],
+                                staged_bytes: encoded(&change.edits),
+                                making: None,
                             },
                         );
                     }
@@ -395,6 +450,7 @@ impl Model {
                     }) => {
                         if let Some(group) = self.groups.get_mut(id) {
                             group.staged.push((file, change.edits.clone()));
+                            group.staged_bytes += encoded(&change.edits);
                         }
                     }
                     Some(GroupOf {
@@ -529,6 +585,57 @@ impl Model {
                 if self.groups.remove(id).is_none() {
                     return Err(Refusal::NoSuchGroup(*id));
                 }
+            }
+            Payload::Group(GroupEvent::NewFile) => {
+                if entry.file != entry.index {
+                    return Err(Refusal::FileField {
+                        kind: Kind::Group,
+                        file: entry.file,
+                    });
+                }
+                if self.groups.len() as u64 >= MAX_OPEN_GROUPS {
+                    return Err(Refusal::TooManyGroups);
+                }
+                self.groups.insert(
+                    entry.index,
+                    Group {
+                        paths: vec![GroupPath {
+                            file: entry.index,
+                            path: Vec::new(),
+                        }],
+                        staged: Vec::new(),
+                        staged_bytes: 0,
+                        making: Some(BTreeMap::new()),
+                    },
+                );
+            }
+            Payload::Group(GroupEvent::Publish {
+                id,
+                name,
+                flags,
+                page0,
+            }) => {
+                if entry.file != *id {
+                    return Err(Refusal::FileField {
+                        kind: Kind::Group,
+                        file: entry.file,
+                    });
+                }
+                let group = self.groups.get(id).ok_or(Refusal::NoSuchGroup(*id))?;
+                if group.making.is_none() {
+                    return Err(Refusal::GroupKind { group: *id });
+                }
+                self.name_free(name)?;
+                let group = self.groups.remove(id).expect("checked");
+                self.files.insert(
+                    *id,
+                    File {
+                        name: name.clone(),
+                        flags: *flags,
+                        page0: page0.clone(),
+                        nodes: group.making.unwrap_or_default(),
+                    },
+                );
             }
         }
         Ok(out)

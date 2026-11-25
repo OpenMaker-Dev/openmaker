@@ -26,16 +26,24 @@ use std::fmt;
 use std::ops::Bound;
 
 use crate::entry::{
-    decode_edits, encode_edits, entry_hash, Entry, FileEvent, Group, GroupEvent, GroupPath, Kind,
-    LockEdit, Members, Op, Payload, PayloadError, ServerId, Session, SessionEvent, Step,
+    decode_edits, encode_edits, entry_hash, Change, Entry, FileEvent, Group, GroupEvent, GroupPath,
+    Kind, LockEdit, Members, Op, Payload, PayloadError, ServerId, Session, SessionEvent, Step,
 };
-use crate::page::{EntryPages, Hash, PageStore, StoreError, TreeName, FORMAT_VERSION, MAX_VALUE};
+use crate::page::{
+    EntryPages, Hash, PageStore, StoreError, TreeName, FORMAT_VERSION, OVERFLOW_DATA,
+};
 use crate::pagefile::entry_bound;
 use crate::tree::{self, key, Direction, Edit, Node, Root, Tree};
 
 /// The most groups open at once (`docs/server-storage-format.md` section
 /// 5.6): an opening part past it is refused.
 pub const MAX_OPEN_GROUPS: u64 = 256;
+
+/// The most bytes a staged group's parts may stage, as their edits encode
+/// (format section 5.6): the largest payload one entry may have, so that a
+/// close holds no more in memory than the largest entry decodes to. A part
+/// past it is refused.
+pub const MAX_GROUP_STAGED: u64 = crate::entry::MAX_PAYLOAD as u64;
 
 /// The top-level segments of the store's own tree, and the segments under a
 /// file's row (format section 5.3). Each is one byte.
@@ -145,27 +153,40 @@ impl Position {
     }
 }
 
-/// An open group's row (format section 5.3): the pages its parts hold for
-/// its later application, and how many parts it has.
+/// Which of the two kinds of group (`docs/server-storage.md` section 6.9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupKind {
+    /// Changes inside existing files: its parts' edits are staged, and the
+    /// close applies them.
+    #[default]
+    Staged,
+    /// A new file: its parts change the file's tree straight, and the
+    /// close puts the file in the catalog.
+    NewFile,
+}
+
+/// An open group's row (format section 5.3): the pages it holds for its
+/// end, how many parts it has, the bytes its parts staged, and its kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GroupRow {
     pub held: u64,
     pub parts: u64,
+    pub staged: u64,
+    pub kind: GroupKind,
 }
 
-/// What an entry does to the space its groups hold (format section 5.8),
-/// read from the state and the entry before it is applied: a part holds
-/// pages for its later application; the close draws on what its group
-/// holds; a discard (and an `empty` entry, for every open group) gives it
-/// back.
+/// What an entry does to the space its groups hold (format section 4.8),
+/// read from the state and the entry before it is applied: an opening
+/// entry holds pages for the group's end, and a staged group's part for
+/// its later application; the entry that ends a group (its close, its
+/// publication, a discard, an `empty` entry for every open group) takes
+/// what the group holds as its reservation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GroupSpace {
     pub hold: u64,
     pub draw: u64,
-    pub release: u64,
-    /// The entry closes or discards a group: what it writes besides the
-    /// staged application (the group's rows, its reply) may take the
-    /// reserve, as recovery may.
+    /// The entry ends a group: what it writes past what the group holds
+    /// may take the reserve, as recovery may.
     pub ends: bool,
 }
 
@@ -264,6 +285,12 @@ pub enum Refusal {
     InGroup { group: u64, edit: usize },
     /// A file in which open group `group` declared a path is removed.
     FileInGroup { group: u64 },
+    /// The entry is for the other kind of group than open group `group`
+    /// is: a close, an open or a publication that does not fit it.
+    GroupKind { group: u64 },
+    /// A staged group's part would make its parts stage more than
+    /// [`MAX_GROUP_STAGED`] bytes.
+    GroupTooLarge { group: u64, staged: u64, max: u64 },
 }
 
 impl fmt::Display for Refusal {
@@ -319,6 +346,13 @@ impl fmt::Display for Refusal {
             Refusal::FileInGroup { group } => {
                 write!(f, "open group {group} declared a path in the file")
             }
+            Refusal::GroupKind { group } => {
+                write!(f, "group {group} is of the other kind")
+            }
+            Refusal::GroupTooLarge { group, staged, max } => write!(
+                f,
+                "group {group} would stage {staged} bytes, past the {max} a group may"
+            ),
         }
     }
 }
@@ -461,6 +495,19 @@ fn name_path(name: &[u8]) -> Path {
     vec![seg(keys::NAMES), name.to_vec()]
 }
 
+/// A file's catalog rows: its row's name, flags and page 0, and its name.
+fn catalog_rows(id: u64, name: &[u8], flags: u32, page0: &[u8]) -> [Edit; 4] {
+    [
+        Edit::leaf(file_field(id, keys::FILE_NAME), name.to_vec()),
+        Edit::leaf(
+            file_field(id, keys::FILE_FLAGS),
+            flags.to_le_bytes().to_vec(),
+        ),
+        Edit::leaf(file_field(id, keys::FILE_PAGE0), page0.to_vec()),
+        Edit::leaf(name_path(name), id.to_le_bytes().to_vec()),
+    ]
+}
+
 fn server_path(server: &ServerId) -> Path {
     vec![seg(keys::SERVERS), server.to_vec()]
 }
@@ -537,6 +584,11 @@ fn groups_in(file: u64) -> Path {
 fn held_value(row: GroupRow) -> Vec<u8> {
     let mut out = row.held.to_le_bytes().to_vec();
     out.extend_from_slice(&row.parts.to_le_bytes());
+    out.extend_from_slice(&row.staged.to_le_bytes());
+    out.push(match row.kind {
+        GroupKind::Staged => 1,
+        GroupKind::NewFile => 2,
+    });
     out
 }
 
@@ -658,14 +710,20 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
 
     /// Open group `id`'s row, if it is open.
     pub fn group(&self, id: u64) -> Result<Option<GroupRow>, Error> {
-        match self.value(&group_held(id))? {
-            None => Ok(None),
-            Some(v) if v.len() == 16 => Ok(Some(GroupRow {
-                held: le64(&v[..8]),
-                parts: le64(&v[8..]),
-            })),
-            Some(_) => Err(Error::Malformed("a group's row")),
-        }
+        let Some(v) = self.value(&group_held(id))? else {
+            return Ok(None);
+        };
+        let kind = match v.get(24) {
+            Some(1) if v.len() == 25 => GroupKind::Staged,
+            Some(2) if v.len() == 25 => GroupKind::NewFile,
+            _ => return Err(Error::Malformed("a group's row")),
+        };
+        Ok(Some(GroupRow {
+            held: le64(&v[..8]),
+            parts: le64(&v[8..16]),
+            staged: le64(&v[16..24]),
+            kind,
+        }))
     }
 
     /// The open groups, by id.
@@ -1010,8 +1068,9 @@ struct Plan {
     stage: Option<Stage>,
     /// A close's staged edits, applied to its files.
     close: Option<Close>,
-    /// The groups whose staging trees are dropped.
-    discard: Vec<u64>,
+    /// The trees of the groups discarded: a staged group's staging tree, or
+    /// the file a group was making.
+    dropped: Vec<TreeId>,
 }
 
 /// What a close applies: its group's staged edits, each file's in order,
@@ -1028,18 +1087,16 @@ struct Stage {
     items: Vec<Edit>,
 }
 
-/// The most bytes of a part's edits one item of the staging tree holds.
-const STAGE_CHUNK: usize = MAX_VALUE;
+/// The most bytes of a part's edits one item of the staging tree holds:
+/// what one overflow page holds, so that a chunk takes its slot in a leaf
+/// and one overflow page (format section 5.3).
+const STAGE_CHUNK: usize = OVERFLOW_DATA;
 
-/// A part's edits as items of its group's staging tree (format section
-/// 5.3): `[file, part, chunk]`, each a piece of the edits in a change's
-/// form, in order.
-fn stage_items(file: u64, part: u64, edits: &[Edit]) -> Result<Vec<Edit>, Error> {
-    if edits.is_empty() {
-        return Ok(Vec::new());
-    }
-    let bytes = encode_edits(edits).map_err(Refusal::Payload)?;
-    Ok(bytes
+/// A part's edits, as a change encodes them (`bytes`), as items of its
+/// group's staging tree (format section 5.3): `[file, part, chunk]`, each a
+/// piece of the bytes, in order. No edits, no items.
+fn stage_items(file: u64, part: u64, bytes: &[u8]) -> Vec<Edit> {
+    bytes
         .chunks(STAGE_CHUNK)
         .enumerate()
         .map(|(i, chunk)| {
@@ -1052,7 +1109,7 @@ fn stage_items(file: u64, part: u64, edits: &[Edit]) -> Result<Vec<Edit>, Error>
                 chunk.to_vec(),
             )
         })
-        .collect())
+        .collect()
 }
 
 /// A group's staged edits, by file, each file's in the order of its parts.
@@ -1117,6 +1174,54 @@ fn later_pages<S: PageStore + ?Sized>(store: &S, file: u64, edits: &[Edit]) -> R
     Ok(entry_bound(edits, height + 1))
 }
 
+/// What a group holds from its open for the entry that ends it (format
+/// section 4.8): an upper bound on what that entry writes in the store's
+/// tree ([`entry_bound`]), at that tree's height now and one level more:
+/// the deletes of the group's rows and of its index rows in `files`, the
+/// last entry's position, and for a new file its catalog rows, with a name
+/// and a page 0 of the largest size.
+fn end_pages<S: PageStore + ?Sized>(
+    store: &S,
+    id: u64,
+    files: &[u64],
+    kind: GroupKind,
+) -> Result<u64, Error> {
+    let height = match store.root(&TreeId::Store.name()) {
+        Some(root) => Tree::open(store, root)?.height(),
+        None => 1,
+    };
+    let mut edits: Vec<Edit> = files
+        .iter()
+        .map(|f| {
+            let mut index = groups_in(*f);
+            index.push(id.to_be_bytes().to_vec());
+            Edit::delete(index)
+        })
+        .collect();
+    edits.push(Edit::delete(group_row(id)));
+    edits.push(Edit::leaf(vec![seg(keys::APPLIED)], vec![0; 48]));
+    if kind == GroupKind::NewFile {
+        // Zero bytes take two in a key: the longest name's path.
+        let name = vec![0; crate::entry::MAX_NAME];
+        edits.push(Edit::leaf(file_field(id, keys::FILE_NAME), name.clone()));
+        edits.push(Edit::leaf(file_field(id, keys::FILE_FLAGS), vec![0; 4]));
+        edits.push(Edit::leaf(
+            file_field(id, keys::FILE_PAGE0),
+            vec![0; crate::entry::MAX_PAGE0],
+        ));
+        edits.push(Edit::leaf(name_path(&name), vec![0; 8]));
+    }
+    Ok(entry_bound(&edits, height + 1))
+}
+
+/// The files an opening part's paths are in, each once, in order.
+fn files_of(paths: &[GroupPath]) -> Vec<u64> {
+    let mut files: Vec<u64> = paths.iter().map(|p| p.file).collect();
+    files.sort_unstable();
+    files.dedup();
+    files
+}
+
 /// What `entry` does to the space the open groups hold ([`GroupSpace`]),
 /// from the state `store` holds and the entry alone: the same on every
 /// server and every replay. An entry that does not decode holds nothing:
@@ -1136,34 +1241,58 @@ pub fn group_space<S: PageStore + ?Sized>(
     };
     let state = StoreTree::of(store)?;
     let held = |id: u64| -> Result<u64, Error> { Ok(state.group(id)?.map_or(0, |g| g.held)) };
+    // An entry that ends a group takes what the group holds.
+    let ends = |draw: u64| GroupSpace {
+        draw,
+        ends: true,
+        ..GroupSpace::default()
+    };
+    let hold = |hold: u64| GroupSpace {
+        hold,
+        ..GroupSpace::default()
+    };
     Ok(match payload {
         Payload::Change(change) => match change.group {
             Some(Group {
-                step: Step::Open(_) | Step::Part,
+                step: Step::Open(paths),
                 ..
-            }) => GroupSpace {
-                hold: later_pages(store, entry.file, &change.edits)?,
-                ..GroupSpace::default()
+            }) => hold(
+                later_pages(store, entry.file, &change.edits)?.saturating_add(end_pages(
+                    store,
+                    entry.index,
+                    &files_of(&paths),
+                    GroupKind::Staged,
+                )?),
+            ),
+            Some(Group {
+                id,
+                step: Step::Part,
+            }) => match state.group(id)? {
+                Some(GroupRow {
+                    kind: GroupKind::NewFile,
+                    ..
+                }) => GroupSpace::default(),
+                _ => hold(later_pages(store, entry.file, &change.edits)?),
             },
             Some(Group {
                 id,
                 step: Step::Close,
-            }) => GroupSpace {
-                draw: held(id)?,
-                ends: true,
-                ..GroupSpace::default()
-            },
+            }) => ends(held(id)?),
             None => GroupSpace::default(),
         },
-        Payload::Group(GroupEvent::Discard { id }) => GroupSpace {
-            release: held(id)?,
-            ends: true,
-            ..GroupSpace::default()
-        },
+        Payload::Group(GroupEvent::NewFile) => hold(end_pages(
+            store,
+            entry.index,
+            &[entry.index],
+            GroupKind::NewFile,
+        )?),
+        Payload::Group(GroupEvent::Discard { id } | GroupEvent::Publish { id, .. }) => {
+            ends(held(id)?)
+        }
         Payload::Empty => {
             let groups = state.groups()?;
             GroupSpace {
-                release: groups.iter().map(|(_, g)| g.held).sum(),
+                draw: groups.iter().map(|(_, g)| g.held).sum(),
                 ends: !groups.is_empty(),
                 ..GroupSpace::default()
             }
@@ -1277,27 +1406,22 @@ fn plan_group<S: PageStore + ?Sized>(
                 .ok_or(Error::MissingRoot(TreeId::File(f)))?;
             files.push((f, root, edits));
         }
-        plan_discard(state, id, plan)?;
-        plan.discard.clear();
+        plan_end(state, id, GroupKind::Staged, plan)?;
         plan.close = Some(Close { group: id, files });
         return Ok(false);
     }
     let (root, row) = match &group.step {
         Step::Open(paths) => {
-            let mut files: Vec<u64> = paths.iter().map(|p| p.file).collect();
-            files.sort_unstable();
-            files.dedup();
-            for f in files {
-                let mut index = groups_in(f);
-                index.push(id.to_be_bytes().to_vec());
-                plan.store.push(Edit::leaf(index, Vec::new()));
-            }
-            for (n, p) in paths.iter().enumerate() {
-                let mut path = group_paths(id, p.file);
-                path.push((n as u16).to_be_bytes().to_vec());
-                plan.store.push(Edit::leaf(path, key::encode(&p.path)));
-            }
-            (None, GroupRow::default())
+            let files = files_of(paths);
+            plan_declared(id, paths, &files, plan);
+            let end = end_pages(store, id, &files, GroupKind::Staged)?;
+            (
+                None,
+                GroupRow {
+                    held: end,
+                    ..GroupRow::default()
+                },
+            )
         }
         _ => (
             Some(
@@ -1308,36 +1432,89 @@ fn plan_group<S: PageStore + ?Sized>(
             state.group(id)?.unwrap_or_default(),
         ),
     };
+    let bytes = if change.edits.is_empty() {
+        Vec::new()
+    } else {
+        encode_edits(&change.edits).map_err(Refusal::Payload)?
+    };
+    let staged = row.staged.saturating_add(bytes.len() as u64);
+    if staged > MAX_GROUP_STAGED {
+        return Err(Refusal::GroupTooLarge {
+            group: id,
+            staged,
+            max: MAX_GROUP_STAGED,
+        }
+        .into());
+    }
     let hold = later_pages(store, file, &change.edits)?;
     plan.store.push(Edit::leaf(
         group_held(id),
         held_value(GroupRow {
             held: row.held.saturating_add(hold),
             parts: row.parts + 1,
+            staged,
+            kind: GroupKind::Staged,
         }),
     ));
     plan.stage = Some(Stage {
         group: id,
         root,
-        items: stage_items(file, entry.index, &change.edits)?,
+        items: stage_items(file, entry.index, &bytes),
     });
     Ok(true)
 }
 
-/// The store-tree edits that end open group `id`, and its staging tree
-/// dropped.
+/// The rows of a group's declared paths, and its index rows in `files`.
+fn plan_declared(id: u64, paths: &[GroupPath], files: &[u64], plan: &mut Plan) {
+    for f in files {
+        let mut index = groups_in(*f);
+        index.push(id.to_be_bytes().to_vec());
+        plan.store.push(Edit::leaf(index, Vec::new()));
+    }
+    for (n, p) in paths.iter().enumerate() {
+        let mut path = group_paths(id, p.file);
+        path.push((n as u16).to_be_bytes().to_vec());
+        plan.store.push(Edit::leaf(path, key::encode(&p.path)));
+    }
+}
+
+/// The store-tree edits that end open group `id`: its row and its index
+/// rows deleted. The file a group made has no other group's paths, so its
+/// list goes whole.
+fn plan_end<S: PageStore + ?Sized>(
+    state: &StoreTree<'_, S>,
+    id: u64,
+    kind: GroupKind,
+    plan: &mut Plan,
+) -> Result<(), Error> {
+    if kind == GroupKind::NewFile {
+        plan.store.push(Edit::delete(groups_in(id)));
+    } else {
+        for file in state.group_files(id)? {
+            let mut index = groups_in(file);
+            index.push(id.to_be_bytes().to_vec());
+            plan.store.push(Edit::delete(index));
+        }
+    }
+    plan.store.push(Edit::delete(group_row(id)));
+    Ok(())
+}
+
+/// Open group `id` discarded: its rows deleted, and its tree dropped, the
+/// staging tree of a staged group or the file a group was making.
 fn plan_discard<S: PageStore + ?Sized>(
     state: &StoreTree<'_, S>,
     id: u64,
     plan: &mut Plan,
 ) -> Result<(), Error> {
-    for file in state.group_files(id)? {
-        let mut index = groups_in(file);
-        index.push(id.to_be_bytes().to_vec());
-        plan.store.push(Edit::delete(index));
-    }
-    plan.store.push(Edit::delete(group_row(id)));
-    plan.discard.push(id);
+    let row = state
+        .group(id)?
+        .ok_or(Error::Malformed("a group listed without its row"))?;
+    plan_end(state, id, row.kind, plan)?;
+    plan.dropped.push(match row.kind {
+        GroupKind::Staged => TreeId::Group(id),
+        GroupKind::NewFile => TreeId::File(id),
+    });
     Ok(())
 }
 
@@ -1511,8 +1688,8 @@ pub fn apply<S: PageStore + ?Sized>(store: &S, entry: &Entry<'_>) -> Result<Appl
         }
         unit.drop_tree(&TreeId::Group(*group).name());
     }
-    for id in &plan.discard {
-        unit.drop_tree(&TreeId::Group(*id).name());
+    for tree in &plan.dropped {
+        unit.drop_tree(&tree.name());
     }
     let new = tree::apply(store, &mut unit, store_root, entry.index, &plan.store)?;
     match store_root {
@@ -1547,7 +1724,7 @@ fn plan<S: PageStore + ?Sized>(
         closed: Vec::new(),
         stage: None,
         close: None,
-        discard: Vec::new(),
+        dropped: Vec::new(),
     };
     let kind = payload.kind();
     let field = || {
@@ -1571,6 +1748,38 @@ fn plan<S: PageStore + ?Sized>(
             .ok_or(Error::MissingRoot(TreeId::File(id)))
     };
     match payload {
+        Payload::Change(Change {
+            group: Some(Group { id, step }),
+            edits,
+            ..
+        }) if state
+            .group(*id)?
+            .is_some_and(|g| g.kind == GroupKind::NewFile) =>
+        {
+            // A part of a group making a new file: its edits go straight
+            // to that file's tree, which no catalog names yet.
+            if *step != Step::Part {
+                return Err(Refusal::GroupKind { group: *id }.into());
+            }
+            if entry.file != *id {
+                return Err(Refusal::GroupFile {
+                    group: *id,
+                    file: entry.file,
+                }
+                .into());
+            }
+            let row = state.group(*id)?.unwrap_or_default();
+            plan.store.push(Edit::leaf(
+                group_held(*id),
+                held_value(GroupRow {
+                    parts: row.parts + 1,
+                    ..row
+                }),
+            ));
+            if !edits.is_empty() {
+                plan.file = Some((*id, root_of(*id)?));
+            }
+        }
         Payload::Change(change) => {
             existing()?;
             let file = entry.file;
@@ -1699,16 +1908,7 @@ fn plan<S: PageStore + ?Sized>(
                     return Err(Refusal::NameTaken(name.clone()).into());
                 }
                 let id = entry.index;
-                plan.store
-                    .push(Edit::leaf(file_field(id, keys::FILE_NAME), name.clone()));
-                plan.store.push(Edit::leaf(
-                    file_field(id, keys::FILE_FLAGS),
-                    flags.to_le_bytes().to_vec(),
-                ));
-                plan.store
-                    .push(Edit::leaf(file_field(id, keys::FILE_PAGE0), page0.clone()));
-                plan.store
-                    .push(Edit::leaf(name_path(name), id.to_le_bytes().to_vec()));
+                plan.store.extend(catalog_rows(id, name, *flags, page0));
                 plan.make = Some(id);
             }
             FileEvent::Removed => {
@@ -1719,6 +1919,8 @@ fn plan<S: PageStore + ?Sized>(
                 }
                 plan.store.push(Edit::delete(file_path(id)));
                 plan.store.push(Edit::delete(name_path(&row.name)));
+                // The list of the groups that had paths in it, all ended.
+                plan.store.push(Edit::delete(groups_in(id)));
                 state.each_file_lock_list(id, |list| {
                     plan.store.push(Edit::delete(list));
                     Ok(())
@@ -1779,6 +1981,53 @@ fn plan<S: PageStore + ?Sized>(
                 return Err(Refusal::NoSuchGroup(*id).into());
             }
             plan_discard(state, *id, &mut plan)?;
+        }
+        Payload::Group(GroupEvent::NewFile) => {
+            // Its id, the file's and the group's, is its own index.
+            if entry.file != entry.index {
+                return Err(field());
+            }
+            if state.groups()?.len() as u64 >= MAX_OPEN_GROUPS {
+                return Err(Refusal::TooManyGroups.into());
+            }
+            let id = entry.index;
+            // The whole new file is the group's declared path.
+            let paths = [GroupPath {
+                file: id,
+                path: Vec::new(),
+            }];
+            plan_declared(id, &paths, &[id], &mut plan);
+            plan.store.push(Edit::leaf(
+                group_held(id),
+                held_value(GroupRow {
+                    held: end_pages(store, id, &[id], GroupKind::NewFile)?,
+                    kind: GroupKind::NewFile,
+                    ..GroupRow::default()
+                }),
+            ));
+            plan.make = Some(id);
+        }
+        Payload::Group(GroupEvent::Publish {
+            id,
+            name,
+            flags,
+            page0,
+        }) => {
+            if entry.file != *id {
+                return Err(field());
+            }
+            let Some(row) = state.group(*id)? else {
+                return Err(Refusal::NoSuchGroup(*id).into());
+            };
+            if row.kind != GroupKind::NewFile {
+                return Err(Refusal::GroupKind { group: *id }.into());
+            }
+            if state.file_named(name)?.is_some() {
+                return Err(Refusal::NameTaken(name.clone()).into());
+            }
+            // The file takes its place in the catalog; its tree stays.
+            plan.store.extend(catalog_rows(*id, name, *flags, page0));
+            plan_end(state, *id, GroupKind::NewFile, &mut plan)?;
         }
     }
     Ok(plan)

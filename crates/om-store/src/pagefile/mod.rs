@@ -2041,12 +2041,11 @@ impl PageFile {
         })
     }
 
-    /// Holds `pages` for the later application of a group that entry
-    /// `entry`, one of its parts, belongs to (section 6.9): promised as a
-    /// reservation's pages are, and checked the same way, but kept past the
-    /// entry, until the entry that closes the group draws on them
-    /// ([`PageFile::reserve_held`]) or the group is discarded
-    /// ([`PageFile::unhold`]).
+    /// Holds `pages` for a group that entry `entry` opens or adds a part
+    /// to (section 4.8): promised as a reservation's pages are, and checked
+    /// the same way, but kept past the entry, until the entry that ends the
+    /// group draws on them ([`PageFile::reserve_held`]). [`PageFile::unhold`]
+    /// gives back a hold whose entry was not applied.
     pub fn hold(&self, entry: u64, pages: u64, purpose: Purpose) -> Result<(), SpaceError> {
         if pages == 0 {
             return Ok(());
@@ -2056,8 +2055,8 @@ impl PageFile {
         Ok(())
     }
 
-    /// Gives back `pages` the open groups held: a group discarded, or a
-    /// part that was not applied. More than they hold is the store's own
+    /// Gives back `pages` the open groups held for an entry that was not
+    /// applied. More than they hold is the store's own
     /// accounting gone wrong: a test build stops on it, and a release
     /// gives back what is held.
     pub fn unhold(&self, pages: u64) {
@@ -2072,10 +2071,12 @@ impl PageFile {
         inner.promised -= pages;
     }
 
-    /// A reservation for entry `entry`, the one that closes a group, of
-    /// `pages` its group holds: set aside already, so no room is looked
-    /// for. Checked as [`PageFile::reserve`] is otherwise. An entry not
-    /// applied gives them back to the group ([`Reservation::keep_held`]).
+    /// A reservation for entry `entry`, one that ends groups (a close, a
+    /// publication, a discard, an `empty` entry), of `pages` the groups
+    /// hold: set aside already, so no room is looked for. Checked as
+    /// [`PageFile::reserve`] is otherwise, the budget of pages waiting for
+    /// a checkpoint included. An entry not applied gives them back to the
+    /// groups ([`Reservation::keep_held`]).
     pub fn reserve_held(
         &self,
         entry: u64,
@@ -2099,6 +2100,15 @@ impl PageFile {
                 return Err(SpaceError::Refused(
                     "an entry with a reservation open: one at a time",
                 ));
+            }
+            // The budget of pages waiting for a checkpoint admits it as it
+            // admits any reservation (`set_aside`).
+            let budget = self.config.dirty_budget;
+            if inner.dirty.len() as u64 >= budget {
+                let dirty = inner.live_dirty();
+                if dirty >= budget {
+                    return Err(SpaceError::CheckpointNeeded { dirty, budget });
+                }
             }
             // More than the groups hold is the store's own accounting gone
             // wrong (as in `unhold`).
