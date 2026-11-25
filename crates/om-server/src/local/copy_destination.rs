@@ -4,12 +4,13 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path};
 
-use log::warn;
 use rustix::fs::{self, AtFlags, Mode, OFlags};
 use rustix::io::Errno;
+
+use crate::staged::Staged;
 
 const EXT_SUPER_MAGIC: u64 = 0xef53; // ext2, ext3 and ext4
 const TMPFS_MAGIC: u64 = 0x0102_1994;
@@ -30,12 +31,10 @@ fn directory_stat(dir: &OwnedFd) -> io::Result<fs::Stat> {
     Ok(fs::fstat(dir)?)
 }
 
-/// A new file on the output filesystem and the directory handles needed to
-/// link that exact inode to a previously unused name.
+/// A new unnamed file on the output filesystem, to be linked to a
+/// previously unused name (`crate::staged`, which exports share).
 pub(super) struct Destination {
-    pub(super) file: File,
-    parent: OwnedFd,
-    proc_fds: OwnedFd,
+    staged: Staged,
     name: OsString,
 }
 
@@ -98,54 +97,29 @@ impl Destination {
             Err(Errno::NOENT) => {}
             Err(e) => return Err(e.into()),
         }
-        let proc_fds = fs::open("/proc/self/fd", walk, Mode::empty())
-            .map_err(|_| unsupported("copy publication needs /proc/self/fd"))?;
-        if fs::fstatfs(&proc_fds)?.f_type != fs::PROC_SUPER_MAGIC {
-            return Err(unsupported("copy publication needs /proc/self/fd"));
-        }
-        let private = Mode::RUSR | Mode::WUSR;
-        let file = fs::openat(
-            &parent,
-            ".",
-            OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
-            private,
-        )
-        .map_err(|e| match e {
-            Errno::INVAL | Errno::OPNOTSUPP | Errno::ISDIR | Errno::NOENT | Errno::NOSYS => {
-                unsupported("the copy folder must support unnamed temporary files")
-            }
-            _ => e.into(),
-        })?;
+        let staged = Staged::unnamed(parent.as_fd())?;
         // Creation mode bounds any inherited POSIX ACL from the start.
         // Restore the owner bits if the ACL or umask narrowed them.
-        fs::fchmod(&file, private)?;
-        let stat = fs::fstat(&file)?;
+        let private = Mode::RUSR | Mode::WUSR;
+        fs::fchmod(staged.file(), private)?;
+        let stat = fs::fstat(staged.file())?;
         if stat.st_uid != uid || stat.st_mode & 0o777 != 0o600 {
             return Err(unsupported("the copy must be accessible only to its owner"));
         }
         Ok(Self {
-            file: file.into(),
-            parent,
-            proc_fds,
+            staged,
             name: name.to_owned(),
         })
     }
 
+    /// The copy, written by the caller from its first byte.
+    pub(super) fn file_mut(&mut self) -> &mut File {
+        self.staged.file_mut()
+    }
+
+    /// Flush the copy, link it to its name, never over an entry there,
+    /// and flush the folder; a failure leaves nothing under the name.
     pub(super) fn publish(self) -> io::Result<()> {
-        self.file.sync_all()?;
-        // Linux follows the procfs fd link to the inode, then creates the
-        // destination exclusively. Dropping the file cleans up an unpublished
-        // inode. No path ever has to be unlinked.
-        fs::linkat(
-            &self.proc_fds,
-            self.file.as_raw_fd().to_string(),
-            &self.parent,
-            &self.name,
-            AtFlags::SYMLINK_FOLLOW,
-        )?;
-        if let Err(error) = fs::fsync(&self.parent) {
-            warn!("saved a copy, but flushing its folder failed: {error}");
-        }
-        Ok(())
+        self.staged.publish(&self.name)
     }
 }

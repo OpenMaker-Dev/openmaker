@@ -561,10 +561,11 @@ impl LocalHost {
             } else {
                 export::Kind::Current
             };
-            let target = export::Target::File(&mut destination.file);
+            let target = export::Target::File(destination.file_mut());
             match engine.export(&file, kind, target, Progress::none()) {
-                Ok(exported) if exported.current => destination.publish(),
-                Ok(_) => Err(io::Error::new(
+                Ok(_) => destination.publish(),
+                // Refused before anything was written.
+                Err(ExportError::Unsaved) => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "the copy would lack changes that could not be saved",
                 )),

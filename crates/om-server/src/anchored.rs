@@ -303,32 +303,10 @@ impl Folder {
         std::fs::rename(self.dir.join(from), self.dir.join(to))
     }
 
-    /// Rename entry `from` to `to`, never over an entry at `to`
-    /// ([`io::ErrorKind::AlreadyExists`]). Where the file system cannot
-    /// refuse that itself, `to` is looked at first.
-    pub fn rename_new(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
-        #[cfg(unix)]
-        {
-            use rustix::fs::RenameFlags;
-            use rustix::io::Errno;
-            match rustix::fs::renameat_with(&self.fd, from, &self.fd, to, RenameFlags::NOREPLACE) {
-                Ok(()) => Ok(()),
-                Err(Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP) => {
-                    if self.entry(to)?.is_some() {
-                        return Err(io::ErrorKind::AlreadyExists.into());
-                    }
-                    self.rename(from, to)
-                }
-                Err(e) => Err(e.into()),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if self.entry(to)?.is_some() {
-                return Err(io::ErrorKind::AlreadyExists.into());
-            }
-            self.rename(from, to)
-        }
+    /// The folder's descriptor (search-only on Linux).
+    #[cfg(unix)]
+    pub fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.fd)
     }
 
     /// Remove entry `name`.

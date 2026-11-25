@@ -27,12 +27,13 @@
 //! the server read or last saved there,
 //! [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). With
 //! changes the disk lacks, it is written from the change number the next
-//! save starts from: what that save would write. A file hosted read-only because it holds
-//! content the writer cannot write is always the file on disk, the bytes
-//! it was loaded from (section 2, rule 2), also when changes its refused
-//! saves left wait in memory: those are then not in the export, and
-//! [`Exported::current`] says so. A backup asks for the file on disk
-//! whatever memory holds ([`FileEngine::stored`]).
+//! save starts from: what that save would write. A file hosted read-only
+//! because it holds content the writer cannot write is always the file on
+//! disk, the bytes it was loaded from (section 2, rule 2); while changes
+//! its refused saves left wait in memory, an export of the version held
+//! is refused before anything is written ([`ExportError::Unsaved`]). A
+//! backup asks for the file on disk whatever memory holds
+//! ([`FileEngine::stored`]).
 //!
 //! **Checked.** A copy is checked to hold as many bytes as the file had
 //! when it was opened, and the file not to have grown past them (one byte
@@ -53,14 +54,15 @@
 //! of the node being written. A value is borrowed from the view while it is
 //! written and compared. Nothing grows with the file.
 //!
-//! **Where it goes.** An export is made under `<name>.omexport` in the
-//! destination folder ([`Folder`]), created only where nothing is (an entry
-//! there is an error, never removed), and checked there ([`Prepared`]).
-//! [`Prepared::publish`] flushes it to the device, renames it to the final
-//! name, never over an entry there, and flushes the folder. A failure at
-//! any step, or a [`Prepared`] dropped unpublished, removes what this
-//! export created, and only while it is still that file: the temporary
-//! entry, or the final one when the folder flush after the rename fails.
+//! **Where it goes.** An export to a folder is made there without its name
+//! where the system can, else under a short temporary name of its own, and
+//! checked there ([`Prepared`], `crate::staged`). [`Prepared::publish`]
+//! flushes it to the device, gives it its name by a link that fails when
+//! the name is taken, and flushes the folder. A failure, or a [`Prepared`]
+//! dropped unpublished, leaves nothing under the final name and no
+//! temporary name, as far as the export can show what it made (the limits
+//! are in `crate::staged`). An export can also fill an empty file its
+//! caller made ([`Target::File`]), from its first byte.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -75,9 +77,6 @@ use super::view::{ReadError, View};
 use super::FileEngine;
 use crate::anchored::{file_identity, FileId};
 use crate::hosting::Hosted;
-
-/// What a temporary export's name adds to the final name.
-const TEMPORARY: &str = ".omexport";
 
 /// How many bytes a copy copies between two looks at its progress: the
 /// part a backup's copy always took.
@@ -116,44 +115,19 @@ pub struct OnDisk {
     pub unsaved: bool,
 }
 
-/// A folder an export is written into: new entries are made, renamed and
-/// removed in it by name, never through a link at the name.
+/// A folder an export is written into, by its descriptor
+/// (`crate::staged`): a backup's folder, or a hosted file's kind of folder.
 pub trait Folder {
-    /// A new entry `name`, for reading and writing, only where nothing is,
-    /// owner-only until the export gives it its permissions.
-    fn create(&self, name: &OsStr) -> io::Result<File>;
-    /// Whether the open `file` is entry `name`, a link there not followed.
-    fn is_entry(&self, file: &File, name: &OsStr) -> io::Result<bool>;
-    /// Rename entry `from` to `to`, never over an entry at `to`
-    /// ([`io::ErrorKind::AlreadyExists`]).
-    fn rename_new(&self, from: &OsStr, to: &OsStr) -> io::Result<()>;
-    /// Remove entry `name`.
-    fn remove(&self, name: &OsStr) -> io::Result<()>;
-    /// Flush the folder's entries to the device.
-    fn sync(&self) -> io::Result<()>;
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_>;
 }
 
 /// A hosted file's kind of folder ([`crate::anchored::Folder`]), opened by
-/// its path and worked through by name.
+/// its path.
 impl Folder for crate::anchored::Folder {
-    fn create(&self, name: &OsStr) -> io::Result<File> {
-        self.create_new(name, true)
-    }
-
-    fn is_entry(&self, file: &File, name: &OsStr) -> io::Result<bool> {
-        crate::anchored::Folder::is_entry(self, file, name)
-    }
-
-    fn rename_new(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
-        crate::anchored::Folder::rename_new(self, from, to)
-    }
-
-    fn remove(&self, name: &OsStr) -> io::Result<()> {
-        crate::anchored::Folder::remove(self, name)
-    }
-
-    fn sync(&self) -> io::Result<()> {
-        crate::anchored::Folder::sync(self)
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        crate::anchored::Folder::descriptor(self)
     }
 }
 
@@ -196,9 +170,6 @@ pub struct Exported {
     pub size: u64,
     /// Its device and inode, where the system has them.
     pub id: Option<FileId>,
-    /// Whether it holds the version the store held: false for a copy of a
-    /// file on disk that lacks changes memory held (the module doc).
-    pub current: bool,
 }
 
 /// Why an export failed. Nothing is left under the final name, nor under
@@ -222,10 +193,14 @@ pub enum ExportError {
     /// The file on disk was `expected` bytes long when it was opened and
     /// `copied` were read from it: it changed while it was copied.
     SourceChanged { expected: u64, copied: u64 },
-    /// Creating, writing, flushing or renaming the export failed.
+    /// The file on disk lacks changes memory holds that its saves were
+    /// refused (a file hosted read-only for content the writer cannot
+    /// write): an export of the version held would lack them.
+    Unsaved,
+    /// Creating, writing, flushing or naming the export failed.
     Io(io::Error),
-    /// An entry is in the way at the temporary name.
-    TemporaryTaken(OsString),
+    /// An entry is in the way at the export's temporary name.
+    TemporaryTaken,
     /// An entry is at the final name.
     Exists(OsString),
     /// The caller stopped it.
@@ -247,11 +222,12 @@ impl fmt::Display for ExportError {
                 "{copied} bytes copied of {expected}: the file changed while it was copied"
             ),
             ExportError::Io(e) => write!(f, "{e}"),
-            ExportError::TemporaryTaken(name) => write!(
-                f,
-                "{} is in the way of the export (left by an earlier one?)",
-                name.to_string_lossy()
-            ),
+            ExportError::Unsaved => {
+                write!(f, "the file on disk lacks changes that could not be saved")
+            }
+            ExportError::TemporaryTaken => {
+                write!(f, "an entry is in the way of the export's temporary name")
+            }
             ExportError::Exists(name) => write!(f, "{} already exists", name.to_string_lossy()),
             ExportError::Stopped => write!(f, "the export was stopped"),
         }
@@ -356,6 +332,15 @@ pub fn copy_checked(
 ) -> Result<(), ExportError> {
     let mut from = source;
     from.seek(SeekFrom::Start(0)).map_err(ExportError::Source)?;
+    // From the target's first byte, whatever its position: a write past it
+    // would leave a hole of zeros before the copy.
+    if target.metadata().map_err(ExportError::Io)?.len() != 0 {
+        return Err(ExportError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the export's file is not empty",
+        )));
+    }
+    target.seek(SeekFrom::Start(0)).map_err(ExportError::Io)?;
     // No more than the file held when it was opened, and one byte to see
     // whether it holds more now: a file another program writes to cannot
     // make the copy run on.
@@ -378,6 +363,11 @@ pub fn copy_checked(
             expected: len,
             copied,
         });
+    }
+    if target.metadata().map_err(ExportError::Io)?.len() != len {
+        return Err(ExportError::Io(io::Error::other(
+            "the copy is not as long as the bytes copied into it",
+        )));
     }
     Ok(())
 }
@@ -513,76 +503,64 @@ fn next_is(
     Ok(())
 }
 
-/// An export made and checked under its temporary name ([`prepare_walked`],
-/// [`prepare_copy`]), not yet published. Dropped unpublished, it removes
-/// its file.
-pub struct Prepared<'d> {
-    folder: &'d dyn Folder,
+/// An export made and checked in its folder without its final name
+/// ([`prepare_walked`], [`prepare_copy`]), not yet published. Dropped
+/// unpublished, it leaves nothing (`crate::staged`).
+pub struct Prepared {
+    staged: crate::staged::Staged,
     name: OsString,
-    temporary: OsString,
-    /// The temporary file, while it is this export's to remove.
-    file: Option<File>,
-    current: bool,
 }
 
-/// The temporary name of an export named `name`.
-pub fn temporary_name(name: &OsStr) -> OsString {
-    let mut temporary = name.to_owned();
-    temporary.push(TEMPORARY);
-    temporary
-}
-
-/// Make the temporary file beside `to`'s name, fill it with `fill` and
-/// give it `to`'s permissions.
-fn prepare<'d>(
-    to: &Destination<'d>,
-    current: bool,
+/// Make a new file in `to`'s folder without `to`'s name, fill it with
+/// `fill` and give it `to`'s permissions.
+fn prepare(
+    to: &Destination<'_>,
     fill: impl FnOnce(&mut File) -> Result<(), ExportError>,
-) -> Result<Prepared<'d>, ExportError> {
-    let temporary = temporary_name(to.name);
-    let file = match to.folder.create(&temporary) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(ExportError::TemporaryTaken(temporary))
+) -> Result<Prepared, ExportError> {
+    #[cfg(unix)]
+    let staged = crate::staged::Staged::new(to.folder.descriptor()).map_err(|e| {
+        if e.kind() == io::ErrorKind::AlreadyExists {
+            ExportError::TemporaryTaken
+        } else {
+            ExportError::Io(e)
         }
-        Err(e) => return Err(ExportError::Io(e)),
-    };
+    })?;
+    #[cfg(not(unix))]
+    let staged: crate::staged::Staged =
+        return Err(ExportError::Io(crate::staged::Staged::unsupported()));
     let mut prepared = Prepared {
-        folder: to.folder,
+        staged,
         name: to.name.to_owned(),
-        temporary,
-        file: Some(file),
-        current,
     };
-    let file = prepared.file.as_mut().expect("just created");
-    fill(file)?;
+    fill(prepared.staged.file_mut())?;
     if let Some(permissions) = &to.permissions {
-        file.set_permissions(permissions.clone())
+        prepared
+            .staged
+            .file()
+            .set_permissions(permissions.clone())
             .map_err(ExportError::Io)?;
     }
     Ok(prepared)
 }
 
-/// Write and check the version `read` reads, from `change_number`, under
-/// the temporary name beside `to`'s (the module doc).
-pub fn prepare_walked<'d>(
+/// Write and check the version `read` reads, from `change_number`, in
+/// `to`'s folder (the module doc).
+pub fn prepare_walked(
     read: Read<'_>,
     change_number: u64,
-    to: &Destination<'d>,
+    to: &Destination<'_>,
     progress: Progress<'_>,
-) -> Result<Prepared<'d>, ExportError> {
-    prepare(to, true, |file| {
-        write_walked(read, change_number, file, progress)
-    })
+) -> Result<Prepared, ExportError> {
+    prepare(to, |file| write_walked(read, change_number, file, progress))
 }
 
-/// Copy and check `on_disk` under the temporary name beside `to`'s.
-pub fn prepare_copy<'d>(
+/// Copy and check `on_disk` in `to`'s folder.
+pub fn prepare_copy(
     on_disk: &OnDisk,
-    to: &Destination<'d>,
+    to: &Destination<'_>,
     progress: Progress<'_>,
-) -> Result<Prepared<'d>, ExportError> {
-    prepare(to, !on_disk.unsaved, |file| {
+) -> Result<Prepared, ExportError> {
+    prepare(to, |file| {
         copy_checked(&on_disk.file, on_disk.len, file, progress)
     })
 }
@@ -597,57 +575,26 @@ pub fn copy(
     prepare_copy(on_disk, to, progress)?.publish()
 }
 
-impl Prepared<'_> {
-    /// Flush the export, give it its final name and flush the folder.
-    pub fn publish(mut self) -> Result<Exported, ExportError> {
-        let file = self.file.as_ref().expect("until published");
-        file.sync_all().map_err(ExportError::Io)?;
-        let size = file.metadata().map_err(ExportError::Io)?.len();
-        let id = file_identity(file).map_err(ExportError::Io)?;
-        if !self.owned(&self.temporary) {
-            // Replaced since it was made: whatever is there is not this
-            // export's to rename or remove.
-            self.file = None;
-            return Err(ExportError::Io(io::Error::other(
-                "the export's temporary file was replaced",
-            )));
-        }
-        match self.folder.rename_new(&self.temporary, &self.name) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(ExportError::Exists(self.name.clone()))
+impl Prepared {
+    /// Flush the export, give it its name, never over an entry there, and
+    /// flush the folder.
+    pub fn publish(self) -> Result<Exported, ExportError> {
+        let size = self
+            .staged
+            .file()
+            .metadata()
+            .map_err(ExportError::Io)?
+            .len();
+        let id = file_identity(self.staged.file()).map_err(ExportError::Io)?;
+        let Prepared { staged, name } = self;
+        staged.publish(&name).map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                ExportError::Exists(name.clone())
+            } else {
+                ExportError::Io(e)
             }
-            Err(e) => return Err(ExportError::Io(e)),
-        }
-        let file = self.file.take().expect("until published");
-        if let Err(e) = self.folder.sync() {
-            // Nothing is left under the final name: it is removed while it
-            // is still this export.
-            if self.folder.is_entry(&file, &self.name).unwrap_or(false) {
-                let _ = self.folder.remove(&self.name);
-            }
-            return Err(ExportError::Io(e));
-        }
-        Ok(Exported {
-            size,
-            id,
-            current: self.current,
-        })
-    }
-
-    /// Whether entry `name` is still this export's file.
-    fn owned(&self, name: &OsStr) -> bool {
-        self.file
-            .as_ref()
-            .is_some_and(|file| self.folder.is_entry(file, name).unwrap_or(false))
-    }
-}
-
-impl Drop for Prepared<'_> {
-    fn drop(&mut self) {
-        if self.owned(&self.temporary) {
-            let _ = self.folder.remove(&self.temporary);
-        }
+        })?;
+        Ok(Exported { size, id })
     }
 }
 
@@ -697,6 +644,9 @@ impl FileEngine {
             Kind::Compacted => reading.compacted_source(),
         };
         match (source, target) {
+            // Refused before anything is written: the copy would lack what
+            // memory holds.
+            (Source::OnDisk(on_disk), _) if on_disk.unsaved => Err(ExportError::Unsaved),
             (Source::OnDisk(on_disk), Target::Folder(to)) => {
                 drop(reading);
                 prepare_copy(&on_disk, to, progress)?.publish()
@@ -704,7 +654,7 @@ impl FileEngine {
             (Source::OnDisk(on_disk), Target::File(into)) => {
                 drop(reading);
                 copy_checked(&on_disk.file, on_disk.len, into, progress)?;
-                exported(into, !on_disk.unsaved)
+                exported(into)
             }
             (Source::Written { change_number }, Target::Folder(to)) => {
                 let prepared =
@@ -715,7 +665,7 @@ impl FileEngine {
             (Source::Written { change_number }, Target::File(into)) => {
                 reading.serve_once(|read| write_walked(read, change_number, into, progress))?;
                 drop(reading);
-                exported(into, true)
+                exported(into)
             }
         }
     }
@@ -730,11 +680,10 @@ impl FileEngine {
 }
 
 /// What a caller's file holds once an export filled it.
-fn exported(file: &File, current: bool) -> Result<Exported, ExportError> {
+fn exported(file: &File) -> Result<Exported, ExportError> {
     Ok(Exported {
         size: file.metadata().map_err(ExportError::Io)?.len(),
         id: file_identity(file).map_err(ExportError::Io)?,
-        current,
     })
 }
 
@@ -927,16 +876,14 @@ mod tests {
         let export =
             |kind, name: &str| export(&engine, &file, kind, &folder, name, Progress::none());
 
-        let loaded = export(Kind::Current, "loaded.fmp12").unwrap();
+        export(Kind::Current, "loaded.fmp12").unwrap();
         assert_eq!(
             scratch.read("loaded.fmp12"),
             std::fs::read(&disk.0).unwrap()
         );
-        assert!(loaded.current);
 
         change(&file, "Renamed");
-        let unsaved = export(Kind::Current, "unsaved.fmp12").unwrap();
-        assert!(unsaved.current);
+        export(Kind::Current, "unsaved.fmp12").unwrap();
         let mut into = std::fs::File::options()
             .read(true)
             .write(true)
@@ -1151,42 +1098,32 @@ mod tests {
         save(file);
     }
 
-    /// An export never removes or replaces an entry it did not make: one
-    /// at the temporary name fails it, one at the final name fails its
-    /// publication; both are left as they were, and so is nothing else.
+    /// An export never removes or replaces an entry it did not make: one at
+    /// the final name fails its publication and is left as it was, and
+    /// nothing else is left; so does a stop. (The temporary names of a
+    /// system without unnamed files: `crate::staged`'s tests.)
     #[test]
     fn an_export_leaves_other_entries_alone() {
         let (_disk, file) = hosted("export-entries");
         let scratch = Scratch::new("entries");
         let folder = scratch.folder();
         let engine = engine(None);
-        std::fs::write(scratch.0.join("taken.fmp12.omexport"), b"mine").unwrap();
-        assert!(matches!(
-            export(
-                &engine,
-                &file,
-                Kind::Current,
-                &folder,
-                "taken.fmp12",
-                Progress::none()
-            ),
-            Err(ExportError::TemporaryTaken(_))
-        ));
         std::fs::write(scratch.0.join("there.fmp12"), b"there").unwrap();
-        assert!(matches!(
-            export(
-                &engine,
-                &file,
-                Kind::Current,
-                &folder,
-                "there.fmp12",
-                Progress::none()
-            ),
-            Err(ExportError::Exists(_))
-        ));
-        assert_eq!(scratch.names(), ["taken.fmp12.omexport", "there.fmp12"]);
-        assert_eq!(scratch.read("taken.fmp12.omexport"), b"mine");
-        assert_eq!(scratch.read("there.fmp12"), b"there");
+        for kind in [Kind::Current, Kind::Compacted] {
+            assert!(matches!(
+                export(
+                    &engine,
+                    &file,
+                    kind,
+                    &folder,
+                    "there.fmp12",
+                    Progress::none()
+                ),
+                Err(ExportError::Exists(_))
+            ));
+            assert_eq!(scratch.names(), ["there.fmp12"]);
+            assert_eq!(scratch.read("there.fmp12"), b"there");
+        }
         // A stop asked for while it writes, copying and walking.
         let progress = Progress {
             stop: &|| true,
@@ -1198,7 +1135,71 @@ mod tests {
                 Err(ExportError::Stopped)
             ));
         }
-        assert_eq!(scratch.names(), ["taken.fmp12.omexport", "there.fmp12"]);
+        assert_eq!(scratch.names(), ["there.fmp12"]);
+    }
+
+    /// A caller's empty file is written from its first byte whatever its
+    /// position, copied and walked: no hole of zeros before the export, and
+    /// as long as the file.
+    #[test]
+    fn a_callers_file_is_written_from_its_first_byte() {
+        use std::io::Seek as _;
+        let (disk, file) = hosted("export-position");
+        let scratch = Scratch::new("position");
+        let engine = engine(None);
+        for (kind, name) in [(Kind::Current, "copied"), (Kind::Compacted, "walked")] {
+            let mut into = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(scratch.0.join(name))
+                .unwrap();
+            into.seek(SeekFrom::Start(4096)).unwrap();
+            let exported = engine
+                .export(&file, kind, Target::File(&mut into), Progress::none())
+                .unwrap();
+            let written = scratch.read(name);
+            assert_eq!(exported.size, written.len() as u64, "{name}");
+            if kind == Kind::Current {
+                assert_eq!(written, std::fs::read(&disk.0).unwrap());
+            } else {
+                assert!(HbamFile::from_bytes(written).is_ok(), "{name}");
+            }
+        }
+    }
+
+    /// An export of a version the file on disk lacks changes of, which its
+    /// refused saves left in memory, is refused before anything is
+    /// written: the desktop's copy of such a file gets the refusal, and its
+    /// file stays empty.
+    #[test]
+    fn a_copy_that_would_lack_changes_is_refused_before_it_writes() {
+        let (_disk, file) = hosted("export-refused");
+        let scratch = Scratch::new("refused");
+        let folder = scratch.folder();
+        let engine = engine(None);
+        file.write_store(&Writer::for_tests())
+            .set_unwritable_for_tests();
+        change(&file, "Unsaved");
+        let mut into = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(scratch.0.join("into.fmp12"))
+            .unwrap();
+        let progress = Progress {
+            stop: &|| panic!("written"),
+            written: &|_| panic!("written"),
+        };
+        let refused = engine.export(&file, Kind::Current, Target::File(&mut into), progress);
+        assert!(matches!(refused, Err(ExportError::Unsaved)), "{refused:?}");
+        assert_eq!(into.metadata().unwrap().len(), 0);
+        let refused = export(&engine, &file, Kind::Current, &folder, "f.fmp12", progress);
+        assert!(matches!(refused, Err(ExportError::Unsaved)), "{refused:?}");
+        assert_eq!(scratch.names(), ["into.fmp12"]);
+        // A backup still copies the file on disk, saying what it lacks.
+        let stored = engine.stored(&file).unwrap();
+        assert!(stored.unsaved);
     }
 
     /// The check finds a file that differs from the view: in a value, in a

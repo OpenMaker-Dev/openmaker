@@ -478,6 +478,37 @@ fn retention_keeps_the_newest_and_the_preserved_and_nothing_else() {
     );
 }
 
+/// A database whose file name is as long as a name can be (255 bytes) is
+/// backed up under that name: the copy is made without a name of its own
+/// and linked to it once complete, so no longer name is ever needed.
+#[test]
+fn a_file_with_the_longest_name_is_backed_up() {
+    let folder = Folder::new("longest-name");
+    let built = hosted_file(&folder);
+    let longest = built
+        .0
+        .with_file_name(format!("{}.fmp12", "L".repeat(255 - ".fmp12".len())));
+    std::fs::rename(&built.0, &longest).unwrap();
+    let file = TempFile(longest);
+    drop(built);
+    let backups = folder.0.join("Backups");
+    let clock = ManualClock::new(at(8, 0));
+    let mut schedule = backup_schedule("Long", 3);
+    schedule.enabled = false;
+    let (_, handle) = start(&file, &backups, vec![schedule], &clock);
+    clock.set(at(8, 1));
+    let made = back_up_now(&handle, "Long");
+    let copy = backups
+        .join(made)
+        .join("Databases")
+        .join(file.0.file_name().unwrap());
+    assert_eq!(file.0.file_name().unwrap().len(), 255);
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        std::fs::read(&file.0).unwrap()
+    );
+}
+
 #[test]
 fn backups_taken_while_a_client_writes_are_each_a_saved_version() {
     let folder = Folder::new("concurrent");

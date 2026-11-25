@@ -168,27 +168,11 @@ impl Identity {
 }
 
 /// A backup exports each file into a folder of it
-/// (`crate::engine::export`), through its handle, never through a link.
+/// (`crate::engine::export`), by its descriptor.
 impl crate::engine::export::Folder for Folder {
-    fn create(&self, name: &OsStr) -> io::Result<File> {
-        self.create_readable(name)
-    }
-
-    fn is_entry(&self, file: &File, name: &OsStr) -> io::Result<bool> {
-        let id = file_id(file)?;
-        Ok(matches!(self.stat(name)?, Some((Kind::File, at, _)) if at == id))
-    }
-
-    fn rename_new(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
-        Folder::rename_new(self, from, to)
-    }
-
-    fn remove(&self, name: &OsStr) -> io::Result<()> {
-        self.remove_file(name)
-    }
-
-    fn sync(&self) -> io::Result<()> {
-        Folder::sync(self)
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.fd)
     }
 }
 
@@ -443,14 +427,6 @@ mod unix {
         .union(OFlags::NOCTTY)
         .union(OFlags::CLOEXEC);
 
-    /// A new file below a folder for reading and writing, where nothing is
-    /// (a link not followed): an export reads back what it wrote.
-    const CREATE_READABLE: OFlags = OFlags::RDWR
-        .union(OFlags::CREATE)
-        .union(OFlags::EXCL)
-        .union(OFlags::NOFOLLOW)
-        .union(OFlags::CLOEXEC);
-
     /// A new file below a folder, where nothing is (a link not followed).
     const CREATE: OFlags = OFlags::WRONLY
         .union(OFlags::CREATE)
@@ -595,18 +571,6 @@ mod unix {
         pub fn create_file(&self, name: &OsStr, mode: RawMode) -> io::Result<File> {
             let fd = fs::openat(&self.fd, name, CREATE, Mode::from_bits_truncate(mode))
                 .map_err(named(name))?;
-            Ok(File::from(fd))
-        }
-
-        /// The new file `name` here, owner-only, for reading and writing.
-        pub fn create_readable(&self, name: &OsStr) -> io::Result<File> {
-            let fd = fs::openat(
-                &self.fd,
-                name,
-                CREATE_READABLE,
-                Mode::from_bits_truncate(0o600),
-            )
-            .map_err(named(name))?;
             Ok(File::from(fd))
         }
 
@@ -786,9 +750,6 @@ mod other {
             Err(unsupported())
         }
         pub fn create_file(&self, _name: &OsStr, _mode: u32) -> io::Result<File> {
-            Err(unsupported())
-        }
-        pub fn create_readable(&self, _name: &OsStr) -> io::Result<File> {
             Err(unsupported())
         }
         pub fn remove_file(&self, _name: &OsStr) -> io::Result<()> {

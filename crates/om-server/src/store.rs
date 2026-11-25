@@ -535,6 +535,14 @@ impl Store {
         self.read_only = true;
     }
 
+    /// Serve the file as one that loaded with content the writer cannot
+    /// write back (tests: such a file cannot be written to make one).
+    #[cfg(test)]
+    pub(crate) fn set_unwritable_for_tests(&mut self) {
+        self.read_only = true;
+        self.unwritable = true;
+    }
+
     /// Whether the file may not be written: [`Store::set_read_only`], or it
     /// loaded with content the writer cannot write back.
     pub fn is_read_only(&self) -> bool {
