@@ -414,17 +414,34 @@ impl<'h> Reading<'h> {
     /// The store engine's reading of `file` (`StoreEngine::read`): the
     /// view of the version it is hosted at, `stored`'s, opened from its
     /// root, and the state derived from it when the file was hosted. When
-    /// the root does not read, every read of the reading fails with why.
-    pub(super) fn of_store(file: &'h Hosted, stored: &'h super::store::StoreFile) -> Reading<'h> {
+    /// the root does not read, every read of the reading fails with why,
+    /// and so does what is answered from the derived state alone: its
+    /// accounts are unreadable, so that a login or a schedule's account
+    /// lookup fails as a read of the file does rather than answer from
+    /// what was read when the file was hosted.
+    /// `broken`: a test's root that does not open.
+    pub(super) fn of_store(
+        file: &'h Hosted,
+        stored: &'h super::store::StoreFile,
+        broken: bool,
+    ) -> Reading<'h> {
         assert_no_reading_held("a reading taken");
-        let derived = stored.derived().clone();
-        let view = match stored.view() {
+        let mut derived = stored.derived().clone();
+        let opened = match broken {
+            false => stored.view(),
+            true => Err(ReadError::Unreadable {
+                path: Vec::new(),
+                why: "a test's root that does not open".into(),
+            }),
+        };
+        let view = match opened {
             Ok(view) => StoreView::Paged(view),
             Err(error) => {
                 log::error!(
                     "{:?}: the version it is hosted at does not read: {error}",
                     file.name
                 );
+                derived = Arc::new(derived.with_accounts(derived.version(), Err(error.clone())));
                 StoreView::Broken {
                     error,
                     version: derived.version(),

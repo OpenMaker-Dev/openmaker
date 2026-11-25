@@ -523,20 +523,30 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
 /// The engine `args` choose (`--engine`, `--store-dir`, `--store-cache-mib`;
 /// docs/server-storage.md 11): the store engine's folder by default in the
-/// state folder, made for the server's user only.
+/// state folder, made for the server's user only. A folder that overlaps a
+/// database folder, or that exists and other users can reach, is refused
+/// (`om_server::check_store_folder`).
 fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
     if !args.store_engine {
         return Ok(EngineSettings::File);
     }
+    let state = args
+        .state_dir
+        .clone()
+        .or_else(default_identity::state_folder);
     let dir = match &args.store_dir {
         Some(dir) => dir.clone(),
-        None => args
-            .state_dir
-            .clone()
-            .or_else(default_identity::state_folder)
+        None => state
+            .as_ref()
             .map(|state| state.join("Store"))
             .ok_or("--engine store: no --store-dir and no state folder to put the store in")?,
     };
+    // The folders `hosted_paths` searches.
+    let database_folders = match args.database_folders.is_empty() {
+        true => state.iter().map(|state| state.join("Databases")).collect(),
+        false => args.database_folders.clone(),
+    };
+    om_server::check_store_folder(&dir, &database_folders)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

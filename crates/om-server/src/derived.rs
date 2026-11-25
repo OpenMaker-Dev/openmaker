@@ -219,7 +219,6 @@ impl Derived {
     /// state computed by [`Derived::new`] has; [`Derived::with_catalog`]
     /// keeps it. Versions compare only within one load: a file closed and
     /// opened again is a new store whose versions start over.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn instance(&self) -> u64 {
         self.instance
     }

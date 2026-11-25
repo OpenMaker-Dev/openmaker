@@ -1786,6 +1786,15 @@ pub enum HostingError {
         name: String,
         error: ReadError,
     },
+    /// What hosting a file on the store engine reads whole (a catalog of
+    /// its schema or layouts, a table's field catalog, its privilege sets,
+    /// an account) is larger than the store engine reads whole
+    /// (`engine::store::HOSTING_LIMIT`).
+    TooLarge {
+        name: String,
+        path: Vec<Vec<u8>>,
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for HostingError {
@@ -1807,6 +1816,12 @@ impl std::fmt::Display for HostingError {
             HostingError::Unreadable { name, error } => {
                 write!(f, "{name}: the store's copy does not read: {error}")
             }
+            HostingError::TooLarge { name, path, limit } => write!(
+                f,
+                "{name}: {path:02x?} is larger than the {} MiB the store engine reads whole \
+                 while hosting a file: not hosted (the file engine hosts it)",
+                limit >> 20
+            ),
         }
     }
 }
@@ -2329,11 +2344,20 @@ fn load_stored(
         })?;
     let held_in = started.elapsed();
     let imported = held.imported;
-    let unreadable = |error| HostingError::Unreadable {
-        name: name(),
-        error,
+    let unreadable = |error| match error {
+        ReadError::TooLarge { path, limit } => HostingError::TooLarge {
+            name: name(),
+            path,
+            limit,
+        },
+        error => HostingError::Unreadable {
+            name: name(),
+            error,
+        },
     };
     let view = crate::engine::store::view_of(engine.folder(), held.root).map_err(unreadable)?;
+    // What hosting reads whole is read within the store engine's limit.
+    let view = crate::engine::store::Capped::new(&view, crate::engine::store::HOSTING_LIMIT);
     if !insecure_files {
         if let Some(why) = insecurity_in(&view).map_err(unreadable)? {
             return Err(HostingError::Insecure { name: name(), why });

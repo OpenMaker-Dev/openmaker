@@ -1006,6 +1006,29 @@ fn wait_for(handle: &om_server::ServerHandle, id: u32, want: om_server::FileStat
     panic!("file {id} not {want:?}");
 }
 
+/// A server script that sets a field and ends with its record open has the
+/// record committed as the session ends; when that commit is not stored
+/// (here its save fails), the edit is lost, and the script's result is the
+/// commit's error, never 0.
+#[test]
+fn a_script_whose_last_record_is_not_stored_reports_the_error() {
+    let left_open = script(
+        4,
+        "Left open",
+        vec![go_to_record(1), set_field(COUNT, "99")],
+    );
+    let file = TempFile::new("save-left-open", &[left_open], true);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let id = handle.files()[0].id;
+    let (mut client, _) = server::logged_in(port, "left open");
+    assert!(handle.failing_saves(id, Some(om_server::SaveFault::BeforeRename)));
+    let reply = client.perform_script_on_server(4, "", true).unwrap();
+    assert!(handle.failing_saves(id, None));
+    assert_eq!(reply.error, 800, "{reply:?}");
+    let records = records_of(&mut client, TABLE);
+    assert_eq!(cell(&records, 1, COUNT), Some("3"));
+}
+
 /// docs/server-storage.md 5, "unknown": a save that renamed its new copy
 /// over the file and could not flush the folder is answered with the
 /// storage error; the file keeps the change, as the renamed file holds it,

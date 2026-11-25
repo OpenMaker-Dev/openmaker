@@ -1,6 +1,6 @@
 //! What a server hosts and how it identifies itself.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use om_calc::eval::CalcLimits;
@@ -251,6 +251,84 @@ pub enum EngineSettings {
     },
 }
 
+/// Refuse a store folder (`--store-dir`) that cannot be the store's own
+/// (docs/server-storage.md 11): one that is a database folder, inside one or
+/// holding one (the store's files would be searched as hosted files, or a
+/// hosted file's folder written in), and one that exists already and other
+/// users can reach: read, written or entered by its group or by others, or
+/// owned by another user (it holds whole databases, readable by the
+/// server's account only). Each refusal says what to do. Paths are
+/// compared resolved, as far as they exist.
+pub fn check_store_folder(store: &Path, database_folders: &[PathBuf]) -> Result<(), String> {
+    let store_at = resolved(store);
+    for folder in database_folders {
+        let folder_at = resolved(folder);
+        let relation = if store_at == folder_at {
+            "is"
+        } else if store_at.starts_with(&folder_at) {
+            "is inside"
+        } else if folder_at.starts_with(&store_at) {
+            "holds"
+        } else {
+            continue;
+        };
+        return Err(format!(
+            "--store-dir {} {relation} the database folder {}: give the store a folder of its \
+             own, outside every database folder",
+            store.display(),
+            folder.display()
+        ));
+    }
+    #[cfg(unix)]
+    if let Ok(metadata) = std::fs::symlink_metadata(store) {
+        use std::os::unix::fs::MetadataExt;
+        if !metadata.is_dir() {
+            return Err(format!(
+                "--store-dir {} is not a folder: give it a new or empty folder",
+                store.display()
+            ));
+        }
+        let mode = metadata.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "--store-dir {} can be reached by its group or others (mode {mode:03o}); the \
+                 store holds whole databases: run `chmod 700 {}`, or give a new folder, which \
+                 the server makes for its own user only",
+                store.display(),
+                store.display()
+            ));
+        }
+        let user = rustix::process::geteuid().as_raw();
+        if metadata.uid() != user {
+            return Err(format!(
+                "--store-dir {} belongs to another user (uid {}): give a folder of the \
+                 server's own user (uid {user})",
+                store.display(),
+                metadata.uid()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `path` resolved as far as it exists, the rest appended as given.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path.to_path_buf();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&at) {
+            return rest.iter().rev().fold(real, |path, name| path.join(name));
+        }
+        match (at.file_name().map(ToOwned::to_owned), at.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                at = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// Everything a server needs to start. Its limits and script schedules are
 /// given to the [`crate::Server`] it starts (`with_script_limits`,
 /// `with_connection_limits`, `with_schedules`). Logins are checked against
@@ -269,4 +347,44 @@ pub struct ServerConfig {
     /// `record`), for protocol analysis. The recordings hold client license
     /// keys and obscured credentials; keep them out of version control.
     pub record_dir: Option<PathBuf>,
+}
+
+#[cfg(test)]
+mod store_folder_tests {
+    use super::check_store_folder;
+
+    /// docs/server-storage.md 11: a store folder that is a database folder,
+    /// is inside one or holds one is refused, and so is an existing one
+    /// its group or others can reach; a folder of its own is taken.
+    #[test]
+    fn a_store_folder_that_is_not_the_stores_own_is_refused() {
+        let base = std::env::temp_dir().join(format!(
+            "om-store-folder-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let databases = base.join("Databases");
+        std::fs::create_dir_all(databases.join("sub")).unwrap();
+        let folders = [databases.clone()];
+        for store in [databases.clone(), databases.join("Store"), base.clone()] {
+            let refused = check_store_folder(&store, &folders);
+            assert!(refused.is_err(), "{store:?}");
+        }
+        // Through a name that resolves to the database folder.
+        assert!(check_store_folder(&databases.join("sub/../Store"), &folders).is_err());
+        let own = base.join("Store");
+        assert_eq!(check_store_folder(&own, &folders), Ok(()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir(&own).unwrap();
+            for (mode, taken) in [(0o755, false), (0o770, false), (0o700, true)] {
+                std::fs::set_permissions(&own, std::fs::Permissions::from_mode(mode)).unwrap();
+                let checked = check_store_folder(&own, &folders);
+                assert_eq!(checked.is_ok(), taken, "{mode:o}: {checked:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

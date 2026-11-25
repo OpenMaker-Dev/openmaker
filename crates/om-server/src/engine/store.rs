@@ -9,10 +9,20 @@
 //! (section 6.10). The import goes into a tree under a name of its own, and
 //! one unit of work then drops the tree it replaces, gives the new one the
 //! file's tree name and records what was imported, the source's length and
-//! SHA-256 and its page 0; a checkpoint then makes it durable. A stop at any
+//! SHA-256 and its page 0; a checkpoint then makes it durable. The SHA-256
+//! is of the bytes the import read, taken in the same pass
+//! ([`Hashing`]), and a source whose length, modification or change time
+//! moved while it was read is not recorded ([`StoreError::SourceChanged`]):
+//! the import is dropped and the next start tries again. A stop at any
 //! point leaves the store holding the file whole, as imported or as before,
 //! and never part of an import: what an earlier start left under an
-//! import's name is dropped when the folder is opened.
+//! import's name is dropped when the folder is opened, and an import that
+//! fails after its tree was made drops it at once.
+//!
+//! Nothing is written in a folder before it is known to be this server's
+//! ([`MARKER`]): an empty folder is given the marker file first; a folder
+//! with the marker goes on; any other folder is refused untouched, with
+//! what it holds.
 //!
 //! The state readers need besides the tree ([`Derived`]) is computed from
 //! the view when the file is hosted. At this step the engine takes no
@@ -67,10 +77,24 @@ const PAGE_ZERO: &[u8] = b"page0";
 /// another mark, or none, refuses the folder.
 pub(crate) const FORMAT_MARK: &[u8] = b"om-server store folder 0: files imported outside the \
     log, hosted read-only; not a format promise (docs/server-storage.md 6.10)";
+/// The marker file a store folder this server made holds, written before
+/// anything else in the folder: its content is [`FORMAT_MARK`] and a line
+/// end. A folder without it is never written to.
+pub(crate) const MARKER: &str = "om-server-store";
+/// The most of a file named [`MARKER`] that is read.
+const MAX_MARKER: usize = 1024;
+
 /// The names of the trees that hold files, and of a tree an import is
 /// filling, each followed by a number.
 const FILE_TREE: &str = "om-server:file:";
 const IMPORTING: &str = "om-server:importing:";
+
+#[cfg(test)]
+thread_local! {
+    /// Fail the next import's last unit, after its tree was made: for the
+    /// test of what such a failure leaves.
+    pub(crate) static FAIL_PUBLISHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// The page file's settings for the store engine: the page cache's size
 /// from `--store-cache-mib`, the rest `om-store`'s defaults.
@@ -99,6 +123,9 @@ pub enum StoreError {
     Store(String),
     /// The import refused the file (`paged::ImportError`).
     Import(ImportError),
+    /// The source changed while the import read it: nothing of it is
+    /// recorded, and the next start imports it again.
+    SourceChanged,
 }
 
 impl std::fmt::Display for StoreError {
@@ -109,11 +136,17 @@ impl std::fmt::Display for StoreError {
             StoreError::Open(e) => write!(f, "the store's page file does not open: {e:?}"),
             StoreError::Foreign(what) => write!(
                 f,
-                "the store folder holds {what}, which this server did not write: move it \
-                 away, and its files are imported again"
+                "the store folder holds {what}, which this server did not make: nothing in it \
+                 was changed; give --store-dir an empty or new folder (one this server made \
+                 has the file {MARKER})"
             ),
             StoreError::Store(e) => write!(f, "the store: {e}"),
             StoreError::Import(e) => write!(f, "the import refused the file: {e}"),
+            StoreError::SourceChanged => write!(
+                f,
+                "the file changed while it was imported: not hosted, and imported again at \
+                 the next start"
+            ),
         }
     }
 }
@@ -179,14 +212,18 @@ pub struct Held {
     pub page_zero: Vec<u8>,
     /// Whether this call imported it (otherwise the store held it).
     pub imported: bool,
+    /// The length and SHA-256 of the `.fmp12` it was imported from.
+    pub source: Digest,
 }
 
 impl StoreFolder {
     /// Open the store folder `fs` gives, making it and its page file when
     /// missing, its lock held for as long as the value lives: a folder
-    /// another process holds is refused. One whose page file holds trees
-    /// without this server's mark ([`FORMAT_MARK`]) is refused; what an
-    /// import left part way at an earlier start is dropped.
+    /// another process holds is refused. Nothing is written in the folder
+    /// before it is known to be this server's ([`claim`]); one whose page
+    /// file holds trees without this server's mark ([`FORMAT_MARK`]) is
+    /// refused too. What an import left part way at an earlier start is
+    /// dropped.
     pub fn open(fs: &dyn Fs, cache_bytes: u64) -> Result<StoreFolder, StoreError> {
         Self::open_with(fs, config(cache_bytes))
     }
@@ -194,6 +231,7 @@ impl StoreFolder {
     /// [`StoreFolder::open`] with the page file's settings `config`.
     pub(crate) fn open_with(fs: &dyn Fs, config: Config) -> Result<StoreFolder, StoreError> {
         fs.create_root()?;
+        claim(fs)?;
         let lock = fs.lock()?;
         let pages = match PageFile::open(fs, &lock, config) {
             Ok((pages, _)) => pages,
@@ -325,10 +363,17 @@ impl StoreFolder {
     /// `source`: the one the store holds when it was imported from bytes of
     /// the same length and SHA-256, else a new import of `source`, which
     /// replaces the one held before only once it is complete. The source is
-    /// read whole once for its digest, and again for an import; it is
-    /// never written. Pinned, so that the version read is kept from reuse.
-    pub fn hold<R: IoRead + Seek>(&self, name: &str, mut source: R) -> Result<Held, StoreError> {
-        let digest = digest(&mut source)?;
+    /// read whole once for its digest when the store holds the name, and
+    /// once for an import, which takes the digest of what it read in the
+    /// same pass; it is never written. A source whose [`Stamp`] moved while
+    /// it was imported is refused ([`StoreError::SourceChanged`]), and an
+    /// import that fails after its tree was made drops that tree. Pinned,
+    /// so that the version read is kept from reuse.
+    pub fn hold<R: IoRead + Seek + Stamped>(
+        &self,
+        name: &str,
+        mut source: R,
+    ) -> Result<Held, StoreError> {
         let _writing = self.lock_writing();
         let meta = Self::meta();
         let meta_root = self
@@ -336,8 +381,9 @@ impl StoreFolder {
             .root(&meta)
             .ok_or_else(|| StoreError::Foreign("no mark".into()))?;
         let recorded = Recorded::read(&self.pages, meta_root, name)?;
-        if let Some(recorded) = recorded.as_ref().filter(|r| r.source == digest) {
-            if self.pages.root(&recorded.tree).is_some() {
+        if let Some(recorded) = recorded.as_ref() {
+            if self.pages.root(&recorded.tree).is_some() && digest(&mut source)? == recorded.source
+            {
                 let pin = self.pages.pin_newest()?;
                 let root = root_in(&pin, &recorded.tree)?;
                 return Ok(Held {
@@ -345,52 +391,103 @@ impl StoreFolder {
                     root,
                     page_zero: recorded.page_zero.clone(),
                     imported: false,
+                    source: recorded.source,
                 });
             }
         }
-        source.seek(SeekFrom::Start(0))?;
+        let before = source.stamp()?;
         let number = next_number(&self.pages, meta_root)?;
         let importing = tree_name(IMPORTING, number);
         let named = tree_name(FILE_TREE, number);
         let first = self.next_entry()?;
+        let mut hashing = Hashing::new(source);
         let imported = paged::import(
-            io::BufReader::with_capacity(64 << 10, source),
+            io::BufReader::with_capacity(64 << 10, &mut hashing),
             &mut OnPages { pages: &self.pages },
             &importing,
             first,
             Batch::default(),
-        )
-        .map_err(StoreError::Import)?;
-        let file = vec![FILES.to_vec(), name.as_bytes().to_vec()];
-        let row = |key: &[u8], value: Vec<u8>| Edit::Put {
-            path: [&file[..], &[key.to_vec()]].concat(),
-            node: Node::Value(value),
+        );
+        // A source that changed while it was read is reported as such,
+        // whatever the import made of the bytes it got.
+        let imported = match imported {
+            Ok(imported) => imported,
+            Err(_) if hashing.inner().stamp()? != before => {
+                warn!("the store: {name:?} changed while it was imported");
+                return Err(StoreError::SourceChanged);
+            }
+            Err(e) => return Err(StoreError::Import(e)),
         };
-        let edits = [
-            Edit::Put {
-                path: file.clone(),
-                node: Node::List,
-            },
-            row(TREE, named.as_bytes().to_vec()),
-            row(SOURCE, digest.bytes()),
-            row(PAGE_ZERO, imported.page_zero.clone()),
-            Edit::Put {
-                path: vec![NEXT.to_vec()],
-                node: Node::Value((number + 1).to_be_bytes().to_vec()),
-            },
-        ];
-        let entry = self.next_entry()?;
-        let res = self.reserve(entry, 32)?;
-        let mut unit = res.begin().map_err(tree::Error::from)?;
-        let new_meta = tree::apply(&res, &mut unit, Some(meta_root), entry, &edits)?;
-        unit.set_root(&meta, new_meta);
-        if let Some(old) = recorded.as_ref().filter(|r| res.root(&r.tree).is_some()) {
-            unit.drop_tree(&old.tree);
-        }
-        unit.rename_tree(&importing, &named);
-        unit.commit().map_err(tree::Error::from)?;
-        drop(res);
-        self.checkpoint()?;
+        // The import's tree exists from here: whatever fails drops it, so
+        // that the next import, which takes the same number, finds no tree
+        // of its name.
+        let published = (|| {
+            let digest = hashing.finish()?;
+            if hashing.inner().stamp()? != before {
+                warn!("the store: {name:?} changed while it was imported");
+                return Err(StoreError::SourceChanged);
+            }
+            #[cfg(test)]
+            if FAIL_PUBLISHING.with(|fail| fail.replace(false)) {
+                return Err(StoreError::Store(
+                    "a test's failure of the last unit".into(),
+                ));
+            }
+            let file = vec![FILES.to_vec(), name.as_bytes().to_vec()];
+            let row = |key: &[u8], value: Vec<u8>| Edit::Put {
+                path: [&file[..], &[key.to_vec()]].concat(),
+                node: Node::Value(value),
+            };
+            let next = number
+                .checked_add(1)
+                .ok_or_else(|| StoreError::Store("no tree number is left".into()))?;
+            let edits = [
+                Edit::Put {
+                    path: file.clone(),
+                    node: Node::List,
+                },
+                row(TREE, named.as_bytes().to_vec()),
+                row(SOURCE, digest.bytes()),
+                row(PAGE_ZERO, imported.page_zero.clone()),
+                Edit::Put {
+                    path: vec![NEXT.to_vec()],
+                    node: Node::Value(next.to_be_bytes().to_vec()),
+                },
+            ];
+            let entry = self.next_entry()?;
+            let res = self.reserve(entry, 32)?;
+            let mut unit = res.begin().map_err(tree::Error::from)?;
+            let new_meta = tree::apply(&res, &mut unit, Some(meta_root), entry, &edits)?;
+            unit.set_root(&meta, new_meta);
+            if let Some(old) = recorded.as_ref().filter(|r| res.root(&r.tree).is_some()) {
+                unit.drop_tree(&old.tree);
+            }
+            unit.rename_tree(&importing, &named);
+            unit.commit().map_err(tree::Error::from)?;
+            drop(res);
+            self.checkpoint()?;
+            Ok(digest)
+        })();
+        let digest = match published {
+            Ok(digest) => digest,
+            Err(error) => {
+                if self.pages.root(&importing).is_some() {
+                    let dropped = self
+                        .next_entry()
+                        .and_then(|entry| self.reserve(entry, 8))
+                        .and_then(|res| Ok(paged::drop_unit(&res, &importing)?))
+                        .and_then(|()| self.checkpoint());
+                    if let Err(e) = dropped {
+                        warn!(
+                            "the store: the import of {name:?} is left under {:?} until the \
+                             next start: {e}",
+                            String::from_utf8_lossy(importing.as_bytes())
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        };
         info!(
             "the store: {name:?} imported, {} nodes, {} bytes",
             imported.nodes, digest.len
@@ -402,6 +499,7 @@ impl StoreFolder {
             root,
             page_zero: imported.page_zero,
             imported: true,
+            source: digest,
         })
     }
 
@@ -454,7 +552,7 @@ fn next_number(pages: &PageFile, meta: Root) -> Result<u64, StoreError> {
 
 /// A source file's length and SHA-256.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Digest {
+pub struct Digest {
     len: u64,
     sha256: [u8; 32],
 }
@@ -490,6 +588,219 @@ fn digest<R: IoRead + Seek>(source: &mut R) -> io::Result<Digest> {
     let mut sha256 = [0; 32];
     sha256.copy_from_slice(context.finish().as_ref());
     Ok(Digest { len, sha256 })
+}
+
+/// `source`, read for an import, with the SHA-256 of the whole file taken
+/// in the same pass, in file order: a read ahead of what was hashed hashes
+/// the bytes between first, a read that goes back is served from the file
+/// as hashed before, and [`Hashing::finish`] hashes what the import did
+/// not read. So each byte is hashed once, and every byte the import read
+/// ahead was the one hashed; a byte it read again could have changed in
+/// between only with the source's [`Stamp`].
+struct Hashing<R> {
+    inner: R,
+    /// Where the next read reads, and where the inner reader is.
+    pos: u64,
+    inner_pos: Option<u64>,
+    /// How far the file is hashed.
+    hashed: u64,
+    context: ring::digest::Context,
+}
+
+impl<R: IoRead + Seek> Hashing<R> {
+    fn new(inner: R) -> Self {
+        Hashing {
+            inner,
+            pos: 0,
+            inner_pos: None,
+            hashed: 0,
+            context: ring::digest::Context::new(&ring::digest::SHA256),
+        }
+    }
+
+    fn inner(&self) -> &R {
+        &self.inner
+    }
+
+    /// Read at `self.pos` into `buf` from the inner reader.
+    fn read_inner(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.inner_pos != Some(self.pos) {
+            self.inner.seek(SeekFrom::Start(self.pos))?;
+        }
+        let n = self.inner.read(buf)?;
+        self.inner_pos = Some(self.pos + n as u64);
+        Ok(n)
+    }
+
+    /// Hash the file up to `to`, or its end.
+    fn hash_to(&mut self, to: u64) -> io::Result<()> {
+        let mut buffer = vec![0; 1 << 16];
+        while self.hashed < to {
+            let want =
+                usize::try_from(to - self.hashed).map_or(buffer.len(), |n| n.min(buffer.len()));
+            let at = self.pos;
+            self.pos = self.hashed;
+            let n = self.read_inner(&mut buffer[..want]);
+            self.pos = at;
+            let n = n?;
+            if n == 0 {
+                break;
+            }
+            self.context.update(&buffer[..n]);
+            self.hashed += n as u64;
+        }
+        Ok(())
+    }
+
+    /// The length and SHA-256 of the whole file, hashing what is left.
+    fn finish(&mut self) -> io::Result<Digest> {
+        self.hash_to(u64::MAX)?;
+        let context = std::mem::replace(
+            &mut self.context,
+            ring::digest::Context::new(&ring::digest::SHA256),
+        );
+        let mut sha256 = [0; 32];
+        sha256.copy_from_slice(context.finish().as_ref());
+        Ok(Digest {
+            len: self.hashed,
+            sha256,
+        })
+    }
+}
+
+impl<R: IoRead + Seek> IoRead for Hashing<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.pos > self.hashed {
+            self.hash_to(self.pos)?;
+        }
+        let n = self.read_inner(buf)?;
+        let end = self.pos + n as u64;
+        if self.pos <= self.hashed && end > self.hashed {
+            let from = usize::try_from(self.hashed - self.pos).unwrap_or(n);
+            self.context.update(&buf[from..n]);
+            self.hashed = end;
+        }
+        self.pos = end;
+        Ok(n)
+    }
+}
+
+impl<R: IoRead + Seek> Seek for Hashing<R> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.pos = match to {
+            SeekFrom::Start(at) => at,
+            SeekFrom::Current(by) => self.pos.checked_add_signed(by).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "a seek before the start")
+            })?,
+            SeekFrom::End(by) => {
+                let at = self.inner.seek(SeekFrom::End(by))?;
+                self.inner_pos = Some(at);
+                at
+            }
+        };
+        Ok(self.pos)
+    }
+}
+
+/// What tells a source's contents changed without reading them: its
+/// length, modification and change times and inode. The change time moves
+/// with every write and cannot be set back by the writer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    changed: (i64, i64),
+    inode: u64,
+}
+
+/// A source whose [`Stamp`] can be read: a file. One without (a test's
+/// bytes in memory) answers none, which never changes.
+pub trait Stamped {
+    fn stamp(&self) -> io::Result<Option<Stamp>>;
+}
+
+impl Stamped for std::fs::File {
+    fn stamp(&self) -> io::Result<Option<Stamp>> {
+        let metadata = self.metadata()?;
+        #[cfg(unix)]
+        let (changed, inode) = {
+            use std::os::unix::fs::MetadataExt;
+            ((metadata.ctime(), metadata.ctime_nsec()), metadata.ino())
+        };
+        #[cfg(not(unix))]
+        let (changed, inode) = ((0, 0), 0);
+        Ok(Some(Stamp {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            changed,
+            inode,
+        }))
+    }
+}
+
+impl<T> Stamped for io::Cursor<T> {
+    fn stamp(&self) -> io::Result<Option<Stamp>> {
+        Ok(None)
+    }
+}
+
+/// Make sure the store folder `fs` gives is this server's before anything
+/// is written in it: an empty folder is given the [`MARKER`] file (and a
+/// marker a stop cut short, alone in the folder, is written again); a
+/// folder with the marker goes on; any other folder is refused, untouched,
+/// with what it holds. A marker of another content (another format of this
+/// server's) is refused too.
+fn claim(fs: &dyn Fs) -> Result<(), StoreError> {
+    let marker = [FORMAT_MARK, b"\n"].concat();
+    let names = fs.list("")?;
+    let found = match names.iter().any(|name| name == MARKER) {
+        true => {
+            let file = fs.open(MARKER, om_store::sys::FileOptions::PLAIN)?;
+            let mut bytes = vec![0; MAX_MARKER];
+            let n = file.read_at(0, &mut bytes)?;
+            bytes.truncate(n);
+            Some(bytes)
+        }
+        false => None,
+    };
+    match found {
+        Some(bytes) if bytes == marker => Ok(()),
+        Some(bytes) if names.len() == 1 && marker.starts_with(&bytes) => write_marker(fs, &marker),
+        None if names.is_empty() => write_marker(fs, &marker),
+        Some(bytes) => Err(StoreError::Foreign(format!(
+            "a {MARKER} of another format ({:?})",
+            String::from_utf8_lossy(bytes.split(|b| *b == b'\n').next().unwrap_or_default())
+        ))),
+        None => {
+            let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+            let more = match names.len().saturating_sub(shown.len()) {
+                0 => String::new(),
+                n => format!(" and {n} more"),
+            };
+            Err(StoreError::Foreign(format!(
+                "{}{more} and no {MARKER}",
+                shown.join(", ")
+            )))
+        }
+    }
+}
+
+/// Write the marker file, durable before anything else is written.
+fn write_marker(fs: &dyn Fs, marker: &[u8]) -> Result<(), StoreError> {
+    let file = match fs.create(MARKER, om_store::sys::FileOptions::SYNC) {
+        Ok(file) => file,
+        // Written meanwhile by another start, or cut short by a stop.
+        Err(e) if e.kind() == om_store::sys::ErrorKind::AlreadyExists => {
+            fs.open(MARKER, om_store::sys::FileOptions::SYNC)?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    file.write_at(0, marker)?;
+    file.flush()?;
+    drop(file);
+    fs.flush_folder("")?;
+    info!("the store: a new store folder, marked with {MARKER}");
+    Ok(())
 }
 
 /// What the store's own tree records of a file.
@@ -598,6 +909,9 @@ pub struct StoreFile {
     waiting: Waiting,
     /// The source file's device and inode when it was hosted.
     on_disk: Option<FileId>,
+    /// The length and SHA-256 of what it was imported from: what a backup
+    /// of it holds (`backups`).
+    source: Digest,
 }
 
 impl std::fmt::Debug for StoreFile {
@@ -624,7 +938,13 @@ impl StoreFile {
             derived: Arc::new(derived),
             waiting: Waiting::storing_nothing(),
             on_disk,
+            source: held.source,
         }
+    }
+
+    /// The length and SHA-256 of the `.fmp12` the file was imported from.
+    pub(crate) fn source(&self) -> (u64, [u8; 32]) {
+        (self.source.len, self.source.sha256)
     }
 
     /// The view of the file's version.
@@ -650,11 +970,96 @@ pub(crate) fn view_of(
     PagedView::open(folder.pages(), root)
 }
 
+/// The most hosting a file on the store engine reads whole of it, each
+/// read on its own, counted as an owned tree's memory
+/// (`om_hbam::tree::memory`): its schema catalog `[3]`, its layout catalog
+/// `[4]`, each table's field catalog `[T, 03]`, its custom functions `[16]`
+/// and value lists `[21]`, its privilege sets `[23, 2, 5]`, and each
+/// account `[23, 1, 5, A]`. Past it the file is not hosted
+/// ([`crate::hosting::HostingError::TooLarge`]); the page cache's bound
+/// leaves these out, as it leaves out the state derived from them
+/// (docs/server-storage.md 11). OpenMaker's choice.
+pub const HOSTING_LIMIT: usize = 256 << 20;
+
+/// A view that refuses, as too large, any subtree its reader asks for whole
+/// past `limit`, even with no limit of its own ([`super::NO_LIMIT`]): what
+/// hosting reads of a file on the store engine.
+pub(crate) struct Capped<'v> {
+    inner: &'v dyn View,
+    limit: usize,
+}
+
+impl<'v> Capped<'v> {
+    pub(crate) fn new(inner: &'v dyn View, limit: usize) -> Self {
+        Capped { inner, limit }
+    }
+}
+
+impl View for Capped<'_> {
+    fn version(&self) -> super::Version {
+        self.inner.version()
+    }
+
+    fn node(&self, path: &[&[u8]]) -> Result<Option<super::Head<'_>>, ReadError> {
+        self.inner.node(path)
+    }
+
+    fn subtree(
+        &self,
+        path: &[&[u8]],
+        limit: usize,
+    ) -> Result<Option<std::borrow::Cow<'_, om_hbam::OwnedNode>>, ReadError> {
+        self.inner.subtree(path, limit.min(self.limit))
+    }
+
+    fn children_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        from: std::ops::Bound<&[u8]>,
+        direction: super::Direction,
+        max: usize,
+        out: &mut Vec<super::Child<'v>>,
+    ) -> Result<bool, ReadError> {
+        self.inner.children_page(path, from, direction, max, out)
+    }
+
+    fn subtrees_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        from: std::ops::Bound<&[u8]>,
+        direction: super::Direction,
+        max: usize,
+        limit: usize,
+        out: &mut Vec<std::borrow::Cow<'v, om_hbam::OwnedNode>>,
+    ) -> Result<bool, ReadError> {
+        self.inner
+            .subtrees_page(path, from, direction, max, limit.min(self.limit), out)
+    }
+
+    fn walk_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        after: Option<&[Vec<u8>]>,
+        max: usize,
+        out: &mut Vec<super::view::Step<'v>>,
+    ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+        self.inner.walk_page(path, after, max, out)
+    }
+
+    fn changed_since(&self, path: &[&[u8]], since: super::Version) -> Result<bool, ReadError> {
+        self.inner.changed_since(path, since)
+    }
+}
+
 /// The store engine: the store folder it hosts files from, and the
 /// environment the operations it runs read the world from.
 pub struct StoreEngine {
     folder: Arc<StoreFolder>,
     environment: Box<dyn Environment>,
+    /// The files whose root a test made fail to open
+    /// (`ServerHandle::failing_reads` with the empty path).
+    #[cfg(debug_assertions)]
+    broken_roots: Mutex<Vec<String>>,
 }
 
 impl std::fmt::Debug for StoreEngine {
@@ -673,6 +1078,8 @@ impl StoreEngine {
         StoreEngine {
             folder,
             environment: Box::new(HostEnvironment),
+            #[cfg(debug_assertions)]
+            broken_roots: Mutex::default(),
         }
     }
 
@@ -683,7 +1090,26 @@ impl StoreEngine {
 
     /// The version `file` is hosted at, for reading.
     pub fn read<'h>(&self, file: &'h Hosted) -> super::reading::Reading<'h> {
-        super::reading::Reading::of_store(file, file.store_file())
+        #[cfg(debug_assertions)]
+        let broken = self
+            .broken_roots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&file.name);
+        #[cfg(not(debug_assertions))]
+        let broken = false;
+        super::reading::Reading::of_store(file, file.store_file(), broken)
+    }
+
+    /// From now on the root of the file named `file` does not open: every
+    /// reading of it is broken, as one whose root page no longer reads.
+    /// Only in debug builds, for tests.
+    #[cfg(debug_assertions)]
+    pub(crate) fn break_root(&self, file: &str) {
+        self.broken_roots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(file.to_owned());
     }
 
     /// Run `operation` on `file` as the store engine can: the lock table's
@@ -822,9 +1248,16 @@ pub(crate) fn derived_of(
     name: &str,
     page_zero: &[u8],
 ) -> Result<Derived, ReadError> {
-    let catalog = crate::derived::read_catalog(view).map_err(|e| ReadError::Unreadable {
-        path: Vec::new(),
-        why: format!("the schema does not read: {e}"),
+    let catalog = crate::derived::read_catalog(view).map_err(|e| match e {
+        // A catalog past what the reader reads whole (`Capped`).
+        om_hbam::Error::TooLarge { limit } => ReadError::TooLarge {
+            path: Vec::new(),
+            limit,
+        },
+        e => ReadError::Unreadable {
+            path: Vec::new(),
+            why: format!("the schema does not read: {e}"),
+        },
     })?;
     let mut derived = Derived::new(view, catalog, name)?;
     derived.set_page_zero(page_zero);
@@ -963,13 +1396,39 @@ mod tests {
         );
     }
 
-    /// A store folder whose page file holds trees but not this server's
-    /// mark is refused, and so is one with another mark.
+    /// Nothing is written or removed in a store folder before it is known
+    /// to be this server's ([`MARKER`]): a folder holding an unrelated
+    /// `pages.new`, and one holding a page file another server made
+    /// without the marker, are refused with what they hold and left byte
+    /// for byte as they were. An empty folder is marked, opens, and opens
+    /// again.
     #[test]
-    fn a_folder_this_server_did_not_write_is_refused() {
-        let sim = Sim::new(3);
+    fn a_folder_this_server_did_not_make_is_refused_untouched() {
+        use om_store::os::OsFs;
+        let base = std::env::temp_dir().join(format!(
+            "om-store-claim-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let snapshot = |dir: &std::path::Path| {
+            let mut files: Vec<(std::ffi::OsString, Vec<u8>)> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let unrelated = base.join("unrelated");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(unrelated.join("pages.new"), b"someone else's").unwrap();
+        let other = base.join("other");
+        std::fs::create_dir_all(&other).unwrap();
         {
-            let fs = sim.fs();
+            let fs = OsFs::new(&other);
             let lock = fs.lock().unwrap();
             let pages = PageFile::create(&fs, &lock, config(CACHE)).unwrap();
             let res = pages.reserve(1, 16, Purpose::Entry).unwrap();
@@ -977,8 +1436,8 @@ mod tests {
                 path: vec![b"x".to_vec()],
                 node: Node::Value(b"y".to_vec()),
             }];
-            let other = TreeName::new(b"another".to_vec()).unwrap();
-            paged::apply_unit(&res, &other, None, 1, &edits).unwrap();
+            let tree = TreeName::new(b"another".to_vec()).unwrap();
+            paged::apply_unit(&res, &tree, None, 1, &edits).unwrap();
             drop(res);
             let id = EntryId {
                 index: pages.newest_entry(),
@@ -987,10 +1446,208 @@ mod tests {
             };
             pages.checkpoint(id, None).unwrap();
         }
-        sim.restart();
-        assert!(matches!(
-            StoreFolder::open(&sim.fs(), CACHE),
-            Err(StoreError::Foreign(_))
-        ));
+        for dir in [&unrelated, &other] {
+            let before = snapshot(dir);
+            let refused = StoreFolder::open(&OsFs::new(dir), CACHE);
+            assert!(
+                matches!(refused, Err(StoreError::Foreign(_))),
+                "{dir:?}: {refused:?}"
+            );
+            assert_eq!(snapshot(dir), before, "{dir:?}");
+        }
+        let new = base.join("new");
+        std::fs::create_dir_all(&new).unwrap();
+        drop(StoreFolder::open(&OsFs::new(&new), CACHE).unwrap());
+        assert_eq!(
+            std::fs::read(new.join(MARKER)).unwrap(),
+            [FORMAT_MARK, b"\n"].concat()
+        );
+        drop(StoreFolder::open(&OsFs::new(&new), CACHE).unwrap());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A file's bytes as one version until `switch` bytes were read in all,
+    /// and as another after, its [`Stamp`] moving with them: a source
+    /// replaced in place while it is read.
+    struct Changing {
+        versions: [Vec<u8>; 2],
+        read: u64,
+        switch: u64,
+        pos: u64,
+    }
+
+    impl Changing {
+        fn now(&self) -> &[u8] {
+            &self.versions[usize::from(self.read >= self.switch)]
+        }
+    }
+
+    impl IoRead for Changing {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let bytes = self.now();
+            let at = (self.pos as usize).min(bytes.len());
+            let n = buf.len().min(bytes.len() - at);
+            buf[..n].copy_from_slice(&bytes[at..at + n]);
+            self.pos += n as u64;
+            self.read += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl Seek for Changing {
+        fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+            let len = self.now().len() as u64;
+            self.pos = match to {
+                SeekFrom::Start(at) => at,
+                SeekFrom::Current(by) => self.pos.saturating_add_signed(by),
+                SeekFrom::End(by) => len.saturating_add_signed(by),
+            };
+            Ok(self.pos)
+        }
+    }
+
+    impl Stamped for Changing {
+        fn stamp(&self) -> io::Result<Option<Stamp>> {
+            let switched = self.read >= self.switch;
+            Ok(Some(Stamp {
+                len: self.now().len() as u64,
+                modified: None,
+                changed: (i64::from(switched), 0),
+                inode: 1,
+            }))
+        }
+    }
+
+    /// The SHA-256 the store records is of the bytes it imported: a source
+    /// replaced in place while the import reads it is not recorded, and is
+    /// imported again once it stands still; the bytes read first are then
+    /// not taken for it either.
+    #[test]
+    fn a_source_that_changes_while_it_is_imported_is_not_recorded() {
+        let first = file("store-changing-first", 50);
+        let second = file("store-changing-second", 60);
+        let sim = Sim::new(5);
+        let folder = open(&sim);
+        let changing = Changing {
+            switch: first.len() as u64 / 2,
+            versions: [first.clone(), second.clone()],
+            read: 0,
+            pos: 0,
+        };
+        let refused = folder.hold(NAME, changing);
+        assert!(
+            matches!(refused, Err(StoreError::SourceChanged)),
+            "{:?}",
+            refused.err()
+        );
+        assert_eq!(held(&folder), None);
+        assert!(folder.hold(NAME, Cursor::new(&second)).unwrap().imported);
+        assert!(!folder.hold(NAME, Cursor::new(&second)).unwrap().imported);
+        assert!(folder.hold(NAME, Cursor::new(&first)).unwrap().imported);
+    }
+
+    /// An import that fails after its tree was made (here at its last
+    /// unit) drops that tree at once: the next import, which takes the same
+    /// number, goes through in the same process.
+    #[test]
+    fn an_import_that_fails_at_its_last_unit_leaves_nothing_in_the_way() {
+        let source = file("store-fail-last", 40);
+        let sim = Sim::new(9);
+        let folder = open(&sim);
+        FAIL_PUBLISHING.with(|fail| fail.set(true));
+        let failed = folder.hold(NAME, Cursor::new(&source));
+        assert!(
+            matches!(failed, Err(StoreError::Store(_))),
+            "{:?}",
+            failed.err()
+        );
+        assert_eq!(held(&folder), None);
+        assert!(folder.hold(NAME, Cursor::new(&source)).unwrap().imported);
+        assert!(held(&folder).is_some());
+    }
+
+    /// What hosting reads whole of a file on the store engine is read
+    /// within a limit ([`HOSTING_LIMIT`]): past it the state it derives is
+    /// refused as too large, never read whole.
+    #[test]
+    fn hosting_reads_nothing_whole_past_its_limit() {
+        let source = file("store-capped", 10);
+        let sim = Sim::new(4);
+        let folder = open(&sim);
+        let held = folder.hold(NAME, Cursor::new(&source)).unwrap();
+        let view = view_of(&folder, held.root).unwrap();
+        assert!(derived_of(&Capped::new(&view, HOSTING_LIMIT), NAME, &held.page_zero).is_ok());
+        let refused = derived_of(&Capped::new(&view, 256), NAME, &held.page_zero);
+        assert!(
+            matches!(refused, Err(ReadError::TooLarge { limit: 256, .. })),
+            "{:?}",
+            refused.err()
+        );
+    }
+
+    /// A measurement, not a test: the roots tables the pins of `n` files
+    /// imported at one start keep (`OM_ROOTS_FILES`, 1, 100 and 1,000 by
+    /// default). Each import is an entry of its own, and each file's pin
+    /// keeps that entry's table of every tree then: about n²/2 entries in
+    /// all. A start that imports nothing pins one entry for every file,
+    /// which share one table. For a release build:
+    ///
+    /// ```sh
+    /// cargo test --release -p om-server --lib -- --ignored roots_tables --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement for release builds"]
+    fn roots_tables_kept_by_imported_files() {
+        let source = file("store-roots", 0);
+        let counts: Vec<usize> = std::env::var("OM_ROOTS_FILES")
+            .map(|v| v.split(',').map(|n| n.parse().unwrap()).collect())
+            .unwrap_or_else(|_| vec![1, 100, 1000]);
+        let entry = std::mem::size_of::<(TreeName, Root)>();
+        for n in counts {
+            let sim = Sim::new(1);
+            let folder = StoreFolder::open_with(&sim.fs(), config(64 << 20)).unwrap();
+            let started = std::time::Instant::now();
+            let held: Vec<Held> = (0..n)
+                .map(|i| {
+                    folder
+                        .hold(&format!("File {i:04}.fmp12"), Cursor::new(&source))
+                        .unwrap()
+                })
+                .collect();
+            // Tables shared by pins of one entry count once.
+            let mut tables: Vec<&[(TreeName, Root)]> = held.iter().map(|h| h.pin.roots()).collect();
+            tables.sort_by_key(|t| t.as_ptr());
+            tables.dedup_by_key(|t| t.as_ptr());
+            let entries: usize = tables.iter().map(|t| t.len()).sum();
+            let names: usize = tables
+                .iter()
+                .flat_map(|t| t.iter())
+                .map(|(name, _)| name.as_bytes().len())
+                .sum();
+            println!(
+                "{n} files imported in {:.1} s: {} tables, {entries} entries, {:.1} MB \
+                 ({entry} bytes each and their names, {names} bytes)",
+                started.elapsed().as_secs_f64(),
+                tables.len(),
+                (entries * entry + names) as f64 / 1e6,
+            );
+            drop(held);
+            let again: Vec<Held> = (0..n)
+                .map(|i| {
+                    folder
+                        .hold(&format!("File {i:04}.fmp12"), Cursor::new(&source))
+                        .unwrap()
+                })
+                .collect();
+            let mut tables: Vec<&[(TreeName, Root)]> =
+                again.iter().map(|h| h.pin.roots()).collect();
+            tables.sort_by_key(|t| t.as_ptr());
+            tables.dedup_by_key(|t| t.as_ptr());
+            println!(
+                "  held again, none imported: {} table(s), {} entries",
+                tables.len(),
+                tables.iter().map(|t| t.len()).sum::<usize>()
+            );
+        }
     }
 }

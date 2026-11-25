@@ -23,11 +23,16 @@
 //! computed from that view as the store engine computes it
 //! (`store::derived_of`). Every read at that version is then answered a
 //! third time, through a [`PagedView`] of the copy, and must give the same
-//! answer. A read at a later version (the file changed) is not: the store
-//! engine takes no changes. With `OM_STORE_CHECK_LOG` set to a file, each
-//! test notes there, once for each file, that a read was compared, and that
-//! one came after a change: how many tests only read, and had every read
-//! checked so.
+//! answer. The third read takes the file engine's state of the file that
+//! is not a version's (read-only, waiting work) with the copy's view and
+//! derived state. Reads that are not compared so: one at a later version
+//! (the file changed; the store engine takes no changes), one a test told
+//! to fail (answered through the test view alone), one that may run only
+//! once (`Reading::serve_once`); a file whose copy cannot be made (its
+//! tree cannot be written as an `.fmp12`, or the import refuses it) fails
+//! its test. The switch counts each kind ([`Compared`],
+//! `ServerHandle::store_comparisons`), and with `OM_STORE_CHECK_LOG` set
+//! to a file each read notes its kind there with the test's name.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -250,6 +255,12 @@ impl super::FileEngine {
         self.switch();
     }
 
+    /// The reads compared on a store copy so far, and those that were not
+    /// (`ServerHandle::store_comparisons`); none without the test view.
+    pub(crate) fn store_comparisons(&self) -> Option<Compared> {
+        self.copies().map(|switch| switch.compared())
+    }
+
     /// Fail every read of `path` (and below it) in the file named `file`,
     /// answering reads through the test view alone
     /// (`ServerHandle::failing_reads`).
@@ -275,6 +286,25 @@ pub(crate) struct Switch {
     /// The test that switched the server (its thread's name), for
     /// `OM_STORE_CHECK_LOG`.
     test: Option<String>,
+    /// The reads compared on a store copy, and those that were not, by why.
+    counts: Mutex<Compared>,
+}
+
+/// How many reads a switched server answered a third time through a store
+/// copy and compared, and how many it did not, by why
+/// (`ServerHandle::store_comparisons`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Compared {
+    /// Compared with the store copy's answer.
+    pub compared: u64,
+    /// At a version after the copy's: the file changed.
+    pub changed: u64,
+    /// Of a file whose copy could not be made.
+    pub no_copy: u64,
+    /// Answered through the test view alone, as a test told it to fail.
+    pub failing: u64,
+    /// A read that may run only once (`Reading::serve_once`).
+    pub single_run: u64,
 }
 
 impl Default for Switch {
@@ -284,6 +314,7 @@ impl Default for Switch {
             derived: Default::default(),
             stores: Default::default(),
             test: std::thread::current().name().map(str::to_owned),
+            counts: Default::default(),
         }
     }
 }
@@ -301,9 +332,6 @@ pub(crate) struct StoreCopy {
     derived: Derived,
     /// The file engine's version the copy holds.
     version: Version,
-    /// Whether a read was compared, and a read came after a change, noted.
-    compared: std::sync::atomic::AtomicBool,
-    changed: std::sync::atomic::AtomicBool,
 }
 
 impl StoreCopy {
@@ -341,8 +369,6 @@ impl StoreCopy {
             root: imported.root,
             derived,
             version: view.version(),
-            compared: Default::default(),
-            changed: Default::default(),
         })
     }
 }
@@ -397,6 +423,7 @@ impl Switch {
             ..file_read
         };
         if failing.is_some() {
+            self.count(|c| &mut c.failing, "failing");
             return read(copied);
         }
         let expected = read(file_read);
@@ -421,9 +448,14 @@ impl Switch {
                 "{:?}: the store engine's answer differs from the file engine's",
                 reading.file().name
             );
-            self.note(&copy.compared, "compared");
+            self.count(|c| &mut c.compared, "compared");
         }
         answer
+    }
+
+    /// The reads compared on a store copy so far, and those that were not.
+    pub(crate) fn compared(&self) -> Compared {
+        *self.counts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The store copy of the file `reading` reads, made at its first read,
@@ -435,21 +467,31 @@ impl Switch {
         let copy = stores
             .entry(key)
             .or_insert_with(|| StoreCopy::of(reading).map(Arc::new))
-            .clone()?;
+            .clone();
         drop(stores);
+        // A server checking reads claims the store comparison for its
+        // files: one that cannot be copied fails its test (none of the
+        // suite's files is such a file).
+        let Some(copy) = copy else {
+            self.count(|c| &mut c.no_copy, "no-copy");
+            panic!(
+                "{:?}: no store copy could be made of it, so its reads are not compared on the \
+                 store engine's view",
+                reading.file().name
+            );
+        };
         if reading.engine_view().version() == copy.version {
             return Some(copy);
         }
-        self.note(&copy.changed, "changed");
+        self.count(|c| &mut c.changed, "changed");
         None
     }
 
-    /// Note `what` once in `OM_STORE_CHECK_LOG`, with the test's name.
-    fn note(&self, once: &std::sync::atomic::AtomicBool, what: &str) {
+    /// Count a read of the kind `kind` names, and note it in
+    /// `OM_STORE_CHECK_LOG` with the test's name.
+    fn count(&self, kind: impl FnOnce(&mut Compared) -> &mut u64, what: &str) {
         use std::io::Write;
-        if once.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
+        *kind(&mut self.counts.lock().unwrap_or_else(PoisonError::into_inner)) += 1;
         let Some(log) = std::env::var_os("OM_STORE_CHECK_LOG") else {
             return;
         };
@@ -484,6 +526,7 @@ impl Switch {
             .unwrap_or_default();
         let copies = Copies::new(reading.engine_view(), &paths);
         let derived = self.derived_of(reading, &copies, failing.is_none(), false);
+        self.count(|c| &mut c.single_run, "single-run");
         read(Read {
             view: &copies,
             derived: &derived,
