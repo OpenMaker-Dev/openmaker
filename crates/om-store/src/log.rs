@@ -66,7 +66,10 @@ use std::sync::Arc;
 use crate::state::{Marker, Segments, State, StateError, Values};
 use crate::sys::{self, ErrorKind, File, FileOptions, Fs};
 
-use format::{encode_entry, segment_number, segment_path, BatchHeader, SegmentHeader};
+use format::{
+    encode_entry, is_batch_mark, segment_number, segment_path, BatchHeader, SegmentHeader,
+    BATCH_MARK,
+};
 pub use format::{
     HeaderFault, BATCH_HEADER, ENTRY_OVERHEAD, MAX_INDEX, MAX_PAYLOAD, MAX_SEGMENT, MIN_SEGMENT,
     SEGMENT_HEADER, VERSION, ZERO_HASH,
@@ -744,6 +747,45 @@ fn park(
     }
     fs.flush_folder(FOLDER).map_err(disk)?;
     Ok((prefix, unreadable))
+}
+
+/// Whether a batch's mark stands anywhere in segment `seg` at or after
+/// `offset`: written bytes the walk could not reach.
+fn marks_after(seg: &Seg, offset: u64) -> Result<bool, LogError> {
+    let size = seg
+        .file
+        .size()
+        .map_err(LogError::Disk)?
+        .min(seg.header.size);
+    let mut buf = vec![0u8; 64 << 10];
+    let mut at = offset;
+    while at < size {
+        let want = ((size - at) as usize).min(buf.len());
+        let n = match read_exact(&*seg.file, at, &mut buf[..want]) {
+            Ok(n) => n,
+            Err(error) if error.kind() == ErrorKind::Read => {
+                return Err(LogError::Unreadable {
+                    segment: seg.number,
+                    offset: at,
+                    error,
+                })
+            }
+            Err(e) => return Err(LogError::Disk(e)),
+        };
+        if n == 0 {
+            break;
+        }
+        if buf[..n].windows(BATCH_MARK as usize).any(is_batch_mark) {
+            return Ok(true);
+        }
+        // A mark across two reads is found by the next one, which begins
+        // just short of this one's end.
+        if at + (n as u64) >= size {
+            break;
+        }
+        at += (n as u64).saturating_sub(BATCH_MARK - 1).max(1);
+    }
+    Ok(false)
 }
 
 fn segment_for(segs: &[Seg], index: u64) -> Option<usize> {
@@ -1495,32 +1537,48 @@ impl Log {
                         start.hash,
                         start.term,
                     );
-                    loop {
+                    let stopped = loop {
                         match scanner.next_event() {
                             Err(fault) => return Err(unreadable(chain, fault)),
                             Ok(Event::Entry(found)) => {
                                 let at = position(&found);
                                 if found.verified && !fits(&at) {
-                                    break;
+                                    break None;
                                 }
                                 seen = (at, found.seg);
                                 if at.index >= firm {
-                                    break;
+                                    break None;
                                 }
                             }
-                            Ok(Event::End { seg, offset }) => {
-                                // Before the start, a walk that ends where
-                                // its framing broke cannot say where the
-                                // start's successor begins.
-                                if scanner.before_anchor() && scanner.broke() {
-                                    return Err(LogError::FramingBroken {
-                                        segment: chain[seg].number,
-                                        offset,
-                                    });
-                                }
-                                break;
-                            }
+                            Ok(Event::End { seg, offset }) => break Some((seg, offset)),
                             Ok(_) => {}
+                        }
+                    };
+                    // The walk stopped before any entry after the start: it
+                    // must say where the start's successor begins, or the
+                    // call refuses. It does so when an entry after the start
+                    // was found and did not check (inside a batch, past the
+                    // start, whose end is placed by its hash), or when the
+                    // walk reached the clean end of the last segment it had,
+                    // nothing follows in that segment, and the listed segment
+                    // after it is missing: the successor was there.
+                    if let Some((seg, offset)) = stopped.filter(|_| seen.0.index <= start.index) {
+                        let placed = !scanner.before_anchor() && scanner.anchor_placed();
+                        let entry_failed = placed && !scanner.ended_between();
+                        let clean_end = scanner.ended_between()
+                            && !scanner.broke()
+                            && (scanner.before_anchor() || placed)
+                            && seg + 1 == chain.len()
+                            && {
+                                let follower = chain[seg].number + 1;
+                                follower < run_end && !present.contains(&follower)
+                            }
+                            && !marks_after(&chain[seg], offset)?;
+                        if !entry_failed && !clean_end {
+                            return Err(LogError::FramingBroken {
+                                segment: chain[seg].number,
+                                offset,
+                            });
                         }
                     }
                 }
@@ -1530,6 +1588,19 @@ impl Log {
                     let last = if reached { to } else { from + seen.1 };
                     keep = Some((usable[front].number, usable[last].number));
                 }
+            }
+        }
+        // No usable segment begins at or before the start's successor: the
+        // listed segments before the first usable one could hold it. Gone,
+        // they are a hole; present with a header that is not valid, they may
+        // hold it whole, and the call refuses.
+        if usable.iter().all(|s| s.header.first > after) && firm > start.index {
+            let first_usable = usable.first().map_or(run_end, |s| s.number);
+            if let Some(&number) = present.range(run.first..first_usable).next_back() {
+                return Err(LogError::FramingBroken {
+                    segment: number,
+                    offset: 0,
+                });
             }
         }
         let listed = match keep {

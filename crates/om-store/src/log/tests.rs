@@ -3919,3 +3919,351 @@ fn a_place_given_up_is_read_again_after_a_cut_back_into_its_segment() {
     assert_eq!(read_all(&log), [one, two_c]);
     assert!(three.index == 3 && three_b.index == 3);
 }
+
+/// What a byte of a segment file belongs to, for the sweep below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    /// A segment's header: every entry of the segment, from `first`.
+    SegmentHeader(u64),
+    /// A batch's header: every entry of the batch, from `first`.
+    BatchHeader(u64),
+    Entry(u64),
+}
+
+impl Owner {
+    fn index(self) -> u64 {
+        match self {
+            Owner::SegmentHeader(i) | Owner::BatchHeader(i) | Owner::Entry(i) => i,
+        }
+    }
+}
+
+/// A small log on the simulated disk, laid out byte by byte: its files,
+/// its entries, and what each byte of its listed segments belongs to (by
+/// the format's description, sections 3.2 to 3.4; the log has no cut).
+struct Laid {
+    config: Config,
+    state: Vec<u8>,
+    segments: Vec<(String, Vec<u8>)>,
+    entries: Vec<(Position, Vec<u8>)>,
+    /// Per segment, the byte ranges and what they belong to.
+    owners: Vec<Vec<(usize, usize, Owner)>>,
+}
+
+impl Laid {
+    fn new() -> Laid {
+        let sim = Sim::new(80);
+        let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+        let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        let config = Config {
+            segment_size: 1024,
+            max_payload: 64,
+        };
+        let (mut log, _) = Log::open(fs.clone(), state, config, Position::START).unwrap();
+        let mut entries = Vec::new();
+        for batch in 0..5u8 {
+            for i in 0..3u8 {
+                let payload = vec![batch * 3 + i + 1; 32];
+                let at = log.append(1, 1, 0, &payload).unwrap();
+                entries.push((at, payload));
+            }
+            let last = entries.last().unwrap().0.index;
+            log.flush_batch(Some(last)).unwrap();
+        }
+        let run = log.segments();
+        drop(log);
+        sim.restart();
+        let image = sim.image();
+        let bytes = |path: &str| {
+            image
+                .iter()
+                .find(|(p, _)| p == path)
+                .and_then(|(_, b)| b.clone())
+                .unwrap()
+        };
+        let segments: Vec<(String, Vec<u8>)> = (run.first..run.first + run.count)
+            .map(|n| (segment_path(n), bytes(&segment_path(n))))
+            .collect();
+        let u64_at = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let mut owners = Vec::new();
+        for (_, b) in &segments {
+            let mut own = vec![(0, 128, Owner::SegmentHeader(u64_at(b, 48)))];
+            let mut at = 128;
+            while at + 136 <= b.len() && &b[at..at + 8] == b"OMBATCH\0" {
+                let count = u32::from_le_bytes(b[at + 12..at + 16].try_into().unwrap());
+                let first = u64_at(b, at + 16);
+                own.push((at, at + 136, Owner::BatchHeader(first)));
+                let mut entry = at + 136;
+                for _ in 0..count {
+                    let len = u32::from_le_bytes(b[entry + 28..entry + 32].try_into().unwrap());
+                    let size = 64 + len as usize;
+                    own.push((entry, entry + size, Owner::Entry(u64_at(b, entry))));
+                    entry += size;
+                }
+                at = entry;
+            }
+            owners.push(own);
+        }
+        let held: usize = owners
+            .iter()
+            .flatten()
+            .filter(|(_, _, o)| matches!(o, Owner::Entry(_)))
+            .count();
+        assert_eq!(held, entries.len(), "every entry laid out once");
+        Laid {
+            config,
+            state: bytes(crate::state::FILE),
+            segments,
+            entries,
+            owners,
+        }
+    }
+
+    /// The segment and offset where entry `index` begins.
+    fn place_of(&self, index: u64) -> (usize, usize) {
+        for (seg, own) in self.owners.iter().enumerate() {
+            for &(start, _, owner) in own {
+                if owner == Owner::Entry(index) {
+                    return (seg, start);
+                }
+            }
+        }
+        panic!("entry {index} laid out")
+    }
+
+    /// What bytes `from..to` of segment `seg` belong to.
+    fn touched(&self, seg: usize, from: usize, to: usize) -> Vec<Owner> {
+        self.owners[seg]
+            .iter()
+            .filter(|(start, end, _)| *start < to && from < *end)
+            .map(|(_, _, owner)| *owner)
+            .collect()
+    }
+
+    /// A fresh disk holding the log, segment `seg` changed by `harm`.
+    fn disk(&self, seg: usize, harm: impl Fn(&mut Vec<u8>)) -> Sim {
+        let sim = Sim::new(81);
+        let fs = sim.fs();
+        fs.create_root().unwrap();
+        fs.create_folder(FOLDER).unwrap();
+        let write = |path: &str, bytes: &[u8]| {
+            let file = fs.create(path, FileOptions::PLAIN).unwrap();
+            file.write_at(0, bytes).unwrap();
+            file.flush().unwrap();
+        };
+        write(crate::state::FILE, &self.state);
+        for (at, (path, bytes)) in self.segments.iter().enumerate() {
+            let mut bytes = bytes.clone();
+            if at == seg {
+                harm(&mut bytes);
+            }
+            write(path, &bytes);
+        }
+        fs.flush_folder(FOLDER).unwrap();
+        fs.flush_folder("").unwrap();
+        sim
+    }
+}
+
+/// The entries from `from` the log reads back, by index, with their
+/// payloads.
+fn read_back(log: &Log, from: u64) -> Vec<(u64, Vec<u8>)> {
+    log.read(from)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.index, e.payload)
+        })
+        .collect()
+}
+
+/// One case of the sweep: segment `seg` of `laid` damaged over `from..to`
+/// by `harm`, the log opened from entry `start`. What it checks is the
+/// sweep's doc; a failure says the case.
+fn damaged_case(
+    laid: &Laid,
+    start: u64,
+    seg: usize,
+    from: usize,
+    to: usize,
+    harm: impl Fn(&mut Vec<u8>),
+) -> &'static str {
+    let case = format!("start {start}, segment {seg}, bytes {from}..{to}");
+    let last = laid.entries.last().unwrap().0;
+    let start_at = if start == 0 {
+        Position::START
+    } else {
+        laid.entries[start as usize - 1].0
+    };
+    let config = laid.config;
+    let want = |from: u64, through: u64| -> Vec<(u64, Vec<u8>)> {
+        laid.entries
+            .iter()
+            .filter(|(p, _)| p.index >= from && p.index <= through)
+            .map(|(p, payload)| (p.index, payload.clone()))
+            .collect()
+    };
+    let touched = laid.touched(seg, from, to);
+    let successor = laid.place_of(start + 1);
+    // Wholly before the entry after the start; begun before it.
+    let before = (seg, to) <= successor;
+    let begun_before = (seg, from) < successor;
+    // The first entry after the start the damage reaches.
+    let first_after = touched
+        .iter()
+        .map(|o| o.index())
+        .filter(|&i| i > start)
+        .min();
+    let sim = laid.disk(seg, harm);
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let damaged: Vec<(String, Vec<u8>)> = sim
+        .image()
+        .into_iter()
+        .filter(|(p, _)| p.starts_with("log/"))
+        .map(|(p, b)| (p, b.unwrap()))
+        .collect();
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    match Log::open(fs.clone(), state, config, start_at) {
+        Ok((log, opened)) => {
+            // It opens with everything, and reports damage it walked past.
+            assert!(
+                first_after.is_none(),
+                "{case}: opened though entry {first_after:?} after the start is damaged"
+            );
+            assert_eq!(opened.durable, last, "{case}: opened short");
+            assert_eq!(
+                read_back(&log, start + 1),
+                want(start + 1, last.index),
+                "{case}"
+            );
+            let walked = opened.walked_before_start.map(|n| {
+                laid.segments
+                    .iter()
+                    .position(|(p, _)| *p == segment_path(n))
+                    .unwrap()
+            });
+            let reported = touched
+                .iter()
+                .filter_map(|o| match o {
+                    Owner::Entry(i) if *i <= start && walked == Some(seg) => Some(*i),
+                    _ => None,
+                })
+                .min();
+            assert_eq!(
+                opened.before_start.map(|f| f.index),
+                reported,
+                "{case}: the chain before the start"
+            );
+            "opened"
+        }
+        Err(failed) => {
+            assert!(
+                matches!(failed.error, LogError::Damaged(_)),
+                "{case}: {}",
+                failed.error
+            );
+            let OpenFailed { state, .. } = *failed;
+            drop(state);
+            sim.restart();
+            let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+            match Log::accept_damage(fs.clone(), state, config, start_at) {
+                Err(refused) => {
+                    // A refusal is allowed for damage that begins before the
+                    // entry after the start; it changes nothing.
+                    assert!(
+                        begun_before,
+                        "{case}: refused ({}) damage after the start",
+                        refused.failed.error
+                    );
+                    assert!(refused.decided.is_none(), "{case}");
+                    let now: Vec<(String, Vec<u8>)> = sim
+                        .image()
+                        .into_iter()
+                        .filter(|(p, _)| p.starts_with("log/"))
+                        .map(|(p, b)| (p, b.unwrap()))
+                        .collect();
+                    assert!(now == damaged, "{case}: the refusal changed the log");
+                    "refused"
+                }
+                Ok((log, _, accepted)) => {
+                    // Wholly before the entry after the start: nothing after
+                    // the start given up. Reaching it or past it: kept every
+                    // entry before the first the damage reaches.
+                    let kept = if before {
+                        last.index
+                    } else {
+                        first_after.map_or(last.index, |t| t - 1)
+                    };
+                    assert_eq!(accepted.kept.index, kept, "{case}: kept");
+                    assert_eq!(accepted.marker, last.index, "{case}");
+                    // Nothing removed: every file's bytes are still in the
+                    // log's folder, under its own name or the one given.
+                    let now: Vec<Vec<u8>> = sim
+                        .image()
+                        .into_iter()
+                        .filter(|(p, _)| p.starts_with("log/"))
+                        .filter_map(|(_, b)| b)
+                        .collect();
+                    for (path, bytes) in &damaged {
+                        assert!(now.contains(bytes), "{case}: {path} lost");
+                    }
+                    drop(log);
+                    // The next open agrees, and reads back what was kept.
+                    sim.restart();
+                    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+                    let (log, opened) = Log::open(fs.clone(), state, config, start_at)
+                        .unwrap_or_else(|e| panic!("{case}: {}", e.error));
+                    assert_eq!(opened.durable.index, kept, "{case}: opened after");
+                    assert_eq!(read_back(&log, start + 1), want(start + 1, kept), "{case}");
+                    "accepted"
+                }
+            }
+        }
+    }
+}
+
+/// Accepting a loss never gives up an entry it could have checked, over
+/// every byte of a small log: each byte of every listed segment changed in
+/// turn, and then 16 bytes zeroed from each, with the start at a batch's
+/// first entry, inside a batch, and at a batch's (and its segment's) last.
+/// Damage wholly before the entry after the start: the open opens with
+/// everything (and reports what it walked past), or it refuses and the
+/// acceptance refuses too or keeps everything. Damage reaching it or past
+/// it: the acceptance keeps every entry before the first it reaches, and
+/// says so. A refusal changes nothing; an acceptance removes no byte; the
+/// open after it agrees and reads back every entry kept. `stride` thins
+/// the bytes for the default run.
+fn sweep_damage(stride: usize) -> BTreeMap<&'static str, u64> {
+    let laid = Laid::new();
+    let mut outcomes = BTreeMap::new();
+    for start in [4, 5, 6] {
+        for (seg, (_, bytes)) in laid.segments.iter().enumerate() {
+            for at in (0..bytes.len()).step_by(stride) {
+                let outcome = damaged_case(&laid, start, seg, at, at + 1, |b| b[at] ^= 0x5a);
+                *outcomes.entry(outcome).or_insert(0) += 1;
+                let end = (at + 16).min(bytes.len());
+                let outcome = damaged_case(&laid, start, seg, at, end, |b| b[at..end].fill(0));
+                *outcomes.entry(outcome).or_insert(0) += 1;
+            }
+        }
+    }
+    outcomes
+}
+
+#[test]
+fn accepting_a_loss_gives_up_no_entry_it_could_check_whatever_byte_is_damaged() {
+    let outcomes = sweep_damage(5);
+    eprintln!("{outcomes:?}");
+    for kind in ["opened", "refused", "accepted"] {
+        assert!(
+            outcomes.get(kind).copied().unwrap_or(0) > 0,
+            "no {kind}: {outcomes:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "long: every byte of the small log's three 1 KiB segments, changed and zeroed, for three starts (18,432 cases); run with --release"]
+fn long_accepting_a_loss_gives_up_no_entry_it_could_check_whatever_byte_is_damaged() {
+    eprintln!("{:?}", sweep_damage(1));
+}

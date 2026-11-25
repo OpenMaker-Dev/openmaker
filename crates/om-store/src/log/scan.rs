@@ -239,6 +239,11 @@ pub(crate) struct Scanner<'a> {
     /// The walk ended where a batch still had an entry to come, or where a
     /// batch's mark is and no valid header continues the log.
     broke: bool,
+    /// The walk ended between batches, where a batch header was looked for.
+    between: bool,
+    /// Where the anchor ends is known: the bytes where its framing places
+    /// its hash hold the anchor's hash (or the walk began after it).
+    placed: bool,
     /// Before the anchor, the hash of the last entry taken while the chain
     /// from the segment's header still holds; `None` once it stopped.
     chain: Option<[u8; 32]>,
@@ -266,6 +271,8 @@ impl<'a> Scanner<'a> {
             judge: None,
             anchor: None,
             broke: false,
+            between: false,
+            placed: true,
             chain: None,
             chain_fault: None,
             spare: Vec::new(),
@@ -283,8 +290,17 @@ impl<'a> Scanner<'a> {
         if self.next <= index {
             self.anchor = Some((index, hash, term));
             self.chain = Some(self.prev);
+            self.placed = false;
         }
         self
+    }
+
+    /// Whether the walk knows where the anchor ends, and so where the entry
+    /// after it begins: the anchor's bytes end with the anchor's hash where
+    /// its framing places it, or the walk began after the anchor. An anchor
+    /// whose length was damaged is placed wrong and does not end so.
+    pub fn anchor_placed(&self) -> bool {
+        self.placed
     }
 
     /// Whether the walk has not yet passed the entry it is anchored at.
@@ -297,6 +313,12 @@ impl<'a> Scanner<'a> {
     /// continued the log.
     pub fn broke(&self) -> bool {
         self.broke
+    }
+
+    /// Whether the walk ended between batches, where it looked for a batch
+    /// header (else inside a batch, where an entry was to come).
+    pub fn ended_between(&self) -> bool {
+        self.between
     }
 
     /// Walk under the open's rule after its firm position (see [`Judge`]).
@@ -497,6 +519,9 @@ impl<'a> Scanner<'a> {
                 [0u8; 32]
             }
             Some(Ok((stored, computed))) => {
+                if head.index == at {
+                    self.placed = stored == anchor_hash;
+                }
                 let holds = computed == Some(stored) && (head.index != at || stored == anchor_hash);
                 if holds {
                     self.chain = Some(stored);
@@ -724,6 +749,7 @@ impl<'a> Scanner<'a> {
             }
             (probe @ (Probe::Nothing | Probe::Marked), _) => {
                 self.broke |= matches!(probe, Probe::Marked);
+                self.between = true;
                 self.ended = true;
                 Ok(Event::End {
                     seg: self.seg,
