@@ -197,6 +197,432 @@ The seeded tests (`crates/om-store/src/state/tests.rs`) check each of
 these: every open against the copies each slot can hold, and every
 confirmed value against what the open returns.
 
+## 2. Pages and trees
+
+The trees of server-storage.md section 6.4, as `om_store::tree` and
+`om_store::page` build them. This is **tree format version 1**: the page
+layouts of 2.2 to 2.5 and the shape rules of 2.7. A change to either is a
+new version. The test `format_version_1_is_pinned`
+(`crates/om-store/tests/trees.rs`) pins the root hash a fixed sequence of
+edits gives, so that a change cannot go unnoticed.
+
+### 2.1 Keys and nodes
+
+A tree holds one key tree: nodes addressed by paths of byte strings
+(segments). The key of a path is each segment's bytes with `00` written as
+`00 ff`, followed by `00 01`. The root, the empty path, has the empty key
+and is not stored: it always exists and is always a list.
+
+Plain byte order of keys is the key tree's order
+([file-format.md](re/file-format.md) 3.6): a node before its children,
+siblings by the bytes of their segments, a shorter segment before a longer
+one it begins. A node's key is a prefix of every key below it, and no
+segment's encoding contains `00 01`, so the subtree of a node with key `k`
+is exactly the keys in `[k, k')`, where `k'` is `k` with its last byte
+(`01`) replaced by `02`. A subtree is one contiguous range, in depth-first
+order.
+
+A node is a **list** (kind 1, no value), a **value** (kind 2, possibly
+empty) or **both** (kind 3: a list that also carries a value). No file
+FileMaker wrote has the third kind (server-storage.md section 4); the
+store keeps it so that nothing is dropped.
+
+Bounds, checked for every edit before any of an entry is applied (an entry
+with an edit beyond them is refused whole, with the edit's number and the
+bound):
+
+| Bound | Value |
+|---|---|
+| encoded path of a node | at most 65,535 bytes |
+| value of a node | at most 65,535 bytes |
+| segments in a path | at most 64 |
+| level of an index page | at most 40 |
+
+The first two are the 64 KiB of server-storage.md section 6.11, taken as
+the largest a 16-bit length holds, so a page cannot state more. Pages are
+held to the others when read: a key of more than 64 segments, whether its
+page holds it whole or only its start, or an index page above level 40,
+is malformed (2.6). The depth bound is the store's own: an
+edit creates its missing ancestors (2.6), each a prefix of its path, so
+without it one 64 KiB path of empty segments would create 32,767 items
+totalling about 1 GiB of keys. With it, one edit creates at most 64 items
+of at most 64 KiB each.
+
+### 2.2 Pages
+
+Every page is 16,384 bytes:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | checksum (2.5) |
+| 8 | 8 | the page's own number |
+| 16 | H | the region: everything the page's hash covers |
+| 16 + H | 8 × P | page numbers the region refers to, in order |
+| 16 + H + 8P | rest | zero |
+
+The region begins with a 24-byte header:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | tree format version: 1 |
+| 1 | 1 | kind: 1 leaf, 2 index, 3 overflow |
+| 2 | 1 | level: 0 for leaves and overflow pages; an index page is one above its children (1 to 40) |
+| 3 | 1 | zero |
+| 4 | 2 | count: items (leaf), children (index) or data bytes (overflow) |
+| 6 | 2 | H, the region's length, this header included |
+| 8 | 2 | P, the number of page numbers after the region |
+| 10 | 6 | zero |
+| 16 | 8 | the index of the entry that wrote the page |
+
+Page numbers are kept out of the region, so that nothing a hash covers
+depends on where a server put a page.
+
+### 2.3 Leaf pages
+
+After the header, `count` items in key order, each:
+
+| Size | Field |
+|---|---|
+| 1 | the node's kind (2.1) |
+| 2 | K, the key's length (at least 2) |
+| 2 | V, the value's length (0 for a list) |
+| K + V | the key, then the value, when 5 + K + V is at most 4,096 (a quarter of a page) |
+
+An item larger than that **spills**: the page holds its first 1,024 bytes
+(of the key followed by the value), then the 32-byte hashes of the
+overflow pages that hold the rest, `ceil((K + V - 1024) / 16344)` of them.
+Their numbers are in the page's pointer array, item by item, in order.
+
+An item's **footprint**, what it takes of a page, is `5 + K + V`, or
+`5 + 1024 + 40n` when it spills with `n` overflow pages.
+
+### 2.4 Index pages and overflow pages
+
+An index page holds `count` children (at least one), each:
+
+| Size | Field |
+|---|---|
+| 32 | the child's hash |
+| 8 | the child's stamp: the index of the entry that wrote it |
+| 2 | L, the separator's length, for every child but the first |
+| L | the separator, when 2 + L is at most 4,096 |
+
+A separator spills by the rule of items: the page holds its first 1,024
+bytes and the hashes of its overflow pages. The pointer array holds the
+children's numbers first, then the separators' overflow pages, in order.
+A child entry's footprint is 48 bytes (hash, stamp and number), plus the
+separator's `2 + L` or `2 + 1024 + 40n`.
+
+Child `i` holds the keys from its separator (child 0: from its parent's
+lower bound) up to the next child's separator. A separator made by a
+leaf split (2.7) is the shortest prefix of the right side's first key `r`
+that is above the left side's last key `l`: `r` cut just after the first
+byte where the two differ, or, when `l` is a proper prefix of `r`, just
+after the byte of `r` that follows `l` (`l` = `7a 00 01`, `r` =
+`7a 00 01 61 00 01` gives `7a 00 01 61`). It need not be a whole key, and
+can end inside a segment, but as it begins a key it is a whole key or the
+start of one, with at most 64 segment ends and none followed by more
+bytes after the 64th; a page with any other separator is malformed.
+Separators of index pages are not made: they move up from a split or
+down into a join (2.7).
+
+An overflow page holds `count` data bytes after its header and refers to
+no page. The overflow pages of an item or separator hold the bytes after
+its first 1,024, 16,344 to a page, the last one holding the rest.
+
+A page fits when the footprints of its items or children total at most
+16,344 bytes (the page less its two headers).
+
+### 2.5 Hash and checksum
+
+A page's **hash** is SHA-256 over its region, bytes `16 .. 16 + H`: its
+kind, level and writing entry, its items, or for an index page its
+children's hashes, stamps and separators, and the hashes of its overflow
+pages. Page numbers, its own included, are outside it. A tree's root hash
+therefore covers the whole tree, content and shape, and two stores that
+place pages differently have the same root hashes.
+
+A page's **checksum** is the first 8 bytes, as a little-endian integer, of
+SHA-256 over the page's hash, then bytes `8 .. 16` (its own number), then
+the pointer array. With the rule that every byte after the pointer array
+is zero, every byte of the page is covered: the region through the hash,
+the numbers directly, the rest by being zero. Damage to a pointer is
+found in the page that holds it.
+
+Truncated SHA-256, rather than a CRC implemented in the crate, because:
+
+- the hash is computed on every read and every write anyway, and chaining
+  the checksum through it costs one more SHA-256 over at most a few
+  kilobytes, where a CRC would be a second pass over all 16 KiB. On the
+  development VM (no SHA instructions), SHA-256 of 16 KiB takes 39 µs;
+- it is not more code to get right. A CRC fast enough to matter needs
+  table-driven or carry-less-multiply code of the crate's own (no
+  third-party crate may be added for it);
+- 64 bits leave a chance of 2^-64 that a damaged page passes, against
+  2^-32 for CRC-32. A CRC's guarantee to find every short burst matters
+  little here: the parent's hash finds any change to the region with
+  certainty short of a SHA-256 collision, and a nonzero byte in the zero
+  fill is always found.
+
+### 2.6 Reading and writing
+
+**Reading.** A page is read by its number and the hash its parent holds
+(a root, by the number and hash that name the version). Before any of it
+is used, `om_store::page::Page::verify` checks, in order, and names the
+page in the error:
+
+1. the headers fit the page (otherwise *damaged*);
+2. the checksum matches and the bytes after the pointer array are zero
+   (otherwise *damaged*);
+3. the page names the number it was read at (otherwise *misplaced*, with
+   the number it names);
+4. its hash is the one the parent holds (otherwise *stale*: an intact page
+   that is not the version the parent names, as a lost write leaves);
+5. its content follows the format: lengths within the page and the
+   bounds, keys well formed, within 64 segments and in order, separators
+   that begin such keys and in order, stamps no later than the page's own
+   entry, the number of page references equal to P (otherwise
+   *malformed*).
+
+The tree then checks that a child has the level and kind its parent
+implies, was written by the entry its stamp names and, if a leaf, is not
+empty, and that an overflow page holds the bytes its item expects. A
+page the store cannot find is *missing*. Nothing is allocated by a size the bytes give before
+it is checked against the page size or the bounds, and no read recurses
+deeper than the tree's levels.
+
+A read touches only the pages on the way to what it returns: a lookup,
+range or walk the pages from the root to the items it returns and those
+items' overflow pages; a listing of children the keys of the items it
+passes and the children's own values; "changed since" index pages only
+(2.8). Every comparison with a stored key or separator uses the bytes its
+page holds first, and reads its overflow pages one at a time only while
+the bytes so far are equal to the other key; that is the one way a read
+reaches an overflow page it does not return. A reverse listing finds each
+child from the last key under it: when the child's own key is longer
+than the 1,024 bytes a spilled key keeps in its page, it reads that last
+key's overflow pages as far as the child's key goes, and no further.
+
+**Writing.** An entry applies its edits (2.7) to a working copy of the
+pages it reaches, reading the store and changing nothing in it. The copy
+keeps items and separators in their pages and compares them as reads do;
+it reads a key whole only for the two keys at a leaf split's boundary and
+the first and last keys a delete removes. Then, into the entry's unit of
+work of the page store (`om_store::page::EntryPages`), which the caller
+opens once for the whole entry, it writes every page of the working
+copy, children before parents, each stamped with the entry's index, and
+releases every page the old version reached and the new one does not
+(replaced by a copy, or dropped with everything under it); it returns
+the new root and commits nothing. A tree the entry makes starts empty
+and is always written, if only as one empty leaf. The unit names the
+trees too: the caller gives it each changed tree's new root and the
+trees the entry makes, drops and renames, and commits once; the store
+holds each tree's name and root and changes them only then. Within one
+unit a tree's root is given at most once (made, or given a new root),
+and only a page the unit wrote; a tree dropped is one that existed when
+the unit began and that the unit gave no root; the old root of a tree
+given a new one is released by the unit, either way. A unit that breaks
+any of this is refused whole, by the page file and by the store in
+memory alike. A failure at
+any point leaves the store as it was once the unit is dropped, so the
+entry can be applied again. An entry that changes an existing tree in
+nothing writes nothing and keeps its root. An entry's index must be
+above the last entry that changed the tree (the root page's), so stamps
+only grow. The page store's guarantees, including what clones need, are
+in the documentation of `PageStore` and `EntryPages`.
+
+### 2.7 The shape rules
+
+The shape of a tree, and so its root hash, is a function of the sequence
+of edits it was given, entry by entry, and of nothing else: not page
+numbers, timing, what is cached, or the order of a hash map. The rules
+below fix the shape, which pages an entry copies (so which carry its
+stamp), and which overflow pages are kept.
+
+Terms: a node *fits* when its footprint (2.3, 2.4) is at most 16,344
+bytes. A node is *underfull* below a quarter of that, 4,086 bytes. A
+node *shrank* in a primitive when its footprint after the primitive (and
+the fixes below it) is smaller than before. A *unit* is an item of a
+leaf or a child entry of an index page; the units of a node have
+positions 0 to `n - 1` in key order, and splitting *before* unit `s`
+puts units 0 to `s - 1` on the left and `s` to `n - 1` on the right. The
+child of an index page for a key is the child whose range holds it: the
+number of separators at or below the key.
+
+**Edits.** An entry's edits are applied in order, each as primitives:
+
+- *Put a node* at a path with key `k`: for each proper ancestor,
+  shallowest first, a missing one is set as an empty list (kind 1, no
+  value), and one that holds a value is changed to hold both (kind 3,
+  same value), as `om_hbam::OwnedNode::put` does; then the range
+  `[k 00, k')` is deleted (`k 00`: `k` followed by one zero byte; the keys
+  strictly under the path); then the node is set, unless the item with key
+  `k` already has that kind and value.
+- *Delete a subtree* at a path with key `k`: the range `[k, k')` is
+  deleted; for the root, every key.
+
+A primitive that would change nothing is skipped and touches no page:
+setting an item that already exists with that kind and value, or
+deleting a range that holds no key. The shape after a primitive is a
+function of the shape before it and the primitive.
+
+**Copies and stamps.** A page is copied into the working copy when a set
+or a kind change goes through it (from the root to the leaf), when a
+delete goes into it (the root, and each child it goes into), when it is
+one side of a join, and when a delete's last step (below) goes through
+it. Pages read only to decide something (whether a primitive changes
+anything, what a root's only child is) are not copied. At the end of an
+entry that changed anything the root is copied if it is not already. The
+pages written are the copies, and the new pages splits and joins make,
+still in the tree at the end of the entry; each carries the entry's
+index.
+
+**Overflow pages.** An item set by a primitive is written anew, and if it
+spills its overflow pages are new pages stamped with the entry. Every
+other item keeps the overflow pages it has, through copies, splits,
+joins and a change of kind. A separator made by a leaf split is new, and
+gets new overflow pages if it spills; a separator that moves up or down
+keeps its own.
+
+**Set an item.** Descend from the root to the leaf, at each index page to
+the child for the key. Insert the item in its leaf where it keeps the
+keys in order, or replace the item with that key (a kind change only
+changes the kind). Then fix the path bottom-up, each index page fixing
+the child the primitive went through (below), then the root rule.
+
+**Fixing a child.** A child that does not fit is split (with its hint, if
+it has one). Otherwise, if it shrank and is underfull or empty: when its
+parent has another child, it is joined (below); when it is empty and its
+parent's only child, it is removed (and the parent is then empty); an
+underfull only child is left as it is.
+
+**Delete a range** `[lo, hi)`. Before it, note the smallest and the
+largest key in the range. Starting at the root, in each index page: the child `i` for
+`lo`, and the last child `j` whose range starts below `hi` (the number of
+separators below `hi`; the last child when the range has no end).
+Children strictly between them are removed whole, unread, with their
+separators; child `j` keeps its separator, so child `i`'s range reaches
+to it. Then the primitive goes into child `i` if it holds a key in the
+range, and into child `j` (when `j > i`) if it does. In a leaf, the keys
+in the range are removed. On the way back, child `i` is fixed if the
+primitive went into it, then child `j` (the same page, wherever fixing
+`i` moved it) if the primitive went into it, unless fixing `i` joined it
+into `i`. Then the root rule. Last, the paths from the root to the leaves
+for the two keys noted (each found as in a set) are copied, so that the
+pages covering the deleted keys' places carry the entry's stamp (2.8).
+
+**Split.** A node of `n` units that does not fit is split before unit
+`s`, `1 <= s < n`, and each side is split again in the same way, left
+side first and without a hint, until every part fits:
+
+- the *hint* `h` exists only in a set, and is found for each node on the
+  set's path from the leaf up. In the leaf, `h` is the position of the
+  item set, after its insertion. In an index page, `h` exists only when
+  fixing the child the set went through split that child: then `h` is
+  the child's own position plus one, which is, in the index page's
+  children after the child is replaced by the parts of its split, the
+  position of the second part, however many parts there are. When the
+  fix joined the child or left it as it was, the index page has no hint.
+  A set goes through one child of each index page, so each has at most
+  one hint; the root has its own, found the same way. A delete gives no
+  hint. When there is a hint, `1 <= h < n`, units 0 to `h - 1` take at
+  least seven eighths of 16,344 bytes (14,301), and both sides fit, `s`
+  is `h`. Items appended in key order therefore fill their pages;
+- otherwise `s` is where the two sides' footprints are nearest equal, the
+  smallest such `s` on a tie.
+
+The footprints of an index page's sides count each child entry, and the
+separators of every child but each side's first; the separator of child
+`s` moves up to the parent as the separator of the right side. A leaf's
+right side gets a new separator, made from the last key on its left and
+its own first key (2.4).
+
+*Example* (pinned by the test
+`an_index_page_splits_at_the_second_part_of_its_split_child`). After the
+empty tree of entry 1, entry 2 puts 21 empty lists at one-segment paths
+whose segment is 3,600 bytes of `42` and one byte, 1 to 21 in that order.
+An item takes 3,608 bytes, so a leaf holds four: the fifth item splits
+the root leaf before position 4 (the four before take 14,432 bytes)
+under a new index root, and each later fifth item splits the last leaf
+the same way. Each separator is 3,601 bytes, the right side's first key
+cut after its last segment byte, so a child entry after the first takes
+48 + 2 + 3,601 = 3,651 bytes. The 21st
+item splits the fifth leaf (position 4) into parts at positions 4 and 5,
+and the index, now of six children and 18,303 bytes, does not fit. Its
+hint is 5: positions 0 to 4 take 5 × 48 + 4 × 3,603 = 14,652 bytes, at
+least 14,301, and both sides fit, so it splits 5 and 1 under a new root.
+At its middle it would have split 3 and 3.
+
+**Join.** A child is joined with its right sibling, or with its left one
+when it is the last child. The joined node takes the place of the left
+one of the two. Two leaves join into the left one's items followed by
+the right one's, and the separator between them goes. Two index pages
+join with that separator moved down between their children, unless one
+of them has no children, when the other is the result and the separator
+goes. A joined node that does not fit is split, without a hint. A joined
+node that is empty is joined again by the same rule, or removed when it
+is its parent's only child, so no page below the root is ever empty.
+
+**Root rule.** After each primitive, repeatedly: a root that does not fit
+is split, with the root's hint in a set, and its parts become the
+children of a new root one level up; an index root with no child becomes an empty
+leaf; an index root with one child is replaced by that child, whether or
+not the entry copied either of them. It stops at a leaf, or at an index
+root with more than one child that fits. An empty tree is one empty leaf.
+
+**Why it is deterministic.** Every choice above is a function of the
+tree's content (keys, values, kinds, separators, stamps and levels) and
+of the primitive. Page numbers are only used to read a page, never to
+choose anything; the working copy is kept in vectors in key order; and
+the code has no clock, randomness or hash map.
+
+### 2.8 Stamps and "changed since"
+
+Each child entry carries the index of the entry that wrote the child, and
+every page written by an entry carries that index, so the stamp of a
+child is never below the last entry that changed anything in the child's
+range of keys. That holds because a primitive copies every page on its
+way to what it changes, every page a split or join makes is new, and a
+delete copies the paths to the pages whose ranges grow over the deleted
+keys' places (2.7).
+
+`Tree::changed_since(path, n)` answers whether anything at or under
+`path` changed after entry `n`. It reads index pages only: at each level,
+of the children whose ranges overlap the subtree's range `[k, k')` (from
+the child for `k` to the last child whose range starts below `k'`), those
+stamped after `n` either lie wholly inside the range (the answer is yes),
+or are at one of the range's two ends, where an index page is looked into
+and a leaf counts as a change without being read. Whether a child lies
+inside is decided by comparing its separators with `k` and `k'`, which
+reads a spilled separator's overflow pages only while its bytes are equal
+to the key. It reads at most two pages per level, and no leaf.
+
+The answer is never no when something changed. It can be yes when
+nothing under the path changed but another path in a leaf at one of the
+range's ends did, or when a deletion in such a leaf was of keys outside
+the path. For the root path it is exact: yes exactly when an entry after
+`n` changed the tree.
+
+### 2.9 Limits
+
+- Pages are not compressed, and leaves keep each key whole (no prefix
+  compression), so deep paths repeat their ancestors' segments in every
+  key.
+- Items are not split across leaves: a large value is one item, with its
+  overflow pages.
+- An index page with spilled separators can hold as few as about 14
+  children, so a tree whose neighbouring keys share prefixes of more than
+  about 4 KiB is tall.
+- The "changed since" answer has the granularity of the leaves at a
+  range's ends (2.8).
+- A tree this code did not write can hold an empty leaf below the root,
+  which these rules never make. Every read and edit that reaches it
+  refuses it; an edit elsewhere in the tree keeps it, and only
+  `om_store::tree::check`, which reads every page, finds it.
+- Keys longer than 1,024 bytes are compared and listed with reads of
+  their overflow pages, as far as the comparison or the child's key goes
+  (2.6).
+
 ## 3. The log
 
 `<store>/log/` (server-storage.md section 6.3), read and written by
@@ -819,3 +1245,902 @@ oldest entry needed afterwards.
 - **The open batch** is at most what is left of the current segment and one
   more segment.
 - Every listed segment is kept open while the log is.
+
+## 4. The page file
+
+`<store>/pages` (server-storage.md sections 6.4 to 6.8), read and
+written by `om_store::pagefile`. Its first 16 KiB are four superblock
+slots of 4,096 bytes; page `n` (from 1) is the 16,384 bytes at byte
+`n * 16384`. The pages of the trees (section 2), the meta streams of
+checkpoints (4.3) and free pages share the same numbers.
+
+### 4.1 Versions
+
+What the page file holds is a line of **versions**, each a pair (entry,
+step), ordered by entry, then step:
+
+- the changes an entry makes are version `(entry, 0)`: every page a tree
+  writes for the entry is born at it;
+- the pages a checkpoint writes for itself (its meta stream) are born at
+  `(entry, number)`, where `entry` is the last entry it covers and
+  `number` the checkpoint's number. A checkpoint **is** version `(entry,
+  number)`: its trees, and its own meta stream.
+
+A page leaves the newest version when a tree releases it (or the subtree
+it was in) for an entry `E`: it **dies** at `(E, 0)`. Between its birth
+and its death every version reaches it; no version at or after its
+death does. Two checkpoints at the same entry are told apart by their
+steps, and a checkpoint's meta stream is reached by that checkpoint's
+version alone (the next checkpoint's version is at or after the meta
+stream's death).
+
+### 4.2 A superblock copy
+
+Each copy is written at the start of its slot; the rest of the slot is
+not read. Slots 0 and 2 form one pair, slots 1 and 3 the other: a
+checkpoint's two copies are in one pair, 8 KiB apart, so that a run of
+damaged bytes shorter than 4 KiB reaches at most one copy of each
+checkpoint.
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMPAGES` followed by a zero byte |
+| 8 | 2 | superblock format version, 1 |
+| 10 | 2 | zero |
+| 12 | 4 | body length `L`, 96 in version 1 |
+| 16 | 8 | the checkpoint's number |
+| 24 | `L` | body |
+| 24 + `L` | 32 | SHA-256 of bytes 0 to 24 + `L` |
+
+The body, version 1:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | the index of the last entry the checkpoint covers |
+| 8 | 8 | that entry's term |
+| 16 | 32 | that entry's hash |
+| 48 | 1 | the tree format version of its trees (section 2) |
+| 49 | 7 | zero |
+| 56 | 8 | the number of the first page of its meta stream |
+| 64 | 32 | that page's hash (section 2.5) |
+
+A copy is **valid** when the mark, the length and the hash check, the
+zero fields are zero, and neither the number nor the meta page is 0. A
+valid copy of a newer superblock or tree format version makes the open
+fail rather than pass over it. A copy whose first 8 bytes are zero is a
+slot never written, or cleared.
+
+A checkpoint's **number** is one more than the highest number of a valid
+copy the last open saw, or of the last checkpoint written since. A number
+whose copies never reached the disk can be used again; an open overwrites
+every other copy that could hold it first (4.6), and a checkpoint is
+identified, where it matters, by its number and its meta stream's first
+page together (4.4, the predecessor). A valid copy at the highest number
+there is (2^64 - 1) makes the open fail before it writes anything: no
+checkpoint could follow it.
+
+### 4.3 The meta stream's pages
+
+A checkpoint's meta stream (4.4) is a byte stream kept in pages of the
+overflow kind (section 2.4), each stamped with the checkpoint's number:
+
+- **data pages** hold the stream, 16,344 bytes each except the last;
+- **directory pages** each hold, as their data, a reference to the next
+  directory page (its number and hash, 8 + 32 bytes; all zero for the
+  last) and then 1 to 407 references to data pages, in order.
+
+The superblock names the first directory page. Each page is read with
+the hash that names it (section 2.5), so every byte of the stream is
+checked before it is used; a stream longer than the file's pages, one
+that names a page twice, or a directory page of another kind or length,
+is malformed, so a stream can never take more memory than the pages it
+occupies. The stream is written whole at every checkpoint: a checkpoint
+shares no meta page with another.
+
+### 4.4 The meta stream, version 1
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMMETA` followed by two zero bytes |
+| 8 | 2 | meta format version, 1 |
+| 10 | 6 | zero |
+| 16 | 8 | the checkpoint's number |
+| 24 | 48 | the entry: index, term (8 each) and hash (32) |
+| 72 | 1 | the tree format version |
+| 73 | 7 | zero |
+| 80 | 8 | the predecessor's number: the newest checkpoint on disk when this one was written; 0 for none |
+| 88 | 16 | the predecessor's version: entry and step (8 each); zero for none |
+| 104 | 40 | the predecessor's meta stream: its first page's number (8) and hash (32); zero for none. With the number, this identifies the predecessor at open |
+| 144 | 8 | `end`: the file's pages, page 0 counted; pages `1..end` exist |
+
+Then, in order:
+
+1. **The trees**: a count (4 bytes), then for each tree in the order of
+   its name's bytes, each name once: the name's length (1 byte, 1 to
+   255), the name, and the root's page number (8) and hash (32). The page
+   file gives names no meaning; the engine names a tree per hosted file
+   and one for the rest of the state (server-storage.md 6.2). At most
+   65,536 trees: an open reads and checks every root, one 16 KiB page at
+   a time, and holds the table (at most 19 MiB) in memory, so a store at
+   the limit opens with any cache size.
+2. **The restore points listed**: a count (4 bytes), then for each: the
+   name's length (1 byte, 1 to 64), the name (UTF-8), the checkpoint's
+   number (8), its entry (48), its version (16), and its meta stream's
+   first page, number (8) and hash (32). A checkpoint kept as a restore
+   point lists itself with page 0 and a zero hash: its own stream is the
+   one being read. At most 65,536.
+3. **The restore points retiring**: the same layout. These are the
+   restore points the predecessor lists and this checkpoint does not,
+   told apart by their versions, never by their names (a name dropped
+   and kept again names a new restore point, and the old one retires by
+   this rule); they are kept while the predecessor is on disk.
+4. **The free pages**: a length (8 bytes), which is `ceil(end / 8)`, and
+   a bitmap: bit `n % 8` of byte `n / 8` is set when page `n` is free.
+   Page 0 and bits past `end` are clear.
+5. **The dying pages**: a count (8 bytes), then 81 bytes each, in page
+   order:
+
+   | Offset | Size | Field |
+   |---:|---:|---|
+   | 0 | 8 | the page's number |
+   | 8 | 32 | its hash |
+   | 40 | 16 | its death: entry and step |
+   | 56 | 1 | bit 0: its birth is known; bit 1: it was dropped with what it refers to, which has not been taken down yet; other bits zero |
+   | 57 | 16 | its birth, when known; zero otherwise |
+   | 73 | 8 | its hold: the number of the first checkpoint whose map records it settled, when an older map on disk records it unsettled; 0 for none (4.5) |
+
+6. **The shared pages**: a count (8 bytes), then 28 bytes each, in page
+   order: the page's number (8), how many trees reach it (4, at least 1),
+   and the latest version (16) at which a tree stopped reaching it.
+
+The stream ends there. Every count is checked against the bytes left
+before anything is allocated for it; a dying page born at or after its
+death, a dying or shared page that is free or outside `1..end`, records
+out of order, or a root, meta page or restore point outside `1..end` make
+the stream malformed. Every page the meta stream occupies must be in use
+in its own map, and so must every tree root.
+
+**The map** (items 4 to 6) is the state of the file's pages at the
+checkpoint's version. A page that is neither free nor dying is in use: a
+page of the checkpoint's trees, of its meta stream, of an older
+checkpoint's meta stream that is still dying, or reached by a dying page
+that has not been taken down yet. Pages that units of later entries had
+taken when the checkpoint was written are recorded free; the map is
+rebuilt for them when those entries are applied again (4.7).
+
+### 4.5 The map's rules
+
+- **Reuse.** A dying page becomes free when it is **settled** (its birth
+  is known and, if it was dropped, its references taken down), no **kept
+  version** lies in `[birth, death)`, and its hold is at most the lowest
+  number of a checkpoint on disk. The kept versions are the two
+  checkpoints on disk (and the one being written), every restore point a
+  superblock on disk lists (a checkpoint's own list and, while its
+  predecessor is on disk, the retiring list), and the pins. A pin is of
+  the trees at an entry, `(entry, 0)`: it keeps no meta page (birth step
+  above 0), so it takes the roots of its version as it is taken and
+  keeps them: from memory for the newest version, the newest
+  checkpoint's and a version another pin holds; from the meta stream of
+  an older checkpoint or a restore point, read while the I/O lock is
+  held, which a reclaim, a checkpoint and a restore point's drop hold
+  too, so that none of them frees, reuses or retires those pages first. A pin whose roots cannot be had (the
+  version a checkpoint is writing, a meta stream that does not read
+  back) is refused. A birth not known yet counts as the earliest.
+- **Settling** needs the page's bytes: its birth is its stamp (section
+  2.2), and an index page's children carry theirs; a dropped page's
+  references are what `Page::references` lists. The bytes are at hand
+  for a page not written yet; otherwise they are read, a page at a time,
+  by `PageFile::reclaim`, which takes at most a given number of dying
+  pages per call, and by a reservation or a checkpoint short of free
+  pages. A reclaim reads a dying page from the file, never from the
+  cache, so whether its read fails does not depend on what readers
+  cached; a read that fails leaves the page dying and unsettled, and
+  what it refers to untouched, is reported, and is met again by the next
+  pass, which goes on past it to the other pages. (A read the trees make
+  while applying an entry may still be served from the cache, and so
+  miss a read error a cold read would meet; that makes the apply fail or
+  not, never the map different.)
+- **Holds.** A map on disk can record a page unsettled, or in use below a
+  dropped page it records unsettled. Opening that checkpoint will need
+  the page's bytes again, so when the running process settles such a page
+  it sets the hold to the next checkpoint's number, and the page is not
+  reused until every checkpoint on disk is at least that one: two
+  checkpoints later. The pages a held page refers to are held the same
+  way when they settle in turn: such a map records them in use below it.
+- **Shares** (section 6.8, Rodeh's method). A page reached by more than
+  one tree has a count; a page without a record is reached by one. A
+  clone raises its root's count. A unit that copies a page whose count is
+  above 1 (counting what the unit's earlier releases raise) reads the
+  page and raises the count of everything it refers to, since the copy
+  refers to it too, and lowers the page's own. A page whose count reaches
+  0 dies, at the latest version at which a tree stopped reaching it; if
+  it was dropped, what it refers to loses one count each when it is
+  taken down, and dies the same way at 0.
+- **A function of the changes.** The map after a sequence of calls from a
+  checkpoint is a function of the map the checkpoint names and the calls:
+  the units committed (in order), the reservations, the checkpoints, the
+  pins and the reclaims. It takes nothing from a clock, randomness, the
+  order of a hash map, or the page cache: a commit and a reclaim learn
+  births and references only from pages not written yet and from the
+  pages a reclaim examines (whose bytes are the same whether they were
+  cached or read), and pages are taken lowest number first. So applying
+  the same entries twice from the same checkpoint, with the same
+  checkpoints, pins and reclaims between them, gives the same map, byte
+  for byte, and the same page numbers. Recovery applies the entries
+  after the checkpoint with the pins gone; the first run's pins and
+  reclaims may have differed, and the map recovery rebuilds is then
+  another correct one for the same trees.
+
+### 4.6 Writing and reading
+
+- **Creation.** Checkpoint 1, at entry 0 with no trees, is written to
+  `pages.new` (its superblock copies in slots 0 and 2, its meta stream in
+  pages 1 and 2), which is flushed, renamed to `pages`, and the store
+  folder flushed. So `pages` exists only whole. A `pages.new` left by a
+  creation that did not finish is removed first.
+- **The callers' contract.** One caller applies entries, in order, one
+  entry at a time: it reserves the entry, runs the entry's one unit of
+  work (every tree's pages and releases, the trees made, dropped and
+  renamed, and each changed tree's new root, committed once), and is done
+  with the entry before it starts the next; it may reserve later entries
+  ahead. Another caller checkpoints and reclaims; readers come at any
+  time. The page file refuses what falls outside this, and makes each
+  check in the same hold of its lock as the change the check guards:
+  1. an entry has one open reservation at a time: a second, while the
+     first is open, is refused (one after the first is dropped is not);
+  2. an entry has one unit of work, and one unit is open at a time: a
+     unit while another is open is refused, and so is one for an entry
+     that has committed one (or one before it); a unit dropped, or whose
+     commit was refused, may be begun again;
+  3. a reservation is checked, its pages promised and it is opened in one
+     hold, so a checkpoint sees it open or it sees the checkpoint's entry
+     fixed;
+  4. a checkpoint at `E` fixes `E` at its first check, in that check's
+     hold: it is refused while a reservation for an entry at or before
+     `E` is open, and from then until it is installed or fails, a
+     reservation, unit or commit at or before `E` is refused; a unit of a
+     later entry committed before it plans refuses it. So it covers every
+     unit committed at or before `E` and none after. A refusal, not a
+     wait: the two callers may be one thread, and a covered unit arriving
+     late is a defect of the caller to be reported, not a race to be
+     hidden;
+  5. every way out of a checkpoint clears what it fixed, an unwind
+     included; a checkpoint left by a panic makes the page file refuse
+     every later write until it is opened again, since its plan may have
+     changed the map in memory;
+  6. the page file holds each tree's name and root, and only a unit's
+     commit changes them. A root a unit names, for a tree it makes or
+     gives a new root, must be a tree's page (not an overflow page) the
+     unit wrote, and a tree's root is given at most once in a unit; a
+     tree given a new root must have had its old root released by the
+     unit (either way), and a page the unit releases that is a tree's
+     root must be the old root of a tree it gives a new one; a tree
+     dropped is one that existed when the unit began and that it gave no
+     root, and the page file releases the root it holds for it; a page
+     released that is still in memory must have the hash it is released
+     with. A unit that breaks any of this is refused whole;
+  7. the restore point a checkpoint keeps counts in the floor (4.8) from
+     its first check, and a checkpoint that keeps one is refused while
+     any reservation is open.
+
+  Since a unit of a later entry committed between a checkpoint's first
+  check and its plan refuses the checkpoint (4), and a keep is refused
+  while any reservation is open (7), the caller that checkpoints has the
+  caller that applies take no new entry for the moment of a checkpoint's
+  first check and plan, and holds no reservation open when it keeps a
+  restore point; otherwise both refusals repeat for as long as the
+  applier does not pause.
+- **A checkpoint** of the newest version, at entry `E` (every unit
+  committed so far is of `E` or earlier), of the trees as the page file
+  holds them: it takes no roots from its caller. Before it writes
+  anything it reads back from the file every tree's root that is not in
+  memory, and checks it, and is refused, naming the tree, when one does
+  not read back: its copies replace the older checkpoint's, so the
+  newest must be usable first, or both checkpoints left on disk would
+  name a root that does not read back. The writer keeps every limit the
+  reader enforces
+  (trees, restore points, names, numbers), and the meta stream goes
+  through the reader's own decoding before any byte of it is written.
+  Short of free pages for its meta stream, it reclaims first.
+  1. the pages the roots reach that are only in memory are found (a page
+     on disk never refers to one in memory); a page in memory of the
+     newest version that no root reaches (a unit wrote a page no tree
+     names) refuses the checkpoint, with nothing written;
+  2. the dying pages in memory that were dropped are taken down (after a
+     restart only the disk is left to read them from), the newest
+     checkpoint's meta pages die at the new version, and the meta stream
+     is laid out in pages taken from the free ones (growing the file if
+     it must, drawing on the reserve; 4.8);
+  3. the tree pages and the meta pages are written in page order, in
+     runs of up to 64 pages, and the file is flushed;
+  4. the superblock copy is written into the first slot of the pair the
+     newest checkpoint does not hold, and flushed;
+  5. then into the second slot of that pair, and flushed. The checkpoint
+     that pair held is retired, and so is every restore point only it
+     listed.
+
+  A crash before step 4 leaves both checkpoints on disk as they were:
+  step 3 wrote only pages that neither reaches nor their maps need
+  (4.5). A crash during step 4 leaves the first slot holding the older
+  checkpoint's copy, a torn copy, or the new one; the second slot holds
+  the older checkpoint's other copy. A crash during step 5 leaves the new
+  checkpoint's first copy whole, with its pages flushed before it. A
+  write or flush that fails makes the page file refuse every later write
+  until it is opened again (section 6.12); a refusal writes nothing.
+- **An open** (section 6.7, step 2) flushes the store folder and reads
+  the four slots one at a time; a slot the device fails to read is passed
+  over. Of the two highest numbers with a valid copy, newest first, it
+  takes the first checkpoint whose meta stream reads back, decodes, and
+  agrees with its superblock (number, entry, tree format), and whose
+  tree roots read back with the hashes it names, are not overflow pages,
+  were written at or before its entry, and are in use in its map. A
+  device read error or bytes that do not check pass the checkpoint over,
+  with the reason; any other failure of a read (the process stopping)
+  fails the open. Then, before it returns:
+  1. the checkpoint's copy is written into both slots of its pair, each
+     flushed: the device may not hold a copy the system's cache showed
+     (an earlier process's failed write or flush), and a crash during a
+     checkpoint's step 5 leaves an older copy in the second slot;
+  2. in the other pair, if a slot holds a valid copy of the predecessor
+     its meta stream names, that copy is written into the other slot of
+     the pair when that slot does not hold it already, and flushed;
+     otherwise each slot that is not blank is cleared (zeros over a
+     copy's length), and flushed. Either way a slot that held anything else (a newer
+     checkpoint passed over, whose pages the store will now reuse; a
+     stale copy; bytes that could not be read) is overwritten before any
+     page is: such a checkpoint must never be taken later;
+  3. if the file is shorter than the map's `end`, it is extended to it
+     and flushed.
+
+  The predecessor is the checkpoint whose number and meta stream the
+  chosen one names, and is kept only when a copy of it was found. The
+  open frees nothing. Applying the entries after the checkpoint again
+  (section 6.7, step 4) then frees what normal running frees (4.8).
+- **Reading a page** returns it from memory when no checkpoint has
+  written it yet, from the cache when the cache holds that number with
+  that hash, and otherwise reads the 16 KiB at its place and checks them
+  with `Page::verify` against the hash its parent names. A number 0 or at
+  or past `end` is missing; a read that fails, or a file that ends inside
+  the page, is reported as unreadable (with the bytes read); bytes that
+  do not check are reported as damaged, misplaced, stale or malformed
+  (section 2.5). Nothing that does not check is ever returned.
+
+### 4.7 What a crash, a fault and a restart leave
+
+- **The two checkpoints on disk are whole**, and so is every restore
+  point a superblock on disk lists: a page is reused only when no kept
+  version reaches it (4.5), and a checkpoint's own meta stream is kept by
+  its version. When the newest checkpoint's superblock or roots cannot be
+  checked, the open takes the one before it, whose pages and whose log
+  (section 6.7, "What is kept") are all there.
+- **Pins are gone after a restart**; what the superblocks on disk name is
+  what is kept. The pages a pin kept are free or dying in the maps on
+  disk, and are reused once no kept version reaches them.
+- **The map is never applied twice.** The map on disk is the one of its
+  checkpoint's version; the changes of later entries are in memory only,
+  and are made again, once, when those entries are applied after the
+  restart. A page those entries had taken is free in the map on disk,
+  and a page they had released is in use there.
+- **A page a failed checkpoint wrote** was free in both checkpoints on
+  disk and needed by neither map (4.5), so a crash or a failed flush at
+  any step costs at most that checkpoint.
+- **A device that drops or misplaces a write it reported done** can leave
+  a checkpoint whose superblock is valid and whose deeper pages are not
+  what it names. Those pages fail their checks when read (section 6.12:
+  page damage, found when a page is read), and the open does not go back
+  to an older checkpoint for them.
+
+### 4.8 Space
+
+- **The file grows** in steps of at least 256 pages (4 MiB, configured),
+  or an eighth of its size when that is more, up to 65,536 pages (1 GiB)
+  a step, through `File::allocate`, so that the space is taken when the
+  file grows and a later write into it cannot fail for lack of space.
+- **Reservations.** Before an entry is appended, the caller reserves the
+  pages applying it can take (section 6.5). A reservation succeeds when
+  the free pages, less those already promised to other reservations,
+  cover it and the **floor**; short of them, it first reclaims (one pass
+  over the dying pages at most), then grows the file. The floor is room
+  for two checkpoints' meta streams of the largest size the next
+  checkpoints can need: the trees that exist now, the restore points of
+  the newest checkpoint together with those listed for the next (a
+  dropped point is still on disk, so a drop does not lower the floor,
+  and a reopen, which lists them again, does not raise it) and one more,
+  and a map in which every page of the file is dying (81 bytes a page,
+  more than a shared page's record or a free bit). Two, because the next
+  checkpoint retires nothing when the other pair is empty, and the one
+  after frees the first's meta stream only once it is on disk. From a
+  checkpoint's first check until it is installed or fails, the point it
+  keeps counts too. Recovery needs this: a reopened page file never
+  judges an entry against a higher floor than the one the running page
+  file judged that entry's reservation against. A reopen takes a
+  checkpoint `C` on disk and judges the entries after `C`'s entry. Each
+  such entry's reservation was judged either while `C` was the newest
+  checkpoint (`C`'s points are among those counted, and drops since do
+  not lower the count), or while `C` was being written, from its first
+  check on (its kept point counted then), or before `C`'s first check:
+  then the reservation was open at that check, so `C` kept no point (a
+  keep is refused while a reservation is open) and lists only points
+  counted already. Of the rest of what the running page file knows and a
+  reopened one does not, pins and the reclaim cursor do not enter the
+  floor, and the map's end, which the running file may have grown past
+  the checkpoint's, only raises the running floor; the trees differ only
+  by those made and renamed by the entries in between, whose room their
+  reservations moved into the floor (below). The cases this does not
+  cover are under "Recovery fits". Commits, the taking down of dropped
+  subtrees and reclaims never make a map larger than one in which every
+  page is dying, so the room stays enough whatever is applied meanwhile;
+  it is about 1% of the file. An ordinary entry also leaves the
+  **reserve** (256 pages by default), which recovery, a follower's
+  entries and the discard of a group may take. Making a tree takes its
+  root page and a fixed 4 pages of room for its record in the tables
+  (one more record adds at most a data page and a directory page to each
+  of the two meta streams), 5 pages to reserve; a rename takes 4. The
+  charge is fixed so that an entry takes the same pages each time it is
+  applied (`Reservation::taken` counts it). When the file cannot grow
+  enough, the reservation is refused with "full" and nothing is
+  reserved: the store keeps reading and can checkpoint.
+- **Recovery fits, within what is proved here.** Applying the entries
+  after a checkpoint again frees exactly what normal running frees: a
+  page that leaves the newest version is freed at once when it never
+  reached the disk and no kept version reaches it, and the rest when a
+  reclaim, a reservation or a checkpoint settles it. When the replay
+  takes no checkpoint the first run did not, the versions kept during
+  recovery are a subset of those the first run kept at the same point
+  (the pins are gone; the checkpoints and restore points are those of
+  the superblocks on disk, which the first run kept too), so no page
+  recovery holds was free in the first run, and the file the first run
+  grew is still there. So, for the caller 4.6 describes, when the store
+  is reopened on the newest checkpoint on disk or on the one being
+  written, each entry was reserved once (not extended), and the replay
+  takes no checkpoint the first run did not take, recovery, reserving
+  exactly the pages each entry took (`Reservation::taken`) against a
+  floor no higher than the one the first run judged it against (above),
+  never needs more free pages than the first run had. Three cases are
+  not covered ([#734](https://github.com/OpenMaker-Dev/openmaker/issues/734));
+  recovery may take the reserve (256 pages by default) for them, and
+  beyond it a replay is refused as full:
+  - a reopen that falls back to the older checkpoint because the newest
+    cannot be read: the older one can list restore points the newest
+    retired, which the running floor no longer counted;
+  - an entry that was extended (`Reservation::extend`): the replay
+    reserves the entry's whole count at its start, while the first run
+    was judged for the extension later, after the entry's own units had
+    freed pages;
+  - a replay that the budget of pages waiting for a checkpoint forces to
+    checkpoint where the first run did not (the first run reserved
+    entries ahead, before the pages that fill the budget were written):
+    that checkpoint keeps pages the first run freed at once.
+- **The configuration** is checked when the page file is created or
+  opened: a growth step of 1 to 65,536 pages, a budget of at least one
+  page, a reserve of at most 2^32 pages, so that no sum the page file
+  makes with them can overflow.
+- **Failures latch.** After a failed write or flush, and after an
+  allocation that failed other than for a full disk (an allocation can
+  write), every later write, growth and checkpoint is refused until the
+  page file is opened again. A full disk refuses a growth and leaves the
+  page file as it was.
+- **What an entry may take.** `pagefile::entry_bound(edits, height)` is
+  an upper bound for tree format version 1: a put at depth `d` is at
+  most `d` sets and one range delete, a delete one range delete; at each
+  level a set copies a page and splits off at most one part, and a range
+  delete reaches at most the two pages at its ends, a sibling for each to
+  join with, and a part each join splits off; the levels are the tree's
+  height plus at most `1 + log2(sets)` new ones; leaf splits and joins add
+  the overflow pages of a new separator, and new items theirs. The bound
+  is loose, and looser for larger entries: one put of a node at depth 1
+  into a tree of height 3 is bounded by 45 pages, one at depth 3 by 82,
+  and either writes 3; a thousand puts at depth 3 are bounded by about
+  200,000 pages. The exact count is a
+  function of the tree and the edits (section 2.7), so a reservation
+  reports the pages its units took (`Reservation::taken`): an entry can
+  carry it, and recovery and followers reserve exactly that.
+  `Reservation::extend` adds to a reservation whose units ran out (the
+  apply that ran out changed nothing).
+- **Pages waiting for a checkpoint** have a budget (16,384 pages, 256 MiB,
+  by default): once as many pages of the newest version wait in memory,
+  a reservation is refused with "checkpoint needed" until a checkpoint
+  writes them. Pages that left the newest version and stay in memory for
+  a pin do not count, and the entries reserved for before the budget was
+  reached can take memory past it by what they write, and by what they
+  add with `Reservation::extend`, which the budget does not judge (an
+  entry that has committed a unit could otherwise not finish: no
+  checkpoint can be taken while it is half applied).
+
+### 4.9 Limits and unknowns
+
+- Each checkpoint writes its whole meta stream: the free bitmap (one bit
+  per page: 128 KiB for 16 GiB of pages) and every dying and shared page
+  (81 and 28 bytes each). A restore point that keeps many pages keeps
+  their records in every checkpoint's map while it is listed.
+- The trees' roots are a table in the meta stream, not a tree: a
+  checkpoint rewrites about 50 bytes and the name per tree, and an open
+  reads every root.
+- The floor (4.8) keeps about 1% of the file free for checkpoints.
+- What an open and a checkpoint hold in memory grows with the trees and
+  restore points: at an open, the meta stream and its decoded tables, the
+  set of tree names, and two copies of the restore points (the newest
+  checkpoint's lists and the next one's); at a checkpoint, a copy of the
+  tree table, the set of root numbers, the restore point lists, the
+  encoded stream, its decoding for the reader's checks and its pages. A
+  tree's record takes 41 bytes and its name (at most 255), a restore
+  point's 113 and its name (at most 64): at the limits, with the
+  longest names, about 19 MiB of tree table and 11 MiB of restore points
+  per list in a stream, somewhat more decoded. Estimated, not measured:
+  an open then holds some 120 MiB at its peak and 80 MiB after, and a
+  checkpoint some 250 MiB while it plans, beyond the map. With short
+  names it is a few MiB: 65,536 trees named in 13 bytes opened in 23 MiB
+  of process memory (measured).
+- The page file holds no lock: `create` and `open` check that the caller
+  holds the store folder's, and the caller keeps it while the page file
+  is open.
+- The superblock carries no store id, so a `pages` file from another
+  store folder is not recognized as foreign.
+- A device that damages a page after it is written is found only when
+  the page is read; the scrubbing job of section 6.12 is not built.
+- Whether a cluster's servers place pages alike does not matter and is
+  not checked: maps are each server's own (section 7.5).
+
+## 5. Entries and the state
+
+What a log entry holds, where the state of server-storage.md section 6.2
+lives in trees, and what applying an entry does, as `om_store::entry`
+and `om_store::apply` implement them. `om_store::model` is the reference
+model of server-storage.md section 12 (check 1): the same rules written a
+second time over plain maps, sharing with `apply` only the decoding, the
+hash and the error types.
+
+### 5.1 An entry
+
+The log (section 3.4) stores an entry's index, term, kind, file and
+payload without interpreting them. Here they mean:
+
+| Field | Meaning |
+|---|---|
+| index | its place in the log, counted from 1 |
+| term | the leader's term; never below the previous entry's |
+| kind | 1 change, 2 session, 3 file, 4 members, 5 mark, 6 empty. Any other code is refused |
+| file | the **id** of the file the entry belongs to, or 0 for none. A file's id is the index of the `file` entry that added it, so ids are never reused, and every server gives a file the same id |
+| payload | 5.2 |
+| hash | SHA-256 over the previous entry's hash and the entry's bytes before the hash, as section 3.4 writes them: index, term and file (8 bytes each), kind (2), two zero bytes, the payload's length (4), the payload. Before entry 1 the previous hash is 32 zero bytes (`om_store::entry::entry_hash`) |
+
+The file field must fit the kind, or the entry is refused (5.6):
+
+| Kind | File field |
+|---|---|
+| change | a file the state has |
+| session, members, empty | 0 |
+| file, added | the entry's own index |
+| file, removed or renamed | a file the state has |
+| mark | 0, or a file the state has |
+
+The log's format has one 8-byte field for the file; nothing else about a
+file is in the entry's header.
+
+### 5.2 Payloads
+
+Integers are little-endian. Byte 0 of every payload except an `empty`
+entry's is the **payload format version**, 1; another is refused. A
+length is 2 or 4 bytes before the bytes it counts (`len2`, `len4`), a
+count is 4 bytes before the items it counts, and a session is 32 bytes:
+the server's id (16, the random id of its `state` file, section 1), the
+start count (8) and the connection number (8).
+
+**change** (kind 1):
+
+| Field | Bytes |
+|---|---|
+| version | 1 |
+| group | 8: the group the change is part of (server-storage.md 6.9), 0 for none. Reserved: anything else is refused as unsupported |
+| op | 1: 0 for none, 1 for an operation, then its session (32) and sequence number (8) |
+| reply | `len4`, at most 65,535 bytes; empty when there is no op |
+| notices | count, at most 65,536; each `len4`, at most 65,535 bytes |
+| lock edits | count, at most 1,048,576; each a tag (1), a session (32), then: tag 1 **set**: key `len2` (at most 16,384), user `len2` (at most 1,024), value `len4` (at most 65,535); tag 2 **remove**: key, user; tag 3 **release the file's locks**: nothing more |
+| tree edits | count, at most 1,048,576; each a tag (1), a path, then for tags 2 and 3 a value `len4`. Tags: 1 put a list, 2 put a value, 3 put both, 4 delete. A path is its number of segments (1, at most 64), then each segment `len2` |
+
+A tree edit is held to the tree's bounds (2.1) as it is decoded: at most
+64 segments, an encoded path of at most 65,535 bytes, a value of at most
+65,535 bytes, and no put at the empty path.
+
+**session** (kind 2): version, then a tag: 1 **opened** and a session; 2
+**closed** and a session; 3 **started**, a server's id (16) and its start
+count (8).
+
+**file** (kind 3): version, then a tag: 1 **added**, a name (`len2`, 1 to
+1,024 bytes), flags (4: bit 0 read-only; any other bit is refused) and
+page 0 (`len2`, at most 4,096 bytes, the size of an `.fmp12` page); 2
+**removed**; 3 **renamed** and a name. Tag 4, **cloned**, is reserved for
+server-storage.md section 6.8 and refused as unsupported.
+
+**members** (kind 4): version, then a tag: 1 **tree format version** and
+the version (1). Tag 2, the cluster's members (section 7.6), is reserved
+and refused as unsupported.
+
+**mark** (kind 5): version, a purpose (1: 1 restore point, 2 release, 3
+comparison) and a name (`len2`, 1 to 1,024 bytes).
+
+**empty** (kind 6): no bytes.
+
+Nothing may follow the last field. Decoding checks every length against
+its bound and against the bytes left before it takes anything, never
+reserves memory by a count, and does not recurse; malformed bytes are an
+error, never a panic. Each item decoded takes at least one byte of the
+payload, so the memory a payload decodes to is a fixed multiple of its
+size: at most about 28 times for edits that delete the root, about 12
+times for paths of empty segments, and close to the payload's size for
+values. Encoding is held to the same bounds, and what decodes encodes to
+the same bytes. `Payload::size` checks each part's bound and returns the
+size the parts would take, which can be past the payload's bound;
+`Payload::encode` refuses a payload past it before it allocates
+anything.
+
+### 5.3 The state's trees
+
+The state is a set of trees, each a key tree of section 2, named as the
+page file keeps them, outside any tree:
+
+| Tree | Name | Holds |
+|---|---|---|
+| the store's own | `store` | 5.3's table below |
+| a file's | `file:` and the id in decimal | exactly the file's key tree, nothing else |
+
+No item of any tree holds a page number, so a root hash depends on
+content alone: servers that place pages differently have the same root
+hashes at the same entry (server-storage.md 6.4).
+
+The store's own tree, by path. Segments are bytes; numbers in segments
+are big-endian, so that rows sort by them, and numbers in values are
+little-endian.
+
+| Path | Node |
+|---|---|
+| `[01]` | value: the last entry applied, its index (8), term (8) and hash (32). Absent before entry 1 |
+| `[02]` | value: the tree format version (1). Absent means 1 |
+| `[03, id]` | list: a file's row; `id` is 8 bytes |
+| `[03, id, 01]` | value: the file's name |
+| `[03, id, 02]` | value: its flags (4) |
+| `[03, id, 03]` | value: its page 0 |
+| `[04, name]` | value: the id (8) of the file with that name. Names are unique |
+| `[05, server]` | value: the server's highest start count (8) and the highest connection number opened in that start (8); `server` is its 16-byte id |
+| `[06, server, start connection]` | list: an open session, there exactly while it is open. The last segment is the session's start count and connection number, 8 bytes each |
+| `[06, server, start connection, 01]` | value: its last completed sequence number (8), 0 for none |
+| `[06, server, start connection, 02]` | value: that operation's reply, empty for none |
+| `[07, server, start connection, file, lock]` | value: a lock's value. `lock` is the key's length (2, big-endian), the key, then the user |
+
+A file's row is the list `[03, id]`, made by its first child, and so is a
+session's. A session's sequence number and reply are leaves under its
+list, not its value, so that a server's sessions are listed from their
+lists without reading a reply (5.8). The lists above the rows (`[03]`,
+`[06, server]`, `[07, server, session, file]` and the like) are made
+when their first row is put and kept until the subtree above them is
+deleted. So a session's lock list for a file stays,
+empty, after its last lock there is removed, until the session closes or
+the file is removed: at most one empty list per session and file it
+locked in.
+
+Locks are kept under their session first, so that closing a session is
+the delete of two subtrees, its list `[06, server, session]` and its
+locks `[07, server, session]`, and a server's start the delete of two,
+`[06, server]` and `[07, server]`, whatever they hold. The layer above
+judges conflicts by key; it builds its lookup by key from a walk of `[07]`
+when it starts (`StoreTree::locks`) and keeps it current from the entries
+it applies.
+
+With the largest key and user, a lock's path is at most 34,911 bytes
+encoded, within the 65,535 of 2.1.
+
+### 5.4 Reserved
+
+- In a change: the group field (5.2).
+- In a `file` entry: tag 4, a clone. In a `members` entry: tag 2, the
+  members.
+- In the store's own tree: under a file's row, segments `04` (its
+  container files, server-storage.md 8), `05` (its design history, 9),
+  `06` (its kept original image, 6.10) and `07` (the file it was cloned
+  from, 6.8); at the top, `08` (the members), `09` (blob reference
+  counts, 8) and `0a` (open groups, 6.9).
+
+A build that meets a reserved form in an entry refuses the entry (5.6).
+
+### 5.5 Tree edits
+
+A change carries a file's edits in order; each sees the tree the edits
+before it left.
+
+- **Put** a node at a path that is not empty: a **list** (no value), a
+  **value**, or **both** (a list with a value). Whatever was at the path,
+  and everything under it, is replaced by the node alone. Each missing
+  ancestor is made as an empty list; an ancestor that holds a value
+  becomes both, keeping its value. A put of the node that is there
+  already, with nothing under it, changes nothing.
+- **Delete** the node at a path and everything under it, however large,
+  as one edit. Its parent stays, an empty list if it was its last child.
+  Nothing there changes nothing. The empty path deletes every node; the
+  root stays, a list.
+
+These are the rules of `om_hbam::OwnedNode`, the file engine's tree:
+`put(path, node)` with a node without children, `remove(path)`, and
+clearing the root's children; the test `edits_leave_what_owned_node_holds`
+(`crates/om-store/tests/entries.rs`) checks them against it. An
+`OwnedNode` maps to a node as its wire form writes it: one with `push`
+set or with children is a list, both when it has a value; otherwise it is
+a value. Every change the file engine makes to a tree today is carried
+by these two edits:
+
+| The file engine (`crates/om-server/src/store.rs`) | Edits |
+|---|---|
+| `put(path, leaf)`: a record's cell, a last record id, a serial's next value, a modification count | put a value |
+| `put(path, subtree)`: a record, the record-id list `[T, 0d]`, a field catalog `[T, 03]`, an index `[T, 01, F, I]`, a container library, a catalog member op13 uploads | put the node, then each node under it in depth-first order (each put makes nothing the next one removes) |
+| `remove(path)`: a record, an index, a library, the deferred field list, a catalog member | delete |
+| `ensure(path)` alone | put a list at the path when it is missing; put both, with its value, when the path holds a value; nothing otherwise |
+| `ensure(path).set_child(leaf)`, `library::store` | put a value below the path (the put makes the ancestors) |
+| changes in place through `at_mut`: `modcount::bump` and `library::adjust` set a leaf with `set_child`, and `adjust` removes a member it takes to zero | put a value; delete |
+| children dropped in place (`children.retain`, `children = kept`: a record's cells, a table's global repetitions) | delete each one dropped |
+| a node replaced in place (`*node = new`), or its children replaced (`entry.children = ...` for an index entry's record list) | delete what is gone and put what is new or changed, or put the node and everything under it |
+
+The file engine refuses a put under a node that holds a value that is not
+empty (`om_hbam::writer::holds_value`), but not under a leaf whose value
+is empty: that leaf becomes a list that keeps its empty value, which is
+both, with an empty value, here, as the put rule above makes it (the
+`OwnedNode` test checks this case). A node that is both, whose value
+changes while its children stay, takes a put of the node and a put of
+each node under it; no path of the file engine found makes that change.
+
+The lock table changes the same way. `LockTable::lock` and `upgrade` are
+a **set** (a new lock, or its count or type changed in its value), with a
+**remove** first when the lock's identity changes; `unlock` is a set of
+the lower count or a remove; the release of a session's locks on one file
+(op65, a logout) is a **release the file's locks**; a session's end is a
+`session` entry that closes it.
+
+### 5.6 Applying an entry
+
+`om_store::apply::apply` takes the page store, which holds the state's
+trees by name with their roots, and an entry, and returns the sessions
+opened and closed and the payload (whose notices and reply, with the
+operation's session and sequence number, the caller delivers when the
+entry is published); the trees it changed are the store's to report
+(5.7). What it costs is 5.8. It reads only the state and the entry:
+no clock, no randomness, nothing of page numbers, caching or what else
+is in memory. Every check below is made from reads of the state before
+anything is written. The checks, in this order, the first that fails
+being the one reported:
+
+1. The entry is the next: its index is one more than the last applied
+   entry's, its term is not below that entry's, and its hash is that
+   entry's hash continued (5.1). Otherwise: *not next*, *term behind* or
+   *chain*. A repeated, skipped or out-of-order entry is not next.
+2. The state's tree format version is one this build knows (only 1; 0 is
+   not a version). Otherwise: *unknown format version*.
+3. The kind is known and the payload decodes (5.2). Otherwise: *payload*,
+   which also covers what is reserved (5.4) and an edit beyond the
+   bounds.
+4. The file field fits the kind (5.1). Otherwise: *file field*, or *no
+   such file* for a nonzero id the state does not have.
+5. The kind's own checks, below.
+
+Then, by kind:
+
+- **change.** If it names an operation, its session must be open
+  (*session not open*) and its sequence number one more than the
+  session's last (*sequence*). Each lock edit, in order, must name an
+  open session (*session not open*); a remove must find the lock held,
+  counting this entry's earlier lock edits (*no such lock*). Then: the
+  lock edits are made under the entry's file, the session's row records
+  the sequence number and the reply, and the tree edits (5.5) are applied
+  to the file's tree.
+- **session.** *Opened* is applied only when the server's row records
+  the session's start count and the session's connection number is above
+  the highest recorded; then the session's row is made with sequence
+  number 0 and the connection number recorded. *Closed* is applied only
+  when the session is open; it deletes the session's row and its locks.
+  *Started* is applied when the server has no row, whatever the count,
+  and otherwise only when the count is above the recorded one; it
+  deletes every session and lock of the server, and records the count
+  with connection number 0, which means none opened. So connection
+  numbers start at 1 (an opening of connection 0 changes nothing), as
+  sequence numbers do. An event that is not applied changes nothing
+  besides the last entry applied, and is not an error: a delayed or
+  repeated entry can never open a session again or close a newer
+  start's sessions.
+- **file.** *Added*: the name must be free (*name taken*); the row and
+  the name are written and the file's tree made, empty, as of this
+  entry. *Removed*: the row, the name and every session's locks on the
+  file are deleted, and the file's tree is dropped. *Renamed*: the new
+  name must be free (*name taken*, also when it is the file's own); the
+  row's name and the name rows change.
+- **members.** The version must be one this build knows (*unknown format
+  version*) and not below the state's (*format version lowered*, which
+  cannot arise while 1 is the only version); it is recorded.
+- **mark** and **empty** change nothing else. An `empty` entry, a new
+  leader's first, would discard the open groups; no build yet has any.
+
+Last, every entry records itself as the last applied.
+
+**Refusals.** An entry that fails any check cannot be right. It is
+refused with nothing changed, and the caller stops the store: applying
+never guesses and never skips part of an entry. Each check reads only
+the state and the entry, so every server, given the same state, refuses
+the same entry in the same way: an entry repeated, skipped or out of
+order; a broken chain or a term that goes back; an unknown kind,
+payload version or tag; a malformed payload or one beyond a bound; a
+group, a clone or a members list; a state or a `members` entry of a tree
+format version this build does not know, or a lower version; a file
+field that does not fit; a file that does not exist; a name taken; an
+operation or a lock edit for a session that is not open; a sequence
+number that is not the next; a remove of a lock not held. A failure that
+is the server's own (a page it cannot read, a page store that fails, a
+file's tree the store does not hold) is reported apart from these, and
+leaves the store as it was too.
+
+### 5.7 One unit of work
+
+Everything an entry changes goes through the page store's one unit of
+work for the entry (`EntryPages`), committed once, so an entry takes
+effect whole or not at all, and a unit dropped at any point leaves
+nothing. Each tree the entry changes applies its edits into the unit
+and hands back its new root (`tree::apply`), which `apply` names in the
+unit (`set_root`). A file's tree made is the empty tree written into the
+unit (`tree::apply` from nothing) and named with `add_tree`; a file's
+tree removed is named with `drop_tree`, and the page store releases the
+root it holds for it. The store's own tree is made the same way by entry
+1: before it the store holds no tree. Each tree is changed at most once
+per entry, so no tree reads a page of the unit before it is committed.
+`apply` writes or releases no root on its own account, and the trees it
+changed are read from the page store, which holds every tree's name and
+root.
+
+### 5.8 What one entry costs
+
+What applying one entry reads and holds, at the bounds of 5.2. A listing
+of rows takes them one at a time and holds one row at once per level of
+listing, so the scratch space of looking through rows does not grow with
+their number, and no listing reads a value it then deletes. What an
+entry keeps beyond that, for the edits it makes and what it returns, is
+stated for each case below. `Applied::listed` reports the rows the
+listings visited and the most held at once.
+
+- **Decoding** holds the payload's items: at most about 28 times the
+  payload's size (5.2), and the payload is at most 64 MiB.
+- **A change**'s checks read the session's sequence number, the list of
+  each session its lock edits name (once per session), and the row of
+  each lock it removes that the change itself did not set or release
+  (one value of at most 64 KiB at a time). Its lock edits are kept by
+  session while it is planned, so a release clears only its own
+  session's earlier edits: the work is linear in the lock edits. It
+  holds one store-tree edit per lock edit and two for the session's row.
+  Its tree edits cost what format section 2 says for each; a delete of
+  any size is one range.
+- **A server's start** lists the server's open sessions from their lists,
+  one at a time, with one seek per session and no value read. It keeps
+  the list of the sessions it closes, 32 bytes each, which
+  `Applied::closed` returns, and holds one listed row at once besides.
+  It then deletes the server's sessions and locks with two edits,
+  whatever their size. The number of sessions a server has open is
+  bounded by the server's own connection limits, not here.
+- **A file's removal** looks through the sessions that hold a lock list
+  (for any file) one at a time, a server and then its sessions, holding
+  two listed rows at once, and looks up each one's list for the file:
+  one lookup per such session, reading lists only. It keeps one delete
+  edit (under 100 bytes) for each session that has a list for the file
+  and nothing for the others, and releases the file's tree with one
+  release, whatever its size.
+- **A session's close, an opening, a rename, a mark, an empty or a
+  members entry** read and write a fixed number of rows.
+
+### 5.9 Limits
+
+- Groups, clones, the members list, blob reference counts, design
+  history, container file lists and the kept original image are not
+  built; their entries are refused (5.4).
+- A file's flags and page 0 are set when it is added; no entry changes
+  them later.
+- The bounds of 5.2 (names, replies, lock keys and users, counts) are
+  OpenMaker's choices, not measured against what FileMaker clients send.
+- An `OwnedNode` leaf without a value (`value: None`, as
+  `OwnedNode::default` makes) is held as an empty value. Made an
+  ancestor, it becomes both with an empty value here, and a list without
+  a value in `OwnedNode`. The file engine makes leaves with a value.
+- The decoder holds tree edits to the tree's bounds with the tree's own
+  check (`tree::check_edits`), so the model, which shares the decoder,
+  does not check those bounds a second time.
