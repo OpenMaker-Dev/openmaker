@@ -36,8 +36,16 @@ CR *in the formula text*, which the calculation parser turns into a space
 
 ```sh
 export FMS_ROOT=.../re/extracted/fms/deb/opt/FileMaker FILES=.../re/work/fms-harness/files
-tools/fms-sql/runq.sh q04-predicates fms-sample-en.fmp12     # writes results/q04-predicates.fms-sample-en.tsv
-tools/fms-sql/view.sh tools/fms-sql/results/q04-predicates.fms-sample-en.tsv
+tools/fms-sql/runq.sh q04-predicates fms-sample-en.fmp12
+tools/fms-sql/view.sh re/work/fms-sql/q04-predicates.fms-sample-en.tsv
+```
+
+`runq.sh <name> <file> [context] [results dir]` writes to the git-ignored
+`re/work/fms-sql/` by default. Inspect a new result before copying it into
+`tools/fms-sql/results/` as a fixture. Build the catalogs from the checked-in
+fixtures:
+
+```sh
 python3 -I tools/fms-sql/make_sql_vectors.py tools/fms-sql/results docs/re/catalogs/execute-sql-vectors.tsv
 python3 -I tools/fms-sql/make_error_catalog.py tools/fms-sql/results/errors-dump.txt \
     docs/re/catalogs/execute-sql-vectors.tsv docs/re/catalogs/execute-sql-errors.tsv
@@ -80,9 +88,9 @@ FileMaker plug-in 16.3 example folder, `re/work/calc-encoding/corpus-mbs`):
 | `q19-summary-data` | summary fields over data: every kind per row, with and without `WHERE`, `ORDER BY`, joins, unstored calculations |
 | `q20-summary-found-sets` | the found set a summary column sees: joins, `FETCH`/`OFFSET`, `OR`/`NOT`, `DISTINCT`, subqueries |
 
-Results (`results/<battery>.<file>.tsv`) are calceval's output: expression,
-error (`EvaluationError`), cached/native/calc types, result text with
-escapes `\r \n \t \\ \uXXXX`.
+Checked-in results (`results/<battery>.<file>.tsv`) are calceval's output:
+expression, error (`EvaluationError`), cached/native/calc types, and result
+text with escapes `\r \n \t \\ \uXXXX`.
 
 ## fqlgrammar
 
