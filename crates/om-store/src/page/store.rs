@@ -104,7 +104,9 @@ impl std::error::Error for StoreError {}
 ///   `begin` returns: the pages written and released, the trees made,
 ///   dropped and renamed, and each changed tree's new root. It takes
 ///   effect at once when it is committed, or not at all ([`EntryPages`]
-///   says how).
+///   says how). One unit is open at a time: `begin` is refused while
+///   another is open, so nothing changes the trees between a unit's begin
+///   and its commit.
 /// - **Pages stay while reached.** A committed page stays readable under its
 ///   number and hash for as long as any version, view, checkpoint, restore
 ///   point, clone or state copy in progress reaches it. Until a checkpoint
@@ -134,6 +136,7 @@ pub trait PageStore {
     fn root(&self, name: &TreeName) -> Option<Root>;
 
     /// Opens the unit of work of one entry: everything the entry changes.
+    /// Refused while another unit is open.
     fn begin(&self) -> Result<Self::Entry<'_>, StoreError>;
 }
 
@@ -143,7 +146,7 @@ pub trait PageStore {
 /// counted in the store's space until [`EntryPages::commit`].
 ///
 /// - **Allocating.** `allocate` returns a number that no committed page uses
-///   and no other open entry holds, and holds it for this entry.
+///   and nothing else holds, and holds it for this entry.
 /// - **Writing.** `write` takes a new page under a number this entry
 ///   allocated. The page is kept as given: no copy and no hash is needed
 ///   (the tree has hashed it).

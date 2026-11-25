@@ -575,8 +575,10 @@ state copy in progress and no view open in the process refers to it:
 every page that leaves the newest version is recorded with the version
 that wrote it and the one that released it, and is reused only when no
 checkpoint on disk, restore point listed, checkpoint being written or
-**pin** lies between the two. The engine pins the entry of a view, a
-state copy or a restore point it reads, for as long as it uses it. Pins
+**pin** lies between the two. The engine pins the version a view, a
+state copy or a restore point reads, for as long as it uses it: the
+newest (`pin_newest`, also for an entry that changed nothing, which has
+no version of its own), or a checkpoint or restore point on disk. Pins
 are in memory, so after a restart only what the superblocks on disk name
 is kept. The log is kept from the oldest
 kept checkpoint, and further back while another server needs it

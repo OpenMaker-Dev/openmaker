@@ -3839,7 +3839,9 @@ enum TreeCall {
     Make(&'static str),
     /// A tree's edits applied, and its new root given.
     Edit(&'static str),
-    /// A tree replaced by an empty one: its old root released as given.
+    /// A tree replaced by an empty one: its old root released as given,
+    /// and, released as copied, what the old root referred to, which the
+    /// new root does not keep.
     Replace(&'static str, Release),
     /// A tree given a second root, an empty one, in the unit.
     SetAgain(&'static str),
@@ -3855,6 +3857,8 @@ enum TreeCall {
     WrongHash,
     /// Tree `a`'s overflow page released twice.
     ReleaseTwice,
+    /// Another unit, begun while this one is open, makes a tree.
+    OtherUnitMakes(&'static str),
 }
 
 /// Makes trees `a` and `b`, empty, as entry `entry`: one unit.
@@ -3880,9 +3884,11 @@ fn grow_a<S: PageStore + ?Sized>(store: &S, entry: u64) -> (PageNo, Hash) {
     overflow_page(store, root)
 }
 
-/// Runs `calls` in one unit of `store`, as entry `entry`, and commits it.
-fn run_tree_calls<S: PageStore + ?Sized>(
+/// Runs `calls` in one unit of `store`, as entry `entry`, and commits it;
+/// another unit is begun from `other`, as entry `entry + 1`.
+fn run_tree_calls<S: PageStore + ?Sized, O: PageStore + ?Sized>(
     store: &S,
+    other: &O,
     entry: u64,
     calls: &[TreeCall],
     overflow: (PageNo, Hash),
@@ -3912,6 +3918,13 @@ fn run_tree_calls<S: PageStore + ?Sized>(
                 let old = current[&name(n)];
                 unit.release(old.page, &old.hash, how)
                     .map_err(|e| e.to_string())?;
+                if how == Release::Copied {
+                    let page = store.read(old.page, &old.hash).map_err(|e| e.to_string())?;
+                    for (number, hash) in page.references() {
+                        unit.release(number, &hash, Release::Dropped)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
                 unit.set_root(&name(n), root);
                 current.insert(name(n), root);
             }
@@ -3947,6 +3960,13 @@ fn run_tree_calls<S: PageStore + ?Sized>(
                         .map_err(|e| e.to_string())?;
                 }
             }
+            TreeCall::OtherUnitMakes(n) => {
+                let mut second = other.begin().map_err(|e| e.to_string())?;
+                let root = tree::apply(other, &mut second, None, entry + 1, &[])
+                    .map_err(|e| e.to_string())?;
+                second.add_tree(&name(n), root);
+                second.commit().map_err(|e| e.to_string())?;
+            }
         }
     }
     unit.commit().map_err(|e| e.to_string())
@@ -3957,7 +3977,9 @@ fn run_tree_calls<S: PageStore + ?Sized>(
 /// given at most once (`add_tree` or `set_root`), and only a page the unit
 /// wrote; `drop_tree` names a tree that existed when the unit began and
 /// that the unit gave no root; a tree replaced whole may release its old
-/// root either way; a page is released once, with its hash.
+/// root either way; a page is released once, with its hash; one unit is
+/// open at a time (round 2). A unit both accept is one the page file can
+/// checkpoint.
 #[test]
 fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
     use TreeCall::*;
@@ -3982,6 +4004,7 @@ fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
         (&[MakeFrom("c", "b")], false),
         (&[WrongHash], false),
         (&[ReleaseTwice], false),
+        (&[OtherUnitMakes("c"), Drop("c")], false),
     ];
     for (i, (calls, ok)) in cases.iter().enumerate() {
         // The page file: one reservation an entry.
@@ -3992,13 +4015,20 @@ fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
         make_a_and_b(&pf.reserve(1, 64, Purpose::Entry).unwrap(), 1);
         let overflow = grow_a(&pf.reserve(2, 64, Purpose::Entry).unwrap(), 2);
         let res = pf.reserve(3, 64, Purpose::Entry).unwrap();
-        let on_file = run_tree_calls(&res, 3, calls, overflow);
-        drop(res);
+        let other = pf.reserve(4, 64, Purpose::Entry).unwrap();
+        let on_file = run_tree_calls(&res, &other, 3, calls, overflow);
+        drop((res, other));
+        // What both stores accept, the page file can also checkpoint.
+        if on_file.is_ok() {
+            if let Err(e) = pf.checkpoint(entry_id(3), None) {
+                panic!("the page file cannot checkpoint {calls:?}: {e}");
+            }
+        }
         // `MemStore`.
         let mem = MemStore::new(Numbering::Sequential);
         make_a_and_b(&mem, 1);
         let overflow = grow_a(&mem, 2);
-        let in_memory = run_tree_calls(&mem, 3, calls, overflow);
+        let in_memory = run_tree_calls(&mem, &mem, 3, calls, overflow);
         assert_eq!(
             on_file.is_ok(),
             *ok,
@@ -4008,20 +4038,43 @@ fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
     }
 }
 
-/// Review of #744 (P1): the version of an entry with no unit of its own is
-/// the version of the last unit before it; a pin of it gets those roots.
+/// Review of #744, round 2 (P0): a pin is of a version the page file has.
+/// Sol's sequence: entry 1 commits root A; entry 2's unit stages B; a pin
+/// of entry 2 before that unit commits is refused (it would get A, which
+/// entry 2's commit may free, and a later pin of entry 2 would be handed
+/// A again). The newest version is entry 1's until then; once entry 2
+/// commits, every pin of it has B, and two pins of it agree. An entry
+/// after the last unit is refused too: it has no version of its own.
 #[test]
-fn a_pin_of_an_entry_without_a_unit_has_the_roots_before_it() {
+fn a_pin_is_of_a_version_the_page_file_has() {
     let sim = Sim::new(63);
     let fs = sim.fs();
     let lock = fs.lock().unwrap();
     let pf = PageFile::create(&fs, &lock, config()).unwrap();
-    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
-    make_tree(&res, &tree_name(0)).unwrap();
+    let name = tree_name(0);
+    let a = make_tree(&pf.reserve(1, 5, Purpose::Entry).unwrap(), &name).unwrap();
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let mut unit = res.begin().unwrap();
+    let edits = [Edit::leaf(vec![b"k".to_vec()], vec![2; 10])];
+    let b = tree::apply(&res, &mut unit, Some(a), 2, &edits).unwrap();
+    unit.set_root(&name, b);
+    assert!(pf.pin(2).is_err(), "a pin of an entry whose unit is open");
+    let newest = pf.pin_newest().unwrap();
+    assert_eq!(
+        (newest.entry(), newest.roots()),
+        (1, &[(name.clone(), a)][..])
+    );
+    unit.commit().unwrap();
     drop(res);
-    let pin = pf.pin(2).unwrap();
-    assert_eq!(pin.roots(), &pf.trees()[..]);
-    assert_eq!(pin.roots().len(), 1);
+    let first = pf.pin(2).unwrap();
+    let second = pf.pin(2).unwrap();
+    let newest = pf.pin_newest().unwrap();
+    for pin in [&first, &second, &newest] {
+        assert_eq!((pin.entry(), pin.roots()), (2, &[(name.clone(), b)][..]));
+    }
+    assert!(pf.pin(3).is_err(), "an entry after the last unit");
+    let read = Tree::open(&pf, b).unwrap().get(&[b"k"]).unwrap();
+    assert_eq!(read, Some(Node::Value(vec![2; 10])));
 }
 
 /// Review of #744 (P1): a pin of an older checkpoint carries the roots of
@@ -4056,4 +4109,171 @@ fn a_pin_of_an_older_checkpoint_carries_its_roots() {
     assert_eq!(pin.roots(), &[(name, first)][..]);
     let read = Tree::open(&pf, first).unwrap().get(&[b"k"]).unwrap();
     assert_eq!(read, Some(Node::Value(vec![1; 10])));
+}
+
+/// Rewrites the tree table of the newest checkpoint on disk, as #719 could
+/// write it from roots its caller gave: the meta stream rebuilt into the
+/// same pages, and the superblock's copies pointed at it.
+fn forge_newest_table(pf: &PageFile, edit: impl FnOnce(&mut Vec<(TreeName, Root)>)) {
+    let (sb, pair) = {
+        let inner = pf.lock();
+        (inner.newest.sb, inner.newest.pair)
+    };
+    let (stream, pages) = pf.read_meta(sb.meta).unwrap();
+    let mut meta = Meta::decode(&stream).unwrap();
+    edit(&mut meta.trees);
+    meta.trees.sort_by(|a, b| a.0.cmp(&b.0));
+    let stream = meta.encode();
+    let numbers: Vec<PageNo> = pages.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        meta::pages_for(stream.len()),
+        numbers.len(),
+        "the table fits"
+    );
+    let (written, root) = meta::build(&stream, &numbers, sb.number);
+    for page in written {
+        pf.file
+            .write_at(page.number() * PAGE, page.bytes())
+            .unwrap();
+    }
+    let copy = superblock::encode(&Superblock { meta: root, ..sb });
+    for s in pair_slots(pair) {
+        pf.file.write_at((s * SLOT) as u64, &copy).unwrap();
+    }
+    pf.file.flush().unwrap();
+}
+
+const SHARED_ROOT: &str = "two trees name one root page, which the map does not record as shared";
+
+/// Review of #744, round 2 (P0): a checkpoint whose table names one root
+/// page for two trees, which the map does not record as shared, is
+/// damage: open passes it over and falls back to the checkpoint before.
+#[test]
+fn a_checkpoint_naming_one_root_for_two_trees_is_passed_over() {
+    let sim = Sim::new(65);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let (t0, t1) = (tree_name(0), tree_name(1));
+    let a = make_tree(&proc.pf.reserve(1, 5, Purpose::Entry).unwrap(), &t0).unwrap();
+    proc.pf.checkpoint(entry_id(1), None).unwrap();
+    proc.pf.checkpoint(entry_id(1), None).unwrap();
+    assert_eq!(proc.pf.checkpoint_entry().0, 3);
+    forge_newest_table(&proc.pf, |trees| trees.push((t1, a)));
+    drop(proc);
+    sim.restart();
+    let (proc, opened) = open_proc(&disk, config()).unwrap();
+    assert_eq!(opened.checkpoint, 2);
+    assert_eq!(
+        opened.passed_over,
+        vec![PassedOver {
+            number: 3,
+            why: Rejection::Mismatch(SHARED_ROOT),
+        }]
+    );
+    assert_eq!(proc.pf.trees(), vec![(t0, a)]);
+}
+
+/// Review of #744, round 2 (P0): the same table reached in memory (as a
+/// page file that loaded it before open refused it would hold it): a
+/// checkpoint of it is refused before it reads or writes anything. Sol's
+/// sequence goes on: one of the two names is dropped, which marks the
+/// page dying while the other still names it; every checkpoint is then
+/// refused, and the checkpoints on disk stay the fallback.
+#[test]
+fn a_checkpoint_of_two_trees_on_one_root_is_refused() {
+    let sim = Sim::new(66);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let pf = &proc.pf;
+    let (t0, t1) = (tree_name(0), tree_name(1));
+    let a = make_tree(&pf.reserve(1, 5, Purpose::Entry).unwrap(), &t0).unwrap();
+    pf.checkpoint(entry_id(1), None).unwrap();
+    {
+        let mut inner = pf.lock();
+        inner.trees.insert(t1.clone(), a);
+        *inner.root_pages.entry(a.page).or_default() += 1;
+    }
+    let next = pf.next_checkpoint();
+    match pf.checkpoint(entry_id(1), None) {
+        Err(CheckpointError::Refused(why)) => assert_eq!(why, SHARED_ROOT),
+        other => panic!("{other:?}"),
+    }
+    let res = pf.reserve(2, 5, Purpose::Entry).unwrap();
+    let mut unit = res.begin().unwrap();
+    unit.drop_tree(&t1);
+    unit.commit().unwrap();
+    drop(res);
+    assert!(!pf.lock().map.in_use(a.page), "the page t0 names is dying");
+    for _ in 0..2 {
+        match pf.checkpoint(entry_id(2), None) {
+            Err(CheckpointError::Refused(why)) => {
+                assert_eq!(why, "a root that is not a page of the newest version")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(pf.next_checkpoint(), next, "nothing written");
+    drop(proc);
+    sim.restart();
+    let (proc, opened) = open_proc(&disk, config()).unwrap();
+    assert_eq!(opened.checkpoint, 2);
+    assert_eq!(proc.pf.trees(), vec![(t0, a)]);
+}
+
+/// Review of #744, round 2 (P0): a table #719 could write that open cannot
+/// tell from a good one without walking every tree: one tree's root is a
+/// page inside another tree. Once that tree is dropped and taken apart,
+/// the first tree's root is dying; a checkpoint is then refused before it
+/// replaces the checkpoint on disk, which stays the fallback.
+#[test]
+fn a_checkpoint_of_a_root_that_died_is_refused() {
+    let sim = Sim::new(67);
+    let disk = Disk::Sim(sim.clone());
+    let proc = create_proc(&disk, config());
+    let (x, y) = (tree_name(0), tree_name(1));
+    let res = proc.pf.reserve(1, 64, Purpose::Entry).unwrap();
+    make_tree(&res, &y).unwrap();
+    drop(res);
+    let res = proc.pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let edits: Vec<Edit> = (0..60u8)
+        .map(|i| Edit::leaf(vec![format!("k{i:02}").into_bytes()], vec![i; 1_000]))
+        .collect();
+    let root = edit_tree(&res, &y, &edits).unwrap();
+    drop(res);
+    let top = proc.pf.read(root.page, &root.hash).unwrap();
+    assert_eq!(top.kind(), PageKind::Index);
+    let child = top.child(0);
+    let inside = Root {
+        page: child.number,
+        hash: child.hash,
+    };
+    proc.pf.checkpoint(entry_id(2), None).unwrap();
+    forge_newest_table(&proc.pf, |trees| trees.push((x.clone(), inside)));
+    drop(proc);
+    sim.restart();
+    let (proc, opened) = open_proc(&disk, config()).unwrap();
+    assert_eq!(opened.checkpoint, 2, "open cannot see it");
+    let pf = &proc.pf;
+    let res = pf.reserve(3, 5, Purpose::Entry).unwrap();
+    let mut unit = res.begin().unwrap();
+    unit.drop_tree(&y);
+    unit.commit().unwrap();
+    drop(res);
+    while !pf.reclaim(1 << 20).drained {}
+    assert!(!pf.lock().map.in_use(inside.page), "x's root is dying");
+    let next = pf.next_checkpoint();
+    for _ in 0..2 {
+        match pf.checkpoint(entry_id(3), None) {
+            Err(CheckpointError::Refused(why)) => {
+                assert_eq!(why, "a root that is not a page of the newest version")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(pf.next_checkpoint(), next, "nothing written");
+    drop(proc);
+    sim.restart();
+    let (proc, opened) = open_proc(&disk, config()).unwrap();
+    assert_eq!(opened.checkpoint, 2);
+    assert_eq!(proc.pf.root(&x), Some(inside));
 }
