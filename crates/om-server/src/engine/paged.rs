@@ -886,22 +886,14 @@ fn check_page_zero(page_zero: &[u8]) -> Result<(), ImportError> {
 /// Refuse a node an export could not give back as it is, or the store
 /// cannot hold ([`import`], "What import accepts, export gives back").
 fn check(path: &[Vec<u8>], node: &Node) -> Result<(), ImportError> {
-    let Some((segment, parents)) = path.split_last() else {
+    if path.is_empty() {
         return Err(ImportError::NoKind { path: Vec::new() });
-    };
-    let edit = [Edit::Put {
-        path: path.to_vec(),
-        node: node.clone(),
-    }];
-    match tree::check_edits(&edit) {
-        Ok(()) => {}
-        Err(tree::Error::Refused { why, .. }) => {
-            return Err(ImportError::Bounds {
-                path: path.to_vec(),
-                why,
-            })
-        }
-        Err(e) => return Err(ImportError::Store(e)),
+    }
+    if let Err(why) = tree::check_put(path, node) {
+        return Err(ImportError::Bounds {
+            path: path.to_vec(),
+            why,
+        });
     }
     let reshaped = match node {
         Node::Both(v) if v.is_empty() => Some(
@@ -919,17 +911,7 @@ fn check(path: &[Vec<u8>], node: &Node) -> Result<(), ImportError> {
             reason,
         });
     }
-    let parents: Vec<&[u8]> = parents.iter().map(Vec::as_slice).collect();
-    let as_written = OwnedNode {
-        segment: segment.clone(),
-        value: match node {
-            Node::List => None,
-            Node::Value(v) | Node::Both(v) => Some(v.clone()),
-        },
-        push: node.is_list(),
-        children: Vec::new(),
-    };
-    if let Some(refused) = om_hbam::writer::unwritable(&parents, &as_written, 1).pop() {
+    if let Some(refused) = om_hbam::writer::unwritable_key(path, node.is_list(), node.value()) {
         return Err(ImportError::Unwritable {
             path: refused.path,
             reason: refused.reason,

@@ -177,25 +177,41 @@ pub(crate) fn fault(page: PageNo, hash: Hash, fault: Fault) -> Error {
 /// entry.
 pub fn check_edits(edits: &[Edit]) -> Result<(), Error> {
     for (i, edit) in edits.iter().enumerate() {
-        let refuse = |why| Err(Error::Refused { edit: i, why });
-        let path = edit.path();
-        if path.len() > MAX_DEPTH {
-            return refuse(Refusal::TooDeep(path.len()));
-        }
-        let len = key::encoded_len(path);
-        if len > MAX_KEY {
-            return refuse(Refusal::KeyTooLong(len));
-        }
-        if let Edit::Put { node, .. } = edit {
-            if path.is_empty() {
-                return refuse(Refusal::RootPut);
-            }
-            if node.value().len() > MAX_VALUE {
-                return refuse(Refusal::ValueTooLong(node.value().len()));
-            }
+        let put = match edit {
+            Edit::Put { node, .. } => Some(node),
+            Edit::Delete { .. } => None,
+        };
+        if let Some(why) = refusal(edit.path(), put) {
+            return Err(Error::Refused { edit: i, why });
         }
     }
     Ok(())
+}
+
+/// Why [`check_edits`] refuses a put of `node` at `path`, if it does: the
+/// same check on a put not yet made an [`Edit`].
+pub fn check_put(path: &[Vec<u8>], node: &Node) -> Result<(), Refusal> {
+    refusal(path, Some(node)).map_or(Ok(()), Err)
+}
+
+/// Why an edit at `path`, a put of `put` or a delete (`None`), is outside
+/// the store's bounds.
+fn refusal(path: &[Vec<u8>], put: Option<&Node>) -> Option<Refusal> {
+    if path.len() > MAX_DEPTH {
+        return Some(Refusal::TooDeep(path.len()));
+    }
+    let len = key::encoded_len(path);
+    if len > MAX_KEY {
+        return Some(Refusal::KeyTooLong(len));
+    }
+    let node = put?;
+    if path.is_empty() {
+        return Some(Refusal::RootPut);
+    }
+    if node.value().len() > MAX_VALUE {
+        return Some(Refusal::ValueTooLong(node.value().len()));
+    }
+    None
 }
 
 /// Which way to iterate.
