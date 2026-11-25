@@ -43,6 +43,7 @@ impl OpenFileDialog {
         crate::file_panel::Request::open("Open File", "")
             .of_kind("fmp12")
             .in_folder(documents())
+            .reporting_modifiers()
     }
 
     /// The chooser, showing the user's Documents folder (or home).

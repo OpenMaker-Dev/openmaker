@@ -1021,8 +1021,9 @@ pub struct OpenMakerApp {
     /// test harness): file panels show beside it (`file_panel`).
     panel_parent: Option<crate::file_panel::Parent>,
     /// The platform's open or save panel of File > Open or Create New, in
-    /// place of `open_file` or `create_new`'s own chooser.
-    file_panel: Option<(Launch, crate::file_panel::FilePanel)>,
+    /// place of `open_file` or `create_new`'s own chooser; with whether
+    /// Shift or Option (Alt) was held as the command was chosen.
+    file_panel: Option<(Launch, bool, crate::file_panel::FilePanel)>,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -2894,12 +2895,16 @@ impl OpenMakerApp {
         let Some(parent) = self.panel_parent else {
             return false;
         };
+        // Shift or Option held as Open is chosen asks for an account too:
+        // the window sees these keys on every platform, where the panel's
+        // own may not be seen (a Wayland session).
+        let asking = ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
         let wake = ctx.clone();
         let shown =
             crate::file_panel::FilePanel::show(request, parent, move || wake.request_repaint());
         match shown {
             Some(panel) => {
-                self.file_panel = Some((launch, panel));
+                self.file_panel = Some((launch, asking, panel));
                 true
             }
             None => false,
@@ -2915,11 +2920,11 @@ impl OpenMakerApp {
         let Some(answer) = self
             .file_panel
             .as_ref()
-            .and_then(|(_, panel)| panel.answer())
+            .and_then(|(_, _, panel)| panel.answer())
         else {
             return;
         };
-        let Some((launch, _)) = self.file_panel.take() else {
+        let Some((launch, held, _)) = self.file_panel.take() else {
             return;
         };
         if self.status != ConnectStatus::Idle || self.w.session.is_some() {
@@ -2927,7 +2932,7 @@ impl OpenMakerApp {
         }
         match (launch, answer) {
             (Launch::OpenFile, Answer::Chosen { path, asking }) => {
-                self.open_chosen(ctx, path, asking);
+                self.open_chosen(ctx, path, held || asking);
             }
             (Launch::OpenFile, Answer::Unavailable) => {
                 self.open_file = Some(crate::open_file::OpenFileDialog::new());
@@ -8346,7 +8351,7 @@ mod tests {
             Box::new(NoLicense),
         );
         let answer = |app: &mut OpenMakerApp, launch: Launch, answer: Answer| {
-            app.file_panel = Some((launch, FilePanel::answered(answer)));
+            app.file_panel = Some((launch, false, FilePanel::answered(answer)));
             app.file_panel_answered(&ctx);
             assert!(app.file_panel.is_none());
         };

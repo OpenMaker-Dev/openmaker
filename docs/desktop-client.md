@@ -76,14 +76,14 @@ the window on X11 and unparented on Wayland. Windows shows none yet
 panel can be shown (Windows, no portal on the session bus or one without a
 file chooser, or no native window, as in the GUI tests) OpenMaker's own
 chooser asks instead: a folder's subfolders and FileMaker files, and a
-path that can be typed. A portal that does not answer within 30 seconds,
-or leaves the bus before the user answers, counts as none.
+path that can be typed. A portal that does not take the request within
+30 seconds, or leaves the bus before the user answers, counts as none.
 
 What follows a choice is the same either way. Shift or Option (Alt) held
-as the panel's Open is chosen asks for an account
-([local-files](re/local-files.md) 3.1): OpenMaker reads the keys as the
-panel answers, on Linux from the X server, so on a Wayland session it does
-not see them. While a panel is up, Open, Create and the other commands
+as Open is chosen, in Home or the File menu, asks for an account
+([local-files](re/local-files.md) 3.1); so do those keys held as the
+panel's own Open is clicked, which OpenMaker reads as the panel answers
+(on Linux from the X server, so not on a Wayland session). While a panel is up, Open, Create and the other commands
 that start from no file do nothing, Home takes no keys and the Hosts
 dialog steps aside, as for OpenMaker's own choosers; an answer that comes
 once a file is opening anyway is dropped. Both panels start in the user's

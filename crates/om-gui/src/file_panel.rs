@@ -50,6 +50,9 @@ pub(crate) struct Request {
     pub folder: Option<PathBuf>,
     /// The save panel's proposed name ("Untitled.fmp12").
     pub name: String,
+    /// The answer says whether Shift or Option (Alt) was held as the user
+    /// chose ([`Answer::Chosen`]'s `asking`); otherwise it says no.
+    pub modifiers: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +73,7 @@ impl Request {
             extension: None,
             folder: None,
             name: String::new(),
+            modifiers: false,
         }
     }
 
@@ -82,7 +86,14 @@ impl Request {
             extension: None,
             folder: Some(folder),
             name,
+            modifiers: false,
         }
+    }
+
+    /// Report the keys held as the user chooses.
+    pub fn reporting_modifiers(mut self) -> Self {
+        self.modifiers = true;
+        self
     }
 
     /// Starting in `folder`.
@@ -113,6 +124,9 @@ impl Parent {
     /// The frame's native window; `None` without one (the GUI tests) or on
     /// a platform with no panel.
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    // `c_ulong` is 64 bits on Unix and 32 on Windows: the XCB id's
+    // conversion is an identity on one of them.
+    #[allow(clippy::useless_conversion)]
     pub(crate) fn of(frame: &eframe::Frame) -> Option<Parent> {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         match frame.window_handle().ok()?.as_raw() {
@@ -247,6 +261,7 @@ fn platform_show(
         }
     }
     let kind = request.kind;
+    let modifiers = request.modifiers;
     // The panel keeps the block: the block holds the panel weakly.
     let weak = Weak::from_retained(&panel);
     let done = block2::RcBlock::new(move |response: NSModalResponse| {
@@ -265,8 +280,9 @@ fn platform_show(
         let answer = match chosen {
             Some(path) => Answer::Chosen {
                 path,
-                asking: NSEvent::modifierFlags_class()
-                    .intersects(NSEventModifierFlags::Shift | NSEventModifierFlags::Option),
+                asking: modifiers
+                    && NSEvent::modifierFlags_class()
+                        .intersects(NSEventModifierFlags::Shift | NSEventModifierFlags::Option),
             },
             None => Answer::Canceled,
         };
@@ -395,11 +411,12 @@ mod portal {
     fn try_ask(request: &Request, parent: &str, shown: &Arc<Mutex<Shown>>) -> zbus::Result<Answer> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static TOKENS: AtomicU64 = AtomicU64::new(0);
-        // A portal that never answers the call must not keep Open and
+        // A portal that never takes the request must not keep Open and
         // Create waiting: after this the panel is unavailable and
         // OpenMaker's chooser asks. Starting the portal on first use takes
-        // a second or two. The user's own time in the chooser is not
-        // bounded: its answer is a signal, not the call's reply.
+        // a second or two. The wait for the user's answer is not bounded
+        // (it is a signal, not the call's reply); it ends with the answer,
+        // the portal leaving the bus, or the panel dropped.
         let connection = zbus::blocking::connection::Builder::session()?
             .method_timeout(std::time::Duration::from_secs(30))
             .build()?;
@@ -517,7 +534,7 @@ mod portal {
                     .and_then(|uri| file_uri_path(&uri))
                     .map_or(Answer::Unavailable, |path| Answer::Chosen {
                         path,
-                        asking: parent.starts_with("x11:") && x11_asking(),
+                        asking: request.modifiers && parent.starts_with("x11:") && x11_asking(),
                     }),
                 1 => Answer::Canceled,
                 // Ended some other way: the backend could not show one.
@@ -529,8 +546,23 @@ mod portal {
     }
 
     /// Shift or Alt is held now, as the X server sees it: the window's own
-    /// input saw nothing while the chooser had the keyboard.
+    /// input saw nothing while the chooser had the keyboard. Asked from a
+    /// thread of its own, so an X server that does not answer within half a
+    /// second cannot hold the user's choice: then no key is held.
     fn x11_asking() -> bool {
+        let (send, held) = std::sync::mpsc::channel();
+        let asked = std::thread::Builder::new()
+            .name("file panel keys".into())
+            .spawn(move || {
+                let _ = send.send(x11_held());
+            });
+        asked.is_ok()
+            && held
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .unwrap_or(false)
+    }
+
+    fn x11_held() -> bool {
         use x11rb::connection::Connection as _;
         use x11rb::protocol::xproto::{ConnectionExt, KeyButMask};
         let Ok((conn, screen)) = x11rb::connect(None) else {
