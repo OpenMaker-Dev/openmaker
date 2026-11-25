@@ -394,80 +394,115 @@ impl Payload {
     }
 
     /// The payload's bytes, refused when anything is beyond the bounds the
-    /// decoder holds it to. A change's size and bounds are checked whole
-    /// before any of it is copied, so a change past the payload's bound is
-    /// refused without building it.
+    /// decoder holds it to. Every bound of every kind, and the payload's
+    /// whole size, are checked before anything is written ([`Payload::size`]),
+    /// so a payload past a bound is refused without building any of it.
     pub fn encode(&self) -> Result<Vec<u8>, PayloadError> {
-        let mut w = Vec::new();
-        if let Payload::Empty = self {
-            return Ok(w);
-        }
-        if let Payload::Change(c) = self {
-            let len = change_size(c)?.saturating_add(1);
-            if len > MAX_PAYLOAD {
-                return Err(PayloadError::TooLong {
-                    field: "payload",
-                    len,
-                    max: MAX_PAYLOAD,
-                });
-            }
-            w.reserve_exact(len);
-            encode_change_at(&mut w, c)?;
-            debug_assert_eq!(w.len(), len, "change_size and encode_change agree");
-            return Ok(w);
-        }
-        // The other kinds are a few KiB at most.
-        w.push(VERSION);
-        match self {
-            Payload::Session(s) => match s {
-                SessionEvent::Opened(session) => {
-                    w.push(1);
-                    put_session(&mut w, session);
-                }
-                SessionEvent::Closed(session) => {
-                    w.push(2);
-                    put_session(&mut w, session);
-                }
-                SessionEvent::Started { server, count } => {
-                    w.push(3);
-                    w.extend_from_slice(server);
-                    w.extend_from_slice(&count.to_le_bytes());
-                }
-            },
-            Payload::File(event) => match event {
-                FileEvent::Added { name, flags, page0 } => {
-                    w.push(1);
-                    put_name(&mut w, name)?;
-                    if flags & !KNOWN_FLAGS != 0 {
-                        return Err(PayloadError::Flags(*flags));
-                    }
-                    w.extend_from_slice(&flags.to_le_bytes());
-                    put16(&mut w, "page 0", page0, MAX_PAGE0)?;
-                }
-                FileEvent::Removed => w.push(2),
-                FileEvent::Renamed { name } => {
-                    w.push(3);
-                    put_name(&mut w, name)?;
-                }
-            },
-            Payload::Members(Members::FormatVersion(v)) => {
-                w.push(1);
-                w.push(*v);
-            }
-            Payload::Mark(mark) => {
-                w.push(mark.purpose as u8);
-                put_name(&mut w, &mark.name)?;
-            }
-            Payload::Change(_) | Payload::Empty => {}
-        }
-        if w.len() > MAX_PAYLOAD {
+        let len = self.size()?;
+        if len > MAX_PAYLOAD {
             return Err(PayloadError::TooLong {
                 field: "payload",
-                len: w.len(),
+                len,
                 max: MAX_PAYLOAD,
             });
         }
+        let mut w = Vec::with_capacity(len);
+        match self {
+            Payload::Empty => {}
+            Payload::Change(c) => {
+                w.push(VERSION);
+                encode_change(&mut w, c)?;
+            }
+            Payload::Session(event) => {
+                w.push(VERSION);
+                match event {
+                    SessionEvent::Opened(session) => {
+                        w.push(1);
+                        put_session(&mut w, session);
+                    }
+                    SessionEvent::Closed(session) => {
+                        w.push(2);
+                        put_session(&mut w, session);
+                    }
+                    SessionEvent::Started { server, count } => {
+                        w.push(3);
+                        w.extend_from_slice(server);
+                        w.extend_from_slice(&count.to_le_bytes());
+                    }
+                }
+            }
+            Payload::File(event) => {
+                w.push(VERSION);
+                match event {
+                    FileEvent::Added { name, flags, page0 } => {
+                        w.push(1);
+                        put_name(&mut w, name)?;
+                        w.extend_from_slice(&flags.to_le_bytes());
+                        put16(&mut w, "page 0", page0, MAX_PAGE0)?;
+                    }
+                    FileEvent::Removed => w.push(2),
+                    FileEvent::Renamed { name } => {
+                        w.push(3);
+                        put_name(&mut w, name)?;
+                    }
+                }
+            }
+            Payload::Members(Members::FormatVersion(v)) => {
+                w.extend_from_slice(&[VERSION, 1, *v]);
+            }
+            Payload::Mark(mark) => {
+                w.extend_from_slice(&[VERSION, mark.purpose as u8]);
+                put_name(&mut w, &mark.name)?;
+            }
+        }
+        debug_assert_eq!(w.len(), len, "size and encode agree");
         Ok(w)
+    }
+
+    /// The bytes [`Payload::encode`] writes, with every field and count
+    /// checked against its bound, in the order the fields are written.
+    pub fn size(&self) -> Result<usize, PayloadError> {
+        fn name(name: &[u8]) -> Result<usize, PayloadError> {
+            if name.is_empty() {
+                return Err(PayloadError::EmptyName);
+            }
+            if name.len() > MAX_NAME {
+                return Err(PayloadError::TooLong {
+                    field: "name",
+                    len: name.len(),
+                    max: MAX_NAME,
+                });
+            }
+            Ok(2 + name.len())
+        }
+        Ok(match self {
+            Payload::Empty => 0,
+            Payload::Change(c) => change_size(c)?.saturating_add(1),
+            Payload::Session(SessionEvent::Opened(_) | SessionEvent::Closed(_)) => 2 + 32,
+            Payload::Session(SessionEvent::Started { .. }) => 2 + 16 + 8,
+            Payload::File(FileEvent::Added {
+                name: n,
+                flags,
+                page0,
+            }) => {
+                let n = name(n)?;
+                if flags & !KNOWN_FLAGS != 0 {
+                    return Err(PayloadError::Flags(*flags));
+                }
+                if page0.len() > MAX_PAGE0 {
+                    return Err(PayloadError::TooLong {
+                        field: "page 0",
+                        len: page0.len(),
+                        max: MAX_PAGE0,
+                    });
+                }
+                2 + n + 4 + 2 + page0.len()
+            }
+            Payload::File(FileEvent::Removed) => 2,
+            Payload::File(FileEvent::Renamed { name: n }) => 2 + name(n)?,
+            Payload::Members(_) => 3,
+            Payload::Mark(mark) => 2 + name(&mark.name)?,
+        })
     }
 }
 
@@ -852,12 +887,6 @@ fn change_size(c: &Change) -> Result<usize, PayloadError> {
         }
     }
     Ok(n)
-}
-
-/// The version byte and a change.
-fn encode_change_at(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {
-    w.push(VERSION);
-    encode_change(w, c)
 }
 
 fn encode_change(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {

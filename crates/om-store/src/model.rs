@@ -9,7 +9,9 @@
 //!
 //! An entry is checked whole before the model changes, in the order of
 //! format section 5.6, so a refused entry leaves it as it was and names the
-//! same refusal `apply` names.
+//! same refusal `apply` names. A change's lock edits are checked against the
+//! edits before them kept by session, so a release touches only its own
+//! session's, and [`Outcome::steps`] counts the work.
 
 use std::collections::BTreeMap;
 
@@ -55,6 +57,11 @@ pub struct Model {
     pub locks: BTreeMap<LockId, Vec<u8>>,
 }
 
+/// A change's lock edits so far, for one session: whether it released the
+/// session's locks on the file, and the locks it set (true) or removed
+/// (false), by key and user.
+type Pending = (bool, BTreeMap<(Vec<u8>, Vec<u8>), bool>);
+
 /// What an entry did besides changing the model.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
@@ -62,6 +69,9 @@ pub struct Outcome {
     pub closed: Vec<Session>,
     pub added: Option<u64>,
     pub removed: Option<u64>,
+    /// The map entries a change's lock edits visited, checked and made:
+    /// linear in its lock edits and the locks they release.
+    pub steps: u64,
 }
 
 impl Default for Model {
@@ -171,13 +181,49 @@ impl Model {
                         });
                     }
                 }
-                // The lock table as it will be, built aside and kept only if
-                // every lock edit is right.
-                let mut locks = self.locks.clone();
+                // Every lock edit is checked first, against the lock table
+                // and the edits before it, which are kept by session: a
+                // release forgets only its own session's.
+                let mut pending: BTreeMap<Session, Pending> = BTreeMap::new();
                 for (i, edit) in change.locks.iter().enumerate() {
+                    out.steps += 1;
                     if !self.sessions.contains_key(edit.session()) {
                         return Err(Refusal::SessionNotOpen(*edit.session()));
                     }
+                    let (released, made) = pending.entry(*edit.session()).or_default();
+                    match edit {
+                        LockEdit::Set { key, user, .. } => {
+                            made.insert((key.clone(), user.clone()), true);
+                        }
+                        LockEdit::Remove { session, key, user } => {
+                            let mine = (key.clone(), user.clone());
+                            let held = match made.get(&mine) {
+                                Some(&held) => held,
+                                None => {
+                                    !*released
+                                        && self.locks.contains_key(&LockId {
+                                            session: *session,
+                                            file,
+                                            key: key.clone(),
+                                            user: user.clone(),
+                                        })
+                                }
+                            };
+                            if !held {
+                                return Err(Refusal::NoSuchLock { edit: i });
+                            }
+                            made.insert(mine, false);
+                        }
+                        LockEdit::ReleaseFile { .. } => {
+                            out.steps += made.len() as u64;
+                            made.clear();
+                            *released = true;
+                        }
+                    }
+                }
+                // Then they are made, in order.
+                for edit in &change.locks {
+                    out.steps += 1;
                     match edit {
                         LockEdit::Set {
                             session,
@@ -191,43 +237,38 @@ impl Model {
                                 key: key.clone(),
                                 user: user.clone(),
                             };
-                            locks.insert(id, value.clone());
+                            self.locks.insert(id, value.clone());
                         }
                         LockEdit::Remove { session, key, user } => {
-                            let id = LockId {
+                            self.locks.remove(&LockId {
                                 session: *session,
                                 file,
                                 key: key.clone(),
                                 user: user.clone(),
-                            };
-                            if locks.remove(&id).is_none() {
-                                return Err(Refusal::NoSuchLock { edit: i });
-                            }
+                            });
                         }
                         LockEdit::ReleaseFile { session } => {
-                            // The session's locks on the file are one range.
+                            // The session's locks on the file sort together.
                             let from = LockId {
                                 session: *session,
                                 file,
                                 key: Vec::new(),
                                 user: Vec::new(),
                             };
-                            let mut after = locks.split_off(&from);
-                            let rest = match after
-                                .keys()
-                                .find(|id| id.session != *session || id.file != file)
-                            {
-                                Some(id) => {
-                                    let id = id.clone();
-                                    after.split_off(&id)
-                                }
-                                None => BTreeMap::new(),
-                            };
-                            locks.extend(rest);
+                            let gone: Vec<LockId> = self
+                                .locks
+                                .range(from..)
+                                .map(|(id, _)| id)
+                                .take_while(|id| id.session == *session && id.file == file)
+                                .cloned()
+                                .collect();
+                            out.steps += gone.len() as u64;
+                            for id in gone {
+                                self.locks.remove(&id);
+                            }
                         }
                     }
                 }
-                self.locks = locks;
                 if let Some(op) = &change.op {
                     self.sessions
                         .insert(op.session, (op.seq, change.reply.clone()));

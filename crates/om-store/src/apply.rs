@@ -314,6 +314,16 @@ pub struct Pages {
     pub dropped: u64,
 }
 
+/// What the checks of an entry listed from the store's tree: the rows the
+/// listings visited, and the most listed rows held at once. A listing holds
+/// one row at a time, so this is the depth of listings within listings
+/// (format section 5.8), whatever the number of rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Listed {
+    pub rows: u64,
+    pub held: u64,
+}
+
 /// What applying an entry did, for the caller to keep and publish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Applied {
@@ -335,6 +345,7 @@ pub struct Applied {
     /// The sessions the entry closed, with their locks.
     pub closed: Vec<Session>,
     pub pages: Pages,
+    pub listed: Listed,
 }
 
 impl Applied {
@@ -496,13 +507,23 @@ fn known_version(version: u8) -> bool {
 /// as it is read; one this build cannot read is [`Error::Malformed`].
 pub struct StoreTree<'s, S: ?Sized> {
     tree: Tree<'s, S>,
+    listed: Cell<Listed>,
+    /// Listed rows held now.
+    holding: Cell<u64>,
 }
 
 impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
     pub fn open(store: &'s S, root: Root) -> Result<Self, Error> {
         Ok(StoreTree {
             tree: Tree::open(store, root)?,
+            listed: Cell::new(Listed::default()),
+            holding: Cell::new(0),
         })
+    }
+
+    /// What the listings made through this reader visited and held.
+    pub fn listed(&self) -> Listed {
+        self.listed.get()
     }
 
     /// The value at `path`, if a value is there.
@@ -514,15 +535,29 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         }
     }
 
-    fn children(&self, path: &[Vec<u8>]) -> Result<Vec<(Vec<u8>, Node)>, Error> {
-        let mut out = Vec::new();
+    /// Calls `f` with each child of the node at `path`, in order, one at a
+    /// time: the listing holds one child at once, however many there are.
+    fn each_child(
+        &self,
+        path: &[Vec<u8>],
+        mut f: impl FnMut(Vec<u8>, Node) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for child in self
             .tree
             .children(path, Bound::Unbounded, Direction::Forward)
         {
-            out.push(child?);
+            let (segment, node) = child?;
+            let holding = self.holding.get() + 1;
+            self.holding.set(holding);
+            let mut listed = self.listed.get();
+            listed.rows += 1;
+            listed.held = listed.held.max(holding);
+            self.listed.set(listed);
+            let done = f(segment, node);
+            self.holding.set(holding - 1);
+            done?;
         }
-        Ok(out)
+        Ok(())
     }
 
     /// The last entry applied: [`Position::START`] before entry 1.
@@ -564,7 +599,7 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
     /// Every file, by id.
     pub fn files(&self) -> Result<Vec<(u64, FileRow)>, Error> {
         let mut out = Vec::new();
-        for (segment, _) in self.children(&[seg(keys::FILES)])? {
+        self.each_child(&[seg(keys::FILES)], |segment, _| {
             if segment.len() != 8 {
                 return Err(Error::Malformed("a file's id"));
             }
@@ -573,7 +608,8 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
                 .file(id)?
                 .ok_or(Error::Malformed("a file without a name"))?;
             out.push((id, row));
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 
@@ -589,12 +625,13 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
     /// The whole name index: every name with the id of its file.
     pub fn names(&self) -> Result<Vec<(Vec<u8>, u64)>, Error> {
         let mut out = Vec::new();
-        for (name, node) in self.children(&[seg(keys::NAMES)])? {
-            match node {
-                Node::Value(v) if v.len() == 8 => out.push((name, le64(&v))),
-                _ => return Err(Error::Malformed("a name's file")),
+        self.each_child(&[seg(keys::NAMES)], |name, node| match node {
+            Node::Value(v) if v.len() == 8 => {
+                out.push((name, le64(&v)));
+                Ok(())
             }
-        }
+            _ => Err(Error::Malformed("a name's file")),
+        })?;
         Ok(out)
     }
 
@@ -611,7 +648,7 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
 
     pub fn servers(&self) -> Result<Vec<(ServerId, ServerRow)>, Error> {
         let mut out = Vec::new();
-        for (segment, _) in self.children(&[seg(keys::SERVERS)])? {
+        self.each_child(&[seg(keys::SERVERS)], |segment, _| {
             let server: ServerId = segment
                 .as_slice()
                 .try_into()
@@ -620,7 +657,8 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
                 .server(&server)?
                 .ok_or(Error::Malformed("a server's row"))?;
             out.push((server, row));
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 
@@ -655,38 +693,41 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         Ok(Some(SessionRow { seq, reply }))
     }
 
-    /// The open sessions of `server`, from their lists alone: no sequence
-    /// number or reply is read.
-    fn session_ids(&self, server: &ServerId) -> Result<Vec<Session>, Error> {
-        let mut out = Vec::new();
-        for (segment, node) in self.children(&server_sessions(server))? {
+    /// Calls `f` with each open session of `server`, from their lists
+    /// alone: no sequence number or reply is read.
+    fn each_session(
+        &self,
+        server: &ServerId,
+        mut f: impl FnMut(Session) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.each_child(&server_sessions(server), |segment, node| {
             let (Node::List, 16) = (node, segment.len()) else {
                 return Err(Error::Malformed("a session's list"));
             };
-            out.push(Session {
+            f(Session {
                 server: *server,
                 start: be64(&segment[..8]),
                 connection: be64(&segment[8..]),
-            });
-        }
-        Ok(out)
+            })
+        })
     }
 
     /// Every open session, with its row.
     pub fn sessions(&self) -> Result<Vec<(Session, SessionRow)>, Error> {
         let mut out = Vec::new();
-        for (segment, _) in self.children(&[seg(keys::SESSIONS)])? {
+        self.each_child(&[seg(keys::SESSIONS)], |segment, _| {
             let server: ServerId = segment
                 .as_slice()
                 .try_into()
                 .map_err(|_| Error::Malformed("a server's id"))?;
-            for session in self.session_ids(&server)? {
+            self.each_session(&server, |session| {
                 let row = self
                     .session(&session)?
                     .ok_or(Error::Malformed("a session's row"))?;
                 out.push((session, row));
-            }
-        }
+                Ok(())
+            })
+        })?;
         Ok(out)
     }
 
@@ -746,22 +787,30 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         Ok(out)
     }
 
-    /// The sessions that hold anything under a file's locks: the paths of
-    /// their lists for the file.
-    fn file_lock_lists(&self, file: u64) -> Result<Vec<Path>, Error> {
-        let mut out = Vec::new();
-        for (server, _) in self.children(&[seg(keys::LOCKS)])? {
+    /// Calls `f` with the path of each session's lock list for `file`,
+    /// looking through the sessions that hold lock lists one at a time:
+    /// what it holds does not grow with the sessions that have none for the
+    /// file.
+    fn each_file_lock_list(
+        &self,
+        file: u64,
+        mut f: impl FnMut(Path) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.each_child(&[seg(keys::LOCKS)], |server, _| {
             let above = vec![seg(keys::LOCKS), server];
-            for (session, _) in self.children(&above)? {
-                let mut path = above.clone();
-                path.push(session);
-                path.push(file.to_be_bytes().to_vec());
+            self.each_child(&above, |session, _| {
+                let path = vec![
+                    above[0].clone(),
+                    above[1].clone(),
+                    session,
+                    file.to_be_bytes().to_vec(),
+                ];
                 if self.tree.get(&path)?.is_some() {
-                    out.push(path);
+                    f(path)?;
                 }
-            }
-        }
-        Ok(out)
+                Ok(())
+            })
+        })
     }
 }
 
@@ -912,6 +961,7 @@ pub fn apply<S: PageStore + ?Sized>(
     };
     plan.store
         .push(Edit::leaf(vec![seg(keys::APPLIED)], position.encode()));
+    let listed = state.listed();
     drop(state);
 
     // Everything is decided; now the writes, all in one unit.
@@ -948,6 +998,7 @@ pub fn apply<S: PageStore + ?Sized>(
         opened: plan.opened,
         closed: plan.closed,
         pages,
+        listed,
     })
 }
 
@@ -1090,7 +1141,10 @@ fn plan<S: PageStore + ?Sized>(
                         Some(row) => *count > row.start,
                     };
                     if applies {
-                        plan.closed = state.session_ids(server)?;
+                        state.each_session(server, |s| {
+                            plan.closed.push(s);
+                            Ok(())
+                        })?;
                         plan.store.push(Edit::delete(server_sessions(server)));
                         plan.store.push(Edit::delete(server_locks(server)));
                         plan.store.push(Edit::leaf(
@@ -1130,9 +1184,10 @@ fn plan<S: PageStore + ?Sized>(
                 let id = entry.file;
                 plan.store.push(Edit::delete(file_path(id)));
                 plan.store.push(Edit::delete(name_path(&row.name)));
-                for list in state.file_lock_lists(id)? {
+                state.each_file_lock_list(id, |list| {
                     plan.store.push(Edit::delete(list));
-                }
+                    Ok(())
+                })?;
                 plan.drop = Some((id, root_of(id)?));
             }
             FileEvent::Renamed { name } => {

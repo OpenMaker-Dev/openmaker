@@ -2173,8 +2173,11 @@ impl PageStore for Counting {
 }
 
 /// Review of #732: a server's start finds the sessions it closes from their
-/// lists alone. It reads none of their replies, however large, so what one
-/// start reads and holds does not grow with the replies it deletes.
+/// lists alone, one at a time. It reads none of their replies, however
+/// large, and holds one listed row at once, so what one start reads and
+/// holds does not grow with the replies it deletes. A file's removal looks
+/// through the sessions that hold lock lists one at a time too, holding
+/// nothing for the many that have none for the file.
 #[test]
 fn a_start_reads_no_reply_of_the_sessions_it_closes() {
     let store = Counting {
@@ -2191,14 +2194,16 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
         applied.update(&mut roots);
         applied
     };
-    push(
-        1,
-        Payload::File(FileEvent::Added {
-            name: b"f".to_vec(),
-            flags: 0,
-            page0: Vec::new(),
-        }),
-    );
+    for (id, name) in [(1, b"f"), (2, b"g")] {
+        push(
+            id,
+            Payload::File(FileEvent::Added {
+                name: name.to_vec(),
+                flags: 0,
+                page0: Vec::new(),
+            }),
+        );
+    }
     push(
         0,
         Payload::Session(SessionEvent::Started { server, count: 1 }),
@@ -2219,7 +2224,22 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
                 ..Change::default()
             }),
         );
+        // A lock on the second file, released: the session keeps an empty
+        // list of locks.
+        let set = LockEdit::Set {
+            session,
+            key: b"k".to_vec(),
+            user: b"u".to_vec(),
+            value: b"v".to_vec(),
+        };
+        let release = LockEdit::ReleaseFile { session };
+        push(2, change_of(None, vec![set, release], Vec::new()));
     }
+    // The first file's removal lists the one server and every session, and
+    // holds two rows at once: a session within its server.
+    let removed = push(1, Payload::File(FileEvent::Removed));
+    assert_eq!(removed.listed.rows, 1 + sessions);
+    assert_eq!(removed.listed.held, 2, "rows held at once by the removal");
     store.overflow.set(0);
     let started = push(
         0,
@@ -2227,5 +2247,43 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
     );
     assert_eq!(started.closed.len(), sessions as usize);
     assert_eq!(store.overflow.get(), 0, "overflow pages read by the start");
+    assert_eq!(started.listed.rows, sessions);
+    assert_eq!(started.listed.held, 1, "rows held at once by the start");
     compare(&store, &roots, &model, "after the start");
+}
+
+/// Review of #732: the model checks and makes one change's lock edits in
+/// linear steps too. Bob's locks sort between Alice's and Carol's; each
+/// release of Bob's touches none of Carol's growing run.
+#[test]
+fn the_model_takes_lock_edits_in_linear_steps() {
+    let mut f = Fixture::new();
+    let carol = Session {
+        connection: 3,
+        ..f.alice
+    };
+    f.push(0, Payload::Session(SessionEvent::Opened(carol)));
+    let n = 5_000u64;
+    let mut locks = Vec::new();
+    for i in 0..n {
+        locks.push(LockEdit::Set {
+            session: carol,
+            key: i.to_be_bytes().to_vec(),
+            user: b"t0".to_vec(),
+            value: b"v".to_vec(),
+        });
+        locks.push(LockEdit::ReleaseFile { session: f.bob });
+    }
+    let edits = locks.len() as u64;
+    let built = f.seal(f.file, &change_of(None, locks, Vec::new()));
+    let outcome = f.model.apply(&built.entry()).unwrap();
+    assert!(
+        outcome.steps <= 2 * edits,
+        "{} steps for {edits} lock edits",
+        outcome.steps
+    );
+    assert_eq!(
+        f.model.locks.keys().filter(|l| l.session == carol).count() as u64,
+        n
+    );
 }
