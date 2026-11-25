@@ -2596,7 +2596,7 @@ impl Store {
         self.dirty |= changed;
         if changed {
             self.generation += 1;
-            self.forget_marks(journal.as_deref_mut());
+            self.forget_marks(journal);
         }
         Ok(changed)
     }
