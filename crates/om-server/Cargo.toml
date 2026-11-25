@@ -49,7 +49,7 @@ rcgen = "0.14"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pemfile = "2"
-sentry = { version = "0.49.6", default-features = false, features = ["backtrace", "contexts", "log", "logs", "ureq", "rustls"], optional = true }
+sentry = { version = "0.49.6", default-features = false, features = ["backtrace", "contexts", "log", "ureq", "rustls"], optional = true }
 # The agent of Sentry's transport, given a request deadline (`reporting`):
 # the ureq Sentry uses, with its rustls features.
 ureq = { version = "3.5", default-features = false, optional = true }

@@ -14,8 +14,13 @@
 //!   message formatted at run time can hold any value the program had, such
 //!   as a field's text, and is withheld ([`panic_event`]);
 //! - a log record at the error level, with the warning and info records
-//!   logged before it on the same thread as breadcrumbs. Warning and error
-//!   records of OpenMaker's own crates also go to Sentry's log.
+//!   logged before it on the same thread as breadcrumbs.
+//!
+//! Sentry's own log (its `logs` feature) is not used: its batching thread
+//! can lose its last batch at the program's end unless the client is
+//! closed, and closing joins Sentry's transport thread, waiting for a
+//! report in flight and panicking if that thread had panicked; its thread
+//! also aborts the program's start when it cannot be made.
 //!
 //! Every message is passed through [`scrub`] first. Personal data is not
 //! sent (`send_default_pii` is off), and no request, record or file content
@@ -149,11 +154,6 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
         }
         Some(breadcrumb)
     }));
-    options.before_send_log = Some(Arc::new(move |mut entry: sentry::protocol::Log| {
-        entry.body = scrub(&entry.body);
-        entry.attributes.insert("app".into(), app.into());
-        Some(entry)
-    }));
     // As `sentry::init` does, but for its guard, which closes the client.
     let client = Arc::new(sentry::Client::with_options(sentry::apply_defaults(
         options,
@@ -178,8 +178,7 @@ fn report_panics() {
     }));
 }
 
-/// Whether this is one of Sentry's own threads (`sentry-transport`,
-/// `sentry-logs-batcher`).
+/// Whether this is one of Sentry's own threads (`sentry-transport`).
 fn on_sentry_thread() -> bool {
     std::thread::current()
         .name()
@@ -224,9 +223,8 @@ impl sentry::TransportFactory for Transport {
 /// `console`, the program's logger, with Sentry's log integration around
 /// it. Every record reaches `console` as before, and first: an error's
 /// line is written before Sentry takes the thread's stack. Error records
-/// become events, warning and info records breadcrumbs, and warning and
-/// error records of OpenMaker's own crates (`om_*`) entries of Sentry's
-/// log too. Not read: debug and trace records, Sentry's own threads' records
+/// become events, warning and info records breadcrumbs. Not read: debug
+/// and trace records, Sentry's own threads' records
 /// and those of `ureq` (Sentry's transport, and Insert from URL's requests,
 /// whose URLs may carry a file's data).
 pub fn logger<L: log::Log>(console: L) -> impl log::Log {
@@ -264,15 +262,11 @@ fn route(metadata: &log::Metadata<'_>) -> LogFilter {
     if target.starts_with("ureq") || target.starts_with("sentry") || on_sentry_thread() {
         return LogFilter::Ignore;
     }
-    let mut filter = match metadata.level() {
+    match metadata.level() {
         log::Level::Error => LogFilter::Event,
         log::Level::Warn | log::Level::Info => LogFilter::Breadcrumb,
-        log::Level::Debug | log::Level::Trace => return LogFilter::Ignore,
-    };
-    if metadata.level() <= log::Level::Warn && target.starts_with("om_") {
-        filter |= LogFilter::Log;
+        log::Level::Debug | log::Level::Trace => LogFilter::Ignore,
     }
-    filter
 }
 
 /// Install `console`, whose most detailed level is `level`, as the

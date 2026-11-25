@@ -1000,8 +1000,10 @@ without the commit, which the build does not record. What is sent:
   not reported.
 - Each error-level log line, as an event with the stack of the thread that
   logged it and, as breadcrumbs, the last 100 warning and info lines logged
-  on that thread. Warning and error lines of OpenMaker's own crates also go
-  to Sentry's log. Debug lines, `ureq`'s and Sentry's own are not read.
+  on that thread. Debug lines, `ureq`'s and Sentry's own are not read.
+  Sentry's own log (Logs) is not used: its batching can lose the last
+  batch when a program ends without closing the client, and closing it can
+  wait for a report in flight and panic after a failure in Sentry's thread.
 - The error a program ends with: `om-server`'s once reports are on, which
   is after the command line and the Admin Console's password are read;
   `om-gui`'s window's.
