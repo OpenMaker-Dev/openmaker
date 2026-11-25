@@ -745,7 +745,7 @@ impl Store {
             version: 0,
             derived,
             name: name.to_string(),
-            basis: HashMap::new(),
+            bases: Arc::default(),
             change_number: 0,
             saved_from: None,
             unwritable: false,
@@ -755,11 +755,12 @@ impl Store {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
             waiting: Waiting::default(),
-            verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
             read_only: Some(cause),
