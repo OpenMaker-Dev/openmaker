@@ -1785,7 +1785,8 @@ reordered or altered entry.
 | file | a file added, removed, renamed or cloned |
 | members | the cluster's servers, or the tree format version (section 7.6) |
 | mark | a named point: a restore point, a release, a comparison of servers (section 7.5) |
-| empty | a new leader's first entry |
+| empty | a new leader's first entry, and a restart's when groups were left open: it discards every open group (section 6.9) |
+| group | a group discarded (section 6.9) |
 
 An entry holds **effects**, not the request: the edits the operation made,
 as computed by the server that ran it (section 7.2). Applying an entry is a
