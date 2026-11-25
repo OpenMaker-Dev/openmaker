@@ -149,28 +149,31 @@ cache). The rows give medians.
 
 1. **The append path.** Once an entry has put a key that the working tree's own
    bytes prove its greatest (every node on the tree's right edge a copy the entry
-   changed, each in order as its bytes show, the last separators at or below the
-   key), a put past that key needs none of the general put's lookups: its
-   ancestors at or below the greatest key are that key or its ancestors, those
-   above are missing, and nothing is at or under its own key. It sets the missing
-   ancestors as lists, then the node: the primitives the general put applies, in
-   the same order. The greatest key's ancestors are looked up once after each
-   proof, as the general put looks them up, so a tree read from its pages that
-   breaks the tree's rules (a key without its parent, keys out of order across or
-   within pages) is never taken on trust; an entry's first put always takes the
-   general put. Deciding reads nothing, so the append path reads no page the
-   general put would not. The tree is the same: seeded tests compare both paths'
-   root hashes after every entry, over random ordered inputs with disorder mixed
-   in (swaps, duplicates, deletes, an ancestor put again) in every split into
-   entries of twelve short sequences in memory and in random splits of six long
-   ones in memory and on the page file; over directed inputs (keys that spill, a
-   key of 65,535 bytes and a value of 65,535, a path 64 deep, a tree at least
-   four levels high, the greatest key deleted, the tree emptied and filled), in
-   memory and on the page file; and on trees written page by page that break
-   those rules. The
-   import's tree here is the same 8,490 pages. Measured with the steps of
-   "Reproduce", three runs each, before interleaving was used; the reads did not
-   change.
+   changed, each in order as its bytes show and at or above the separator its
+   parent holds for it, the last separators at or below the key), a put past that
+   key needs none of the general put's lookups: its ancestors at or below the
+   greatest key are that key or its ancestors, those above are missing, and
+   nothing is at or under its own key. It sets the missing ancestors as lists,
+   then the node: the primitives the general put applies, in the same order. The
+   greatest key's ancestors are looked up once after each proof, as the general
+   put looks them up, and an append that splits a page drops the proof, so that
+   the next put proves the key and looks its ancestors up again. So a tree read
+   from its pages that breaks the tree's rules (a key without its parent, keys
+   out of order across or within pages) is not taken on trust: on a tree read
+   from its pages an entry's first put takes the general put (an entry that makes
+   the tree appends from its first put, having nothing to read). Deciding reads
+   nothing, so the append path reads no page the general put would not. The tree
+   is the same: seeded tests compare both paths' root hashes after every entry,
+   over random ordered inputs with disorder mixed in (swaps, duplicates, deletes,
+   an ancestor put again) in every split into entries of twelve short sequences
+   in memory and in random splits of six long ones in memory and on the page
+   file; over directed inputs (keys that spill, a key of 65,535 bytes and a value
+   of 65,535, a path 64 deep, a tree at least four levels high, the greatest key
+   deleted, the tree emptied and filled), in memory and on the page file; and on
+   trees written page by page that break those rules, splits of their right
+   leaves and root index included. The import's tree here is the same 8,490
+   pages. Measured with the steps of "Reproduce", three runs each, before
+   interleaving was used; the reads did not change.
 2. **Lent keys.** `Cursor::next_lent` lends a key from its page when the page
    holds it whole, and the walk copies it into one of two buffers it swaps, rather
    than allocating every key. The last segment is still copied: the step owns it.
@@ -186,7 +189,7 @@ cache). The rows give medians.
    comparison reads nothing, so it cannot fail, and leaving out the items' own
    comparisons leaves out no read: the walk gives what comparing each item gives,
    its errors included. On any other leaf each item is compared alone.
-5. **One read of each item.** The cursor parsed each item's header three times
+5. **Fewer reads of each item's header.** The cursor parsed each item's header three times
    (for the bound, the node and the key) and cloned its leaf's `Arc` for every
    item. It now lends the leaf and parses the header once for the item, and once
    more for its comparison where the item is compared alone (a leaf's first step,
@@ -201,7 +204,11 @@ Review made changes 1 and 4 exact on trees the writer never makes and on reads
 that fail (above, as they now are). Measured interleaved against the code before,
 ten rounds each with load averages from 4 to 6, the corrections cost nothing
 measurable: import 3.81 s before and 3.84 s after, the warm walk 325 and 332 ms,
-its first pass 873 and 861 ms, the listing 327 and 321 ms.
+its first pass 873 and 861 ms, the listing 327 and 321 ms. A second round made
+an append that splits a page drop its proof, so the next put proves the greatest
+key and looks its ancestors up again, about 8,500 times in this import: import
+3.71 s before and 3.82 s after (ten rounds each, load averages 4 to 6), the warm
+walk 327 and 322 ms.
 
 ## After (all six changes)
 
