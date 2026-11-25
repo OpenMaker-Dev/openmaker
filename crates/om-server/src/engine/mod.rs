@@ -741,10 +741,11 @@ pub enum Reply {
     ReleaseLock,
     /// op65 is answered with the request's own header (write-path.md 4.4).
     ReleaseLocks,
-    /// Whether the subtree was put into the file: it is not on a read-only
-    /// file or where the file cannot hold it, and op13's reply is the same
-    /// either way (schema-path.md 3.3); or the storage error when it was
-    /// not stored.
+    /// The subtree stored (`true`; the engine's refusal of an operation it
+    /// does not hold aside, never `false`); or why it was not: the storage
+    /// error of a save that failed, or the refusal of a file hosted
+    /// read-only or of a destination the file cannot hold, which op13
+    /// answers as a save that failed (#737).
     UploadToCatalog(Result<bool, StorageError>),
     /// op86's reply is what its program answered when it ran; this is
     /// only whether its writes were refused because the file became
@@ -859,8 +860,8 @@ impl StorageError {
     }
 
     /// The error of an operation refused, unrun, because the file takes no
-    /// more changes (`why`, `Store::writes_refused`): nothing of it is
-    /// stored.
+    /// more changes (`why`, `Store::writes_refused`) or is hosted read-only:
+    /// nothing of it is stored.
     fn refused(why: &str) -> Self {
         StorageError {
             code: crate::hosting::save_error(&std::io::Error::other(why)),
@@ -886,11 +887,20 @@ pub struct CommitReply {
     pub unused: Staged,
 }
 
-/// An operation's reply and the notices for other clients.
+/// An operation's reply, the notices for other clients, and what it asks
+/// of the file's state, which the engine applies in one place, after the
+/// operation's save ([`FileEngine::submit`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub reply: Reply,
     pub notices: Notices,
+    /// Hold the file read-only for this cause from now on, unless it is
+    /// already for another: deferred field work that cannot be done
+    /// (op73's, or what the file is opened with, `store::WorkKept`), or
+    /// whose finished work's save failed. Decided from what the version
+    /// holds and from the save, never set by the store while it runs
+    /// (docs/server-storage.md 5).
+    pub holds_read_only: Option<crate::store::ReadOnlyCause>,
 }
 
 /// The changes to tell the connections registered on the file about
@@ -915,6 +925,16 @@ impl Outcome {
         Outcome {
             reply,
             notices: Notices::default(),
+            holds_read_only: None,
+        }
+    }
+
+    /// This outcome, with the file to be held read-only for deferred field
+    /// work that cannot be done.
+    fn work_kept(self) -> Self {
+        Outcome {
+            holds_read_only: Some(crate::store::ReadOnlyCause::DeferredWork),
+            ..self
         }
     }
 
@@ -1026,6 +1046,7 @@ impl Outcome {
                 from: self.notices.from,
                 changes: Vec::new(),
             },
+            holds_read_only: self.holds_read_only,
         }
     }
 }
@@ -1226,6 +1247,7 @@ pub fn run(
             Outcome {
                 reply: Reply::CommitRecords(reply),
                 notices: Notices { from, changes },
+                holds_read_only: None,
             }
         }
         (Operation::TakeLock(op), Hold::View(store)) => Outcome::new(Reply::TakeLock(
@@ -1245,15 +1267,20 @@ pub fn run(
                     from,
                     changes: writes::unlock(op, locks),
                 },
+                holds_read_only: None,
             }
         }
         (Operation::ReleaseLocks(op), _) => {
             writes::kill_all_locks(op, locks);
             Outcome::new(Reply::ReleaseLocks)
         }
-        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => Outcome::new(
-            Reply::UploadToCatalog(Ok(schema::upload_to_catalog(op, file, tx))),
-        ),
+        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::UploadToCatalog(
+                schema::upload_to_catalog(op, file, tx)
+                    .map(|()| true)
+                    .map_err(|why| StorageError::refused(&why)),
+            ))
+        }
         (Operation::ChangeSchema(op), Hold::Transaction(tx)) => Outcome::new(Reply::ChangeSchema(
             schema::change_schema(op, file, tx).map_err(SchemaNotChanged::Refused),
         )),
@@ -1261,9 +1288,18 @@ pub fn run(
             schema::store_indexes(op.indexes, file, tx);
             Outcome::new(Reply::StoreIndexes(Ok(())))
         }
-        (Operation::UpdateTable(op), Hold::Transaction(tx)) => Outcome::new(Reply::UpdateTable(
-            schema::update_table(op, tx, environment).map_err(String::from),
-        )),
+        (Operation::UpdateTable(op), Hold::Transaction(tx)) => {
+            match schema::update_table(op, tx, environment) {
+                Ok(changed) => Outcome::new(Reply::UpdateTable(Ok(changed))),
+                Err(not_updated) => {
+                    let outcome = Outcome::new(Reply::UpdateTable(Err(not_updated.why().into())));
+                    match not_updated {
+                        crate::store::NotUpdated::Kept(_) => outcome.work_kept(),
+                        crate::store::NotUpdated::ReadOnly => outcome,
+                    }
+                }
+            }
+        }
         (Operation::StoreContainerData(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::StoreContainerData(crate::containers::store_upload(op, file, tx, environment)),
         ),
@@ -1278,6 +1314,7 @@ pub fn run(
             Outcome {
                 reply: Reply::EditDesign(reply),
                 notices: Notices { from, changes },
+                holds_read_only: None,
             }
         }
         // The engine saves the file (`FileEngine::submit`).
@@ -1294,6 +1331,7 @@ pub fn run(
             Outcome {
                 reply: Reply::CommitScriptRecords(result),
                 notices: Notices { from, changes },
+                holds_read_only: None,
             }
         }
         (Operation::SetNextSerial(op), Hold::Transaction(tx)) => {
@@ -1315,6 +1353,7 @@ pub fn run(
                     from: user.connection,
                     changes,
                 },
+                holds_read_only: None,
             }
         }
         (Operation::ReleaseSessionLocks(op), _) => {
@@ -1341,9 +1380,15 @@ pub fn run(
         (Operation::DeleteAccount(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::DeleteAccount(crate::hosting::delete_account(op, tx, environment)),
         ),
-        (Operation::FinishDeferredWork, Hold::Transaction(tx)) => Outcome::new(
-            Reply::FinishDeferredWork(Ok(schema::finish_deferred_work(tx, environment))),
-        ),
+        (Operation::FinishDeferredWork, Hold::Transaction(tx)) => {
+            match schema::finish_deferred_work(tx, environment) {
+                Ok(changed) => Outcome::new(Reply::FinishDeferredWork(Ok(changed))),
+                // Nothing done, as nothing changed before (`Store::recover`).
+                Err(crate::store::WorkKept(_)) => {
+                    Outcome::new(Reply::FinishDeferredWork(Ok(false))).work_kept()
+                }
+            }
+        }
         (Operation::SaveFoundSet(op), Hold::Transaction(tx)) => {
             Outcome::new(Reply::SaveFoundSet(save_found_set(op, file, tx)))
         }
@@ -1449,7 +1494,7 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
         Operation::UpgradeLock(_) => Reply::UpgradeLock(refused_lock),
         Operation::ReleaseLock(_) => Reply::ReleaseLock,
         Operation::ReleaseLocks(_) => Reply::ReleaseLocks,
-        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Ok(false)),
+        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Err(StorageError::refused(why))),
         Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(SchemaNotChanged::Refused(why))),
         Operation::StoreIndexes(_) => Reply::StoreIndexes(Ok(())),
         Operation::UpdateTable(_) => Reply::UpdateTable(Err(why.to_owned())),

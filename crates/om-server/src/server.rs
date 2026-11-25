@@ -211,6 +211,8 @@ impl Server {
                 script_gate: Default::default(),
                 #[cfg(debug_assertions)]
                 failing_timestamps: Default::default(),
+                #[cfg(debug_assertions)]
+                read_only_before_write: AtomicBool::new(false),
             }),
             schedules: Scheduler::new(),
             limits: ConnectionLimits::DEFAULT,

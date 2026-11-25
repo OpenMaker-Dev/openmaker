@@ -48,10 +48,19 @@
 //! in to again), and uploading past a limit are [`Refused`]: the connection
 //! answers with a CORBA system exception, which the client reports as an
 //! error. An upload refused part way is dropped whole, its charge given
-//! back, and its cursor remembered like an evicted one. A cursor this connection never issued, or finished, gets the empty
-//! last page FileMaker Server's code gives instead, which a client reads as
-//! the end of the stream; an evicted cursor never does, so a client is
-//! never handed a silently truncated result.
+//! back, and its cursor remembered like an evicted one; an evicted cursor
+//! never reads as the end of a stream, so a client is never handed a
+//! silently truncated result. A continuation of a download (op90, op92,
+//! op86's results) whose cursor this connection never issued, or finished,
+//! gets the empty last page FileMaker Server's code gives, which a client
+//! reads as the end of the stream. An upload's continuation with such a
+//! cursor ([`Upload::Unknown`]) is a failure for its operation to answer,
+//! as nothing of it is held: the empty last page would read as the upload
+//! done (op13, op14, op70 and op88 fail it, and op86 for a program's
+//! part). The last part of a completed upload sent again is such a cursor
+//! too, whatever its operation answered: the connection keeps no memory of
+//! the uploads it completed, so a repeat fails rather than be answered done
+//! for work the answer could no longer vouch for.
 //!
 //! Receiving an upload costs time linear in its size: the scan of the parts
 //! received ([`UploadScan`]) is kept with the transfer.
@@ -319,7 +328,8 @@ pub(crate) enum Upload {
     /// More parts follow; answer with this resume block and no slots.
     Partial(Resume),
     /// The cursor is not an upload this operation started on this
-    /// connection.
+    /// connection and still holds: never issued, another operation's, or
+    /// one it completed (its last part sent again).
     Unknown,
 }
 
@@ -539,6 +549,27 @@ impl Transfers {
             return Ok(Upload::Complete(payload, charge));
         }
         self.keep_upload(owner, held.perform, resume.cursor, (payload, scan, charge))
+    }
+
+    /// Drop the upload that `resume` continues, when `owner` holds it, with
+    /// its charge, and remember its cursor, so that a later part of it is
+    /// refused: a continuation refused before it reaches
+    /// [`Transfers::upload`] (its file became read-only, its session may no
+    /// longer write) ends the upload it belongs to, rather than leave the
+    /// parts already held charged until they are evicted.
+    pub fn abandon_upload(&mut self, owner: Owner, resume: &Resume) {
+        if !resume.has_more() {
+            return;
+        }
+        let Some(held) = self.remove(resume.cursor) else {
+            return;
+        };
+        match held.transfer {
+            Transfer::Upload { .. } if held.owner == owner && held.perform == resume.perform => {
+                self.remember(resume.cursor);
+            }
+            transfer => self.insert(resume.cursor, Held { transfer, ..held }),
+        }
     }
 
     /// Drop the transfers of file `file_id`, whose session in it ended (the
@@ -768,6 +799,7 @@ mod tests {
             transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
             Ok(Upload::Complete(p, _)) if p == [0x80, 0x20, 0x01]
         ));
+        // Its last part again: a cursor no longer held.
         assert!(matches!(
             transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
             Ok(Upload::Unknown)
@@ -876,10 +908,35 @@ mod tests {
             payload,
             [0x80, 0x00, 0x10, 0x20, 0x11, 0x80, 0x00, 0x01, 0x40, 0x00, 0xfb, 0x40]
         );
-        assert!(matches!(
-            transfers.upload(OWNER, &resume, vec![0x40], MAX_UPLOAD, &mut handles),
-            Ok(Upload::Unknown)
-        ));
+        // The last part again is a cursor no longer held, as one another
+        // operation or perform handle names, or one never issued, is.
+        let other = Owner {
+            opcode: OWNER.opcode + 1,
+            ..OWNER
+        };
+        for (owner, resume) in [
+            (OWNER, resume.clone()),
+            (other, resume.clone()),
+            (
+                OWNER,
+                Resume {
+                    perform: resume.perform + 1,
+                    ..resume.clone()
+                },
+            ),
+            (
+                OWNER,
+                Resume {
+                    cursor: resume.cursor + 1000,
+                    ..resume.clone()
+                },
+            ),
+        ] {
+            assert!(matches!(
+                transfers.upload(owner, &resume, vec![0x40], MAX_UPLOAD, &mut handles),
+                Ok(Upload::Unknown)
+            ));
+        }
     }
 
     /// Abandoned transfers hold at most `MAX_IDLE` bytes besides the one in

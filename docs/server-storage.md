@@ -1319,17 +1319,133 @@ before; whether the file takes no more changes it keeps beside the store
 writes outside an operation are the engine's too: the identity of the
 file it loaded, set before anyone can reach the file
 (`FileEngine::loaded_from`), and the read-only hold of a file whose
-deferred work a panic left part way (`FileEngine::hold_read_only`).
+deferred work a panic left part way (`FileEngine::hold_read_only`). The
+read-only hold for deferred work comes from an operation only through its
+outcome: deferred field work that cannot be done (op73's or the file's at
+opening: an unknown work bit or field key, a value removal or conversion
+whose old type is unknown, a work list that is not a list) is decided from
+what the version holds, its tree and its bases, with the field catalog
+decoded from that tree, before anything changes, and comes back as the
+outcome (`store::WorkKept`, `store::NotUpdated::Kept`;
+`Outcome::holds_read_only`), not set by the store while it runs; and a save
+of finished deferred work that definitely failed (its work taken back) asks
+the same. The engine applies it in one place, after the operation's save
+(`FileEngine::submit`). Every server applying the same operation to the same
+version decides alike, as long as the decoded catalog is the tree's: a
+catalog that fails to decode leaves the previous one in place
+(`Store::reread_catalog`), so two stores with one tree and one set of bases
+can hold different catalogs and decide an op73 differently
+([#847](https://github.com/OpenMaker-Dev/openmaker/issues/847)). The rest
+of a save's outcome does not go through the operation's outcome: a save
+whose outcome is unknown (its copy renamed over the file, the folder's
+flush failed) records that the file takes no more changes, and the
+hosting publishes it, during the save itself (`Hosted::save_change`),
+before the engine applies the operation's outcome; and a save records
+the identity of the file it renamed into place as it renames it.
 
 The callers: the desktop host's read-only reasons (`LocalHost::read_only`,
 in the same order of precedence: the reason it was opened with, then no
 more changes, then the engine's cause) and its Change Password, a server
 script's account steps, every write request's read-only check
-(`connection::writable`, op72), the event a file's opening records, a
-slot's file on disk for backups (`Slot::saved_file`) and for a close
+(`connection::writable`, op72), the event a file's opening
+records, a slot's file on disk for backups (`Slot::saved_file`) and for a close
 (`Slot::finish_close_if_drained`), and the check that no other slot hosts
 the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
+
+**Writes to a file hosted read-only.** No request that would change a
+file hosted read-only is answered with the reply of a change that
+happened. A write request is admitted once (`connection::writable`, which
+says why it refused: the session, or the file hosted read-only), and a
+file that becomes read-only after that, as another connection's op73 can
+make it, is refused by the engine, which decides again under the write
+lock; the request answers either refusal alike, and leaves the session as
+either leaves it (a commit's staged records stay staged: the engine checks
+before the commit takes any, `writes::commit`). A request whose reply has
+no status to carry the refusal fails with the system exception a write
+whose save failed gets (MARSHAL, COMPLETED_NO): op13 and op14 into the
+file; op70; op73. A part of an upload (op13, op14, op70's list, op88)
+admitted before its file became read-only is held as any part is and
+answered with its continuation, still charged; the refusal comes with the
+next part, or with the last, whose request the engine refuses. A later
+part refused so ends the upload it belongs to, the parts held and their
+charge given back. An upload into a session's own temporary area (op14,
+or op13 with the flag) changes no file: it is refused with that exception
+on a file already read-only at admission, to save the work, and staged
+when the file becomes read-only after, as its reply says; the op70 that
+would commit it is where the file would change, and is refused. The
+engine refuses an op13 upload on a read-only file with its own error
+(`Reply::UploadToCatalog(Err(..))`), not as an upload that had nothing to
+change, and so it refuses one the file cannot hold where it is sent (what
+the file writer cannot write there, a change to a value the upload does
+not name, or the whole file, an empty destination), on any file. The
+others answer their own refusal: op71, op72 and op88 status 200 (access
+denied), op87 a failed count, op86 with schema instructions or a key it
+reserves the error slot with 200 (at admission, when the program runs,
+and when the engine refuses its draft; a key-only program whose file
+becomes read-only after it issued its key and before its draft is
+submitted answers 800 when the key stayed waiting, which stays queued, or
+the program's own answer when another writer had saved it before),
+op240's edits a save error (810, or 800 when the edit was made and taken
+back) and its Save status 3. In a server script, a step that would open,
+create or delete a record answers 3 where the script sees it, before it
+holds anything for the edit (a container's data, a lock); Set Next Serial
+Value answers 3 before anything is written, and the engine refuses it
+first too, so no save is tried and none fails; a script whose last record
+is not stored when it ends has that commit's error as the run's result,
+never 0 (op30's reply when it waits; one that does not wait answers only
+that the script started). A script sets a global field all the same: its
+value is the session's, and needs no record, lock or save. On the
+desktop, Change Password answers an unwritten error and a window's saved
+found set is not kept, which only the log says. These answers are
+OpenMaker's choice; what FileMaker Server answers for a file it serves
+read-only, and what FileMaker Pro does with each, is unmeasured
+([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)).
+
+Nor do op13, op14 and op70 answer done for what they did not store or
+stage, on any file: a request refused for the session (the file not open
+in it, no Login, a set that reads records only, op13 into the file without
+[Full Access], op70 with no privilege set or for a record its set
+refuses) and a list that is not a slot list each fail with the system
+exception. An op70 stores every record its list names or none
+(`writes::unstorable`, as a server script's commit checks its records):
+each is checked under the write lock before anything is written, and a
+record it cannot store refuses the whole commit, with that exception, its
+staged records left staged and charged as they were: a table the file
+does not have, a record another lock user holds (another connection's,
+or the session's own under another transaction id), a new record whose
+id was not issued or that a record already has, a staged record whose
+modification count is not one. FileMaker Server half-writes a record
+another lock user holds and answers done (write-path.md 3.4); OpenMaker
+refuses. A record the list names with nothing staged for it, and the
+deletion of one that is not there, ask for nothing. op73 for a path that
+is not one table fails too; op73 refused for the session still answers
+its empty reply
+([#801](https://github.com/OpenMaker-Dev/openmaker/issues/801)).
+
+A continuation whose cursor the connection does not hold (never issued,
+finished, or for another operation) answers as its request does. A
+download's (op90, op92, op86's results) gets the empty last page
+FileMaker Server's code gives (network-protocol.md 5.6.6c, step 1,
+derived and not exercised live), which a client reads as the end of the
+stream. An upload's (op13, op14, op70, op88, and op86 for a part of its
+program) fails with the system exception: nothing of it is held, and the
+empty last page would read as the upload done, a program run. That is
+OpenMaker's choice against FileMaker's code, unverified. The last part of
+an upload this connection completed, sent again, is such a continuation
+too and fails, although the first sending was done and stored: the
+connection keeps no memory of the uploads it completed. A memory that
+answered such a repeat done was built and taken out again: its answer
+could not vouch for the work once the session's staging was dropped, the
+file had become read-only or the part's bytes were other ones, and no
+client is known to send a part twice on one connection (FileMaker Pro
+26.0.3 answers a failed request by opening a new session, which holds
+none of the old one's cursors). A cursor evicted or refused (an upload
+past a limit, a continuation refused) fails with IMP_LIMIT.
+`tests/recalc.rs` sends each request first to a writable copy, where it
+makes its change, read back, then to a file hosted read-only, and each that
+reaches the engine also to a file made read-only between its admission and
+the engine's write (`ServerHandle::read_only_before_next_write`).
 
 **A script session's reads.** A server script session reads its file
 through readings of its own (`ServerHost::read`), at the points where it
@@ -1812,10 +1928,10 @@ first, each with the test view's runs of its tests:
      listing of the records with each changed record written through the
      transaction, and the container data it reads through a view rather
      than the library node whole
-     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)); and
-     the read-only decision for work it cannot do as the operation's
-     outcome, not a side effect on the file
-     ([#809](https://github.com/OpenMaker-Dev/openmaker/issues/809)).
+     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)). The
+     read-only hold for work it cannot do is its outcome now, decided from
+     the version before anything changes, which the engine applies ("The
+     engine's state of a file", above).
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a `Source` method for the head NodeExists and GetKey read,

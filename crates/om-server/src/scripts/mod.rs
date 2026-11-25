@@ -766,7 +766,9 @@ mod tests {
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
         let engine = crate::engine::FileEngine::default();
-        // Every read answered through both views (`engine::copies`).
+        // Every read answered through both views (`engine::copies`, in
+        // debug builds only).
+        #[cfg(debug_assertions)]
         engine.check_reads();
         engine.check_writes();
         let hosting = Hosting::load(
@@ -823,6 +825,8 @@ mod tests {
             script_gate: Default::default(),
             #[cfg(debug_assertions)]
             failing_timestamps: Default::default(),
+            #[cfg(debug_assertions)]
+            read_only_before_write: Default::default(),
         });
         // A client registered for the file's notifications.
         shared.connection_ids.lock().unwrap().insert(CLIENT);
@@ -1036,6 +1040,27 @@ mod tests {
         assert_eq!(shared.connection_ids.lock().unwrap().len(), 1);
     }
 
+    /// FileMaker Pro 26.0.3 names the script by a counted key, a length
+    /// byte before its serial key (`01 0a` for script 10; #828 of
+    /// github.com/OpenMaker-Dev/openmaker), OpenMaker's client by the serial
+    /// key alone: both run it (the other keys are `script_id`'s tests).
+    #[test]
+    fn a_counted_script_key_runs_its_script() {
+        let ten = fixture::script(10, "PM Navigate", vec![fixture::exit_with("\"ten\"")]);
+        let file = TempFile::new("counted-keys", &[ten], true);
+        let shared = shared(&file);
+        for key in [&[0x01, 0x0a][..], &[0x0a]] {
+            let mut request = request(&shared, 10, "", 0);
+            request.script.script = key.to_vec();
+            let reply = perform(&shared, request);
+            assert_eq!(
+                (reply.error, reply.result.as_str()),
+                (0, "ten"),
+                "{key:02x?}"
+            );
+        }
+    }
+
     #[test]
     fn request_errors_are_filemakers() {
         let file = TempFile::new(
@@ -1140,6 +1165,30 @@ mod tests {
             Value::number(1),
         );
         assert_eq!(rep, Err(HostError::Error(ErrorCode(111))));
+        host.close();
+    }
+
+    /// Set Field on a file hosted read-only is refused (3) before a
+    /// container's data is held for the edit: the refused step leaves
+    /// nothing in the session.
+    #[test]
+    fn a_refused_set_field_holds_no_container_data() {
+        let mut root = fixture::tree(&[], true);
+        fixture::add_photo(&mut root);
+        let file = TempFile::from_tree("refused-container", &root);
+        let shared = shared(&file);
+        shared
+            .engine
+            .hold_read_only(&hosted(&shared), crate::store::ReadOnlyCause::DeferredWork);
+        let mut host = session(&shared);
+        host.go_to_record(om_scripts::runtime::RecordMove::First, false)
+            .unwrap();
+        let data = Value::Container(om_calc::Container::file("a.txt", b"hello".to_vec()));
+        assert_eq!(
+            host.set_field(field(fixture::PHOTO), data),
+            Err(HostError::Error(ErrorCode(3)))
+        );
+        assert_eq!(host.pending_data(), 0);
         host.close();
     }
 
@@ -1728,6 +1777,8 @@ mod tests {
     /// the destination exists; nothing reaches the loopback mail and web
     /// servers. Create Data File and Delete File read nothing of the file
     /// for their arguments, so only a direct call reaches them so.
+    // The test view (`engine::copies`) is in debug builds only.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failed_read_stops_every_effect_outside_the_file() {
         use om_scripts::runtime::{
@@ -1948,6 +1999,8 @@ mod tests {
     /// then on; accounts the engine could not decode answer as before (3).
     /// Each case fails one path in the test view (`FileEngine::fail_reads`)
     /// and runs a script, or a step, that reads it.
+    // The test view (`engine::copies`) is in debug builds only.
+    #[cfg(debug_assertions)]
     #[test]
     fn each_kind_of_read_that_fails_is_802() {
         use om_scripts::runtime::Accounts as _;
@@ -2204,6 +2257,7 @@ mod tests {
 
     /// The scripts of [`a_failed_read_ends_the_run_and_writes_nothing`]:
     /// between them, every kind of step that reads the file.
+    #[cfg(debug_assertions)]
     fn read_fault_corpus() -> Vec<om_scripts::Script> {
         use om_scripts::{FieldSpec, ScriptStep, StoredKey};
         let replace = |text: &str| {
@@ -2440,6 +2494,7 @@ mod tests {
     /// The file the corpus runs on: Tasks with records 1 to 3 and a stored
     /// global, Notes with records related to Tasks by name, the local
     /// accounts.
+    #[cfg(debug_assertions)]
     fn read_fault_tree(scripts: &[om_scripts::Script]) -> om_hbam::OwnedNode {
         let mut tree = fixture::tree(scripts, true);
         fixture::add_tasks(&mut tree, 1..=3);
@@ -2478,6 +2533,7 @@ mod tests {
     /// of the run failing (0: none): the run's error, the reads the run
     /// made, and the file's tree when the session ended and when the read
     /// failed.
+    #[cfg(debug_assertions)]
     fn run_with_failed_read(
         tree: &om_hbam::OwnedNode,
         script: u64,
@@ -2516,6 +2572,7 @@ mod tests {
     }
 
     /// What [`run_with_failed_read`] found.
+    #[cfg(debug_assertions)]
     struct FaultRun {
         reply: PerformScriptReply,
         /// The reads the run made.
@@ -2546,6 +2603,7 @@ mod tests {
     /// submitted but releases, so no lock taken; the file's waiting set and
     /// its whole tree, when the session has ended, as they were at the
     /// failure; error 802; and no result. Returns the runs made.
+    #[cfg(debug_assertions)]
     fn every_failed_read_ends_the_run(after: bool) -> usize {
         let scripts = read_fault_corpus();
         let tree = read_fault_tree(&scripts);
@@ -2611,6 +2669,9 @@ mod tests {
 
     /// [`every_failed_read_ends_the_run`] with one read failing: about
     /// 400 runs, a few seconds.
+    // The store's record of what a read left waiting
+    // (`Store::waiting_for_tests`) is in debug builds only.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failed_read_ends_the_run_and_writes_nothing() {
         let runs = every_failed_read_ends_the_run(false);
@@ -2619,6 +2680,7 @@ mod tests {
 
     /// [`every_failed_read_ends_the_run`] with every read failing from the
     /// k-th on, storage that stays broken, after the default run.
+    #[cfg(debug_assertions)]
     #[test]
     #[ignore = "runs the corpus twice, the second time with every read failing from the k-th on"]
     fn a_failed_read_ends_the_run_and_writes_nothing_when_reads_keep_failing() {

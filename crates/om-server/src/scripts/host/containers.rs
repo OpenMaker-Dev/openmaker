@@ -318,6 +318,13 @@ impl ServerHost {
         format!("{TOKEN_START}{number}\u{e000}")
     }
 
+    /// How many pieces of container data the session holds for a commit,
+    /// for tests.
+    #[cfg(test)]
+    pub(crate) fn pending_data(&self) -> usize {
+        self.pending.values.iter().flatten().count()
+    }
+
     /// The tokens the open record and the open transaction's records hold.
     fn pending_tokens(&self) -> Vec<usize> {
         let held = self.transaction.iter().flat_map(|t| {

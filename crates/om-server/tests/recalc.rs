@@ -12,11 +12,16 @@
 mod fixture;
 #[path = "fixtures/server.rs"]
 mod server;
+#[path = "fixtures/transfer.rs"]
+mod transfer;
+
+use std::path::Path;
 
 use fixture::{TempFile, COUNT, DOUBLED, NAME, OCCURRENCE, TABLE};
 use om_formula::Key;
 use om_hbam::slot::uint_segment;
 use om_hbam::{OwnedNode, RidList};
+use om_protocol::authoring;
 use om_protocol::schema::{self, Upgrade};
 use om_protocol::write::{self, attention, Lock, Unlock, Upload};
 use om_protocol::{DownloadRequest, Resume};
@@ -459,6 +464,1664 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
     assert!(cell(&records, 1, NAME).is_some());
     assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
+}
+
+/// What a request was answered: its reply, or the system exception it got.
+type Answer = Result<Vec<u8>, String>;
+
+/// How a row's request is sent, on the session to the file with an id.
+type SendRequest = Box<dyn Fn(&mut Session, u32) -> Answer>;
+
+/// What a row puts in place first, on the session to the file at the
+/// path: whether it is there, which the tests check where the file is
+/// writable (on a read-only file the preparation's own writes are
+/// refused).
+type Prepare = Box<dyn Fn(&mut Session, &Path) -> bool>;
+
+/// Whether a row's request made its change, read back on the session or
+/// from the file on disk at the path.
+type Made = Box<dyn Fn(&mut Session, &Answer, &Path) -> bool>;
+
+/// A request that would change a file, as one row of the tests below: what
+/// it needs in place first (a lock and a staged edit, the work op73 does),
+/// how it is sent, how its refusal reads, and, on a writable file, the
+/// change it made, read back. No refusal may be the reply of a write that
+/// was done.
+struct Row {
+    what: &'static str,
+    prepare: Prepare,
+    send: SendRequest,
+    refused: fn(&Answer) -> bool,
+    made: Made,
+    /// Admitted, it reaches the engine, which decides again: the transition
+    /// test runs it.
+    engine: bool,
+}
+
+/// The Tasks file with Photo and the scripts the rows run: writable, as
+/// each row first runs on it; with `read_only`, field work deferred for a
+/// field whose definition is gone (Name's), which no server can do, so
+/// that it is hosted read-only from the start. Its field catalog comes back
+/// too.
+fn tasks_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
+    let (file, root) = tasks_tree_for_writes(tag, read_only);
+    (file, field_catalog(&root))
+}
+
+/// [`tasks_for_writes`], with the file's whole tree.
+fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
+    use fixture::{exit_with, go_to_record, on, script, set_field, set_variable};
+    // Set Field's error and the commit's, as `set|commit`.
+    let edit = script(
+        4,
+        "Edit",
+        vec![
+            on(86, true),
+            go_to_record(1),
+            set_field(COUNT, "99"),
+            set_variable("$set", "Get ( LastError )"),
+            om_scripts::ScriptStep::new(75),
+            exit_with("$set & \"|\" & Get ( LastError )"),
+        ],
+    );
+    let left_open = script(
+        6,
+        "Left open",
+        vec![go_to_record(1), set_field(COUNT, "98")],
+    );
+    // A record id reserved and the record reverted: the reservation waits
+    // unsaved for a save (the Save row's preparation).
+    let reserve = script(
+        7,
+        "Reserve",
+        vec![
+            om_scripts::ScriptStep::new(7),
+            om_scripts::ScriptStep::new(51),
+        ],
+    );
+    // A step's error and the commit's, as `step|commit`.
+    let stepped = |id: u64, name: &str, steps: Vec<om_scripts::ScriptStep>| {
+        let mut all = vec![on(86, true), go_to_record(1)];
+        all.extend(steps);
+        all.extend([
+            set_variable("$step", "Get ( LastError )"),
+            om_scripts::ScriptStep::new(75),
+            exit_with("$step & \"|\" & Get ( LastError )"),
+        ]);
+        script(id, name, all)
+    };
+    let new_record = stepped(8, "New", vec![om_scripts::ScriptStep::new(7)]);
+    let delete_record = stepped(9, "Delete", vec![om_scripts::ScriptStep::new(9)]);
+    let replace = stepped(10, "Replace", vec![replace_count_with("7")]);
+    let serial = stepped(11, "Serial", vec![set_next_serial("40")]);
+    // The two records exported to the session's temporary folder, which a
+    // read-only file allows, and imported back as new records.
+    let import = stepped(
+        13,
+        "Import",
+        vec![
+            transfer::export(
+                &["rows.tab"],
+                &[NAME, COUNT],
+                om_transfer::FileType::TabSeparated,
+            ),
+            transfer::import(&["rows.tab"], &[NAME, COUNT], false),
+        ],
+    );
+    // A global set and read in the next step: the session's own value.
+    let global = script(
+        12,
+        "Global",
+        vec![
+            on(86, true),
+            set_field(fixture::SETTING, "\"kept\""),
+            exit_with("Get ( LastError ) & \"|\" & Tasks::Setting"),
+        ],
+    );
+    let scripts = [
+        edit,
+        left_open,
+        reserve,
+        new_record,
+        delete_record,
+        replace,
+        serial,
+        global,
+        import,
+    ];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_photo(&mut root);
+    let mut catalog = field_catalog(&root);
+    if read_only {
+        catalog.remove(&[&[5], &uint_segment(NAME)]);
+        defer(&mut catalog, NAME, 0x1e1);
+        root.put(&[&uint_segment(TABLE), &[3]], catalog);
+    }
+    (TempFile::from_tree(tag, &root), root)
+}
+
+/// Replace Field Contents [Tasks::Count; the calculation `text`], every
+/// record of the found set.
+fn replace_count_with(text: &str) -> om_scripts::ScriptStep {
+    let mut step = om_scripts::ScriptStep::new(91);
+    step.set_field_spec(
+        0,
+        Some(om_scripts::FieldSpec::new(
+            om_scripts::StoredKey::from_id(OCCURRENCE).unwrap(),
+            om_scripts::StoredKey::from_id(COUNT).unwrap(),
+            1,
+        )),
+    );
+    step.set_number(1, Some(3));
+    step.set_calculation(0, Some(&fixture::calc(text)));
+    step
+}
+
+/// Set Next Serial Value [Tasks::Count; text].
+fn set_next_serial(text: &str) -> om_scripts::ScriptStep {
+    let mut step = fixture::with_calc(116, text);
+    step.set_field_spec(
+        0,
+        Some(om_scripts::FieldSpec::new(
+            om_scripts::StoredKey::from_id(OCCURRENCE).unwrap(),
+            om_scripts::StoredKey::from_id(COUNT).unwrap(),
+            0,
+        )),
+    );
+    step
+}
+
+/// Count's next serial value `[T, 03, 05, Count, 0c]`, as a client reads it.
+fn next_serial(session: &mut Session) -> Option<String> {
+    let path = [
+        uint_segment(TABLE),
+        vec![3],
+        vec![5],
+        uint_segment(COUNT),
+        vec![0x0c],
+    ];
+    om_scsu::decode_scsu(&read_back(session, &path).1).ok()
+}
+
+/// Tasks' last issued record id `[T, 00]`: as a client reads it, and in
+/// the file on disk at `path`.
+fn last_ids(session: &mut Session, path: &Path) -> (Vec<u8>, Option<Vec<u8>>) {
+    let read = read_back(session, &[uint_segment(TABLE), vec![0]]).1;
+    let on_disk = om_hbam::HbamFile::open(path).ok().and_then(|file| {
+        let node = file.subtree(&[&uint_segment(TABLE), &[0]]).ok()??;
+        node.value.map(<[u8]>::to_vec)
+    });
+    (read, on_disk)
+}
+
+/// Whether a script's step failed with `code`, from its answer
+/// `error|step|commit`.
+fn step_failed_with(answer: &Answer, code: &str) -> bool {
+    answer.as_deref().is_ok_and(|bytes| {
+        let text = String::from_utf8_lossy(bytes);
+        let parts: Vec<&str> = text.split('|').collect();
+        parts.get(1) == Some(&code)
+    })
+}
+
+/// The deferred-work list of Tasks `[T, 03, 01, fd]`.
+fn deferred_path() -> Vec<Vec<u8>> {
+    vec![uint_segment(TABLE), vec![3], vec![1], vec![0xfd]]
+}
+
+/// The node at `path`, as a download answers: its state and value.
+fn read_back(session: &mut Session, path: &[Vec<u8>]) -> (om_protocol::NodeState, Vec<u8>) {
+    let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    let reply = session.download(&path).unwrap();
+    (reply.node_state, reply.value)
+}
+
+/// An upload of `payload` to `dest` with `flags`, in one part.
+fn upload(flags: u8, dest: Vec<Vec<u8>>, payload: Vec<u8>) -> Upload {
+    Upload {
+        payload,
+        resume: Resume::start(),
+        terminal: 0x10u32.to_be_bytes().to_vec(),
+        flags,
+        dest,
+    }
+}
+
+/// Count's build-index work `0x10` as a deferred-work list: a change of
+/// Tasks' field catalog no file of these tests holds.
+fn count_work() -> OwnedNode {
+    OwnedNode::list(
+        vec![0xfd],
+        vec![OwnedNode::leaf(
+            uint_segment(COUNT),
+            0x10u32.to_be_bytes().to_vec(),
+        )],
+    )
+}
+
+/// Whether Count's work `0x10` is in the deferred-work list.
+fn count_work_listed(session: &mut Session) -> bool {
+    let mut path = deferred_path();
+    path.push(uint_segment(COUNT));
+    read_back(session, &path)
+        == (
+            om_protocol::NodeState::Terminal,
+            0x10u32.to_be_bytes().to_vec(),
+        )
+}
+
+/// An edit of record 1's Name as staged records, `name` its new value.
+fn staged_name(name: &str) -> OwnedNode {
+    OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            om_hbam::serial::encode(1),
+            vec![OwnedNode::leaf(
+                uint_segment(NAME),
+                om_scsu::encode_scsu(name),
+            )],
+        )],
+    )
+}
+
+/// The op70 list that commits record 1's staged Name.
+fn name_commit_list() -> Vec<u8> {
+    let changed = OwnedNode::list(
+        om_hbam::serial::encode(1),
+        vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+    );
+    write::commit_list_tables(vec![(uint_segment(TABLE), vec![changed])]).unwrap()
+}
+
+/// Lock record 1 for transaction 0x31, as FileMaker Pro does before it
+/// stages an edit (op60); its reply unchecked, for a read-only file's
+/// preparation too.
+fn lock_record_1(session: &mut Session) {
+    let (t, record) = (uint_segment(TABLE), om_hbam::serial::encode(1));
+    let path: [&[u8]; 3] = [&t, &[5], &record];
+    let _ = session.lock(&path, 0x31, true);
+}
+
+/// Record 1's Name, as a client reads it.
+fn name_of_record_1(session: &mut Session) -> Option<String> {
+    cell(&records_of(session, TABLE), 1, NAME).map(str::to_owned)
+}
+
+/// An op88 payload holding `bytes` as one stream, with its directory and
+/// MD5 (containers.md 2, 3.1).
+fn binary_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut directory = 1u16.to_be_bytes().to_vec();
+    directory.extend(b"FILE");
+    directory.extend((bytes.len() as u32).to_be_bytes());
+    let md5 = om_data::containers::md5([(&b"FILE"[..], bytes)]);
+    OwnedNode::list(
+        Vec::new(),
+        vec![
+            OwnedNode::leaf(vec![2], directory),
+            OwnedNode::leaf(vec![4], md5.to_vec()),
+            OwnedNode::leaf(b"FILE".to_vec(), bytes.to_vec()),
+        ],
+    )
+    .to_wire()
+    .unwrap()
+}
+
+/// op86 with a schema instruction (DeleteTable of Notes), keyed for the
+/// session as FileMaker Pro keys it.
+fn delete_notes_program(session: &Session, file_id: u32) -> Vec<u8> {
+    use om_query::program::{leaf, opcode};
+    let t = uint_segment(fixture::NOTES);
+    let mut program = OwnedNode::list(Vec::new(), Vec::new());
+    for (key, value) in [
+        (leaf::OPCODE, vec![opcode::DELETE_TABLE]),
+        (leaf::SRC, [vec![t.len() as u8], t].concat()),
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+        (
+            leaf::ACCESS_KEY,
+            om_crypto::query_access_key(1, session.connection_key(), file_id).to_vec(),
+        ),
+    ] {
+        program.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    program.to_wire().unwrap()
+}
+
+/// A server script's run as an answer: its error and result, `error|result`.
+fn run_script(session: &mut Session, script: u64) -> Answer {
+    let reply = session
+        .perform_script_on_server(script, "", true)
+        .map_err(|e| e.to_string())?;
+    Ok(format!("{}|{}", reply.error, reply.result).into_bytes())
+}
+
+/// A script's answer (`error|result`) with an error in it: the run's, or one
+/// its result reports (script 4's `set|commit`).
+fn script_failed(answer: &Answer) -> bool {
+    answer.as_deref().is_ok_and(|bytes| {
+        String::from_utf8_lossy(bytes)
+            .split('|')
+            .any(|part| part.parse::<i64>().is_ok_and(|code| code != 0))
+    })
+}
+
+/// Every request a client sends that changes a file, each with how its
+/// refusal reads and the change it makes on a writable file. `root` is the
+/// file's tree (an authoring edit names the revision of what it edits).
+fn write_rows(root: &OwnedNode) -> Vec<Row> {
+    use om_protocol::container;
+    let exception = |answer: &Answer| answer.is_err();
+    let status = |answer: &Answer| {
+        let bytes = answer.as_deref().unwrap_or_default();
+        bytes.get(..4).is_some_and(|code| code != [0; 4])
+    };
+    let none = || Box::new(|_: &mut Session, _: &Path| true) as Prepare;
+    let into_file = |op13: bool, flags: u8| {
+        move |session: &mut Session, id: u32| {
+            let payload = match flags {
+                write::UPLOAD_VALUE => Vec::new(),
+                _ => count_work().to_wire().unwrap(),
+            };
+            let mut dest = deferred_path();
+            if flags == write::UPLOAD_VALUE {
+                dest.push(uint_segment(COUNT));
+            }
+            let request = upload(flags, dest, payload);
+            let bytes = match op13 {
+                true => write::build_upload_to_host(1, id, &request),
+                false => write::build_upload(1, id, &request),
+            };
+            session.perform(&bytes).map_err(|e| e.to_string())
+        }
+    };
+    let to_temp = |op13: bool| {
+        move |session: &mut Session, id: u32| {
+            let dest = vec![uint_segment(TABLE), vec![5]];
+            let request = upload(
+                write::UPLOAD_FLAGS,
+                dest,
+                staged_name("Staged").to_wire().unwrap(),
+            );
+            let bytes = match op13 {
+                true => write::build_upload_to_host(2, id, &request),
+                false => write::build_upload(2, id, &request),
+            };
+            session.perform(&bytes).map_err(|e| e.to_string())
+        }
+    };
+    // What a staged edit of Name becomes once committed.
+    let staged_then_committed = |session: &mut Session, _: &Answer, _: &Path| {
+        let committed = session.perform(&write::build_commit(
+            3,
+            session.opened_file().unwrap().reply.file_id,
+            &write::Commit {
+                list: name_commit_list(),
+                resume: Resume::start(),
+                flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+                txn: 0x31,
+            },
+        ));
+        committed.is_ok() && name_of_record_1(session).as_deref() == Some("Staged")
+    };
+    let left_open = [vec![17], vec![5], om_hbam::serial::encode(6)];
+    let revision = {
+        let path: Vec<&[u8]> = left_open.iter().map(Vec::as_slice).collect();
+        authoring::content_revision(root.at(&path).expect("script 6"))
+    };
+    vec![
+        Row {
+            what: "op13 node into the file",
+            prepare: none(),
+            send: Box::new(into_file(true, write::UPLOAD_NODE)),
+            refused: exception,
+            made: Box::new(|session, _, _| count_work_listed(session)),
+            engine: true,
+        },
+        Row {
+            what: "op13 value into the file",
+            prepare: none(),
+            send: Box::new(into_file(true, write::UPLOAD_VALUE)),
+            refused: exception,
+            made: Box::new(|session, _, _| count_work_listed(session)),
+            engine: true,
+        },
+        Row {
+            what: "op14 node into the file (temporary-area flag clear)",
+            prepare: none(),
+            send: Box::new(into_file(false, write::UPLOAD_NODE)),
+            refused: exception,
+            made: Box::new(|session, _, _| count_work_listed(session)),
+            engine: true,
+        },
+        Row {
+            what: "op13 into the temporary area",
+            prepare: Box::new(|session, _| {
+                lock_record_1(session);
+                true
+            }),
+            send: Box::new(to_temp(true)),
+            refused: exception,
+            made: Box::new(staged_then_committed),
+            engine: false,
+        },
+        Row {
+            what: "op14 into the temporary area",
+            prepare: Box::new(|session, _| {
+                lock_record_1(session);
+                true
+            }),
+            send: Box::new(to_temp(false)),
+            refused: exception,
+            made: Box::new(staged_then_committed),
+            engine: false,
+        },
+        Row {
+            what: "op70 commit",
+            prepare: Box::new(|session, _| {
+                lock_record_1(session);
+                let t = uint_segment(TABLE);
+                session
+                    .upload_records(&t, staged_name("Changed").children.clone())
+                    .is_ok()
+            }),
+            send: Box::new(|session, id| {
+                let commit = write::Commit {
+                    list: name_commit_list(),
+                    resume: Resume::start(),
+                    flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+                    txn: 0x31,
+                };
+                session
+                    .perform(&write::build_commit(4, id, &commit))
+                    .map_err(|e| e.to_string())
+            }),
+            refused: exception,
+            made: Box::new(|session, _, _| name_of_record_1(session).as_deref() == Some("Changed")),
+            engine: true,
+        },
+        Row {
+            what: "op71 create a record",
+            prepare: none(),
+            send: Box::new(|session, id| {
+                let create = write::CreateRecord {
+                    table: vec![uint_segment(TABLE)],
+                    count: 1,
+                    txn: 0x32,
+                };
+                session
+                    .perform(&write::build_create_record(5, id, &create))
+                    .map_err(|e| e.to_string())
+            }),
+            refused: status,
+            made: Box::new(|session, answer, _| {
+                let Ok(reply) =
+                    write::parse_create_record_reply(answer.as_deref().unwrap_or_default())
+                else {
+                    return false;
+                };
+                // The new last id is saved before the id is answered.
+                let last = read_back(session, &[uint_segment(TABLE), vec![0]]).1;
+                reply.status == 0 && reply.record.first().is_some_and(|id| last.ends_with(id))
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op72 advance a serial",
+            prepare: none(),
+            send: Box::new(|session, id| {
+                let serial = write::GetSerial {
+                    table: vec![uint_segment(TABLE)],
+                    field: vec![uint_segment(COUNT)],
+                    value: String::new(),
+                    increment: 1,
+                    flags: write::SERIAL_INCREMENT,
+                };
+                session
+                    .perform(&write::build_get_serial(6, id, &serial))
+                    .map_err(|e| e.to_string())
+            }),
+            refused: status,
+            made: Box::new(|session, answer, _| {
+                let Ok(reply) =
+                    write::parse_get_serial_reply(answer.as_deref().unwrap_or_default())
+                else {
+                    return false;
+                };
+                let next: Option<u64> = reply.value.parse().ok().map(|v: u64| v + 1);
+                let path = [
+                    uint_segment(TABLE),
+                    vec![3],
+                    vec![5],
+                    uint_segment(COUNT),
+                    vec![0x0c],
+                ];
+                let stored = om_scsu::decode_scsu(&read_back(session, &path).1).ok();
+                reply.status == 0 && next.map(|n| n.to_string()) == stored
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op73 update a table (Count's work listed first)",
+            // The work is listed before, and done after.
+            prepare: Box::new(|session, _| {
+                let dest = deferred_path();
+                let dest: Vec<&[u8]> = dest.iter().map(Vec::as_slice).collect();
+                let _ = session.upload_to_host(&dest, &count_work());
+                count_work_listed(session)
+            }),
+            send: Box::new(|session, id| {
+                session
+                    .perform(&schema::build_update_table(
+                        7,
+                        id,
+                        &vec![uint_segment(TABLE)],
+                    ))
+                    .map_err(|e| e.to_string())
+            }),
+            refused: exception,
+            made: Box::new(|session, _, _| {
+                read_back(session, &deferred_path()).0 == om_protocol::NodeState::Missing
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op86 a program that deletes a table",
+            prepare: none(),
+            send: Box::new(|session, id| {
+                let program = delete_notes_program(session, id);
+                session
+                    .query(&program)
+                    .map(|reply| reply.slots)
+                    .map_err(|e| e.to_string())
+            }),
+            refused: |answer| {
+                answer
+                    .as_deref()
+                    .is_ok_and(|slots| slots.windows(3).any(|s| s == [2, 0, 200]))
+            },
+            made: Box::new(|session, _, _| {
+                read_back(session, &[uint_segment(fixture::NOTES)]).0
+                    == om_protocol::NodeState::Missing
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op87 adjust a reference count",
+            prepare: none(),
+            send: Box::new(|session, id| {
+                let adjust = container::AdjustReferenceCount {
+                    path: vec![
+                        uint_segment(TABLE),
+                        vec![0x1f],
+                        vec![5],
+                        om_hbam::serial::encode(fixture::PHOTO_MEMBER),
+                    ],
+                    delta: 1,
+                };
+                session
+                    .perform(&container::build_adjust_reference_count(8, id, &adjust))
+                    .map_err(|e| e.to_string())
+            }),
+            refused: |answer| {
+                answer
+                    .as_deref()
+                    .is_ok_and(|b| b == container::COUNT_FAILED.to_be_bytes())
+            },
+            made: Box::new(|session, answer, _| {
+                let path = [
+                    uint_segment(TABLE),
+                    vec![0x1f],
+                    vec![5],
+                    om_hbam::serial::encode(fixture::PHOTO_MEMBER),
+                    vec![0x12],
+                ];
+                answer.as_deref().is_ok_and(|b| b == 2u32.to_be_bytes())
+                    && read_back(session, &path).1 == 2u32.to_be_bytes()
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op88 upload container data",
+            prepare: none(),
+            send: Box::new(|session, id| {
+                let binary = container::UploadBinary {
+                    payload: binary_payload(b"kept"),
+                    resume: Resume::start(),
+                    table: vec![uint_segment(TABLE)],
+                    field: vec![uint_segment(fixture::PHOTO)],
+                    solved_path: String::new(),
+                    reserved: [0; 16],
+                };
+                session
+                    .perform(&container::build_upload_binary(9, id, &binary))
+                    .map_err(|e| e.to_string())
+            }),
+            refused: |answer| {
+                answer.as_ref().is_ok_and(|bytes| {
+                    container::parse_upload_binary_reply(bytes)
+                        .is_ok_and(|reply| reply.status != 0 && reply.member.is_empty())
+                })
+            },
+            made: Box::new(|session, answer, _| {
+                let Some(member) = answer.as_ref().ok().and_then(|bytes| {
+                    let reply = container::parse_upload_binary_reply(bytes).ok()?;
+                    (reply.status == 0)
+                        .then(|| reply.member.first().cloned())
+                        .flatten()
+                }) else {
+                    return false;
+                };
+                // The member holds the bytes sent, as its FILE stream.
+                let path = [
+                    uint_segment(TABLE),
+                    vec![0x1f],
+                    vec![5],
+                    member,
+                    b"FILE".to_vec(),
+                ];
+                read_back(session, &path) == (om_protocol::NodeState::Terminal, b"kept".to_vec())
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op240 Save",
+            // A change the file holds unsaved: a server script's record id,
+            // reserved and its record reverted, whose save at the script's
+            // end failed (a folder stands where the save makes its copy).
+            prepare: Box::new(|session, path| {
+                let mut blocked = path.as_os_str().to_owned();
+                blocked.push(".omsave");
+                std::fs::create_dir(&blocked).unwrap();
+                let _ = run_script(session, 7);
+                std::fs::remove_dir(&blocked).unwrap();
+                let (read, on_disk) = last_ids(session, path);
+                on_disk.is_some_and(|on_disk| on_disk != read)
+            }),
+            send: Box::new(|session, id| {
+                session
+                    .perform(&authoring::build_request(10, id, &authoring::Request::Save).unwrap())
+                    .map_err(|e| e.to_string())
+            }),
+            refused: |answer| {
+                answer.as_ref().is_ok_and(|bytes| {
+                    matches!(
+                        authoring::parse_reply(&authoring::Request::Save, bytes),
+                        Ok(authoring::Reply::Refused { .. })
+                    )
+                })
+            },
+            // The change is in the file on disk.
+            made: Box::new(|session, answer, path| {
+                let saved = answer.as_ref().is_ok_and(|bytes| {
+                    authoring::parse_reply(&authoring::Request::Save, bytes)
+                        == Ok(authoring::Reply::Saved)
+                });
+                let (read, on_disk) = last_ids(session, path);
+                saved && on_disk == Some(read)
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op240 replace a script's steps",
+            prepare: none(),
+            send: Box::new(move |session, id| {
+                session
+                    .perform(&authoring::build_request(11, id, &replace_steps(revision)).unwrap())
+                    .map_err(|e| e.to_string())
+            }),
+            refused: |answer| {
+                answer.as_ref().is_ok_and(|bytes| {
+                    matches!(
+                        authoring::parse_reply(&replace_steps([0; 32]), bytes),
+                        Ok(authoring::Reply::Refused { .. })
+                    )
+                })
+            },
+            made: Box::new(|session, answer, _| {
+                let replaced = answer.as_ref().is_ok_and(|bytes| {
+                    matches!(
+                        authoring::parse_reply(&replace_steps([0; 32]), bytes),
+                        Ok(authoring::Reply::Replaced(authoring::Replaced {
+                            changed: true,
+                            ..
+                        }))
+                    )
+                });
+                // The script runs its new steps.
+                replaced && run_script(session, 6).as_deref() == Ok(&b"0|replaced"[..])
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op30 a server script that sets a field and commits",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 4)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                !script_failed(answer) && cell(&records_of(session, TABLE), 1, COUNT) == Some("99")
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op30 a server script that sets a field and ends",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 6)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                !script_failed(answer) && cell(&records_of(session, TABLE), 1, COUNT) == Some("98")
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op30 a server script's New Record",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 8)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                !script_failed(answer) && records_of(session, TABLE).len() == 3
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op30 a server script's Delete Record",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 9)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                let records = records_of(session, TABLE);
+                !script_failed(answer) && records.len() == 1 && cell(&records, 1, NAME).is_none()
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op30 a server script's Replace Field Contents",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 10)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                let records = records_of(session, TABLE);
+                !script_failed(answer)
+                    && cell(&records, 1, COUNT) == Some("7")
+                    && cell(&records, 2, COUNT) == Some("7")
+            }),
+            engine: true,
+        },
+        Row {
+            what: "op30 a server script's Import Records",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 13)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                !script_failed(answer) && records_of(session, TABLE).len() == 4
+            }),
+            engine: true,
+        },
+        // Refused with 3 at the step, also when the file becomes read-only
+        // after the script checked it (the engine refuses it first then):
+        // never 800 from a save tried and failed.
+        Row {
+            what: "op30 a server script's Set Next Serial Value",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 11)),
+            refused: |answer| step_failed_with(answer, "3"),
+            made: Box::new(|session, answer, _| {
+                !script_failed(answer) && next_serial(session).as_deref() == Some("40")
+            }),
+            engine: true,
+        },
+    ]
+}
+
+/// op240's request to replace script 6's steps with one that exits with
+/// "replaced", at the script's revision `expected`.
+fn replace_steps(expected: authoring::Revision) -> authoring::Request {
+    let steps = vec![fixture::exit_with("\"replaced\"")];
+    authoring::Request::ReplaceScriptSteps(authoring::ReplaceScriptSteps {
+        script: 6,
+        expected,
+        definition: fixture::script(6, "Left open", steps).encode(),
+    })
+}
+
+/// #737 and the writes like it: every request a client sends that changes
+/// a file is first sent to a writable copy, where it makes its change,
+/// read back; then to the same file hosted read-only (here its deferred
+/// work cannot be done at startup), where it is refused and none is
+/// answered as a write that was done: a system exception where the reply
+/// has no status (op13 and op14, into the file or the temporary area;
+/// op70; op73), otherwise the status or count of a refusal (and a server
+/// script's error). The connection carries on, and the file is as it was.
+/// What FileMaker Server answers for a file it serves read-only is
+/// unmeasured (#790).
+#[test]
+fn every_write_to_a_file_hosted_read_only_is_refused() {
+    let (writable, root) = tasks_tree_for_writes("recalc-writes-writable", false);
+    let (read_only, read_only_root) = tasks_tree_for_writes("recalc-writes-read-only", true);
+    let before = std::fs::read(&read_only.0).unwrap();
+    let rows = write_rows(&root);
+    let read_only_rows = write_rows(&read_only_root);
+    for (n, (row, read_only_row)) in rows.iter().zip(&read_only_rows).enumerate() {
+        // Each row on a writable copy of its own: it makes its change.
+        let copy = TempFile(writable.0.with_extension(format!("{n}.fmp12")));
+        std::fs::copy(&writable.0, &copy.0).unwrap();
+        let (mut client, id) = server::logged_in(server::start(&copy), "writer");
+        assert!(
+            (row.prepare)(&mut client, &copy.0),
+            "{}: not prepared",
+            row.what
+        );
+        let answer = (row.send)(&mut client, id);
+        assert!(
+            !(row.refused)(&answer),
+            "{}: refused on a writable file: {answer:02x?}",
+            row.what
+        );
+        assert!(
+            (row.made)(&mut client, &answer, &copy.0),
+            "{}: made no change: {answer:02x?}",
+            row.what
+        );
+        client.disconnect().unwrap();
+        // The same on the read-only file: refused, nothing made.
+        let (mut client, id) = server::logged_in(server::start(&read_only), "designer");
+        (read_only_row.prepare)(&mut client, &read_only.0);
+        let answer = (read_only_row.send)(&mut client, id);
+        assert!(
+            (read_only_row.refused)(&answer),
+            "{}: {answer:02x?}",
+            row.what
+        );
+        assert_eq!(std::fs::read(&read_only.0).unwrap(), before, "{}", row.what);
+        client.disconnect().unwrap();
+    }
+    let (mut client, _) = server::logged_in(server::start(&read_only), "reader");
+    let records = records_of(&mut client, TABLE);
+    assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
+    assert_eq!(cell(&records, 1, COUNT), Some("3"));
+    assert_eq!(std::fs::read(&read_only.0).unwrap(), before);
+}
+
+/// On a file hosted read-only a server script opens no record for editing:
+/// Set Field fails with 3 where the script sees it (script 4 keeps Set
+/// Field's error before its commit), and a script that sets a field and
+/// ends reports 3, never 0 with its edit dropped when the session ends.
+/// So do the other steps that would change the file.
+#[test]
+fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
+    let (read_only, _) = tasks_tree_for_writes("recalc-script-read-only", true);
+    let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
+    let edit = run_script(&mut client, 4).unwrap();
+    assert!(
+        String::from_utf8_lossy(&edit).ends_with("|3|0"),
+        "{}",
+        String::from_utf8_lossy(&edit)
+    );
+    let left_open = run_script(&mut client, 6).unwrap();
+    assert!(
+        left_open.starts_with(b"3|"),
+        "{}",
+        String::from_utf8_lossy(&left_open)
+    );
+    // New Record, Delete Record, Replace Field Contents, Set Next Serial
+    // Value and Import Records: each step 3, and its commit nothing to do.
+    for script in [8, 9, 10, 11, 13] {
+        let answer = run_script(&mut client, script).unwrap();
+        assert!(
+            answer.ends_with(b"|3|0"),
+            "script {script}: {}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
+    assert_eq!(cell(&records_of(&mut client, TABLE), 1, COUNT), Some("3"));
+    assert_eq!(records_of(&mut client, TABLE).len(), 2);
+}
+
+/// A global field's value is the session's own: on a file hosted
+/// read-only a server script sets it, with no record, lock or save, and
+/// reads it in its next step.
+#[test]
+fn a_server_script_sets_a_global_on_a_file_hosted_read_only() {
+    let (read_only, _) = tasks_tree_for_writes("recalc-global-read-only", true);
+    let before = std::fs::read(&read_only.0).unwrap();
+    let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
+    let answer = run_script(&mut client, 12).unwrap();
+    assert!(
+        answer.ends_with(b"|0|kept"),
+        "{}",
+        String::from_utf8_lossy(&answer)
+    );
+    assert_eq!(std::fs::read(&read_only.0).unwrap(), before);
+}
+
+/// An op13 upload the file cannot hold where it is sent is not stored,
+/// and fails as an upload whose save failed does, rather than answer done:
+/// one under `[T, 00]`, which holds a value (the file writer cannot write
+/// a list there, `om_hbam::writer::put_refusals`), and one over the whole
+/// file (an empty destination), as a node or a value.
+#[test]
+fn an_upload_the_file_cannot_hold_fails() {
+    let (writable, _) = tasks_tree_for_writes("recalc-cannot-hold", false);
+    let before = std::fs::read(&writable.0).unwrap();
+    let (mut client, id) = server::logged_in(server::start(&writable), "uploader");
+    let under_a_value = vec![uint_segment(TABLE), vec![0], vec![5]];
+    let work = count_work().to_wire().unwrap();
+    for (dest, flags, payload) in [
+        (under_a_value, write::UPLOAD_NODE, work.clone()),
+        (Vec::new(), write::UPLOAD_NODE, work),
+        (Vec::new(), write::UPLOAD_VALUE, Vec::new()),
+    ] {
+        let request = upload(flags, dest.clone(), payload);
+        let answer = client.perform(&write::build_upload_to_host(1, id, &request));
+        assert!(answer.is_err(), "{dest:02x?}: {answer:02x?}");
+    }
+    assert_eq!(std::fs::read(&writable.0).unwrap(), before);
+}
+
+/// A write admitted while its file was writable, whose file becomes
+/// read-only before the engine takes the write lock (as another
+/// connection's op73 can make it), is refused by the engine and answered
+/// as not stored, never with the reply of a write that was done: every row
+/// that reaches the engine once admitted, each on a server of its own (a
+/// file stays read-only once it is), its change not made and the file on
+/// disk as it was.
+#[test]
+fn a_write_whose_file_becomes_read_only_before_it_is_stored_fails() {
+    let (writable, root) = tasks_tree_for_writes("recalc-read-only-meanwhile", false);
+    for (n, row) in write_rows(&root)
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.engine)
+    {
+        let copy = TempFile(writable.0.with_extension(format!("{n}.fmp12")));
+        std::fs::copy(&writable.0, &copy.0).unwrap();
+        let (port, handle) = server::start_with_handle(&copy, om_server::ScriptLimits::DEFAULT);
+        let (mut client, id) = server::logged_in(port, "designer");
+        assert!(
+            (row.prepare)(&mut client, &copy.0),
+            "{}: not prepared",
+            row.what
+        );
+        // What the preparation stored (op73's listed work) is the file's.
+        let before = std::fs::read(&copy.0).unwrap();
+        handle.read_only_before_next_write();
+        let answer = (row.send)(&mut client, id);
+        assert!((row.refused)(&answer), "{}: {answer:02x?}", row.what);
+        assert!(
+            !(row.made)(&mut client, &answer, &copy.0),
+            "{}: made",
+            row.what
+        );
+        assert_eq!(std::fs::read(&copy.0).unwrap(), before, "{}", row.what);
+    }
+}
+
+/// An op70 refused because its file became read-only after the request
+/// was admitted leaves the session's staged edit, and what it is charged,
+/// where a refusal at admission leaves them: the engine checks before the
+/// commit takes anything from staging.
+#[test]
+fn a_late_refused_commit_leaves_the_staged_edit_as_an_early_one_does() {
+    let (writable, _) = tasks_for_writes("recalc-staged-kept", false);
+    for late in [false, true] {
+        let copy = TempFile(writable.0.with_extension(format!("{late}.fmp12")));
+        std::fs::copy(&writable.0, &copy.0).unwrap();
+        let (port, handle) = server::start_with_handle(&copy, om_server::ScriptLimits::DEFAULT);
+        let (mut client, id) = server::logged_in(port, "stager");
+        lock_record_1(&mut client);
+        let t = uint_segment(TABLE);
+        client
+            .upload_records(&t, staged_name("Staged").children.clone())
+            .unwrap();
+        let staged = handle.upload_memory_in_use();
+        assert!(staged > 0);
+        match late {
+            false => assert!(handle.hold_read_only(1)),
+            true => handle.read_only_before_next_write(),
+        }
+        let commit = write::Commit {
+            list: name_commit_list(),
+            resume: Resume::start(),
+            flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+            txn: 0x31,
+        };
+        assert!(client
+            .perform(&write::build_commit(1, id, &commit))
+            .is_err());
+        assert_eq!(handle.upload_memory_in_use(), staged, "late {late}");
+        assert_eq!(
+            name_of_record_1(&mut client).as_deref(),
+            Some("Write tests")
+        );
+    }
+}
+
+/// One entry of an op70 list of Tasks: an edit of Name, a new record or a
+/// deletion, by record id.
+#[derive(Clone, Copy)]
+enum Entry {
+    Edit(u64),
+    New(u64),
+    Delete(u64),
+}
+
+/// The op70 list of `entries` in table `table`.
+fn commit_list_of(table: &[u8], entries: &[Entry]) -> Vec<u8> {
+    let nodes = entries
+        .iter()
+        .map(|entry| match *entry {
+            Entry::Edit(id) => OwnedNode::list(
+                om_hbam::serial::encode(id),
+                vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+            ),
+            Entry::New(id) => OwnedNode::leaf(om_hbam::serial::encode(id), vec![write::COMMIT_NEW]),
+            Entry::Delete(id) => {
+                OwnedNode::leaf(om_hbam::serial::encode(id), vec![write::COMMIT_DELETED])
+            }
+        })
+        .collect();
+    write::commit_list_tables(vec![(table.to_vec(), nodes)]).unwrap()
+}
+
+/// Record `id` staged with Name `name`, and `extra` cells.
+fn staged_record(id: u64, name: &str, extra: Vec<OwnedNode>) -> OwnedNode {
+    let mut cells = vec![OwnedNode::leaf(
+        uint_segment(NAME),
+        om_scsu::encode_scsu(name),
+    )];
+    cells.extend(extra);
+    OwnedNode::list(om_hbam::serial::encode(id), cells)
+}
+
+/// Lock Tasks record `id` for `txn` (op60); granted.
+fn lock_record(session: &mut Session, id: u64, txn: u32) {
+    let (t, record) = (uint_segment(TABLE), om_hbam::serial::encode(id));
+    let path: [&[u8]; 3] = [&t, &[5], &record];
+    let reply = session.lock(&path, txn, true).unwrap();
+    assert!(
+        matches!(reply, write::LockReply::Granted { .. }),
+        "record {id}: {reply:?}"
+    );
+}
+
+/// op70 of `list` for `txn`, as one part.
+fn commit(session: &mut Session, id: u32, list: Vec<u8>, txn: u32) -> Answer {
+    let commit = write::Commit {
+        list,
+        resume: Resume::start(),
+        flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+        txn,
+    };
+    session
+        .perform(&write::build_commit(9, id, &commit))
+        .map_err(|e| e.to_string())
+}
+
+/// An op70 stores every record its list names or none
+/// (`writes::unstorable`): each case below, on a writable copy of its own,
+/// names a record the commit cannot store, alone or beside one it could,
+/// and the whole commit fails with a system exception. Read back over a new
+/// connection and from disk, nothing changed (the file's bytes are as they
+/// were), and what the committing connection B staged stays staged,
+/// charged as before. A holds the locks of another connection.
+#[test]
+fn a_commit_stores_every_record_it_names_or_none() {
+    /// What a case puts in place on A and B before B's op70.
+    type Prepare = fn(&mut Session, &mut Session);
+    /// A case: what it is, its preparation, and B's op70 (the table, its
+    /// entries, the transaction).
+    type Case<'t> = (&'static str, Prepare, &'t [u8], Vec<Entry>, u32);
+    let tasks = uint_segment(TABLE);
+    let missing = uint_segment(0x8099);
+    let cases: [Case; 8] = [
+        (
+            "record 1, which another connection holds, edited",
+            |a, b| {
+                lock_record(a, 1, 0x31);
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(1, "FromB", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1)],
+            0x31,
+        ),
+        (
+            "record 2, which another connection holds, deleted",
+            |a, _| lock_record(a, 2, 0x31),
+            &tasks,
+            vec![Entry::Delete(2)],
+            0x31,
+        ),
+        (
+            "record 1, locked by the session under another transaction",
+            |_, b| {
+                lock_record(b, 1, 0x31);
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(1, "Other txn", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1)],
+            0x32,
+        ),
+        (
+            "records 1, held by another connection, and 2, held by B",
+            |a, b| {
+                lock_record(a, 1, 0x31);
+                lock_record(b, 2, 0x31);
+                let t = uint_segment(TABLE);
+                b.upload_records(
+                    &t,
+                    vec![
+                        staged_record(1, "B1", Vec::new()),
+                        staged_record(2, "B2", Vec::new()),
+                    ],
+                )
+                .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1), Entry::Edit(2)],
+            0x31,
+        ),
+        (
+            "new record 99, an id never issued",
+            |_, b| {
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(99, "New", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::New(99)],
+            0x31,
+        ),
+        (
+            "new record 1, an id a record has",
+            |_, b| {
+                let t = uint_segment(TABLE);
+                b.upload_records(&t, vec![staged_record(1, "Twice", Vec::new())])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::New(1)],
+            0x31,
+        ),
+        (
+            "record 1 staged with fc ff ff ff, not a count",
+            |_, b| {
+                lock_record(b, 1, 0x31);
+                let t = uint_segment(TABLE);
+                let count = OwnedNode::leaf(vec![0xfc], vec![0xff, 0xff, 0xff]);
+                b.upload_records(&t, vec![staged_record(1, "Bad count", vec![count])])
+                    .unwrap();
+            },
+            &tasks,
+            vec![Entry::Edit(1)],
+            0x31,
+        ),
+        (
+            "record 1 of table 80 99, which the file does not have",
+            |_, b| {
+                let t = uint_segment(0x8099);
+                b.upload_records(&t, vec![staged_record(1, "Nowhere", Vec::new())])
+                    .unwrap();
+            },
+            &missing,
+            vec![Entry::Edit(1)],
+            0x31,
+        ),
+    ];
+    let (writable, _) = tasks_for_writes("recalc-whole-commits", false);
+    for (n, (what, prepare, table, entries, txn)) in cases.into_iter().enumerate() {
+        let copy = TempFile(writable.0.with_extension(format!("{n}.fmp12")));
+        std::fs::copy(&writable.0, &copy.0).unwrap();
+        let before = std::fs::read(&copy.0).unwrap();
+        let (port, handle) = server::start_with_handle(&copy, om_server::ScriptLimits::DEFAULT);
+        let (mut a, _) = server::logged_in(port, "holder");
+        let (mut b, id) = server::logged_in(port, "committer");
+        let records = records_of(&mut b, TABLE);
+        prepare(&mut a, &mut b);
+        let staged = handle.upload_memory_in_use();
+        let answer = commit(&mut b, id, commit_list_of(table, &entries), txn);
+        assert!(answer.is_err(), "{what}: answered {answer:02x?}");
+        assert_eq!(handle.upload_memory_in_use(), staged, "{what}: staging");
+        // Nothing changed, read over a new connection and from disk.
+        let (mut reader, _) = server::logged_in(port, "reader");
+        assert_eq!(records_of(&mut reader, TABLE), records, "{what}");
+        assert_eq!(std::fs::read(&copy.0).unwrap(), before, "{what}");
+    }
+}
+
+/// A continuation whose cursor the connection does not hold answers as its
+/// request does. A part of an op86 program with a cursor never issued is
+/// not run and fails (Notes is still there), where a continuation of
+/// results with one gets the empty last page FileMaker Server's code
+/// gives. The last part of an upload completed in two parts, sent again,
+/// is a cursor the connection no longer holds, and fails for op13, op70,
+/// op14 into the temporary area, op88 and a program, although the first
+/// sending was done: nothing is done again (the record stored once, the
+/// staged records and their charge as after the first), and the connection
+/// keeps no memory that could answer done for it (`transfer`). A part of
+/// op13 with a cursor never issued fails too.
+#[test]
+fn a_continuation_answers_as_its_request_does() {
+    use om_protocol::container;
+    let (writable, catalog) = tasks_for_writes("recalc-repeats", false);
+    let (port, handle) = server::start_with_handle(&writable, om_server::ScriptLimits::DEFAULT);
+    let (mut client, id) = server::logged_in(port, "repeater");
+    let never = Resume {
+        perform: 77,
+        cursor: 4242,
+        depth: -1,
+        copy_key: Vec::new(),
+    };
+    let query = |client: &mut Session, program: &[u8], resume: Resume| {
+        let txn = om_protocol::build_query(&om_protocol::QueryRequest {
+            transaction_id: 1,
+            file_id: id,
+            program,
+            resume,
+        });
+        client
+            .perform_with_max(&txn, om_protocol::QUERY_MAX_RETURN)
+            .map(|reply| om_protocol::parse_query_reply(&reply).unwrap())
+            .map_err(|e| e.to_string())
+    };
+    let notes = || [uint_segment(fixture::NOTES)];
+    let program = delete_notes_program(&client, id);
+    let (program_first, program_rest) = program.split_at(program.len() / 2);
+
+    // op86: the second half of a DeleteTable program, a cursor never issued.
+    assert!(query(&mut client, program_rest, never.clone()).is_err());
+    assert_ne!(
+        read_back(&mut client, &notes()).0,
+        om_protocol::NodeState::Missing
+    );
+    // A continuation of results with a cursor never issued.
+    let results = query(
+        &mut client,
+        &[],
+        Resume {
+            depth: 0,
+            ..never.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (results.slots.len(), results.resume),
+        (0, Resume::complete())
+    );
+
+    // op13 in two parts, then its last part again.
+    let whole = catalog.to_wire().unwrap();
+    let (first, rest) = whole.split_at(whole.len() / 2);
+    let to_catalog = |payload: &[u8], resume: Resume| Upload {
+        payload: payload.to_vec(),
+        resume,
+        terminal: Vec::new(),
+        flags: write::UPLOAD_NODE,
+        dest: vec![uint_segment(TABLE), vec![3]],
+    };
+    let reply = client
+        .perform(&write::build_upload_to_host(
+            1,
+            id,
+            &to_catalog(first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_upload_to_host(2, id, &to_catalog(rest, resume));
+    client.perform(&last).unwrap();
+    assert!(client.perform(&last).is_err(), "op13's last part again");
+    assert!(client
+        .perform(&write::build_upload_to_host(
+            3,
+            id,
+            &to_catalog(rest, never.clone())
+        ))
+        .is_err());
+
+    // op70 of 40 entries in two parts, record 1 staged, then its last part
+    // again.
+    lock_record_1(&mut client);
+    let t = uint_segment(TABLE);
+    client
+        .upload_records(&t, vec![staged_record(1, "Twice", Vec::new())])
+        .unwrap();
+    let entries: Vec<Entry> = (1..=40).map(Entry::Edit).collect();
+    let list = commit_list_of(&t, &entries);
+    let (list_first, list_rest) = list.split_at(list.len() / 2);
+    let part = |list: &[u8], resume: Resume| write::Commit {
+        list: list.to_vec(),
+        resume,
+        flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+        txn: 0x31,
+    };
+    let reply = client
+        .perform(&write::build_commit(
+            4,
+            id,
+            &part(list_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_commit(5, id, &part(list_rest, resume));
+    client.perform(&last).unwrap();
+    assert_eq!(name_of_record_1(&mut client).as_deref(), Some("Twice"));
+    let held = handle.upload_memory_in_use();
+    assert!(client.perform(&last).is_err(), "op70's last part again");
+    assert_eq!(name_of_record_1(&mut client).as_deref(), Some("Twice"));
+    assert_eq!(handle.upload_memory_in_use(), held);
+
+    // op14 of 60 records into the temporary area in two parts, then its
+    // last part again.
+    let records: Vec<OwnedNode> = (1..=60)
+        .map(|n| staged_record(n, "Staged", Vec::new()))
+        .collect();
+    let staged = OwnedNode::list(Vec::new(), records).to_wire().unwrap();
+    let (staged_first, staged_rest) = staged.split_at(staged.len() / 2);
+    let to_temp = |payload: &[u8], resume: Resume| Upload {
+        payload: payload.to_vec(),
+        resume,
+        terminal: Vec::new(),
+        flags: write::UPLOAD_FLAGS,
+        dest: vec![uint_segment(TABLE), vec![5]],
+    };
+    let reply = client
+        .perform(&write::build_upload(
+            6,
+            id,
+            &to_temp(staged_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_upload(7, id, &to_temp(staged_rest, resume));
+    client.perform(&last).unwrap();
+    let held = handle.upload_memory_in_use();
+    assert!(client.perform(&last).is_err(), "op14's last part again");
+    assert_eq!(handle.upload_memory_in_use(), held);
+
+    // op88 in two parts, then its last part again.
+    let binary = binary_payload(&[7; 4096]);
+    let (binary_first, binary_rest) = binary.split_at(binary.len() / 2);
+    let binary_part = |payload: &[u8], resume: Resume| container::UploadBinary {
+        payload: payload.to_vec(),
+        resume,
+        table: vec![uint_segment(TABLE)],
+        field: vec![uint_segment(fixture::PHOTO)],
+        solved_path: String::new(),
+        reserved: [0; 16],
+    };
+    let reply = client
+        .perform(&container::build_upload_binary(
+            8,
+            id,
+            &binary_part(binary_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = container::parse_upload_binary_reply(&reply).unwrap().resume;
+    assert!(resume.has_more(), "op88's first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = container::build_upload_binary(9, id, &binary_part(binary_rest, resume));
+    let stored = container::parse_upload_binary_reply(&client.perform(&last).unwrap()).unwrap();
+    assert_eq!((stored.status, stored.member.len()), (0, 1));
+    assert!(client.perform(&last).is_err(), "op88's last part again");
+
+    // op86 in two parts, which deletes Notes, then its last part again.
+    let started = query(&mut client, program_first, Resume::start()).unwrap();
+    assert!(started.resume.has_more());
+    let resume = Resume {
+        depth: -1,
+        ..started.resume
+    };
+    query(&mut client, program_rest, resume.clone()).unwrap();
+    assert_eq!(
+        read_back(&mut client, &notes()).0,
+        om_protocol::NodeState::Missing
+    );
+    assert!(query(&mut client, program_rest, resume).is_err());
+}
+
+/// The last part again of an upload whose operation failed fails too. An
+/// op70 in two parts that is refused whole (another connection holds
+/// record 1) and an op13 in two parts the engine refuses (the whole file
+/// as its destination) fail, and their last parts sent again fail: record
+/// 1 keeps its name. Found by experiment, when the connection remembered
+/// the uploads it completed so as to answer a repeat done: it remembered
+/// them whatever their operation answered, and the repeat of a refused
+/// commit's last part read as done. That memory is gone.
+#[test]
+fn a_last_part_again_fails_when_its_operation_failed() {
+    let (writable, catalog) = tasks_for_writes("recalc-failed-repeats", false);
+    let (port, handle) = server::start_with_handle(&writable, om_server::ScriptLimits::DEFAULT);
+    let (mut holder, _) = server::logged_in(port, "holder");
+    let (mut client, id) = server::logged_in(port, "repeater");
+    let name = name_of_record_1(&mut client);
+
+    lock_record(&mut holder, 1, 0x31);
+    let t = uint_segment(TABLE);
+    client
+        .upload_records(&t, vec![staged_record(1, "FromB", Vec::new())])
+        .unwrap();
+    let staged = handle.upload_memory_in_use();
+    let entries: Vec<Entry> = (1..=40).map(Entry::Edit).collect();
+    let list = commit_list_of(&t, &entries);
+    let (list_first, list_rest) = list.split_at(list.len() / 2);
+    let part = |list: &[u8], resume: Resume| write::Commit {
+        list: list.to_vec(),
+        resume,
+        flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+        txn: 0x31,
+    };
+    let reply = client
+        .perform(&write::build_commit(
+            4,
+            id,
+            &part(list_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_commit(5, id, &part(list_rest, resume));
+    assert!(client.perform(&last).is_err(), "the commit is refused");
+    for _ in 0..2 {
+        assert!(client.perform(&last).is_err(), "its last part again");
+    }
+    assert_eq!(name_of_record_1(&mut client), name);
+    assert_eq!(handle.upload_memory_in_use(), staged, "staging");
+
+    let whole = catalog.to_wire().unwrap();
+    let (first, rest) = whole.split_at(whole.len() / 2);
+    let to_file = |payload: &[u8], resume: Resume| Upload {
+        payload: payload.to_vec(),
+        resume,
+        terminal: Vec::new(),
+        flags: write::UPLOAD_NODE,
+        dest: Vec::new(),
+    };
+    let reply = client
+        .perform(&write::build_upload_to_host(
+            6,
+            id,
+            &to_file(first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_upload_to_host(7, id, &to_file(rest, resume));
+    assert!(client.perform(&last).is_err(), "the upload is refused");
+    assert!(client.perform(&last).is_err(), "its last part again");
+}
+
+/// op73 names one table (`[T]`, schema-path.md 3.6): for any other path it
+/// fails, and the table's work stays listed; for the table it is done.
+#[test]
+fn a_table_update_for_a_path_that_is_no_table_fails() {
+    let (writable, _) = tasks_tree_for_writes("recalc-op73-paths", false);
+    let (mut client, id) = server::logged_in(server::start(&writable), "updater");
+    let dest = deferred_path();
+    let dest: Vec<&[u8]> = dest.iter().map(Vec::as_slice).collect();
+    client.upload_to_host(&dest, &count_work()).unwrap();
+    assert!(count_work_listed(&mut client));
+    for path in [Vec::new(), vec![uint_segment(TABLE), vec![3]]] {
+        let answer = client.perform(&schema::build_update_table(7, id, &path));
+        assert!(answer.is_err(), "{path:02x?}: {answer:02x?}");
+        assert!(count_work_listed(&mut client), "{path:02x?}");
+    }
+    client
+        .perform(&schema::build_update_table(
+            8,
+            id,
+            &vec![uint_segment(TABLE)],
+        ))
+        .unwrap();
+    assert!(!count_work_listed(&mut client));
+}
+
+/// A later part of an upload, refused because its file became read-only
+/// since its first part (op13 into the file, op70's list, op88's
+/// container data), ends the upload it belongs to: the parts held and what
+/// they are charged are given back at once, not kept until evicted.
+#[test]
+fn a_refused_continuation_gives_back_the_parts_it_follows() {
+    use om_protocol::container;
+    let (writable, catalog) = tasks_for_writes("recalc-continuations", false);
+    let whole = catalog.to_wire().unwrap();
+    let (first, rest) = whole.split_at(whole.len() / 2);
+    let commit_list = {
+        let changed: Vec<OwnedNode> = (1..=40)
+            .map(|id| {
+                OwnedNode::list(
+                    om_hbam::serial::encode(id),
+                    vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+                )
+            })
+            .collect();
+        write::commit_list_tables(vec![(uint_segment(TABLE), changed)]).unwrap()
+    };
+    let (list_first, list_rest) = commit_list.split_at(commit_list.len() / 2);
+    let binary = binary_payload(&[7; 4096]);
+    let (binary_first, binary_rest) = binary.split_at(binary.len() / 2);
+    for what in ["op13", "op70", "op88"] {
+        let copy = TempFile(writable.0.with_extension(format!("{what}.fmp12")));
+        std::fs::copy(&writable.0, &copy.0).unwrap();
+        let (port, handle) = server::start_with_handle(&copy, om_server::ScriptLimits::DEFAULT);
+        let (mut client, id) = server::logged_in(port, "uploader");
+        let dest = vec![uint_segment(TABLE), vec![3]];
+        let upload = |payload: &[u8], resume: Resume| Upload {
+            payload: payload.to_vec(),
+            resume,
+            terminal: Vec::new(),
+            flags: write::UPLOAD_NODE,
+            dest: dest.clone(),
+        };
+        let commit = |list: &[u8], resume: Resume| write::Commit {
+            list: list.to_vec(),
+            resume,
+            flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+            txn: 0x31,
+        };
+        let binary_part = |payload: &[u8], resume: Resume| container::UploadBinary {
+            payload: payload.to_vec(),
+            resume,
+            table: vec![uint_segment(TABLE)],
+            field: vec![uint_segment(fixture::PHOTO)],
+            solved_path: String::new(),
+            reserved: [0; 16],
+        };
+        // The first part, while the file is writable: held, a cursor back.
+        let resume = match what {
+            "op13" => write::parse_upload_reply(
+                &client
+                    .perform(&write::build_upload_to_host(
+                        1,
+                        id,
+                        &upload(first, Resume::start()),
+                    ))
+                    .unwrap(),
+            )
+            .unwrap(),
+            "op70" => write::parse_upload_reply(
+                &client
+                    .perform(&write::build_commit(
+                        1,
+                        id,
+                        &commit(list_first, Resume::start()),
+                    ))
+                    .unwrap(),
+            )
+            .unwrap(),
+            _ => {
+                container::parse_upload_binary_reply(
+                    &client
+                        .perform(&container::build_upload_binary(
+                            1,
+                            id,
+                            &binary_part(binary_first, Resume::start()),
+                        ))
+                        .unwrap(),
+                )
+                .unwrap()
+                .resume
+            }
+        };
+        assert!(resume.has_more(), "{what}: the first part was not held");
+        assert!(handle.upload_memory_in_use() > 0, "{what}");
+        assert!(handle.hold_read_only(1));
+        let resume = Resume {
+            depth: -1,
+            ..resume
+        };
+        match what {
+            // No status in the reply: a system exception.
+            "op13" | "op70" => {
+                let answer = match what {
+                    "op13" => {
+                        client.perform(&write::build_upload_to_host(2, id, &upload(rest, resume)))
+                    }
+                    _ => client.perform(&write::build_commit(2, id, &commit(list_rest, resume))),
+                };
+                assert!(answer.is_err(), "{what}: the continuation was answered");
+            }
+            // op88's reply carries the refusal: a status and no member.
+            _ => {
+                let bytes = client
+                    .perform(&container::build_upload_binary(
+                        2,
+                        id,
+                        &binary_part(binary_rest, resume),
+                    ))
+                    .expect("op88 answers a refused part with a status");
+                let reply = container::parse_upload_binary_reply(&bytes).unwrap();
+                assert!(reply.status != 0 && reply.member.is_empty(), "{reply:?}");
+            }
+        }
+        assert_eq!(handle.upload_memory_in_use(), 0, "{what}: parts still held");
+    }
 }
 
 #[test]
