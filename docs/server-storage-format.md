@@ -474,7 +474,7 @@ start count (8) and the connection number (8).
 | version | 1 |
 | group | 8: the group the change is part of (server-storage.md 6.9), 0 for none. Reserved: anything else is refused as unsupported |
 | op | 1: 0 for none, 1 for an operation, then its session (32) and sequence number (8) |
-| reply | `len4`, at most 65,527 bytes; empty when there is no op |
+| reply | `len4`, at most 65,535 bytes; empty when there is no op |
 | notices | count, at most 65,536; each `len4`, at most 65,535 bytes |
 | lock edits | count, at most 1,048,576; each a tag (1), a session (32), then: tag 1 **set**: key `len2` (at most 16,384), user `len2` (at most 1,024), value `len4` (at most 65,535); tag 2 **remove**: key, user; tag 3 **release the file's locks**: nothing more |
 | tree edits | count, at most 1,048,576; each a tag (1), a path, then for tags 2 and 3 a value `len4`. Tags: 1 put a list, 2 put a value, 3 put both, 4 delete. A path is its number of segments (1, at most 64), then each segment `len2` |
@@ -540,20 +540,26 @@ little-endian.
 | `[03, id, 03]` | value: its page 0 |
 | `[04, name]` | value: the id (8) of the file with that name. Names are unique |
 | `[05, server]` | value: the server's highest start count (8) and the highest connection number opened in that start (8); `server` is its 16-byte id |
-| `[06, server, start connection]` | value: an open session's last completed sequence number (8, 0 for none) and that operation's reply. The last segment is the session's start count and connection number, 8 bytes each |
+| `[06, server, start connection]` | list: an open session, there exactly while it is open. The last segment is the session's start count and connection number, 8 bytes each |
+| `[06, server, start connection, 01]` | value: its last completed sequence number (8), 0 for none |
+| `[06, server, start connection, 02]` | value: that operation's reply, empty for none |
 | `[07, server, start connection, file, lock]` | value: a lock's value. `lock` is the key's length (2, big-endian), the key, then the user |
 
-A file's row is the list `[03, id]`, made by its first child. The lists
-above the rows (`[03]`, `[06, server]`, `[07, server, session, file]`
-and the like) are made when their first row is put and kept until the
-subtree above them is deleted. So a session's lock list for a file stays,
+A file's row is the list `[03, id]`, made by its first child, and so is a
+session's. A session's sequence number and reply are leaves under its
+list, not its value, so that a server's sessions are listed from their
+lists without reading a reply (5.8). The lists above the rows (`[03]`,
+`[06, server]`, `[07, server, session, file]` and the like) are made
+when their first row is put and kept until the subtree above them is
+deleted. So a session's lock list for a file stays,
 empty, after its last lock there is removed, until the session closes or
 the file is removed: at most one empty list per session and file it
 locked in.
 
 Locks are kept under their session first, so that closing a session is
-the delete of one subtree, `[07, server, session]`, and a server's start
-the delete of two, `[06, server]` and `[07, server]`. The layer above
+the delete of two subtrees, its list `[06, server, session]` and its
+locks `[07, server, session]`, and a server's start the delete of two,
+`[06, server]` and `[07, server]`, whatever they hold. The layer above
 judges conflicts by key; it builds its lookup by key from a walk of `[07]`
 when it starts (`StoreTree::locks`) and keeps it current from the entries
 it applies.
@@ -610,11 +616,13 @@ by these two edits:
 | children dropped in place (`children.retain`, `children = kept`: a record's cells, a table's global repetitions) | delete each one dropped |
 | a node replaced in place (`*node = new`), or its children replaced (`entry.children = ...` for an index entry's record list) | delete what is gone and put what is new or changed, or put the node and everything under it |
 
-A node that is both, whose value changes while its children stay, takes
-a put of the node and a put of each node under it. No file FileMaker
-wrote has such a node, and the file engine refuses to make one
-(`om_hbam::writer::holds_value`), so this does not arise from a hosted
-file.
+The file engine refuses a put under a node that holds a value that is not
+empty (`om_hbam::writer::holds_value`), but not under a leaf whose value
+is empty: that leaf becomes a list that keeps its empty value, which is
+both, with an empty value, here, as the put rule above makes it (the
+`OwnedNode` test checks this case). A node that is both, whose value
+changes while its children stay, takes a put of the node and a put of
+each node under it; no path of the file engine found makes that change.
 
 The lock table changes the same way. `LockTable::lock` and `upgrade` are
 a **set** (a new lock, or its count or type changed in its value), with a
@@ -630,7 +638,7 @@ returns what changed: the trees whose roots changed with their new roots,
 the trees made and dropped, the sessions opened and closed, the
 payload (whose notices and reply, with the operation's session and
 sequence number, the caller delivers when the entry is published), and
-what the unit of work took (5.7). It reads only the state and the entry:
+what the unit of work took (5.7). What it costs is 5.8. It reads only the state and the entry:
 no clock, no randomness, nothing of page numbers, caching or what else
 is in memory. Every check below is made from reads of the state before
 anything is written. The checks, in this order, the first that fails
@@ -640,8 +648,8 @@ being the one reported:
    entry's, its term is not below that entry's, and its hash is that
    entry's hash continued (5.1). Otherwise: *not next*, *term behind* or
    *chain*. A repeated, skipped or out-of-order entry is not next.
-2. The state's tree format version is one this build knows (only 1).
-   Otherwise: *unknown format version*.
+2. The state's tree format version is one this build knows (only 1; 0 is
+   not a version). Otherwise: *unknown format version*.
 3. The kind is known and the payload decodes (5.2). Otherwise: *payload*,
    which also covers what is reserved (5.4) and an edit beyond the
    bounds.
@@ -664,12 +672,15 @@ Then, by kind:
   the highest recorded; then the session's row is made with sequence
   number 0 and the connection number recorded. *Closed* is applied only
   when the session is open; it deletes the session's row and its locks.
-  *Started* is applied only when the count is above the server's
-  recorded count (or the server has no row); it deletes every session
-  row and lock of the server, and records the count with connection
-  number 0. An event that is not applied changes nothing besides the
-  last entry applied, and is not an error: a delayed or repeated entry
-  can never open a session again or close a newer start's sessions.
+  *Started* is applied when the server has no row, whatever the count,
+  and otherwise only when the count is above the recorded one; it
+  deletes every session and lock of the server, and records the count
+  with connection number 0, which means none opened. So connection
+  numbers start at 1 (an opening of connection 0 changes nothing), as
+  sequence numbers do. An event that is not applied changes nothing
+  besides the last entry applied, and is not an error: a delayed or
+  repeated entry can never open a session again or close a newer
+  start's sessions.
 - **file.** *Added*: the name must be free (*name taken*); the row and
   the name are written and the file's tree made, empty, as of this
   entry. *Removed*: the row, the name and every session's locks on the
@@ -677,8 +688,8 @@ Then, by kind:
   name must be free (*name taken*, also when it is the file's own); the
   row's name and the name rows change.
 - **members.** The version must be one this build knows (*unknown format
-  version*) and not below the state's (*format version lowered*); it is
-  recorded.
+  version*) and not below the state's (*format version lowered*, which
+  cannot arise while 1 is the only version); it is recorded.
 - **mark** and **empty** change nothing else. An `empty` entry, a new
   leader's first, would discard the open groups; no build yet has any.
 
@@ -717,7 +728,37 @@ exist. It also reports what passed through the unit: numbers allocated,
 pages written, and pages released as copied or dropped. A dropped page
 stands for everything under it, which the unit does not count.
 
-### 5.8 Limits
+### 5.8 What one entry costs
+
+What applying one entry reads and holds, at the bounds of 5.2. No
+listing reads a value it then deletes, so the memory of one entry does
+not grow with the size of the values it deletes.
+
+- **Decoding** holds the payload's items: at most about 28 times the
+  payload's size (5.2), and the payload is at most 64 MiB.
+- **A change**'s checks read the session's sequence number, the list of
+  each session its lock edits name (once per session), and the row of
+  each lock it removes that the change itself did not set or release
+  (one value of at most 64 KiB at a time). Its lock edits are kept by
+  session while it is planned, so a release clears only its own
+  session's earlier edits: the work is linear in the lock edits. It
+  holds one store-tree edit per lock edit and two for the session's row.
+  Its tree edits cost what format section 2 says for each; a delete of
+  any size is one range.
+- **A server's start** lists the server's open sessions from their lists,
+  with one seek per session and no value read, and holds 32 bytes per
+  session it closes. It then deletes the server's sessions and locks
+  with two edits, whatever their size. The number of sessions a server
+  has open is bounded by the server's own connection limits, not here.
+- **A file's removal** looks, for each session that holds a lock list
+  (for any file), for its list for the file: one lookup per such
+  session, reading lists only. It holds one delete edit (under 100
+  bytes) per session that has a list for the file, and releases the
+  file's tree with one release, whatever its size.
+- **A session's close, an opening, a rename, a mark, an empty or a
+  members entry** read and write a fixed number of rows.
+
+### 5.9 Limits
 
 - Groups, clones, the members list, blob reference counts, design
   history, container file lists and the kept original image are not
@@ -730,3 +771,6 @@ stands for everything under it, which the unit does not count.
   `OwnedNode::default` makes) is held as an empty value. Made an
   ancestor, it becomes both with an empty value here, and a list without
   a value in `OwnedNode`. The file engine makes leaves with a value.
+- The decoder holds tree edits to the tree's bounds with the tree's own
+  check (`tree::check_edits`), so the model, which shares the decoder,
+  does not check those bounds a second time.
