@@ -105,7 +105,6 @@ const UNCLASSIFIED: &[&str] = &[
     "[04, 05, *, 16]",
     "[11, 05, *, 13]",
     "[19, 05, *, 02]",
-    "[19, 05, *, 03]",
     "[41, 05, *, 02]",
 ];
 
@@ -633,4 +632,58 @@ fn two_language_versions_compare_class_by_class() {
         base.source.is_same() && base.target == m.difference
     }));
     assert!(with.matched.len() >= without.matched.len());
+}
+
+/// A value list's key in the name list by type `[21, 1, 06]` is its type,
+/// then the first two levels of its key in the name list `[21, 1, 01]`
+/// (schema-path.md 5.6): the primary weights, `00 00` and the secondary
+/// level where the name has one. The name list's closing `00` and third
+/// level are not in it (file-format.md 3.7, file-metadata.md 6.1).
+#[test]
+#[ignore = "requires the git-ignored extracted templates in re/extracted"]
+fn a_value_lists_type_key_is_its_type_and_two_levels_of_its_name_key() {
+    let files = files();
+    assert!(!files.is_empty(), "no template folder under re/extracted");
+    let (mut lists, mut with_second, mut with_third) = (0, 0, 0);
+    for path in &files {
+        let (_, root) = tree(path);
+        let Some(by_type) = root.at(&[&[0x21][..], &[1], &[6]]) else {
+            continue;
+        };
+        let by_name = root.at(&[&[0x21][..], &[1], &[1]]).expect("a name list");
+        for leaf in &by_type.children {
+            let (kind, levels) = leaf.segment.split_at(2);
+            assert!(
+                kind == [0, 0] || kind == [0, 1],
+                "{path:?}: type {kind:02x?}"
+            );
+            let names: Vec<&[u8]> = by_name
+                .children
+                .iter()
+                .filter(|name| name.value == leaf.value)
+                .map(|name| name.segment.as_slice())
+                .collect();
+            let [name] = names[..] else {
+                panic!("{path:?}: {} names for one list", names.len());
+            };
+            // The name key goes on with `00` and its third level, which
+            // holds no zero byte.
+            let third = name
+                .strip_prefix(levels)
+                .and_then(|rest| rest.strip_prefix(&[0]))
+                .unwrap_or_else(|| panic!("{path:?}: {levels:02x?} against {name:02x?}"));
+            assert!(!third.contains(&0), "{path:?}: {name:02x?}");
+            // The primary level is whole u16s and ends at the first `00 00`.
+            let primary = (0..levels.len() / 2)
+                .map(|i| i * 2)
+                .find(|&at| levels[at..at + 2] == [0, 0])
+                .unwrap_or_else(|| panic!("{path:?}: no `00 00` in {levels:02x?}"));
+            lists += 1;
+            with_second += usize::from(primary + 2 < levels.len());
+            with_third += usize::from(!third.is_empty());
+        }
+    }
+    // Over the 66 starter files: 264 lists, 41 and 11.
+    println!("{lists} value lists: {with_second} with a second level, {with_third} with a third");
+    assert!(lists > 0);
 }

@@ -46,7 +46,7 @@ Scripts are members of catalog `[17]` (scripts.md): `[17, 5, S]` per script.
 | `04` | step list | the step descriptors, 28 bytes each, concatenated (chunked when large) [O] |
 | `05` | step data | one subtree per step, keyed by the step's data key (section 4) [O] |
 | `10` | `KName` | script name, masked SCSU text (chunked when long) [O] |
-| `13` | (`KCompatibility`/`KPrefixKey` share the number) | u32, 0 in all 361 samples [O]; meaning unknown |
+| `13` | (`KCachedCountIgnoreFolders`, `KCompatibility`, `KDragSize` and `KPrefixKey` share the number) | u32, 0 in all 361 samples and on all 330 scripts of the 66 starter files, folders included [O]; meaning unknown (file-format.md 3.7) |
 | `d8`, `d9` | `KUniqueID`, `KSourceUUID` | 16-byte UUIDs [O] |
 | `f0` | `KMemberFlags` | u64; values 0, 2, 8, 9, 0xa, 0xd, 0x18 seen; bit 0 marks a folder (scripts.md) [O]; bit 3 (`0x8`) leaves the member out of the Scripts menu: FileMaker's XML writes it as the `Options` value with `hidden="True"` (oracle, "Implementation notes (Script Workspace)") [O]; "run with full access" and Siri visibility (XML `runwithfullaccess`, `SiriShortcutVisible`) are not mapped [I] |
 | `f1` | `KPrivateMemberFlags` | u64, 0 [O] |
