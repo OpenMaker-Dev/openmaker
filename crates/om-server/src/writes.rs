@@ -428,10 +428,11 @@ impl TempArea {
     /// commit took.
     ///
     /// The list may name a record more than once, out of key order, or not
-    /// staged at all. Each table's staged records are split into the named
-    /// and the rest in one walk, in time linear in the records staged and
-    /// named, up to sorting the names (#693): taking them out one at a time
-    /// moved every later record each time.
+    /// staged at all. Each named record is found as [`places`] finds it,
+    /// and a table's are taken out together: the records after the first
+    /// move once, where taking them out one at a time moved every later
+    /// record each time (#693). Records before the first named one are not
+    /// read.
     pub fn lend(&mut self, list: &OwnedNode) -> (Staged, Lent) {
         let mut named: BTreeMap<&[u8], Vec<&[u8]>> = BTreeMap::new();
         for table in &list.children {
@@ -451,16 +452,33 @@ impl TempArea {
             let Some(records) = self.root.at_mut(&[table, RECORDS]) else {
                 continue;
             };
-            // The area's lists are in key order with each key once, as
-            // `OwnedNode::put` keeps them, so one walk through the sorted
-            // names meets each staged record's name, if it has one, as it
-            // reaches the record.
             names.sort_unstable();
-            let mut names = names.into_iter().peekable();
-            let taken = records.children.extract_if(.., |record| {
-                let segment = record.segment.as_slice();
-                while names.next_if(|name| *name < segment).is_some() {}
-                names.peek() == Some(&segment)
+            names.dedup();
+            // The area's lists are in key order with each key once, as
+            // `OwnedNode::put` keeps them: a name's place holds its record
+            // or none does.
+            let found: Vec<usize> = places(&records.children, names.iter().copied())
+                .into_iter()
+                .zip(&names)
+                .filter(|&(place, name)| {
+                    records
+                        .children
+                        .get(place)
+                        .is_some_and(|record| record.segment == *name)
+                })
+                .map(|(place, _)| place)
+                .collect();
+            let (Some(&first), Some(&last)) = (found.first(), found.last()) else {
+                continue;
+            };
+            // `extract_if` visits the span in order, moving each record it
+            // keeps once.
+            let mut found = found.into_iter().peekable();
+            let mut place = first;
+            let taken = records.children.extract_if(first..=last, |_| {
+                let take = found.next_if_eq(&place).is_some();
+                place += 1;
+                take
             });
             for record in taken {
                 let path = vec![table.to_vec(), RECORDS.to_vec(), record.segment.clone()];
@@ -502,12 +520,41 @@ impl TempArea {
 #[derive(Debug)]
 pub struct Lent(Vec<(KeyPath, usize)>);
 
+/// Where each of `keys`, in key order, is among `children`, in key order
+/// with each key once, or would go: the index of the first child whose key
+/// is not before it. A few keys among many children are found by a binary
+/// search each, from the previous key's place on, which compares no more
+/// than looking each one up; more keys by one walk through both, linear in
+/// both (#693).
+fn places<'k>(children: &[OwnedNode], keys: impl ExactSizeIterator<Item = &'k [u8]>) -> Vec<usize> {
+    // A binary search compares about log2(n) + 1 times, the walk n + k.
+    let search = children
+        .len()
+        .checked_ilog2()
+        .map_or(1, |log| log as usize + 1);
+    let search = keys.len().saturating_mul(search) < children.len();
+    let mut at = 0;
+    keys.map(|key| {
+        let rest = children.get(at..).unwrap_or_default();
+        at += if search {
+            rest.partition_point(|child| child.segment.as_slice() < key)
+        } else {
+            rest.iter()
+                .take_while(|child| child.segment.as_slice() < key)
+                .count()
+        };
+        at
+    })
+    .collect()
+}
+
 /// Put `records`, no two with one key, among `list`'s children, which are
 /// in key order with each key once: what [`OwnedNode::set_child`] does for
-/// each in turn (a record replaces the child with its key), in time linear
-/// in both up to sorting `records`, and within the room the list already
-/// has when the records came out of it (#693). Inserting them one at a
-/// time moved every later child each time.
+/// each in turn (a record replaces the child with its key), within the
+/// room the list already has when the records came out of it (#693). Each
+/// record's place is found as [`places`] finds it; the children from the
+/// first place on move once, and those before it are not read, where
+/// inserting the records one at a time moved every later child each time.
 fn put_back(list: &mut OwnedNode, mut records: Vec<OwnedNode>) {
     if records.is_empty() {
         return;
@@ -515,36 +562,41 @@ fn put_back(list: &mut OwnedNode, mut records: Vec<OwnedNode>) {
     list.push = true;
     records.sort_unstable_by(|a, b| a.segment.cmp(&b.segment));
     let children = &mut list.children;
-    // A record whose key a child has takes the child's place.
-    let mut at = 0;
-    records.retain_mut(|record| {
-        while children
-            .get(at)
-            .is_some_and(|child| child.segment < record.segment)
-        {
-            at += 1;
-        }
-        match children.get_mut(at) {
-            Some(child) if child.segment == record.segment => {
-                *child = std::mem::take(record);
-                false
-            }
-            _ => true,
-        }
-    });
-    // The rest are merged in from the back, into places made at the end:
-    // each child moves at most once, past the records that go after it.
+    let at = places(children, records.iter().map(|r| r.segment.as_slice()));
+    // Whether `record` takes the place of the child at `place`, which is
+    // one of the first `kept` children: those that have not moved.
+    let replaces = |children: &[OwnedNode], kept: usize, record: &OwnedNode, place: usize| {
+        place < kept && children[place].segment == record.segment
+    };
     let mut kept = children.len();
-    children.resize_with(kept + records.len(), OwnedNode::default);
+    let added = records
+        .iter()
+        .zip(&at)
+        .filter(|&(record, &place)| !replaces(children, kept, record, place))
+        .count();
+    children.resize_with(kept + added, OwnedNode::default);
+    // From the back, into the places made at the end, which lie between
+    // `kept` and `end`, one for each record still to add: the children
+    // after a record's place move once, together, past those places.
     let mut end = children.len();
-    while let Some(record) = records.pop() {
-        while kept > 0 && children[kept - 1].segment > record.segment {
-            kept -= 1;
-            end -= 1;
-            children.swap(kept, end);
+    for (record, place) in records.into_iter().zip(at).rev() {
+        let replacing = replaces(children, kept, &record, place);
+        let after = place + usize::from(replacing);
+        let (moving, free) = (kept - after, end - kept);
+        if moving <= free {
+            let (before, places) = children.split_at_mut(after + free);
+            before[after..kept].swap_with_slice(&mut places[..moving]);
+        } else {
+            children[after..end].rotate_right(free);
         }
-        end -= 1;
-        children[end] = record;
+        kept = after;
+        end = after + free;
+        if replacing {
+            children[place] = record;
+        } else {
+            end -= 1;
+            children[end] = record;
+        }
     }
 }
 
@@ -1424,13 +1476,15 @@ mod tests {
         assert_eq!(budget.in_use(), 0);
     }
 
-    /// A temporary area lends and takes back its records in one walk of
-    /// each table's (#693), and that takes, leaves and puts back what taking
-    /// out and putting back one record at a time did (the code it replaced,
-    /// kept here): for lists naming all of the staged records, none, every
-    /// other one, a prefix, a suffix, some out of order, some twice, some
-    /// not staged, and records of two tables, the same table twice; then
-    /// for commits taking all of them, none, or every other one, with a
+    /// A temporary area lends and takes back each table's records together
+    /// (#693), and that takes, leaves and puts back what taking out and
+    /// putting back one record at a time did (the code it replaced, kept
+    /// here): for lists naming all of the staged records, none, every other
+    /// one, a prefix, a suffix, some out of order, some twice, some not
+    /// staged, records of two tables with one listed twice, a table without
+    /// a record list, a table with nothing staged, and one record alone at
+    /// the start, in the middle or at the end of the list or not staged;
+    /// then for commits taking all of them, none, or every other one, with a
     /// record staged again between the lending and the settling or not.
     #[test]
     fn staged_records_are_lent_and_taken_back_as_one_at_a_time() {
@@ -1472,7 +1526,7 @@ mod tests {
             }
             area.held.shrink_to(held);
         }
-        let tables = [vec![0x80, 0x01], vec![0x80, 0x02]];
+        let tables = [vec![0x80, 0x01], vec![0x80, 0x02], vec![0x80, 0x03]];
         let budget = crate::uploads::UploadMemory::new(usize::MAX);
         let client: std::net::IpAddr = [192, 0, 2, 1].into();
         // Records `ids` of table `table`, each holding a cell of `len` bytes.
@@ -1486,8 +1540,9 @@ mod tests {
             let mut reading = budget.reserve(client, 1 << 20).unwrap();
             stage_upload(area, &dest, &payload, &mut reading).unwrap();
         };
-        // Records 2, 4, .., 24 of each table.
-        let even: Vec<u8> = (1..=12).map(|i| 2 * i).collect();
+        // Records 2, 4, .., 250 of the first two tables: enough that a few
+        // names are looked up, and many walked to (`places`).
+        let even: Vec<u8> = (1..=125).map(|i| 2 * i).collect();
         let staged_area = || {
             let mut area = TempArea::new(Charge::none(&budget, client));
             stage(&mut area, 0, &even, 3);
@@ -1506,23 +1561,36 @@ mod tests {
             });
             OwnedNode::list(Vec::new(), tables.collect())
         };
+        let unlisted = OwnedNode::list(
+            tables[0].clone(),
+            vec![OwnedNode::leaf(vec![0x01], Vec::new())],
+        );
         let cases = [
-            ("all", vec![(0, even.clone())]),
-            ("none", vec![(0, Vec::new())]),
-            ("no table", Vec::new()),
+            ("all", list(&[(0, even.clone())])),
+            ("none", list(&[(0, Vec::new())])),
+            ("no table", list(&[])),
             (
                 "every other",
-                vec![(0, even.iter().copied().step_by(2).collect())],
+                list(&[(0, even.iter().copied().step_by(2).collect())]),
             ),
-            ("a prefix", vec![(0, even[..5].to_vec())]),
-            ("a suffix", vec![(0, even[7..].to_vec())]),
-            ("out of order", vec![(0, vec![24, 2, 14, 8, 20])]),
-            ("repeated", vec![(0, vec![4, 4, 10, 4, 10])]),
-            ("not staged", vec![(0, vec![0, 1, 3, 4, 13, 25])]),
+            ("a prefix", list(&[(0, even[..5].to_vec())])),
+            ("a suffix", list(&[(0, even[7..].to_vec())])),
+            ("out of order", list(&[(0, vec![24, 2, 14, 8, 20])])),
+            ("repeated", list(&[(0, vec![4, 4, 10, 4, 10])])),
+            ("not staged", list(&[(0, vec![0, 1, 3, 4, 13, 25, 255])])),
             (
                 "two tables",
-                vec![(1, vec![6, 2, 30]), (0, even.clone()), (1, vec![2, 22, 12])],
+                list(&[(1, vec![6, 2, 30]), (0, even.clone()), (1, vec![2, 22, 12])]),
             ),
+            (
+                "no record list",
+                OwnedNode::list(Vec::new(), vec![unlisted]),
+            ),
+            ("nothing staged", list(&[(2, vec![2, 4])])),
+            ("the first alone", list(&[(0, vec![2])])),
+            ("one in the middle alone", list(&[(0, vec![126])])),
+            ("the last alone", list(&[(0, vec![250])])),
+            ("one not staged alone", list(&[(0, vec![127])])),
         ];
         // Whether a commit leaves the `i`th record it was lent unused.
         type Leaves = fn(usize) -> bool;
@@ -1531,14 +1599,13 @@ mod tests {
             ("refused", |_| true),
             ("partly taken", |i| i % 2 == 1),
         ];
-        for (case, groups) in &cases {
-            let list = list(groups);
+        for (case, list) in &cases {
             for (commit, leaves) in commits {
                 for restaged in [false, true] {
                     let at = format!("{case}, {commit}, staged again: {restaged}");
                     let (mut each, mut once) = (staged_area(), staged_area());
-                    let (each_staged, each_lent) = lend_each(&mut each, &list);
-                    let (once_staged, once_lent) = once.lend(&list);
+                    let (each_staged, each_lent) = lend_each(&mut each, list);
+                    let (once_staged, once_lent) = once.lend(list);
                     // Lent in key order rather than the list's: nothing
                     // reads its order.
                     let mut sorted = each_lent.clone();
