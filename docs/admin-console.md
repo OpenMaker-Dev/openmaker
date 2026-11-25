@@ -444,7 +444,10 @@ it. Both lists are live regions and keep their checked boxes.
   lists the files' folders. A folder shows its files and those of its
   subfolders (inf). Each
   file shows its status icon, an encryption lock, its name without
-  `.fmp12`, and its client count; selecting it filters the clients and
+  `.fmp12`, a Read-only mark when the server serves it read-only, with
+  the cause as its tooltip (`FileInfo::read_only`; OpenMaker's own: no
+  such mark of FileMaker Server's console has been seen), and its client
+  count; selecting it filters the clients and
   turns the Databases column into Account Name. Sorting is by Filename,
   Status (open, then transitions, paused, closed), Clients (most first)
   or Folder (inf for the last three); search matches the name, ignoring

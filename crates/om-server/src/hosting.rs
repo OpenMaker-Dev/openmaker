@@ -2169,6 +2169,17 @@ fn load_hosted(
     // this file (#468).
     engine.loaded_from(&loaded, on_disk);
     drop(file);
+    // A file this server's user may not write, or whose folder does not
+    // allow a save's new copy, is held read-only before anything is saved,
+    // the deferred work included: a save would replace it all the same.
+    // Decided as it is hosted, as the other causes are (docs/server-
+    // storage.md 5).
+    if let Some(cause) = crate::store::save_refused(at.place()) {
+        let why = cause.why();
+        error!("{:?}: {why}; it is served read-only", hosted.name);
+        events.alert(Event::hosted_read_only(&hosted.name, why));
+        engine.hold_read_only(&loaded, cause);
+    }
     // Looked at in the file's folder, without following a link; one that
     // cannot be looked at counts.
     let copy_in_the_way = !matches!(

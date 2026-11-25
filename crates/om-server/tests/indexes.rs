@@ -98,6 +98,71 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
 /// a find that reads it fails with the error slot's code `ffff`, and what
 /// does not reach it is served as before, on the same connection.
 #[cfg(debug_assertions)]
+/// A hosted file this server's user may not write (mode 444), or whose
+/// folder does not allow the new copy a save writes beside it (mode 555), is
+/// served read-only (#827 of github.com/OpenMaker-Dev/openmaker): the
+/// administrator's list of files says why, and a find on a field without an
+/// index, which stores the index it builds on a writable file, and an edit,
+/// which is refused, leave the file's bytes as they were. Permissions do
+/// not bind root (or a user with its override): a run where the file opens
+/// for writing all the same says so and checks nothing.
+#[cfg(unix)]
+#[test]
+fn a_file_its_user_may_not_write_is_served_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &std::path::Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    for (case, why) in [
+        (
+            "file",
+            "the server's user may not write the file, or its file system is read-only",
+        ),
+        (
+            "folder",
+            "its folder does not allow the new copy a save writes beside it",
+        ),
+    ] {
+        let folder = std::env::temp_dir().join(format!(
+            "om-read-only-{case}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = fixture::TempFile(folder.join("Tasks.fmp12"));
+        fixture::write_tree(&file.0, &fixture::tree(&[], true));
+        match case {
+            "file" => mode(&file.0, 0o444),
+            _ => mode(&folder, 0o555),
+        }
+        let bypassed = case == "file"
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .open(&file.0)
+                .is_ok();
+        if bypassed {
+            eprintln!("skipped: this user writes a file of mode 444 (root?)");
+        } else {
+            let before = std::fs::read(&file.0).unwrap();
+            let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+            let path = std::path::absolute(&file.0).unwrap();
+            let listed = handle.files().into_iter().find(|f| f.path == path).unwrap();
+            assert_eq!(listed.read_only, Some(why), "{case}");
+            for (_, found) in find_ship_twice(port) {
+                assert_eq!(found, [2], "{case}");
+            }
+            let (mut session, _) = server::logged_in(port, "read-only file");
+            assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Changed")]).is_err());
+            session.disconnect().unwrap();
+            assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}");
+        }
+        mode(&folder, 0o755);
+        mode(&file.0, 0o644);
+        drop(file);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+}
+
 #[test]
 fn a_failed_read_reaches_the_client_as_an_error() {
     use om_hbam::serial;
@@ -321,7 +386,8 @@ fn commit_name(session: &mut om_session::Session, id: u64, name: &str) {
 }
 
 /// [`commit_name`] of a record holding `cells` of Tasks, its new content
-/// (the upload is the whole record), with the commit's outcome.
+/// (the upload is the whole record), with the outcome of the upload and the
+/// commit.
 fn commit_cells(
     session: &mut om_session::Session,
     id: u64,
@@ -349,9 +415,11 @@ fn commit_cells(
             .collect()
     };
     let record = OwnedNode::list(serial::encode(id), leaves(true));
-    session.upload_records(&table, vec![record]).unwrap();
     let changed = OwnedNode::list(serial::encode(id), leaves(false));
-    let committed = session.commit_records(&table, vec![changed], 0x31);
+    // On a file served read-only the upload is refused already.
+    let committed = session
+        .upload_records(&table, vec![record])
+        .and_then(|_| session.commit_records(&table, vec![changed], 0x31));
     session.kill_all_locks(0x31).unwrap();
     committed
 }

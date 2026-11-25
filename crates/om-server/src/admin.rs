@@ -113,6 +113,9 @@ pub struct FileInfo {
     /// is unknown (docs/server-storage.md 5). Closing it and opening it
     /// again, or a restart, clears that.
     pub error: Option<String>,
+    /// Why it is served read-only (`ReadOnlyCause::why`), while it is
+    /// served: no client's change is stored.
+    pub read_only: Option<&'static str>,
 }
 
 /// Why a [`ServerHandle`] file operation ([`ServerHandle::close_file`],
@@ -851,6 +854,10 @@ impl ServerHandle {
                         slot.served()
                             .and_then(|file| file.writes_refused().map(str::to_owned))
                     }),
+                    read_only: slot
+                        .served()
+                        .and_then(|file| self.shared.engine.read_only(&file))
+                        .map(crate::store::ReadOnlyCause::why),
                 }
             })
             .collect()

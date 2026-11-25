@@ -1237,7 +1237,9 @@ clients and why not, whether it takes no more changes at all, and which
 file on disk the engine last read or saved for it. The engine offers them
 itself (`engine::state`, on `FileEngine`), not through a view or `Store`:
 `read_only(file)` (the first cause: opened read-only, content the writer
-cannot write, deferred work refused), `writes_refused(file)` (a save
+cannot write, deferred work refused, a file the server's user may not
+write or whose folder does not allow a save's new copy),
+`writes_refused(file)` (a save
 whose outcome was unknown) and `file_on_disk(file)` (its device and
 inode). They describe the engine's hold of the file on disk and of its
 clients, not the content of a version. Two versions with the same tree
@@ -1264,6 +1266,27 @@ records, a slot's file on disk for backups (`Slot::saved_file`) and for a close
 (`Slot::finish_close_if_drained`), and the check that no other slot hosts
 the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
+
+**A file the server may not write.** A save writes a new copy beside the
+file and renames it over the file, which needs write access to the folder
+only, so a file the server's user may not write (mode 444 in a writable
+folder) would be replaced all the same. The server asks, as it hosts a
+file and before anything is saved (deferred work included), the two
+questions the desktop's host asks as it opens one (`store::save_refused`,
+`local::open_file`): whether the file opens for writing (refused for this
+user or on a read-only file system: `ReadOnlyCause::NotWritable`), and
+whether its folder allows the new copy (`ReadOnlyCause::FolderNotWritable`).
+Either holds the file read-only, with an error in the log, an alert
+(`Database "<name>" is served read-only: <why>.`), the startup event 18
+`Opened database "<name>" read only.`, and the cause in the Admin
+Console's list of files. It is decided when the file is hosted, as the
+other causes are: a file whose permissions change while it is hosted is
+served as it was hosted until it is closed and opened again or the server
+restarts (a file made unwritable is still replaced by the next save; a
+folder made unwritable fails the next save, as any save that cannot write
+its copy does). OpenMaker's own choice: how FileMaker Server hosts a file
+it may not write is unmeasured, though its event catalog has event 18
+(re/server-logs.md).
 
 **Writes to a file hosted read-only.** No request that would change a
 file hosted read-only is answered with the reply of a change that

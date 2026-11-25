@@ -218,6 +218,33 @@ pub enum ReadOnlyCause {
     /// Its deferred field work cannot be done, or could not be saved, and
     /// is kept (`Store::recover`, op73).
     DeferredWork,
+    /// The server's user may not write it, or its file system is
+    /// read-only ([`save_refused`]): a save, which renames a new copy over
+    /// it, would replace it all the same.
+    NotWritable,
+    /// The folder that holds it does not allow the new copy a save writes
+    /// beside it ([`save_refused`]).
+    FolderNotWritable,
+}
+
+impl ReadOnlyCause {
+    /// Why a file is held read-only for this cause, as the server's log,
+    /// its alerts and the Admin Console say it.
+    pub fn why(self) -> &'static str {
+        match self {
+            ReadOnlyCause::Opened => "it was opened read-only",
+            ReadOnlyCause::Unwritable => "it holds content OpenMaker cannot write back",
+            ReadOnlyCause::DeferredWork => {
+                "its deferred field work cannot be done or could not be saved"
+            }
+            ReadOnlyCause::NotWritable => {
+                "the server's user may not write the file, or its file system is read-only"
+            }
+            ReadOnlyCause::FolderNotWritable => {
+                "its folder does not allow the new copy a save writes beside it"
+            }
+        }
+    }
 }
 
 /// An index: its table, field and kind (value 0, word 1).
@@ -634,6 +661,48 @@ enum Undo {
     Record(Vec<u8>, u64, Option<OwnedNode>),
     /// The node at a path as it was.
     Node(Vec<Vec<u8>>, Option<OwnedNode>),
+}
+
+/// Why this process may not save the file at `path` the way a save writes
+/// it, a new copy beside it renamed over it: the user may not write the
+/// file, or its file system is read-only (opening it for writing is refused
+/// as [`refuses_writing`] says), or its folder does not allow the new copy
+/// ([`folder_allows_save`]). A server hosting the file asks once, as it
+/// hosts it; the desktop's host asks the same two questions as it opens a
+/// file (`local::open_file`). Any other failure to open it says nothing
+/// here: the save that meets it fails with its own error.
+pub(crate) fn save_refused(path: &Path) -> Option<ReadOnlyCause> {
+    match std::fs::File::options().read(true).write(true).open(path) {
+        Err(error) if refuses_writing(&error) => Some(ReadOnlyCause::NotWritable),
+        _ if !folder_allows_save(path) => Some(ReadOnlyCause::FolderNotWritable),
+        _ => None,
+    }
+}
+
+/// Whether `error`, of opening a file for writing, says this user may not
+/// write it or its file system is read-only.
+pub(crate) fn refuses_writing(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+/// Whether the folder that holds `path` allows this user to make the new
+/// copy a save writes beside the file.
+#[cfg(unix)]
+pub(crate) fn folder_allows_save(path: &Path) -> bool {
+    path.parent()
+        .is_some_and(|dir| rustix::fs::access(dir, rustix::fs::Access::WRITE_OK).is_ok())
+}
+
+/// Whether the folder that holds `path` allows this user to make the new
+/// copy a save writes beside the file.
+#[cfg(not(unix))]
+pub(crate) fn folder_allows_save(path: &Path) -> bool {
+    path.parent()
+        .and_then(|dir| std::fs::metadata(dir).ok())
+        .is_some_and(|m| !m.permissions().readonly())
 }
 
 /// Where a save writes the file's new copy: `<file>.omsave` beside it.
