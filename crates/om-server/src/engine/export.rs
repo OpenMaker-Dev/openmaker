@@ -24,26 +24,30 @@
 //! changed since the last save or the load, the version is the file on
 //! disk, opened where the store can tell it is that file (the descriptor
 //! it holds locked, or the entry at the file's path while it is the file
-//! the server read or last saved there, #468). With changes the disk
-//! lacks, it is written from the change number the next save starts from:
-//! what that save would write. A file hosted read-only because it holds
+//! the server read or last saved there,
+//! [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). With
+//! changes the disk lacks, it is written from the change number the next
+//! save starts from: what that save would write. A file hosted read-only because it holds
 //! content the writer cannot write is always the file on disk, the bytes
 //! it was loaded from (section 2, rule 2), also when changes its refused
 //! saves left wait in memory: those are then not in the export, and
 //! [`Exported::current`] says so. A backup asks for the file on disk
 //! whatever memory holds ([`FileEngine::stored`]).
 //!
-//! **Checked.** A copy is checked against its source: as many bytes as the
-//! file had when it was opened, and the SHA-256 of the bytes read from it
-//! equal to the SHA-256 of the copy read back. A written file is read back
-//! with the streaming reader ([`om_hbam::stream::NodeStream`]) and
+//! **Checked.** A copy is checked to hold as many bytes as the file had
+//! when it was opened, and the file not to have grown past them (one byte
+//! more is read to see). It is not read back: that is what FileMaker
+//! Server's Verify option of a backup schedule adds, which OpenMaker does
+//! not have ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)).
+//! A written file is read back with the streaming reader
+//! ([`om_hbam::stream::NodeStream`]) and
 //! compared with a second walk of the view, node by node: path, kind (list
 //! or value) and value, with a value over 1,000 bytes as the writer splits
 //! it (hbam-writer.md 2.3), and page 0 as written. A difference, or a file
 //! that does not read back, is an error.
 //!
-//! **Memory** is a copy buffer of [`COPY_BUFFER`] bytes and two hash states
-//! for a copy; for a written file, what the writer holds (a few pages and
+//! **Memory** for a copy is what `io::copy` takes, nothing where the kernel
+//! copies; for a written file, what the writer holds (a few pages and
 //! the open key path, hbam-writer.md 7.2), what the reader holds (a page
 //! and the open path), one page of the view's walk at a time and the path
 //! of the node being written. A value is borrowed from the view while it is
@@ -65,7 +69,6 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use om_hbam::stream::NodeStream;
 use om_hbam::writer::{self as hbam_writer, NodeWriter, MAX_INLINE_VALUE};
-use ring::digest;
 
 use super::reading::Read;
 use super::view::{ReadError, View};
@@ -76,8 +79,9 @@ use crate::hosting::Hosted;
 /// What a temporary export's name adds to the final name.
 const TEMPORARY: &str = ".omexport";
 
-/// How many bytes a copy reads at once.
-pub const COPY_BUFFER: usize = 256 << 10;
+/// How many bytes a copy copies between two looks at its progress: the
+/// part a backup's copy always took.
+pub const COPY_PART: u64 = 8 << 20;
 
 /// How often, in bytes written, the caller hears how far an export got.
 const REPORT_EVERY: u64 = 8 << 20;
@@ -218,9 +222,6 @@ pub enum ExportError {
     /// The file on disk was `expected` bytes long when it was opened and
     /// `copied` were read from it: it changed while it was copied.
     SourceChanged { expected: u64, copied: u64 },
-    /// The copy does not read back as the bytes read from the file on disk
-    /// (their SHA-256 differ).
-    CopyDiffers,
     /// Creating, writing, flushing or renaming the export failed.
     Io(io::Error),
     /// An entry is in the way at the temporary name.
@@ -245,7 +246,6 @@ impl fmt::Display for ExportError {
                 f,
                 "{copied} bytes copied of {expected}: the file changed while it was copied"
             ),
-            ExportError::CopyDiffers => write!(f, "the copy does not read back as the file"),
             ExportError::Io(e) => write!(f, "{e}"),
             ExportError::TemporaryTaken(name) => write!(
                 f,
@@ -342,69 +342,42 @@ impl Seek for Counted<'_, '_> {
 }
 
 /// Copy `source`, `len` bytes long when it was opened, from its start into
-/// `target`, an empty file open for reading and writing, and check the
-/// copy against it (the module doc, "Checked"). On an error `target` holds
-/// part of a file, for the caller to discard.
+/// `target`, an empty file, and check that it was still that long (the
+/// module doc, "Checked"). The copy goes from descriptor to descriptor in
+/// parts of [`COPY_PART`] bytes, which the kernel copies where the system
+/// can (`copy_file_range` on Linux), as backups always copied; `progress`
+/// is asked whether to stop, and told, at each part. On an error `target`
+/// holds part of a file, for the caller to discard.
 pub fn copy_checked(
     source: &File,
     len: u64,
     target: &mut File,
     progress: Progress<'_>,
 ) -> Result<(), ExportError> {
-    use std::io::Read as _;
-    let mut counted = Counted {
-        file: target,
-        progress,
-        unreported: 0,
-    };
     let mut from = source;
     from.seek(SeekFrom::Start(0)).map_err(ExportError::Source)?;
-    let mut buffer = vec![0; COPY_BUFFER];
-    let mut read = digest::Context::new(&digest::SHA256);
     // No more than the file held when it was opened, and one byte to see
     // whether it holds more now: a file another program writes to cannot
     // make the copy run on.
-    let mut from = from.take(len.saturating_add(1));
+    let limit = len.saturating_add(1);
     let mut copied = 0u64;
-    loop {
-        let n = match from.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(ExportError::Source(e)),
-        };
-        copied += n as u64;
-        if copied > len {
+    while copied < limit {
+        if (progress.stop)() {
+            return Err(ExportError::Stopped);
+        }
+        let part = (limit - copied).min(COPY_PART);
+        let n = io::copy(&mut io::Read::take(from, part), target).map_err(ExportError::Io)?;
+        if n == 0 {
             break;
         }
-        read.update(&buffer[..n]);
-        counted.write_all(&buffer[..n]).map_err(destination)?;
+        copied += n;
+        (progress.written)(n);
     }
     if copied != len {
         return Err(ExportError::SourceChanged {
             expected: len,
             copied,
         });
-    }
-    counted.flush().map_err(destination)?;
-    counted.report();
-    // The copy as the file system gives it back.
-    let mut back = &*counted.file;
-    back.seek(SeekFrom::Start(0)).map_err(ExportError::Io)?;
-    let mut written = digest::Context::new(&digest::SHA256);
-    let mut length = 0u64;
-    loop {
-        let n = match back.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(ExportError::Io(e)),
-        };
-        written.update(&buffer[..n]);
-        length += n as u64;
-    }
-    if length != copied || written.finish().as_ref() != read.finish().as_ref() {
-        return Err(ExportError::CopyDiffers);
     }
     Ok(())
 }
@@ -1131,72 +1104,45 @@ mod tests {
         );
     }
 
-    /// A copy is checked against the file on disk: a file that grew while
-    /// it was copied, and a copy that does not read back as what was read,
-    /// fail the export and leave nothing.
+    /// A copy is checked against the file on disk: one that grew or shrank
+    /// while it was copied fails the export and leaves nothing. A file that
+    /// keeps growing cannot make the copy run on.
     #[test]
     fn a_copy_is_checked_against_the_file_on_disk() {
         let (disk, file) = hosted("export-copy-check");
         let scratch = Scratch::new("copy-check");
         let folder = scratch.folder();
         let engine = engine(None);
-        // Grown once, before the first write.
-        let grew = Cell::new(false);
-        let grow = || {
-            if !grew.replace(true) {
-                let mut source = std::fs::OpenOptions::new()
-                    .append(true)
+        for (name, grow) in [("grown.fmp12", true), ("short.fmp12", false)] {
+            let len = std::fs::metadata(&disk.0).unwrap().len();
+            // Before each part is copied: grown by a page every time, or
+            // cut short by one once.
+            let stop = || {
+                let source = std::fs::OpenOptions::new()
+                    .write(true)
                     .open(&disk.0)
                     .unwrap();
-                source.write_all(&[0; 4096]).unwrap();
-            }
-            false
-        };
-        let progress = Progress {
-            stop: &grow,
-            written: &|_| {},
-        };
-        let grown = export(
-            &engine,
-            &file,
-            Kind::Current,
-            &folder,
-            "grown.fmp12",
-            progress,
-        );
-        assert!(
-            matches!(grown, Err(ExportError::SourceChanged { .. })),
-            "{grown:?}"
-        );
-        assert!(scratch.names().is_empty());
-        // Written over once the copy is complete, before it is read back.
-        let temporary = scratch.0.join("altered.fmp12.omexport");
-        let alter = |_| {
-            let mut copy = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&temporary)
-                .unwrap();
-            copy.write_all(b"altered").unwrap();
-        };
-        let progress = Progress {
-            stop: &|| false,
-            written: &alter,
-        };
-        // A fresh file on disk: the grown one is no longer what was loaded.
-        save_fresh(&file);
-        let altered = export(
-            &engine,
-            &file,
-            Kind::Current,
-            &folder,
-            "altered.fmp12",
-            progress,
-        );
-        assert!(
-            matches!(altered, Err(ExportError::CopyDiffers)),
-            "{altered:?}"
-        );
-        assert!(scratch.names().is_empty());
+                let now = source.metadata().unwrap().len();
+                if grow {
+                    source.set_len(now + 4096).unwrap();
+                } else if now == len {
+                    source.set_len(len - 4096).unwrap();
+                }
+                false
+            };
+            let progress = Progress {
+                stop: &stop,
+                written: &|_| {},
+            };
+            let changed = export(&engine, &file, Kind::Current, &folder, name, progress);
+            assert!(
+                matches!(changed, Err(ExportError::SourceChanged { .. })),
+                "{name}: {changed:?}"
+            );
+            assert!(scratch.names().is_empty());
+            // The file on disk as the tree holds it again.
+            save_fresh(&file);
+        }
     }
 
     /// Make the file on disk the tree's again: a change, then a save.
