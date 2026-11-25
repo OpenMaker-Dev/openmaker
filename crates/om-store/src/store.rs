@@ -1558,8 +1558,11 @@ impl Store {
         let discarded = if groups_open.is_empty() {
             None
         } else {
-            match store.append_as(0, &Payload::Empty, Purpose::Discard) {
-                Ok(appended) => Some(appended.position),
+            match store.append_own(&Payload::Empty, Purpose::Discard) {
+                Ok((at, checkpoints)) => {
+                    replay_checkpoints += checkpoints;
+                    Some(at)
+                }
                 Err(error) => {
                     return Err(OpenError::Start(Box::new(StartFailed {
                         discarded: None,
@@ -1581,28 +1584,12 @@ impl Store {
                 error,
             }))
         };
-        let mut checkpointed = false;
-        let started = loop {
-            match store.append_as(0, &payload, Purpose::Recovery) {
-                Ok(appended) => break appended.position,
-                Err(
-                    WriteError::CheckpointNeeded(_)
-                    | WriteError::Full(_)
-                    | WriteError::Log(LogError::NoSpace(_)),
-                ) if !checkpointed => {
-                    checkpointed = true;
-                    if let Err(e) = store.checkpoint(None) {
-                        let why = format!("the checkpoint before this start's entry: {e}");
-                        let error = match e {
-                            CheckpointFailed::NoSpace(_) => WriteError::NoSpace(why),
-                            _ => WriteError::Failed(why),
-                        };
-                        return Err(failed(None, error));
-                    }
-                    replay_checkpoints += 1;
-                }
-                Err(error) => return Err(failed(None, error)),
+        let started = match store.append_own(&payload, Purpose::Recovery) {
+            Ok((at, checkpoints)) => {
+                replay_checkpoints += checkpoints;
+                at
             }
+            Err(error) => return Err(failed(None, error)),
         };
         if let Err(error) = store.flush() {
             return Err(failed(Some((started, payload)), error));
@@ -1783,6 +1770,43 @@ impl Store {
     /// This start's count, from `state`.
     fn start_count(&self) -> u64 {
         self.log.state().values().start_count
+    }
+
+    /// Appends one of the open's own entries (format section 6.2, steps 5
+    /// and 6), unflushed: refused because the pages waiting for a
+    /// checkpoint are past their budget, or because the disk has no room,
+    /// it flushes what the open appended before it, checkpoints that
+    /// version, which is durable then, and appends the entry again, once.
+    /// Returns where the entry went and the checkpoints taken.
+    fn append_own(
+        &mut self,
+        payload: &Payload,
+        purpose: Purpose,
+    ) -> Result<(Position, u64), WriteError> {
+        let mut checkpointed = false;
+        loop {
+            match self.append_as(0, payload, purpose) {
+                Ok(appended) => return Ok((appended.position, u64::from(checkpointed))),
+                Err(
+                    WriteError::CheckpointNeeded(_)
+                    | WriteError::Full(_)
+                    | WriteError::Log(LogError::NoSpace(_)),
+                ) if !checkpointed => {
+                    checkpointed = true;
+                    if !self.pending.is_empty() {
+                        self.flush()?;
+                    }
+                    if let Err(e) = self.checkpoint(None) {
+                        let why = format!("the checkpoint before the open's own entry: {e}");
+                        return Err(match e {
+                            CheckpointFailed::NoSpace(_) => WriteError::NoSpace(why),
+                            _ => WriteError::Failed(why),
+                        });
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// [`Store::append`] without its rules on the payload, reserving for

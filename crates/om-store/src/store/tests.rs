@@ -2615,6 +2615,56 @@ fn group_crashed_at_every_step(every_fate: bool) {
     }
 }
 
+/// A group left open, and a replay that leaves the pages waiting for a
+/// checkpoint past their budget: the open's `empty` entry is refused for
+/// a checkpoint, and the open checkpoints the recovered version and
+/// appends it again, as it does for its start's entry, rather than fail
+/// at every open (the long drawn test found that, seed 150).
+#[test]
+fn a_restart_discards_groups_when_the_replay_leaves_pages_past_their_budget() {
+    let sim = Sim::new(43);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    store.flush().unwrap();
+    store.checkpoint(None).unwrap();
+    let open = Payload::Change(Change {
+        group: Some(Group {
+            id: store.next_index(),
+            step: Step::Open(vec![GroupPath {
+                file,
+                path: vec![b"g".to_vec()],
+            }]),
+        }),
+        edits: vec![Edit::leaf(vec![b"g".to_vec(), vec![0]], vec![1; 300])],
+        ..Change::default()
+    });
+    store.append(file, &open).unwrap();
+    // Changes beside the group, each flushed, until the budget refuses
+    // one.
+    for i in 0u16.. {
+        match store.append(file, &put(&i.to_be_bytes(), &[2; 3000])) {
+            Ok(_) => {
+                store.flush().unwrap();
+            }
+            Err(WriteError::CheckpointNeeded(_)) => break,
+            Err(e) => panic!("change {i}: {e}"),
+        }
+    }
+    store.flush().unwrap();
+    assert!(store.space().dirty >= CONFIG.pages.dirty_budget);
+    drop(store);
+    let (store, opened) = reopened(&sim).unwrap();
+    assert!(opened.discarded.is_some());
+    assert!(opened.replay_checkpoints > 0, "{opened:?}");
+    assert!(StoreTree::of(&*store.pages)
+        .unwrap()
+        .groups()
+        .unwrap()
+        .is_empty());
+    let space = store.space();
+    assert_eq!((space.groups, space.promised), (0, 0));
+}
+
 /// A group left open by every stop, through checkpoints and reopens: each
 /// open discards it, gives back what its parts held and its staging pages,
 /// and the page file does not grow from cycle to cycle.

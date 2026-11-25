@@ -2578,9 +2578,12 @@ store whose `state` is gone, reported for a restore (server-storage.md
    pinned and is the published one. When its state has groups open, an
    `empty` entry is appended, which discards them all (5.6,
    server-storage.md 6.9), before this start's entry and flushed with
-   it. It is reserved as a discard (it may take the reserve), and a
-   failure fails the open with `OpenError::Start`, which says whether
-   the log took the `empty` entry (`StartFailed::discarded`). Each
+   it. It is reserved as a discard (it may take the reserve). Refused
+   for the budget of pages waiting for a checkpoint or for room, it is
+   treated as this start's entry is (step 6): the recovered version is
+   checkpointed and the entry appended again, once. A failure fails the
+   open with `OpenError::Start`, which says whether the log took the
+   `empty` entry (`StartFailed::discarded`). Each
    start begins a new term, one above every term `state` and the log
    recorded, and writes its entries in it: the `empty` entry and this
    start's entry make it durable when they are. `state`'s own term, for
@@ -2591,10 +2594,10 @@ store whose `state` is gone, reported for a restore (server-storage.md
    reserved with the reserve allowed, and when it is refused because the
    pages waiting for a checkpoint are past their budget, or because the
    disk has no room for it (pages past the reserve, or the log's next
-   segment), the recovered version, which is durable, is checkpointed
-   first (6.6: the log retired and dying pages freed as far as the
-   checkpoints and restore points on disk allow), and the entry is
-   appended again, once. A disk that still has no room fails the open
+   segment), the `empty` entry of step 5, if any, is flushed, the
+   version then published, which is durable, is checkpointed first (6.6:
+   the log retired and dying pages freed as far as the checkpoints and
+   restore points on disk allow), and the entry is appended again, once. A disk that still has no room fails the open
    with `OpenError::Start`, whose remedy is to free space; so does a write
    of the entry, or of the marker, that the disk refuses for room, the
    cause kept through the error.
