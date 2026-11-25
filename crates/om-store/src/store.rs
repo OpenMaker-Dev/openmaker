@@ -20,7 +20,8 @@
 //!    unit of work ([`apply::apply`]): a reservation that runs short is
 //!    extended and the unit begun again; a full disk refuses the entry
 //!    with nothing changed and nothing appended;
-//! 3. pins the version the committed unit made, the newest then;
+//! 3. pins the version the committed unit made, the newest then
+//!    ([`PageFile::pin_newest`]);
 //! 4. appends it to the log.
 //!
 //! [`Store::flush`] writes the open batch and advances the marker, then
@@ -50,7 +51,10 @@
 //! durable entry, with recovery reservations; then this start's own
 //! `session` entry (section 7.3), the first write of every start. Nothing
 //! is freed in the log, and nothing reclaimed or checkpointed in the page
-//! file, before the replay is done. What cannot be opened is reported,
+//! file, before the replay is done, but for one case: when the pages
+//! waiting for a checkpoint pass their budget during the replay, the last
+//! entry replayed, which is durable, is checkpointed and the replay goes
+//! on. What cannot be opened is reported,
 //! typed, with what the administrator can do ([`OpenError`]); the two
 //! explicit "accept the loss" calls ([`Store::accept_damage`],
 //! [`Store::give_up_unreadable_end`]) are the only way past a damaged log
@@ -683,7 +687,8 @@ impl Store {
             (_, None) => {}
         }
         // A copy of `state` passed over, and no whole batch after the
-        // marker to make up for the advance it can have held (#745's 6.12).
+        // marker to make up for the advance it can have held
+        // (server-storage.md 6.12 as revised for lost acknowledgements).
         let last_batch_may_be_lost = passed_over_state.is_some() && log_opened.kept == 0;
         let pages = Arc::new(pages);
         // 4. The entries after the checkpoint, each once, in order, through
