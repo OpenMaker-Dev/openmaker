@@ -127,6 +127,9 @@ impl Both {
     }
 }
 
+/// A request to send both engines: what it is, and its bytes for a file id.
+type Row<'a> = (&'a str, Box<dyn Fn(u32) -> Vec<u8> + 'a>);
+
 /// docs/server-storage.md 11: each write request a client sends a file the
 /// store engine hosts is refused as the file engine refuses it for a file
 /// it hosts read-only, byte for byte, before it changes anything: op71,
@@ -141,7 +144,7 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
     let t = uint_segment(TABLE);
     let tables = vec![t.clone()];
     let record = serial::encode(1);
-    let rows: [(&str, Box<dyn Fn(u32) -> Vec<u8>>); 9] = [
+    let rows: [Row<'_>; 9] = [
         (
             "op71 create a record",
             Box::new(|id| {
