@@ -1346,8 +1346,10 @@ impl<'a> Run<'a> {
             return;
         }
         // The place stays unreadable (a failed sector): once what follows
-        // it is given up, nothing may read it again.
-        let stays = self.machine.sim().is_some();
+        // it is given up, nothing may read it again, until a cut takes the
+        // log back into the segment it is in. A device that drops writes
+        // can drop the fresh segment's header.
+        let stays = self.machine.sim().is_some() && self.device == Device::Honest;
         if stays {
             self.machine
                 .set_bad(Some((format::segment_path(end.segment), end.offset)));
@@ -1687,6 +1689,13 @@ impl<'a> Run<'a> {
             return;
         }
         let durable_before = self.model.durable;
+        if from <= durable_before {
+            // A cut of durable entries can take the log back into the
+            // segment of a place given up, past which a walk then reads
+            // again: the place reads again too.
+            self.given_up_place = None;
+            self.machine.set_bad(None);
+        }
         self.machine.begin_reads();
         let log = self.log.as_mut().expect("open");
         let cut = log.cut(from);
