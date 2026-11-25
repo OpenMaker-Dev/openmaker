@@ -3738,7 +3738,6 @@ impl ServerHost {
             .read_accounts(|read| Ok(read.derived.account(&self.account).ok().flatten()))
             .ok()
             .flatten();
-        crate::engine::assert_no_reading_held("an account's verifier check");
         account
             .map(|account| account.authenticated_info())
             .unwrap_or_default()

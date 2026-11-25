@@ -58,8 +58,11 @@ pub struct FileAccount {
 
 impl FileAccount {
     /// Facts about a file account after its own password authenticated it.
-    /// No credential or security-catalog bytes leave the host.
+    /// No credential or security-catalog bytes leave the host. They check
+    /// an empty password against the account's verifier, which is no read:
+    /// never with a reading of the file held (debug builds check it).
     pub fn authenticated_info(&self) -> om_data::host::AccountInfo {
+        crate::engine::assert_no_reading_held("an account's verifier check");
         let account_type =
             (self.kind == Some(AccountKind::FileMakerFile)).then(|| "FileMaker File".to_owned());
         let password_expiry = match (self.password.as_ref(), self.password_days, self.status) {

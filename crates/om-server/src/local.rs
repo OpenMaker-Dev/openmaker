@@ -481,17 +481,16 @@ impl LocalHost {
         let Some((shared, file)) = self.served() else {
             return Ok(Default::default());
         };
-        let info = shared.engine.read(&file).serve_with_accounts(|read| {
+        let account = shared.engine.read(&file).serve_with_accounts(|read| {
             let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
-            Ok::<_, ReadError>(
-                accounts
-                    .iter()
-                    .find(|account| account.key == key)
-                    .map(|account| account.authenticated_info())
-                    .unwrap_or_default(),
-            )
+            Ok::<_, ReadError>(accounts.iter().find(|account| account.key == key).cloned())
         });
-        info.map_err(io::Error::other)
+        // Its facts check a password against the account's verifier, once
+        // the reading is let go.
+        let account = account.map_err(io::Error::other)?;
+        Ok(account
+            .map(|account| account.authenticated_info())
+            .unwrap_or_default())
     }
 
     /// Set account `name`'s password from `old` to `new`, as FileMaker

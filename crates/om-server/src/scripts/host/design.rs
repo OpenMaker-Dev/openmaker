@@ -272,7 +272,6 @@ impl ServerHost {
         })?;
         let schema = schema?;
         let source = SessionSource { host: self };
-        crate::engine::assert_no_reading_held("an account's verifier check");
         let account_info = account
             .map(|account| account.authenticated_info())
             .unwrap_or_default();
