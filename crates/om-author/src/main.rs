@@ -939,6 +939,7 @@ mod tests {
             action: Some("resize".into()),
             height: Some("100".into()),
             path: Some("New.fmp12".into()),
+            target_file: Some("B.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
             arrangement: Some("align_left_edges".into()),
             ..Args::default()
