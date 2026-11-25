@@ -10,7 +10,7 @@
 # Needs stable Rust and the Xcode command line tools; everything else ships
 # with macOS. It builds for this Mac's architecture and signs ad hoc, so
 # the bundle is for this Mac. JOBS is cargo's job count (default: cargo's
-# own); CARGO_TARGET_DIR is honoured.
+# own).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ "$(uname -s)" != Darwin ]; then
@@ -18,13 +18,32 @@ if [ "$(uname -s)" != Darwin ]; then
     exit 1
 fi
 out=${1:-target/package}
-bin=${CARGO_TARGET_DIR:-target}/release
+# Where cargo builds, as its environment and configuration say
+# (CARGO_TARGET_DIR, build.target-dir).
+target=$(cargo metadata --format-version 1 --no-deps --locked |
+    plutil -extract target_directory raw -o - -)
+bin=$target/release
 cargo build --release --locked ${JOBS:+-j "$JOBS"} -p om-gui --features web-viewer --bins
 
 mkdir -p "$out"
 # Staged beside the bundle it replaces, so the last step is a rename.
 work=$(mktemp -d "$out/.OpenMaker.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+lock=$out/.OpenMaker.lock
+locked=
+cleanup() {
+    # A run stopped between the two renames below puts the previous
+    # bundle back.
+    if [ -e "$work/previous.app" ] && [ ! -e "$out/OpenMaker.app" ]; then
+        mv "$work/previous.app" "$out/OpenMaker.app"
+    fi
+    rm -rf "$work"
+    if [ -n "$locked" ]; then
+        rmdir "$lock"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 app=$work/OpenMaker.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 # om-gui looks for its PDF worker beside itself (#566).
@@ -63,6 +82,15 @@ codesign --force --sign - "$app/Contents/MacOS/om-gui-pdf-worker"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"
 
-rm -rf "$out/OpenMaker.app"
+# One run at a time replaces the bundle: mv would move a second bundle
+# into one another run had just put in place.
+if ! mkdir "$lock" 2>/dev/null; then
+    echo "package-macos: another run is replacing $out/OpenMaker.app; if none is, remove $lock" >&2
+    exit 1
+fi
+locked=1
+if [ -e "$out/OpenMaker.app" ]; then
+    mv "$out/OpenMaker.app" "$work/previous.app"
+fi
 mv "$app" "$out/OpenMaker.app"
 echo "$out/OpenMaker.app"
