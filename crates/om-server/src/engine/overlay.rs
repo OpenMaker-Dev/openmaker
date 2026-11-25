@@ -450,7 +450,11 @@ impl View for Overlay<'_> {
 
     /// The base's where the overlay holds nothing at or below `path`;
     /// otherwise what the overlay holds or builds, unchecked, for the reader
-    /// to count.
+    /// to count. Right while the store engine takes no writes (a script's
+    /// transaction then never holds part of an index entry there, and the
+    /// file engine lends); once writes reach the store engine, an entry the
+    /// transaction has touched is built here whole before its reader
+    /// refuses it.
     fn subtree_within(
         &self,
         path: &[&[u8]],
