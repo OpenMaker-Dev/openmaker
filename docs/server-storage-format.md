@@ -845,19 +845,31 @@ rebuilt for them when those entries are applied again (4.7).
      included; a checkpoint left by a panic makes the page file refuse
      every later write until it is opened again, since its plan may have
      changed the map in memory;
-  6. a unit's change to the set of trees acts on the trees it named when
-     it staged the change (each tree has an identity in memory, which a
-     rename keeps): a unit one of whose trees another unit made, dropped
-     or renamed since is refused whole at commit, so overlapping changes
-     by units of one entry give one result whatever order they commit
-     in, or the later is refused. A released page still in memory must
-     have the hash the unit released it with;
+  6. the page file counts the changes to the set of trees committed; a
+     unit that changes the set (makes, drops or renames a tree) or drops
+     a page is refused whole at commit if the count moved since the unit
+     began, so overlapping changes by units of one entry give one result
+     whatever order they commit in, or the later is refused. A released
+     page still in memory must have the hash the unit released it with
+     (a byte-identical page passes: a hash covers a page's content, not
+     its number);
   7. the restore point a checkpoint keeps counts in the floor (4.8) from
      its first check, and a checkpoint that keeps one is refused while
      any reservation is open;
   8. a checkpoint checks every root it is given as an open will (a tree's
      page, not an overflow page, written at or before `E`), whether the
      root is in memory or on disk.
+
+  The page file is specified and tested for the caller that applies one
+  entry at a time, normally through one unit; several units of one entry
+  are allowed, and what is claimed for them is exactly what these rules
+  state. Since a unit of a later entry committed between a checkpoint's
+  first check and its plan refuses the checkpoint (4), and a keep is
+  refused while any reservation is open (7), the caller that checkpoints
+  has the caller that applies take no new entry for the moment of a
+  checkpoint's first check and plan, and holds no reservation open when
+  it keeps a restore point; otherwise both refusals repeat for as long as
+  the applier does not pause.
 - **A checkpoint** of the newest version, at entry `E` (every unit
   committed so far is of `E` or earlier), given every tree's root: the
   trees given must be exactly the trees that exist, those of the newest
@@ -990,37 +1002,53 @@ rebuilt for them when those entries are applied again (4.7).
   counted already. Of the rest of what the running page file knows and a
   reopened one does not, pins and the reclaim cursor do not enter the
   floor, and the map's end, which the running file may have grown past
-  the checkpoint's, only raises the running floor; the trees are the
-  same at the same entry. Not covered: a reopen that falls back to the
-  older checkpoint because the newest cannot be read. The older one can
-  list restore points the newest retired, which the running floor no
-  longer counted, so replaying from it can need more room by their
-  records; recovery may take the reserve (256 pages by default), and
-  beyond that the replay is refused as full. Commits, the taking down of
-  dropped subtrees and reclaims never make a map larger than one in
-  which every page is dying, so the room stays enough whatever is
-  applied meanwhile; it is about 1% of the file. An ordinary entry also
-  leaves the **reserve** (256 pages by default), which recovery, a
-  follower's entries and the discard of a group may take. Making a tree
-  takes its root page and a fixed 4 pages of room for its record in the
-  tables (one more record adds at most a data page and a directory page
-  to each of the two meta streams), 5 pages to reserve; a rename takes
-  4. The charge is fixed so that an entry takes the same pages each time
-  it is applied (`Reservation::taken` counts it). When the file cannot
-  grow enough, the reservation is refused with "full" and nothing is
+  the checkpoint's, only raises the running floor; the trees differ only
+  by those made and renamed by the entries in between, whose room their
+  reservations moved into the floor (below). The cases this does not
+  cover are under "Recovery fits". Commits, the taking down of dropped
+  subtrees and reclaims never make a map larger than one in which every
+  page is dying, so the room stays enough whatever is applied meanwhile;
+  it is about 1% of the file. An ordinary entry also leaves the
+  **reserve** (256 pages by default), which recovery, a follower's
+  entries and the discard of a group may take. Making a tree takes its
+  root page and a fixed 4 pages of room for its record in the tables
+  (one more record adds at most a data page and a directory page to each
+  of the two meta streams), 5 pages to reserve; a rename takes 4. The
+  charge is fixed so that an entry takes the same pages each time it is
+  applied (`Reservation::taken` counts it). When the file cannot grow
+  enough, the reservation is refused with "full" and nothing is
   reserved: the store keeps reading and can checkpoint.
-- **Recovery fits.** Applying the entries after a checkpoint again frees
-  exactly what normal running frees: a page that leaves the newest
-  version is freed at once when it never reached the disk and no kept
-  version reaches it, and the rest when a reclaim, a reservation or a
-  checkpoint settles it. The versions kept during recovery are a subset
-  of those the first run kept at the same point (the pins are gone; the
-  checkpoints and restore points are those of the superblocks on disk,
-  which the first run kept too), so no page recovery holds was free in
-  the first run, and the file the first run grew is still there:
-  recovery, reserving exactly the pages each entry took
-  (`Reservation::taken`), never needs more free pages than the first run
-  had.
+- **Recovery fits, within what is proved here.** Applying the entries
+  after a checkpoint again frees exactly what normal running frees: a
+  page that leaves the newest version is freed at once when it never
+  reached the disk and no kept version reaches it, and the rest when a
+  reclaim, a reservation or a checkpoint settles it. When the replay
+  takes no checkpoint the first run did not, the versions kept during
+  recovery are a subset of those the first run kept at the same point
+  (the pins are gone; the checkpoints and restore points are those of
+  the superblocks on disk, which the first run kept too), so no page
+  recovery holds was free in the first run, and the file the first run
+  grew is still there. So, for the caller 4.6 describes, when the store
+  is reopened on the newest checkpoint on disk or on the one being
+  written, each entry was reserved once (not extended), and the replay
+  takes no checkpoint the first run did not take, recovery, reserving
+  exactly the pages each entry took (`Reservation::taken`) against a
+  floor no higher than the one the first run judged it against (above),
+  never needs more free pages than the first run had. Three cases are
+  not covered ([#734](https://github.com/OpenMaker-Dev/openmaker/issues/734));
+  recovery may take the reserve (256 pages by default) for them, and
+  beyond it a replay is refused as full:
+  - a reopen that falls back to the older checkpoint because the newest
+    cannot be read: the older one can list restore points the newest
+    retired, which the running floor no longer counted;
+  - an entry that was extended (`Reservation::extend`): the replay
+    reserves the entry's whole count at its start, while the first run
+    was judged for the extension later, after the entry's own units had
+    freed pages;
+  - a replay that the budget of pages waiting for a checkpoint forces to
+    checkpoint where the first run did not (the first run reserved
+    entries ahead, before the pages that fill the budget were written):
+    that checkpoint keeps pages the first run freed at once.
 - **The configuration** is checked when the page file is created or
   opened: a growth step of 1 to 65,536 pages, a budget of at least one
   page, a reserve of at most 2^32 pages, so that no sum the page file
@@ -1052,7 +1080,10 @@ rebuilt for them when those entries are applied again (4.7).
   a reservation is refused with "checkpoint needed" until a checkpoint
   writes them. Pages that left the newest version and stay in memory for
   a pin do not count, and the entries reserved for before the budget was
-  reached can take memory past it by what they write.
+  reached can take memory past it by what they write, and by what they
+  add with `Reservation::extend`, which the budget does not judge (an
+  entry that has committed a unit could otherwise not finish: no
+  checkpoint can be taken while it is half applied).
 
 ### 4.9 Limits and unknowns
 

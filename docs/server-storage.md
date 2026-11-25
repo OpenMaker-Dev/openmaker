@@ -492,8 +492,12 @@ it covers every change of its entry and of those before, and none after
 engine calls the page file as 4.6 sets out: one caller applies entries
 in order, one at a time, with one open reservation an entry and one
 entry's units open at a time (one unit a tree, or one for the whole
-entry), and another checkpoints and reclaims. The order of the writes
-and flushes, and what a crash at each step leaves, are in
+entry), and another checkpoints and reclaims. The one that checkpoints
+has the applier take no new entry for the moment of a checkpoint's first
+check and plan, and keeps a restore point only while no reservation is
+open; otherwise the page file refuses the checkpoint, or the keep, for
+as long as the applier does not pause. The order of the writes and
+flushes, and what a crash at each step leaves, are in
 server-storage-format.md 4.6.
 
 **What is kept.** The two newest checkpoints are kept whole, and so is
