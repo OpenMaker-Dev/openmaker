@@ -25,8 +25,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
 use om_data::containers::{self, MemberInfo};
@@ -3772,7 +3773,15 @@ impl Store {
         if let Some(agrees) = self.verified.1.get(&id) {
             return *agrees;
         }
+        let started = Instant::now();
         let agrees = self.check_index(table, field, kind);
+        debug!(
+            "{}: index {kind} of table {table:02x?} field {field:02x?} checked against its \
+             records in {:?}: {}",
+            self.name,
+            started.elapsed(),
+            if agrees { "agrees" } else { "disagrees" }
+        );
         self.verified.1.insert(id, agrees);
         agrees
     }
