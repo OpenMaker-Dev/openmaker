@@ -90,7 +90,9 @@ accept/reopen with Preview repagination. The existing Preview isolation test als
 checks cached-plan replacement, same-file/new-window inheritance and peer-file
 isolation while retaining its stale-range/reload-error checks. These use the
 existing synthetic report/provider and literal synthetic page-format bytes, and
-the decoder check also reads the one native US Letter `Comm` chunk.
+the decoder check also reads the two native US Letter `Comm` chunks, portrait and
+landscape. The synthetic landscape formats are turned the way FileMaker stores
+them, with the printable size swapped.
 
 A4 landscape produces five physical pages for the nine-record fixture; both
 Preview and PDF use that plan, including report page-number calculations. Existing
