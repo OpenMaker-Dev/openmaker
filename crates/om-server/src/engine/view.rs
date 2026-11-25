@@ -58,6 +58,31 @@ pub const NO_LIMIT: usize = usize::MAX;
 /// once. A view may answer fewer.
 const PAGE: usize = 256;
 
+/// A subtree a view gave, held while it is read: lent (the file engine's
+/// view lends its tree) it is left alone; a copy the view made (a view
+/// that reads pages, the test view) is wiped when dropped, for it holds
+/// secrets (an account's password verifier, a stored password).
+pub(crate) struct Wiped<'v>(pub Cow<'v, OwnedNode>);
+
+impl Drop for Wiped<'_> {
+    fn drop(&mut self) {
+        /// Every value of `node`, wiped. Bounded: a node of the file is at
+        /// most 17 keys deep (`om_hbam::slot::MAX_DEPTH`).
+        fn wipe(node: &mut OwnedNode) {
+            use zeroize::Zeroize;
+            if let Some(value) = node.value.as_mut() {
+                value.zeroize();
+            }
+            for child in &mut node.children {
+                wipe(child);
+            }
+        }
+        if let Cow::Owned(node) = &mut self.0 {
+            wipe(node);
+        }
+    }
+}
+
 /// One node of a view, without its children.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Head<'v> {

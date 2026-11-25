@@ -295,11 +295,28 @@ impl<'h> Reading<'h> {
     /// (`Server::checking_reads`) answers through that one, and first
     /// through the file engine's to check that both answer the same
     /// ([`super::copies`]): `read` then runs twice, and must not count on
-    /// running once.
+    /// running once. A read of the accounts goes through
+    /// [`Self::serve_with_accounts`]: the test view reads them only for it.
     pub fn serve<T: PartialEq + std::fmt::Debug>(&self, mut read: impl FnMut(Read<'_>) -> T) -> T {
         #[cfg(debug_assertions)]
         if let Some(copies) = &self.copies {
-            return copies.serve(self, read);
+            return copies.serve(self, false, read);
+        }
+        read(self.read())
+    }
+
+    /// [`Self::serve`] for a read of the file's accounts
+    /// (`derived::Derived::accounts`): a login and the other readers of
+    /// them. The running server reads as [`Self::serve`] does; the test
+    /// view reads the accounts through itself for this read alone, and for
+    /// no other.
+    pub fn serve_with_accounts<T: PartialEq + std::fmt::Debug>(
+        &self,
+        mut read: impl FnMut(Read<'_>) -> T,
+    ) -> T {
+        #[cfg(debug_assertions)]
+        if let Some(copies) = &self.copies {
+            return copies.serve(self, true, read);
         }
         read(self.read())
     }

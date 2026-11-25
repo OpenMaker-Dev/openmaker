@@ -1963,7 +1963,7 @@ fn login(
             let found = shared
                 .engine
                 .read(&file.hosted)
-                .serve(|read| read.derived.account(&login.account));
+                .serve_with_accounts(|read| read.derived.account(&login.account));
             let found = match found {
                 Ok(found) => found,
                 Err(error) => {

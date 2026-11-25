@@ -873,7 +873,7 @@ fn log_in(
     let found = shared
         .engine
         .read(hosted)
-        .serve(|read| read.derived.account(account))?;
+        .serve_with_accounts(|read| read.derived.account(account))?;
     Ok(found.filter(|account| {
         let custom_sets = shared.custom_sets.load(Ordering::Relaxed);
         account.password.is_ok()

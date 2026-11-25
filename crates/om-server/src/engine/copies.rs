@@ -283,10 +283,13 @@ impl Switch {
         self.failing().is_none()
     }
 
-    /// `read`, answered through the test view (module doc).
+    /// `read`, answered through the test view (module doc); its derived
+    /// state holds the accounts read through the test view only when
+    /// `accounts` (a reader of them, `Reading::serve_with_accounts`).
     pub(crate) fn serve<T: PartialEq + std::fmt::Debug>(
         &self,
         reading: &Reading<'_>,
+        accounts: bool,
         mut read: impl FnMut(Read<'_>) -> T,
     ) -> T {
         let failing = self.failing();
@@ -297,7 +300,7 @@ impl Switch {
             .unwrap_or_default();
         let file_read = reading.read();
         let copies = Copies::new(reading.file_view(), &paths);
-        let derived = self.derived_of(reading, &copies, failing.is_none());
+        let derived = self.derived_of(reading, &copies, failing.is_none(), accounts);
         let copied = Read {
             view: &copies,
             derived: &derived,
@@ -318,7 +321,7 @@ impl Switch {
     }
 
     /// `read`, answered through the test view alone, unchecked: a read
-    /// that may run only once.
+    /// that may run only once, of no accounts.
     pub(crate) fn serve_once<T>(
         &self,
         reading: &Reading<'_>,
@@ -331,7 +334,7 @@ impl Switch {
             .cloned()
             .unwrap_or_default();
         let copies = Copies::new(reading.file_view(), &paths);
-        let derived = self.derived_of(reading, &copies, failing.is_none());
+        let derived = self.derived_of(reading, &copies, failing.is_none(), false);
         read(Read {
             view: &copies,
             derived: &derived,
@@ -340,9 +343,13 @@ impl Switch {
     }
 
     /// The derived state of the file `reading` reads, computed through
-    /// `copies`: once for each load of the file, and the catalog or the
-    /// accounts again each time the file engine reads them again (after a
-    /// schema change; after an operation moved the schema generation). With
+    /// `copies`: the catalog, the locale and the date order once for each
+    /// load of the file, and the catalog again each time the file engine
+    /// reads it again (after a schema change); the accounts, read through
+    /// `copies` for this read alone, when `accounts` (a reader of them), and
+    /// otherwise not read at all, held as unreadable ([`not_read`]), so that
+    /// a reader that did not ask for them gets none and the test view copies
+    /// no account record for it (a password's verifier included). With
     /// `check` it must equal the file engine's, and failing to compute it
     /// fails the check.
     ///
@@ -356,19 +363,25 @@ impl Switch {
     ///   a damaged part of the catalog fails the reads that reach it and
     ///   leaves the state readers were given.
     /// - The accounts are a reader's whole read: a login reads nothing else
-    ///   of the file. So while a failing path reaches what they are computed
-    ///   from ([`derived::read_accounts`]: `[23, 1, 5]` and `[23, 2, 5]`,
-    ///   at, above or below either), they are unavailable to every reader,
-    ///   whatever state is cached and whichever part failed to compute
-    ///   first ([`with_accounts_as_read`]), and a login gets a failed read's
-    ///   reply.
-    fn derived_of(&self, reading: &Reading<'_>, copies: &Copies<'_>, check: bool) -> Arc<Derived> {
+    ///   of the file. They are read for each reader of them, so while a
+    ///   failing path reaches what they are computed from
+    ///   ([`derived::read_accounts`]: `[23, 1, 5]` and `[23, 2, 5]`, at,
+    ///   above or below either) they are unavailable to it, whatever state
+    ///   is cached and whichever part failed to compute first, and a login
+    ///   gets a failed read's reply.
+    fn derived_of(
+        &self,
+        reading: &Reading<'_>,
+        copies: &Copies<'_>,
+        check: bool,
+        accounts: bool,
+    ) -> Arc<Derived> {
         let current = reading.derived();
         let id = reading.file().id;
         let mut cache = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
         let computed = match cache.get(&id) {
             Some((of, mine)) if Arc::ptr_eq(of, current) => Ok(mine.clone()),
-            // The same load of the file, its schema changed.
+            // The same load of the file, its state computed again.
             Some((of, mine)) if of.instance() == current.instance() => {
                 // The file engine computed its state again: the tree changed
                 // since the version the last one was computed from.
@@ -376,21 +389,18 @@ impl Switch {
                     copies.changed_since(&[], of.version()).unwrap_or(true),
                     "derived state changed without a change of the version"
                 );
-                (|| -> om_hbam::Result<Arc<Derived>> {
-                    let mut next = Derived::clone(mine);
-                    if !of.shares_catalog(current) {
-                        next = next.with_catalog(copies.version(), catalog_of(reading, copies)?);
-                    }
-                    if !of.shares_accounts(current) {
-                        next = next.with_accounts(copies.version(), derived::read_accounts(copies));
-                    }
-                    Ok(Arc::new(next))
-                })()
+                if of.shares_catalog(current) {
+                    // Its accounts alone, which this state does not hold.
+                    Ok(mine.clone())
+                } else {
+                    catalog_of(reading, copies)
+                        .map(|catalog| Arc::new(mine.with_catalog(copies.version(), catalog)))
+                }
             }
             // The first read of this load of the file (a file closed and
             // opened again is a new store, whose versions start over).
             _ => catalog_of(reading, copies).and_then(|catalog| {
-                let mut mine = Derived::new(copies, catalog, current.name())?;
+                let mut mine = Derived::with_parts(copies, catalog, not_read(), current.name())?;
                 if current.desktop() {
                     mine.serve_desktop();
                 }
@@ -403,7 +413,7 @@ impl Switch {
             Ok(mine) => {
                 if check {
                     assert!(
-                        mine.same_as(current),
+                        mine.same_as(current, false),
                         "{:?}: the test view's derived state differs from the file engine's:\n{mine:?}\n{current:?}",
                         reading.file().name
                     );
@@ -421,26 +431,38 @@ impl Switch {
                      using the file engine's",
                     reading.file().name
                 );
-                current.clone()
+                Arc::new(current.with_accounts(current.version(), not_read()))
             }
         };
-        // Checking, no path fails, and the accounts read as computed.
-        if check {
+        drop(cache);
+        if !accounts {
             return derived;
         }
-        with_accounts_as_read(derived, copies)
+        // Read for this reader, through `copies`: what it copies of each
+        // account record is wiped once decoded (`hosting::read_accounts`).
+        let with =
+            Arc::new(derived.with_accounts(derived.version(), derived::read_accounts(copies)));
+        if check {
+            assert!(
+                with.same_as(current, true),
+                "{:?}: the test view's accounts differ from the file engine's:\n{with:?}\n{current:?}",
+                reading.file().name
+            );
+        }
+        with
     }
 }
 
-/// `derived` with its accounts as a reader reading them through `copies`
-/// now gets them: unavailable when the read of what they are computed from
-/// fails ([`derived::read_accounts`]), whether `derived` was cached or is
-/// the file engine's; else as `derived` holds them (`Switch::derived_of`).
-fn with_accounts_as_read(derived: Arc<Derived>, copies: &Copies<'_>) -> Arc<Derived> {
-    match derived::read_accounts(copies) {
-        Err(error) => Arc::new(derived.with_accounts(derived.version(), Err(error))),
-        Ok(_) => derived,
-    }
+/// What the test view's derived state holds for the accounts when its
+/// reader did not ask for them (`Switch::derived_of`): an error, so that a
+/// reader that reads them without asking fails its test.
+fn not_read() -> derived::Accounts {
+    Err(ReadError::Unreadable {
+        path: vec![vec![23], vec![1], vec![5]],
+        why: "the test view reads the accounts only for a reader of them \
+              (`Reading::serve_with_accounts`)"
+            .into(),
+    })
 }
 
 /// The catalog the test view's derived state holds: the one it decodes

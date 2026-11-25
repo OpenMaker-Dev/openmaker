@@ -3982,10 +3982,12 @@ fn a_failed_save_of_an_account_edit_puts_back_the_accounts() {
 
 /// The review's P2 on panics: a record commit that panics part way, inside
 /// its own guard, on a file without unsaved changes is put back by that
-/// guard and then by the engine's, and the file is left as it was, without
-/// unsaved changes, so no later operation saves for nothing.
+/// guard and then by the engine's, and the file is left as it was. It
+/// counts as changed since its last save, though (the review of #751): an
+/// unwind can leave what no journal holds, so memory is no longer known to
+/// equal the file on disk, and the next save writes it.
 #[test]
-fn a_commit_that_panics_leaves_a_clean_file_clean() {
+fn a_commit_that_panics_is_put_back_and_counts_as_changed() {
     let mut tree = fixture::tree(&[], true);
     fixture::add_tasks(&mut tree, 1..=3);
     let (_disk, file) = host("engine-panic-clean", &tree);
@@ -4036,7 +4038,13 @@ fn a_commit_that_panics_leaves_a_clean_file_clean() {
     }));
     super::transaction::PANIC_WRITING_RECORDS.with(|panics| panics.set(false));
     assert!(ran.is_err());
-    assert_eq!(untouched(&file, &_disk), before);
+    assert_eq!(
+        untouched(&file, &_disk),
+        Untouched {
+            unsaved: true,
+            ..before
+        }
+    );
 }
 
 /// An export copies the file on disk while the store counts nothing as
@@ -4050,7 +4058,6 @@ fn a_commit_that_panics_leaves_a_clean_file_clean() {
 /// disk, holds exactly the tree in memory.
 #[test]
 fn an_export_after_a_failed_save_holds_what_memory_holds() {
-    use super::export::{Kind, Progress, Source, Target};
     // Notes without its records: its record list, record ids and indexes.
     let table = uint_segment(fixture::NOTES);
     let mut tree = fixture::tree(&[], true);
@@ -4120,8 +4127,15 @@ fn an_export_after_a_failed_save_holds_what_memory_holds() {
         None,
         "the record list is taken back"
     );
+    exported_from_disk_as_memory(&engine, &file, &disk);
+}
+
+/// An export of the version `file` holds now is a copy of its file on disk
+/// (`disk`), byte for byte, and holds exactly the tree in memory.
+fn exported_from_disk_as_memory(engine: &FileEngine, file: &Hosted, disk: &fixture::TempFile) {
+    use super::export::{Kind, Progress, Source, Target};
     assert!(matches!(
-        engine.read(&file).export_source().unwrap(),
+        engine.read(file).export_source().unwrap(),
         Source::OnDisk(_)
     ));
     let path = disk.0.with_extension("export");
@@ -4133,7 +4147,7 @@ fn an_export_after_a_failed_save_holds_what_memory_holds() {
         .unwrap();
     engine
         .export(
-            &file,
+            file,
             Kind::Current,
             Target::File(&mut into),
             Progress::none(),
@@ -4150,7 +4164,163 @@ fn an_export_after_a_failed_save_holds_what_memory_holds() {
     let read = om_hbam::HbamFile::from_bytes(exported).unwrap();
     assert_eq!(
         Some(read.key_tree().unwrap().root.to_owned_node()),
-        node_at(&file, &[]),
+        node_at(file, &[]),
         "what memory holds"
     );
+}
+
+/// The review of #751 (P0): a roll-back puts back what a change removed as
+/// it was kept, byte for byte and kind for kind, not through the checks
+/// that guard a client's write. A record held as a value, not a list,
+/// whose deletion's save fails before its rename, is back as that value,
+/// the store counts as unchanged since its last save, and an export, a
+/// copy of the file on disk, holds exactly what memory holds.
+#[test]
+fn a_deletion_taken_back_puts_the_record_back_as_it_was() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let table = uint_segment(fixture::TABLE);
+    let held = vec![table.clone(), vec![0x05], serial::encode(2)];
+    let path: Vec<&[u8]> = held.iter().map(Vec::as_slice).collect();
+    tree.put(
+        &path,
+        OwnedNode::leaf(Vec::new(), b"held as a value".to_vec()),
+    );
+    let (disk, file) = host("engine-deletion-back", &tree);
+    let before = node_at(&file, &[]);
+    assert!(node_at(&file, &held).is_some_and(|record| !record.push));
+    let engine = engine();
+    let list = OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            table.clone(),
+            vec![OwnedNode::list(
+                vec![0x05],
+                vec![OwnedNode::leaf(serial::encode(2), vec![COMMIT_DELETED])],
+            )],
+        )],
+    );
+    let commit = Operation::CommitRecords(CommitRecords {
+        user: LockUser {
+            connection: 1,
+            txn: 7,
+        },
+        account: fixture::ACCOUNT.into(),
+        access: file
+            .account(fixture::ACCOUNT)
+            .unwrap()
+            .access
+            .clone()
+            .unwrap(),
+        list,
+        staged: Staged::default(),
+        withheld: Withheld::default(),
+    });
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    let failed = engine.submit(&file, commit);
+    file.fail_saves(None);
+    assert!(is_storage_error(&failed.reply), "{:?}", failed.reply);
+    assert_eq!(node_at(&file, &[]), before, "the record is back as it was");
+    assert!(!file.read_store().has_unsaved_changes());
+    exported_from_disk_as_memory(&engine, &file, &disk);
+}
+
+/// A source whose draws panic: the unique id of container data a
+/// recalculation stores, among them.
+struct PanickingDraws;
+
+impl Environment for PanickingDraws {
+    fn now(&self) -> jiff::Zoned {
+        "2026-11-24T12:00:00[UTC]".parse().unwrap()
+    }
+
+    fn fill_random(&self, _: &mut [u8]) {
+        panic!("a test's panic in a draw");
+    }
+
+    fn stopwatch(&self) -> om_data::rules::Stopwatch {
+        virtual_stopwatch(Duration::from_millis(1), Arc::default())
+    }
+}
+
+/// The review of #751 (P0): a panic part way through deferred work that
+/// stores container data, in the draw of a new library member's unique id,
+/// leaves nothing of the work: the record's own journal is taken back with
+/// the operation's. And whatever an unwind leaves, the store counts as
+/// changed since its last save, so an export walks the tree rather than
+/// copy the file on disk.
+#[test]
+fn a_panic_in_deferred_container_work_leaves_nothing_and_counts_as_changed() {
+    use super::export::Source;
+    const GENERATED: u64 = 48;
+    let mut tree = fixture::tree(&[], true);
+    let table = uint_segment(fixture::TABLE);
+    fixture::add_field(
+        &mut tree,
+        fixture::TABLE,
+        GENERATED,
+        "Generated",
+        2,
+        6,
+        0,
+        0x20,
+        0,
+    );
+    fixture::add_formula(
+        &mut tree,
+        &fixture::names(),
+        (fixture::TABLE, fixture::OCCURRENCE),
+        GENERATED,
+        5,
+        "Base64Decode ( \"aGVsbG8=\" ; \"a.txt\" )",
+    );
+    tree.put(
+        &[&table, &[0x03], &[0x01], &[0xfd], &uint_segment(GENERATED)],
+        OwnedNode::leaf(Vec::new(), 0xc0u32.to_be_bytes().to_vec()),
+    );
+    assert!(tree.at(&[&table, &[0x1f]]).is_none(), "no library yet");
+    let disk = fixture::TempFile::from_tree("engine-container-panic", &tree);
+    let file = local(&disk);
+    let before = node_at(&file, &[]);
+    assert!(!file.read_store().has_unsaved_changes());
+    let engine = FileEngine::new(Box::new(PanickingDraws));
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.recover(&engine)));
+    assert!(ran.is_err());
+    assert_eq!(node_at(&file, &[]), before, "nothing of the work is left");
+    assert!(
+        file.read_store().has_unsaved_changes(),
+        "counted as changed"
+    );
+    assert!(matches!(
+        engine.read(&file).export_source().unwrap(),
+        Source::Written { .. }
+    ));
+}
+
+/// The review of #751 (P2): member keys a write already passed change
+/// nothing, so a draft that writes only them leaves the file as it was:
+/// not counted as changed, not saved, its change number where it was.
+#[test]
+fn a_member_key_draft_that_writes_nothing_leaves_the_file_as_it_was() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::index_layouts(&mut tree);
+    let (disk, file) = host("engine-keys-passed", &tree);
+    let layouts = vec![vec![4]];
+    assert!(file.read_store().issue_member_key(&layouts).is_some());
+    // A write passes the key: the catalog's counters set past it, saved.
+    {
+        let mut store = file.write_store(&Writer::for_tests());
+        for key in [crate::derived::LAST_MEMBER_ID, MOD_COUNT] {
+            let at = vec![vec![4], vec![crate::derived::CATALOG_INDEX], vec![key]];
+            assert!(store.put_subtree(&at, serial_leaf(key, 1_000_000)));
+        }
+        assert!(store.save(&file.at).unwrap());
+    }
+    let saves = file.read_store().saves();
+    let bytes = std::fs::read(&disk.0).unwrap();
+    let outcome = engine().submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
+    assert_eq!(outcome.reply, Reply::ChangeSchema(Ok(())));
+    assert!(!file.read_store().has_unsaved_changes());
+    assert_eq!(file.read_store().saves(), saves, "not saved");
+    assert_eq!(std::fs::read(&disk.0).unwrap(), bytes, "the file as it was");
 }

@@ -405,9 +405,10 @@ impl FileEngine {
                 // What it changed is put back, member keys it wrote
                 // included, which wait again, as they did before the engine
                 // interface; the indexes it took do not (they had been
-                // taken then too).
+                // taken then too). The store counts as changed since its
+                // last save: an unwind can leave what no journal holds.
                 let journal = tx.journal;
-                store.roll_back(journal);
+                store.roll_back_unwound(journal);
                 store.put_back_member_keys(taken.member_keys);
                 std::panic::resume_unwind(panic)
             }

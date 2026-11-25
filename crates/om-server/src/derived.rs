@@ -108,7 +108,18 @@ impl Derived {
     /// keyed in ([`detect_date_order`]). Accounts that cannot be read are
     /// kept as such ([`Derived::accounts`]).
     pub fn new(view: &dyn View, catalog: Catalog, name: &str) -> Result<Self, ReadError> {
-        let accounts = read_accounts(view);
+        Self::with_parts(view, catalog, read_accounts(view), name)
+    }
+
+    /// [`Derived::new`] with `accounts` given, not read from `view` (the
+    /// test view's, which reads them only for a reader of them,
+    /// `engine::copies`).
+    pub(crate) fn with_parts(
+        view: &dyn View,
+        catalog: Catalog,
+        accounts: Accounts,
+        name: &str,
+    ) -> Result<Self, ReadError> {
         let locale = view
             .subtree(&LOCALE, NO_LIMIT)?
             .and_then(|node| node.assembled().map(Cow::into_owned))
@@ -373,13 +384,14 @@ impl Derived {
     }
 
     /// Whether `other` is the same state, whatever version each was
-    /// computed at (the test view's check, `engine::copies`). Passwords
-    /// compare as they are stored; their `Debug` form, in the check's
-    /// message, is redacted (`om_crypto::account::StoredPassword`).
+    /// computed at, its accounts too when `accounts` (the test view's
+    /// check, `engine::copies`). Passwords compare as they are stored;
+    /// their `Debug` form, in the check's message, is redacted
+    /// (`om_crypto::account::StoredPassword`).
     #[cfg(debug_assertions)]
-    pub(crate) fn same_as(&self, other: &Derived) -> bool {
+    pub(crate) fn same_as(&self, other: &Derived, accounts: bool) -> bool {
         self.catalog == other.catalog
-            && self.accounts == other.accounts
+            && (!accounts || self.accounts == other.accounts)
             && self.locale == other.locale
             && self.date_order == other.date_order
             && self.name == other.name
@@ -393,15 +405,6 @@ impl Derived {
     #[cfg(debug_assertions)]
     pub(crate) fn shares_catalog(&self, other: &Derived) -> bool {
         Arc::ptr_eq(&self.catalog, &other.catalog)
-    }
-
-    /// [`Self::shares_catalog`] for the accounts.
-    #[cfg(debug_assertions)]
-    pub(crate) fn shares_accounts(&self, other: &Derived) -> bool {
-        match (&self.accounts, &other.accounts) {
-            (Ok(mine), Ok(theirs)) => Arc::ptr_eq(mine, theirs),
-            _ => false,
-        }
     }
 }
 

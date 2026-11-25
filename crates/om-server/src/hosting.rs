@@ -1564,7 +1564,11 @@ pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadErr
         Direction::Forward,
         NO_LIMIT,
     ) {
-        let account = account?;
+        // A copy the view made of the record, its password verifier with
+        // it, is wiped once decoded (the test view's; the file engine's
+        // view lends its tree).
+        let account = crate::engine::Wiped(account?);
+        let account = &account.0;
         // A Login reply names the account by its record key as a key path
         // with one-byte lengths (`[len][key]`, network-protocol.md 5.6.5):
         // an account whose key is too long for that is not admitted.

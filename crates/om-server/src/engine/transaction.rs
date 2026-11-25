@@ -224,17 +224,17 @@ impl<'a> Transaction<'a> {
     /// Run `work`: when it panics, the operation's changes are put back
     /// before the panic goes on, as `Store::guarded` does, so the store a
     /// poisoned lock hands to the next request is the one before the
-    /// operation.
+    /// operation, counted as changed since its last save
+    /// (`Store::roll_back_unwound`).
     pub fn guarded<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
         let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
         match done {
             Ok(value) => value,
             Err(panic) => {
                 let journal = std::mem::replace(&mut self.journal, self.store.begin_commit());
-                self.store.roll_back(journal);
+                self.store.roll_back_unwound(journal);
                 // Begun again from the store as it was put back, so that the
-                // engine, rolling this one back, leaves it so: its unsaved
-                // state the one before the operation.
+                // engine, rolling this one back, leaves it so.
                 self.journal = self.store.begin_commit();
                 std::panic::resume_unwind(panic)
             }

@@ -1680,7 +1680,8 @@ impl Store {
     /// Run `work` on a commit's changes: when it panics, everything the
     /// commit changed is put back before the panic goes on, so the store a
     /// poisoned lock hands to the next request is the one before the commit
-    /// ([`crate::hosting::Hosted::write_store`]).
+    /// ([`crate::hosting::Hosted::write_store`]), counted as changed since
+    /// its last save ([`Store::roll_back_unwound`]).
     pub fn guarded<T>(
         &mut self,
         journal: &mut Journal,
@@ -1691,7 +1692,7 @@ impl Store {
             Ok(value) => value,
             Err(panic) => {
                 let taken = std::mem::replace(journal, self.begin_commit());
-                self.roll_back(taken);
+                self.roll_back_unwound(taken);
                 // Begun again from the store as it was put back, so that a
                 // handler outside, rolling this one back, leaves it so.
                 *journal = self.begin_commit();
@@ -1700,30 +1701,37 @@ impl Store {
         }
     }
 
-    /// Put back everything a commit changed, newest first.
+    /// [`Store::roll_back`] of a change an unwind left: what the journal
+    /// holds is put back, and the store counts as changed since its last
+    /// save from now on, whatever it counted before. A panic can leave
+    /// changes no journal holds (one it unwound past before it was put back
+    /// or absorbed), so memory is no longer known to equal the file on
+    /// disk: the next save writes the tree, and an export walks it rather
+    /// than copy the disk (`engine::export`).
+    pub(crate) fn roll_back_unwound(&mut self, journal: Journal) {
+        self.roll_back(journal);
+        self.dirty = true;
+    }
+
+    /// Put back everything a commit changed, newest first, each as it was
+    /// kept, byte for byte and kind for kind: nothing is put back through
+    /// the checks and reshaping that guard a client's write (a record's
+    /// `put_record`, which makes a record a list and refuses one that
+    /// holds a value), which could refuse it or put back something else.
     pub(crate) fn roll_back(&mut self, journal: Journal) {
-        // The record lists and counts are nodes the journal kept; a
-        // record's own undo only moves it back in the indexes.
+        // The record lists, the index entries a record moved between and
+        // the counts are nodes the journal kept before the record's own
+        // undo, so they are put back after it, as they were.
         for undo in journal.undo.into_iter().rev() {
             match undo {
                 Undo::Record(table, id, old) => {
-                    let current = self
-                        .node(&[&table, &[keys::RECORDS], &serial::encode(id)])
-                        .cloned();
-                    // The write went through these nodes, so its reverse can.
-                    if let Err(reason) = self.put_record(
-                        &table,
-                        id,
-                        current.as_ref(),
-                        old,
-                        None,
-                        &mut BTreeSet::new(),
-                        false,
-                    ) {
-                        error!(
-                            "{}: record {id} of table {table:02x?} could not be put back: {reason}",
-                            self.name
-                        );
+                    let segment = serial::encode(id);
+                    let path: [&[u8]; 3] = [&table, &[keys::RECORDS], &segment];
+                    match old {
+                        Some(node) => self.root.put(&path, node),
+                        None => {
+                            self.root.remove(&path);
+                        }
                     }
                 }
                 Undo::Node(path, old) => {
@@ -2259,9 +2267,11 @@ impl Store {
                     self.root
                         .ensure(&path)
                         .set_child(modcount::serial_leaf(key, value));
+                    // Changed only when a counter advances: keys a write
+                    // already passed change nothing to save.
+                    self.dirty = true;
                 }
             }
-            self.dirty = true;
         }
     }
 
@@ -2981,51 +2991,56 @@ impl Store {
         let mut journal = self.begin_commit();
         // Added cells, removed names, and additions already counted by storage.
         let mut references: BTreeMap<Vec<u8>, (i32, i32, i32)> = BTreeMap::new();
-        for (cell, result) in cells {
-            let key = uint_segment(*cell);
-            if let Some(member) = old.child(&key).and_then(member_key) {
-                references.entry(member).or_default().1 += 1;
-            }
-            let text = match result {
-                ContainerResult::Empty => None,
-                ContainerResult::Text(text) => Some(text.clone()),
-                ContainerResult::Data(value) => {
-                    let Some((member, stored)) =
-                        self.recomputed_member(&mut journal, table, value, unique_id)
-                    else {
-                        journal.refused.get_or_insert_with(|| {
-                            "the container value has no data to store".to_string()
-                        });
-                        break;
-                    };
-                    let (added, _, counted) = references.entry(member.clone()).or_default();
-                    *added += 1;
-                    if stored {
-                        *counted += 1;
+        // A panic part way (in a library write, or the draw of a new
+        // member's unique id) takes back what this record's own journal
+        // holds before it goes on, as the operation's does with its own.
+        self.guarded(&mut journal, |store, journal| {
+            for (cell, result) in cells {
+                let key = uint_segment(*cell);
+                if let Some(member) = old.child(&key).and_then(member_key) {
+                    references.entry(member).or_default().1 += 1;
+                }
+                let text = match result {
+                    ContainerResult::Empty => None,
+                    ContainerResult::Text(text) => Some(text.clone()),
+                    ContainerResult::Data(value) => {
+                        let Some((member, stored)) =
+                            store.recomputed_member(journal, table, value, unique_id)
+                        else {
+                            journal.refused.get_or_insert_with(|| {
+                                "the container value has no data to store".to_string()
+                            });
+                            break;
+                        };
+                        let (added, _, counted) = references.entry(member.clone()).or_default();
+                        *added += 1;
+                        if stored {
+                            *counted += 1;
+                        }
+                        Some(containers::reference_text(&member))
                     }
-                    Some(containers::reference_text(&member))
-                }
-            };
-            match text {
-                Some(text) => new.set_child(om_scripts::text_node(&key, &text)),
-                None => {
-                    new.remove(&[&key]);
+                };
+                match text {
+                    Some(text) => new.set_child(om_scripts::text_node(&key, &text)),
+                    None => {
+                        new.remove(&[&key]);
+                    }
                 }
             }
-        }
-        if journal.refused.is_none() {
-            let deltas = references
-                .iter()
-                .map(|(member, &(added, removed, counted))| {
-                    let surviving =
-                        naming.get(member).copied().unwrap_or_default() - i64::from(removed);
-                    let release =
-                        self.guarded_container_release(table, member, counted, surviving, removed);
-                    (member.clone(), added - counted - release)
-                })
-                .collect();
-            self.adjust_container_counts(&mut journal, table, deltas);
-        }
+            if journal.refused.is_none() {
+                let deltas = references
+                    .iter()
+                    .map(|(member, &(added, removed, counted))| {
+                        let surviving =
+                            naming.get(member).copied().unwrap_or_default() - i64::from(removed);
+                        let release = store
+                            .guarded_container_release(table, member, counted, surviving, removed);
+                        (member.clone(), added - counted - release)
+                    })
+                    .collect();
+                store.adjust_container_counts(journal, table, deltas);
+            }
+        });
         if let Some(reason) = journal.refused.take() {
             warn!(
                 "{}: table {name:?}: record {record:02x?} keeps its container calculation \

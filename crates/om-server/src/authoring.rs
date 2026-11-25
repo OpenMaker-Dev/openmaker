@@ -87,7 +87,8 @@ use om_scripts::{Script, ScriptKind};
 use crate::config::Privileges;
 use crate::connection::{host_time_key_at, mismatched, Shared};
 use crate::engine::{
-    self, DesignEdit, EditDesign, Edited, Environment, FileNotSaved, Locks, NotStored, Transaction,
+    self, DesignEdit, EditDesign, Edited, Environment, FileNotSaved, Locks, NotStored, ReadError,
+    Transaction,
 };
 use crate::hosting::{FileAccount, Hosted};
 use crate::locks::LockUser;
@@ -244,6 +245,22 @@ pub(crate) fn perform(
         Request::DescribeSecurity => {
             let catalog = match crate::security::catalog(&shared.engine, file) {
                 Ok(catalog) => catalog,
+                // A member larger than one reply carries: refused as a
+                // reply past it is (below).
+                Err(ReadError::TooLarge { .. }) => {
+                    warn!(
+                        "{peer}: refusing a security catalog of {:?} with a value past one reply",
+                        file.name
+                    );
+                    return Ok(authoring::build_reply(&refused(
+                        status::UNSUPPORTED,
+                        format!(
+                            "The file's security catalog holds a value larger than one reply \
+                             carries ({} KB).",
+                            MAX_DEFINITION_BYTES / 1024
+                        ),
+                    )));
+                }
                 Err(e) => {
                     error!(
                         "{peer}: the security catalog of {:?} could not be read: {e}",

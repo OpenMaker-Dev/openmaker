@@ -442,7 +442,10 @@ impl LocalHost {
         let Some((shared, hosted)) = self.served() else {
             return Ok(None);
         };
-        let suggested = shared.engine.read(&hosted).serve(suggested_account);
+        let suggested = shared
+            .engine
+            .read(&hosted)
+            .serve_with_accounts(suggested_account);
         suggested.map_err(io::Error::other)
     }
 
@@ -478,7 +481,7 @@ impl LocalHost {
         let Some((shared, file)) = self.served() else {
             return Ok(Default::default());
         };
-        let info = shared.engine.read(&file).serve(|read| {
+        let info = shared.engine.read(&file).serve_with_accounts(|read| {
             let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
             Ok::<_, ReadError>(
                 accounts
@@ -777,7 +780,7 @@ impl std::fmt::Debug for StoredLogin {
 /// view that lends the store's own bytes (the file engine's) copies
 /// nothing, a value assembled from parts is a copy wiped when dropped, and
 /// a copy the view itself hands over (a view that reads pages, the test
-/// view) is wiped when dropped too ([`Wiped`]).
+/// view) is wiped when dropped too (`engine::Wiped`).
 fn stored_login(read: FileRead<'_>) -> Result<Option<StoredLogin>, ReadError> {
     use std::borrow::Cow;
     let Some(name) = read.view.subtree(&SUGGESTED_ACCOUNT, NO_LIMIT)? else {
@@ -797,7 +800,7 @@ fn stored_login(read: FileRead<'_>) -> Result<Option<StoredLogin>, ReadError> {
     let password = match read.view.subtree(&STORED_PASSWORD, NO_LIMIT)? {
         None => zeroize::Zeroizing::new(String::new()),
         Some(node) => {
-            let node = Wiped(node);
+            let node = crate::engine::Wiped(node);
             let Some(masked) = node.0.assembled() else {
                 return Ok(None);
             };
@@ -815,29 +818,6 @@ fn stored_login(read: FileRead<'_>) -> Result<Option<StoredLogin>, ReadError> {
         }
     };
     Ok(Some(StoredLogin { account, password }))
-}
-
-/// A subtree a view gave: lent (the store's own) it is left alone; a copy
-/// the view made is wiped when dropped, for it holds a stored password.
-struct Wiped<'v>(std::borrow::Cow<'v, om_hbam::OwnedNode>);
-
-impl Drop for Wiped<'_> {
-    fn drop(&mut self) {
-        /// Every value of `node`, wiped. Bounded: a node of the file is at
-        /// most 17 keys deep (`om_hbam::slot::MAX_DEPTH`).
-        fn wipe(node: &mut om_hbam::OwnedNode) {
-            use zeroize::Zeroize;
-            if let Some(value) = node.value.as_mut() {
-                value.zeroize();
-            }
-            for child in &mut node.children {
-                wipe(child);
-            }
-        }
-        if let std::borrow::Cow::Owned(node) = &mut self.0 {
-            wipe(node);
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
