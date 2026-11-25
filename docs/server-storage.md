@@ -1393,8 +1393,21 @@ cannot write its copy does). On Windows the entry has no identity here, so
 it is not verified to be the file loaded, and only the read-only attributes
 of the file and of its folder are looked at; the access control lists are
 not read ([#851](https://github.com/OpenMaker-Dev/openmaker/issues/851)).
-OpenMaker's own choice: how FileMaker Server hosts a file it may not write
-is unmeasured, though its event catalog has event 18 (re/server-logs.md).
+Serving read-only a file the server's user may not write is what FileMaker
+Server does [O]: FileMaker Server 26.0.3 opened a file of mode 444 owned by
+its user with event 18 `Opened database "<name>" read only.`, listed it
+with status `Normal`, and left its bytes unchanged, where the same file
+writable opened with event 184 (re/server-logs.md 4,
+[#790](https://github.com/OpenMaker-Dev/openmaker/issues/790#issuecomment-7176757453)).
+The folder cause (`FolderNotWritable`) and the `Unchecked` cause are
+OpenMaker's own, for its own way of saving, a new copy renamed over the
+file: FileMaker Server writes a file in place, so a folder it may not write
+may not matter to it (unmeasured). The Read-only mark in the Admin
+Console's list is OpenMaker's own too. FileMaker Server also writes the
+`fmapp` extended privilege into a file no account of which has it as it
+opens the file (event 655), and on a file it may not write cannot, says so
+(654) and opens it unshared; OpenMaker does neither
+([#863](https://github.com/OpenMaker-Dev/openmaker/issues/863)).
 
 **Writes to a file hosted read-only.** No request that would change a
 file hosted read-only is answered with the reply of a change that
