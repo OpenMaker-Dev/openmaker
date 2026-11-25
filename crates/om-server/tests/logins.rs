@@ -192,28 +192,45 @@ fn an_account_failing_from_many_addresses_is_refused_only_from_new_ones() {
 }
 
 /// A login to a file whose accounts could not be read (the test view
-/// failing reads of `[23, 1, 5]` from the start, as a damaged page would,
-/// docs/server-storage.md 5) is answered 802, "unable to open file",
-/// whatever its password: neither 212, which a client counts toward
-/// locking the account out, nor a success. It is not counted toward the
-/// login limits either: seven from one address, which may fail five at
-/// once, are all answered so, none 214.
+/// failing reads, as a damaged page would, docs/server-storage.md 5) is
+/// answered 802, "unable to open file", whatever its password: neither
+/// 212, which a client counts toward locking the account out, nor a
+/// success. It is not counted toward the login limits either: seven from
+/// one address, which may fail five at once, are all answered so, none
+/// 214. So for the account records `[23, 1, 5]` failing from the start;
+/// for them failing only after a read computed the test view's derived
+/// state, which it keeps; and for the whole security catalog `[23]`
+/// failing, which fails the catalog's computation first.
 #[cfg(debug_assertions)]
 #[test]
 fn a_login_whose_accounts_cannot_be_read_is_answered_unable_to_open() {
-    let (_file, port, handle) = start("logins-unreadable");
-    handle.failing_reads(FILE, &[&[23], &[1], &[5]]);
-    let mut session = opened(port);
-    for password in [PASSWORD, "wrong", PASSWORD, "", "wrong", PASSWORD, "wrong"] {
+    let cases: [(&str, &[&[u8]], bool); 3] = [
+        ("logins-unreadable", &[&[23], &[1], &[5]], false),
+        ("logins-unreadable-later", &[&[23], &[1], &[5]], true),
+        ("logins-unreadable-security", &[&[23]], false),
+    ];
+    for (tag, path, later) in cases {
+        let (_file, port, handle) = start(tag);
+        if !later {
+            handle.failing_reads(FILE, path);
+        }
+        // Its download of the status area computes the derived state.
+        let mut session = opened(port);
+        if later {
+            handle.failing_reads(FILE, path);
+        }
+        for password in [PASSWORD, "wrong", PASSWORD, "", "wrong", PASSWORD, "wrong"] {
+            assert_eq!(
+                login(&mut session, ACCOUNT, password),
+                om_server::LOGIN_UNREADABLE_FILE,
+                "{tag}: {password:?}"
+            );
+        }
         assert_eq!(
-            login(&mut session, ACCOUNT, password),
+            login(&mut session, "Nobody", PASSWORD),
             om_server::LOGIN_UNREADABLE_FILE,
-            "{password:?}"
+            "{tag}"
         );
+        session.disconnect().unwrap();
     }
-    assert_eq!(
-        login(&mut session, "Nobody", PASSWORD),
-        om_server::LOGIN_UNREADABLE_FILE
-    );
-    session.disconnect().unwrap();
 }

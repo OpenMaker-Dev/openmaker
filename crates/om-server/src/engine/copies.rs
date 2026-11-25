@@ -344,13 +344,24 @@ impl Switch {
     /// accounts again each time the file engine reads them again (after a
     /// schema change; after an operation moved the schema generation). With
     /// `check` it must equal the file engine's, and failing to compute it
-    /// fails the check. Without (a test told the view to fail paths), a
-    /// failure gives the file engine's state: derived state is computed when
-    /// a file is loaded and when its schema changes, not by the read that
-    /// fails, so a damaged part of the catalog fails the reads that reach it
-    /// but leaves the state readers were given. Accounts that cannot be read
-    /// are not such a failure: the state holds them as unreadable
-    /// (`Derived::accounts`), and every login is refused.
+    /// fails the check.
+    ///
+    /// Without (a test told the view to fail paths), each part of the state
+    /// answers for its own readers:
+    ///
+    /// - The catalog, the locale and the date order are those computed when
+    ///   the file was loaded or its schema changed, or the file engine's
+    ///   when this view cannot compute them. Their readers also read the
+    ///   tree, through this view, and those reads fail where it fails; so
+    ///   a damaged part of the catalog fails the reads that reach it and
+    ///   leaves the state readers were given.
+    /// - The accounts are a reader's whole read: a login reads nothing else
+    ///   of the file. So while a failing path reaches what they are computed
+    ///   from ([`derived::read_accounts`]: `[23, 1, 5]` and `[23, 2, 5]`,
+    ///   at, above or below either), they are unavailable to every reader,
+    ///   whatever state is cached and whichever part failed to compute
+    ///   first ([`with_accounts_as_read`]), and a login gets a failed read's
+    ///   reply.
     fn derived_of(&self, reading: &Reading<'_>, copies: &Copies<'_>, check: bool) -> Arc<Derived> {
         let current = reading.derived();
         let id = reading.file().id;
@@ -386,7 +397,7 @@ impl Switch {
                 Ok(Arc::new(mine))
             }),
         };
-        match computed {
+        let derived = match computed {
             Ok(mine) => {
                 if check {
                     assert!(
@@ -410,7 +421,23 @@ impl Switch {
                 );
                 current.clone()
             }
+        };
+        // Checking, no path fails, and the accounts read as computed.
+        if check {
+            return derived;
         }
+        with_accounts_as_read(derived, copies)
+    }
+}
+
+/// `derived` with its accounts as a reader reading them through `copies`
+/// now gets them: unavailable when the read of what they are computed from
+/// fails ([`derived::read_accounts`]), whether `derived` was cached or is
+/// the file engine's; else as `derived` holds them (`Switch::derived_of`).
+fn with_accounts_as_read(derived: Arc<Derived>, copies: &Copies<'_>) -> Arc<Derived> {
+    match derived::read_accounts(copies) {
+        Err(error) => Arc::new(derived.with_accounts(derived.version(), Err(error))),
+        Ok(_) => derived,
     }
 }
 

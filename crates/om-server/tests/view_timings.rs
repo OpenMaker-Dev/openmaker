@@ -100,13 +100,14 @@ fn tree(count: u64) -> OwnedNode {
     root
 }
 
-/// The folder the file is written to, removed when dropped.
+/// The folder the file is written to, removed when dropped: one of its own
+/// for each timing (`name`), so that timings run at once do not share it.
 struct Folder(PathBuf);
 
 impl Folder {
-    fn new() -> Folder {
+    fn new(name: &str) -> Folder {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("view-timings-{}", std::process::id()));
+            .join(format!("view-timings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         Folder(root)
@@ -173,7 +174,7 @@ fn downloads_and_finds_on_a_large_file() {
     // What the finds on Count give, Count being the record id modulo 1000.
     let equal = (1..=count).filter(|id| id % 1000 == 500).count();
     let below = (1..=count).filter(|id| id % 1000 < 500).count();
-    let folder = Folder::new();
+    let folder = Folder::new("large");
     let file = fixture::TempFile(folder.0.join(fixture::FILE));
     let started = Instant::now();
     fixture::write_tree(&file.0, &tree(count));
@@ -337,7 +338,7 @@ fn logins_and_thumbnails() {
 
     const LOGINS: u32 = 200;
     let runs = env_number("OM_VIEW_RUNS", 9, 1..=101) as usize;
-    let folder = Folder::new();
+    let folder = Folder::new("logins");
     let file = fixture::TempFile(folder.0.join(fixture::FILE));
     fixture::write_tree(&file.0, &accounts_tree());
     let (port, handle) = server::start_configured_with_handle(&file, |server| server);
