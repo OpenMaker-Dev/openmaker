@@ -942,6 +942,11 @@ pub struct OpenMakerApp {
     file_history: crate::file_history::History,
     /// Why Recent and Favorites could not be read or saved, shown on Home.
     history_error: Option<String>,
+    /// Alerts that wait for the one up: each shows once no other is up, and
+    /// stays until its own alert is dismissed, so an error that replaces it
+    /// meanwhile does not lose it. A host Add to Hosts could not save as
+    /// its file opened, when the file's own errors may follow at once.
+    waiting_alerts: std::collections::VecDeque<String>,
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
     opening: Option<Opening>,
@@ -1097,6 +1102,7 @@ impl OpenMakerApp {
             home: Default::default(),
             file_history: Default::default(),
             history_error: None,
+            waiting_alerts: Default::default(),
             status: ConnectStatus::Idle,
             opening: None,
             listing: connect::Listing::None,
@@ -2910,6 +2916,9 @@ impl OpenMakerApp {
                 self.forced_alert = Some((file, text));
             }
         }
+        if self.forced_alert.is_none() && self.error.is_none() && self.script.prompt.is_none() {
+            self.error = self.waiting_alerts.front().cloned();
+        }
         self.alert(&ctx, actions);
         self.host_message(&ctx, actions);
         self.prompt(&ctx);
@@ -3337,8 +3346,12 @@ impl OpenMakerApp {
     fn edit_file_history(&mut self, change: crate::file_history::Change) {
         let path = self.history_path().map(std::path::Path::to_path_buf);
         let requested = change.requested();
+        // Saved as its file opens, a host's failure waits for any alert
+        // the opening file raises, and is not lost to it.
+        let waits = matches!(change, crate::file_history::Change::AddHost(_));
         match self.file_history.change(path.as_deref(), change) {
             Ok(()) => self.history_error = None,
+            Err(error) if waits => self.waiting_alerts.push_back(error.message),
             Err(error) if requested => self.error = Some(error.message),
             Err(error) => self.history_error = Some(error.message),
         }
@@ -5204,6 +5217,9 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissAlert => {
+                if self.waiting_alerts.front() == self.error.as_ref() {
+                    self.waiting_alerts.pop_front();
+                }
                 self.error = None;
                 self.w.document.release_focus();
             }

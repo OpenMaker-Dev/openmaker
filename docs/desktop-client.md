@@ -72,8 +72,8 @@ paths, host names, ports, file names, the list shown and the saved hosts
 passwords. When that file cannot be read or written, the lists last until
 OpenMaker quits: Home says so beside its tabs, and a pin, Remove or host
 change that could not be saved shows an alert. A host Open Network File adds
-is saved as its file opens, and noted beside the tabs, as the file's Recent
-entry is, when it cannot be.
+is saved as its file opens; when it cannot be, its alert waits for any the
+opening file shows, and stays until it is dismissed itself.
 
 Under Home in the sidebar, **Hosts** lists the saved hosts, by name or
 address; **+** adds one (Address, Port, and an optional Name the sidebar

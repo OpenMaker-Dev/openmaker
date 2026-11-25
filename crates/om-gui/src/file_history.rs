@@ -140,9 +140,7 @@ pub(crate) enum Change {
     },
     /// Save `host` under Hosts unless one at its address and port is
     /// saved: Open Network File's Add to Hosts, which leaves a name
-    /// another instance gave it. It is saved as its file opens, like the
-    /// file's Recent entry, and a failure is noted on Home as that one's
-    /// is: an alert then could be replaced by the opening file's own.
+    /// another instance gave it. It is saved as its file opens.
     AddHost(SavedHost),
     /// Forget the saved host at this address and port.
     RemoveHost(String, u16),
@@ -157,6 +155,7 @@ impl Change {
             Self::SetFavorite(..)
                 | Self::RemoveRecent(_)
                 | Self::SaveHost { .. }
+                | Self::AddHost(_)
                 | Self::RemoveHost(..)
         )
     }

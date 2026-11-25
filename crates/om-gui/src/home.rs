@@ -496,7 +496,9 @@ impl Home {
             actions.push(Action::ListFiles(server.clone()));
         }
         search_field(ui, search, &mut self.search, enabled && listed.is_some());
-        status(ui, view, pos2(refresh.left() - 10.0, line_y));
+        if view.busy {
+            status(ui, view, pos2(refresh.left() - 10.0, line_y));
+        }
 
         column_header(ui, table, None);
         let mut rows_ui = rows_ui(ui, table);
