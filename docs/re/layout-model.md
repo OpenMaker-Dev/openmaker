@@ -2251,7 +2251,7 @@ small SVGs for the `-fm-icon` arrow, calendar, and check glyphs.
 | Layout-level styles | `KLayoutStyleDefs` | `ThemeStyles` protobuf |
 | Layout metadata | `KMetadataDefs` | [U] |
 | Layout script triggers | `KScriptTriggers` (`30`) | trigger cache and records, [file-metadata.md](file-metadata.md) section 7 |
-| [U] `16` | layout + `16` | `00 00` on every layout that has it; FileMaker Pro 26 adds it when it saves a layout in Layout mode (10.14, 10.17); [I] `KGuides`, the layout's guides (file-format.md 3.7) |
+| [U] `16` | layout + `16` | `00 00` on every layout seen with it; FileMaker Pro 26 added it in the Layout mode saves that were looked at, Layout Setup's OK with Save Layout (10.14) and the save of a new portal (10.17); that every Layout mode save adds it is [U]; [I] `KGuides`, the layout's guides (file-format.md 3.7) |
 | Table-view layout | layout + `0d` | the layout's own table view (`FMLayout::HasTableLayout`), objects at `0d/05/<object>` with their own trigger caches ([file-metadata.md](file-metadata.md) 7.1); a new file's, member by member, in 10.14 |
 | Per-object attributes | section 5.5 | calc formulas and binary records [U] |
 | Themes | `KThemeDefs`, `KStyleDefs`, `KMetadataDefs`, `KBaseThemeName`, `KBaseThemeVersion` | `ThemeStyles`, `ThemeMetadata` protobuf |
@@ -3339,7 +3339,7 @@ wrote, in the layout member:
 | `03, 02, 07` | the body's list: the portal alone (`00 00 00 01 02 01 01`) |
 | `0a, (158, 134, 0)` | the portal's entry: no value; nested in it the field's entry at (163, 139, 1), value as a field's (10.5) |
 | `15, 00 01` | the field first in the tab order, the same value |
-| `16` | `00 00` (as on other layout saves, 10.14) |
+| `16` | `00 00` (as Layout Setup's save wrote it, 10.14) |
 | `0d` | the stored table view rewritten as for a field the Field tool places (10.14): a column 3 for `Attachments::Description` and a new empty column 4, each with its 213-byte format record, and the body 21 pt high; `LayoutDef.tblCustomRowHeight` 0 to 21 |
 
 The field's index entry is at its drawn place: the portal's top and left,
