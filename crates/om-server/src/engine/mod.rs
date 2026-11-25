@@ -198,7 +198,9 @@ mod state;
 mod transaction;
 mod view;
 
-#[cfg(test)]
+/// Debug builds only: they test switches only those have (failed saves,
+/// the test view), as `export`'s tests do.
+#[cfg(all(test, debug_assertions))]
 mod tests;
 
 use std::collections::BTreeMap;

@@ -241,7 +241,7 @@ impl FileEngine {
 
     /// This engine, offering each operation it runs to `recorder` first
     /// ([`Recorder`]).
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub fn recording(mut self, recorder: impl Fn(&Operation) + Send + Sync + 'static) -> Self {
         self.recorder = Some(Box::new(recorder));
         self

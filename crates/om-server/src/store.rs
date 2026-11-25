@@ -4437,7 +4437,7 @@ fn increment_serial(text: &str, by: i32) -> String {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 impl Store {
     /// The basis of stored calculations, by table ([`recalc`]): tests check
     /// that a change not stored leaves it as it was.

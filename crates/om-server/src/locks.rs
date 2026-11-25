@@ -275,7 +275,7 @@ impl LockTable {
 
     /// Every lock held, by path in key order: its user, type, count and
     /// holder (tests compare two tables with it).
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn entries(&self) -> Vec<(KeyPath, LockUser, u16, u32, String)> {
         self.held
             .iter()

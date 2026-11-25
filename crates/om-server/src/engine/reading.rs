@@ -124,7 +124,7 @@ impl Waiting {
 
     /// The indexes built on demand and the member keys issued that wait,
     /// each in order (`Store::waiting_for_tests`).
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn snapshot(&self) -> (Vec<IndexId>, Vec<MemberKey>) {
         let indexes = self
             .on_demand
