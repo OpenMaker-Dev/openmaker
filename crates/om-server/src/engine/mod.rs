@@ -217,10 +217,12 @@ pub(crate) use export::{Destination, ExportError, OnDisk, Progress, Source};
 pub(crate) use file::FileEngine;
 pub(crate) use reading::{Read, Waiting};
 pub(crate) use transaction::{Hold, Locks, Transaction};
-pub(crate) use view::{wire, Direction, ReadError, TreeView, Version, View, Wiped, NO_LIMIT};
 /// For views written in tests outside the engine.
 #[cfg(test)]
-pub(crate) use view::{Child, Head, Step};
+pub(crate) use view::Step;
+pub(crate) use view::{
+    wire, Child, Direction, Head, ReadError, TreeView, Version, View, Wiped, NO_LIMIT,
+};
 
 /// A change the server makes to a hosted file: one request's work, as a
 /// value. Who asks is part of it (the lock user, the name other users see

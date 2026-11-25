@@ -28,39 +28,48 @@ use om_protocol::authoring::{
 };
 
 use crate::accounts::{AccountKind, AccountStatus};
-use crate::engine::{Direction, FileEngine, ReadError, View};
+use crate::engine::{Child, Direction, FileEngine, Head, ReadError, View};
 use crate::hosting::Hosted;
 
 const ACCOUNTS: [&[u8]; 3] = [&[23], &[1], &[5]];
 const PRIVILEGE_SETS: [&[u8]; 3] = [&[23], &[2], &[5]];
 const EXTENDED_PRIVILEGES: [&[u8]; 3] = [&[23], &[3], &[5]];
 
-/// The members of a record a decoder reads, in key order: each read whole
-/// ([`Member::Whole`]), or as the keys of its children alone
-/// ([`Member::Keys`]).
+/// The members of a record a decoder reads, in key order, each read as
+/// its decoder reads it.
 #[derive(Clone, Copy)]
 enum Member {
-    Whole(u8),
+    /// A value a decoder reads with [`member`]: a leaf's own value, and
+    /// empty for a node with children, whose children are never read.
+    Scalar(u8),
+    /// Text a decoder reads with [`text`]: the node's own value, or else
+    /// its pieces (`om_hbam::OwnedNode::assembled`), listed.
+    Text(u8),
+    /// The keys of the node's children, all the reply takes of them.
     Keys(u8),
 }
 
 /// The members of an account record decoded ([`account`]).
 const ACCOUNT_MEMBERS: [Member; 4] = [
-    Member::Whole(2),
-    Member::Whole(0x0a),
-    Member::Whole(0x0b),
-    Member::Whole(16),
+    Member::Scalar(2),
+    Member::Scalar(0x0a),
+    Member::Scalar(0x0b),
+    Member::Text(16),
 ];
 /// The members of a privilege set record decoded ([`privilege_set`]).
-const SET_MEMBERS: [Member; 3] = [Member::Whole(2), Member::Whole(0x0c), Member::Whole(0x10)];
+const SET_MEMBERS: [Member; 3] = [Member::Scalar(2), Member::Scalar(0x0c), Member::Text(0x10)];
 /// The members of an extended privilege record decoded
 /// ([`extended_privilege`]): its sets `05` are the keys of its children.
-const EXTENDED_MEMBERS: [Member; 2] = [Member::Keys(5), Member::Whole(0x10)];
+const EXTENDED_MEMBERS: [Member; 2] = [Member::Keys(5), Member::Text(0x10)];
 
-/// The most one member read whole may take, and the most the keys of one
-/// member read as keys may (counted as `om_hbam::tree::memory` counts an
-/// owned tree): what one reply carries. A member past it refuses the
-/// request ([`ReadError::TooLarge`]), as a reply past it is refused.
+/// The most a text member or the keys of a member may take: the bytes of
+/// the keys and values the view hands out for it, what its part of the
+/// reply holds. That is what one reply carries; a member past it refuses
+/// the request ([`ReadError::TooLarge`]), as a reply past it is refused.
+/// FileMaker's own security editor is not known to write a member of that
+/// size. A scalar member is read as its own value alone, as large as one
+/// node's value is, and its children (a value in pieces, which no decoder
+/// takes) never.
 const MEMBER_LIMIT: usize = MAX_DEFINITION_BYTES;
 
 /// `hosted`'s security catalog in the version `engine` holds now.
@@ -84,8 +93,8 @@ fn read_catalog(view: &dyn View) -> Result<SecurityCatalog, ReadError> {
 
 /// The records of the catalog at `path` in key order, each decoded by
 /// `decode` as it is read, from a node that holds only `members`, those
-/// present, in key order, as a record holds them: one read whole, or one
-/// read as keys with each key an empty leaf. One record is held at a time.
+/// present, in key order, each as its decoder reads it. One record is held
+/// at a time.
 fn decoded<T>(
     view: &dyn View,
     path: &[&[u8]],
@@ -97,40 +106,136 @@ fn decoded<T>(
         let key = child?.segment;
         let mut record = OwnedNode::list(key.to_vec(), Vec::new());
         for member in members {
-            let (Member::Whole(segment) | Member::Keys(segment)) = *member;
-            let segment = [segment];
-            let at: Vec<&[u8]> = path.iter().copied().chain([&key[..], &segment]).collect();
-            match member {
-                Member::Whole(_) => {
-                    if let Some(node) = view.subtree(&at, MEMBER_LIMIT)? {
-                        record.children.push(node.into_owned());
-                    }
-                }
-                Member::Keys(_) => {
-                    let mut keys = Vec::new();
-                    let mut taken = 0usize;
-                    for child in view.children(&at, Bound::Unbounded, Direction::Forward) {
-                        let key = child?.segment.into_owned();
-                        taken = taken.saturating_add(key.len());
-                        if taken > MEMBER_LIMIT {
-                            return Err(ReadError::TooLarge {
-                                path: at.iter().map(|s| s.to_vec()).collect(),
-                                limit: MEMBER_LIMIT,
-                            });
-                        }
-                        keys.push(OwnedNode::leaf(key, Vec::new()));
-                    }
-                    if !keys.is_empty() {
-                        record
-                            .children
-                            .push(OwnedNode::list(segment.to_vec(), keys));
-                    }
-                }
-            }
+            let (Member::Scalar(segment) | Member::Text(segment) | Member::Keys(segment)) = *member;
+            let member_key = [segment];
+            let at: Vec<&[u8]> = path
+                .iter()
+                .copied()
+                .chain([&key[..], &member_key])
+                .collect();
+            let mut budget = Budget::new(&at);
+            let node = match member {
+                Member::Scalar(_) => read_scalar(view, &at, segment)?,
+                Member::Text(_) => read_text(view, &at, segment, &mut budget)?,
+                Member::Keys(_) => read_keys(view, &at, segment, &mut budget)?,
+            };
+            record.children.extend(node);
         }
         decoded.push(decode(&record));
     }
     Ok(decoded)
+}
+
+/// What the view handed out for one member, against [`MEMBER_LIMIT`].
+struct Budget {
+    path: Vec<Vec<u8>>,
+    taken: usize,
+}
+
+impl Budget {
+    fn new(path: &[&[u8]]) -> Self {
+        Budget {
+            path: path.iter().map(|segment| segment.to_vec()).collect(),
+            taken: 0,
+        }
+    }
+
+    /// Count `child`, its key and its own value, handed out.
+    fn take(&mut self, child: &Child<'_>) -> Result<(), ReadError> {
+        let bytes = child.segment.len() + child.head.value.as_ref().map_or(0, |v| v.len());
+        self.taken = self.taken.saturating_add(bytes);
+        if self.taken > MEMBER_LIMIT {
+            return Err(ReadError::TooLarge {
+                path: self.path.clone(),
+                limit: MEMBER_LIMIT,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Whether the node at `at`, whose head is `head`, has a child: one child
+/// listed, when its head says it opens a list.
+fn has_children(view: &dyn View, at: &[&[u8]], head: &Head<'_>) -> Result<bool, ReadError> {
+    if !head.list {
+        return Ok(false);
+    }
+    let mut first = Vec::new();
+    view.children_page(at, Bound::Unbounded, Direction::Forward, 1, &mut first)?;
+    Ok(!first.is_empty())
+}
+
+/// The member at `at` as [`member`] reads it: a leaf holding its own value,
+/// or an empty one for a node without a value or with children.
+fn read_scalar(view: &dyn View, at: &[&[u8]], segment: u8) -> Result<Option<OwnedNode>, ReadError> {
+    let Some(head) = view.node(at)? else {
+        return Ok(None);
+    };
+    let value = match &head.value {
+        Some(value) if !has_children(view, at, &head)? => value.to_vec(),
+        _ => Vec::new(),
+    };
+    Ok(Some(OwnedNode::leaf(vec![segment], value)))
+}
+
+/// The member at `at` as [`text`] reads it: its own value, or else its
+/// children as listed, each with its own value and, when it has children,
+/// one placeholder child, so that `OwnedNode::assembled` joins exactly the
+/// pieces it joined from the node itself.
+fn read_text(
+    view: &dyn View,
+    at: &[&[u8]],
+    segment: u8,
+    budget: &mut Budget,
+) -> Result<Option<OwnedNode>, ReadError> {
+    let Some(head) = view.node(at)? else {
+        return Ok(None);
+    };
+    if let Some(value) = head.value {
+        budget.take(&Child {
+            segment: std::borrow::Cow::Borrowed(&[]),
+            head: Head {
+                list: head.list,
+                value: Some(value.clone()),
+            },
+        })?;
+        return Ok(Some(OwnedNode::leaf(vec![segment], value.into_owned())));
+    }
+    let mut pieces = Vec::new();
+    for child in view.children(at, Bound::Unbounded, Direction::Forward) {
+        let child = child?;
+        budget.take(&child)?;
+        let below: Vec<&[u8]> = at.iter().copied().chain([&child.segment[..]]).collect();
+        let children = if has_children(view, &below, &child.head)? {
+            vec![OwnedNode::default()]
+        } else {
+            Vec::new()
+        };
+        pieces.push(OwnedNode {
+            segment: child.segment.into_owned(),
+            value: child.head.value.map(std::borrow::Cow::into_owned),
+            push: child.head.list,
+            children,
+        });
+    }
+    Ok(Some(OwnedNode::list(vec![segment], pieces)))
+}
+
+/// The keys of the children of the member at `at`, each an empty leaf: all
+/// an extended privilege's sets give the reply. `None` without children.
+fn read_keys(
+    view: &dyn View,
+    at: &[&[u8]],
+    segment: u8,
+    budget: &mut Budget,
+) -> Result<Option<OwnedNode>, ReadError> {
+    let mut keys = Vec::new();
+    for child in view.children(at, Bound::Unbounded, Direction::Forward) {
+        let child = child?;
+        budget.take(&child)?;
+        keys.push(OwnedNode::leaf(child.segment.into_owned(), Vec::new()));
+    }
+    Ok((!keys.is_empty()).then(|| OwnedNode::list(vec![segment], keys)))
 }
 
 fn account(record: &OwnedNode) -> CatalogAccount {
@@ -207,7 +312,7 @@ mod tests {
     use om_hbam::OwnedNode;
 
     use super::*;
-    use crate::engine::{Child, Head, Step, TreeView, Version};
+    use crate::engine::{Step, TreeView, Version};
 
     /// A view over another that counts the bytes of what it hands out: the
     /// values of heads, the segments of children and steps, and each
@@ -352,6 +457,66 @@ mod tests {
         root.put(
             &[&[23], &[1], &[5], &[2], &[16]],
             OwnedNode::leaf(Vec::new(), vec![0x41; MEMBER_LIMIT + 1]),
+        );
+        let tree = TreeView::new(&root, 0);
+        assert!(matches!(
+            read_catalog(&tree),
+            Err(ReadError::TooLarge { .. })
+        ));
+    }
+
+    /// The review of #751, round 2 (P1, P2): a member no decoder takes is
+    /// not read, however large. An account's status `0a` and a privilege
+    /// set's record flags `02`, each a value in pieces past what one reply
+    /// carries, read as their heads and one key: the catalog answers as it
+    /// answered when those were read whole (a member with children decodes
+    /// as no value), and little is handed out. What the view hands out of a
+    /// member it lists is counted, values included: an extended
+    /// privilege's set key carrying a value past the limit refuses the
+    /// request.
+    #[test]
+    fn a_large_member_the_reply_discards_is_not_read() {
+        let mut root = OwnedNode::default();
+        let text = |text: &str| om_scripts::text_node(&[], text);
+        // A value in pieces (hbam-writer.md 2.3): its length, then pieces.
+        let in_pieces = |bytes: usize| {
+            let total = OwnedNode::leaf(vec![0], (bytes as u32).to_be_bytes().to_vec());
+            let pieces = (1..=bytes.div_ceil(1000) as u64)
+                .map(|n| OwnedNode::leaf(om_hbam::serial::encode(n), vec![0x5a; 1000]));
+            OwnedNode::list(Vec::new(), std::iter::once(total).chain(pieces).collect())
+        };
+        root.put(&[&[23], &[1], &[5], &[2], &[16]], text("Admin"));
+        root.put(
+            &[&[23], &[1], &[5], &[2], &[0x0a]],
+            in_pieces(MEMBER_LIMIT + 1000),
+        );
+        root.put(&[&[23], &[2], &[5], &[1], &[0x10]], text("[Full Access]"));
+        root.put(
+            &[&[23], &[2], &[5], &[1], &[2]],
+            in_pieces(MEMBER_LIMIT + 1000),
+        );
+        root.put(&[&[23], &[3], &[5], &[1], &[0x10]], text("fmapp"));
+        let tree = TreeView::new(&root, 0);
+        let view = Counting {
+            inner: &tree,
+            bytes: Cell::new(0),
+        };
+        let catalog = read_catalog(&view).unwrap();
+        let account = &catalog.accounts[0];
+        assert_eq!(account.name.as_deref(), Some("Admin"));
+        assert_eq!((account.active, account.must_change_password), (None, None));
+        let set = &catalog.privilege_sets[0];
+        assert_eq!(set.name.as_deref(), Some("[Full Access]"));
+        assert_eq!((&set.record_flags, set.password_days), (&None, Some(0)));
+        assert!(
+            view.bytes.get() < 4096,
+            "{} bytes handed out",
+            view.bytes.get()
+        );
+
+        root.put(
+            &[&[23], &[3], &[5], &[1], &[5], &[1]],
+            OwnedNode::leaf(Vec::new(), vec![0x5a; MEMBER_LIMIT]),
         );
         let tree = TreeView::new(&root, 0);
         assert!(matches!(
