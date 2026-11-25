@@ -490,21 +490,23 @@ The **commit list** is a bracketed slot list keyed `[T, 05, R]`:
 | leaf `R` = `03` | deleted record (`kDeletedRow`) | live:s2/a_del `80 28 8002 80 20 05 80 01 04 03 40 40 40` |
 
 One list may hold several records of one table (cap:1026, three new records)
-and, by the grammar, several tables.
+and, by the grammar, several tables. Value `02` (`kModifiedRow`) is the
+engine's internal state for a modified record; on the wire a modified record
+is the node form.
 
 What FileMaker Server does with an entry in the modified form for a record
 the file does not hold (one another user deleted, or an id never created) is
 unmeasured: FileMaker Pro marks its new records `01` and locks a record before
 it edits it, so it sends neither, and reports an edit of a record another user
 deleted to its user as a missing record (error 101; not captured against
-FileMaker Server). OpenMaker Server refuses such an entry, and with it the
-whole commit, whatever its id: only an entry marked new creates a record, and
-only under an issued, free id (OpenMaker's choice until measured,
+FileMaker Server). OpenMaker Server refuses such an entry when a record is
+staged for it (uploaded with op14, 3.3), and with it the whole commit,
+whatever its id: only an entry marked new creates a record, and only under an
+issued, free id (OpenMaker's choice until measured,
 [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840); it never
 brings back a deleted record, nor lets a client plant a record under an id
-another client's next new record gets). Value `02` (`kModifiedRow`) is the
-engine's internal state for a modified record; on the wire a modified record
-is the node form.
+another client's next new record gets). An entry with nothing staged for it
+still asks for nothing.
 
 Reply: the empty page (23 bytes) as for op14. Errors are not reported in
 the reply: FileMaker Server answered the same 23 bytes when it could not apply
