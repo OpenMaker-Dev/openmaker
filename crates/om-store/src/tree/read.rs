@@ -519,7 +519,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             hi: hi.map(<[u8]>::to_vec),
             direction,
             stack: Vec::new(),
-            leaf_within: None,
+            edge: Edge::First,
             state: State::Start,
         }
     }
@@ -540,7 +540,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             hi: end.map_or(Bound::Unbounded, Bound::Excluded),
             direction: Direction::Forward,
             stack: Vec::new(),
-            leaf_within: None,
+            edge: Edge::First,
             state: State::Start,
         }
     }
@@ -682,10 +682,25 @@ pub struct Cursor<'t, 's, S: ?Sized> {
     /// The pages from the root to the current leaf, with the child (or item)
     /// each is at.
     stack: Vec<(Arc<Page>, usize)>,
-    /// Whether every item of the current leaf is within the far bound, as
-    /// its last item (first, going backward) is: `None` until compared.
-    leaf_within: Option<bool>,
+    /// What the cursor knows of the current leaf's far edge ([`Edge`]).
+    edge: Edge,
     state: State,
+}
+
+/// Whether every item of a cursor's leaf is within the far bound, as the
+/// leaf's last item (first, going backward) is. A leaf's keys are in
+/// order, so then no item of it is compared alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    /// The cursor's first step in the leaf: its item is compared alone, so
+    /// that a cursor that takes one step compares one item.
+    First,
+    /// Not compared yet: the leaf's second step compares it.
+    Unknown,
+    Within,
+    /// Not within, or its comparison failed: each item is compared alone,
+    /// and fails, if it does, as its own.
+    Past,
 }
 
 impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
@@ -696,7 +711,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         let bound = if forward { &self.lo } else { &self.hi };
         let mut page = self.tree.top.clone();
         self.stack.clear();
-        self.leaf_within = None;
+        self.edge = Edge::First;
         while page.kind() == PageKind::Index {
             let c = match bound {
                 Bound::Unbounded if forward => 0,
@@ -751,7 +766,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     fn next_leaf(&mut self) -> Result<bool> {
         let forward = self.direction == Direction::Forward;
         self.stack.pop();
-        self.leaf_within = None;
+        self.edge = Edge::First;
         loop {
             let Some((page, c)) = self.stack.last_mut() else {
                 return Ok(false);
@@ -785,13 +800,9 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         }
     }
 
-    /// The item the cursor is at, if it is within the far bound. Reads no
-    /// more of an item than the comparison with the bound needs. A leaf's
-    /// keys are in order, so when its last item (first, going backward) is
-    /// within the bound, every item of it is: that item is compared once,
-    /// on the leaf's first step, and each item alone only when it is not
-    /// within, or the comparison failed (the failure is then the item's own,
-    /// if its comparison fails too).
+    /// Whether the item the cursor is at is within the far bound. Reads no
+    /// more of an item than the comparison with the bound needs; the leaf's
+    /// far edge is compared once, on its second step ([`Edge`]).
     fn within(&mut self) -> Result<bool> {
         let Some((leaf, i)) = self.stack.last() else {
             return Ok(false);
@@ -814,18 +825,22 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
                 _ => true,
             })
         };
-        let leaf_within = match self.leaf_within {
-            Some(known) => known,
-            None => {
-                let edge = match self.direction {
+        let edge = match self.edge {
+            Edge::First => Edge::Unknown,
+            Edge::Unknown => {
+                let at = match self.direction {
                     Direction::Forward => leaf.count().saturating_sub(1),
                     Direction::Backward => 0,
                 };
-                compare(edge).unwrap_or(false)
+                match compare(at) {
+                    Ok(true) => Edge::Within,
+                    Ok(false) | Err(_) => Edge::Past,
+                }
             }
+            known => known,
         };
-        let within = leaf_within || compare(*i)?;
-        self.leaf_within = Some(leaf_within);
+        let within = edge == Edge::Within || compare(*i)?;
+        self.edge = edge;
         Ok(within)
     }
 
