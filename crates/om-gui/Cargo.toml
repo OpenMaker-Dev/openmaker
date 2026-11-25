@@ -74,10 +74,13 @@ muda = { version = "0.21", default-features = false }
 # The `web-viewer` feature's backend (wry: MIT OR Apache-2.0).
 wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
 # AppKit (the versions wry uses; MIT): the views web viewers place pages
-# in, the Insert commands' open panel (`file_panel`), and the Edit
-# menu's text pasteboard.
+# in, the open and save panels (`file_panel`), and the Edit menu's text
+# pasteboard.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-uniform-type-identifiers", "NSApplication", "NSEvent", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+# The panels' file type, by extension (`file_panel`; the objc2 version
+# objc2-app-kit 0.3 uses; MIT OR Zlib OR Apache-2.0).
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"] }
 block2 = "0.6"
@@ -90,6 +93,10 @@ keyring = { version = "3.6.3", features = ["windows-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
 x11rb = "0.13"
+# The desktop's file chooser through xdg-desktop-portal (`file_panel`): the
+# D-Bus library and version eframe's accessibility already builds
+# (accesskit_unix), with its blocking calls (MIT).
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 # The `web-viewer` feature's backend (wry and gtk-rs: MIT OR Apache-2.0).
 wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
 gtk = { version = "0.18", optional = true }
@@ -123,10 +130,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 hayro = "0.8"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-# AppKit tests for web viewers, the system menu bar and the open panel.
+# AppKit tests for web viewers, the system menu bar and the file panels.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-uniform-type-identifiers", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Real pointer input for the web viewer test (XTest).
@@ -144,6 +152,11 @@ harness = false
 # loop per process, on the main thread.
 [[test]]
 name = "insert_panel_native"
+harness = false
+
+# File > Open's and Create New's system panels (macOS), the same way.
+[[test]]
+name = "file_panels_native"
 harness = false
 
 [[test]]

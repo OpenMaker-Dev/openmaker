@@ -64,6 +64,36 @@ itself stays. File > Favorites > Show Favorites and File > Recent > Show
 Recent show the lists, and both submenus list their files. Home opens on
 the list it showed last.
 
+Home's Open and File > Open... show the system's open panel, asking it to
+list only FileMaker files (`.fmp12`, in any case); Home's Create and
+File > Create New... show the system's save panel after the Create an App
+sheet ([new-files.md](new-files.md)). The panels are `file_panel`'s: on
+macOS `NSOpenPanel` and `NSSavePanel`, beside the window; on Linux the
+desktop's own file chooser (GTK's, GNOME's or KDE's), asked through the
+xdg-desktop-portal FileChooser interface on the session bus, parented to
+the window on X11 and unparented on Wayland. Windows shows none yet
+([#826](https://github.com/OpenMaker-Dev/openmaker/issues/826)). Where no
+panel can be shown (Windows, no portal on the session bus or one without a
+file chooser, or no native window, as in the GUI tests) OpenMaker's own
+chooser asks instead: a folder's subfolders and FileMaker files, and a
+path that can be typed. A portal that does not take the request within
+30 seconds, or leaves the bus before the user answers, counts as none.
+
+What follows a choice is the same either way. Shift or Option (Alt) held
+as Open is chosen, in Home or the File menu, asks for an account
+([local-files](re/local-files.md) 3.1); so do those keys held as the
+panel's own Open is clicked, which OpenMaker reads as the panel answers
+(on Linux from the X server, so not on a Wayland session). While a panel is up, Open, Create and the other commands
+that start from no file do nothing, Home takes no keys and, without
+Home, Open Network File steps aside, as for OpenMaker's own choosers; an answer that comes
+once a file is opening anyway is dropped. Both panels start in the user's
+Documents folder (or home without one), as OpenMaker's own chooser does,
+so macOS's open panel does not return to the folder last used. GTK's
+chooser also offers "Open files read-only", which an unsandboxed app is
+not told of: the file opens as it would from OpenMaker's chooser. Which
+files FileMaker Pro's open panel lists, and where it starts, are
+unmeasured.
+
 A file on this computer opens at once. A hosted file asks for its sign-in
 first: **Open “Name”**, with Account Name, Password and, when the provider
 can send one, **Use saved FileMaker license**, then **Sign in**. Home keeps
@@ -747,10 +777,10 @@ authoring part tabs or object kind captions.
   #1338). A window without a player shows the filename and a note.
 - The Insert menu offers PDF and Audio/Video for a selected, writable
   interactive container outside portal rows whose field object allows
-  entry in Browse mode. On macOS the Insert commands ask for the file in
-  the system's open panel, which shows every file (whether FileMaker Pro's
-  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
-  a typed path. Either way, a file of a different type (a picture Insert
+  entry in Browse mode. The Insert commands ask for the file in the
+  system's file panel (see Opening files), which shows every file (whether
+  FileMaker Pro's panel filters by type is unmeasured); where there is
+  none, an in-app dialog takes a typed path. Either way, a file of a different type (a picture Insert
   Picture cannot show, a PDF without its header, a file the player would
   not play) is refused with 734 or 700 before an edit is prepared or data
   uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
