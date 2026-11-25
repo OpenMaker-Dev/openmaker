@@ -22,6 +22,14 @@
 //!
 //! `OM_VIEW_PARTS` names the parts to run, of `finds`, `downloads` and
 //! `demand` (all by default).
+//!
+//! `logins_and_thumbnails` times logins on a Tasks file with a thousand
+//! accounts more and thumbnails of a picture in its library, each the
+//! median of `OM_VIEW_RUNS` runs:
+//!
+//! ```sh
+//! cargo test --release -p om-server --test view_timings -- --ignored --nocapture logins_and_thumbnails
+//! ```
 
 #[path = "fixtures/tasks.rs"]
 mod fixture;
@@ -124,13 +132,18 @@ fn median(mut times: Vec<Duration>) -> Duration {
 }
 
 fn report(what: &str, times: Vec<Duration>) {
+    report_in(what, times, 1000.0, "ms");
+}
+
+/// [`report`] in `unit`s, `scale` of them to a second.
+fn report_in(what: &str, times: Vec<Duration>, scale: f64, unit: &str) {
     let all: Vec<String> = times
         .iter()
-        .map(|t| format!("{:.1}", t.as_secs_f64() * 1000.0))
+        .map(|t| format!("{:.1}", t.as_secs_f64() * scale))
         .collect();
     println!(
-        "{what}: median {:.1} ms (runs: {} ms)",
-        median(times).as_secs_f64() * 1000.0,
+        "{what}: median {:.1} {unit} (runs: {} {unit})",
+        median(times).as_secs_f64() * scale,
         all.join(", ")
     );
 }
@@ -267,4 +280,135 @@ fn demand(folder: &Folder, file: &fixture::TempFile, runs: usize) {
         handle.shutdown(Duration::from_secs(5));
     }
     report("find on Name, its index built on demand", times);
+}
+
+/// How many accounts [`logins_and_thumbnails`]'s file has besides the
+/// fixture's.
+const ACCOUNTS: u64 = 1_000;
+
+/// Account `n` of [`ACCOUNTS`]: its record key, after every key the
+/// fixture's accounts use, its name and its password.
+fn generated_account(n: u64) -> (Vec<u8>, String, String) {
+    (
+        serial::encode(0x100 + n),
+        format!("User {n:04}"),
+        format!("password {n}"),
+    )
+}
+
+/// The Tasks tree with [`ACCOUNTS`] more accounts in [Full Access], each
+/// stored as the fixture stores Admin, and Photo's picture in Tasks'
+/// library ([`fixture::add_photo`]).
+fn accounts_tree() -> OwnedNode {
+    use om_crypto::account::StoredPassword;
+    let mut root = fixture::tree(&[], true);
+    for n in 0..ACCOUNTS {
+        let (key, name, password) = generated_account(n);
+        let salt = [(n % 251) as u8; 10];
+        let members = [
+            (6u8, StoredPassword::encode(&password, salt)),
+            (0x0b, vec![1, 1]),
+        ];
+        for (member, value) in members {
+            root.put(
+                &[&[23], &[1], &[5], &key, &[member]],
+                OwnedNode::leaf(Vec::new(), value),
+            );
+        }
+        root.put(&[&[23], &[1], &[5], &key, &[16]], text_node(&[], &name));
+    }
+    fixture::add_photo(&mut root);
+    root
+}
+
+/// A login (op80) on a file with a thousand accounts, as the last of them
+/// (the account looked up after every other), and refused for an unknown
+/// account and for a wrong password, each the mean of 200 logins on one
+/// connection; and a thumbnail (op96) of Photo's picture, in microseconds, once cached and
+/// once rendered for a box not asked for before. The login limits' clock
+/// is moved on an hour before each refused login, so none is refused for
+/// the limits.
+#[test]
+#[ignore = "a timing for release builds; writes a file under the build's temporary folder"]
+fn logins_and_thumbnails() {
+    let report_us = |what: &str, times| report_in(what, times, 1e6, "us");
+    use om_protocol::container::{self, DownloadThumbnail, ThumbnailReply};
+    use om_protocol::LoginEnvironment;
+
+    const LOGINS: u32 = 200;
+    let runs = env_number("OM_VIEW_RUNS", 9, 1..=101) as usize;
+    let folder = Folder::new();
+    let file = fixture::TempFile(folder.0.join(fixture::FILE));
+    fixture::write_tree(&file.0, &accounts_tree());
+    let (port, handle) = server::start_configured_with_handle(&file, |server| server);
+    handle.stop_login_clock();
+    let (mut session, file_id) = server::logged_in(port, "timings");
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", fixture::FILE);
+    let (_, last, password) = generated_account(ACCOUNTS - 1);
+    let mut login = |account: &str, password: &str, expected: u16| {
+        let times = (0..runs)
+            .map(|_| {
+                let mut spent = Duration::ZERO;
+                for _ in 0..LOGINS {
+                    if expected != 0 {
+                        handle.advance_login_clock(Duration::from_secs(3600));
+                    }
+                    let started = Instant::now();
+                    let reply = session
+                        .login(account, password, fixture::INTERNAL_CREATION, &environment)
+                        .unwrap();
+                    spent += started.elapsed();
+                    assert_eq!(reply.error_code, expected, "{account}");
+                }
+                spent / LOGINS
+            })
+            .collect();
+        times
+    };
+    report_us(
+        "login as the last of 1,000 accounts (op80)",
+        login(&last, &password, 0),
+    );
+    report_us(
+        "login as an unknown account (op80)",
+        login("Nobody", &password, 212),
+    );
+    report_us(
+        "login with a wrong password (op80)",
+        login(&last, "wrong", 212),
+    );
+    session
+        .login(&last, &password, fixture::INTERNAL_CREATION, &environment)
+        .unwrap();
+
+    let mut thumbnail = |width: u32| {
+        let request = DownloadThumbnail {
+            reserved: [0; 4],
+            height: 32,
+            width,
+            member: vec![serial::encode(fixture::PHOTO_MEMBER)],
+            table: vec![uint_segment(fixture::TABLE)],
+            flags: 0,
+            offset: 0,
+            max_chunk: 0x000f_ffe6,
+        };
+        let started = Instant::now();
+        let reply = session
+            .perform(&container::build_download_thumbnail(10, file_id, &request))
+            .unwrap();
+        let elapsed = started.elapsed();
+        let reply = container::parse_download_thumbnail_reply(&reply).unwrap();
+        assert!(
+            matches!(reply, ThumbnailReply::Chunk { status: 0, .. }),
+            "{reply:?}"
+        );
+        elapsed
+    };
+    thumbnail(64);
+    let cached = (0..runs).map(|_| thumbnail(64)).collect();
+    report_us("thumbnail of Photo, cached (op96)", cached);
+    let rendered = (0..runs as u32).map(|run| thumbnail(65 + run)).collect();
+    report_us("thumbnail of Photo, rendered (op96)", rendered);
+    session.disconnect().unwrap();
+    handle.shutdown(Duration::from_secs(5));
 }
