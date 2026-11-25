@@ -1336,11 +1336,24 @@ fn unavailable(operation: Operation) -> Outcome {
 const UNAVAILABLE_CODE: u16 = 3;
 
 /// The state of `file` the store engine computes from `view` when it is
-/// hosted, page 0 as imported.
+/// hosted, page 0 as imported ([`derived_within`], its accounts within
+/// [`HOSTING_LIMIT`]).
 pub(crate) fn derived_of(
     view: &dyn View,
     name: &str,
     page_zero: &[u8],
+) -> Result<Derived, ReadError> {
+    derived_within(view, name, page_zero, HOSTING_LIMIT)
+}
+
+/// [`derived_of`], refused as too large when what its decoded accounts
+/// keep together passes `kept_limit` ([`crate::hosting::kept_by_accounts`]),
+/// however small each account's and each set's tree is.
+pub(crate) fn derived_within(
+    view: &dyn View,
+    name: &str,
+    page_zero: &[u8],
+    kept_limit: usize,
 ) -> Result<Derived, ReadError> {
     let catalog = crate::derived::read_catalog(view).map_err(|e| match e {
         // A catalog past what the reader reads whole (`Capped`).
@@ -1359,6 +1372,12 @@ pub(crate) fn derived_of(
     // catalog past the limit is, and the file is not hosted.
     if let Err(error) = derived.accounts() {
         return Err(error.clone());
+    }
+    if crate::hosting::kept_by_accounts(view)? > kept_limit {
+        return Err(ReadError::TooLarge {
+            path: vec![vec![23], vec![1], vec![5]],
+            limit: kept_limit,
+        });
     }
     derived.set_page_zero(page_zero);
     Ok(derived)
@@ -1920,6 +1939,42 @@ mod tests {
         assert!(!folder.hold(NAME, Cursor::new(&source)).unwrap().imported);
     }
 
+    /// A flush that fails during the checkpoint after an import's
+    /// publication (the file recorded in memory, its tree renamed), a write
+    /// error the page file cannot take back, marks the page file failed:
+    /// that hold fails,
+    /// and so does every later one in the same process, as the store cannot
+    /// make anything durable; after a restart the store opens its last
+    /// durable checkpoint, which does not hold the import, and imports the
+    /// file again. Found by placing the failed flush at each step of the
+    /// hold in turn until one marks the page file failed.
+    #[test]
+    fn a_checkpoint_that_fails_to_flush_fails_the_process_until_a_restart() {
+        let source = file("store-fail-flush", 40);
+        let steps = {
+            let sim = Sim::new(21);
+            let folder = open(&sim);
+            let opened = sim.steps();
+            folder.hold(NAME, Cursor::new(&source)).unwrap();
+            sim.steps() - opened
+        };
+        let failed = (1..=steps).find_map(|k| {
+            let sim = Sim::new(21);
+            let folder = open(&sim);
+            sim.place(sim.steps() + k, Fault::FailFlush);
+            let first = folder.hold(NAME, Cursor::new(&source));
+            // The publication's checkpoint: the file is recorded in memory.
+            let published = !folder.recorded().is_empty();
+            (first.is_err() && folder.pages().failed() && published).then_some((sim, folder))
+        });
+        let (sim, folder) = failed.expect("a failed flush that marks the page file failed");
+        assert!(folder.hold(NAME, Cursor::new(&source)).is_err());
+        drop(folder);
+        sim.restart();
+        let folder = open(&sim);
+        assert!(folder.hold(NAME, Cursor::new(&source)).unwrap().imported);
+    }
+
     /// An import whose own drop of its tree failed leaves that tree under
     /// the import's name: the next import, which takes the same number,
     /// drops it first and goes through in the same process.
@@ -1992,6 +2047,52 @@ mod tests {
         let refused = derive("store-accounts-large", true);
         assert!(
             matches!(refused, Err(ReadError::TooLarge { .. })),
+            "{refused:?}"
+        );
+    }
+
+    /// What the decoded accounts keep together is held under a limit
+    /// (`hosting::kept_by_accounts`, [`derived_within`]): each account keeps
+    /// its own copy of its privilege set's rules, so 300 small accounts on
+    /// one set keep that set 300 times, and the file is refused as too large
+    /// although every tree is far under the limit; the file's own two
+    /// accounts derive within it.
+    #[test]
+    fn many_small_accounts_on_one_set_are_refused_past_the_limit() {
+        let kept = |copies: u8| {
+            let mut tree = fixture::tree(&[], true);
+            let clerk = tree.at(&[&[23], &[1], &[5], &[3]]).unwrap().clone();
+            for n in 0..copies {
+                let key = vec![0x80, n];
+                let mut copy = clerk.clone();
+                copy.segment = key.clone();
+                tree.put(&[&[23], &[1], &[5], &key], copy);
+            }
+            let source =
+                std::fs::read(&fixture::TempFile::from_tree("store-kept", &tree).0).unwrap();
+            let sim = Sim::new(8);
+            let folder = open(&sim);
+            let held = folder.hold(NAME, Cursor::new(&source)).unwrap();
+            let view = view_of(&folder, held.root).unwrap();
+            let kept = crate::hosting::kept_by_accounts(&view).unwrap();
+            let derive = |limit| {
+                derived_within(
+                    &Capped::new(&view, HOSTING_LIMIT),
+                    NAME,
+                    &held.page_zero,
+                    limit,
+                )
+                .map(|_| ())
+            };
+            (kept, derive(64 << 10))
+        };
+        let (few, derived) = kept(0);
+        assert!(few < 64 << 10, "{few}");
+        assert_eq!(derived, Ok(()));
+        let (many, refused) = kept(255);
+        assert!(many > 64 << 10, "{many}");
+        assert!(
+            matches!(refused, Err(ReadError::TooLarge { limit, .. }) if limit == 64 << 10),
             "{refused:?}"
         );
     }
