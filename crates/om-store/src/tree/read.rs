@@ -972,12 +972,12 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
         // in its page; then the found key's overflow pages are read as far
         // as the child's key goes, and no further.
         let child_key = pages
-            .key_through_segment(&leaf, i, self.prefix.len())?
+            .key_through_segment(leaf, i, self.prefix.len())?
             .ok_or_else(orphan)?;
         let child_key = child_key.as_slice();
         let child_end = child_key.len();
         let node = if child_end == item.key_len {
-            pages.item_node(&leaf, i)?
+            pages.item_node(leaf, i)?
         } else if forward {
             // The child sorts before everything under it.
             return Err(orphan());
