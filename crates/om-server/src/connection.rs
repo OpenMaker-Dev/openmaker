@@ -2650,8 +2650,9 @@ fn query(
                 return Ok(reply(Vec::new(), resume).to_result_within(max_return as usize));
             }
             // A part of a program this connection does not hold, or the
-            // last part of one that ran: what the program does cannot be
-            // known, or was answered already, and a program may write
+            // last part of one that ran (op86 records no done answer, so
+            // that is a cursor not held too): what the program does cannot
+            // be known, or was answered already, and a program may write
             // (`query_changes_file`), which the empty last page would answer
             // as done. It fails; a continuation of results keeps the empty
             // last page (above).
@@ -4063,7 +4064,10 @@ fn upload_binary(
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
             Payload::Complete(payload, held) => (payload, held),
             // Its member was answered when its last part first came, and
-            // is not answered again.
+            // is not answered again: op88 records no done answer
+            // (`Transfers::answered_done`), so its last part again is a
+            // cursor not held and has failed above. This arm keeps a repeat
+            // a failure should one ever be recorded.
             Payload::Repeated => {
                 return Err(PerformError::Status(format!(
                     "the last part of container upload {:#x} again: its member is not \
