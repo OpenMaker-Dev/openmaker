@@ -20,6 +20,10 @@ pub struct FileEngine {
     /// (`super::copies`).
     #[cfg(debug_assertions)]
     pub(super) copies: std::sync::RwLock<Option<std::sync::Arc<super::copies::Switch>>>,
+    /// Whether each operation's reads and writes through its transaction
+    /// are checked (`super::checking`), when a test asked for it.
+    #[cfg(debug_assertions)]
+    checking_writes: std::sync::atomic::AtomicBool,
 }
 
 /// What the engine offers each operation to, by reference, completed and
@@ -236,7 +240,17 @@ impl FileEngine {
             recorder: None,
             #[cfg(debug_assertions)]
             copies: Default::default(),
+            #[cfg(debug_assertions)]
+            checking_writes: Default::default(),
         }
+    }
+
+    /// Check each operation's reads and writes through its transaction
+    /// (`super::checking`, `Server::checking_reads`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn check_writes(&self) {
+        self.checking_writes
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// This engine, offering each operation it runs to `recorder` first
@@ -398,15 +412,25 @@ impl FileEngine {
         let save = save(&operation);
         let mut locks = Locks::new(file.locks(&WRITER));
         let mut tx = Transaction::new(&mut store);
+        #[cfg(debug_assertions)]
+        if self
+            .checking_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tx.checked();
+        }
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(
+            let outcome = run(
                 operation,
                 credentials,
                 &file.name,
                 Hold::Transaction(&mut tx),
                 &mut locks,
                 &*self.environment,
-            )
+            );
+            // The derived state follows the operation's last writes.
+            tx.settle();
+            outcome
         }));
         let mut outcome = match ran {
             Ok(outcome) => outcome,
@@ -415,6 +439,8 @@ impl FileEngine {
                 unwound(file, &mut store, journal, taken, locks, panic)
             }
         };
+        #[cfg(debug_assertions)]
+        let check = tx.check.take();
         let Transaction {
             mut journal,
             committing,
@@ -435,6 +461,16 @@ impl FileEngine {
         }));
         if let Err(panic) = followed {
             unwound(file, &mut store, journal, taken, locks, panic);
+        }
+        // The operation's writes said all it changed (a test's check).
+        #[cfg(debug_assertions)]
+        if let Some(check) = check {
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check.finish(&store);
+            }));
+            if let Err(panic) = checked {
+                unwound(file, &mut store, journal, taken, locks, panic);
+            }
         }
         // An authoring edit's locks, released once the store is let go.
         let held = locks.after_stored();

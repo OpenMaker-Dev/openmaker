@@ -4374,6 +4374,7 @@ fn the_test_view_reads_the_accounts_only_for_a_reader_of_them() {
     let (_disk, file) = host("engine-accounts-asked", &fixture::tree(&[], true));
     let engine = engine();
     engine.check_reads();
+    engine.check_writes();
     let has_accounts = |read: Read<'_>| read.derived.accounts().is_ok();
     assert!(engine.read(&file).serve_with_accounts(has_accounts));
     let unasked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

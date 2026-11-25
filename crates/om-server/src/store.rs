@@ -544,6 +544,13 @@ impl Journal {
         self.lines.extend(inner.lines);
     }
 
+    /// A write of the change was refused, `reason` for the log: the rest
+    /// of the change is taken back and its save fails
+    /// ([`Store::save_commit`]).
+    pub(crate) fn refuse(&mut self, reason: String) {
+        self.refused.get_or_insert(reason);
+    }
+
     /// Note a log line that says what the change did, written once it is
     /// stored.
     fn note(&mut self, line: String) {
@@ -563,6 +570,42 @@ impl Journal {
             || !self.basis.is_empty()
             || self.refused.is_some()
             || !self.ids.is_empty()
+    }
+}
+
+/// Whether the node at `path`, or anything under it, is part of what the
+/// store's derived state reads ([`Derived`]): the schema catalogs and every
+/// other catalog at the top of the tree (its preferences and locale, the
+/// layouts, scripts, value lists, custom functions, the security catalog),
+/// a table's node and its field catalog `[T, 03]`. Not a table's records,
+/// record ids, last issued id, indexes or library, the file's library
+/// `[1f]`, a field's next serial value `[T, 03, 05, F, 0c]` or the deferred
+/// field work `[T, 03, 01, fd]`, which change without the schema; a table
+/// occurrence's saved found set `[TO, 07]` is under a key of a table's
+/// range and counts as data the same way.
+fn feeds_derived(path: &[Vec<u8>]) -> bool {
+    let Some((first, rest)) = path.split_first() else {
+        return true;
+    };
+    match be_uint(first) {
+        Some(table) if table >= 0x8000 => match rest {
+            [] => true,
+            [fields, ..] if fields.as_slice() == [keys::FIELDS] => {
+                !matches!(
+                    rest,
+                    [_, definitions, _, serial, ..]
+                        if definitions.as_slice() == [keys::FIELD_DEFINITIONS]
+                            && serial.as_slice() == [keys::SERIAL_VALUE]
+                ) && !matches!(
+                    rest,
+                    [_, work, deferred, ..]
+                        if work.as_slice() == [0x01] && deferred.as_slice() == [keys::DEFERRED]
+                )
+            }
+            _ => false,
+        },
+        Some(library) if library == u64::from(LIBRARY) => false,
+        _ => true,
     }
 }
 
@@ -1575,39 +1618,6 @@ impl Store {
         self.derived.container_cell(table, cell)
     }
 
-    /// [`Store::serial_value`] replacing a field's next serial value within
-    /// a commit: the old node goes into `journal`.
-    pub fn set_serial_in(
-        &mut self,
-        journal: &mut Journal,
-        table: &[u8],
-        field: &[u8],
-        value: &str,
-    ) -> Option<String> {
-        let path: Vec<Vec<u8>> = vec![
-            table.to_vec(),
-            vec![keys::FIELDS],
-            vec![keys::FIELD_DEFINITIONS],
-            field.to_vec(),
-            vec![keys::SERIAL_VALUE],
-        ];
-        let kept = self.kept_before(path);
-        let current = self.serial_value(table, field, Some(value), None)?;
-        journal.absorb(kept);
-        Some(current)
-    }
-
-    /// A journal that keeps the node at `path` and what a put there changes
-    /// besides it ([`Journal::save_node`]: the first parent it creates, or
-    /// one that is not a list, which the put makes one, whole), as the tree
-    /// is now: for a write that knows only afterwards whether it changed
-    /// anything, which absorbs it into its own journal when it did.
-    fn kept_before(&self, path: Vec<Vec<u8>>) -> Journal {
-        let mut kept = self.begin_commit();
-        kept.save_node(&self.root, path);
-        kept
-    }
-
     /// Write a commit to `path` ([`Store::save`]). When the file cannot be
     /// written, everything the commit changed is put back, newest first,
     /// and the error returned: the tree never holds a commit the file
@@ -1847,6 +1857,18 @@ impl Store {
         &self.derived
     }
 
+    /// The tree itself, for the engine's check of an operation's writes
+    /// (`engine::checking`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn tree(&self) -> &OwnedNode {
+        &self.root
+    }
+
+    /// The store's version, which views of it read at.
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
     /// The tree as a view (`engine::TreeView`), at the store's version.
     pub(crate) fn tree_view(&self) -> TreeView<'_> {
         TreeView::new(&self.root, self.version)
@@ -1935,62 +1957,14 @@ impl Store {
             .unwrap_or(0)
     }
 
-    /// Reserve `count` record ids in `table` (op71): returns the first and
-    /// stores the new last issued id, its old node kept in `journal`.
-    /// `None`, changing nothing, for a count of 0, when the ids would pass
-    /// the largest a serial key holds (the last issued id comes from the
-    /// file, and a catalog upload can set it: ids must not wrap around to
-    /// those records have), and when the table's node holds a value, which
-    /// the id cannot go beneath.
-    pub fn reserve_record_ids(
-        &mut self,
-        journal: &mut Journal,
-        table: &[u8],
-        count: u32,
-    ) -> Option<u64> {
-        // The count and the arithmetic first, from the values alone; then
-        // the write against the tree as it is. Neither changes anything, so
-        // either refusal leaves the table as it was.
-        if count == 0 {
-            return None;
-        }
-        let last = self.last_record_id(table);
-        let Some(new_last) = last.checked_add(u64::from(count)) else {
-            warn!(
-                "{}: no record ids reserved: {count} do not fit after the last issued id \
-                 {last} of table {table:02x?}",
-                self.name
-            );
-            return None;
-        };
-        let leaf = OwnedNode::leaf(vec![keys::LAST_RECORD_ID], vec![0; 10]);
-        let refused = put_refusals(&self.root, &[table], &leaf, 1);
-        if !refused.is_empty() {
-            warn!(
-                "{}: no record ids reserved: {}",
-                self.name,
-                describe(&refused)
-            );
-            return None;
-        }
-        let segment = serial::encode(new_last);
-        let mut value = vec![segment.len() as u8];
-        value.extend(segment);
-        journal.save_path(&self.root, vec![table.to_vec(), vec![keys::LAST_RECORD_ID]]);
-        self.root.put(
-            &[table, &[keys::LAST_RECORD_ID]],
-            OwnedNode::leaf(Vec::new(), value),
-        );
-        self.dirty = true;
-        // At most `new_last`, as `count` is at least 1.
-        Some(last + 1)
-    }
-
     /// A field's next serial value (op72), read and possibly replaced or
-    /// advanced; returns the value before the update. `None` when the field
+    /// advanced, outside a journal (a test's; op72 itself goes through its
+    /// transaction, `writes::get_serial`); returns the value before the
+    /// update. `None` when the field
     /// does not exist, or when the new value cannot go beneath its
     /// definition as the tree is (a definition that holds a value), which
     /// changes nothing.
+    #[cfg(test)]
     pub fn serial_value(
         &mut self,
         table: &[u8],
@@ -2035,36 +2009,6 @@ impl Store {
                 );
                 self.dirty = true;
             }
-        }
-        Some(current)
-    }
-
-    /// [`Store::serial_value`] (op72), its serial node as it was kept in
-    /// `journal` when it changes.
-    pub fn serial_value_in(
-        &mut self,
-        journal: &mut Journal,
-        table: &[u8],
-        field: &[u8],
-        replace: Option<&str>,
-        increment: Option<i32>,
-    ) -> Option<String> {
-        let path: Vec<Vec<u8>> = vec![
-            table.to_vec(),
-            vec![keys::FIELDS],
-            vec![keys::FIELD_DEFINITIONS],
-            field.to_vec(),
-            vec![keys::SERIAL_VALUE],
-        ];
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let old = self.node(&segments).cloned();
-        // Only an existing field definition gets a serial node; one held as
-        // a value becomes a list under it, so it is kept whole.
-        let kept = self.kept_before(path.clone());
-        let current = self.serial_value(table, field, replace, increment)?;
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        if self.node(&segments) != old.as_ref() {
-            journal.absorb(kept);
         }
         Some(current)
     }
@@ -2488,20 +2432,55 @@ impl Store {
         self.schema_changed();
     }
 
-    /// Replace the node at `path` within a commit ([`Store::begin_commit`]):
-    /// a node no record or schema reader holds, such as a table
-    /// occurrence's saved found set `[TO, 07]`. A failed save puts it back
-    /// ([`Store::save_commit`]).
-    pub fn replace_node_in(&mut self, journal: &mut Journal, path: Vec<Vec<u8>>, node: OwnedNode) {
-        if let Some(reason) = self.replacement_refusal(&path, &node) {
-            journal.refused.get_or_insert(reason);
-            return;
+    /// One write of an operation's transaction (`engine::Transaction`):
+    /// `node` put at `path`, replacing whatever is there and everything
+    /// under it, as `OwnedNode::put` puts it, or, with `None`, the node at
+    /// `path` and everything under it removed. What it replaces, and the
+    /// parents a put creates, go into `journal`. A put the file cannot hold
+    /// there (`put_refusals`) is refused, for a log line, and changes
+    /// nothing; so is a write at the empty path. The tree then has changes
+    /// the file on disk lacks. Returns whether the write reaches what the
+    /// derived state reads ([`feeds_derived`]), which the caller then reads
+    /// again ([`Store::schema_changed_in`]).
+    pub(crate) fn write_in(
+        &mut self,
+        journal: &mut Journal,
+        path: &[Vec<u8>],
+        node: Option<OwnedNode>,
+    ) -> Result<bool, String> {
+        let Some(last) = path.last() else {
+            return Err("a write at the root".into());
+        };
+        match node {
+            Some(node) => {
+                let placed = OwnedNode {
+                    segment: last.clone(),
+                    ..node
+                };
+                if let Some(reason) = self.replacement_refusal(path, &placed) {
+                    return Err(reason);
+                }
+                journal.replace(&mut self.root, path.to_vec(), placed);
+            }
+            None => {
+                journal.take(&mut self.root, path.to_vec());
+            }
         }
-        journal.save_path(&self.root, path.clone());
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        self.root.put(&segments, node);
         self.dirty = true;
-        self.generation += 1;
+        let feeds = feeds_derived(path);
+        if feeds {
+            // Who read what the schema derives from reads it again: the
+            // verified index marks and the accounts follow the count.
+            self.generation += 1;
+        }
+        Ok(feeds)
+    }
+
+    /// The derived state read again after writes that reach it
+    /// ([`Store::write_in`]), the state before them kept in `journal`.
+    pub(crate) fn schema_changed_in(&mut self, journal: &mut Journal) {
+        journal.schema_from(&self.derived);
+        self.reread_catalog();
     }
 
     /// Remove the schema node at `path` (a layout member Delete Layout
@@ -4385,7 +4364,7 @@ fn member_key(value: &OwnedNode) -> Option<Vec<u8>> {
 /// Advance a serial number's text by `by`: the rightmost run of digits is
 /// incremented keeping its width ("INV0099" + 1 = "INV0100"); text without
 /// digits gets the number appended (write-path.md 3.2, Med).
-fn increment_serial(text: &str, by: i32) -> String {
+pub(crate) fn increment_serial(text: &str, by: i32) -> String {
     let bytes = text.as_bytes();
     let Some(end) = bytes.iter().rposition(u8::is_ascii_digit).map(|i| i + 1) else {
         return format!("{text}{by}");

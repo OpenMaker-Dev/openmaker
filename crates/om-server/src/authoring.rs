@@ -690,7 +690,11 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
     }
     let definition_path = vec![vec![SCRIPTS], vec![DEFINITIONS], key.clone()];
     let index_path = vec![vec![SCRIPTS], vec![INDEX]];
-    let Some(current) = ed.tx.node(&[&[SCRIPTS], &[DEFINITIONS], &key]).cloned() else {
+    let Some(current) = ed
+        .tx
+        .store_node(&[&[SCRIPTS], &[DEFINITIONS], &key])
+        .cloned()
+    else {
         return refused(
             status::SCRIPT_MISSING,
             format!("The file has no script {id}."),
@@ -744,7 +748,7 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
     // FileMaker Pro saves the index with the same stamp; a file without
     // one (scripts listed by their definitions only) does not get a
     // partial one.
-    let index = ed.tx.node(&[&[SCRIPTS], &[INDEX]]).cloned();
+    let index = ed.tx.store_node(&[&[SCRIPTS], &[INDEX]]).cloned();
     if let Some(index) = &index {
         members.push((index_path.clone(), ed.stamped(index.clone(), &time)));
     }
@@ -835,7 +839,7 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
             format!("The file has no table {}.", request.table),
         );
     }
-    let current = ed.tx.node(&[&table, &[FIELDS]]).cloned();
+    let current = ed.tx.store_node(&[&table, &[FIELDS]]).cloned();
     let current_revision = catalog_revision(
         current
             .as_ref()
@@ -959,7 +963,7 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
     }
     let like = (request.like != 0).then_some(request.like);
     let planned = {
-        let Some(layouts) = ed.tx.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to add a layout to.",
@@ -1395,7 +1399,11 @@ where
     }
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let Some(current) = ed.tx.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .tx
+        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .cloned()
+    else {
         return Err(refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
@@ -1458,7 +1466,7 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
     let planned = {
-        let Some(layouts) = ed.tx.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
             return refused(status::UNSUPPORTED, "The file has no layout catalog [4].");
         };
         let Some(member) = layouts.at(&[&[LAYOUT_MEMBERS], &uint_segment(id)]) else {
@@ -1562,7 +1570,7 @@ fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> 
         uint_segment(id),
     ];
     let planned = {
-        let Some(catalog) = ed.tx.node(&[&[VALUE_LISTS]]) else {
+        let Some(catalog) = ed.tx.store_node(&[&[VALUE_LISTS]]) else {
             return refused(
                 status::VALUE_LIST_MISSING,
                 "The file has no value-list catalog [21].",
@@ -1677,7 +1685,11 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
     }
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let Some(current) = ed.tx.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .tx
+        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .cloned()
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
@@ -1815,7 +1827,7 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let (duplicated, items) = {
-        let Some(layouts) = ed.tx.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to copy a layout in.",
@@ -1875,7 +1887,7 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
             let key = serial::encode(item);
             let raised = ed
                 .tx
-                .node(&[&[LIBRARY], &[LIBRARY_MEMBERS], &key])
+                .store_node(&[&[LIBRARY], &[LIBRARY_MEMBERS], &key])
                 .and_then(|member| {
                     let count = member.child(&[LIBRARY_USES])?.value.as_deref()?;
                     let count = u32::from_be_bytes(count.try_into().ok()?).checked_add(uses)?;
@@ -1996,7 +2008,7 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
     let (planned, released) = {
-        let Some(layouts) = ed.tx.node(&[&[LAYOUTS]]) else {
+        let Some(layouts) = ed.tx.store_node(&[&[LAYOUTS]]) else {
             return refused(
                 status::UNSUPPORTED,
                 "The file has no layout catalog [4] to delete a layout from.",
@@ -2040,7 +2052,7 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
         let released = if planned.library.is_empty() {
             None
         } else {
-            let Some(library) = ed.tx.node(&[&[LIBRARY]]) else {
+            let Some(library) = ed.tx.store_node(&[&[LIBRARY]]) else {
                 return refused(
                     status::UNSUPPORTED,
                     "The layout shows library items, but the file has no library [31].",
@@ -2129,7 +2141,11 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
     }
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let Some(current) = ed.tx.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .tx
+        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .cloned()
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
@@ -2258,7 +2274,11 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
     };
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let Some(current) = ed.tx.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .tx
+        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .cloned()
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
@@ -2338,7 +2358,7 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
     }
     let theme = layout_placement::theme_key(&current).and_then(|theme| {
         ed.tx
-            .node(&[&[THEMES], &[THEME_MEMBERS]])?
+            .store_node(&[&[THEMES], &[THEME_MEMBERS]])?
             .children
             .iter()
             .find(|t| om_hbam::slot::be_uint(&t.segment) == Some(theme))
@@ -2500,7 +2520,11 @@ fn place_planned_button(
     };
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
-    let Some(current) = ed.tx.node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key]).cloned() else {
+    let Some(current) = ed
+        .tx
+        .store_node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .cloned()
+    else {
         return refused(
             status::LAYOUT_MISSING,
             format!("The file has no layout {id}."),
@@ -2515,7 +2539,7 @@ fn place_planned_button(
         };
         match ed
             .tx
-            .node(&[&[SCRIPTS], &[DEFINITIONS], &serial::encode(script)])
+            .store_node(&[&[SCRIPTS], &[DEFINITIONS], &serial::encode(script)])
             .map(decode)
         {
             Some(Ok(found)) if found.kind == ScriptKind::Script => {}

@@ -365,6 +365,7 @@ impl LocalHost {
     pub fn checking_reads(self) -> Self {
         if let Some(handle) = &self.handle {
             handle.shared.engine.check_reads();
+            handle.shared.engine.check_writes();
         }
         self
     }

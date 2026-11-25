@@ -513,6 +513,18 @@ impl Server {
         self
     }
 
+    /// Check every operation's reads and writes through its transaction
+    /// against its starting tree with its writes laid over it, and panic on
+    /// a difference (docs/server-storage.md 5, "The operations'
+    /// transaction"; `engine::checking`): a test fixture that shows each
+    /// moved operation's writes say all it changed. Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn checking_writes(self) -> Self {
+        self.shared.engine.check_writes();
+        self
+    }
+
     /// Answer a client's find on a field without the index it reads as
     /// FileMaker Server does: with no records, building the index
     /// afterwards for later finds (query-program.md 7.1). By default the

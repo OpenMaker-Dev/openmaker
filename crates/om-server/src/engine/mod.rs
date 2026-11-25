@@ -181,6 +181,8 @@
 //! issuing a member key and building an index operations of their own.
 
 #[cfg(debug_assertions)]
+mod checking;
+#[cfg(debug_assertions)]
 mod copies;
 pub(crate) mod export;
 mod file;
@@ -204,6 +206,7 @@ mod view;
 #[cfg(all(test, debug_assertions))]
 mod tests;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use log::error;
@@ -1212,9 +1215,9 @@ pub fn run(
         (Operation::ReserveRecordIds(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::ReserveRecordIds(writes::create_record(op, file, tx, locks)),
         ),
-        (Operation::AdvanceSerial(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::AdvanceSerial(writes::get_serial(&op.request, tx)))
-        }
+        (Operation::AdvanceSerial(op), Hold::Transaction(tx)) => Outcome::new(
+            Reply::AdvanceSerial(writes::get_serial(&op.request, file, tx)),
+        ),
         (Operation::CommitRecords(op), Hold::Transaction(tx)) => {
             let from = op.user.connection;
             let (reply, changes) = writes::commit(op, file, tx, locks, environment);
@@ -1292,7 +1295,7 @@ pub fn run(
             }
         }
         (Operation::SetNextSerial(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::SetNextSerial(writes::set_next_serial(op, tx)))
+            Outcome::new(Reply::SetNextSerial(writes::set_next_serial(op, file, tx)))
         }
         (Operation::TakeScriptLock(op), _) => Outcome::new(Reply::TakeScriptLock(
             locks.lock(&op.path, op.user, LOCK_WRITE, &op.holder),
@@ -1361,10 +1364,11 @@ fn save_found_set(op: SaveFoundSet, file: &str, tx: &mut Transaction<'_>) -> boo
     if tx.is_read_only() {
         return false;
     }
-    let version = tx
-        .node(&[&[3], &[0x10], &[5], &table, &[0xfb]])
-        .and_then(|n| n.value.as_deref())
-        .and_then(|v| <[u8; 4]>::try_from(v).ok())
+    let version = View::node(tx, &[&[3], &[0x10], &[5], &table, &[0xfb]])
+        .ok()
+        .flatten()
+        .and_then(|head| head.value)
+        .and_then(|value| <[u8; 4]>::try_from(&*value).ok())
         .map(u32::from_be_bytes);
     let Some(data_version) = version else {
         log::info!("{file}: no data version for table {table:02x?}; found set not kept");
@@ -1375,18 +1379,27 @@ fn save_found_set(op: SaveFoundSet, file: &str, tx: &mut Transaction<'_>) -> boo
         current,
         data_version,
     };
-    let existing = tx.node(&[&occurrence, &[7]]);
-    let Some(node) = om_data::meta::saved_found_set_written(existing, &table, &write) else {
+    // The saved found set whole, as FileMaker Pro writes it.
+    let existing = tx
+        .subtree(&[&occurrence, &[7]], NO_LIMIT)
+        .ok()
+        .flatten()
+        .map(Cow::into_owned);
+    let Some(node) = om_data::meta::saved_found_set_written(existing.as_ref(), &table, &write)
+    else {
         log::info!(
             "{file}: occurrence {occurrence:02x?} holds a found set FileMaker Pro never wrote \
              that way; not kept"
         );
         return false;
     };
-    if existing == Some(&node) {
+    if existing.as_ref() == Some(&node) {
         return true;
     }
-    tx.replace_node(vec![occurrence, vec![7]], node);
+    tx.begin_commit();
+    if let Err(reason) = tx.replace(vec![occurrence, vec![7]], node) {
+        tx.refuse(reason);
+    }
     true
 }
 

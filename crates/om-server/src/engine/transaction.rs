@@ -3,12 +3,16 @@
 //! ([`Locks`]). Both keep what the engine needs to take the operation's
 //! effects back when they cannot be stored.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::borrow::Cow;
+use std::ops::Bound;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use om_data::rules::RecordEnvironment;
 use om_hbam::OwnedNode;
 use om_protocol::write::{Conflict, KeyPath};
 
+use super::view::{Child, Direction, Head, ReadError, Step, Version, View};
+use crate::derived::Derived;
 use crate::library::{BinaryData, Stored};
 use crate::locks::{LockTable, LockUser};
 use crate::store::{IndexId, Journal, MemberKey, Store};
@@ -30,11 +34,20 @@ pub enum Hold<'h, 'a> {
 
 /// A transaction on a file's tree, over the file engine's store: what an
 /// operation reads and the changes it makes, kept so that the engine can
-/// store them or take them back.
+/// store them or take them back (docs/server-storage.md 5, "The
+/// operations' transaction").
 ///
-/// It exposes the `Store` methods the operations use, and `view` for the
-/// state derived from the tree (a privilege set's hidden fields and record
-/// limits, the decoded catalog an authoring edit checks). Every change goes
+/// It is a view ([`View`]) of the version the operation started on with
+/// the operation's own writes applied, its derived state
+/// ([`Self::derived`]), and a closed set of writes, those the store
+/// engine's entries hold (`om_store::tree::Edit`): put a node
+/// ([`Self::put`]), remove one with everything under it
+/// ([`Self::remove`]), replace a subtree ([`Self::replace`]). An operation
+/// moved onto it reads and changes the tree through these alone.
+///
+/// The operations not moved yet use the `Store` methods it still exposes,
+/// and `view` for the state derived from the tree (a privilege set's
+/// hidden fields and record limits). Every change goes
 /// into one `Journal`, which keeps what each replaced: a commit's record
 /// writes (with a server script's container data and reference counts), an
 /// authoring edit's and an account edit's catalog members, Set Next Serial
@@ -69,6 +82,13 @@ pub struct Transaction<'a> {
     /// Whether the run began writing member keys
     /// ([`Self::write_member_keys`]).
     pub(super) wrote_member_keys: bool,
+    /// Whether a write reached what the derived state reads, which is read
+    /// again before the derived state is next used ([`Self::derived`]) or
+    /// the operation ends ([`Self::settle`]).
+    schema_pending: bool,
+    /// The check of its writes, in tests (`super::checking`).
+    #[cfg(debug_assertions)]
+    pub(super) check: Option<Box<super::checking::Check>>,
 }
 
 impl<'a> Transaction<'a> {
@@ -84,6 +104,80 @@ impl<'a> Transaction<'a> {
             emptied_libraries: Vec::new(),
             field_bases: Vec::new(),
             wrote_member_keys: false,
+            schema_pending: false,
+            #[cfg(debug_assertions)]
+            check: None,
+        }
+    }
+
+    /// Check the operation's reads and writes (`super::checking`).
+    #[cfg(debug_assertions)]
+    pub(super) fn checked(&mut self) {
+        self.check = Some(Box::new(super::checking::Check::new(self.store)));
+    }
+
+    /// The operation changed the tree through the store's own helpers.
+    fn by_store(&mut self) {
+        #[cfg(debug_assertions)]
+        if let Some(check) = &mut self.check {
+            check.by_store = true;
+        }
+    }
+
+    /// Put `node` (with its children) at `path`, replacing whatever is
+    /// there and everything under it (`om_store::tree::Edit::Put`, then a
+    /// put of each node under it): missing parents become lists, and a
+    /// parent that holds an empty value becomes an empty list, as
+    /// `OwnedNode::put` puts it. A put the file cannot hold there
+    /// (`om_hbam::writer::put_refusals`) is refused, for a log line, and
+    /// changes nothing.
+    pub fn replace(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) -> Result<(), String> {
+        #[cfg(debug_assertions)]
+        let recorded = self.check.as_ref().map(|_| node.clone());
+        let feeds = self.store.write_in(&mut self.journal, &path, Some(node))?;
+        self.schema_pending |= feeds;
+        #[cfg(debug_assertions)]
+        if let (Some(check), Some(node)) = (&mut self.check, recorded) {
+            check.wrote(&path, Some(&node));
+        }
+        Ok(())
+    }
+
+    /// Put `node`, without children, at `path` ([`Self::replace`]).
+    pub fn put(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) -> Result<(), String> {
+        let node = OwnedNode {
+            children: Vec::new(),
+            ..node
+        };
+        self.replace(path, node)
+    }
+
+    /// Remove the node at `path` and everything under it
+    /// (`om_store::tree::Edit::Delete`).
+    pub fn remove(&mut self, path: Vec<Vec<u8>>) -> Result<(), String> {
+        let feeds = self.store.write_in(&mut self.journal, &path, None)?;
+        self.schema_pending |= feeds;
+        #[cfg(debug_assertions)]
+        if let Some(check) = &mut self.check {
+            check.wrote(&path, None);
+        }
+        Ok(())
+    }
+
+    /// The state derived from the tree as the transaction has it (the
+    /// catalog, the accounts, the locale), read again after writes that
+    /// reach it.
+    pub fn derived(&mut self) -> Arc<Derived> {
+        self.settle();
+        self.store.derived().clone()
+    }
+
+    /// Read the derived state again after writes that reached it, the
+    /// state before them kept to take back: before the derived state is
+    /// used, and when the operation ends (`FileEngine::submit`).
+    pub(super) fn settle(&mut self) {
+        if std::mem::take(&mut self.schema_pending) {
+            self.store.schema_changed_in(&mut self.journal);
         }
     }
 
@@ -109,33 +203,24 @@ impl<'a> Transaction<'a> {
         self.store.last_record_id(table)
     }
 
-    pub fn node(&self, path: &[&[u8]]) -> Option<&OwnedNode> {
+    /// The node at `path` with everything under it, from the store: for
+    /// the operations not moved onto the transaction's reads ([`View`]).
+    pub fn store_node(&self, path: &[&[u8]]) -> Option<&OwnedNode> {
         self.store.node(path)
     }
 
-    /// Reserve `count` record ids of `table` (`Store::reserve_record_ids`).
-    /// The reservation is not a commit: the engine saves it before the ids
-    /// are answered, or takes it back byte for byte when the save fails.
-    pub fn reserve_record_ids(&mut self, table: &[u8], count: u32) -> Option<u64> {
-        let first = self
-            .store
-            .reserve_record_ids(&mut self.journal, table, count)?;
-        self.reserved = true;
-        Some(first)
+    /// A write the operation needed was refused ([`Self::replace`]): the
+    /// engine takes back the rest of its commit and fails its save, as
+    /// content the file cannot hold.
+    pub fn refuse(&mut self, reason: String) {
+        self.journal.refuse(reason);
     }
 
-    /// A field's next serial value, read and possibly replaced or advanced
-    /// (`Store::serial_value_in`): taken back when the save fails, and then
-    /// not handed out either, as the reply is the storage error.
-    pub fn serial_value(
-        &mut self,
-        table: &[u8],
-        field: &[u8],
-        replace: Option<&str>,
-        increment: Option<i32>,
-    ) -> Option<String> {
-        self.store
-            .serial_value_in(&mut self.journal, table, field, replace, increment)
+    /// The operation reserved record ids (op71), which the engine saves
+    /// before they are answered, or takes back byte for byte when the save
+    /// fails; a reservation is not a commit.
+    pub fn reserved_ids(&mut self) {
+        self.reserved = true;
     }
 
     /// Start the commit the record writes go into, which the engine saves
@@ -148,6 +233,7 @@ impl<'a> Transaction<'a> {
     /// Write record `id` of `table` (`None` deletes it) within the commit
     /// (`Store::write_record_in`).
     pub fn write_record(&mut self, table: &[u8], id: u64, record: Option<OwnedNode>) {
+        self.by_store();
         self.committing = true;
         self.store
             .write_record_in(&mut self.journal, table, id, record);
@@ -167,6 +253,7 @@ impl<'a> Transaction<'a> {
         data: BinaryData,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Vec<u8> {
+        self.by_store();
         self.committing = true;
         self.store
             .store_container_in(&mut self.journal, table, data, unique_id)
@@ -182,6 +269,7 @@ impl<'a> Transaction<'a> {
         new: Option<&OwnedNode>,
         counted: &[Vec<u8>],
     ) {
+        self.by_store();
         self.committing = true;
         self.store
             .count_containers_in(&mut self.journal, table, old, new, counted);
@@ -190,6 +278,7 @@ impl<'a> Transaction<'a> {
     /// Release the container references of the records the commit deleted
     /// (`Store::release_deleted_record_containers`).
     pub fn release_deleted_record_containers(&mut self) {
+        self.by_store();
         self.committing = true;
         self.store
             .release_deleted_record_containers(&mut self.journal);
@@ -200,6 +289,7 @@ impl<'a> Transaction<'a> {
     /// (`Store::drop_emptied_library_in`), its thumbnails forgotten once
     /// the commit is stored. Whether it did.
     pub fn drop_emptied_library(&mut self, table: &[u8]) -> bool {
+        self.by_store();
         self.committing = true;
         let dropped = self.store.drop_emptied_library_in(&mut self.journal, table);
         if dropped {
@@ -207,18 +297,6 @@ impl<'a> Transaction<'a> {
                 .push(vec![table.to_vec(), vec![crate::library::LIBRARY]]);
         }
         dropped
-    }
-
-    /// Set Next Serial Value: replace a field's next serial value within
-    /// the commit (`Store::set_serial_in`), the value it had returned.
-    /// `None` when the table has no such field or the tree cannot take the
-    /// value, which changes nothing and begins no commit.
-    pub fn set_serial(&mut self, table: &[u8], field: &[u8], value: &str) -> Option<String> {
-        let set = self
-            .store
-            .set_serial_in(&mut self.journal, table, field, value);
-        self.committing |= set.is_some();
-        set
     }
 
     /// Run `work`: when it panics, the operation's changes are put back
@@ -249,6 +327,7 @@ impl<'a> Transaction<'a> {
     /// op13: put `node` at `path` (`Store::put_subtree_in`); whether it was
     /// stored.
     pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
+        self.by_store();
         self.store.put_subtree_in(&mut self.journal, path, node)
     }
 
@@ -256,18 +335,21 @@ impl<'a> Transaction<'a> {
     /// The libraries deleted tables took go with them, and so do their
     /// thumbnails once the writes are stored ([`Self::released_libraries`]).
     pub fn apply(&mut self, writes: Vec<om_query::Write>) {
+        self.by_store();
         let released = self.store.apply_in(&mut self.journal, writes);
         self.released_libraries.extend(released);
     }
 
     /// GenerateMemberKey's issued keys (`Store::write_member_keys_in`).
     pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
+        self.by_store();
         self.wrote_member_keys = true;
         self.store.write_member_keys_in(&mut self.journal, keys);
     }
 
     /// Indexes finds built on demand (`Store::store_indexes_in`).
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
+        self.by_store();
         #[cfg(test)]
         if PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
             panic!("a test's panic while storing indexes");
@@ -279,6 +361,7 @@ impl<'a> Transaction<'a> {
     /// and the script catalog's index, within the commit
     /// (`Store::replace_members_in`).
     pub fn replace_members(&mut self, members: Vec<(Vec<Vec<u8>>, OwnedNode)>) {
+        self.by_store();
         self.committing = true;
         self.store.replace_members_in(&mut self.journal, members);
     }
@@ -286,6 +369,7 @@ impl<'a> Transaction<'a> {
     /// Replace the schema node at `path` within the commit, the schema read
     /// again (`Store::replace_schema_in`).
     pub fn replace_schema(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
+        self.by_store();
         self.committing = true;
         self.store.replace_schema_in(&mut self.journal, path, node);
     }
@@ -293,15 +377,9 @@ impl<'a> Transaction<'a> {
     /// Remove the schema node at `path` within the commit
     /// (`Store::remove_schema_in`).
     pub fn remove_schema(&mut self, path: Vec<Vec<u8>>) {
+        self.by_store();
         self.committing = true;
         self.store.remove_schema_in(&mut self.journal, path);
-    }
-
-    /// Replace the node at `path` within the commit
-    /// (`Store::replace_node_in`): a window's saved found set.
-    pub fn replace_node(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
-        self.committing = true;
-        self.store.replace_node_in(&mut self.journal, path, node);
     }
 
     /// Count field `field` of `table`, which the commit adds, as computed
@@ -319,6 +397,7 @@ impl<'a> Transaction<'a> {
         data: BinaryData,
         unique_id: impl FnMut() -> [u8; 16],
     ) -> Option<Stored> {
+        self.by_store();
         self.store
             .store_binary_in(&mut self.journal, path, data, unique_id)
     }
@@ -331,6 +410,7 @@ impl<'a> Transaction<'a> {
         member: &[u8],
         delta: i32,
     ) -> Option<u32> {
+        self.by_store();
         self.store
             .adjust_reference_count_in(&mut self.journal, path, member, delta)
     }
@@ -345,6 +425,7 @@ impl<'a> Transaction<'a> {
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Result<bool, &'static str> {
+        self.by_store();
         self.store
             .update_table(Some(&mut self.journal), table, environment, unique_id)
     }
@@ -358,6 +439,7 @@ impl<'a> Transaction<'a> {
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
+        self.by_store();
         let recovered = self
             .store
             .recover(Some(&mut self.journal), environment, unique_id);
@@ -367,6 +449,156 @@ impl<'a> Transaction<'a> {
         }
         recovered
     }
+}
+
+/// The transaction's reads: the tree as the operation's writes left it,
+/// at the version it started on. In tests each answer is checked against
+/// the starting tree with the writes laid over it (`super::checking`).
+impl View for Transaction<'_> {
+    fn version(&self) -> Version {
+        self.store.version()
+    }
+
+    fn node(&self, path: &[&[u8]]) -> Result<Option<Head<'_>>, ReadError> {
+        let ours = self.store.tree_view().head(path);
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            let owned = ours.clone().map(Head::into_owned);
+            check.read("node", path, &owned, |view| {
+                view.node(path).ok().flatten().map(Head::into_owned)
+            });
+        }
+        Ok(ours)
+    }
+
+    fn subtree(
+        &self,
+        path: &[&[u8]],
+        limit: usize,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        let ours = self.store.tree_view().lend(path, limit);
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            let owned = ours.clone().map(|node| node.cloned());
+            check.read("subtree", path, &owned, |view| {
+                view.subtree(path, limit)
+                    .map(|node| node.map(Cow::into_owned))
+            });
+        }
+        Ok(ours?.map(Cow::Borrowed))
+    }
+
+    fn children_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Child<'v>>,
+    ) -> Result<bool, ReadError> {
+        let given = out.len();
+        let more = self
+            .store
+            .tree_view()
+            .children_into(path, from, direction, max, out)?;
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            let owned = (owned_children(&out[given..]), more);
+            check.read("listing", path, &owned, |view| {
+                let mut page = Vec::new();
+                let more = view
+                    .children_page(path, from, direction, max, &mut page)
+                    .unwrap_or_default();
+                (owned_children(&page), more)
+            });
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = given;
+        Ok(more)
+    }
+
+    fn subtrees_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        limit: usize,
+        out: &mut Vec<Cow<'v, OwnedNode>>,
+    ) -> Result<bool, ReadError> {
+        let given = out.len();
+        let more = self
+            .store
+            .tree_view()
+            .subtrees_into(path, from, direction, max, limit, out);
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            let owned = more.clone().map(|more| {
+                let page: Vec<OwnedNode> = out[given..]
+                    .iter()
+                    .map(|n| n.clone().into_owned())
+                    .collect();
+                (page, more)
+            });
+            check.read("subtrees", path, &owned, |view| {
+                let mut page = Vec::new();
+                view.subtrees_page(path, from, direction, max, limit, &mut page)
+                    .map(|more| (page.into_iter().map(Cow::into_owned).collect(), more))
+            });
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = given;
+        more
+    }
+
+    fn walk_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        after: Option<&[Vec<u8>]>,
+        max: usize,
+        out: &mut Vec<Step<'v>>,
+    ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+        let given = out.len();
+        let resume = self.store.tree_view().walk_into(path, after, max, out);
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            let owned = (owned_steps(&out[given..]), resume.clone());
+            check.read("walk", path, &owned, |view| {
+                let mut page = Vec::new();
+                let resume = view.walk_page(path, after, max, &mut page).ok().flatten();
+                (owned_steps(&page), resume)
+            });
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = given;
+        Ok(resume)
+    }
+
+    fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
+        self.store.tree_view().changed_since(path, since)
+    }
+}
+
+#[cfg(debug_assertions)]
+fn owned_children(children: &[Child<'_>]) -> Vec<(Vec<u8>, Head<'static>)> {
+    children
+        .iter()
+        .map(|child| (child.segment.to_vec(), child.head.clone().into_owned()))
+        .collect()
+}
+
+#[cfg(debug_assertions)]
+fn owned_steps(steps: &[Step<'_>]) -> Vec<(usize, Vec<u8>, Head<'static>)> {
+    steps
+        .iter()
+        .map(|step| {
+            (
+                step.depth,
+                step.segment.to_vec(),
+                step.head.clone().into_owned(),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

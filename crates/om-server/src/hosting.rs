@@ -872,7 +872,7 @@ pub(crate) fn change_password(
         .and_then(|r| r.split_first())
         .filter(|(length, key)| usize::from(**length) == key.len())
         .and_then(|(_, key)| {
-            tx.node(&[
+            tx.store_node(&[
                 PRIVILEGE_SETS_PATH[0],
                 PRIVILEGE_SETS_PATH[1],
                 PRIVILEGE_SETS_PATH[2],
@@ -1043,11 +1043,11 @@ pub(crate) fn delete_account(
         return Err(AccountEditError::FullAccess);
     }
     let mut accounts = tx
-        .node(&ACCOUNTS_PATH)
+        .store_node(&ACCOUNTS_PATH)
         .cloned()
         .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
     let index = tx
-        .node(&ACCOUNT_INDEX_PATH)
+        .store_node(&ACCOUNT_INDEX_PATH)
         .cloned()
         .ok_or_else(|| AccountEditError::Unwritten("the account catalog has no index".into()))?;
     let members: Vec<Vec<u8>> = accounts

@@ -92,7 +92,7 @@ fn bind_files(files: &[(&str, &TempFile)]) -> Server {
     // checked against the file engine's view (docs/server-storage.md 5,
     // "Views").
     #[cfg(debug_assertions)]
-    let server = server.checking_reads();
+    let server = server.checking_reads().checking_writes();
     server
 }
 
