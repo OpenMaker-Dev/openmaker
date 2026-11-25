@@ -925,7 +925,8 @@ hosted on it, and nothing of its write side is built.
   byte for byte. A read that fails fails it; what is then left under the
   export's name is what every export leaves ("Where an export goes",
   above): nothing where the file was made unnamed, what was written where
-  it was made under its name.
+  it was made under its name
+  ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
