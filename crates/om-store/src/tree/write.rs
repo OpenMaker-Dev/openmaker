@@ -107,6 +107,7 @@ pub(crate) fn apply_with<S: PageStore + ?Sized, E: EntryPages>(
         } else {
             Last::Unknown { floor: None }
         },
+        splits: 0,
     };
     // An entry of one put pays nothing for the append path.
     let appends = appends && edits.len() > 1;
@@ -153,6 +154,8 @@ thread_local! {
     /// The puts the append path made on this thread, for tests to check
     /// that the runs they rely on took it.
     static APPENDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The greatest keys the append path proved on this thread.
+    static PROVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// What the entry being applied carries along.
@@ -164,6 +167,9 @@ struct Cx<'s, S: ?Sized> {
     changed: bool,
     /// What the append path knows of the working tree's greatest key.
     last: Last,
+    /// The pages split so far, so that the append path knows when one of
+    /// its puts split a page.
+    splits: u64,
 }
 
 /// What the append path ([`append`]) knows of the working tree's greatest
@@ -687,20 +693,26 @@ fn has_keys<S: PageStore + ?Sized>(
 /// [`Last::Empty`] when the root is a working leaf with no items; else,
 /// when every node on the tree's right edge is a working copy (the entry
 /// changed it), each one's separators or keys are in order as their bytes
-/// show ([`page::known_in_order`]), each last separator is at or below the
-/// right leaf's last key as the bytes show, and that key is one this entry
-/// set, that key.
+/// show ([`page::known_in_order`]), each one's first separator or key is
+/// at or above the separator its parent holds for it as the bytes show
+/// (strictly above, for a separator), each last separator is at or below
+/// the right leaf's last key as the bytes show, and that key is one this
+/// entry set, that key. `above` is the parent's separator for the node at
+/// `slot`, as far as memory holds it, and whether that is all of it.
 ///
 /// Past that key, a lookup goes down the right edge, every separator there
 /// being at or below it, and finds nothing at or after it, as the leaf's
-/// keys are below it; and appends keep the edge so, adding at its end and
-/// splitting it between keys in order. Its ancestors are lists as the edit
+/// keys are below it. An append that adds at the edge's end without
+/// splitting a page keeps the edge so. One that splits a page makes new
+/// separators from keys the proof saw only within their page, so it drops
+/// the proof: the next put proves the greatest key again, and looks its
+/// ancestors up again ([`append`]). Its ancestors are lists as the edit
 /// that set it left them, unless something changed one since, which would
 /// have removed the key; [`append`] looks them up once anyway, since a
 /// tree read from its pages may hold keys a lookup does not find where
 /// they are (reading a page checks its own bytes, not every key's parent
 /// or the order across pages: `tree::check` does).
-fn proven_last(slot: &Slot, root: bool) -> Option<Last> {
+fn proven_last(slot: &Slot, root: bool, above: Option<(&[u8], bool)>) -> Option<Last> {
     let Slot::Dirty(node) = slot else {
         return None;
     };
@@ -716,7 +728,10 @@ fn proven_last(slot: &Slot, root: bool) -> Option<Last> {
                 let (a, whole) = pair[0].known_key();
                 page::known_in_order(a, whole, pair[1].known_key().0)
             });
-            ordered.then(|| Last::Proven {
+            let inside = above.is_none_or(|(sep, whole)| {
+                page::known_at_most(sep, whole, leaf.items[0].known_key().0)
+            });
+            (ordered && inside).then(|| Last::Proven {
                 key: key.clone(),
                 kind: last.kind,
                 lists: 0,
@@ -727,10 +742,17 @@ fn proven_last(slot: &Slot, root: bool) -> Option<Last> {
                 let (a, whole) = pair[0].known();
                 page::known_in_order(a, whole, pair[1].known().0)
             });
-            if !ordered {
+            let inside = match (above, ix.seps.first()) {
+                (Some((sep, whole)), Some(first)) => {
+                    page::known_in_order(sep, whole, first.known().0)
+                }
+                _ => true,
+            };
+            if !(ordered && inside) {
                 return None;
             }
-            let proven = proven_last(ix.children.last()?, false)?;
+            let below = ix.seps.last().map(WSep::known).or(above);
+            let proven = proven_last(ix.children.last()?, false, below)?;
             let Last::Proven { key, .. } = &proven else {
                 return None;
             };
@@ -772,7 +794,13 @@ fn proven_last(slot: &Slot, root: bool) -> Option<Last> {
 /// rest is the setting both do. [`put`] reads more: its ancestors' nodes
 /// again for every key, and its lookups down the right edge, which the
 /// proof holds in memory. So a page that fails every read fails an entry
-/// through both paths or neither.
+/// through both paths or neither. A page that fails only some of its reads
+/// can tell them apart, either way: [`put`] looks the shared ancestors up
+/// again for every key, where this looks them up once after each proof;
+/// and when this looks them up and then declines (an ancestor missing or
+/// holding only a value), [`put`] looks them up again. A store whose
+/// failures depend on how many reads came before can fail one path and
+/// not the other.
 fn append<S: PageStore + ?Sized>(
     cx: &mut Cx<'_, S>,
     tree: &mut Work,
@@ -787,8 +815,12 @@ fn append<S: PageStore + ?Sized>(
         if floor.as_ref().is_some_and(|floor| key <= *floor) {
             return Ok(false);
         }
-        match proven_last(&tree.slot, true) {
-            Some(last) => cx.last = last,
+        match proven_last(&tree.slot, true, None) {
+            Some(last) => {
+                #[cfg(test)]
+                PROVED.with(|n| n.set(n.get() + 1));
+                cx.last = last;
+            }
             None => return Ok(false),
         }
     }
@@ -820,6 +852,7 @@ fn append<S: PageStore + ?Sized>(
             _ => missing.push(ancestor.clone()),
         }
     }
+    let splits = cx.splits;
     for ancestor in missing {
         set(
             cx,
@@ -833,10 +866,14 @@ fn append<S: PageStore + ?Sized>(
         tree,
         Op::Set(WItem::new(key.clone(), node.kind(), value)),
     )?;
-    cx.last = Last::Proven {
-        key,
-        kind: node.kind(),
-        lists: usize::MAX,
+    cx.last = if cx.splits == splits {
+        Last::Proven {
+            key,
+            kind: node.kind(),
+            lists: usize::MAX,
+        }
+    } else {
+        Last::Unknown { floor: Some(key) }
     };
     Ok(true)
 }
@@ -1139,6 +1176,7 @@ fn fix_child<S: PageStore + ?Sized>(
     if footprint > USABLE {
         let node = std::mem::replace(child, WNode::Leaf(WLeaf::new(Vec::new())));
         let parts = split(&cx.pages, node, change.hint)?;
+        cx.splits += 1;
         let new = parts.len();
         replace(ix, c, 1, parts);
         return Ok(Fixed {
@@ -1414,6 +1452,7 @@ fn fix_root<S: PageStore + ?Sized>(
             }
             let node = std::mem::replace(&mut **node, WNode::Leaf(WLeaf::new(Vec::new())));
             let parts = split(&cx.pages, node, hint)?;
+            cx.splits += 1;
             let mut ix = WIndex::new(tree.level + 1, Vec::new(), Vec::new());
             replace(&mut ix, 0, 0, parts);
             tree.slot = Slot::Dirty(Box::new(WNode::Index(ix)));
@@ -1568,7 +1607,7 @@ mod tests {
         //! makes, in splits of the edits into entries, on `MemStore` and on
         //! the page file.
 
-        use super::super::{apply_with, APPENDED};
+        use super::super::{apply_with, APPENDED, PROVED};
         use crate::page::{
             EntryPages, Hash, MemStore, Numbering, PageStore, Root, TreeName, KIND_VALUE, MAX_KEY,
             MAX_VALUE,
@@ -1703,7 +1742,8 @@ mod tests {
         /// as `cuts` split them.
         fn on_memory(edits: &[Edit], cuts: &[usize], appends: bool) -> Vec<Hash> {
             let store = MemStore::new(Numbering::Sequential);
-            from_memory(&store, None, edits, cuts, appends)
+            let roots = from_memory(&store, None, edits, cuts, appends);
+            roots.iter().map(|root| root.hash).collect()
         }
 
         /// The same from `root` in `store`, written by entry 1 if any (an
@@ -1714,14 +1754,14 @@ mod tests {
             edits: &[Edit],
             cuts: &[usize],
             appends: bool,
-        ) -> Vec<Hash> {
+        ) -> Vec<Root> {
             let first = if root.is_some() { 2 } else { 1 };
             let mut roots = Vec::new();
             for (entry, batch) in (first..).zip(batches(edits, cuts)) {
                 let mut unit = store.begin().unwrap();
                 let new = apply_with(store, &mut unit, root, entry, batch, appends).unwrap();
                 unit.commit().unwrap();
-                roots.push(new.hash);
+                roots.push(new);
                 root = Some(new);
             }
             roots
@@ -1800,6 +1840,13 @@ mod tests {
             let before = APPENDED.with(|n| n.get());
             let out = f();
             (out, APPENDED.with(|n| n.get()) - before)
+        }
+
+        /// The greatest keys the append path proves while `f` runs.
+        fn proved<T>(f: impl FnOnce() -> T) -> (T, usize) {
+            let before = PROVED.with(|n| n.get());
+            let out = f();
+            (out, PROVED.with(|n| n.get()) - before)
         }
 
         /// The root page's level after `edits` in one entry.
@@ -2133,6 +2180,67 @@ mod tests {
                     ],
                     0,
                 ),
+                // Review of #769, round 2, finding 2: the general put finds
+                // `long(n)` where the leaf's disorder puts it and sets
+                // nothing; an append past `long(m)` would set it anew.
+                (
+                    "spilled keys out of order, one put again",
+                    vec![[b"c", b"d", b"e", b"n", b"f"]
+                        .iter()
+                        .map(|tail| item(&[&long(*tail)], KIND_VALUE, &[7; 3000]))
+                        .collect()],
+                    vec![],
+                    vec![
+                        put(&[&long(b"m")], Node::Value(vec![1])),
+                        put(&[&long(b"n")], Node::Value(vec![7; 3000])),
+                    ],
+                    0,
+                ),
+                // Round 2, finding 1: a right leaf holding keys below its
+                // separator. Appended there, `b/l` and `b/m` would split it
+                // between `a3` and `b/k`, under a separator `b` below `b/a`,
+                // and the general put's next lookup of `b` would go to the
+                // new leaf and set `b` again there.
+                (
+                    "a right leaf below its separator, split",
+                    vec![
+                        vec![item(&[b"b"], crate::page::KIND_LIST, b"")],
+                        [b"a1", b"a2", b"a3"]
+                            .iter()
+                            .map(|k| item(&[*k], KIND_VALUE, &[7; 3490]))
+                            .collect(),
+                    ],
+                    vec![key(&[b"b", b"a"])],
+                    vec![
+                        put(&[b"b", b"k"], Node::Value(vec![1])),
+                        put(&[b"b", b"l"], Node::Value(vec![2; 3490])),
+                        put(&[b"b", b"m"], Node::Value(vec![3; 3490])),
+                        put(&[b"b", b"n"], Node::Value(vec![4])),
+                        Edit::delete(vec![b"b".to_vec(), b"l".to_vec()]),
+                        Edit::delete(vec![b"b".to_vec(), b"m".to_vec()]),
+                    ],
+                    0,
+                ),
+                // A key without its parent under appends that split the
+                // right leaf again and again and the root index above it:
+                // keys of 3,900 bytes make separators that long, four to an
+                // index page.
+                (
+                    "a key without its parent, split up to the root",
+                    vec![
+                        vec![item(&[b"a"], KIND_VALUE, b"v")],
+                        vec![item(&[b"m", b"a"], KIND_VALUE, b"v")],
+                    ],
+                    vec![key(&[b"m"])],
+                    (0..40u32)
+                        .map(|i| {
+                            let child =
+                                [&[b't'; 3900][..], &(i + 0x0101_0101).to_be_bytes()].concat();
+                            put(&[b"m", &child], Node::Value(vec![1]))
+                        })
+                        .collect(),
+                    39,
+                ),
             ];
             for (name, leaves, seps, edits, appends) in cases {
                 let seps: Vec<&[u8]> = seps.iter().map(Vec::as_slice).collect();
@@ -2142,9 +2250,40 @@ mod tests {
                 let store = MemStore::new(Numbering::Sequential);
                 let root = crate::tree::built::tree(&store, &leaves, &seps).root;
                 let (got, made) = appended(|| from_memory(&store, Some(root), &edits, &[], true));
-                assert_eq!(got, expected, "{name}");
+                let hashes = |roots: &[Root]| roots.iter().map(|r| r.hash).collect::<Vec<_>>();
+                assert_eq!(hashes(&got), hashes(&expected), "{name}");
                 assert_eq!(made, appends, "{name}: puts the append path made");
+                // The roots #759's `apply` gives for round 2's inputs, run
+                // at deaee759a.
+                let at_759 = match name {
+                    "spilled keys out of order, one put again" => Some("Hash(9412f12652d6ccf1)"),
+                    "a right leaf below its separator, split" => Some("Hash(449b12a0dfa00030)"),
+                    _ => None,
+                };
+                if let (Some(at_759), Some(last)) = (at_759, expected.last()) {
+                    assert_eq!(format!("{:?}", last.hash), at_759, "{name}");
+                }
+                if name == "a key without its parent, split up to the root" {
+                    let top = store.read(got[0].page, &got[0].hash).unwrap();
+                    assert_eq!(top.level(), 2, "{name}: the root index split");
+                }
             }
+        }
+
+        /// Review of #769, round 2: an append that splits a page drops the
+        /// proof, so the next put proves the greatest key again (and looks
+        /// its ancestors up again) before it appends.
+        #[test]
+        fn an_append_that_splits_a_page_proves_the_greatest_key_again() {
+            let edits: Vec<Edit> = (0..200u32)
+                .map(|i| put(&[b"r", &i.to_be_bytes()], Node::Value(vec![1; 1000])))
+                .collect();
+            let ((got, made), proofs) = proved(|| appended(|| on_memory(&edits, &[], true)));
+            assert_eq!(got, on_memory(&edits, &[], false));
+            // Some 200 KB of items fill a dozen leaves or more: a split every
+            // fifteen puts or so, and a proof after each.
+            assert!(made > 190, "{made} appends");
+            assert!(proofs >= 12, "{proofs} proofs");
         }
     }
 

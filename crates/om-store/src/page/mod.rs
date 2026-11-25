@@ -734,7 +734,7 @@ pub(crate) fn known_in_order(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
 }
 
 /// Whether a key known as far as `a` (all of it when `a_complete`) sorts
-/// at or before the whole key `b`, as the known part proves.
+/// at or before a key known as far as `b`, as the known parts prove.
 pub(crate) fn known_at_most(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
     let n = a.len().min(b.len());
     match a[..n].cmp(&b[..n]) {
