@@ -9,7 +9,8 @@ use om_hbam::{serial, KeySegment, KeyTree, SlotReader};
 use om_protocol::write;
 use om_protocol::{LoginEnvironment, MachineInfo, Opcode, RequestNotification};
 use om_server::{
-    HostedFile, Identity, ScriptLimits, Server, ServerConfig, ServerHandle, ServerIdentity,
+    EngineSettings, HostedFile, Identity, ScriptLimits, Server, ServerConfig, ServerHandle,
+    ServerIdentity,
 };
 use om_session::Session;
 
@@ -66,9 +67,29 @@ fn bind(file: &TempFile) -> Server {
     bind_files(&[(FILE, file)])
 }
 
+/// [`start_hosting`] on the store engine, its folder `store`
+/// (docs/server-storage.md 11): each file imported there when the store
+/// does not hold it as it is on disk, and hosted read-only.
+pub fn start_on_store(
+    files: &[(&str, &TempFile)],
+    store: &std::path::Path,
+    configure: impl FnOnce(Server) -> Server,
+) -> (u16, ServerHandle) {
+    let settings = EngineSettings::Store {
+        dir: store.to_path_buf(),
+        cache_bytes: 8 << 20,
+    };
+    serve(configure(bind_files_on(files, &settings)))
+}
+
 /// A server for `files`, each with the name clients open it by; Admin has
 /// [Full Access].
 fn bind_files(files: &[(&str, &TempFile)]) -> Server {
+    bind_files_on(files, &EngineSettings::File)
+}
+
+/// [`bind_files`] on the engine `settings` name.
+fn bind_files_on(files: &[(&str, &TempFile)], settings: &EngineSettings) -> Server {
     let config = ServerConfig {
         identity: ServerIdentity {
             name: "openmaker-test".into(),
@@ -87,7 +108,7 @@ fn bind_files(files: &[(&str, &TempFile)]) -> Server {
         record_dir: None,
     };
     let identity = Identity::self_signed(vec!["localhost".into()]).unwrap();
-    let server = Server::bind("127.0.0.1:0", config, identity).unwrap();
+    let server = Server::bind_on("127.0.0.1:0", config, identity, settings).unwrap();
     // Every download and find is answered through the test view too, and
     // checked against the file engine's view (docs/server-storage.md 5,
     // "Views").

@@ -53,7 +53,7 @@ use crate::authoring;
 use crate::config::{ConnectionLimits, ServerIdentity};
 use crate::containers;
 use crate::engine::{
-    AdjustContainerCount, AdvanceSerial, CommitRecords, Direction, Draft, FileEngine, Operation,
+    AdjustContainerCount, AdvanceSerial, CommitRecords, Direction, Draft, Engine, Operation,
     Read as FileRead, ReadError as ViewError, ReleaseLock, ReleaseLocks, ReleaseSessionLocks,
     Reply, ReserveRecordIds, SchemaNotChanged, StoreContainerData, TakeLock, UpdateTable,
     UpgradeLock, UploadToCatalog, NO_LIMIT,
@@ -189,7 +189,7 @@ pub(crate) struct Shared {
     pub mailboxes: Mailboxes,
     /// Runs the operations that change hosted files ([`crate::engine`]),
     /// shared with what outlives a request (a desktop's prepared copy).
-    pub engine: Arc<FileEngine>,
+    pub engine: Arc<Engine>,
     /// Perform Script on Server (script-runtime.md 11).
     pub scripts: ScriptEngine,
     /// Key paths no download may read after Login, with what is under them

@@ -1346,17 +1346,23 @@ fn write_backup(
         let into = folder_below(&databases, &relative, &mut folders)
             .map_err(|e| Failure::io(&dest_path.display(), &e))?;
         // The file as its last save left it, opened under the store's read
-        // lock for that call alone, and copied after it.
-        let source = shared.engine.stored(hosted).map_err(|e| unreadable(&e))?;
-        if source.unsaved {
+        // lock for that call alone, and copied after it. An engine with no
+        // file on disk (the store engine's, whose file takes no changes
+        // while hosted) has its backup written from the view.
+        let source = match shared.engine.capabilities().copies_files_on_disk {
+            true => Some(shared.engine.stored(hosted).map_err(|e| unreadable(&e))?),
+            false => None,
+        };
+        if source.as_ref().is_some_and(|source| source.unsaved) {
             warn!(
                 "{:?}: the backup holds the file as last saved: changes the server could not \
                  save are not in it",
                 hosted.name
             );
         }
+        let saves = source.as_ref().map_or(0, |source| source.saves);
         let shown = shown_name(hosted);
-        let previous = last.get(&hosted.id).filter(|p| p.saves == source.saves);
+        let previous = last.get(&hosted.id).filter(|p| p.saves == saves);
         let links = backups.links();
         let linked = match previous {
             Some(previous) if links => link_previous(&target.folder, previous, &into, file_name)
@@ -1376,13 +1382,22 @@ fn write_backup(
             let to = Destination {
                 folder: if links { &into } else { &without_links },
                 name: file_name,
-                permissions: Some(source.permissions.clone()),
+                permissions: source.as_ref().map(|source| source.permissions.clone()),
             };
             let progress = Progress {
                 stop: &stop,
                 written: &copied,
             };
-            let exported = match export::copy(&source, &to, progress) {
+            let exported = match &source {
+                Some(source) => export::copy(source, &to, progress),
+                None => shared.engine.export(
+                    hosted,
+                    export::Kind::Current,
+                    export::Target::Folder(&to),
+                    progress,
+                ),
+            };
+            let exported = match exported {
                 Ok(exported) => exported,
                 // The copy is complete under its name. The run flushes every
                 // folder of the backup before the backup is named, and fails
@@ -1415,7 +1430,7 @@ fn write_backup(
         made.insert(
             hosted.id,
             Made {
-                saves: source.saves,
+                saves,
                 backup: name.clone(),
                 relative: relative.clone(),
                 file: file_name.to_os_string(),

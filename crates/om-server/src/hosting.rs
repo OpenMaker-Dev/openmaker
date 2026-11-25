@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use log::{debug, error, info, warn};
 use om_crypto::account::{StoredPassword, StoredPasswordError};
 use om_data::host::security::{set_access, BuiltInSet, SetAccess};
-use om_hbam::HbamFile;
+use om_hbam::slot::uint_segment;
+use om_hbam::{HbamFile, OwnedNode};
 
 use crate::accounts::{AccountKind, AccountStatus};
 use crate::admin::FileStatus;
@@ -18,8 +19,9 @@ use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
 use crate::connection::host_time_key_at;
 use crate::engine::{
-    AccountStamp, ChangePassword, DeleteAccount, Direction, EnableAccount, Environment, FileEngine,
-    Operation, Password, ReadError, Reply, ResetPassword, Transaction, View, Writer, NO_LIMIT,
+    AccountStamp, AsEngine, ChangePassword, DeleteAccount, Direction, EnableAccount, EngineRef,
+    Environment, Operation, Password, ReadError, Reply, ResetPassword, Transaction, View, Writer,
+    NO_LIMIT,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -229,8 +231,13 @@ pub struct Hosted {
     pub(crate) at: FileAt,
     /// The file's contents: every download, query and write goes here.
     /// Taken through [`Hosted::read_store`] and [`Hosted::write_store`],
-    /// which keeps `published` following it.
+    /// which keeps `published` following it. A file the store engine hosts
+    /// keeps an empty store here, read-only, which nothing reads: its
+    /// contents are `stored`'s.
     store: RwLock<Store>,
+    /// What the store engine holds of the file, when it hosts it
+    /// (`engine::StoreFile`): every reading of the file reads it.
+    stored: Option<crate::engine::StoreFile>,
     /// The locks clients hold on it: changed only by the engine
     /// ([`Hosted::locks`]), read by anyone ([`Hosted::lock_table`]).
     locks: Mutex<LockTable>,
@@ -439,6 +446,7 @@ impl Hosted {
             path: hosted.path.clone(),
             at,
             store: RwLock::new(store),
+            stored: None,
             locks: Mutex::new(LockTable::default()),
             registrations: Mutex::new(Vec::new()),
             thumbnails: Mutex::new(thumbnail::Cache::default()),
@@ -449,6 +457,51 @@ impl Hosted {
             #[cfg(test)]
             read_fault: ReadFault::default(),
         })
+    }
+
+    /// The hosted file `hosted` as the store engine holds it (`stored`),
+    /// with server id `id`: its contents are read through the store
+    /// engine, never through the empty, read-only store kept where the file
+    /// engine keeps its own. Its deferred field work, if any, is not done:
+    /// the store engine takes no changes.
+    fn from_store(
+        id: u32,
+        hosted: &HostedFile,
+        at: FileAt,
+        stored: crate::engine::StoreFile,
+        internal_creation: u32,
+        events: &EventLog,
+    ) -> Self {
+        let derived = stored.derived().clone();
+        Hosted {
+            id,
+            name: hosted.name.clone(),
+            path: hosted.path.clone(),
+            at,
+            store: RwLock::new(Store::placeholder(
+                &hosted.name,
+                derived,
+                crate::store::ReadOnlyCause::StoreEngine,
+            )),
+            stored: Some(stored),
+            locks: Mutex::new(LockTable::default()),
+            registrations: Mutex::new(Vec::new()),
+            thumbnails: Mutex::new(thumbnail::Cache::default()),
+            internal_creation,
+            recovery: Mutex::new(Recovery::Ended),
+            unknown: std::sync::OnceLock::new(),
+            events: events.clone(),
+            #[cfg(test)]
+            read_fault: ReadFault::default(),
+        }
+    }
+
+    /// What the store engine holds of the file. Only the store engine asks,
+    /// and it hosts every file of its server, so each one has this.
+    pub(crate) fn store_file(&self) -> &crate::engine::StoreFile {
+        self.stored
+            .as_ref()
+            .expect("every file of a store engine's server is hosted from its store")
     }
 
     /// Finish and save, with `engine`, the deferred field work the file
@@ -470,7 +523,8 @@ impl Hosted {
     /// what it did, so the file is as its disk holds it, the work pending)
     /// is found begun by the next login, which gets the file read-only, as
     /// when the work cannot be done, never as if it were recovered.
-    pub(crate) fn recover(&self, engine: &FileEngine) {
+    pub(crate) fn recover(&self, engine: &(impl AsEngine + ?Sized)) {
+        let engine = engine.as_engine();
         let mut state = self
             .recovery
             .lock()
@@ -1528,39 +1582,65 @@ impl std::fmt::Display for Insecure {
 /// account whose status OpenMaker cannot read counts as active, and an
 /// account of another kind has no password to try.
 fn insecurity(file: &HbamFile) -> om_hbam::Result<Option<Insecure>> {
-    let Some(accounts) = file.subtree(&ACCOUNTS_PATH)? else {
-        return Ok(None);
+    let owned = |path: &[&[u8]]| -> om_hbam::Result<Option<OwnedNode>> {
+        Ok(file.subtree(path)?.map(|node| node.to_owned_node()))
     };
-    let sets = file.subtree(&PRIVILEGE_SETS_PATH)?;
-    let text = |node: Option<&om_hbam::Node>| {
-        node.and_then(om_hbam::Node::text)
-            .and_then(Result::ok)
+    Ok(insecurity_of(
+        owned(&ACCOUNTS_PATH)?.as_ref(),
+        owned(&PRIVILEGE_SETS_PATH)?.as_ref(),
+        owned(&ACCOUNT_CATALOG_PATH)?.as_ref(),
+    ))
+}
+
+/// [`insecurity`] of the file `view` reads: the store engine's.
+fn insecurity_in(view: &dyn View) -> Result<Option<Insecure>, ReadError> {
+    let owned = |path: &[&[u8]]| -> Result<Option<OwnedNode>, ReadError> {
+        Ok(view
+            .subtree(path, NO_LIMIT)?
+            .map(std::borrow::Cow::into_owned))
+    };
+    Ok(insecurity_of(
+        owned(&ACCOUNTS_PATH)?.as_ref(),
+        owned(&PRIVILEGE_SETS_PATH)?.as_ref(),
+        owned(&ACCOUNT_CATALOG_PATH)?.as_ref(),
+    ))
+}
+
+/// [`insecurity`] of a file whose accounts `[23, 1, 5]`, privilege sets
+/// `[23, 2, 5]` and account catalog header `[23, 1, 1]` are these.
+fn insecurity_of(
+    accounts: Option<&OwnedNode>,
+    sets: Option<&OwnedNode>,
+    header: Option<&OwnedNode>,
+) -> Option<Insecure> {
+    let accounts = accounts?;
+    let text = |node: Option<&OwnedNode>| {
+        node.and_then(OwnedNode::assembled)
+            .and_then(|bytes| om_scsu::decode_scsu(&bytes).ok())
             .unwrap_or_default()
     };
     // The account File Options log in as, and the password they store.
-    let header = file.subtree(&ACCOUNT_CATALOG_PATH)?;
-    let (logs_in_as, stored_login) = header.as_ref().map_or_else(Default::default, |header| {
+    let (logs_in_as, stored_login) = header.map_or_else(Default::default, |header| {
         (
             text(header.child(ACCOUNT_NAME)).to_lowercase(),
             text(header.child(LOGIN_USING_PASSWORD)),
         )
     });
     for account in &accounts.children {
-        let status = AccountStatus::decode(member(account, ACCOUNT_STATUS));
+        let status = AccountStatus::decode(owned_member(account, ACCOUNT_STATUS));
         if status.is_some_and(|status| !status.is_active()) {
             continue;
         }
-        let Some((_, set)) = member(account, ACCOUNT_PRIVILEGES)
+        let Some((_, set)) = owned_member(account, ACCOUNT_PRIVILEGES)
             .and_then(|r| r.split_first())
             .filter(|(length, key)| usize::from(**length) == key.len())
         else {
             continue;
         };
         let manages_accounts = || {
-            let options = sets
-                .as_ref()?
+            let options = sets?
                 .child(set)
-                .and_then(|s| member(s, SET_OPTIONS))?;
+                .and_then(|s| owned_member(s, SET_OPTIONS))?;
             let &[high, low] = options else {
                 return None;
             };
@@ -1569,31 +1649,42 @@ fn insecurity(file: &HbamFile) -> om_hbam::Result<Option<Insecure>> {
         if set != FULL_ACCESS_SET && manages_accounts().is_none_or(|o| o & MANAGES_ACCOUNTS == 0) {
             continue;
         }
-        if account.segment.0 == GUEST_KEY {
-            return Ok(Some(Insecure::Guest));
+        if account.segment == GUEST_KEY {
+            return Some(Insecure::Guest);
         }
-        if AccountKind::decode(member(account, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
+        if AccountKind::decode(owned_member(account, ACCOUNT_KIND))
+            != Some(AccountKind::FileMakerFile)
+        {
             continue;
         }
         let Some(stored) = account
             .child(ACCOUNT_PASSWORD)
-            .and_then(|n| n.assembled())
+            .and_then(OwnedNode::assembled)
             .and_then(|bytes| StoredPassword::parse(&bytes).ok())
         else {
             continue;
         };
         let name = text(account.child(ACCOUNT_NAME));
         if stored.verify("") {
-            return Ok(Some(Insecure::EmptyPassword(name)));
+            return Some(Insecure::EmptyPassword(name));
         }
         if !logs_in_as.is_empty()
             && logs_in_as == name.to_lowercase()
             && stored.verify(&stored_login)
         {
-            return Ok(Some(Insecure::StoredPassword(name)));
+            return Some(Insecure::StoredPassword(name));
         }
     }
-    Ok(None)
+    None
+}
+
+/// [`member`] of an owned record: a child's value when it is a leaf, an
+/// empty value for a child that is a list.
+fn owned_member<'a>(record: &'a OwnedNode, key: &[u8]) -> Option<&'a [u8]> {
+    record.child(key).map(|n| match &n.value {
+        Some(value) if n.children.is_empty() => value.as_slice(),
+        _ => &[],
+    })
 }
 
 /// The accounts in the security catalog of the file `view` reads, in key
@@ -1683,6 +1774,18 @@ pub enum HostingError {
         name: String,
         why: Insecure,
     },
+    /// The store engine could not hold the file: its import refused it
+    /// (the typed reason, `paged::ImportError`), or the store failed.
+    Store {
+        name: String,
+        error: crate::engine::store::StoreError,
+    },
+    /// The store engine holds the file, but what hosting it reads of it
+    /// (its schema, accounts, locale) does not read.
+    Unreadable {
+        name: String,
+        error: ReadError,
+    },
 }
 
 impl std::fmt::Display for HostingError {
@@ -1700,6 +1803,10 @@ impl std::fmt::Display for HostingError {
                 f,
                 "{name} is not password protected: {why} (hosting it needs --allow-insecure-files)"
             ),
+            HostingError::Store { name, error } => write!(f, "{name}: {error}"),
+            HostingError::Unreadable { name, error } => {
+                write!(f, "{name}: the store's copy does not read: {error}")
+            }
         }
     }
 }
@@ -1788,8 +1895,9 @@ impl Slot {
     }
 
     /// The file on disk this slot's engine last read or saved for it
-    /// ([`FileEngine::file_on_disk`]), also after the file is closed.
-    pub(crate) fn saved_file(&self, engine: &FileEngine) -> Option<FileId> {
+    /// ([`Engine::file_on_disk`]), also after the file is closed.
+    pub(crate) fn saved_file(&self, engine: &(impl AsEngine + ?Sized)) -> Option<FileId> {
+        let engine = engine.as_engine();
         let (served, closed) = {
             let state = self.state();
             (state.file.clone(), state.closed_file)
@@ -1850,7 +1958,8 @@ impl Slot {
     /// file is handed out ([`Slot::admit`]): once it is closed no one holds
     /// the old store, so it can never save over the file opened again.
     /// Returns whether it closed.
-    pub(crate) fn finish_close_if_drained(&self, engine: &FileEngine) -> bool {
+    pub(crate) fn finish_close_if_drained(&self, engine: &(impl AsEngine + ?Sized)) -> bool {
+        let engine = engine.as_engine();
         let mut state = self.state();
         let drained = state
             .file
@@ -1909,8 +2018,9 @@ impl Hosting {
         files: &[HostedFile],
         insecure_files: bool,
         events: &EventLog,
-        engine: &FileEngine,
+        engine: &(impl AsEngine + ?Sized),
     ) -> Result<Self, HostingError> {
+        let engine = engine.as_engine();
         let mut hosting = Hosting {
             slots: Vec::new(),
             configured: files.to_vec(),
@@ -1965,8 +2075,9 @@ impl Hosting {
         &self,
         id: u32,
         events: &EventLog,
-        engine: &FileEngine,
+        engine: &(impl AsEngine + ?Sized),
     ) -> Result<(), ReopenError> {
+        let engine = engine.as_engine();
         let slot = self.slot(id).ok_or(ReopenError::UnknownFile)?;
         slot.change(FileStatus::Closed, FileStatus::Opening)
             .map_err(ReopenError::NotAllowed)?;
@@ -2102,7 +2213,25 @@ fn load_hosted(
     insecure_files: bool,
     events: &EventLog,
     taken: &dyn Fn(FileId) -> Option<String>,
-    engine: &FileEngine,
+    engine: EngineRef<'_>,
+) -> Result<Arc<Hosted>, HostingError> {
+    match engine {
+        EngineRef::File(_) => load_file(id, hosted, at, insecure_files, events, taken, engine),
+        EngineRef::Store(store) => {
+            load_stored(id, hosted, at, insecure_files, events, taken, store)
+        }
+    }
+}
+
+/// [`load_hosted`] on the file engine: the file read whole into memory.
+fn load_file(
+    id: u32,
+    hosted: &HostedFile,
+    at: &FileAt,
+    insecure_files: bool,
+    events: &EventLog,
+    taken: &dyn Fn(FileId) -> Option<String>,
+    engine: EngineRef<'_>,
 ) -> Result<Arc<Hosted>, HostingError> {
     let (bytes, on_disk) = read_regular_file(at).map_err(|e| HostingError::Open {
         name: hosted.name.clone(),
@@ -2152,8 +2281,110 @@ fn load_hosted(
             &copy.display().to_string(),
         ));
     }
-    loaded.recover(engine);
+    loaded.recover(&engine);
     Ok(loaded)
+}
+
+/// [`load_hosted`] on the store engine: the file `at` names, from the
+/// folder it was first hosted from, read only, held by the store: imported
+/// now unless the store holds it as imported from the same bytes
+/// (`StoreFolder::hold`; a file the import refuses is not hosted, with the
+/// typed reason). It is hosted read-only from the version the store holds,
+/// with the checks the file engine makes: the same file hosted under
+/// another name, an insecure file, `mInternalCreation`. Its state is
+/// derived from its view, and deferred field work it holds is not done: the
+/// store engine takes no changes.
+fn load_stored(
+    id: u32,
+    hosted: &HostedFile,
+    at: &FileAt,
+    insecure_files: bool,
+    events: &EventLog,
+    taken: &dyn Fn(FileId) -> Option<String>,
+    engine: &crate::engine::StoreEngine,
+) -> Result<Arc<Hosted>, HostingError> {
+    let name = || hosted.name.clone();
+    let open = |error: std::io::Error| HostingError::Open {
+        name: name(),
+        error: om_hbam::Error::from(error),
+    };
+    let file = at
+        .folder()
+        .and_then(|folder| folder.open_regular(at.name()))
+        .map_err(open)?;
+    let on_disk = crate::anchored::file_identity(&file).map_err(open)?;
+    if let Some(hosted_as) = on_disk.and_then(taken) {
+        return Err(HostingError::SameFile {
+            name: name(),
+            hosted_as,
+        });
+    }
+    let started = Instant::now();
+    let held = engine
+        .folder()
+        .hold(&hosted.name, file)
+        .map_err(|error| HostingError::Store {
+            name: name(),
+            error,
+        })?;
+    let held_in = started.elapsed();
+    let imported = held.imported;
+    let unreadable = |error| HostingError::Unreadable {
+        name: name(),
+        error,
+    };
+    let view = crate::engine::store::view_of(engine.folder(), held.root).map_err(unreadable)?;
+    if !insecure_files {
+        if let Some(why) = insecurity_in(&view).map_err(unreadable)? {
+            return Err(HostingError::Insecure { name: name(), why });
+        }
+    }
+    let internal_creation = internal_creation_in(&view)
+        .map_err(unreadable)?
+        .ok_or_else(|| HostingError::NoInternalCreation { name: name() })?;
+    let derived_started = Instant::now();
+    let derived = crate::engine::store::derived_of(&view, &hosted.name, &held.page_zero)
+        .map_err(unreadable)?;
+    let derived_in = derived_started.elapsed();
+    for table in &derived.catalog().tables {
+        let t = uint_segment(table.id);
+        let deferred = [&t[..], &[3], &[1], &[0xfd]];
+        if view.node(&deferred).map_err(unreadable)?.is_some() {
+            warn!(
+                "{:?}: table {:02x?} has deferred field work pending, which the store engine                  does not do: its stored calculations are served as the file holds them",
+                hosted.name, t
+            );
+        }
+    }
+    info!(
+        "{:?}: {} the store in {held_in:?}, its state derived in {derived_in:?}",
+        hosted.name,
+        if imported { "imported into" } else { "held by" }
+    );
+    let stored = crate::engine::StoreFile::new(engine.folder().clone(), held, derived, on_disk);
+    Ok(Arc::new(Hosted::from_store(
+        id,
+        hosted,
+        at.clone(),
+        stored,
+        internal_creation,
+        events,
+    )))
+}
+
+/// The file's `mInternalCreation` `[2, 254]` through `view`: a 4-byte
+/// value, or none.
+fn internal_creation_in(view: &dyn View) -> Result<Option<u32>, ReadError> {
+    let path: Vec<Vec<u8>> = om_hbam::INTERNAL_CREATION_PATH
+        .iter()
+        .map(|key| uint_segment(*key))
+        .collect();
+    let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    Ok(view
+        .node(&path)?
+        .and_then(|head| head.value)
+        .and_then(|value| <[u8; 4]>::try_from(&*value).ok())
+        .map(u32::from_be_bytes))
 }
 
 /// The bytes of the regular file `at`, from the folder it was first hosted
@@ -2172,8 +2403,8 @@ fn read_regular_file(at: &FileAt) -> std::io::Result<(Vec<u8>, Option<FileId>)> 
 }
 
 /// The name of the slot other than `id` among `slots` that serves the file
-/// with device and inode `file` ([`FileEngine::file_on_disk`]).
-fn hosted_as(slots: &[Slot], file: FileId, id: u32, engine: &FileEngine) -> Option<String> {
+/// with device and inode `file` ([`Engine::file_on_disk`]).
+fn hosted_as(slots: &[Slot], file: FileId, id: u32, engine: EngineRef<'_>) -> Option<String> {
     slots
         .iter()
         .filter(|slot| slot.id != id)
@@ -2238,8 +2469,12 @@ mod tests {
         ];
         let (done, wait) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let hosting =
-                Hosting::load(&files, false, &EventLog::default(), &FileEngine::default());
+            let hosting = Hosting::load(
+                &files,
+                false,
+                &EventLog::default(),
+                &crate::engine::Engine::default(),
+            );
             let _ = done.send(hosting.map(|h| h.by_name(fixture::FILE).is_some()));
         });
         let loaded = wait.recv_timeout(std::time::Duration::from_secs(30));
@@ -2253,7 +2488,6 @@ mod tests {
     /// checks first does the work, under the lock the other waits on.
     #[test]
     fn a_login_while_recovery_runs_waits_for_it() {
-        use om_hbam::slot::uint_segment;
         use om_hbam::OwnedNode;
         let mut tree = fixture::tree(&[], true);
         fixture::add_tasks(&mut tree, 1..=3);
@@ -2273,7 +2507,7 @@ mod tests {
             file.read_store().node(&path).is_some(),
             "not before a login"
         );
-        let engine = FileEngine::default();
+        let engine = crate::engine::Engine::default();
         let (done, answered) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             // The work cannot run until the store is let go of.
@@ -2310,7 +2544,7 @@ mod tests {
             &[hosted_file],
             false,
             &EventLog::default(),
-            &FileEngine::default(),
+            &crate::engine::Engine::default(),
         )
         .unwrap();
         let hosted = hosting.by_name(fixture::FILE).unwrap();

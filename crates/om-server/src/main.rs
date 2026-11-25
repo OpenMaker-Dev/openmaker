@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use om_server::default_identity::{self, Source, SYSTEM_CERTIFICATES};
 use om_server::{
-    parse_schedules, CalcLimits, ConnectionLimits, HostedFile, Identity, ScheduleTask,
-    ScriptLimits, Server, ServerConfig, ServerIdentity, SCRIPT_CALC_LIMITS,
+    parse_schedules, CalcLimits, ConnectionLimits, EngineSettings, HostedFile, Identity,
+    ScheduleTask, ScriptLimits, Server, ServerConfig, ServerIdentity, SCRIPT_CALC_LIMITS,
 };
 
 const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>]
@@ -39,6 +39,8 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                  [--schedules <file>] [--backup-folder <dir>]
                  [--database-folder <dir>]...
                  [--list <file name>]... [--list-all]
+                 [--engine file|store [--store-dir <dir>]
+                  [--store-cache-mib <n>]]
                  [<file.fmp12>...]
 
   --bind            listen address (default 0.0.0.0:5003, FileMaker's port)
@@ -172,6 +174,18 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                     need an account. Anyone who can reach the port sees the
                     listed names (not their paths)
   --list-all        list every hosted file
+  --engine          the engine that hosts every file (default file). file:
+                    each file loaded whole into memory and saved whole.
+                    store: each file a tree in the store folder, imported
+                    from its .fmp12 at startup when the store does not hold
+                    it as it is on disk (the .fmp12 is never written), and
+                    served read-only: every change is refused. Not a format
+                    promise yet: a later server may import the files again
+  --store-dir       the store engine's folder (default Store in the state
+                    folder, see --state-dir), made for the server's user only;
+                    one server at a time
+  --store-cache-mib the store engine's page cache (default 256): the memory
+                    its reads hold, whatever the files' size
   --record          save every connection's GIOP messages under <dir>/conn-NNN,
                     numbered after the highest conn-NNN already there
                     (holds client license keys; keep it out of git)";
@@ -199,6 +213,9 @@ struct Args {
     listed: Vec<String>,
     list_all: bool,
     files: Vec<PathBuf>,
+    store_engine: bool,
+    store_dir: Option<PathBuf>,
+    store_cache_mib: Option<u64>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: String) -> Result<T, String> {
@@ -253,6 +270,9 @@ fn parse_args() -> Result<Args, String> {
         listed: Vec::new(),
         list_all: false,
         files: Vec::new(),
+        store_engine: false,
+        store_dir: None,
+        store_cache_mib: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -276,6 +296,15 @@ fn parse_args() -> Result<Args, String> {
             "--database-folder" => args.database_folders.push(value()?.into()),
             "--list" => args.listed.push(value()?),
             "--list-all" => args.list_all = true,
+            "--engine" => {
+                args.store_engine = match value()?.as_str() {
+                    "file" => false,
+                    "store" => true,
+                    other => return Err(format!("--engine {other:?}: file or store")),
+                }
+            }
+            "--store-dir" => args.store_dir = Some(value()?.into()),
+            "--store-cache-mib" => args.store_cache_mib = Some(positive(&arg, value()?)?),
             "--scripts" => args.limits.concurrent = number(&arg, value()?)?,
             "--script-steps" => args.limits.steps = number(&arg, value()?)?,
             "--script-seconds" => {
@@ -313,6 +342,16 @@ fn parse_args() -> Result<Args, String> {
         ] {
             if given {
                 return Err(format!("{flag} needs --admin-user"));
+            }
+        }
+    }
+    if !args.store_engine {
+        for (given, flag) in [
+            (args.store_dir.is_some(), "--store-dir"),
+            (args.store_cache_mib.is_some(), "--store-cache-mib"),
+        ] {
+            if given {
+                return Err(format!("{flag} needs --engine store"));
             }
         }
     }
@@ -362,6 +401,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let identity = tls_identity(&args)?;
     #[cfg(feature = "admin-console")]
     let console_identity = admin.as_ref().map(|_| identity.clone());
+    let engine = engine_settings(&args)?;
     let (paths, database_folders) = hosted_paths(&args);
     // No files is a server with nothing hosted yet, as FileMaker Server
     // starts before any database is opened: its Admin Console and listener
@@ -420,7 +460,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .or_else(default_identity::state_folder)?;
         Some(state.join("Logs"))
     });
-    let mut server = Server::bind(&args.bind, config, identity)?;
+    let mut server = Server::bind_on(&args.bind, config, identity, &engine)?;
     match log_folder {
         Some(folder) => server = server.with_event_log(folder)?,
         None => log::warn!("no state folder and no --log-folder: no event log is written"),
@@ -479,6 +519,38 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         log::warn!("the event log was not written to its end in {LOG_CLOSE:?}");
     }
     Ok(())
+}
+
+/// The engine `args` choose (`--engine`, `--store-dir`, `--store-cache-mib`;
+/// docs/server-storage.md 11): the store engine's folder by default in the
+/// state folder, made for the server's user only.
+fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
+    if !args.store_engine {
+        return Ok(EngineSettings::File);
+    }
+    let dir = match &args.store_dir {
+        Some(dir) => dir.clone(),
+        None => args
+            .state_dir
+            .clone()
+            .or_else(default_identity::state_folder)
+            .map(|state| state.join("Store"))
+            .ok_or("--engine store: no --store-dir and no state folder to put the store in")?,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| format!("--store-dir {}: {e}", dir.display()))?;
+    }
+    let mib = args.store_cache_mib.unwrap_or(256);
+    Ok(EngineSettings::Store {
+        dir,
+        cache_bytes: mib.saturating_mul(1 << 20),
+    })
 }
 
 /// How long a stopped server waits for its clients' sessions to end once

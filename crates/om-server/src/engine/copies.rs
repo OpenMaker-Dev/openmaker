@@ -299,7 +299,7 @@ impl Switch {
             .cloned()
             .unwrap_or_default();
         let file_read = reading.read();
-        let copies = Copies::new(reading.file_view(), &paths);
+        let copies = Copies::new(reading.engine_view(), &paths);
         let derived = self.derived_of(reading, &copies, failing.is_none(), accounts);
         let copied = Read {
             view: &copies,
@@ -333,7 +333,7 @@ impl Switch {
             .and_then(|failing| failing.get(&reading.file().name.to_lowercase()))
             .cloned()
             .unwrap_or_default();
-        let copies = Copies::new(reading.file_view(), &paths);
+        let copies = Copies::new(reading.engine_view(), &paths);
         let derived = self.derived_of(reading, &copies, failing.is_none(), false);
         read(Read {
             view: &copies,
@@ -476,7 +476,7 @@ fn not_read() -> derived::Accounts {
 fn catalog_of(reading: &Reading<'_>, copies: &Copies<'_>) -> om_hbam::Result<om_hbam::Catalog> {
     match derived::read_catalog(copies) {
         Ok(catalog) => Ok(catalog),
-        Err(error) => match derived::read_catalog(reading.file_view()) {
+        Err(error) => match derived::read_catalog(reading.engine_view()) {
             Err(theirs) if theirs.to_string() == error.to_string() => {
                 Ok(reading.derived().catalog().clone())
             }

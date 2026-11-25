@@ -559,7 +559,7 @@ pub(super) mod tests {
     pub(in crate::scripts::host) fn session(file: &Path, dir: &Path) -> ServerHost {
         let path = dir.join("work.fmp12");
         std::fs::copy(file, &path).unwrap();
-        let engine = crate::engine::FileEngine::default();
+        let engine = crate::engine::Engine::default();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: "work.fmp12".into(),

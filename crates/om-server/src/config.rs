@@ -235,6 +235,22 @@ pub const SCRIPT_CALC_LIMITS: CalcLimits = CalcLimits {
     ..CalcLimits::DEFAULT
 };
 
+/// The engine a server runs for all its files (docs/server-storage.md 5,
+/// 11; `--engine`): the file engine, each file one `.fmp12` loaded whole,
+/// or the store engine, each file a tree in the store folder's page file,
+/// imported from its `.fmp12` when the server starts and hosted read-only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum EngineSettings {
+    #[default]
+    File,
+    Store {
+        /// The store folder (`--store-dir`).
+        dir: PathBuf,
+        /// The page cache's size in bytes (`--store-cache-mib`).
+        cache_bytes: u64,
+    },
+}
+
 /// Everything a server needs to start. Its limits and script schedules are
 /// given to the [`crate::Server`] it starts (`with_script_limits`,
 /// `with_connection_limits`, `with_schedules`). Logins are checked against

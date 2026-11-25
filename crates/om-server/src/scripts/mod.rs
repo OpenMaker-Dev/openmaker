@@ -765,7 +765,7 @@ mod tests {
     const CLIENT: u32 = 0x77;
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
-        let engine = crate::engine::FileEngine::default();
+        let engine = crate::engine::Engine::default();
         // Every read answered through both views (`engine::copies`).
         engine.check_reads();
         let hosting = Hosting::load(

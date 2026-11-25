@@ -222,6 +222,9 @@ pub enum ReadOnlyCause {
     /// Its deferred field work cannot be done, or could not be saved, and
     /// is kept (`Store::recover`, op73).
     DeferredWork,
+    /// The store engine hosts it, which takes no changes yet
+    /// (docs/server-storage.md 5, 11).
+    StoreEngine,
 }
 
 /// An index: its table, field and kind (value 0, word 1).
@@ -659,6 +662,37 @@ impl Store {
     /// ([`crate::LocalHost`]): its calculations compile as FileMaker Pro's.
     pub(crate) fn serve_desktop(&mut self) {
         Arc::make_mut(&mut self.derived).serve_desktop();
+    }
+
+    /// A store that holds nothing, read-only for `cause`, with `derived`
+    /// the state of the file another engine hosts: what a file the store
+    /// engine hosts keeps where the file engine keeps its store
+    /// (`Hosted::from_store`). Nothing reads its tree.
+    pub(crate) fn placeholder(name: &str, derived: Arc<Derived>, cause: ReadOnlyCause) -> Self {
+        Self {
+            root: OwnedNode::list(Vec::new(), Vec::new()),
+            version: 0,
+            derived,
+            name: name.to_string(),
+            basis: HashMap::new(),
+            change_number: 0,
+            saved_from: None,
+            unwritable: false,
+            dirty: false,
+            saves: 0,
+            #[cfg(debug_assertions)]
+            fail_commit_saves: false,
+            #[cfg(debug_assertions)]
+            save_fault: None,
+            unknown: None,
+            generation: 0,
+            accounts_at: 0,
+            waiting: Waiting::default(),
+            verified: (0, BTreeMap::new()),
+            lock: None,
+            file: None,
+            read_only: Some(cause),
+        }
     }
 
     /// Load every key of `file` into memory.

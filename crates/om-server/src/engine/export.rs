@@ -929,7 +929,7 @@ mod tests {
             }],
             false,
             &EventLog::default(),
-            &FileEngine::default(),
+            &super::super::Engine::default(),
         )
         .unwrap();
         let hosted = hosting.by_name(fixture::FILE).unwrap();

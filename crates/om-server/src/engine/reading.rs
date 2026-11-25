@@ -35,9 +35,21 @@ type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
 pub struct Waiting {
     issued: Mutex<IssuedKeys>,
     on_demand: Mutex<BTreeSet<IndexId>>,
+    /// The file stores nothing (the store engine's, which takes no
+    /// changes yet): an index a find built is not noted as waiting, since
+    /// no write will ever store it.
+    stores_nothing: bool,
 }
 
 impl Waiting {
+    /// What waits for a file that stores nothing: never an index.
+    pub(crate) fn storing_nothing() -> Self {
+        Waiting {
+            stores_nothing: true,
+            ..Waiting::default()
+        }
+    }
+
     /// The member keys issued, also after a request panicked holding them.
     /// Every section that holds them reads, inserts or drains whole entries
     /// (an entry is inserted only once both its checked increments
@@ -99,6 +111,9 @@ impl Waiting {
 
     /// Note an index a find built on demand, due to be stored.
     pub fn note_index(&self, index: IndexId) {
+        if self.stores_nothing {
+            return;
+        }
         self.on_demand.lock().expect("index lock").insert(index);
     }
 
@@ -258,14 +273,101 @@ pub(crate) fn assert_no_reading_held(what: &str) {
     let _ = what;
 }
 
-/// A reader's hold on one version of a hosted file ([`FileEngine::read`]).
+/// A reader's hold on one version of a hosted file ([`FileEngine::read`],
+/// `StoreEngine::read`).
 pub struct Reading<'h> {
     file: &'h Hosted,
-    view: FileView<'h>,
+    view: Held<'h>,
     derived: Arc<Derived>,
     /// The test view the reads go through instead ([`super::copies`]).
     #[cfg(debug_assertions)]
     copies: Option<Arc<super::copies::Switch>>,
+}
+
+/// The view a reading holds: the file engine's, under its store's read
+/// lock, or the store engine's, of the version its file is hosted at.
+enum Held<'h> {
+    File(FileView<'h>),
+    Store {
+        view: StoreView<'h>,
+        file: &'h super::store::StoreFile,
+    },
+}
+
+/// The store engine's view of its file's version, or, when the version's
+/// root no longer reads, one that fails every read with that error, as a
+/// read that reaches a damaged page fails.
+enum StoreView<'h> {
+    Paged(super::paged::PagedView<'h, om_store::pagefile::PageFile>),
+    Broken { error: ReadError, version: Version },
+}
+
+impl StoreView<'_> {
+    fn paged(&self) -> Result<&dyn View, ReadError> {
+        match self {
+            StoreView::Paged(view) => Ok(view),
+            StoreView::Broken { error, .. } => Err(error.clone()),
+        }
+    }
+}
+
+impl View for StoreView<'_> {
+    fn version(&self) -> Version {
+        match self {
+            StoreView::Paged(view) => view.version(),
+            StoreView::Broken { version, .. } => *version,
+        }
+    }
+
+    fn node(&self, path: &[&[u8]]) -> Result<Option<Head<'_>>, ReadError> {
+        self.paged()?.node(path)
+    }
+
+    fn subtree(
+        &self,
+        path: &[&[u8]],
+        limit: usize,
+    ) -> Result<Option<std::borrow::Cow<'_, OwnedNode>>, ReadError> {
+        self.paged()?.subtree(path, limit)
+    }
+
+    fn children_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        from: std::ops::Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Child<'v>>,
+    ) -> Result<bool, ReadError> {
+        self.paged()?.children_page(path, from, direction, max, out)
+    }
+
+    fn subtrees_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        from: std::ops::Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        limit: usize,
+        out: &mut Vec<std::borrow::Cow<'v, OwnedNode>>,
+    ) -> Result<bool, ReadError> {
+        self.paged()?
+            .subtrees_page(path, from, direction, max, limit, out)
+    }
+
+    fn walk_page<'v>(
+        &'v self,
+        path: &[&[u8]],
+        after: Option<&[Vec<u8>]>,
+        max: usize,
+        out: &mut Vec<Step<'v>>,
+    ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+        self.paged()?.walk_page(path, after, max, out)
+    }
+
+    fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
+        self.paged()?.changed_since(path, since)
+    }
 }
 
 /// What a read gets of one version of a file: its view, the state derived
@@ -300,10 +402,43 @@ impl FileEngine {
         );
         Reading {
             file,
-            view,
+            view: Held::File(view),
             derived,
             #[cfg(debug_assertions)]
             copies: self.copies(),
+        }
+    }
+}
+
+impl<'h> Reading<'h> {
+    /// The store engine's reading of `file` (`StoreEngine::read`): the
+    /// view of the version it is hosted at, `stored`'s, opened from its
+    /// root, and the state derived from it when the file was hosted. When
+    /// the root does not read, every read of the reading fails with why.
+    pub(super) fn of_store(file: &'h Hosted, stored: &'h super::store::StoreFile) -> Reading<'h> {
+        assert_no_reading_held("a reading taken");
+        let derived = stored.derived().clone();
+        let view = match stored.view() {
+            Ok(view) => StoreView::Paged(view),
+            Err(error) => {
+                log::error!(
+                    "{:?}: the version it is hosted at does not read: {error}",
+                    file.name
+                );
+                StoreView::Broken {
+                    error,
+                    version: derived.version(),
+                }
+            }
+        };
+        #[cfg(debug_assertions)]
+        HELD.with(|held| held.set(held.get() + 1));
+        Reading {
+            file,
+            view: Held::Store { view, file: stored },
+            derived,
+            #[cfg(debug_assertions)]
+            copies: None,
         }
     }
 }
@@ -316,14 +451,23 @@ impl Drop for Reading<'_> {
 }
 
 impl<'h> Reading<'h> {
-    /// The file engine's own read of this version.
+    /// The engine's own read of this version.
     pub fn read(&self) -> Read<'_> {
-        Read {
-            view: &self.view,
-            derived: &self.derived,
-            waiting: self.view.store.waiting(),
-            read_only: self.view.store.is_read_only(),
-            writes_refused: self.view.store.writes_refused(),
+        match &self.view {
+            Held::File(view) => Read {
+                view,
+                derived: &self.derived,
+                waiting: view.store.waiting(),
+                read_only: view.store.is_read_only(),
+                writes_refused: view.store.writes_refused(),
+            },
+            Held::Store { view, file } => Read {
+                view,
+                derived: &self.derived,
+                waiting: file.waiting(),
+                read_only: true,
+                writes_refused: None,
+            },
         }
     }
 
@@ -373,21 +517,37 @@ impl<'h> Reading<'h> {
     /// engine's choice, `Store::export_source`. A file on disk is opened
     /// here, under the store's read lock.
     pub fn export_source(&self) -> std::io::Result<super::export::Source> {
-        self.view.store.export_source(&self.file.at)
+        match &self.view {
+            Held::File(view) => view.store.export_source(&self.file.at),
+            Held::Store { .. } => Ok(self.compacted_source()),
+        }
     }
 
     /// How a compacted copy of this version is written
     /// (`Store::compacted_source`).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn compacted_source(&self) -> super::export::Source {
-        self.view.store.compacted_source()
+        match &self.view {
+            Held::File(view) => view.store.compacted_source(),
+            // No file on disk is the version: it is written from the view,
+            // page 0 as imported with the change number it holds.
+            Held::Store { .. } => super::export::Source::Written {
+                change_number: om_hbam::writer::change_number(self.derived.page_zero())
+                    .unwrap_or(0),
+            },
+        }
     }
 
     /// The file on disk the store read or last saved, opened to read while
     /// its path still leads to it, with what a copy needs
     /// (`Store::on_disk`).
     pub fn on_disk(&self) -> std::io::Result<super::export::OnDisk> {
-        self.view.store.on_disk(&self.file.at)
+        match &self.view {
+            Held::File(view) => view.store.on_disk(&self.file.at),
+            Held::Store { .. } => Err(std::io::Error::other(
+                "the store engine's file is no file on disk: it is written from its view",
+            )),
+        }
     }
 
     /// Whether [`Self::serve`] runs its read twice.
@@ -405,10 +565,13 @@ impl<'h> Reading<'h> {
         self.file
     }
 
-    /// The file engine's view.
+    /// The engine's view.
     #[cfg(debug_assertions)]
-    pub(super) fn file_view(&self) -> &FileView<'h> {
-        &self.view
+    pub(super) fn engine_view(&self) -> &dyn View {
+        match &self.view {
+            Held::File(view) => view,
+            Held::Store { view, .. } => view,
+        }
     }
 
     /// The file engine's derived state.

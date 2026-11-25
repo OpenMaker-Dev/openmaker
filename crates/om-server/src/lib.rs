@@ -151,8 +151,8 @@ pub use admin::{
 };
 pub use backups::{BackupError, BackupInfo, BackupProgress, MAX_KEEP, MAX_LABEL_CHARS};
 pub use config::{
-    ConnectionLimits, HostedFile, Privileges, ScriptLimits, ServerConfig, ServerIdentity,
-    SCRIPT_CALC_LIMITS,
+    ConnectionLimits, EngineSettings, HostedFile, Privileges, ScriptLimits, ServerConfig,
+    ServerIdentity, SCRIPT_CALC_LIMITS,
 };
 #[cfg(debug_assertions)]
 #[doc(hidden)]

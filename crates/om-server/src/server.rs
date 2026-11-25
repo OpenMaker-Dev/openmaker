@@ -28,9 +28,9 @@ use rustls::{ServerConnection, StreamOwned};
 use crate::admin::{ClientSocket, Control};
 use crate::admission::{Admissions, Slot};
 use crate::backups::{BackupError, BackupInfo, BackupProgress};
-use crate::config::{ConnectionLimits, ScriptLimits, ServerConfig};
+use crate::config::{ConnectionLimits, EngineSettings, ScriptLimits, ServerConfig};
 use crate::connection::{Connection, Shared};
-use crate::engine::FileEngine;
+use crate::engine::Engine;
 use crate::eventlog::{Event, EventLog};
 use crate::hosting::{Hosting, HostingError};
 use crate::record::Recordings;
@@ -57,6 +57,8 @@ pub enum StartError {
         dir: PathBuf,
         error: io::Error,
     },
+    /// The store engine's folder cannot be opened (`--store-dir`).
+    Store(crate::engine::store::StoreError),
 }
 
 impl std::fmt::Display for StartError {
@@ -75,6 +77,7 @@ impl std::fmt::Display for StartError {
                     dir.display()
                 )
             }
+            StartError::Store(e) => write!(f, "{e}"),
         }
     }
 }
@@ -131,8 +134,32 @@ impl Server {
         config: ServerConfig,
         identity: Identity,
     ) -> Result<Self, StartError> {
+        Self::bind_on(addr, config, identity, &EngineSettings::File)
+    }
+
+    /// [`Server::bind`], the files hosted by the engine `settings` name
+    /// (`--engine`, docs/server-storage.md 11): on the store engine, its
+    /// folder is opened, and each file the store does not hold as it is on
+    /// disk is imported first.
+    pub fn bind_on(
+        addr: impl ToSocketAddrs,
+        config: ServerConfig,
+        identity: Identity,
+        settings: &EngineSettings,
+    ) -> Result<Self, StartError> {
         let events = EventLog::new(crate::eventlog::host_name(&config.identity.name));
-        let engine = FileEngine::default();
+        let engine = match settings {
+            EngineSettings::File => Engine::default(),
+            EngineSettings::Store { dir, cache_bytes } => {
+                let folder = crate::engine::StoreFolder::open(
+                    &om_store::os::OsFs::new(dir.clone()),
+                    *cache_bytes,
+                )
+                .map_err(StartError::Store)?;
+                info!("the store engine hosts the files, from {}", dir.display());
+                Engine::Store(crate::engine::StoreEngine::new(Arc::new(folder)))
+            }
+        };
         let hosting = Hosting::load(&config.files, config.insecure_files, &events, &engine)
             .map_err(StartError::Hosting)?;
         let tls = server_config(identity).map_err(StartError::Identity)?;
@@ -150,7 +177,7 @@ impl Server {
         tls: Arc<rustls::ServerConfig>,
         local: bool,
         events: EventLog,
-        engine: FileEngine,
+        engine: Engine,
     ) -> Result<Self, StartError> {
         // A server asked to record refuses to start without its folder
         // rather than serve unrecorded.

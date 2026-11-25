@@ -1065,13 +1065,28 @@ fn over_cap(file: &str, holder: &str, path: &[Vec<u8>]) -> LockReply {
 /// is refused when `room`, the locks the connection may still take
 /// ([`MAX_LOCKS`]), is 0.
 pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_>) -> LockReply {
+    let mod_count = op
+        .request
+        .want_mod_count
+        .then(|| store.mod_count(&op.request.path));
+    lock_counted(op, file, mod_count, locks)
+}
+
+/// [`lock`], with the modification count it answers, where the request
+/// asks for one, already read: an engine that reads the file through a
+/// view reads it there (`derived::mod_count`).
+pub(crate) fn lock_counted(
+    op: TakeLock,
+    file: &str,
+    mod_count: Option<Vec<u8>>,
+    locks: &mut Locks<'_>,
+) -> LockReply {
     let TakeLock {
         user,
         holder,
         request: req,
         room,
     } = op;
-    let mod_count = req.want_mod_count.then(|| store.mod_count(&req.path));
     let granted = LockReply::Granted { mod_count };
     if let Err(e) = granted.to_result() {
         warn!(
@@ -1094,6 +1109,18 @@ pub(crate) fn lock(op: TakeLock, file: &str, store: &Store, locks: &mut Locks<'_
         Err(conflict) => LockReply::Refused {
             status: LOCK_CONFLICT,
             conflict,
+        },
+    }
+}
+
+/// op60's refusal of a lock whose modification count could not be read
+/// (the read failed): not granted, as one that cannot be sent is not.
+pub(crate) fn lock_unavailable() -> LockReply {
+    LockReply::Refused {
+        status: LOCK_UNAVAILABLE,
+        conflict: Conflict {
+            self_conflict: false,
+            users: String::new(),
         },
     }
 }
