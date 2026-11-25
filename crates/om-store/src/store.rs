@@ -471,19 +471,31 @@ impl fmt::Debug for Store {
     }
 }
 
-/// The pin of entry `entry`'s version. The store asks for two kinds only:
-/// the version an entry's unit made, right after it committed, when it is
-/// the newest (or the newest checkpoint's, when no unit was committed
-/// since); and a restore point's, which is on disk. It never names an
-/// entry whose unit has not committed. Every pin the store takes goes
-/// through here, so that how the page file hands out pins is one place.
-fn pin_version(pages: &PageFile, entry: u64) -> Result<Pin, String> {
-    let pin = pages
-        .pin(entry)
-        .map_err(|why| format!("the version of entry {entry} could not be pinned: {why}"))?;
+/// Which version the store pins.
+enum PinOf {
+    /// The newest version, right after entry `.0` was applied (or, at
+    /// open, replayed or loaded from the checkpoint). Every entry the
+    /// store applies commits a unit, since its unit always records the
+    /// entry as the store tree's last applied, so the newest version is
+    /// that entry's.
+    Newest(u64),
+    /// A restore point's version, which is on disk.
+    OnDisk(u64),
+}
+
+/// The pin of a version, and the entry it must be of. Every pin the store
+/// takes goes through here, so that how the page file hands out pins is
+/// one place. The store never names an entry whose unit has not committed.
+fn pin_version(pages: &PageFile, of: PinOf) -> Result<Pin, String> {
+    let (pin, entry) = match of {
+        PinOf::Newest(entry) => (pages.pin_newest(), entry),
+        PinOf::OnDisk(entry) => (pages.pin(entry), entry),
+    };
+    let pin =
+        pin.map_err(|why| format!("the version of entry {entry} could not be pinned: {why}"))?;
     if pin.entry() != entry {
         return Err(format!(
-            "a pin of entry {entry} holds entry {}'s version",
+            "a pin for entry {entry} holds entry {}'s version",
             pin.entry()
         ));
     }
@@ -734,7 +746,7 @@ impl Store {
                 "the replay did not end at the durable entry",
             ));
         }
-        let pin = pin_version(&pages, last.index).map_err(OpenError::Disk)?;
+        let pin = pin_version(&pages, PinOf::Newest(last.index)).map_err(OpenError::Disk)?;
         let term = values.term.max(durable.term).max(1);
         let mut store = Store {
             fs,
@@ -888,7 +900,7 @@ impl Store {
             Err(NotApplied::Apply(e)) => return Err(WriteError::Apply(e)),
         };
         // The unit is committed: from here a failure stops the store.
-        let pin = match pin_version(&self.pages, index) {
+        let pin = match pin_version(&self.pages, PinOf::Newest(index)) {
             Ok(pin) => pin,
             Err(why) => return Err(self.stop(why)),
         };
@@ -956,7 +968,8 @@ impl Store {
             .find(|(rp, dropped)| rp.name == name && !dropped)
             .map(|(rp, _)| rp)
             .ok_or(WriteError::Rule("no restore point of that name is listed"))?;
-        let pin = pin_version(&self.pages, point.entry.index).map_err(WriteError::Failed)?;
+        let pin = pin_version(&self.pages, PinOf::OnDisk(point.entry.index))
+            .map_err(WriteError::Failed)?;
         Ok(View {
             pages: self.pages.clone(),
             version: Version {

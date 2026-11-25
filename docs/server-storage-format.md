@@ -2254,7 +2254,10 @@ store's term, and:
    extended (doubling), and the entry applied again. A full disk, a
    reservation refused for a checkpoint, a refused entry or a page that
    cannot be read refuses the entry with nothing changed;
-3. pins the version the unit made, the newest then;
+3. pins the newest version (`PageFile::pin_newest`), which is the one
+   the unit made: every entry commits a unit, since its unit records it
+   as the store tree's last applied entry, and the store checks that the
+   pin is of that entry;
 4. appends the entry to the log's open batch, in memory, and checks that
    the log hashed it as it was applied.
 
