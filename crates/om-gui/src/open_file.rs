@@ -384,7 +384,7 @@ fn home_relative(text: &str) -> PathBuf {
 
 /// Forget what egui keeps of the text field `id`: its undo history holds
 /// earlier text in the clear, a password field's too.
-fn forget_field(ctx: &egui::Context, id: egui::Id) {
+pub(crate) fn forget_field(ctx: &egui::Context, id: egui::Id) {
     ctx.data_mut(|d| d.remove::<egui::text_edit::TextEditState>(id));
 }
 

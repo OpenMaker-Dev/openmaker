@@ -291,8 +291,7 @@ fn document() -> RenderLayout {
 
 fn open() -> common::App {
     let mut app = common::harness(Box::new(Provider));
-    common::fill(&mut app, "Host", "wheel.example.invalid");
-    common::fill(&mut app, "File", "Wheel.fmp12");
+    common::fill(&mut app, "Path", "fmnet:/wheel.example.invalid/Wheel.fmp12");
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "WHEEL FIXTURE");
     common::wait_for_label(&mut app, &line(1));

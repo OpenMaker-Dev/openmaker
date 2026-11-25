@@ -96,11 +96,13 @@ fn external_script_uses_the_first_available_source_path() {
         ],
     );
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", fixture::ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", fixture::ACCOUNT);
     common::fill(&mut app, "Password", fixture::PASSWORD);
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "root ready", |a| a.state().is_settled());
@@ -177,11 +179,13 @@ fn external_layout_trigger_fixture(event: om_data::runtime::TriggerEvent) -> rel
 
 fn open_trigger_fixture(host: &related::Host) -> common::App {
     let mut app = common::harness(Box::new(host.provider()));
-    common::click(&mut app, "Use saved license");
-    common::fill(&mut app, "Host", "127.0.0.1");
-    hosted::replace(&mut app, "Port", &host.port.to_string());
-    common::fill(&mut app, "File", "Root.fmp12");
-    common::fill(&mut app, "Account", fixture::ACCOUNT);
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", fixture::ACCOUNT);
     common::fill(&mut app, "Password", fixture::PASSWORD);
     common::click(&mut app, "Open");
     app
