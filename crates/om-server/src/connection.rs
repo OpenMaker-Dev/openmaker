@@ -2650,8 +2650,9 @@ fn query(
                 return Ok(reply(Vec::new(), resume).to_result_within(max_return as usize));
             }
             // A part of a program this connection does not hold, or the
-            // last part of one that ran: what the program does cannot be
-            // known, or was answered already, and a program may write
+            // last part of one that ran (op86 records no done answer, so
+            // that is a cursor not held too): what the program does cannot
+            // be known, or was answered already, and a program may write
             // (`query_changes_file`), which the empty last page would answer
             // as done. It fails; a continuation of results keeps the empty
             // last page (above).
@@ -3440,8 +3441,12 @@ enum Payload {
     /// More parts follow: answer with this resume block (spec 5.6.6c).
     Continues(Resume),
     /// A repeat of the last part of an upload this connection completed in
-    /// parts (a client retrying after a timeout): the operation ran on it,
-    /// and nothing is done again ([`Upload::Repeated`]).
+    /// parts and whose operation answered done (a client retrying after a
+    /// timeout): nothing is done again ([`Upload::Repeated`]). The
+    /// operation says so where it answers done
+    /// ([`crate::transfer::Transfers::answered_done`]); the last part again
+    /// of an upload whose operation failed is a cursor not held, and fails
+    /// again.
     Repeated,
 }
 
@@ -3567,6 +3572,9 @@ fn upload(
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
         upload_to_file(shared, peer, &hosted, &request, &payload, reading.bytes())?;
+        session
+            .transfers
+            .answered_done(Owner::of(header), &request.resume);
         return Ok(done);
     }
     let client = session.client;
@@ -3588,6 +3596,9 @@ fn upload(
             return Err(Refused.into());
         }
     }
+    session
+        .transfers
+        .answered_done(Owner::of(header), &request.resume);
     Ok(done)
 }
 
@@ -3924,6 +3935,9 @@ fn commit(
     let reply = match committed.result {
         Ok(()) => {
             outcome.notices.deliver(&hosted, &shared.mailboxes);
+            session
+                .transfers
+                .answered_done(Owner::of(header), &request.resume);
             Ok(done)
         }
         // Refused under the write lock, record by record, by the account's
@@ -4050,7 +4064,10 @@ fn upload_binary(
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
             Payload::Complete(payload, held) => (payload, held),
             // Its member was answered when its last part first came, and
-            // is not answered again.
+            // is not answered again: op88 records no done answer
+            // (`Transfers::answered_done`), so its last part again is a
+            // cursor not held and has failed above. This arm keeps a repeat
+            // a failure should one ever be recorded.
             Payload::Repeated => {
                 return Err(PerformError::Status(format!(
                     "the last part of container upload {:#x} again: its member is not \
