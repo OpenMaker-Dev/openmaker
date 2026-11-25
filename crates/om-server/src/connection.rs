@@ -3143,6 +3143,17 @@ fn writable<'s>(
     Some(file)
 }
 
+/// Why a write to the file `header` names is refused for the file itself,
+/// for a session logged in to it: the file is hosted read-only. A write
+/// whose reply has no status to carry the refusal (op13, op73) then fails
+/// with a system exception rather than answer as if it ran (#737); what
+/// FileMaker Server answers for a file it serves read-only is unmeasured.
+fn hosted_read_only(shared: &Shared, session: &Session, header: &Header) -> Option<String> {
+    let file = session.open.get(&header.file_id)?;
+    (set_access(file).is_some() && file_read_only(shared, file))
+        .then(|| format!("{:?} is hosted read-only", file.hosted.name))
+}
+
 /// The privilege set `file`'s session logged in with, as it was then
 /// (`OpenFile::account`); none before Login. An account whose set cannot
 /// be read is never admitted, and every check below fails closed without
@@ -3401,6 +3412,7 @@ fn upload(
 ) -> Result<Vec<u8>, PerformError> {
     let mut request = write::parse_upload_request(txn)?;
     let done = write::upload_reply(&Resume::no_stream(), max_return as usize);
+    let to_file = request.flags & write::UPLOAD_TO_TEMP == 0;
     // Each part is held only for a request that may write. A later part
     // for a file the session may no longer write continues an upload that
     // was dropped with its session in the file (closed, logged out of): it
@@ -3410,9 +3422,16 @@ fn upload(
         if request.resume.has_more() {
             return Err(Refused.into());
         }
+        // An upload to a catalog of a file hosted read-only is not stored,
+        // and fails as one whose save failed does (#737).
+        if let (true, Some(why)) = (to_file, hosted_read_only(shared, session, header)) {
+            return Err(PerformError::Status(format!(
+                "upload to {:02x?} not stored: {why}",
+                request.dest
+            )));
+        }
         return Ok(done);
     };
-    let to_file = request.flags & write::UPLOAD_TO_TEMP == 0;
     // Native uploads can replace a script through any catalog ancestor or
     // descendant. Apply the same account boundary as opcode 240 to every
     // direct catalog upload; staged record edits stay separate.
@@ -3555,6 +3574,13 @@ fn update_table(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let table = schema::parse_update_table_request(txn)?;
+    // The reply is empty: on a file hosted read-only the work is not done,
+    // and the request fails as op13's does (#737).
+    if let Some(why) = hosted_read_only(shared, session, header) {
+        return Err(PerformError::Status(format!(
+            "table update not done: {why}"
+        )));
+    }
     if let (Some(file), [table]) = (writable(shared, peer, session, header), table.as_slice()) {
         let account = file.account.as_deref().map_or("", |account| &account.name);
         let update = UpdateTable {

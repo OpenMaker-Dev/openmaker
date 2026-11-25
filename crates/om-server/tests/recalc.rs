@@ -461,6 +461,40 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
 }
 
+/// #737: on a file hosted read-only (here its deferred work cannot be
+/// done at startup), an upload to a catalog (op13) and a table update
+/// (op73) fail with a system exception, as a write that was not stored
+/// fails, rather than answer as if they ran: neither reply has a status to
+/// carry the refusal. The connection carries on, and the file is as it was.
+/// What FileMaker Server answers for a file it serves read-only is
+/// unmeasured.
+#[test]
+fn catalog_writes_to_a_file_hosted_read_only_fail() {
+    let mut root = fixture::tree(&[], true);
+    let t = uint_segment(TABLE);
+    let mut catalog = field_catalog(&root);
+    catalog.remove(&[&[5], &uint_segment(NAME)]);
+    defer(&mut catalog, NAME, 0x1e1);
+    root.put(&[&t, &[3]], catalog.clone());
+    let file = TempFile::from_tree("recalc-read-only-catalog-writes", &root);
+    let before = std::fs::read(&file.0).unwrap();
+    let (mut client, id) = server::logged_in(server::start(&file), "designer");
+    let upload = Upload {
+        payload: catalog.to_wire().unwrap(),
+        resume: Resume::start(),
+        terminal: Vec::new(),
+        flags: write::UPLOAD_NODE,
+        dest: vec![t.clone(), vec![3]],
+    };
+    let uploaded = client.perform(&write::build_upload_to_host(1001, id, &upload));
+    assert!(uploaded.is_err(), "op13: {uploaded:02x?}");
+    let updated = client.perform(&schema::build_update_table(1002, id, &vec![t.clone()]));
+    assert!(updated.is_err(), "op73: {updated:02x?}");
+    let records = records_of(&mut client, TABLE);
+    assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), before);
+}
+
 #[test]
 fn refused_live_deferred_work_keeps_the_host_read_only() {
     let root = fixture::tree(&[], true);
