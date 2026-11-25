@@ -54,15 +54,23 @@ const FLUSH: Duration = Duration::from_secs(2);
 
 /// The longest one request to Sentry takes, its name lookup and connection
 /// included (OpenMaker's choice). Sentry's transport sends one report at a
-/// time and its shutdown waits for the one being sent, so this bounds how
-/// long an unanswering endpoint can hold up the program's end: about
-/// twice this and [`FLUSH`].
+/// time, and a flush waits for room in its queue, so this bounds how long
+/// an unanswering endpoint can hold up the program's end: this and
+/// [`FLUSH`].
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The Sentry client while reports are on. Dropping it sends what is
-/// queued, waiting up to two seconds and the report being sent.
+/// queued, waiting up to two seconds, and leaves the client open: closing
+/// it would join Sentry's transport thread, waiting for the report being
+/// sent, and panic if that thread had panicked.
 pub struct Reporting {
-    _client: sentry::ClientInitGuard,
+    client: Arc<sentry::Client>,
+}
+
+impl Drop for Reporting {
+    fn drop(&mut self) {
+        self.client.flush(Some(FLUSH));
+    }
 }
 
 /// Whether the environment asks for reports: `SENTRY_DSN` is set and not
@@ -146,9 +154,13 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
         entry.attributes.insert("app".into(), app.into());
         Some(entry)
     }));
-    let client = sentry::init(options);
+    // As `sentry::init` does, but for its guard, which closes the client.
+    let client = Arc::new(sentry::Client::with_options(sentry::apply_defaults(
+        options,
+    )));
+    sentry::Hub::current().bind_client(Some(client.clone()));
     report_panics();
-    Some(Reporting { _client: client })
+    Some(Reporting { client })
 }
 
 /// Report each panic, then send the report, before the panic hook that was
@@ -425,10 +437,12 @@ fn without_addresses(text: &str) -> String {
 /// path is not one: it has a name among its segments, or begins with `/`.
 fn without_key_paths(text: &str) -> String {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '/';
+    // om-hbam's `KeySegment` form: decimal for 1 to 4 bytes, else `x` and
+    // hex, a bare `x` for none.
     let hex = |segment: &str| {
         segment
             .strip_prefix('x')
-            .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+            .is_some_and(|hex| hex.chars().all(|c| c.is_ascii_hexdigit()))
     };
     let mut kept = String::with_capacity(text.len());
     let mut copied = 0;
@@ -531,7 +545,7 @@ mod tests {
                 "om_server::server: bound to <address> at 21:04:32Z",
             ),
             (
-                "Tasks.fmp12: key out of order or duplicated at 3/5/x6b65792061626364/1; x6b65792061626364 alone, a path /srv/db/1/2, 1/2",
+                "Tasks.fmp12: key out of order or duplicated at 3/5/x6b65792061626364/x; x6b65792061626364 alone, a path /srv/db/1/2, 1/2",
                 "Tasks.fmp12: key out of order or duplicated at …; … alone, a path /srv/db/1/2, …",
             ),
             (

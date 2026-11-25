@@ -1020,10 +1020,11 @@ personal data (`send_default_pii`) is off, and no request, record or file
 is attached. The console shows what it showed without Sentry, and each
 line before Sentry reads it.
 
-Each request to Sentry, its name lookup included, ends after 5 seconds, so
-an endpoint that does not answer delays a program's end by seconds, not
-indefinitely: about 12 seconds, a few more when a panic is being reported
-as the program ends.
+Each request to Sentry, its name lookup included, ends after 5 seconds,
+and a program's end waits for room in Sentry's queue and then 2 seconds
+for what is queued, without waiting for Sentry's thread to finish: an
+endpoint that does not answer delays the end by about 7 seconds, not
+indefinitely, and reports still queued then are not sent.
 
 Limits: a value a log line gives unquoted and outside a list (an error
 text from a lower layer, `{e}`) is sent as it reads; the Admin Console's
