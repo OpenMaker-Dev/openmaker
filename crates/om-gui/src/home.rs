@@ -496,9 +496,7 @@ impl Home {
             actions.push(Action::ListFiles(server.clone()));
         }
         search_field(ui, search, &mut self.search, enabled && listed.is_some());
-        if view.busy {
-            status(ui, view, pos2(refresh.left() - 10.0, line_y));
-        }
+        status(ui, view, pos2(refresh.left() - 10.0, line_y));
 
         column_header(ui, table, None);
         let mut rows_ui = rows_ui(ui, table);
@@ -1163,7 +1161,7 @@ fn status(ui: &mut Ui, view: &HomeView<'_>, right_center: egui::Pos2) {
     } else if let Some(error) = view.history_error {
         status_ui
             .label(
-                egui::RichText::new("Recent and Favorites can't be saved")
+                egui::RichText::new("Recent, Favorites and Hosts can't be saved")
                     .font(theme::small())
                     .color(theme::YELLOW),
             )
