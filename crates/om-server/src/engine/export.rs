@@ -609,10 +609,10 @@ pub enum Kind {
     Compacted,
 }
 
-/// Where an export goes: a new entry of a folder, made under a temporary
-/// name and renamed ([`Destination`]), or an empty file the caller made,
-/// open for reading and writing, which it then publishes itself (the
-/// desktop's unnamed copy).
+/// Where an export goes: a new entry of a folder, made without its name and
+/// named once complete ([`Destination`], `crate::staged`), or an empty file
+/// the caller made, open for reading and writing, which it then publishes
+/// itself (the desktop's unnamed copy).
 pub enum Target<'t, 'd> {
     #[allow(
         dead_code,

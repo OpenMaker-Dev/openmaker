@@ -573,10 +573,12 @@ an `.fmp12`, in one of two ways; the engine says which
   saved there,
   [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). A file
   hosted read-only for content the writer cannot write is always its file
-  on disk, the bytes it was loaded from (section 2, rule 2), also while
-  changes its refused saves left wait in memory; those are then not in
-  the export, and `Exported::current` says so. The copy goes from descriptor to descriptor, by the kernel where the
-  system can (`copy_file_range`), as backups always copied, and is checked
+  on disk, the bytes it was loaded from (section 2, rule 2); while changes
+  its refused saves left wait in memory, an export of the version held is
+  refused before anything is written (`ExportError::Unsaved`), and a
+  backup copies the file on disk with a warning, as it always did. The
+  copy goes from descriptor to descriptor, by the kernel where the system
+  can (`copy_file_range`), as backups always copied, and is checked
   to be as long as the file was when it was opened, the file not having
   grown past that. It is not read back: that is what FileMaker Server's
   Verify option of a backup schedule adds
@@ -601,15 +603,40 @@ an `.fmp12`, in one of two ways; the engine says which
 
 A difference, a file that does not read back, a file on disk that changed
 while it was copied, a read of the view that fails (`ReadError`) or a
-refusal of the writer is a typed error (`engine::ExportError`). An export
-to a folder is made under `<name>.omexport`, made only where nothing is,
-then flushed, renamed to its name, never over an entry there, and the
-folder flushed; on any failure what the export made is removed while it is
-still that file, and nothing else. An export can also fill an empty file
-its caller made (`engine::export::Target::File`). Memory is what the
-kernel's copy takes, or what the writer and reader hold (a few pages and
-the open key path) and a page of the view's walk; never a part of the
-file.
+refusal of the writer is a typed error (`engine::ExportError`).
+
+**Where an export goes** (`crate::staged`, which the desktop's Save a Copy
+as shares). Into a folder, the export is made without a name and named
+only once it is complete. On Linux with `/proc` mounted, on a file system
+that makes unnamed files (`O_TMPFILE`: ext2, ext3, ext4, XFS, Btrfs, tmpfs
+and others), it is an unnamed file, flushed, then linked to its name from
+its descriptor, which fails when the name is taken: there is no temporary
+name to collide, to be too long for a long database name, to be swapped
+or to remove. Elsewhere (other Unix systems such as macOS, and file
+systems without unnamed files) it is made under a short temporary name of
+its own, `.omstage-<process>-<n>`, only where nothing is (an entry there
+is an error and is left), flushed, hard-linked to its name, which fails
+when the name is taken, and its temporary name removed; the link is made
+from the descriptor where `/proc/self/fd` exists, else from the temporary
+name. The folder is flushed after the link. What a failure leaves:
+
+- before the link (writing, the check, flushing the file): nothing under
+  the final name; an unnamed file is gone once closed, a temporary name is
+  removed while it is still the file made;
+- the link, when the name is taken: the entry there, untouched, and
+  nothing else;
+- the folder flush after the link: the final name is removed while it is
+  still the file made, and the export fails;
+- a removal or a folder flush after one that fails: logged; what could not
+  be removed stays where it was.
+
+An export can also fill an empty file its caller made
+(`engine::export::Target::File`, the desktop's), from its first byte
+whatever the descriptor's position, and is checked to be as long as the
+file. Windows has no folder descriptors here: an export to a folder fails
+as unsupported. Memory is what the kernel's copy takes, or what the writer
+and reader hold (a few pages and the open key path) and a page of the
+view's walk; never a part of the file.
 
 **The file engine's limit.** Its view holds the store's read lock for as
 long as the view lives, so a written export holds up every write to the
@@ -630,6 +657,34 @@ desktop's Save a Copy as (`LocalHost::prepare_copy`, into its unnamed
 destination: the current version, or a compacted copy). Not yet: an export
 at any time from a running server, at a clean stop, and `om-server export`
 (section 6.10).
+
+**Limits of exports.**
+
+- A copy of the file on disk relies on the store's record that nothing
+  changed since the last save being exact. One case is not: a change whose
+  save fails before its rename is taken back, but a parent list it created
+  on its way (the first record of a table creates `[T, 05]`) stays in
+  memory, empty, while the store counts as unchanged; an export then copies
+  the file on disk, which lacks that empty list.
+  [#725](https://github.com/OpenMaker-Dev/openmaker/pull/725) takes such
+  parents back.
+- Another program that writes into the hosted file in place, keeping its
+  length, gives a copy that passes the length check: OpenMaker's saves never
+  write in place, but nothing stops another program, as before exports
+  ([#724](https://github.com/OpenMaker-Dev/openmaker/issues/724)).
+- Under the store's read lock, a copy opens the file's folder by its path,
+  the file in it without following a link, and reads the file's identity,
+  length and permissions: calls that can wait on a slow file system. The
+  server's store holds no descriptor of its file to clone instead; the
+  desktop's holds the locked one, which a copy could clone and read by
+  position, where it now opens the path again (a permissions change since
+  the file was opened fails that open).
+- Without unnamed files and without `/proc/self/fd` (macOS), the link is
+  made from the temporary name: an entry another program swaps in under it
+  between the two calls is what gets linked, and the export fails and
+  leaves it there, since it cannot show that it made it. A removal is a
+  look at the entry, then its removal: an entry swapped in between is what
+  is removed.
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's locale and the

@@ -855,11 +855,14 @@ than a second reader and writer.
     that filesystem, with mode 0600. Linux's creation mode masks any
     inherited POSIX ACL grants to other accounts from the start. The host
     flushes the file, then links its descriptor to the final name using
-    the opened output directory. A file, directory or link already at
-    that name is left untouched. An interrupted or failed write closes
-    the unnamed file, which the kernel reclaims. There is no staging name
-    to remove, and the final name appears only after the bytes are written
-    and flushed. These are OpenMaker's choices [I].
+    the opened output directory, and flushes the directory. A file,
+    directory or link already at that name is left untouched. An
+    interrupted or failed write closes the unnamed file, which the kernel
+    reclaims. There is no staging name to remove, and the final name
+    appears only after the bytes are written and flushed. When the
+    directory cannot be flushed after the link, the copy is removed again
+    and the step fails. Exports share this publication (server-storage.md
+    5, "Exports"). These are OpenMaker's choices [I].
   - *The desktop's step.* The step refuses clones, self-contained copies,
     an absent output path (the Save dialog is not built), "Automatically
     open file", "Create email", an open transaction, a hosted file and

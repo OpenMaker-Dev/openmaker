@@ -41,12 +41,12 @@ Remove the generated file afterwards.
   peak (`VmHWM` less the resident memory before the copy).
 - **The steps.** `copy`: the file opened under the lock, then copied from
   its descriptor in 8 MB parts (the kernel's `copy_file_range`: 15 calls
-  for the 105 MB file, under `strace -c`), checked to be as long as the
-  file was when opened, flushed and renamed (a backup and a desktop Copy
-  now). `walk`: the view written and
-  checked under the lock, then flushed and renamed (a compacted copy now
-  and at `0b36912`; a backup and a desktop Copy of a saved version at
-  `0b36912`). The code before exports, re-enacted with the calls it made,
+  for the 105 MB file, under `strace -c`) into an unnamed file, checked to
+  be as long as the file was when opened, flushed, linked to its name and
+  the folder flushed (a backup and a desktop Copy now). `walk`: the view
+  written and checked under the lock, then flushed and named (a compacted
+  copy now and at `0b36912`; a backup and a desktop Copy of a saved
+  version at `0b36912`). The code before exports, re-enacted with the calls it made,
   since it no longer exists: `backup-before`, the file opened under the
   lock, then copied with `io::copy` in 8 MB parts, its permissions set and
   flushed; `copy-before`, the locked descriptor cloned under the lock, then
@@ -80,8 +80,11 @@ every copy and walk, and 99.6 and 499.6 MB for the compacted copy before
 exports, which held the whole file in memory.
 
 - A backup and a desktop Copy hold the lock for an open again, and take
-  what they took before: the kernel copies the file, and the copy is
-  checked only for its length. A desktop Copy now opens the file by its
+  about what they took before: the kernel copies the file, and the copy is
+  checked only for its length. Made without a name and linked to it, with
+  the folder flushed after the link, the 105 MB copy took 17 µs under the
+  lock and 249 ms in all, the old copy beside it in the same runs 12 µs
+  and 193 ms (three runs each, after the table's). A desktop Copy now opens the file by its
   path, checked against the one the host holds locked (about 10 µs),
   where it cloned the locked descriptor (1 to 2 µs).
 - A compacted copy holds the lock 2.5 times as long as before and takes no

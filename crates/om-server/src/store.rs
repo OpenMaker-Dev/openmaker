@@ -537,7 +537,7 @@ impl Store {
 
     /// Serve the file as one that loaded with content the writer cannot
     /// write back (tests: such a file cannot be written to make one).
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn set_unwritable_for_tests(&mut self) {
         self.read_only = true;
         self.unwritable = true;
