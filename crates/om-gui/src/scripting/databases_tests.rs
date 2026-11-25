@@ -1685,6 +1685,11 @@ fn desktop_open_file_adopts_the_rendered_table_before_startup_deletion() {
     assert!(c.events().iter().any(|event| matches!(event,
         ScriptEvent::FileOpened(opened) if opened.schema.as_ref().is_some_and(|s| s.table_of(90).is_some_and(|t| t.id == 6))
     )));
+    // The window built from the event lists the file's layouts in its
+    // layout menus outside Layout mode (#855).
+    assert!(c.events().iter().any(|event| matches!(event,
+        ScriptEvent::FileOpened(opened) if opened.layout_menu.iter().map(|e| e.name.as_str()).eq(["Entry"])
+    )));
 }
 
 #[test]

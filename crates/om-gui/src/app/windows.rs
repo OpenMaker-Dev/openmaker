@@ -942,6 +942,7 @@ impl OpenMakerApp {
             crate::session::DEFAULT_PAGE_SIZE,
         );
         session.set_layouts_for(opened.layouts, doc.calcs.schema().map(AsRef::as_ref));
+        session.layout_menu = opened.layout_menu;
         // The page setup the file stores, as a file the user opens starts
         // with it (`accept_calc_schema`).
         if let Some(paper) =

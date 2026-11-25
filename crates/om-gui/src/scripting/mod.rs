@@ -689,6 +689,9 @@ pub(crate) struct OpenedFile {
     pub context: SessionContext,
     pub window: WindowState,
     pub layouts: Vec<om_data::LayoutInfo>,
+    /// The layout menus' catalog (flags, folders, separators), which a file
+    /// opened from Home reads with its layouts (`Request::Layouts`).
+    pub layout_menu: Vec<om_data::LayoutMenuEntry>,
     /// The file's whole script catalog when the session has read it; a
     /// file a script opens reads none (#1053), and its windows' Scripts
     /// menu asks for it.

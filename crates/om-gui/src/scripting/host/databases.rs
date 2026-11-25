@@ -478,6 +478,10 @@ impl WorkerHost<'_> {
     fn send_file_state(&mut self) {
         let host_version = self.p().host_application_version().unwrap_or_default();
         let privileges = self.p().account_privileges();
+        // Without it the window this builds has empty layout menus outside
+        // Layout mode (#855). The provider computes it from the catalog it
+        // read at open; a catalog it cannot decode leaves them empty.
+        let layout_menu = self.p().layout_menu().unwrap_or_default();
         self.send(ScriptEvent::FileOpened(Box::new(
             crate::scripting::OpenedFile {
                 id: self.s.file.id,
@@ -485,6 +489,7 @@ impl WorkerHost<'_> {
                 context: self.s.file.context.clone(),
                 window: self.s.file.window.state.clone(),
                 layouts: self.s.file.layouts.clone().unwrap_or_default(),
+                layout_menu,
                 catalog: self.s.file.catalog.clone(),
                 schema: self.schema().cloned(),
                 host_version,
