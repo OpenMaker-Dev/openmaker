@@ -139,7 +139,6 @@ fn on_the_store(operation: &Operation) -> bool {
             | Operation::CommitScriptRecords(_)
             | Operation::UpdateTable(_)
             | Operation::FinishDeferredWork
-            | Operation::StoreIndexes(_)
     )
 }
 
@@ -437,9 +436,8 @@ impl FileEngine {
         if self
             .checking_writes
             .load(std::sync::atomic::Ordering::Relaxed)
-            && !on_the_store(&operation)
         {
-            tx.checked();
+            tx.checked(!on_the_store(&operation));
         }
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let outcome = run(
@@ -470,7 +468,6 @@ impl FileEngine {
             stored_lines,
             released_libraries,
             emptied_libraries,
-            field_bases,
             ..
         } = tx;
         // The accounts follow the change in the same step, before its save
@@ -486,14 +483,18 @@ impl FileEngine {
         }
         // The operation's writes said all it changed (a test's check).
         #[cfg(debug_assertions)]
-        if let Some(check) = check {
-            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check.finish(&store);
-            }));
-            if let Err(panic) = checked {
-                unwound(file, &mut store, journal, taken, locks, panic);
+        let settled = match check {
+            Some(check) => {
+                let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    check.finish(&store, &journal)
+                }));
+                match checked {
+                    Ok(settled) => Some(settled),
+                    Err(panic) => unwound(file, &mut store, journal, taken, locks, panic),
+                }
             }
-        }
+            None => None,
+        };
         // An authoring edit's locks, released once the store is let go.
         let held = locks.after_stored();
         let effects = journal.changed();
@@ -532,11 +533,12 @@ impl FileEngine {
         };
         let outcome = match saved {
             Ok(()) => {
+                #[cfg(debug_assertions)]
+                if let Some(settled) = &settled {
+                    settled.after_stored(&store);
+                }
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
-                for (table, field) in field_bases {
-                    store.add_field_basis(&table, field);
-                }
                 for line in stored_lines.into_iter().chain(lines) {
                     info!("{line}");
                 }
@@ -546,11 +548,12 @@ impl FileEngine {
                 // The renamed file holds the change: the tree keeps it, as
                 // what was derived from it does, and the file takes no
                 // more changes (`Hosted::save_change`).
+                #[cfg(debug_assertions)]
+                if let Some(settled) = &settled {
+                    settled.after_stored(&store);
+                }
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
-                for (table, field) in field_bases {
-                    store.add_field_basis(&table, field);
-                }
                 for line in stored_lines.into_iter().chain(lines) {
                     info!("{line} (not confirmed on disk)");
                 }
@@ -566,7 +569,13 @@ impl FileEngine {
                 if !effects {
                     // Nothing of its own to take back: what others left
                     // waiting waits on (`Hosted::save_change` alerted it),
-                    // and what it took waits again.
+                    // and what it took waits again. The store still took
+                    // back its (empty) journal and the indexes the file
+                    // cannot hold (`Store::save_commit`).
+                    #[cfg(debug_assertions)]
+                    if let Some(settled) = &settled {
+                        settled.after_roll_back(&store);
+                    }
                     taken.put_back(&mut store);
                     locks.keep();
                     if outcome.reply == Reply::SaveFile(Ok(())) {
@@ -575,6 +584,10 @@ impl FileEngine {
                     outcome
                 } else {
                     // The journal was put back (`Store::save_commit`).
+                    #[cfg(debug_assertions)]
+                    if let Some(settled) = &settled {
+                        settled.after_roll_back(&store);
+                    }
                     locks.take_back();
                     taken.put_back(&mut store);
                     if let Reply::EditDesign(Edited {

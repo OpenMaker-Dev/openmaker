@@ -6,7 +6,7 @@
 //! The solution is synthetic (`solution/mod.rs`): a root file and related
 //! files hosted by in-process OpenMaker Servers on loopback, each recording
 //! its connections. The window is the real client in the test harness,
-//! signing in through the Hosts dialog as a user does. A relay can delay
+//! signing in through Open Network File as a user does. A relay can delay
 //! every chunk each way, as a link with that latency would. Cold is the
 //! first open in a new window; repeated is the same window opening the file
 //! again after File > Close.
@@ -294,15 +294,20 @@ struct Open {
     shown: usize,
 }
 
-/// Fill in the Hosts dialog for `connection`, replacing what it holds.
+/// Fill in Open Network File for `connection`, replacing what it holds.
 fn fill(app: &mut common::App, connection: &om_data::Connection) {
-    if app.query_by_label("Use saved license").is_some() {
-        common::click(app, "Use saved license");
+    if app.query_by_label("Use saved FileMaker license").is_some() {
+        common::click(app, "Use saved FileMaker license");
     }
-    hosted::replace(app, "Host", &connection.host);
-    hosted::replace(app, "Port", &connection.port.to_string());
-    hosted::replace(app, "File", &connection.file);
-    hosted::replace(app, "Account", &connection.account);
+    hosted::replace(
+        app,
+        "Path",
+        &format!(
+            "fmnet:/{}:{}/{}",
+            connection.host, connection.port, connection.file
+        ),
+    );
+    hosted::replace(app, "Account Name", &connection.account);
     hosted::replace(app, "Password", &connection.password);
 }
 
@@ -382,11 +387,11 @@ fn open(app: &mut common::App, hosted: &Hosted, expected: usize) -> Open {
     }
 }
 
-/// File > Close, back to the Hosts dialog.
+/// File > Close, back to Open Network File.
 fn close(app: &mut common::App) {
     app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
-    common::wait_until(app, "the Hosts dialog", |app| {
-        !app.state().is_open() && app.query_by_label("Hosts").is_some()
+    common::wait_until(app, "Open Network File", |app| {
+        !app.state().is_open() && app.query_by_label("Open Network File").is_some()
     });
 }
 
