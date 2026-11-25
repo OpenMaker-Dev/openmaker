@@ -1470,8 +1470,8 @@ impl<'r> Run<'r> {
 
     fn reopen(&mut self) {
         let honest = self.device != Device::Lying;
-        let slots_before = if honest { self.slot_bytes() } else { None };
-        let (mut result, _) = open_proc_counting(&self.disk, self.config, self.unreadable, None);
+        let (mut result, wrote) =
+            open_proc_counting(&self.disk, self.config, self.unreadable, None);
         let mut gave_up = false;
         // The plain open gives nothing up: what stops it is returned with
         // nothing written, with the approval that gets past it (#750, review
@@ -1482,12 +1482,10 @@ impl<'r> Run<'r> {
                 OpenError::Damaged { .. } => self.reached.open_damaged += 1,
                 _ => self.reached.open_unreadable += 1,
             }
-            if let (Some(before), Some(after)) = (&slots_before, self.slot_bytes()) {
-                assert!(
-                    *before == after,
-                    "an open that gave nothing up wrote a slot"
-                );
-            }
+            // Counted where the writes reach the device: comparing the
+            // slots' bytes would read the system's cache, which can drop
+            // what a failed flush lost at any later step.
+            assert!(!wrote, "an open that gave nothing up wrote a slot");
             let transient = matches!(e, OpenError::Unreadable { .. }) && self.unreadable.is_none();
             if transient && honest {
                 // A read that failed once: open again later.
@@ -1606,10 +1604,17 @@ impl<'r> Run<'r> {
             self.reached.fallbacks += 1;
             self.gave_up = true;
         }
-        if let (Some(before), false) = (&slots_before, gave_up) {
-            // A plain open is on the newest valid copy, and writes over no
-            // copy of it or of its predecessor.
-            let copies = slot_numbers(before);
+        if honest && !gave_up {
+            // A plain open is on the newest valid copy it read, and writes
+            // over no copy of it or of its predecessor.
+            let copies: Vec<Option<u64>> = opened
+                .slots
+                .iter()
+                .map(|seen| match seen {
+                    SlotSeen::Copy(n) => Some(*n),
+                    _ => None,
+                })
+                .collect();
             assert_eq!(
                 Some(number),
                 copies.iter().flatten().copied().max(),
