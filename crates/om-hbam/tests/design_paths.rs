@@ -226,8 +226,10 @@ fn scripts_layouts_and_value_lists_keep_the_old_revisions_but_for_secrets_and_sp
     root.put(&[&[0x04], &[5], &[3]], OwnedNode::list(vec![], large));
     root.put(&[&[0x21], &[5], &[1]], OwnedNode::list(vec![], list));
 
+    // Members only: every catalog also has an object, here with no index.
     let compared: Vec<(Kind, Old)> = design_paths::objects(&root)
         .iter()
+        .filter(|object| !object.is_catalog())
         .map(|object| (object.kind(), against_oracle(object)))
         .collect();
     assert_eq!(
