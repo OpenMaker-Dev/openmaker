@@ -325,6 +325,9 @@ impl OpenError {
                 "open the store again later, restore it from a backup, or accept the loss of what \
                  may follow the place (Store::give_up_unreadable_end)"
             }
+            OpenError::Log(LogError::NoSpace(_)) => {
+                "free space on the disk, then open the store again"
+            }
             OpenError::Log(LogError::Unreadable { .. }) => {
                 "open the store again later, or restore it from a backup"
             }
@@ -332,6 +335,9 @@ impl OpenError {
             OpenError::Replay { .. } => "restore the store from a backup",
             OpenError::Unreadable(_) => "open the store again later, or restore it from a backup",
             OpenError::NoSpace(_) => "free space on the disk, then open the store again",
+            OpenError::Start(failed) if failed.disk_full() => {
+                "free space on the disk, then open the store again"
+            }
             OpenError::Start(_) => "open the store again",
             OpenError::Refused(_) => "a defect of the caller",
             OpenError::AfterGivingUp(failed) => failed.error.remedy(),
@@ -399,6 +405,17 @@ pub struct StartFailed {
     /// may find it durable.
     pub written: Option<(Position, Payload)>,
     pub error: WriteError,
+}
+
+impl StartFailed {
+    /// Whether the disk had no room for the entry, after a checkpoint of
+    /// the recovered version let go of what it could.
+    pub fn disk_full(&self) -> bool {
+        matches!(
+            self.error,
+            WriteError::Full(_) | WriteError::Log(LogError::NoSpace(_))
+        )
+    }
 }
 
 /// What was given up to open the store, by one of the two explicit calls.
@@ -978,8 +995,11 @@ impl Store {
         };
         // 6. This start's own entry (section 7.3), the first write. It is
         // part of the recovery for space: it may take the reserve, and when
-        // the pages waiting for a checkpoint are past their budget the
-        // recovered version, which is durable, is checkpointed first.
+        // the pages waiting for a checkpoint are past their budget, or the
+        // disk has no room for the entry (the log's next segment, pages
+        // past the reserve), the recovered version, which is durable, is
+        // checkpointed first, which retires the log and frees dying pages
+        // as far as the checkpoints and restore points on disk allow.
         let start_count = values.start_count;
         let payload = Payload::Session(SessionEvent::Started {
             server: store.server,
@@ -990,7 +1010,11 @@ impl Store {
         let started = loop {
             match store.append_as(0, &payload, Purpose::Recovery) {
                 Ok(appended) => break appended.position,
-                Err(WriteError::CheckpointNeeded(_)) if !checkpointed => {
+                Err(
+                    WriteError::CheckpointNeeded(_)
+                    | WriteError::Full(_)
+                    | WriteError::Log(LogError::NoSpace(_)),
+                ) if !checkpointed => {
                     checkpointed = true;
                     if let Err(e) = store.checkpoint(None) {
                         let why = format!("the checkpoint before this start's entry: {e}");

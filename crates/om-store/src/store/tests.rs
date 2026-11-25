@@ -527,6 +527,7 @@ struct Reached {
     last_batch_may_be_lost: u64,
     damaged_reads: u64,
     ended_unopenable: u64,
+    space_freed: u64,
     kinds: BTreeMap<u16, u64>,
     fired: BTreeMap<Fault, u64>,
 }
@@ -560,9 +561,9 @@ struct Run {
     /// loss is accepted from the moment `state` records it.
     excused: Option<u64>,
     views: Vec<(View, Model)>,
-    /// Restore points kept, with the model at their entry and the number of
-    /// the checkpoint that wrote them.
-    points: BTreeMap<String, (Model, u64)>,
+    /// Restore points kept, with the model at their entry, the number of
+    /// the checkpoint that wrote them and the device's step then.
+    points: BTreeMap<String, (Model, u64, u64)>,
     names: u64,
     reached: Reached,
     seed: u64,
@@ -575,6 +576,8 @@ struct Run {
     rates: Rates,
     /// The store cannot be opened again, for a reason the device explains.
     unopenable: bool,
+    /// The disk's size, when the run gives it one.
+    capacity: Option<u64>,
 }
 
 /// A failing run prints what it did, to read with the seed.
@@ -607,9 +610,10 @@ impl Run {
         let bad = flaky.bad.clone();
         let fs: Arc<dyn Fs> = Arc::new(flaky);
         let (store, opened) = Store::create(fs.clone(), &sim.random(), CONFIG).unwrap();
-        if seed % 4 == 3 {
-            // A small disk, which fills.
-            sim.set_capacity(3 << 20);
+        // A small disk, which fills.
+        let capacity = (seed % 4 == 3).then_some(3 << 20);
+        if let Some(bytes) = capacity {
+            sim.set_capacity(bytes);
         }
         sim.set_rates(rates);
         let mut run = Run {
@@ -639,6 +643,7 @@ impl Run {
             lying,
             rates,
             unopenable: false,
+            capacity,
         };
         run.opened(store, &opened);
         run
@@ -821,17 +826,39 @@ impl Run {
             .map(|rp| rp.name)
             .collect();
         let used = opened.checkpoint.checkpoint;
-        self.points.retain(|name, (_, number)| {
+        let events = self.sim.events();
+        // An open that failed may have passed over, and cleared, the
+        // checkpoint that wrote a point, for a read of the pages the device
+        // failed (its number can then be used again).
+        let pages_failed_since = |at: u64| {
+            events.iter().any(|e| match e {
+                sim::Event::ReadFailed { step, path } | sim::Event::Damaged { step, path, .. } => {
+                    *step >= at && path == pagefile::FILE
+                }
+                sim::Event::Crash {
+                    step,
+                    op: Some(sys::Op::Read),
+                    path,
+                    ..
+                } => *step >= at && path == pagefile::FILE,
+                _ => false,
+            })
+        };
+        let mut gone = Vec::new();
+        self.points.retain(|name, (_, number, at)| {
             if listed.contains(name) {
                 return true;
             }
-            assert!(
-                *number > used,
-                "seed {seed}: restore point {name} of checkpoint {number} is gone, though the open \
-                 used checkpoint {used}"
-            );
+            if *number <= used && !pages_failed_since(*at) {
+                gone.push(format!("{name} of checkpoint {number}"));
+            }
             false
         });
+        assert!(
+            gone.is_empty(),
+            "seed {seed}: restore points {gone:?} are gone, though the open used checkpoint {used} \
+             and the device failed no read of the pages"
+        );
         self.store = Some(store);
         self.check_published("after the open");
     }
@@ -905,6 +932,9 @@ impl Run {
                 }
                 other => other,
             };
+            if let Err(e) = &opened {
+                self.note(format!("then: {e}"));
+            }
             // A decision an explicit call recorded, or may have, before
             // the open failed: it excuses a loss down to what it kept.
             let opened = match opened {
@@ -950,6 +980,18 @@ impl Run {
                         "seed {seed}: the start's entry"
                     );
                     self.record.push(built);
+                    continue;
+                }
+                // A full disk: the administrator frees space, as the
+                // remedy says, and the store opens. (Elsewhere the device
+                // drew a refusal for space, which passes.)
+                Err(e) if e.remedy().starts_with("free space") => {
+                    if let Some(bytes) = self.capacity {
+                        let bytes = bytes + (1 << 20);
+                        self.capacity = Some(bytes);
+                        self.sim.set_capacity(bytes);
+                        self.reached.space_freed += 1;
+                    }
                     continue;
                 }
                 Err(
@@ -1224,7 +1266,9 @@ impl Run {
                 if let Some(name) = keep {
                     self.reached.kept += 1;
                     let number = done.written.number;
-                    self.points.insert(name, (self.published.clone(), number));
+                    let step = self.sim.steps();
+                    self.points
+                        .insert(name, (self.published.clone(), number, step));
                 }
             }
             Err(CheckpointFailed::Refused(_)) => {}
@@ -1253,7 +1297,7 @@ impl Run {
         if self.lying {
             return;
         }
-        let Some((name, (model, _))) = self.points.iter().next() else {
+        let Some((name, (model, _, _))) = self.points.iter().next() else {
             return;
         };
         let Some(store) = &self.store else { return };
@@ -1330,7 +1374,8 @@ fn add(into: &mut Reached, from: Reached) {
         passed_over_state,
         last_batch_may_be_lost,
         damaged_reads,
-        ended_unopenable
+        ended_unopenable,
+        space_freed
     );
     for (k, n) in from.kinds {
         *into.kinds.entry(k).or_default() += n;
