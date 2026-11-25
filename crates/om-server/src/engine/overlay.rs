@@ -307,23 +307,25 @@ impl<'v> Overlay<'v> {
         let Some(head) = self.node(path)? else {
             return Ok(None);
         };
-        let segment = path.last().map(|s| s.to_vec()).unwrap_or_default();
-        // Charged before its value is copied.
-        let value = head.value.as_ref().map_or(0, |value| value.len());
-        charge(room, size_of::<OwnedNode>() + segment.len() + value)?;
+        let segment = path.last().copied().unwrap_or_default();
+        // Charged as `om_hbam::tree::memory` counts it, before its segment
+        // and value are copied.
+        let value = head.value.as_ref().map(|value| value.len());
+        charge(room, om_hbam::tree::node_memory(segment.len(), value))?;
         let mut node = OwnedNode {
-            segment,
+            segment: segment.to_vec(),
             value: head.value.map(Cow::into_owned),
             push: head.list,
             children: Vec::new(),
         };
         let mut from: Option<Vec<u8>> = None;
         loop {
-            // No more children than could still fit, each at least a
-            // node's place, and one more to pass the limit with.
+            // With a limit, one child at a time: each is charged before
+            // the next is read, so a child that passes the limit is refused
+            // as too large, whatever follows it.
             let page_size = match limit {
                 NO_LIMIT => PAGE,
-                _ => PAGE.min(*room / size_of::<OwnedNode>() + 1),
+                _ => 1,
             };
             let mut page = Vec::new();
             let bound = match &from {
@@ -492,16 +494,27 @@ impl View for Overlay<'_> {
                 .base
                 .subtrees_page(path, from, direction, max, limit, out),
             Place::Above => {
-                let mut children = Vec::new();
-                let more = self.children_page(path, from, direction, max, &mut children)?;
-                for child in children {
+                // One child at a time: each subtree is read, and refused at
+                // the limit, before the next child is.
+                let mut from = from.map(<[u8]>::to_vec);
+                for _ in 0..max {
+                    let mut children = Vec::new();
+                    let bound = from.as_ref().map(Vec::as_slice);
+                    let more = self.children_page(path, bound, direction, 1, &mut children)?;
+                    let Some(child) = children.pop() else {
+                        return Ok(false);
+                    };
                     let mut at = path.to_vec();
                     at.push(&child.segment);
                     if let Some(node) = self.subtree(&at, limit)? {
                         out.push(Cow::Owned(node.into_owned()));
                     }
+                    if !more {
+                        return Ok(false);
+                    }
+                    from = Bound::Excluded(child.segment.to_vec());
                 }
-                Ok(more)
+                Ok(true)
             }
         }
     }
@@ -796,11 +809,13 @@ mod tests {
     /// overlay above covers must not read of its version: children of the
     /// asked node from before the page's bound or more of them than the
     /// page's size, or the head of a child before the bound. It counts the
-    /// children it gives of that node and the subtrees read.
+    /// children it gives of that node, the requests for them (a listing or
+    /// a child's head), and the subtrees read.
     struct Strict<'v> {
         inner: &'v dyn View,
         asked: std::cell::RefCell<Option<Asked>>,
         given: std::cell::Cell<usize>,
+        requests: std::cell::Cell<usize>,
         subtrees: std::cell::Cell<usize>,
     }
 
@@ -810,6 +825,7 @@ mod tests {
                 inner,
                 asked: Default::default(),
                 given: Default::default(),
+                requests: Default::default(),
                 subtrees: Default::default(),
             }
         }
@@ -822,6 +838,7 @@ mod tests {
                 max,
             });
             self.given.set(0);
+            self.requests.set(0);
             self.subtrees.set(0);
         }
     }
@@ -859,6 +876,9 @@ mod tests {
         fn node(&self, path: &[&[u8]]) -> Result<Option<Head<'_>>, ReadError> {
             if let Some(asked) = self.asked.borrow().as_ref() {
                 let child = path.len() == asked.path.len() + 1 && starts_with(path, &asked.path);
+                if child {
+                    self.requests.set(self.requests.get() + 1);
+                }
                 if child
                     && !after(
                         path[asked.path.len()],
@@ -899,6 +919,7 @@ mod tests {
                     if max > asked.max {
                         return Err(refused("more children than the page can give"));
                     }
+                    self.requests.set(self.requests.get() + 1);
                     this = true;
                 }
             }
@@ -959,6 +980,8 @@ mod tests {
             base.put(&[&[1], &[id]], leaf(&[id]));
         }
         base.put(&[&[1], &[0x25], &[1]], leaf(b"deep"));
+        // [2]: a child of the version that cannot be read, after a laid one.
+        base.put(&[&[2], &[0x20]], leaf(b"unreadable"));
         let big = vec![7u8; 64 * 1024];
         let mut covers: Vec<Cover> = (0x01..=0x10u8)
             .map(|id| {
@@ -981,6 +1004,10 @@ mod tests {
             vec![vec![1], vec![0x40]],
             Some(OwnedNode::leaf(vec![0x40], b"last".to_vec())),
         ));
+        covers.push((
+            vec![vec![2], vec![0x01]],
+            Some(OwnedNode::leaf(vec![0x01], big.clone())),
+        ));
         covers.push((Vec::new(), None));
         let mut reference = base.clone();
         for (path, laid) in &covers {
@@ -997,10 +1024,11 @@ mod tests {
         // Hidden: 0x22 replaced, 0x23 removed. Not hidden: 0x20 and 0x2a
         // of the version's own, and 0x25, on the way to a deeper cover.
         let unreadable: [u8; 3] = [0x20, 0x25, 0x2a];
-        let failing: Vec<Vec<Vec<u8>>> = [0x20u8, 0x22, 0x23, 0x25, 0x2a]
+        let mut failing: Vec<Vec<Vec<u8>>> = [0x20u8, 0x22, 0x23, 0x25, 0x2a]
             .iter()
             .map(|id| vec![vec![1], vec![*id]])
             .collect();
+        failing.push(vec![vec![2], vec![0x20]]);
         let copies = Copies::new(&version, &failing);
         let strict = Strict::new(&copies);
         let overlay = Overlay::new(&strict, &covers);
@@ -1070,5 +1098,37 @@ mod tests {
             Err(ReadError::TooLarge { .. })
         ));
         assert_eq!(strict.subtrees.get(), 0, "no record of the version read");
+        // A limit the parent's own head passes, as `om_hbam::tree::memory`
+        // counts it: refused before any of its children is asked for.
+        let head = om_hbam::tree::node_memory(1, None);
+        strict.ask(&[&[1]], Bound::Unbounded, Direction::Forward, 1);
+        assert!(matches!(
+            overlay.subtree(&[&[1]], head - 1),
+            Err(ReadError::TooLarge { .. })
+        ));
+        assert_eq!(strict.requests.get(), 0, "no child asked for");
+        // A laid child that alone passes the limit, then a child of the
+        // version that cannot be read: too large, the children asked for
+        // one at a time and none after it, for a subtree and for a page of
+        // two subtrees.
+        strict.ask(&[&[2]], Bound::Unbounded, Direction::Forward, 1);
+        assert!(matches!(
+            overlay.subtree(&[&[2]], 1024),
+            Err(ReadError::TooLarge { .. })
+        ));
+        assert_eq!(strict.requests.get(), 1, "one request, for the first child");
+        assert_eq!(strict.subtrees.get(), 0, "no record of the version read");
+        strict.ask(&[&[2]], Bound::Unbounded, Direction::Forward, 2);
+        let mut page = Vec::new();
+        let read = overlay.subtrees_page(
+            &[&[2]],
+            Bound::Unbounded,
+            Direction::Forward,
+            2,
+            1024,
+            &mut page,
+        );
+        assert!(matches!(read, Err(ReadError::TooLarge { .. })), "{read:?}");
+        assert_eq!(strict.requests.get(), 1, "one request, for the first child");
     }
 }

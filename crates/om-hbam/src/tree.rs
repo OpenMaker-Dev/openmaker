@@ -560,6 +560,14 @@ fn allocation(len: usize) -> usize {
     }
 }
 
+/// What a node with a key of `segment` bytes and a value of `value` bytes
+/// takes before it has children, as [`memory`] counts it: its place, its
+/// key and its value. For charging a node against a limit before it is
+/// built.
+pub fn node_memory(segment: usize, value: Option<usize>) -> usize {
+    size_of::<OwnedNode>() + allocation(segment) + value.map_or(0, allocation)
+}
+
 /// What one node's own allocations take: its key, its value and the list
 /// that holds its children's places.
 fn own_memory(node: &OwnedNode) -> usize {
