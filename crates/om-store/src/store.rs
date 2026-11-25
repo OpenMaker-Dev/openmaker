@@ -333,8 +333,11 @@ impl OpenError {
             OpenError::Pages(pagefile::OpenError::Disk(_)) => "open the store again",
             OpenError::Pages(_) => "restore the store from a backup",
             OpenError::LogDamaged(_) => {
-                "restore the store from a backup, or accept the loss of what the log no longer \
-                 holds (Store::accept_damage)"
+                "restore the store from a backup, or see what accepting the loss would keep and \
+                 give up (Store::plan_damage) and accept that plan (Store::accept_damage)"
+            }
+            OpenError::Log(LogError::PlanChanged) => {
+                "plan the acceptance again (Store::plan_damage): the log changed since"
             }
             OpenError::UnreadableEnd { .. } => {
                 "open the store again later, restore it from a backup, or accept the loss of what \
@@ -443,7 +446,7 @@ impl StartFailed {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GaveUp {
     /// The loss after damage through the marker ([`Store::accept_damage`]).
-    Damage(DamageAccepted),
+    Damage(Box<DamageAccepted>),
     /// Whatever may follow the unreadable end `end`, after `last`, the last
     /// entry the open verified ([`Store::give_up_unreadable_end`]). `done`
     /// is what the log did: `None` only when the update of `state` that
@@ -451,7 +454,7 @@ pub enum GaveUp {
     UnreadableEnd {
         last: log::Position,
         end: UnreadableEnd,
-        done: Option<CutDone>,
+        done: Option<Box<CutDone>>,
     },
 }
 
@@ -506,9 +509,9 @@ struct Opening {
 
 /// How an open treats the log.
 #[derive(Clone, Copy, Debug)]
-enum How {
+enum How<'a> {
     Normal,
-    AcceptDamage,
+    AcceptDamage(&'a log::DamagePlan),
     GiveUp(log::Position),
 }
 
@@ -828,8 +831,12 @@ impl Store {
     /// checkpoint's entry is broken, or nothing would change. What was given
     /// up is in [`Opened::gave_up`], or, when the open fails after deciding,
     /// in [`OpenError::AfterGivingUp`].
-    pub fn accept_damage(fs: Arc<dyn Fs>, config: Config) -> Result<(Store, Opened), OpenError> {
-        Store::start(fs, config, How::AcceptDamage)
+    pub fn accept_damage(
+        fs: Arc<dyn Fs>,
+        config: Config,
+        plan: &log::DamagePlan,
+    ) -> Result<(Store, Opened), OpenError> {
+        Store::start(fs, config, How::AcceptDamage(plan))
     }
 
     /// Opens a store whose log ends at a place it cannot read, giving up
@@ -847,14 +854,39 @@ impl Store {
         Store::start(fs, config, How::GiveUp(last))
     }
 
-    fn start(fs: Arc<dyn Fs>, config: Config, how: How) -> Result<(Store, Opened), OpenError> {
+    /// What accepting the loss would do ([`Log::plan_damage`]), from the
+    /// checkpoint the store would open on: nothing is written to the log.
+    /// The open's own first steps run as in any open (they raise `state`'s
+    /// start count and settle the page file's slots). Accept it with
+    /// [`Store::accept_damage`], which refuses when the log no longer
+    /// matches it.
+    pub fn plan_damage(fs: Arc<dyn Fs>, config: Config) -> Result<log::DamagePlan, OpenError> {
+        let (state, _, checkpoint, _) = Store::first_steps(&fs, config)?;
+        let start = log::Position {
+            index: checkpoint.entry.index,
+            term: checkpoint.entry.term,
+            hash: checkpoint.entry.hash.0,
+        };
+        Log::plan_damage(&*fs, &state, config.log, start).map_err(|e| match e {
+            LogError::Damaged(d) => OpenError::LogDamaged(d),
+            e => OpenError::Log(e),
+        })
+    }
+
+    /// An open's first steps: the configuration checked, the lock and
+    /// `state`, a creation's marker settled, the page file's checkpoint.
+    #[allow(clippy::type_complexity)]
+    fn first_steps(
+        fs: &Arc<dyn Fs>,
+        config: Config,
+    ) -> Result<(State, PageFile, pagefile::Opened, Option<SlotFault>), OpenError> {
         check_config(&config)?;
         // 1. The lock and `state`.
         let disk = |e: sys::Error| OpenError::Disk(e.to_string());
         let mut looks = 0;
         let state = loop {
             let lock = fs.lock().map_err(disk)?;
-            match State::open(&*fs, lock) {
+            match State::open(&**fs, lock) {
                 Ok(state) => break state,
                 Err(StateError::Missing) => {
                     // Without `state`: nothing, a creation cut short, or a
@@ -863,10 +895,10 @@ impl Store {
                     // have made `state` meanwhile, and it is opened then.
                     let _lock = fs.lock().map_err(disk)?;
                     looks += 1;
-                    if exists(&*fs, crate::state::FILE)? && looks < 3 {
+                    if exists(&**fs, crate::state::FILE)? && looks < 3 {
                         continue;
                     }
-                    return Err(match store_left(&*fs)? {
+                    return Err(match store_left(&**fs)? {
                         Some(found) => OpenError::NoState { found },
                         None => OpenError::Missing,
                     });
@@ -875,11 +907,16 @@ impl Store {
             }
         };
         // A creation whose last step was cut short.
-        creation_done(&*fs)?;
+        creation_done(&**fs)?;
         let passed_over_state = state.opened().and_then(|o| o.other.err());
         // 2. The page file's checkpoint.
         let (pages, checkpoint) =
-            PageFile::open(&*fs, state.folder_lock(), config.pages).map_err(OpenError::Pages)?;
+            PageFile::open(&**fs, state.folder_lock(), config.pages).map_err(OpenError::Pages)?;
+        Ok((state, pages, checkpoint, passed_over_state))
+    }
+
+    fn start(fs: Arc<dyn Fs>, config: Config, how: How) -> Result<(Store, Opened), OpenError> {
+        let (state, pages, checkpoint, passed_over_state) = Store::first_steps(&fs, config)?;
         let start = log::Position {
             index: checkpoint.entry.index,
             term: checkpoint.entry.term,
@@ -893,18 +930,24 @@ impl Store {
             e => OpenError::Log(e),
         };
         let (mut log, mut log_opened, mut gave_up) = match how {
-            How::AcceptDamage => match Log::accept_damage(fs.clone(), state, config.log, start) {
-                Ok((log, opened, accepted)) => (log, opened, Some(GaveUp::Damage(accepted))),
-                Err(f) => {
-                    let error = failed(f.failed.error);
-                    return Err(match f.decided {
-                        Some((accepted, recorded)) => {
-                            OpenError::after(GaveUp::Damage(accepted), recorded, error)
-                        }
-                        None => error,
-                    });
+            How::AcceptDamage(plan) => {
+                match Log::accept_damage(fs.clone(), state, config.log, start, plan) {
+                    Ok((log, opened, accepted)) => {
+                        (log, opened, Some(GaveUp::Damage(Box::new(accepted))))
+                    }
+                    Err(f) => {
+                        let error = failed(f.failed.error);
+                        return Err(match f.decided {
+                            Some((accepted, recorded)) => OpenError::after(
+                                GaveUp::Damage(Box::new(accepted)),
+                                recorded,
+                                error,
+                            ),
+                            None => error,
+                        });
+                    }
                 }
-            },
+            }
             How::Normal | How::GiveUp(_) => {
                 let (log, opened) =
                     Log::open(fs.clone(), state, config.log, start).map_err(|f| failed(f.error))?;
@@ -919,7 +962,7 @@ impl Store {
                         gave_up = Some(GaveUp::UnreadableEnd {
                             last: named,
                             end,
-                            done: Some(done),
+                            done: Some(Box::new(done)),
                         });
                     }
                     // Its one `state` update failed part way.

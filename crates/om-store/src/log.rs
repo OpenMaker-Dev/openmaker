@@ -247,6 +247,8 @@ pub enum CutWhy {
 /// ([`Log::accept_damage`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DamageAccepted {
+    /// The plan it carried out.
+    pub plan: DamagePlan,
     /// The last entry kept: chained from the start, through every segment
     /// that still reads, up to the later of the marker and the start. When
     /// it is that entry, no confirmed entry was given up.
@@ -284,6 +286,88 @@ pub struct DamageAccepted {
     pub prefix: Option<String>,
 }
 
+/// What accepting a loss would do, computed without writing anything
+/// ([`Log::plan_damage`]), and what [`Log::accept_damage`] is given to do:
+/// it does exactly this, or refuses and changes nothing when a fresh plan
+/// differs. Two plans are equal when everything in them is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DamagePlan {
+    /// The checkpoint's entry the plan is made from.
+    pub start: Position,
+    /// The last confirmed entry kept: the marker's when no confirmed entry
+    /// is given up.
+    pub kept: Position,
+    /// The marker now.
+    pub marker: u64,
+    /// The cut count raised to, when anything after `kept` is given up.
+    pub cut_count: Option<u64>,
+    /// The segments `state` lists now, and will list.
+    pub listed_before: Segments,
+    pub listed: Segments,
+    /// Where the open after the acceptance ends the log: `kept`, or later
+    /// by whole batches after the marker when nothing after it is given up.
+    pub opens_at: Position,
+    /// Every listed segment's fate, and every segment file the run does not
+    /// list, with the entries it held as far as the headers say.
+    pub files: Vec<FileFate>,
+    /// The kept segment whose bytes after `kept` are given up, copied first.
+    pub tail_copied: Option<u64>,
+    /// Where the chain before the start stops checking, in the segment the
+    /// open walks to reach it (as an open reports it): the decision does not
+    /// depend on those entries.
+    pub before_start: Option<ChainFault>,
+}
+
+/// A segment file's fate in a [`DamagePlan`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileFate {
+    pub number: u64,
+    /// The entries it holds as far as the headers say (its own, and the next
+    /// listed segment's); `None` where unknown.
+    pub first: Option<u64>,
+    pub last: Option<u64>,
+    pub fate: Fate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fate {
+    /// Kept as it is.
+    Kept,
+    /// Kept, and lengthened with zeros to its header's size.
+    Lengthened { size: u64 },
+    /// Given up: renamed aside, why.
+    SetAside { reason: &'static str },
+    /// Listed and not there: given up.
+    Missing,
+}
+
+/// The marker and the cut count a plan gives `state`.
+fn planned(
+    values: &Values,
+    kept: Position,
+    reached: bool,
+    raise: bool,
+) -> Result<(Marker, u64), LogError> {
+    let marker = if reached {
+        values.marker
+    } else {
+        Marker {
+            index: kept.index,
+            hash: kept.hash,
+            committed: values.marker.committed.min(kept.index),
+        }
+    };
+    let cut_count = if raise {
+        values
+            .cut_count
+            .checked_add(1)
+            .ok_or(LogError::Refused("the cut count is at its limit"))?
+    } else {
+        values.cut_count
+    };
+    Ok((marker, cut_count))
+}
+
 /// A listed segment an acceptance gave up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SegmentGivenUp {
@@ -300,6 +384,7 @@ pub struct SegmentGivenUp {
 /// What [`Log::accept_damage`] decided, before anything is written.
 struct AcceptPlan {
     accepted: DamageAccepted,
+    plan: DamagePlan,
     values: Values,
     /// The segments whose files are renamed first.
     moves: Vec<u64>,
@@ -466,6 +551,9 @@ pub enum LogError {
     /// the segment that holds the start's successor, so that where that
     /// begins cannot be established.
     FramingBroken { segment: u64, offset: u64 },
+    /// An acceptance was given a plan that a fresh plan no longer matches:
+    /// refused, with nothing changed. Plan again.
+    PlanChanged,
 }
 
 impl fmt::Display for LogError {
@@ -516,6 +604,10 @@ impl fmt::Display for LogError {
                  opened, and the one recorded may be behind",
             ),
             LogError::Refused(why) => write!(f, "log refused: {why}"),
+            LogError::PlanChanged => f.write_str(
+                "the plan for accepting the loss no longer matches the log: nothing was changed; \
+                 plan again",
+            ),
             LogError::FramingBroken { segment, offset } => write!(
                 f,
                 "the log's framing before the checkpoint's entry is broken in segment \
@@ -682,6 +774,231 @@ fn batch_bytes(entries: &[Pending], prev: [u8; 32], cut_count: u64) -> Vec<u8> {
 }
 
 /// The last of `segs` whose first index is at or before `index`.
+/// What the open's walk found (format section 3.6, steps 2 to 6).
+struct Walked {
+    last: Position,
+    end: Option<(usize, u64)>,
+    kept: u64,
+    why: Option<CutWhy>,
+    unreadable_end: Option<UnreadableEnd>,
+    before_start: Option<ChainFault>,
+    walked_before_start: Option<u64>,
+}
+
+/// The open's walk of the listed segments `segs` (a run beginning at
+/// `run_first`) from `start`, against `marker` and the cut count
+/// `cut_count`: what it keeps, where it ends, what it reports. With
+/// `write_back` the batches it keeps after the firm position are written
+/// again as it goes (the open); without, nothing is written (an
+/// acceptance's plan, which so knows what the open after it keeps).
+fn walk_log(
+    segs: &[Seg],
+    start: Position,
+    marker: Marker,
+    cut_count: u64,
+    run_first: u64,
+    write_back: bool,
+) -> Result<Walked, LogError> {
+    let after_start = start.index + 1;
+    let firm = marker.index.max(start.index);
+    let mut last = start;
+    let mut end: Option<(usize, u64)> = None;
+    let mut kept = 0u64;
+    let mut why: Option<CutWhy> = None;
+    let mut unreadable_end: Option<UnreadableEnd> = None;
+    let mut before_start: Option<ChainFault> = None;
+    let mut walked_before_start: Option<u64> = None;
+    if let Some(first) = segs.first() {
+        if first.header.first > after_start {
+            return Err(damage(
+                DamageKind::Gap,
+                first.number,
+                SEGMENT_HEADER,
+                after_start,
+            ));
+        }
+        let from = segment_for(segs, after_start).expect("the first segment starts in time");
+        let header = segs[from].header;
+        let before = Position {
+            index: header.first - 1,
+            term: header.prev_term,
+            hash: header.prev_hash,
+        };
+        let check = |at: &Position, seg: usize, offset: u64| -> Result<(), LogError> {
+            if at.index == start.index && at.hash != start.hash {
+                return Err(damage(
+                    DamageKind::Start,
+                    segs[seg].number,
+                    offset,
+                    at.index,
+                ));
+            }
+            if at.index == marker.index && at.hash != marker.hash {
+                return Err(damage(
+                    DamageKind::Marker,
+                    segs[seg].number,
+                    offset,
+                    at.index,
+                ));
+            }
+            Ok(())
+        };
+        check(&before, from, 0)?;
+        last = before;
+        end = Some((from, SEGMENT_HEADER));
+        // Anchored at the start: what comes before it in its segment
+        // is taken by its framing alone (format section 3.5).
+        let mut scanner = Scanner::new(segs, from, Keep::BytesAfter(firm))
+            .judging(Judge { firm, cut_count })
+            .anchored_at(start.index, start.hash, start.term);
+        // Entries after `firm` wait for their batch to prove whole and
+        // current: how many, and the last (a batch is in one segment).
+        // Their bytes, as verified, wait in `back`, and the batch's
+        // header in `header`, to be written again once the batch is
+        // kept: bytes read back are never made durable by a flush alone
+        // (format section 3.11). Nothing at or before `firm` is written
+        // again: what the marker covers was written by a synchronous
+        // write that returned, and what the start covers is in a
+        // checkpoint, which covers only entries the marker covered once
+        // (server-storage.md 6.5 and 6.7); the marker can be behind the
+        // start only by a lost copy of `state` (format section 1.5).
+        let mut tail: Option<(u64, Found)> = None;
+        let mut back = WriteBack::default();
+        let mut header: Option<(usize, u64, [u8; BATCH_HEADER as usize])> = None;
+        let mut batch_cut_count = cut_count;
+        let mut incomplete = false;
+        let stop = loop {
+            let event = match scanner.next_event() {
+                Ok(event) => event,
+                // After the firm position a read that fails ends the log
+                // for this open only (format section 3.6): nothing past
+                // it is cut, dropped or written over, and the log takes
+                // no appends until it is opened again. At or before the
+                // firm position, the caller tells it apart from damage.
+                Err(fault)
+                    if fault.error.kind() == ErrorKind::Read && scanner.position().0 > firm =>
+                {
+                    unreadable_end = Some(UnreadableEnd {
+                        segment: segs[fault.seg].number,
+                        offset: fault.offset,
+                        index: scanner.position().0,
+                    });
+                    break end.expect("set before the walk");
+                }
+                Err(fault) => return Err(unreadable(segs, fault)),
+            };
+            let was_incomplete = std::mem::replace(&mut incomplete, false);
+            let stale = |batch: u64| {
+                if batch == cut_count {
+                    CutWhy::NotWhole
+                } else {
+                    CutWhy::OlderCut
+                }
+            };
+            match event {
+                // A batch written before the last cut counts only up to
+                // the firm position: the walk reads nothing of it past
+                // that, so what follows the firm position is judged by
+                // the batch's header alone (format section 3.6).
+                Event::Batch {
+                    seg,
+                    offset,
+                    cut_count: written,
+                    header: bytes,
+                } => {
+                    batch_cut_count = written;
+                    header = bytes.map(|bytes| (seg, offset, bytes));
+                }
+                Event::Entry(found) if found.index <= firm => {
+                    // An entry taken by its framing is the start's or
+                    // before it: the checkpoint covers it.
+                    if found.verified {
+                        check(&position(&found), found.seg, found.offset)?;
+                    }
+                    if found.index > marker.index {
+                        kept += 1;
+                    }
+                    end = Some((found.seg, found.offset + found.size));
+                    last = position(&found);
+                }
+                Event::Entry(mut found) => {
+                    let bytes = std::mem::take(&mut found.bytes);
+                    if write_back {
+                        back.add(segs, found.seg, found.offset, bytes)?;
+                    }
+                    let count = tail.as_ref().map_or(0, |(n, _)| *n);
+                    tail = Some((count + 1, found));
+                }
+                Event::BatchEnd { whole } => match tail.take() {
+                    // A batch written before the last cut is never part
+                    // of the log after it, however it chains.
+                    Some((count, found)) if whole && batch_cut_count == cut_count => {
+                        let (seg, offset, bytes) = header
+                            .take()
+                            .expect("a batch of the current count had its header read");
+                        if write_back {
+                            back.finish(segs, seg, offset, &bytes)?;
+                        }
+                        kept += count;
+                        end = Some((found.seg, found.offset + found.size));
+                        last = position(&found);
+                    }
+                    Some(_) => {
+                        back.clear();
+                        why = Some(stale(batch_cut_count));
+                        break end.expect("set before the walk");
+                    }
+                    None => incomplete = !whole,
+                },
+                Event::Segment { seg } => end = Some((seg, SEGMENT_HEADER)),
+                Event::End { seg, offset } => {
+                    // An entry that broke a batch off ends the walk.
+                    if was_incomplete {
+                        why = Some(stale(batch_cut_count));
+                    }
+                    break (seg, offset);
+                }
+            }
+        };
+        // The chain before the start, checked on the way to it.
+        walked_before_start = (before.index < start.index).then_some(segs[from].number);
+        before_start = scanner.chain_fault().map(|stop| ChainFault {
+            segment: segs[stop.seg].number,
+            offset: stop.offset,
+            index: stop.index,
+            unreadable: stop.unreadable,
+        });
+        if last.index < marker.index {
+            return Err(damage(
+                DamageKind::EndsEarly,
+                segs[stop.0].number,
+                stop.1,
+                last.index + 1,
+            ));
+        }
+        if last.index < start.index {
+            return Err(damage(
+                DamageKind::Gap,
+                segs[stop.0].number,
+                stop.1,
+                last.index + 1,
+            ));
+        }
+    } else if marker.index > start.index {
+        return Err(damage(DamageKind::EndsEarly, run_first, 0, after_start));
+    }
+
+    Ok(Walked {
+        last,
+        end,
+        kept,
+        why,
+        unreadable_end,
+        before_start,
+        walked_before_start,
+    })
+}
+
 /// Moves the files of segments `moves` aside in `log/`, renamed
 /// `given-up-<k>.<number>` (`k` the next number no name uses), and copies
 /// segment `tail` to `given-up-<k>.<number>.tail`: a rename reads nothing,
@@ -972,7 +1289,6 @@ impl Log {
         if marker.index > MAX_INDEX {
             return Err(LogError::Refused("the marker is past the last index"));
         }
-        let after_start = start.index + 1;
 
         // The folder is made, when missing, only once the checks pass: an
         // open that finds damage changes nothing.
@@ -1036,190 +1352,15 @@ impl Log {
             });
         }
 
-        // Walk from the segment that holds the entry after `start`.
-        let firm = marker.index.max(start.index);
-        let mut last = start;
-        let mut end: Option<(usize, u64)> = None;
-        let mut kept = 0u64;
-        let mut why: Option<CutWhy> = None;
-        let mut unreadable_end: Option<UnreadableEnd> = None;
-        let mut before_start: Option<ChainFault> = None;
-        let mut walked_before_start: Option<u64> = None;
-        if let Some(first) = segs.first() {
-            if first.header.first > after_start {
-                return Err(damage(
-                    DamageKind::Gap,
-                    first.number,
-                    SEGMENT_HEADER,
-                    after_start,
-                ));
-            }
-            let from = segment_for(&segs, after_start).expect("the first segment starts in time");
-            let header = segs[from].header;
-            let before = Position {
-                index: header.first - 1,
-                term: header.prev_term,
-                hash: header.prev_hash,
-            };
-            let check = |at: &Position, seg: usize, offset: u64| -> Result<(), LogError> {
-                if at.index == start.index && at.hash != start.hash {
-                    return Err(damage(
-                        DamageKind::Start,
-                        segs[seg].number,
-                        offset,
-                        at.index,
-                    ));
-                }
-                if at.index == marker.index && at.hash != marker.hash {
-                    return Err(damage(
-                        DamageKind::Marker,
-                        segs[seg].number,
-                        offset,
-                        at.index,
-                    ));
-                }
-                Ok(())
-            };
-            check(&before, from, 0)?;
-            last = before;
-            end = Some((from, SEGMENT_HEADER));
-            // Anchored at the start: what comes before it in its segment
-            // is taken by its framing alone (format section 3.5).
-            let mut scanner = Scanner::new(&segs, from, Keep::BytesAfter(firm))
-                .judging(Judge { firm, cut_count })
-                .anchored_at(start.index, start.hash, start.term);
-            // Entries after `firm` wait for their batch to prove whole and
-            // current: how many, and the last (a batch is in one segment).
-            // Their bytes, as verified, wait in `back`, and the batch's
-            // header in `header`, to be written again once the batch is
-            // kept: bytes read back are never made durable by a flush alone
-            // (format section 3.11). Nothing at or before `firm` is written
-            // again: what the marker covers was written by a synchronous
-            // write that returned, and what the start covers is in a
-            // checkpoint, which covers only entries the marker covered once
-            // (server-storage.md 6.5 and 6.7); the marker can be behind the
-            // start only by a lost copy of `state` (format section 1.5).
-            let mut tail: Option<(u64, Found)> = None;
-            let mut back = WriteBack::default();
-            let mut header: Option<(usize, u64, [u8; BATCH_HEADER as usize])> = None;
-            let mut batch_cut_count = cut_count;
-            let mut incomplete = false;
-            let stop = loop {
-                let event = match scanner.next_event() {
-                    Ok(event) => event,
-                    // After the firm position a read that fails ends the log
-                    // for this open only (format section 3.6): nothing past
-                    // it is cut, dropped or written over, and the log takes
-                    // no appends until it is opened again. At or before the
-                    // firm position, the caller tells it apart from damage.
-                    Err(fault)
-                        if fault.error.kind() == ErrorKind::Read && scanner.position().0 > firm =>
-                    {
-                        unreadable_end = Some(UnreadableEnd {
-                            segment: segs[fault.seg].number,
-                            offset: fault.offset,
-                            index: scanner.position().0,
-                        });
-                        break end.expect("set before the walk");
-                    }
-                    Err(fault) => return Err(unreadable(&segs, fault)),
-                };
-                let was_incomplete = std::mem::replace(&mut incomplete, false);
-                let stale = |batch: u64| {
-                    if batch == cut_count {
-                        CutWhy::NotWhole
-                    } else {
-                        CutWhy::OlderCut
-                    }
-                };
-                match event {
-                    // A batch written before the last cut counts only up to
-                    // the firm position: the walk reads nothing of it past
-                    // that, so what follows the firm position is judged by
-                    // the batch's header alone (format section 3.6).
-                    Event::Batch {
-                        seg,
-                        offset,
-                        cut_count: written,
-                        header: bytes,
-                    } => {
-                        batch_cut_count = written;
-                        header = bytes.map(|bytes| (seg, offset, bytes));
-                    }
-                    Event::Entry(found) if found.index <= firm => {
-                        // An entry taken by its framing is the start's or
-                        // before it: the checkpoint covers it.
-                        if found.verified {
-                            check(&position(&found), found.seg, found.offset)?;
-                        }
-                        if found.index > marker.index {
-                            kept += 1;
-                        }
-                        end = Some((found.seg, found.offset + found.size));
-                        last = position(&found);
-                    }
-                    Event::Entry(mut found) => {
-                        let bytes = std::mem::take(&mut found.bytes);
-                        back.add(&segs, found.seg, found.offset, bytes)?;
-                        let count = tail.as_ref().map_or(0, |(n, _)| *n);
-                        tail = Some((count + 1, found));
-                    }
-                    Event::BatchEnd { whole } => match tail.take() {
-                        // A batch written before the last cut is never part
-                        // of the log after it, however it chains.
-                        Some((count, found)) if whole && batch_cut_count == cut_count => {
-                            let (seg, offset, bytes) = header
-                                .take()
-                                .expect("a batch of the current count had its header read");
-                            back.finish(&segs, seg, offset, &bytes)?;
-                            kept += count;
-                            end = Some((found.seg, found.offset + found.size));
-                            last = position(&found);
-                        }
-                        Some(_) => {
-                            back.clear();
-                            why = Some(stale(batch_cut_count));
-                            break end.expect("set before the walk");
-                        }
-                        None => incomplete = !whole,
-                    },
-                    Event::Segment { seg } => end = Some((seg, SEGMENT_HEADER)),
-                    Event::End { seg, offset } => {
-                        // An entry that broke a batch off ends the walk.
-                        if was_incomplete {
-                            why = Some(stale(batch_cut_count));
-                        }
-                        break (seg, offset);
-                    }
-                }
-            };
-            // The chain before the start, checked on the way to it.
-            walked_before_start = (before.index < start.index).then_some(segs[from].number);
-            before_start = scanner.chain_fault().map(|stop| ChainFault {
-                segment: segs[stop.seg].number,
-                offset: stop.offset,
-                index: stop.index,
-                unreadable: stop.unreadable,
-            });
-            if last.index < marker.index {
-                return Err(damage(
-                    DamageKind::EndsEarly,
-                    segs[stop.0].number,
-                    stop.1,
-                    last.index + 1,
-                ));
-            }
-            if last.index < start.index {
-                return Err(damage(
-                    DamageKind::Gap,
-                    segs[stop.0].number,
-                    stop.1,
-                    last.index + 1,
-                ));
-            }
-        } else if marker.index > start.index {
-            return Err(damage(DamageKind::EndsEarly, run.first, 0, after_start));
-        }
+        let Walked {
+            last,
+            end,
+            kept,
+            why,
+            unreadable_end,
+            before_start,
+            walked_before_start,
+        } = walk_log(&segs, start, marker, cut_count, run.first, true)?;
 
         // The log holds what it must, and what it keeps after the firm
         // position was written again as the walk went. Make its folder's
@@ -1336,11 +1477,25 @@ impl Log {
     /// it was and whether `state` holds it ([`AcceptFailed::decided`]). It
     /// needs no committed position: it is the administrator's decision,
     /// which no committed position could make on a single server.
+    pub fn plan_damage(
+        fs: &dyn Fs,
+        state: &State,
+        config: Config,
+        start: Position,
+    ) -> Result<DamagePlan, LogError> {
+        Self::decide_damaged(fs, state, config, start).map(|decided| decided.plan)
+    }
+
+    /// Carry out `plan` ([`Log::plan_damage`]), when a fresh plan is the
+    /// same; refused with nothing changed ([`LogError::PlanChanged`]) when
+    /// it is not. Then the log is opened as [`Log::open`] opens it, and what
+    /// that open keeps is checked against the plan.
     pub fn accept_damage(
         fs: Arc<dyn Fs>,
         mut state: State,
         config: Config,
         start: Position,
+        plan: &DamagePlan,
     ) -> Result<(Log, Opened, DamageAccepted), Box<AcceptFailed>> {
         let fail = |error, state, decided| {
             Box::new(AcceptFailed {
@@ -1348,16 +1503,20 @@ impl Log {
                 decided,
             })
         };
-        let plan = match Self::decide_damaged(&*fs, &state, config, start) {
-            Ok(plan) => plan,
+        let decided = match Self::decide_damaged(&*fs, &state, config, start) {
+            Ok(decided) => decided,
             Err(error) => return Err(fail(error, state, None)),
         };
+        if decided.plan != *plan {
+            return Err(fail(LogError::PlanChanged, state, None));
+        }
         let AcceptPlan {
             mut accepted,
             values,
             moves,
             lengthen,
-        } = plan;
+            ..
+        } = decided;
         // What is given up is moved aside first, under names no open
         // removes, and the kept segment whose tail is given up copied: all
         // durable before `state` changes.
@@ -1400,7 +1559,24 @@ impl Log {
             return Err(fail(LogError::State(e), state, decided));
         }
         match Log::open(fs, state, config, start) {
-            Ok((log, opened)) => Ok((log, opened, accepted)),
+            // The effect, checked against the plan: the open ends where it
+            // said, with the run it said, and removed nothing.
+            Ok((log, opened))
+                if opened.durable == plan.opens_at
+                    && log.segments() == plan.listed
+                    && opened.removed.is_empty() =>
+            {
+                Ok((log, opened, accepted))
+            }
+            Ok((log, _)) => Err(Box::new(AcceptFailed {
+                failed: Box::new(OpenFailed {
+                    error: LogError::Refused(
+                        "the open after the acceptance did not do what the plan said",
+                    ),
+                    state: log.state,
+                }),
+                decided: Some((accepted, Recorded::Done)),
+            })),
             Err(failed) => Err(Box::new(AcceptFailed {
                 failed,
                 decided: Some((accepted, Recorded::Done)),
@@ -1452,6 +1628,11 @@ impl Log {
             .collect();
         numbers.sort_unstable();
         numbers.dedup();
+        let unlisted: std::collections::BTreeSet<u64> = names
+            .iter()
+            .filter_map(|name| segment_number(name))
+            .filter(|n| !(run.first..run_end).contains(n))
+            .collect();
         let mut present = std::collections::BTreeSet::new();
         let mut usable: Vec<Seg> = Vec::new();
         let mut short = std::collections::BTreeSet::new();
@@ -1511,7 +1692,7 @@ impl Log {
         // An empty log that needs to hold nothing has nothing to give up.
         let mut reached = usable.is_empty() && run.count == 0 && marker.index <= start.index;
         let mut kept = start;
-        let mut keep: Option<(u64, u64)> = None;
+        let mut keep: Option<(usize, usize)> = None;
         let after = start.index + 1;
         if let Some(from) = usable.iter().rposition(|s| s.header.first <= after) {
             let mut to = from;
@@ -1586,7 +1767,7 @@ impl Log {
                     kept = seen.0;
                     reached = seen.0.index >= firm;
                     let last = if reached { to } else { from + seen.1 };
-                    keep = Some((usable[front].number, usable[last].number));
+                    keep = Some((front, last));
                 }
             }
         }
@@ -1603,10 +1784,43 @@ impl Log {
                 });
             }
         }
+        // The open after the acceptance keeps what its own walk over the
+        // listed run keeps: the plan runs that walk, writing nothing, and
+        // lists only the segments it reaches (with the cut count raised when
+        // it drops any, which may end it sooner: walked again then).
+        let mut raise = !reached;
+        let mut opens_at = kept;
+        let mut before_start = None;
+        if let Some((front, last)) = keep.as_mut() {
+            loop {
+                let ends_short = (usable[*last].number + 1) < run_end;
+                raise |= ends_short;
+                let (marker, cut_count) = planned(&values, kept, reached, raise)?;
+                let walked = walk_log(
+                    &usable[*front..=*last],
+                    start,
+                    marker,
+                    cut_count,
+                    usable[*front].number,
+                    false,
+                )?;
+                opens_at = walked.last;
+                before_start = walked.before_start;
+                let ends = match (walked.end, walked.unreadable_end) {
+                    (Some((seg, _)), None) => *front + seg,
+                    _ => *last,
+                };
+                if ends < *last {
+                    *last = ends;
+                    continue;
+                }
+                break;
+            }
+        }
         let listed = match keep {
-            Some((first, last)) => Segments {
-                first,
-                count: last - first + 1,
+            Some((front, last)) => Segments {
+                first: usable[front].number,
+                count: usable[last].number - usable[front].number + 1,
             },
             None => Segments {
                 first: run_end,
@@ -1627,31 +1841,71 @@ impl Log {
         }
         // Anything after `kept` given up: the marker lowered, or listed
         // segments after the kept ones dropped.
-        let raise = !reached || listed_end < run_end;
-        let cut_count = if raise {
-            Some(
-                values
-                    .cut_count
-                    .checked_add(1)
-                    .ok_or(LogError::Refused("the cut count is at its limit"))?,
-            )
-        } else {
-            None
-        };
+        let raise = raise || listed_end < run_end;
+        let (_, raised) = planned(&values, kept, reached, raise)?;
+        let cut_count = raise.then_some(raised);
         let mut given_up = Vec::new();
         let mut moves = Vec::new();
-        for number in (run.first..run_end).filter(|n| !kept_numbers.contains(n)) {
-            given_up.push(SegmentGivenUp {
-                number,
-                first: first_of.get(&number).copied(),
-                last: (number + 1 < run_end)
-                    .then(|| first_of.get(&(number + 1)).map(|f| f - 1))
-                    .flatten(),
-                moved_to: None,
-            });
-            if present.contains(&number) {
+        let mut files = Vec::new();
+        let entries_of = |number: u64| {
+            let first = first_of.get(&number).copied();
+            let last = (number + 1 < run_end)
+                .then(|| first_of.get(&(number + 1)).map(|f| f - 1))
+                .flatten();
+            (first, last)
+        };
+        for number in run.first..run_end {
+            let (first, last) = entries_of(number);
+            let fate = if kept_numbers.contains(&number) {
+                match lengthen.iter().find(|(n, _)| *n == number) {
+                    Some(&(_, size)) => Fate::Lengthened { size },
+                    None => Fate::Kept,
+                }
+            } else if !present.contains(&number) {
+                Fate::Missing
+            } else if !first_of.contains_key(&number) {
+                Fate::SetAside {
+                    reason: "its header does not check",
+                }
+            } else if number < listed.first {
+                Fate::SetAside {
+                    reason: "before the kept chain, past a gap: only an older checkpoint needed it",
+                }
+            } else {
+                Fate::SetAside {
+                    reason: "after the last entry kept, or past where the open would end the log",
+                }
+            };
+            if !matches!(fate, Fate::Kept | Fate::Lengthened { .. }) {
+                given_up.push(SegmentGivenUp {
+                    number,
+                    first,
+                    last,
+                    moved_to: None,
+                });
+            }
+            if matches!(fate, Fate::SetAside { .. }) {
                 moves.push(number);
             }
+            files.push(FileFate {
+                number,
+                first,
+                last,
+                fate,
+            });
+        }
+        // Segment files the run does not list: the open would remove them,
+        // so they are set aside too.
+        for &number in unlisted.iter() {
+            moves.push(number);
+            files.push(FileFate {
+                number,
+                first: None,
+                last: None,
+                fate: Fate::SetAside {
+                    reason: "not listed: the open would remove it",
+                },
+            });
         }
         let tail_copied = (raise && listed.count > 0).then_some(listed_end - 1);
         let lowered = if reached {
@@ -1669,8 +1923,21 @@ impl Log {
             cut_count: cut_count.unwrap_or(values.cut_count),
             ..values
         };
+        let plan = DamagePlan {
+            start,
+            kept,
+            marker: marker.index,
+            cut_count,
+            listed_before: run,
+            listed,
+            opens_at,
+            files,
+            tail_copied,
+            before_start,
+        };
         Ok(AcceptPlan {
             accepted: DamageAccepted {
+                plan: plan.clone(),
                 kept,
                 marker: marker.index,
                 cut_count,
@@ -1682,6 +1949,7 @@ impl Log {
                 lengthened: lengthen.iter().map(|(n, _)| *n).collect(),
                 prefix: None,
             },
+            plan,
             values: new,
             moves,
             lengthen,

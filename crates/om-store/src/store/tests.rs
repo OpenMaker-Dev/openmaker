@@ -1079,7 +1079,7 @@ impl Run {
                         "seed {seed}: {damage:?}, though the device damaged no segment"
                     );
                     self.sim.restart();
-                    Store::accept_damage(self.fs.clone(), CONFIG)
+                    plan_and_accept(self.fs.clone(), CONFIG)
                 }
                 Err(OpenError::UnreadableEnd { end, last }) => {
                     self.reached.unreadable_ends += 1;
@@ -1840,6 +1840,13 @@ fn long_the_store_survives_drawn_faults_against_the_model() {
     eprintln!("{reached:?}");
 }
 
+/// Plans accepting the loss and accepts that plan, as an administrator
+/// would.
+fn plan_and_accept(fs: Arc<dyn Fs>, config: Config) -> Result<(Store, Opened), OpenError> {
+    let plan = Store::plan_damage(fs.clone(), config)?;
+    Store::accept_damage(fs, config, &plan)
+}
+
 /// A store on `sim` with `CONFIG`, made where there is none.
 fn made(sim: &Sim) -> (Store, Opened) {
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
@@ -2175,7 +2182,7 @@ fn accepting_the_loss_after_damage_opens_the_store_at_what_the_log_still_holds()
     sim.restart();
     // Nothing to accept yet.
     assert!(matches!(
-        Store::accept_damage(Arc::new(sim.fs()), CONFIG),
+        plan_and_accept(Arc::new(sim.fs()), CONFIG),
         Err(OpenError::Log(LogError::Refused(_)))
     ));
     // Damage in the segment, at an entry past the middle (by the log's
@@ -2197,7 +2204,7 @@ fn accepting_the_loss_after_damage_opens_the_store_at_what_the_log_still_holds()
         "{damaged:?}"
     );
     sim.restart();
-    let (store, opened) = Store::accept_damage(Arc::new(sim.fs()), CONFIG).unwrap();
+    let (store, opened) = plan_and_accept(Arc::new(sim.fs()), CONFIG).unwrap();
     let Some(GaveUp::Damage(accepted)) = opened.gave_up else {
         panic!("{opened:?}")
     };
@@ -2265,7 +2272,7 @@ fn accepting_a_lost_older_segment_keeps_the_chain_from_the_checkpoint() {
         "{damaged:?}"
     );
     sim.restart();
-    let (store, opened) = Store::accept_damage(fs.clone(), CONFIG).unwrap();
+    let (store, opened) = plan_and_accept(fs.clone(), CONFIG).unwrap();
     assert_eq!(opened.checkpoint.entry.index, newest);
     let Some(GaveUp::Damage(accepted)) = opened.gave_up else {
         panic!("{opened:?}")
@@ -2520,9 +2527,13 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     sim.restart();
     drop(State::open(&*fs, fs.lock().unwrap()).unwrap());
     let opening = 1000 - flaky.fail_writes.lock().unwrap().as_ref().unwrap().1;
+    // The plan first, as an administrator asks for it; then the acceptance,
+    // whose own open writes `state` before the decision does.
+    sim.restart();
+    let plan = Store::plan_damage(fs.clone(), CONFIG).unwrap();
     fail_writes(crate::state::FILE, opening);
     sim.restart();
-    let failed = Store::accept_damage(fs.clone(), CONFIG);
+    let failed = Store::accept_damage(fs.clone(), CONFIG, &plan);
     let Err(OpenError::AfterGivingUp(after)) = &failed else {
         panic!("{failed:?}")
     };
@@ -2541,7 +2552,7 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     // sets aside.
     fail_writes("log/0", 0);
     sim.restart();
-    let failed = Store::accept_damage(fs.clone(), CONFIG);
+    let failed = plan_and_accept(fs.clone(), CONFIG);
     let Err(OpenError::AfterGivingUp(after)) = &failed else {
         panic!("{failed:?}")
     };
@@ -3003,7 +3014,7 @@ fn accepting_the_loss_over_every_shape_of_damage() {
                 }
                 drop(store);
                 s.sim.restart();
-                let refused = Store::accept_damage(s.fs(), SHAPE_CONFIG);
+                let refused = plan_and_accept(s.fs(), SHAPE_CONFIG);
                 assert!(
                     matches!(refused, Err(OpenError::Log(LogError::Refused(_)))),
                     "{name}: {refused:?}"
@@ -3023,7 +3034,7 @@ fn accepting_the_loss_over_every_shape_of_damage() {
                 };
                 let at_refusal = log(&s.sim);
                 s.sim.restart();
-                let refused = Store::accept_damage(s.fs(), SHAPE_CONFIG);
+                let refused = plan_and_accept(s.fs(), SHAPE_CONFIG);
                 let Err(e) = &refused else {
                     panic!("{name}: accepted")
                 };
@@ -3042,8 +3053,8 @@ fn accepting_the_loss_over_every_shape_of_damage() {
                 assert!(ordinary.is_err(), "{name}: the ordinary open opened");
                 drop(ordinary);
                 s.sim.restart();
-                let (store, opened) = Store::accept_damage(s.fs(), SHAPE_CONFIG)
-                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                let (store, opened) =
+                    plan_and_accept(s.fs(), SHAPE_CONFIG).unwrap_or_else(|e| panic!("{name}: {e}"));
                 let Some(GaveUp::Damage(d)) = &opened.gave_up else {
                     panic!("{name}: {opened:?}")
                 };
@@ -3118,7 +3129,7 @@ fn an_unreadable_end_after_a_recorded_acceptance_says_what_was_given_up() {
     let end = s.end_of_batches(3);
     *s.flaky.bad.lock().unwrap() = Some((s.segments[3].clone(), end));
     s.sim.restart();
-    let failed = Store::accept_damage(s.fs(), SHAPE_CONFIG);
+    let failed = plan_and_accept(s.fs(), SHAPE_CONFIG);
     let Err(OpenError::AfterGivingUp(after)) = &failed else {
         panic!("{failed:?}")
     };

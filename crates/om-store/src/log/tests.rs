@@ -4166,26 +4166,34 @@ fn damaged_case(
             drop(state);
             sim.restart();
             let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-            match Log::accept_damage(fs.clone(), state, config, start_at) {
+            let planned = Log::plan_damage(&*fs, &state, config, start_at);
+            match planned {
                 Err(refused) => {
                     // A refusal is allowed for damage that begins before the
                     // entry after the start; it changes nothing.
                     assert!(
                         begun_before,
-                        "{case}: refused ({}) damage after the start",
-                        refused.failed.error
+                        "{case}: refused ({refused}) damage after the start"
                     );
-                    assert!(refused.decided.is_none(), "{case}");
                     let now: Vec<(String, Vec<u8>)> = sim
                         .image()
                         .into_iter()
                         .filter(|(p, _)| p.starts_with("log/"))
                         .map(|(p, b)| (p, b.unwrap()))
                         .collect();
-                    assert!(now == damaged, "{case}: the refusal changed the log");
+                    assert!(now == damaged, "{case}: the plan changed the log");
                     "refused"
                 }
-                Ok((log, _, accepted)) => {
+                Ok(plan) => {
+                    let (log, opened, accepted) =
+                        Log::accept_damage(fs.clone(), state, config, start_at, &plan)
+                            .unwrap_or_else(|e| panic!("{case}: {}", e.failed.error));
+                    // The effect is the plan: what it keeps, the run, where
+                    // the open ends; and that open removed nothing.
+                    assert_eq!(accepted.plan, plan, "{case}: the plan carried out");
+                    assert_eq!(log.segments(), plan.listed, "{case}: the run");
+                    assert_eq!(opened.durable, plan.opens_at, "{case}: where it ends");
+                    assert!(opened.removed.is_empty(), "{case}: the open removed files");
                     // Wholly before the entry after the start: nothing after
                     // the start given up. Reaching it or past it: kept every
                     // entry before the first the damage reaches.
@@ -4214,6 +4222,10 @@ fn damaged_case(
                     let (log, opened) = Log::open(fs.clone(), state, config, start_at)
                         .unwrap_or_else(|e| panic!("{case}: {}", e.error));
                     assert_eq!(opened.durable.index, kept, "{case}: opened after");
+                    assert!(
+                        opened.removed.is_empty(),
+                        "{case}: the next open removed files"
+                    );
                     assert_eq!(read_back(&log, start + 1), want(start + 1, kept), "{case}");
                     "accepted"
                 }
