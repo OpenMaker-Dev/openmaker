@@ -1127,7 +1127,11 @@ pub fn markdown_table() -> String {
             .filter(|k| k.group != Group::Design || k.entries)
         {
             let holds = if key.entries {
-                format!("{}; each entry is part of its member's object", key.holds)
+                format!(
+                    "{}; each entry is part of its member's object for edits, of the catalog's \
+                     for design revisions (section 9)",
+                    key.holds
+                )
             } else {
                 key.holds.to_string()
             };

@@ -43,22 +43,18 @@ fn error(error: CompareError) -> AuthorError {
             ErrorKind::InvalidRequest,
             json!({"file": which.name(), "reason": "too_deep"}),
         ),
-        CompareError::Identity {
-            which,
-            kind,
-            table,
-            id,
-            problem,
-        } => {
-            let reason = match problem {
+        CompareError::Identity { which, error } => {
+            let reason = match error.problem {
+                IdentityProblem::Unsorted => "unsorted_keys",
                 IdentityProblem::KeyShape => "key_shape",
                 IdentityProblem::Duplicate => "duplicate_id",
                 IdentityProblem::Misread => "misread",
             };
             (
                 ErrorKind::InvalidRequest,
-                json!({"file": which.name(), "reason": reason, "kind": kind.name(),
-                       "table": table, "id": id}),
+                json!({"file": which.name(), "reason": reason,
+                       "kind": error.kind.map(|k| k.name()), "table": error.table,
+                       "id": error.id}),
             )
         }
     };

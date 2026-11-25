@@ -4,7 +4,8 @@
 //! catalog members that are no design object. With `--objects`, also each
 //! design object (each catalog as a whole, then its members) with its
 //! kind, key, name, how many Secret paths it holds and its design
-//! revision, or `-` when it has none. Edit tokens are not printed: a token
+//! revision, or `-` when it has none; through `design_paths::inventory`,
+//! so a file whose objects fail its checks is not listed. Edit tokens are not printed: a token
 //! covers stored passwords, and a report is pasted where a token does not
 //! belong (it is for an authoring client and its host).
 //! Several files give one report over all of them.
@@ -45,7 +46,15 @@ fn main() {
         total.members.extend(report.members);
         if objects {
             println!("{path}:");
-            for object in design_paths::objects(&root) {
+            // Design revisions and names only through a checked inventory.
+            let checked = match design_paths::inventory(&root) {
+                Ok(checked) => checked,
+                Err(refused) => {
+                    println!("  not listed: {refused}");
+                    continue;
+                }
+            };
+            for object in &checked {
                 let table = object
                     .table()
                     .map(|t| format!("{}.", hex(t)))

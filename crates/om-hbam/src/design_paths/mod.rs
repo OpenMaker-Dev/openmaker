@@ -60,6 +60,7 @@
 
 mod compare;
 mod design;
+mod inventory;
 mod report;
 mod revision;
 mod rules;
@@ -67,10 +68,11 @@ mod secrets;
 
 pub use compare::{
     compare, compare_files, design_tree, Agreement, Alone, ChangedBy, CompareError, Comparison,
-    Difference, FromBase, Ident, IdentityProblem, Matched, PossibleMatch, Presence, ReadFailure,
-    Which, COMPARE_DESIGNS, NAME_CANDIDATES,
+    Difference, FromBase, Ident, Matched, PossibleMatch, Presence, ReadFailure, Which,
+    COMPARE_DESIGNS, NAME_CANDIDATES,
 };
 pub use design::{DesignRevision, DESIGN_REVISION_VERSION};
+pub use inventory::{inventory, Checked, IdentityError, IdentityProblem};
 pub use report::{report, Member, MemberIs, Report};
 pub use revision::{
     catalog_revision, is_stamp, legacy_catalog_revision, legacy_script_form_revision,
@@ -222,10 +224,10 @@ impl<'t> Object<'t> {
         &self.entries
     }
 
-    /// The name, only where the node it is read from is one Design piece
-    /// (a catalog's always), and only of a member read as the decoders read
-    /// it: what a report may show.
-    pub fn design_name(&self) -> Option<String> {
+    /// The name, only where it is Design throughout (a catalog's always),
+    /// and only of a member read as the decoders read it: what a report may
+    /// show. Given out through a checked inventory ([`inventory`]).
+    pub(crate) fn design_name(&self) -> Option<String> {
         if self.catalog {
             return self.name();
         }
@@ -259,8 +261,9 @@ impl<'t> Object<'t> {
     /// member, or for a catalog in all of the catalog but its member
     /// objects, with no step data and no piece of any other group in it
     /// ([`design`]'s module doc). `None` when the object holds step data or
-    /// an unidentified piece.
-    pub fn design_revision(&self) -> Option<DesignRevision> {
+    /// an unidentified piece. Given out only for an object of a checked
+    /// inventory ([`inventory`]).
+    pub(crate) fn design_revision(&self) -> Option<DesignRevision> {
         design::classify(self).ok()?.revision()
     }
 

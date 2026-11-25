@@ -198,12 +198,14 @@ and 9). An **edit token**, `sha256:` and 64 hex digits, guards an edit:
 results of the commands above are edit tokens, but for `compare_designs`,
 whose `*_revision` results are design revisions. A **design revision**,
 `design-sha256:` and 64 hex digits, is what `compare_designs` reports: the
-hash of an object's Design pieces alone, with no step data and so no byte
-of a stored password or key, safe to show and keep. A design revision is
-refused where an edit token is expected, and it is comparable only with
-one of the same version (`design_revision_version`, now 1). An object
-holding step data, or a piece no rule identifies, has none ([Comparing
-designs](#comparing-designs)).
+hash of an object's Design pieces alone. It leaves out step data, the
+places the specs name for a stored password or key, and every piece no
+rule identifies; it does not prove that no other key of a design catalog
+holds one (server-storage.md section 4, "What the rules cannot see"). A
+design revision is refused where an edit token is expected, and it is
+comparable only with one of the same version (`design_revision_version`,
+now 1). An object holding step data, or a piece no rule identifies, has
+none ([Comparing designs](#comparing-designs)).
 
 Edit tokens are computed over an object's stored content in a canonical
 form, used by `om-author`, the host and the desktop client alike. A script's
@@ -1144,27 +1146,43 @@ computer, a source and a target, and with a `base`, the copy both were
 made from, says which side changed what
 ([server-storage.md](server-storage.md) section 9, "Comparison"). It only
 reads the files. Each is read whole and every slot decoded, as
-OpenMaker's file reader reads files; only the design catalogs are kept
-(never records, indexes, accounts or the file's status), so it holds
-each file in memory once, and the tree of its design catalogs.
+OpenMaker's file reader reads files; only the design catalogs are kept,
+with their own indexes (never records, field value indexes, accounts or
+the file's status), so it holds each file in memory once, and the tree
+of its design catalogs.
 
-Its objects are every member of a design catalog (tables, occurrences,
-relationships, fields, layouts, themes, custom functions, scripts,
-privilege sets, extended privileges, fonts, file library items, data
-sources, value lists, base directories, custom menu sets and menus), and
-for each catalog everything in it that is in no member: its index with
-every entry, any other branch, and the members with no children. A
-script's cached name is an entry of its catalog's index, so renaming a
-script changes the script and its catalog.
+Before anything is named, classified or hashed it checks the inventory
+of every file (`om_hbam::design_paths::inventory`): the sibling keys on
+the way to and within each design catalog in order and unique, as a
+file's are; every member key of the shape its catalog's spec gives (a
+font's two bytes, a base directory's four, a serial key elsewhere); no
+two objects of one kind (and table) with one id; no member the decoders
+could read differently. A file that fails is refused with
+`invalid_request`; `details` give the `file`, the `reason`
+(`unsorted_keys`, `key_shape`, `duplicate_id` or `misread`), and where
+known the `kind`, the `table` and, when the key has its specified shape,
+the `id`, never a key's bytes.
 
-Before anything else it checks every object's identity: a key of the
-shape its catalog's spec gives (a font's two bytes, a base directory's
-four, a serial key elsewhere), no two objects of one kind (and table)
-with one id, no member the decoders could read differently. A file that
-fails is refused with `invalid_request`; `details` give the `file`, the
-`reason` (`key_shape`, `duplicate_id` or `misread`), the `kind`, the
-`table` and, when the key has its specified shape, the `id`, never a
-key's bytes.
+Its objects are every member of a design catalog that has children
+(tables, occurrences, relationships, fields, layouts, themes, custom
+functions, scripts, privilege sets, extended privileges, fonts, file
+library items, data sources, value lists, base directories, custom menu
+sets and menus), and for each catalog everything in it that is in no
+member object: the catalog's own value, its index with every entry (its
+members' entries too), any other branch, the member list's own value,
+and the members with no children. Index entries never move between
+objects. A member that gains its first child becomes an object and takes
+its own node and value from its catalog; one that loses its last child
+gives them back. A script's cached name is an entry of its catalog's
+index, so renaming a script changes the script and its catalog.
+
+The tree is compared as the file holds it: a value stored in pieces
+(re/file-format.md 3.6) is its header and its pieces, never joined.
+Files read from disk store each value one way, so equal content compares
+equal; a tree held in memory with such a value inline would compare as
+different from the file written from it
+([#777](https://github.com/OpenMaker-Dev/openmaker/issues/777)). Edit
+tokens join the pieces, so they do not differ in this way.
 
 With a base, an object of the source is the target's object of the same
 kind and id when the base has it too. An object the base lacks is new
@@ -1176,19 +1194,24 @@ since the base. Without a base, two objects of one kind and id are
 matched when their names, decoded on both sides, are equal byte for
 byte, or when neither has a name (relationships, file library items,
 custom menu sets) and all of their content is equal: that is no proof
-that they share a history, and a deploy must not rely on it. Every
-object matched with none is listed once, in `only_in_source` or
-`only_in_target`; among them, one agreeing with another in id alone, or
-in name alone (up to 8 per source object; `possible_matches_left_out`
-counts the rest), is also listed as a possible match, which a person
-settles, and is never matched. A field is matched only when its table
-is.
+that they share a history, and a deploy must not rely on it. A field
+(and a table's field catalog) is matched only when its table is, by the
+same test. Every object matched with none is listed once, in
+`only_in_source` or `only_in_target`; among them, one agreeing with
+another in id alone is also listed as a possible match (`agrees` `id`),
+and so is a field whose id and name agree under a table that is not
+matched. Without a base, one agreeing with another in name alone is
+listed too (`agrees` `name`, up to 8 per source object;
+`possible_matches_left_out` counts the rest). A person settles a
+possible match; it is never matched. With a base, a field under a table
+the base lacks is new on each side.
 
 Each matched object is compared by its pieces, group by group, whether
 it has a design revision or not, and `difference` lists the parts that
-differ: `design`; `step_data`, a script's or a button's step data, which
-is compared as bytes and not read, so a stored password's change and any
-other change of a step's parameters are both `step_data`; `unidentified`,
+differ: `design`; `step_data`, a script's or a button's step data (and,
+inferred, a layout table view's), which is compared as bytes and not
+read, so a stored password's change and any other change of a step's
+parameters are both `step_data`; `unidentified`,
 a key no spec explains; `data` and `derived`. An empty list is the same
 (modification stamps may differ). With a base, `source_change` and
 `target_change` are each side's difference from it, and a side changed
@@ -1205,7 +1228,9 @@ Design revisions are given for matched objects (`source_revision`,
 (`revision`) and for possible matches; null where the object has none.
 An object has one only when it holds no step data and no piece a rule
 does not name. So no script has one, and no layout with a button that
-has step data; in FileMaker Pro 26's starter files every font and custom
+has step data (nor, inferred, one whose table view holds step data,
+which no starter file does); in FileMaker Pro 26's starter files every
+font and custom
 menu also holds a key of their own no spec explains
 ([#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)). Two
 copies made separately, such as two language versions of a starter
@@ -1576,13 +1601,20 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   reports differences; it classes none by what every record must do (a
   field's type, a stored calculation), keeps no history, writes no text
   form, and deploys nothing. Objects holding step data (scripts, and
-  layouts with a button that has step data) have no design revision, and
-  a change in step data is reported without saying what in it changed,
-  until step data is identified exactly per step
-  ([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)). Which
+  layouts with a button or a table view that has step data) have no
+  design revision, and a change in step data is reported without saying
+  what in it changed, until step data is identified exactly per step
+  ([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)).
+  Leaving out step data covers the places the specs name for a stored
+  password or key, not any other key that might hold one. A tree held in
+  memory with a value inline that the file stores in pieces compares as
+  different from that file
+  ([#777](https://github.com/OpenMaker-Dev/openmaker/issues/777)). Which
   differences FileMaker itself would see as changes is not compared with
   FileMaker; the grouping of the member lists `07` and the value lists'
-  `06` as Derived is inferred (re/file-format.md 3.7).
+  `06` as Derived, and the table view's step data `[4, 5, L, 0d, 05, O,
+  11]`, which no starter file holds, are inferred (re/file-format.md 3.7,
+  re/layout-model.md 10.14).
 - **Not audited.** A dedicated security review of the extension and of
   OpenMaker Server's existing op13 handling (direct catalog uploads need
   the file's [Full Access] set; staged record uploads need only a session

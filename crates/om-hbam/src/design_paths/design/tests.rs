@@ -9,8 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::super::compare::{compare, CompareError, Difference, IdentityProblem, Which};
-use super::super::revision::{is_stamp, parse_revision, split_value};
+use super::super::compare::{compare, CompareError, Difference, Which};
+use super::super::inventory::{inventory, IdentityError, IdentityProblem};
+use super::super::revision::{is_stamp, parse_revision};
 use super::super::rules::{rule_for, rules, Group};
 use super::super::tests::{descriptor, leaf, list, message, varint};
 use super::super::{instances, objects, Kind, Object, Path, CATALOGS};
@@ -49,11 +50,13 @@ enum Piece {
 }
 
 /// The oracle: a piece's class from its path, by the rule table and the
-/// places step data lives (`[11, 5, S, 05]`, `[4, 5, L, 05, O, 11]`).
+/// places step data lives (`[11, 5, S, 05]`, `[4, 5, L, 05, O, 11]`, `[4, 5,
+/// L, 0d, 05, O, 11]`).
 fn oracle(path: &[Vec<u8>], piece: Piece) -> Class {
     let p = at(path);
     let step_data = matches!(&p[..], [[0x11], [0x05], _, [0x05], ..])
-        || matches!(&p[..], [[0x04], [0x05], _, [0x05], _, [0x11], ..]);
+        || matches!(&p[..], [[0x04], [0x05], _, [0x05], _, [0x11], ..])
+        || matches!(&p[..], [[0x04], [0x05], _, [0x0d], [0x05], _, [0x11], ..]);
     if step_data {
         return Class::StepData;
     }
@@ -117,8 +120,7 @@ fn tree_pieces(root: &OwnedNode) -> BTreeSet<(Path, Piece)> {
     out
 }
 
-/// Each piece an object's classification holds, by path, with its class;
-/// a split value written whole stands for the pieces it was joined from.
+/// Each piece an object's classification holds, by path, with its class.
 fn classified_pieces(
     top_path: &[Vec<u8>],
     top: &OwnedNode,
@@ -131,33 +133,6 @@ fn classified_pieces(
         out: &mut Vec<(Path, Piece, Class)>,
     ) {
         out.push((path.clone(), Piece::Here, classed.here));
-        // A split value written whole: a value the node does not hold.
-        let folded = node.value.is_none() && classed.value.is_some();
-        if folded {
-            // Every node joined into the value, in the value's class.
-            let class = classed.value.as_ref().unwrap().0;
-            let mut stack: Vec<(Path, &OwnedNode)> = node
-                .children
-                .iter()
-                .map(|c| {
-                    let mut p = path.clone();
-                    p.push(c.segment.clone());
-                    (p, c)
-                })
-                .collect();
-            while let Some((p, n)) = stack.pop() {
-                out.push((p.clone(), Piece::Here, class));
-                if n.value.is_some() {
-                    out.push((p.clone(), Piece::Value, class));
-                }
-                for c in &n.children {
-                    let mut q = p.clone();
-                    q.push(c.segment.clone());
-                    stack.push((q, c));
-                }
-            }
-            return;
-        }
         if let Some((class, _)) = &classed.value {
             out.push((path.clone(), Piece::Value, *class));
         }
@@ -186,7 +161,7 @@ fn part<'a>(object: &Object<'a>) -> (Path, &'a OwnedNode) {
 /// cannot cancel. The number of pieces.
 fn partition(root: &OwnedNode) -> usize {
     let mut seen: BTreeMap<(Path, Piece), usize> = BTreeMap::new();
-    for (i, object) in objects(root).iter().enumerate() {
+    for (i, object) in inventory(root).expect("checked").iter().enumerate() {
         let (path, node) = part(object);
         let classified = classify(object).expect("a member read as the decoders read it");
         for (p, piece, class) in classified_pieces(&path, node, &classified) {
@@ -242,22 +217,19 @@ fn with_part<'a>(object: &Object<'a>, node: &'a OwnedNode) -> Object<'a> {
     changed
 }
 
-/// Whether `rel` in `node` is the header `00` of a split value: its total
-/// length, then a text's character count (file-format.md 3.6). A split
-/// value is hashed as the value it joins to, so the header's other words
-/// are framing that neither an edit token nor a design revision covers;
-/// the sweep changes its total.
-fn split_header(node: &OwnedNode, rel: &[Vec<u8>]) -> bool {
-    let Some((last, parent)) = rel.split_last() else {
-        return false;
-    };
-    last == &[0] && node.at(&at(parent)).and_then(split_value).is_some()
-}
-
-/// Whether a proper prefix of `rel` in `node` is a split value, whose
-/// pieces have fixed lengths.
-fn in_split_value(node: &OwnedNode, rel: &[Vec<u8>]) -> bool {
-    (0..rel.len()).any(|k| node.at(&at(&rel[..k])).and_then(split_value).is_some())
+/// The key step data would have below the node at `rel` of `object`: a
+/// script member's `05`; an attribute record's `11`, in a layout and in its
+/// table view.
+fn step_data_key(object: &Object<'_>, rel: &[Vec<u8>]) -> Option<u8> {
+    if object.whole.is_some() {
+        return None;
+    }
+    let rel = at(rel);
+    match (object.kind, &rel[..]) {
+        (Kind::Script, []) => Some(0x05),
+        (Kind::Layout, [[0x05], _]) | (Kind::Layout, [[0x0d], [0x05], _]) => Some(0x11),
+        _ => None,
+    }
 }
 
 /// Assert that after an operation exactly the projections of `expected`
@@ -323,23 +295,15 @@ fn sweep(object: &Object<'_>, secrets: &[Vec<u8>], stats: &mut Stats) {
         let what = |op: &str| format!("{op} of {piece:?} at {path:02x?}");
         match piece {
             Piece::Value => {
-                // Change it: keeping its length in a split value, else to a
-                // planted secret of another length.
+                // Change it, to a planted secret of another length: values
+                // in pieces included, which are written as held.
                 stats.next += 1;
                 let secret = planted(1_000_000 + stats.next);
                 let mut changed = top.clone();
-                let v = changed.at_mut(&at(&rel)).unwrap().value.as_mut().unwrap();
-                let planting = !in_split_value(top, &rel);
-                if planting {
-                    *v = secret.clone();
-                } else if split_header(top, &rel) {
-                    v[3] ^= 0x01;
-                } else {
-                    *v.last_mut().unwrap() ^= 0x01;
-                }
+                changed.at_mut(&at(&rel)).unwrap().value = Some(secret.clone());
                 let after_change = after(&changed);
                 changed_exactly(&before, &after_change, &[*class].into(), &what("a change"));
-                if planting && *class != Class::Design {
+                if *class != Class::Design {
                     assert!(!leaks(&after_change[0], &secret), "{}", what("a change"));
                     stats.planted += 1;
                 }
@@ -355,6 +319,27 @@ fn sweep(object: &Object<'_>, secrets: &[Vec<u8>], stats: &mut Stats) {
                 *stats.ops.entry(("value", class_name(*class))).or_default() += 2;
             }
             Piece::Here => {
+                // Add step data where it would be, beside Design siblings:
+                // only the step-data projection moves.
+                if let Some(key) =
+                    step_data_key(object, &rel).filter(|k| target.child(&[*k]).is_none())
+                {
+                    let mut added = top.clone();
+                    added
+                        .at_mut(&at(&rel))
+                        .unwrap()
+                        .set_child(leaf(&[key], &[1]));
+                    changed_exactly(
+                        &before,
+                        &after(&added),
+                        &[Class::StepData].into(),
+                        &what("adding step data"),
+                    );
+                    *stats
+                        .ops
+                        .entry(("add step data", class_name(*class)))
+                        .or_default() += 1;
+                }
                 if rel.is_empty() {
                     continue;
                 }
@@ -398,7 +383,6 @@ fn sweep(object: &Object<'_>, secrets: &[Vec<u8>], stats: &mut Stats) {
                     oracle(&new_path, Piece::Value),
                 ]
                 .into();
-                // A split value the node unfolds stays its class.
                 changed_exactly(&before, &after(&added), &expected, &what("adding below"));
                 *stats.ops.entry(("add", class_name(*class))).or_default() += 1;
             }
@@ -512,6 +496,41 @@ fn built() -> (OwnedNode, Vec<Vec<u8>>) {
         &[&[0x04], &[5], &[1]],
         button_member(138, vec![slot(0, b"\"me\""), slot(1, &pw)]),
     );
+    // Beside it, an attribute record holding what looks like a value in
+    // pieces, a header and one piece, where a button's step data `11` could
+    // be added; and a table view with a record holding step data, and one
+    // that does not.
+    root.put(
+        &[&[0x04], &[5], &[1], &[0x05], &serial::encode(6)],
+        list(
+            &[],
+            vec![leaf(&[0x00], &[0, 0, 0, 3]), leaf(&[0x01], b"abc")],
+        ),
+    );
+    root.put(
+        &[
+            &[0x04],
+            &[5],
+            &[1],
+            &[0x0d],
+            &[0x05],
+            &serial::encode(7),
+            &[0x11],
+        ],
+        list(&[], vec![slot(1, &pw)]),
+    );
+    root.put(
+        &[
+            &[0x04],
+            &[5],
+            &[1],
+            &[0x0d],
+            &[0x05],
+            &serial::encode(8),
+            &[0x01],
+        ],
+        leaf(&[], &[1]),
+    );
     // The scripts' catalog: its own value, a branch beside the index and
     // the members, a value on the member list, an emptied member with a
     // value, entries (one with a stamp-shaped key, one of a script that is
@@ -570,7 +589,7 @@ fn every_piece_is_in_one_object_and_moves_only_its_own_class() {
     // The partition, by path.
     assert!(partition(&root) > 0);
     let mut stats = Stats::default();
-    let found = objects(&root);
+    let found = inventory(&root).unwrap();
     for object in &found {
         sweep(object, &secrets, &mut stats);
     }
@@ -592,6 +611,7 @@ fn every_piece_is_in_one_object_and_moves_only_its_own_class() {
         ("add", "Design"),
         ("add", "StepData"),
         ("add", "Unidentified"),
+        ("add step data", "Design"),
     ] {
         assert!(
             stats.ops.get(&(op, class)).is_some_and(|&n| n > 0),
@@ -610,6 +630,69 @@ fn every_piece_is_in_one_object_and_moves_only_its_own_class() {
     assert!(revision.text().starts_with("design-sha256:"));
     assert_eq!(revision.text().len(), "design-sha256:".len() + 64);
     assert_eq!(parse_revision(&revision.text()), None);
+}
+
+/// A member that gains its first child becomes an object, and takes its
+/// own node's being there (Design) and own value (not identified) from its
+/// catalog, which keeps everything else, index entries included; losing its
+/// last child gives them back.
+#[test]
+fn a_member_gaining_its_first_child_takes_its_own_node_from_its_catalog() {
+    let (root, _) = built();
+    let catalog = |root: &OwnedNode| {
+        let checked = inventory(root).unwrap();
+        let catalog = checked
+            .iter()
+            .find(|o| o.kind == Kind::Script && o.catalog)
+            .unwrap();
+        projections(&classify(catalog).unwrap())
+    };
+    let member_pieces = |root: &OwnedNode| -> Option<BTreeSet<(Path, Piece, Class)>> {
+        let checked = inventory(root).unwrap();
+        let member = checked
+            .iter()
+            .find(|o| o.kind == Kind::Script && !o.catalog && o.key == [9])?;
+        let (path, node) = part(member);
+        let classified = classify(member).unwrap();
+        Some(
+            classified_pieces(&path, node, &classified)
+                .into_iter()
+                .collect(),
+        )
+    };
+    // Script 9 has no children: its own node and value are the catalog's.
+    assert_eq!(member_pieces(&root), None);
+    let mut grown = root.clone();
+    grown.put(&[&[0x11], &[5], &[9], &[0x13]], leaf(&[], &[0, 0, 0, 0]));
+    let (before, after) = (catalog(&root), catalog(&grown));
+    changed_exactly(
+        &before,
+        &after,
+        &[Class::Design, Class::Unidentified].into(),
+        "the first child",
+    );
+    let path = |rest: &[u8]| {
+        let mut p: Path = vec![vec![0x11], vec![5], vec![9]];
+        p.extend(rest.iter().map(|b| vec![*b]));
+        p
+    };
+    assert_eq!(
+        member_pieces(&grown).unwrap(),
+        [
+            (path(&[]), Piece::Here, Class::Design),
+            (path(&[]), Piece::Value, Class::Unidentified),
+            (path(&[0x13]), Piece::Here, Class::Unidentified),
+            (path(&[0x13]), Piece::Value, Class::Unidentified),
+        ]
+        .into()
+    );
+    // Both trees partition, the entries staying the catalog's.
+    assert!(partition(&root) > 0 && partition(&grown) > 0);
+    // Losing its last child gives the two pieces back.
+    let mut shrunk = grown.clone();
+    shrunk.remove(&[&[0x11], &[5], &[9], &[0x13]]);
+    assert_eq!(catalog(&shrunk), before);
+    assert_eq!(member_pieces(&shrunk), None);
 }
 
 /// A tree holding `script` as script 1, with its index entry.
@@ -654,6 +737,14 @@ fn the_cases_of_723_change_step_data_only_and_leak_nothing() {
         list(
             &[0, 11],
             vec![leaf(&[0], &(pw.len() as u32).to_be_bytes()), leaf(&[1], pw)],
+        )
+    };
+    // A value kept in pieces whose header carries a second word: only that
+    // word differs; step data is written as held, so it differs.
+    let header_slot = |word: u8| {
+        list(
+            &[0, 11],
+            vec![leaf(&[0], &[0, 0, 0, 24, 0, 0, 0, word]), leaf(&[1], &pw)],
         )
     };
     let with_value = |pw: &[u8]| {
@@ -742,6 +833,11 @@ fn the_cases_of_723_change_step_data_only_and_leak_nothing() {
             with_steps(descriptor(0, 63), &pw2),
         ),
         (
+            "a header's second word",
+            one_script(send_mail(header_slot(1)), 1),
+            one_script(send_mail(header_slot(2)), 1),
+        ),
+        (
             "an ODBC profile",
             profile(b"ODBC", &pw),
             profile(b"ODBC", &pw2),
@@ -784,10 +880,12 @@ fn the_cases_of_723_change_step_data_only_and_leak_nothing() {
         compare(&aliased, &aliased, None).unwrap_err(),
         CompareError::Identity {
             which: Which::Source,
-            kind: Kind::Script,
-            table: None,
-            id: Some(1),
-            problem: IdentityProblem::Misread
+            error: IdentityError {
+                kind: Some(Kind::Script),
+                table: None,
+                id: Some(1),
+                problem: IdentityProblem::Misread
+            }
         }
     );
 
@@ -803,10 +901,12 @@ fn the_cases_of_723_change_step_data_only_and_leak_nothing() {
         compare(&both, &both, None).unwrap_err(),
         CompareError::Identity {
             which: Which::Source,
-            kind: Kind::Script,
-            table: None,
-            id: Some(1),
-            problem: IdentityProblem::Misread
+            error: IdentityError {
+                kind: Some(Kind::Script),
+                table: None,
+                id: Some(1),
+                problem: IdentityProblem::Misread
+            }
         }
     );
 
@@ -876,7 +976,7 @@ fn every_template_piece_is_in_one_object_and_moves_only_its_own_class() {
         let file = crate::HbamFile::open(path).unwrap();
         let root = file.key_tree().unwrap().root.to_owned_node();
         pieces += partition(&root);
-        for object in objects(&root) {
+        for object in inventory(&root).unwrap() {
             sweep(&object, &[], &mut stats);
         }
     }

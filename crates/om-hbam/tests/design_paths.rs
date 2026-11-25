@@ -461,9 +461,24 @@ fn design_revisions_and_names_per_kind() {
     // (kind, catalog) -> (with, without, without a name)
     let mut table: BTreeMap<(Kind, bool), (usize, usize, usize)> = BTreeMap::new();
     let mut why: BTreeMap<(Kind, bool, String), usize> = BTreeMap::new();
+    let mut table_view = 0;
     for path in &files {
         let (_, root) = tree(path);
-        let objects = design_paths::objects(&root);
+        let objects = design_paths::inventory(&root).expect("a starter file passes the checks");
+        // Step data in a layout's table view, [I] `[4, 5, L, 0d, 05, O,
+        // 11]`: counted.
+        for layout in objects
+            .iter()
+            .filter(|o| o.kind() == Kind::Layout && !o.is_catalog())
+        {
+            if let Some(records) = layout.node().at(&[&[0x0d], &[0x05]]) {
+                table_view += records
+                    .children
+                    .iter()
+                    .filter(|r| r.child(&[0x11]).is_some())
+                    .count();
+            }
+        }
         // A file compared with itself matches every object, those with no
         // name by their content, and finds them all the same.
         let itself = design_paths::compare(&root, &root, None).unwrap();
@@ -515,6 +530,7 @@ fn design_revisions_and_names_per_kind() {
             }
         }
     }
+    println!("step data in a table view: {table_view}");
     println!("| Objects | With a design revision | Without | No decoded name |");
     println!("|---|---|---|---|");
     for ((kind, catalog), (with, without, unnamed)) in &table {

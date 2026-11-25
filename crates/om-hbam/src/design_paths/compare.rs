@@ -2,12 +2,12 @@
 //! without a base (`docs/server-storage.md` section 9; `docs/authoring.md`,
 //! "Comparing designs"): the operation [`COMPARE_DESIGNS`].
 //!
-//! **Identities first.** Before a name is decoded or anything is classified
-//! or hashed, every object's identity is checked: its key has the shape its
-//! catalog's spec gives (a font's two bytes, a base directory's four, a
-//! serial key elsewhere), no two objects of one kind (and table) report one
-//! id, and no member is one the decoders could read differently. Any failure
-//! refuses the comparison ([`CompareError::Identity`]).
+//! **Inventories first.** Every input's [`inventory`] is checked before a
+//! name of any input is decoded or anything is classified or hashed:
+//! sibling keys in order and unique, each key of the shape its catalog's
+//! spec gives, no two objects of one kind (and table) with one id, and no
+//! member the decoders could read differently. Any failure refuses the
+//! comparison ([`CompareError::Identity`]).
 //!
 //! **Matching.** With a base, an object of the source is the target's
 //! object of the same kind and id when the base has that object too; one
@@ -16,11 +16,13 @@
 //! base, two objects of one kind and id are matched when their names,
 //! decoded on both sides, are equal byte for byte, or when neither has a
 //! name and every class of their content is equal: that is no proof that
-//! they share a history, and a deploy must not take it for one. Agreeing
-//! in id alone, or in name alone, is listed as a possible match and never
-//! matched. A field (and a table's field catalog) is matched only when its
-//! table is, by the same test. Every object matched with none is listed
-//! once, in the file it is in.
+//! they share a history, and a deploy must not take it for one. A field
+//! (and a table's field catalog) is matched only when its table is, by the
+//! same test; one whose id and name agree under a table that is not
+//! matched is a possible match by id. Agreeing in id alone is listed as a
+//! possible match, and without a base so is agreeing in name alone;
+//! neither is matched. Every object matched with none is listed once, in
+//! the file it is in.
 //!
 //! **Differences.** Every matched object is compared by each class of its
 //! pieces ([`super::design`]), whether it has a design revision or not:
@@ -39,10 +41,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 
 use super::design::{classify, Class, Classified, DesignRevision, Refusal};
+use super::inventory::{inventory, Checked, IdentityError, IdentityProblem};
 use super::rules::{Group, CATALOGS};
-use super::{objects, secrets, Kind, Object};
+use super::{Kind, Object};
 use crate::container::HbamFile;
-use crate::slot::{be_uint, KeySegment};
+use crate::slot::KeySegment;
 use crate::tree::{KeyTree, OwnedNode};
 
 /// The operation's stable id: the `om-author` command and its MCP tool
@@ -293,18 +296,6 @@ impl ReadFailure {
     }
 }
 
-/// Why an object's identity is not trusted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IdentityProblem {
-    /// Its key has another shape than its catalog's spec gives.
-    KeyShape,
-    /// Another object of its kind (and table) reports its id.
-    Duplicate,
-    /// A member with a key the decoders could read as another (`[00 04]`
-    /// as the step list `04`): where its step data is, is in doubt.
-    Misread,
-}
-
 /// Why a comparison could not be made. It names a file, a kind, a table
 /// and an id at most, the id only when the key has its specified shape;
 /// never a key's bytes or any content.
@@ -314,14 +305,8 @@ pub enum CompareError {
     Read { which: Which, failure: ReadFailure },
     /// A tree deeper than a file's keys can be (file-format.md 2.2).
     TooDeep { which: Which },
-    /// An object whose identity is not trusted.
-    Identity {
-        which: Which,
-        kind: Kind,
-        table: Option<u64>,
-        id: Option<u64>,
-        problem: IdentityProblem,
-    },
+    /// A file whose design objects are not trusted ([`inventory`]).
+    Identity { which: Which, error: IdentityError },
 }
 
 impl std::fmt::Display for CompareError {
@@ -340,31 +325,10 @@ impl std::fmt::Display for CompareError {
                 "The {} file's keys are nested deeper than a FileMaker file's can be.",
                 which.name()
             ),
-            CompareError::Identity {
-                which,
-                kind,
-                table,
-                id,
-                problem,
-            } => {
-                let table = table.map_or_else(String::new, |t| format!(" of table {t}"));
-                let what = match id {
-                    Some(id) => format!("the {}{table} with id {id}", kind.name()),
-                    None => format!("a {}{table}", kind.name()),
-                };
-                let why = match problem {
-                    IdentityProblem::KeyShape => {
-                        "has a key of another shape than its catalog's spec gives"
-                    }
-                    IdentityProblem::Duplicate => "has an id another object of its kind has",
-                    IdentityProblem::Misread => {
-                        "holds a key the decoders could read as another, so where its step \
-                         data is cannot be told"
-                    }
-                };
+            CompareError::Identity { which, error } => {
                 write!(
                     f,
-                    "In the {} file, {what} {why}; nothing is compared.",
+                    "In the {} file, {error}; nothing is compared.",
                     which.name()
                 )
             }
@@ -396,63 +360,22 @@ struct Side {
     by_key: BTreeMap<Key, usize>,
 }
 
-/// A member's id when its key has the shape its catalog's spec gives: a
-/// base directory's four bytes (containers.md 8.1) and a font's two
-/// (layout-model.md 8), big-endian; a serial key elsewhere (file-metadata.md
-/// 1), whose encoding is one per id.
-fn checked_id(kind: Kind, key: &[u8]) -> Option<u64> {
-    match kind {
-        Kind::BaseDirectory => (key.len() == 4).then(|| be_uint(key)).flatten(),
-        Kind::Font => (key.len() == 2).then(|| be_uint(key)).flatten(),
-        _ => crate::serial::decode(key),
-    }
-}
-
-/// Check every object's identity (module doc), before anything is read
-/// from them.
-fn check_identities(found: &[Object<'_>], which: Which) -> Result<(), CompareError> {
-    let mut seen = BTreeSet::new();
-    for object in found {
-        let kind = object.kind();
-        let table = object.table().and_then(crate::serial::decode);
-        let refuse = |id, problem| CompareError::Identity {
-            which,
-            kind,
-            table,
-            id,
-            problem,
-        };
-        let id = match object.is_catalog() {
-            true => None,
-            false => Some(
-                checked_id(kind, object.key())
-                    .ok_or_else(|| refuse(None, IdentityProblem::KeyShape))?,
-            ),
-        };
-        if !seen.insert((kind, object.is_catalog(), table, id)) {
-            return Err(refuse(id, IdentityProblem::Duplicate));
-        }
-        if !object.is_catalog() && secrets::misread(kind, object.node()) {
-            return Err(refuse(id, IdentityProblem::Misread));
-        }
-    }
-    Ok(())
-}
-
 impl Side {
-    fn of(root: &OwnedNode, which: Which) -> Result<Side, CompareError> {
-        let found = objects(root);
-        check_identities(&found, which)?;
+    /// A file's objects of a checked inventory, classified and digested.
+    fn of(found: &[Checked<'_>], which: Which) -> Result<Side, CompareError> {
         let mut entries = Vec::with_capacity(found.len());
-        for object in &found {
+        for object in found {
             let classified = classify(object).map_err(|refusal| match refusal {
                 Refusal::TooDeep => CompareError::TooDeep { which },
+                // The inventory refused these already.
                 Refusal::Misread => CompareError::Identity {
                     which,
-                    kind: object.kind(),
-                    table: object.table().and_then(crate::serial::decode),
-                    id: object.id(),
-                    problem: IdentityProblem::Misread,
+                    error: IdentityError {
+                        kind: Some(object.kind()),
+                        table: object.table().and_then(crate::serial::decode),
+                        id: object.id(),
+                        problem: IdentityProblem::Misread,
+                    },
                 },
             })?;
             entries.push(Entry {
@@ -516,9 +439,19 @@ pub fn compare(
     target: &OwnedNode,
     base: Option<&OwnedNode>,
 ) -> Result<Comparison, CompareError> {
-    let source = Side::of(source, Which::Source)?;
-    let target = Side::of(target, Which::Target)?;
-    let base = base.map(|b| Side::of(b, Which::Base)).transpose()?;
+    // Every input's identities first: nothing is classified, named or
+    // hashed until all have passed.
+    let check =
+        |root, which| inventory(root).map_err(|error| CompareError::Identity { which, error });
+    let source_objects = check(source, Which::Source)?;
+    let target_objects = check(target, Which::Target)?;
+    let base_objects = base.map(|b| check(b, Which::Base)).transpose()?;
+    let source = Side::of(&source_objects, Which::Source)?;
+    let target = Side::of(&target_objects, Which::Target)?;
+    let base = base_objects
+        .as_deref()
+        .map(|b| Side::of(b, Which::Base))
+        .transpose()?;
     Ok(compare_sides(&source, &target, base.as_ref()))
 }
 

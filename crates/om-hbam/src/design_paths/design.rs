@@ -1,25 +1,29 @@
 //! Design revisions, and the classes of an object's content that the
 //! comparison of two files' designs ([`super::compare`]) compares
 //! (`docs/server-storage.md` section 9; `docs/authoring.md`,
-//! "Revisions").
+//! "Revisions"). Only objects of a checked inventory
+//! ([`super::inventory`]) are classified for a revision or a comparison.
 //!
-//! **What an object holds.** A member object is its member `[cat, 5, id]`.
-//! A catalog object is everything in its catalog that is in no member
-//! object: the catalog's own value, its index with every entry (its
-//! members' entries too), any branch beside the index and the members, the
-//! member list's own value, and the members that are no object (a member
-//! with no children). Nothing moves between objects when a member appears
-//! or is emptied, and nothing is held by two.
+//! **What an object holds.** A member object is its member `[cat, 5, id]`,
+//! a member with children. A catalog object is everything in its catalog
+//! that is in no member object: the catalog's own value, its index with
+//! every entry (its members' entries too), any branch beside the index and
+//! the members, the member list's own value, and the members with no
+//! children. No index entry ever moves between objects; a member that
+//! gains its first child or loses its last becomes, or stops being, an
+//! object, and its own node and value pass between it and its catalog.
 //!
 //! **Pieces and classes.** An object's content is its pieces: each node's
-//! being there and each node's own value. Each piece is one [`Class`],
-//! decided by its own path alone, never by what lies below it:
+//! being there and each node's own value, as the tree holds them. Each
+//! piece is one [`Class`], decided by its own path alone, never by what
+//! lies below it or beside it:
 //!
 //! - **step data**, [`Class::StepData`]: a script's step data `[11, 5, S,
-//!   05]` and a button's `[4, 5, L, 05, O, 11]`, each one opaque piece with
-//!   everything below it. Nothing looks inside it: which of its bytes are a
-//!   stored password depends on the step, and no reading of it is trusted
-//!   here.
+//!   05]`, a button's `[4, 5, L, 05, O, 11]`, and [I] the same place in a
+//!   layout's table view `[4, 5, L, 0d, 05, O, 11]` (which keeps a
+//!   layout's own structure, layout-model.md 10.14), each one opaque piece
+//!   with everything below it. Nothing looks inside it: which of its bytes
+//!   are a stored password depends on the step.
 //! - Design, Data and Derived by the path rules ([`super::rules()`]); a
 //!   node above the rules, such as the member itself, is there as Design
 //!   (the object's shape) and its own value, which no rule names, is not
@@ -27,13 +31,14 @@
 //! - **not identified**, [`Class::Unidentified`]: a key no rule names, and
 //!   everything below it.
 //!
-//! A split value (file-format.md 3.6) is one piece, its joined value, when
-//! all of it is one class; otherwise each of its pieces is its own. Its
-//! header's words after the length (a text's character count) are framing,
-//! in no projection, as for the edit token. Modification stamps are left
-//! out at exactly two places, where schema-path.md 8 places them: the
-//! direct stamp keys of a member object's own node, and of a catalog's
-//! index. Anywhere else a stamp-shaped key is a piece like any other.
+//! The tree is written as it is held: a value the file keeps in pieces
+//! (file-format.md 3.6) is its header and its pieces, never joined, so one
+//! piece's encoding never depends on its siblings. (An edit token joins
+//! them; the two differ for a tree in memory that holds such a value
+//! inline.) Modification stamps are left out at exactly two places, where
+//! schema-path.md 8 places them: the direct stamp keys of a member
+//! object's own node, and of a catalog's index. Anywhere else a
+//! stamp-shaped key is a piece like any other.
 //!
 //! **Projections.** A class's projection of an object is built by walking
 //! the object and adding the pieces of that class: the edit token's general
@@ -52,13 +57,12 @@
 //! comparable only with one of the same version. The other projections are
 //! hashed only to compare two objects inside the process and are never
 //! given out. A member the decoders could read differently is not
-//! classified at all ([`Refusal::Misread`]): where its step data is, is in
-//! doubt.
+//! classified at all ([`Refusal::Misread`]).
 
 use std::borrow::Cow;
 use std::fmt;
 
-use super::revision::{is_stamp, split_value};
+use super::revision::is_stamp;
 use super::rules::{hex, Group, Rule};
 use super::{candidates, secrets, step, Kind, Object};
 use crate::tree::OwnedNode;
@@ -141,10 +145,11 @@ impl Class {
 #[derive(Clone, Debug)]
 pub(crate) struct Classed<'t> {
     pub segment: &'t [u8],
-    /// The class of the node's being there.
+    /// The class of the node's being there (in the writer's mask; read by
+    /// the tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub here: Class,
-    /// Its own value (joined, for a split value written whole) and that
-    /// value's class.
+    /// Its own value and that value's class.
     pub value: Option<(Class, Cow<'t, [u8]>)>,
     /// The classes of the pieces at and below it.
     mask: u8,
@@ -197,7 +202,9 @@ impl Walk {
     fn step_data(&self, rel: &[&[u8]]) -> bool {
         matches!(
             (self.part, rel),
-            (Part::Script, [[0x05]]) | (Part::Layout, [[0x05], _, [0x11]])
+            (Part::Script, [[0x05]])
+                | (Part::Layout, [[0x05], _, [0x11]])
+                | (Part::Layout, [[0x0d], [0x05], _, [0x11]])
         )
     }
 
@@ -238,22 +245,7 @@ impl Walk {
                 None => (Class::Unidentified, Class::Unidentified),
             }
         };
-        // A split value is its joined value when all of it is one class,
-        // that of the node's being there.
-        if let Some(joined) = split_value(node) {
-            let pieces = self.children(node, rel, depth, (cands, best), step_data, false)?;
-            let mask = pieces.iter().fold(here.bit(), |m, p| m | p.mask);
-            if mask == here.bit() {
-                return Ok(Classed {
-                    segment: &node.segment,
-                    here,
-                    value: Some((here, Cow::Owned(joined))),
-                    mask,
-                    children: Vec::new(),
-                });
-            }
-        }
-        let children = self.children(node, rel, depth, (cands, best), step_data, true)?;
+        let children = self.children(node, rel, depth, (cands, best), step_data)?;
         let value = node
             .value
             .as_deref()
@@ -271,8 +263,7 @@ impl Walk {
         })
     }
 
-    /// `node`'s children, classified; without what is left out when
-    /// `filter`.
+    /// `node`'s children, classified, without what is left out.
     fn children<'t>(
         &self,
         node: &'t OwnedNode,
@@ -280,11 +271,10 @@ impl Walk {
         depth: usize,
         (cands, best): (&[&'static Rule], Option<&'static Rule>),
         inside: bool,
-        filter: bool,
     ) -> Result<Vec<Classed<'t>>, Refusal> {
         let mut out = Vec::with_capacity(node.children.len());
         for child in &node.children {
-            if filter && self.left_out(rel, child) {
+            if self.left_out(rel, child) {
                 continue;
             }
             let (deeper, rule) = step(cands, depth, &child.segment, best);
@@ -342,15 +332,14 @@ fn write(node: &Classed<'_>, class: Class, out: &mut Vec<u8>) {
 }
 
 impl Classified<'_> {
-    /// Whether the member's name is one Design piece: there, with a value
-    /// of its own (a leaf's, or a split value's written whole) and nothing
-    /// below it.
+    /// Whether the member's name is Design throughout: there, with a value
+    /// of its own or kept in pieces (file-format.md 3.6), and nothing in it
+    /// of another class.
     pub fn design_name(&self) -> bool {
         self.top.children.iter().any(|c| {
             c.segment == self.name_key
-                && c.children.is_empty()
-                && c.here == Class::Design
-                && matches!(c.value, Some((Class::Design, _)))
+                && c.mask == Class::Design.bit()
+                && (c.value.is_some() || !c.children.is_empty())
         })
     }
 

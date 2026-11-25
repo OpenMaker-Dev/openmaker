@@ -464,6 +464,37 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
         .filter(|p| p.agrees == Agreement::Name)
         .count();
     assert_eq!((by_name, capped.possible_matches_left_out), (8, 2));
+    // With the object of the same key in the bucket: fields under a table
+    // that is not matched, field 1 named alike on both sides. It is an id
+    // candidate, not a name one, and is not counted among those left out.
+    let fields = |table: &str, count: u8| {
+        let mut root = OwnedNode::default();
+        root.put(
+            &[&[0x03], &[0x10], &[5], TABLE],
+            list(&[], vec![leaf(&[0x10], &om_scsu::encode_scsu(table))]),
+        );
+        for id in 1..=count {
+            root.put(
+                &[TABLE, &[3], &[5], &[id]],
+                list(&[], vec![leaf(&[0x10], &om_scsu::encode_scsu("Same"))]),
+            );
+        }
+        root
+    };
+    let bucket = compare(&fields("Tasks", 1), &fields("Jobs", 11), None).unwrap();
+    let names: Vec<(Option<u64>, Option<u64>)> = bucket
+        .possible_matches
+        .iter()
+        .filter(|p| p.agrees == Agreement::Name)
+        .map(|p| (p.source.id, p.target.id))
+        .collect();
+    assert_eq!(names.len(), 8);
+    assert!(names.iter().all(|&(s, t)| s == Some(1) && t != Some(1)));
+    assert_eq!(bucket.possible_matches_left_out, 2);
+    assert!(bucket
+        .possible_matches
+        .iter()
+        .any(|p| p.agrees == Agreement::Id && p.source.id == Some(1) && !p.source.catalog));
     // Objects with no name: one when kind, id and every class of content
     // agree, a possible match otherwise; and a file matches itself whole.
     let relationship = |definition: &[u8]| {
@@ -504,15 +535,21 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
     let itself = compare(&base, &base, None).unwrap();
     assert!(itself.possible_matches.is_empty() && itself.only_in_source.is_empty());
     assert!(itself.matched.iter().all(|m| m.difference.is_same()));
-    // A name is reported only where it is one Design piece: not from a
-    // name node that holds a node of its own.
-    let mut odd = scripts(&["Alpha"]);
-    odd.put(&[&[0x11], &[5], &[1], &[0x10], &[0x7e]], leaf(&[], &[1]));
-    let object = objects(&odd).into_iter().find(|o| !o.is_catalog()).unwrap();
-    assert!(object.name().is_some());
-    assert_eq!(object.design_name(), None);
-    let compared = compare(&odd, &odd, Some(&odd)).unwrap();
-    assert_eq!(matched(&compared, Kind::Script, 1).source.name, None);
+    // A name is reported where it is Design throughout: a name kept in
+    // pieces (non-ASCII text, file-format.md 3.6), and one whose node
+    // holds a node of its own under the name's rule. (Within a member the
+    // inventory accepts, a name holds nothing of another class.)
+    let mut pieces = scripts(&["Alpha", "Beta"]);
+    pieces.put(
+        &[&[0x11], &[5], &[1], &[0x10]],
+        list(&[], vec![leaf(&[0], &[0, 0, 0, 2]), leaf(&[1], b"Ab")]),
+    );
+    pieces.put(&[&[0x11], &[5], &[2], &[0x10], &[0x7e]], leaf(&[], &[1]));
+    let compared = compare(&pieces, &pieces, None).unwrap();
+    for id in [1, 2] {
+        let reported = &matched(&compared, Kind::Script, id).source.name;
+        assert!(reported.is_some(), "script {id}");
+    }
     // Identities are checked before anything is read: a font key of
     // another width than two bytes, a base directory's of other than four,
     // a key that is no serial key (finding 8 of #768's second review: a
@@ -526,13 +563,16 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
         );
         root
     };
-    let shape = |kind| CompareError::Identity {
+    let refused = |kind, id, problem| CompareError::Identity {
         which: Which::Target,
-        kind,
-        table: None,
-        id: None,
-        problem: IdentityProblem::KeyShape,
+        error: IdentityError {
+            kind: Some(kind),
+            table: None,
+            id,
+            problem,
+        },
     };
+    let shape = |kind| refused(kind, None, IdentityProblem::KeyShape);
     assert_eq!(
         compare(&base, &font(&[0x01]), None).unwrap_err(),
         shape(Kind::Font)
@@ -552,23 +592,45 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
     );
     let mut token = base.clone();
     token.put(&[&[0x11], &[5], b"\0TOKEN99"], script("Token", b"pw"));
-    let refused = compare(&base, &token, None).unwrap_err();
-    assert_eq!(refused, shape(Kind::Script));
-    for text in [refused.to_string(), format!("{refused:?}")] {
+    let error = compare(&base, &token, None).unwrap_err();
+    assert_eq!(error, shape(Kind::Script));
+    for text in [error.to_string(), format!("{error:?}")] {
         assert!(!text.contains("TOKEN"), "{text}");
     }
+    // Keys out of order or repeated, which a file never holds: a member
+    // twice, or two member lists, one of which would be enumerated and the
+    // other skipped (finding 4 of #768's third review).
     let mut twice = font(&[0x00, 0x01]);
     let members = twice.at_mut(&[&[0x19], &[5]]).unwrap();
     let copy = members.children[0].clone();
     members.children.push(copy);
     assert_eq!(
         compare(&base, &twice, None).unwrap_err(),
-        CompareError::Identity {
-            which: Which::Target,
-            kind: Kind::Font,
-            table: None,
-            id: Some(1),
-            problem: IdentityProblem::Duplicate
+        refused(Kind::Font, None, IdentityProblem::Unsorted)
+    );
+    let mut two_lists = base.clone();
+    let scripts = two_lists.at_mut(&[&[0x11]]).unwrap();
+    let list_again = scripts.child(&[5]).unwrap().clone();
+    scripts.children.push(list_again);
+    assert_eq!(
+        compare(&base, &two_lists, None).unwrap_err(),
+        refused(Kind::Script, None, IdentityProblem::Unsorted)
+    );
+    // Every input is checked before any is classified (finding 5): a
+    // source deeper than a file can be is not reached when the target is
+    // refused.
+    let mut deep = base.clone();
+    let mut path: Vec<&[u8]> = vec![&[0x11], &[5], &[2], &[0x10]];
+    path.extend(std::iter::repeat_n(&[0x01][..], 70));
+    deep.put(&path, leaf(&[], &[1]));
+    assert_eq!(
+        compare(&deep, &font(&[0x01]), None).unwrap_err(),
+        shape(Kind::Font)
+    );
+    assert_eq!(
+        compare(&deep, &base, None).unwrap_err(),
+        CompareError::TooDeep {
+            which: Which::Source
         }
     );
 }
