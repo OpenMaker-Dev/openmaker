@@ -248,23 +248,25 @@ impl Model {
                             });
                         }
                         LockEdit::ReleaseFile { session } => {
-                            // The session's locks on the file sort together.
+                            // The session's locks on the file sort together:
+                            // the first of them is removed until none is
+                            // left, one id held at a time.
                             let from = LockId {
                                 session: *session,
                                 file,
                                 key: Vec::new(),
                                 user: Vec::new(),
                             };
-                            let gone: Vec<LockId> = self
+                            while let Some(id) = self
                                 .locks
-                                .range(from..)
+                                .range(&from..)
+                                .next()
                                 .map(|(id, _)| id)
-                                .take_while(|id| id.session == *session && id.file == file)
+                                .filter(|id| id.session == *session && id.file == file)
                                 .cloned()
-                                .collect();
-                            out.steps += gone.len() as u64;
-                            for id in gone {
+                            {
                                 self.locks.remove(&id);
+                                out.steps += 1;
                             }
                         }
                     }

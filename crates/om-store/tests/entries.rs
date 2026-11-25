@@ -2254,7 +2254,8 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
 
 /// Review of #732: the model checks and makes one change's lock edits in
 /// linear steps too. Bob's locks sort between Alice's and Carol's; each
-/// release of Bob's touches none of Carol's growing run.
+/// release of Bob's touches none of Carol's growing run, and a release of
+/// Carol's takes one step per lock it removes and leaves Alice's.
 #[test]
 fn the_model_takes_lock_edits_in_linear_steps() {
     let mut f = Fixture::new();
@@ -2285,5 +2286,28 @@ fn the_model_takes_lock_edits_in_linear_steps() {
     assert_eq!(
         f.model.locks.keys().filter(|l| l.session == carol).count() as u64,
         n
+    );
+    let release = f.seal(
+        f.file,
+        &change_of(
+            None,
+            vec![LockEdit::ReleaseFile { session: carol }],
+            Vec::new(),
+        ),
+    );
+    let outcome = f.model.apply(&release.entry()).unwrap();
+    assert!(
+        outcome.steps <= n + 2,
+        "{} steps to release {n} locks",
+        outcome.steps
+    );
+    assert!(f.model.locks.keys().all(|l| l.session != carol));
+    assert_eq!(
+        f.model
+            .locks
+            .keys()
+            .filter(|l| l.session == f.alice)
+            .count(),
+        2
     );
 }

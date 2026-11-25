@@ -459,8 +459,11 @@ impl Payload {
         Ok(w)
     }
 
-    /// The bytes [`Payload::encode`] writes, with every field and count
-    /// checked against its bound, in the order the fields are written.
+    /// The bytes [`Payload::encode`] would write, with every field and
+    /// count checked against its bound, in the order the fields are
+    /// written. Each part is held to its own bound only: the size returned
+    /// can be past [`MAX_PAYLOAD`], and `encode` refuses such a payload
+    /// before it allocates anything.
     pub fn size(&self) -> Result<usize, PayloadError> {
         fn name(name: &[u8]) -> Result<usize, PayloadError> {
             if name.is_empty() {
