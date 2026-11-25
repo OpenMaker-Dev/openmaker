@@ -194,25 +194,35 @@ pub fn minimal_code(push: bool, key_len: usize, value: Option<usize>) -> Option<
 /// Encode a push or leaf chunk with an explicit code. Returns `None` when the
 /// code's size classes cannot carry this key and value.
 pub fn encode_chunk(code: u8, key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(4 + key.len() + value.len());
+    encode_chunk_into(&mut out, code, key, value)?;
+    Some(out)
+}
+
+/// [`encode_chunk`] appended to `out`, which is left as it was when the
+/// code's size classes cannot carry this key and value.
+pub fn encode_chunk_into(out: &mut Vec<u8>, code: u8, key: &[u8], value: &[u8]) -> Option<()> {
     if !matches!(kind_of(code, 0).ok()?, ChunkKind::Push | ChunkKind::Leaf) {
         return None;
     }
-    let mut out = Vec::with_capacity(4 + key.len() + value.len());
+    let key_length = match ((code >> 3) & 3, key.len()) {
+        (0, 1) | (1, 2) | (2, 3) => None,
+        (3, n) if n <= 255 => Some(n as u8),
+        _ => return None,
+    };
+    // The value's length as the code writes it: none, one byte or two.
+    let (length, length_bytes) = match (code & 7, value.len()) {
+        (0, 0) | (1, 1) | (2, 2) | (3, 4) | (4, 6) | (5, 8) => ([0, 0], 0),
+        (6, n) if n <= 255 => ([n as u8, 0], 1),
+        (7, n) if n <= 65535 => ((n as u16).to_be_bytes(), 2),
+        _ => return None,
+    };
     out.push(code);
-    match ((code >> 3) & 3, key.len()) {
-        (0, 1) | (1, 2) | (2, 3) => {}
-        (3, n) if n <= 255 => out.push(n as u8),
-        _ => return None,
-    }
+    out.extend(key_length);
     out.extend_from_slice(key);
-    match (code & 7, value.len()) {
-        (0, 0) | (1, 1) | (2, 2) | (3, 4) | (4, 6) | (5, 8) => {}
-        (6, n) if n <= 255 => out.push(n as u8),
-        (7, n) if n <= 65535 => out.extend_from_slice(&(n as u16).to_be_bytes()),
-        _ => return None,
-    }
+    out.extend_from_slice(&length[..length_bytes]);
     out.extend_from_slice(value);
-    Some(out)
+    Some(())
 }
 
 /// One segment of a hierarchical key, borrowed from the slot buffer.

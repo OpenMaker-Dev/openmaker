@@ -55,34 +55,50 @@ impl RidList {
     fn from_entries<'e>(entries: impl Iterator<Item = (&'e [u8], &'e [u8])>) -> Result<Self> {
         let mut list = Self::new();
         for (key, value) in entries {
-            let bad = |reason| Error::BadValue {
-                path: format!("{key:02x?}"),
-                reason,
-            };
-            let id = serial::decode(key).ok_or_else(|| bad("RID key is not a serial key"))?;
-            if value.is_empty() {
-                list.insert(id);
-                continue;
-            }
-            if id % 32 != 0 || value.len() % 4 != 0 {
-                return Err(bad("RID bitmap run is misaligned"));
-            }
-            for (j, word) in value.chunks_exact(4).enumerate() {
-                let word = u32::from_be_bytes(word.try_into().expect("four bytes"));
-                if word == 0 {
-                    continue;
-                }
-                // The word's records `start..=start + 31` must be ids.
-                let start = (j as u64)
-                    .checked_mul(32)
-                    .and_then(|offset| id.checked_add(offset))
-                    .filter(|start| start.checked_add(31).is_some())
-                    .ok_or_else(|| bad("RID bitmap run passes the largest record id"))?;
-                // `start` is a multiple of 32: the word is one half of a block.
-                *list.0.entry(start / BLOCK).or_default() |= u64::from(word) << (start % BLOCK);
-            }
+            list.add(key, value)?;
         }
         Ok(list)
+    }
+
+    /// Add the records of one entry of a RID list node, its key and value
+    /// (a child of the node, as [`RidList::from_owned`] reads each), for a
+    /// reader that has the entries one at a time rather than the node.
+    pub fn add_entry(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.add(key, value)
+    }
+
+    /// [`RidList::add_entry`], inlined into the loops that decode a whole
+    /// node: a call per entry there costs a find that reads many index
+    /// entries several percent.
+    #[inline(always)]
+    fn add(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        let bad = |reason| Error::BadValue {
+            path: format!("{key:02x?}"),
+            reason,
+        };
+        let id = serial::decode(key).ok_or_else(|| bad("RID key is not a serial key"))?;
+        if value.is_empty() {
+            self.insert(id);
+            return Ok(());
+        }
+        if id % 32 != 0 || value.len() % 4 != 0 {
+            return Err(bad("RID bitmap run is misaligned"));
+        }
+        for (j, word) in value.chunks_exact(4).enumerate() {
+            let word = u32::from_be_bytes(word.try_into().expect("four bytes"));
+            if word == 0 {
+                continue;
+            }
+            // The word's records `start..=start + 31` must be ids.
+            let start = (j as u64)
+                .checked_mul(32)
+                .and_then(|offset| id.checked_add(offset))
+                .filter(|start| start.checked_add(31).is_some())
+                .ok_or_else(|| bad("RID bitmap run passes the largest record id"))?;
+            // `start` is a multiple of 32: the word is one half of a block.
+            *self.0.entry(start / BLOCK).or_default() |= u64::from(word) << (start % BLOCK);
+        }
+        Ok(())
     }
 
     /// The entries in key order, as FileMaker Server writes them
