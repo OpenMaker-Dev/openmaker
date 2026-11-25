@@ -92,7 +92,8 @@ pub struct Segments {
 }
 
 /// The marker (section 6.3): the last entry a flushed batch holds, and the
-/// highest committed position this server has heard of.
+/// committed position: the last entry of this server's log known to be
+/// committed, never past the marker's index in a copy the log writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Marker {
     pub index: u64,

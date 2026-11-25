@@ -521,8 +521,13 @@ struct Model {
     /// The checkpoint the next open reads from.
     start: Position,
     /// The highest committed position the scenario, as the leader, has
-    /// given the log, in calls that succeeded or failed.
+    /// given the log, in calls that succeeded or failed. What it gives is
+    /// never past the log's own last entry (`Log::set_committed`), but a
+    /// power loss can take entries back below it.
     committed: u64,
+    /// The highest committed position given since the last open, in calls
+    /// that succeeded: the log refuses every cut at or before it.
+    told: u64,
     appended: Position,
     /// Cuts of durable entries reported done, and those also attempted by
     /// calls that failed: the cut count `state` holds is between them.
@@ -542,6 +547,7 @@ impl Model {
             ever: BTreeMap::new(),
             start: Position::START,
             committed: 0,
+            told: 0,
             appended: Position::START,
             cuts: 0,
             cuts_attempted: 0,
@@ -1308,6 +1314,7 @@ impl<'a> Run<'a> {
             self.model.committed
         );
         assert!(!log.committed_confirmed(), "seed {seed}");
+        self.model.told = 0;
         let cut_count = log.state().values().cut_count;
         assert_eq!(opened.cut_count, cut_count, "seed {seed}");
         assert!(
@@ -1371,7 +1378,10 @@ impl<'a> Run<'a> {
             );
             log.give_up_unreadable_end(durable.index, durable.hash)
         } else {
-            let given = self.model.committed;
+            // As a leader: confirm, then cut from the entry after the
+            // durable one. A cut further on removes nothing and leaves the
+            // end unreadable: a cut never removes anything before its index.
+            let given = self.model.committed.min(durable.index);
             if let Err(e) = log.set_committed(given) {
                 assert!(log.is_poisoned(), "seed {seed}: {e}");
                 self.reached.poisoned += 1;
@@ -1379,18 +1389,18 @@ impl<'a> Run<'a> {
                 self.fail();
                 return;
             }
-            let from = durable.index + 1 + self.plan.below(3);
-            if from <= given.max(self.model.start.index) {
-                // A leader never cuts what it committed.
-                assert!(
-                    matches!(log.cut(from), Err(LogError::Refused(_))),
-                    "seed {seed}"
-                );
-                self.machine.set_bad(None);
-                self.stop(false);
-                return;
-            }
-            log.cut(from)
+            self.model.told = self.model.told.max(given);
+            let further = durable.index + 2 + self.plan.below(2);
+            let nothing = log.cut(further);
+            assert!(
+                matches!(&nothing, Ok(done) if *done == CutDone::nothing(durable)),
+                "seed {seed}: a cut from {further}: {nothing:?}"
+            );
+            assert!(
+                matches!(log.append(1, 0, 0, b""), Err(LogError::EndUnreadable(_))),
+                "seed {seed}"
+            );
+            log.cut(durable.index + 1)
         };
         self.trace.push(stamp(
             &*self.machine,
@@ -1422,10 +1432,12 @@ impl<'a> Run<'a> {
                 } else {
                     self.reached.cut_past_unreadable += 1;
                 }
-                // Whatever followed is gone, the loss accepted.
+                // Whatever followed is gone, the loss accepted, and what was
+                // committed past it with it.
                 self.model.acked.split_off(&(durable.index + 1));
                 self.model.maybe.split_off(&(durable.index + 1));
                 self.model.durable = durable.index;
+                self.model.committed = self.model.committed.min(durable.index);
                 self.model.before_advance = durable.index;
                 self.model.cuts += 1;
                 self.model.cuts_attempted = self.model.cuts_attempted.max(self.model.cuts);
@@ -1564,13 +1576,27 @@ impl<'a> Run<'a> {
 
     fn flush(&mut self, with_committed: bool) {
         let seed = self.seed;
-        // A leader gives at least the commit index it gave before: never
-        // less than the scenario has given, in calls that succeeded or not.
+        // A leader gives at least the commit index it gave before, and the
+        // log is given the lower of that and its own last entry (Raft's
+        // follower rule; every entry here matches the scenario's).
+        let last = self.model.appended.index;
         let committed = with_committed.then(|| {
-            let heard = self.model.appended.index.saturating_sub(self.plan.below(4));
-            heard.max(self.model.committed)
+            let heard = last.saturating_sub(self.plan.below(4));
+            heard.max(self.model.committed).min(last)
         });
         let log = self.log.as_mut().expect("open");
+        if self.plan.below(10) == 0 {
+            // One past the last entry is refused, with nothing written.
+            let past = last + 1 + self.plan.below(3);
+            let batch = log.batch_len();
+            assert!(
+                matches!(log.flush_batch(Some(past)), Err(LogError::Refused(_))),
+                "seed {seed}"
+            );
+            assert!(!log.is_poisoned(), "seed {seed}");
+            assert_eq!(log.batch_len(), batch, "seed {seed}");
+            assert_eq!(log.appended(), self.model.appended, "seed {seed}");
+        }
         let segments = log.segments().count;
         let flushed = log.flush_batch(committed);
         self.trace
@@ -1597,6 +1623,7 @@ impl<'a> Run<'a> {
                 self.model.durable = durable;
                 if let Some(c) = committed {
                     self.model.committed = self.model.committed.max(c);
+                    self.model.told = self.model.told.max(c);
                     assert!(log.committed_confirmed(), "seed {seed}");
                 }
             }
@@ -1616,8 +1643,16 @@ impl<'a> Run<'a> {
 
     fn set_committed(&mut self) {
         let seed = self.seed;
-        let committed = self.model.durable.max(self.model.committed);
         let log = self.log.as_mut().expect("open");
+        // Everything durable is committed, and no more can be given.
+        let committed = log.durable().index;
+        if self.plan.below(5) == 0 {
+            assert!(
+                matches!(log.set_committed(committed + 1), Err(LogError::Refused(_))),
+                "seed {seed}"
+            );
+            assert!(!log.is_poisoned(), "seed {seed}");
+        }
         let set = log.set_committed(committed);
         self.trace.push(stamp(
             &*self.machine,
@@ -1627,6 +1662,7 @@ impl<'a> Run<'a> {
         match set {
             Ok(()) => {
                 self.model.committed = self.model.committed.max(committed);
+                self.model.told = self.model.told.max(committed);
                 assert!(log.committed() >= committed, "seed {seed}");
                 assert!(log.committed_confirmed(), "seed {seed}");
             }
@@ -1653,20 +1689,23 @@ impl<'a> Run<'a> {
             );
             assert_eq!(log.appended(), self.model.appended, "seed {seed}");
             self.reached.unconfirmed += 1;
-            let given = self.model.committed;
+            let given = self.model.committed.min(log.durable().index);
             if let Err(e) = log.set_committed(given) {
                 assert!(log.is_poisoned(), "seed {seed}: {e}");
                 self.reached.poisoned += 1;
                 self.fail();
                 return;
             }
+            self.model.told = self.model.told.max(given);
         }
-        // A cut at or before the committed position, or the checkpoint
-        // (which covers only committed entries), is refused with nothing
-        // changed (section 7.1).
+        // A cut at or before a committed position given since the open, or
+        // the checkpoint (which covers only committed entries), is refused
+        // with nothing changed (section 7.1). The scenario, as the leader,
+        // never asks for one at or before the committed position it gave.
+        let refused_floor = self.model.told.max(self.model.start.index);
         let floor = self.model.committed.max(self.model.start.index);
-        if floor > 0 && self.plan.below(3) == 0 {
-            let from = 1 + self.plan.below(floor);
+        if refused_floor > 0 && self.plan.below(3) == 0 {
+            let from = 1 + self.plan.below(refused_floor);
             let log = self.log.as_mut().expect("open");
             let refused = log.cut(from);
             if !matches!(refused, Err(LogError::Refused(_))) && self.device == Device::Lying {
@@ -1678,7 +1717,7 @@ impl<'a> Run<'a> {
             }
             assert!(
                 matches!(refused, Err(LogError::Refused(_))),
-                "seed {seed}: a cut from {from} at or before {floor} gave {refused:?}"
+                "seed {seed}: a cut from {from} at or before {refused_floor} gave {refused:?}"
             );
             assert_eq!(log.appended(), self.model.appended, "seed {seed}");
             assert!(!log.is_poisoned(), "seed {seed}");
@@ -2570,6 +2609,19 @@ fn a_cut_never_reaches_committed_or_checkpointed_entries() {
     assert!(matches!(log.cut(6), Err(LogError::Refused(_))));
     assert_eq!(log.durable().index, 8);
     assert_eq!(log.cut(7).unwrap().last.index, 6);
+    // A `state` this log did not write, whose committed position is past
+    // its marker: nothing is repaired, nothing breaks, and the cut is
+    // refused.
+    let mut state = log.into_state();
+    state.update(|v| v.marker.committed = u64::MAX).unwrap();
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let (mut log, opened) = Log::open(fs, state, CONFIG, at4.position()).unwrap();
+    assert_eq!(opened.recorded_committed, u64::MAX);
+    log.set_committed(6).unwrap();
+    log.flush_batch(Some(6)).unwrap();
+    assert_eq!(log.committed(), u64::MAX);
+    assert!(matches!(log.cut(6), Err(LogError::Refused(_))));
+    assert!(!log.is_poisoned());
 }
 
 /// Entries 1, 2 and 3, each flushed as a batch of its own, entry 1
@@ -2719,9 +2771,22 @@ fn a_cut_waits_for_a_committed_position_given_since_the_open() {
     assert_eq!(opened.recorded_committed, 1);
     assert!(!log.committed_confirmed());
     assert!(matches!(log.cut(2), Err(LogError::CommittedUnconfirmed)));
-    log.set_committed(4).unwrap();
+    // A committed position is never past the log's own entries: one past
+    // the last entry a flush makes durable, or past the durable entry, is
+    // refused with nothing written, and the log goes on.
+    let five = log.append(1, 0, 0, &[5; 10]).unwrap();
+    assert!(matches!(
+        log.flush_batch(Some(6)),
+        Err(LogError::Refused(_))
+    ));
+    assert!(matches!(log.set_committed(5), Err(LogError::Refused(_))));
+    assert!(!log.is_poisoned() && !log.committed_confirmed());
+    assert_eq!((log.durable().index, log.batch_len()), (4, 1));
+    assert_eq!(log.flush_batch(Some(4)).unwrap(), five);
+    assert_eq!(log.committed(), 4);
+    log.set_committed(5).unwrap();
     assert!(matches!(log.cut(2), Err(LogError::Refused(_))));
-    assert_eq!(log.durable().index, 4);
+    assert_eq!(log.durable().index, 5);
 }
 
 /// The first review's fourth sequence: one store has one log. A second
@@ -3253,13 +3318,23 @@ fn open_watched(
     watched: &Arc<Watched>,
     config: Config,
 ) -> Result<(Log, Opened), Box<OpenFailed>> {
+    open_watched_from(sim, watched, config, Position::START)
+}
+
+/// As [`open_watched`], the log opened from `start`.
+fn open_watched_from(
+    sim: &Sim,
+    watched: &Arc<Watched>,
+    config: Config,
+    start: Position,
+) -> Result<(Log, Opened), Box<OpenFailed>> {
     let fs: Arc<dyn Fs> = watched.clone();
     let state = match State::open(&*fs, fs.lock().unwrap()) {
         Ok(state) => state,
         Err(StateError::Missing) => State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap(),
         Err(e) => panic!("{e}"),
     };
-    Log::open(fs, state, config, Position::START)
+    Log::open(fs, state, config, start)
 }
 
 /// A log of 1024-byte segments written in `batches` (each a list of
@@ -3474,6 +3549,35 @@ fn giving_up_an_unreadable_end_fences_what_may_follow() {
         log.give_up_unreadable_end(two.index, two.hash),
         Err(LogError::Refused(_))
     ));
+    drop(log);
+    // A device that drops the fresh segment's header write leaves the space
+    // the segment was made with, zeros: `state` lists a segment with no
+    // valid header, which is damage, and the open changes nothing.
+    sim.restart();
+    let fs: Arc<dyn Fs> = watched.clone();
+    let file = fs
+        .open(&format::segment_path(2), FileOptions::PLAIN)
+        .unwrap();
+    file.write_at(0, &[0; SEGMENT_HEADER as usize]).unwrap();
+    file.flush().unwrap();
+    drop(file);
+    let changes = watched.changes.load(Ordering::Relaxed);
+    match open_watched(&sim, &watched, SMALL) {
+        Err(failed) => assert!(
+            matches!(
+                failed.error,
+                LogError::Damaged(Damage {
+                    kind: DamageKind::Header(HeaderFault::Magic),
+                    segment: 2,
+                    ..
+                })
+            ),
+            "{}",
+            failed.error
+        ),
+        Ok((_, opened)) => panic!("{opened:?}"),
+    }
+    assert_eq!(watched.changes.load(Ordering::Relaxed), changes);
 }
 
 /// Giving up is done once the first slot of its `state` update is flushed:
@@ -3527,30 +3631,43 @@ fn giving_up_survives_a_crash_at_every_step() {
     assert!(done_after > 0);
 }
 
-/// The third review's fourth point: a cut at any index after the durable
-/// entry of a log that ends unreadable gives up what may follow, and says
-/// so; one at or before the durable entry ends the log before the place.
+/// The fourth review's fourth point and the fifth's second: on a log that
+/// ends unreadable, a cut from the entry after the durable one gives up
+/// what may follow, and says so; one further on removes nothing, since a
+/// cut never removes anything before its index, and the end stays
+/// unreadable; one at or before the durable entry ends the log before the
+/// place.
 #[test]
 fn a_cut_past_an_unreadable_end_gives_up_what_may_follow() {
-    for from in [2, 5] {
-        let (sim, watched, one, mut log, opened) = unreadable_after_one(53);
-        assert!(matches!(log.cut(from), Err(LogError::CommittedUnconfirmed)));
-        log.set_committed(0).unwrap();
-        let done = log.cut(from).unwrap();
-        assert_eq!(done.last, one);
-        assert_eq!(done.cut_count, Some(1));
-        assert_eq!(done.unreadable_end, opened.unreadable_end);
-        assert_eq!(done.fence, Some(2));
-        let two = log.append(2, 0, 0, b"two").unwrap();
-        log.flush_batch(None).unwrap();
-        drop(log);
-        sim.restart();
-        let (_, opened) = open_watched(&sim, &watched, SMALL).unwrap();
-        assert_eq!(opened.durable, two, "cut from {from}");
-        assert_eq!(opened.unreadable_end, None);
+    let (sim, watched, one, mut log, opened) = unreadable_after_one(53);
+    assert!(matches!(log.cut(2), Err(LogError::CommittedUnconfirmed)));
+    // No committed position past the durable entry is taken.
+    assert!(matches!(log.set_committed(2), Err(LogError::Refused(_))));
+    assert!(!log.is_poisoned());
+    assert!(!log.committed_confirmed());
+    log.set_committed(1).unwrap();
+    for further in [3, 5] {
+        assert_eq!(log.cut(further).unwrap(), CutDone::nothing(one));
+        assert!(matches!(
+            log.append(2, 0, 0, b"x"),
+            Err(LogError::EndUnreadable(_))
+        ));
     }
+    let done = log.cut(2).unwrap();
+    assert_eq!(done.last, one);
+    assert_eq!(done.cut_count, Some(1));
+    assert_eq!(done.unreadable_end, opened.unreadable_end);
+    assert_eq!(done.fence, Some(2));
+    let two = log.append(2, 0, 0, b"two").unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    sim.restart();
+    let (_, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert_eq!(opened.durable, two);
+    assert_eq!(opened.unreadable_end, None);
     // Entries 1 and 2 durable, 3's batch past the marker unreadable: a cut
-    // from 2 moves the end before the place, which no open reads again.
+    // from 2 ends the log before the place; the next open stops at entry
+    // 2's batch, of an older cut count, before it reaches the place.
     let (sim, watched, entries) = small_log(54, &[&[10], &[10], &[10]], false);
     let bad = (format::segment_path(1), 548 + 2);
     watched.bad.lock().unwrap().push(bad);
@@ -3570,4 +3687,137 @@ fn a_cut_past_an_unreadable_end_gives_up_what_may_follow() {
     let (_, opened) = open_watched(&sim, &watched, SMALL).unwrap();
     assert_eq!(opened.durable, entries[0]);
     assert_eq!(opened.unreadable_end, None);
+}
+
+/// The fifth review's first finding: a retirement shortens the run from the
+/// front, and giving up an unreadable end in the last segment is accepted
+/// after it. Three segments of 1024 bytes, entries 1 to 6 two to a segment,
+/// entry 7's batch past the marker in the third, and its mark unreadable.
+#[test]
+fn an_unreadable_end_is_given_up_after_a_retirement() {
+    let batch: &[usize] = &[100];
+    let (sim, watched, entries) = small_log(
+        55,
+        &[batch, batch, batch, batch, batch, batch, &[10]],
+        false,
+    );
+    watched
+        .bad
+        .lock()
+        .unwrap()
+        .push((format::segment_path(3), 728 + 2));
+    let (mut log, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert_eq!(opened.durable, entries[5]);
+    assert_eq!(
+        opened.unreadable_end.map(|e| (e.segment, e.offset)),
+        Some((3, 728))
+    );
+    assert_eq!(log.segments().count, 3);
+    // A checkpoint at entry 4: segments 1 and 2 are no longer needed.
+    let four = entries[3];
+    assert_eq!(log.retire(5).unwrap(), 2);
+    let done = log
+        .give_up_unreadable_end(entries[5].index, entries[5].hash)
+        .unwrap();
+    assert_eq!(done.fence, Some(4));
+    assert_eq!(log.segments(), Segments { first: 3, count: 2 });
+    let seven = log.append(2, 0, 0, b"seven").unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    sim.restart();
+    let (log, opened) = open_watched_from(&sim, &watched, SMALL, four).unwrap();
+    assert_eq!(opened.durable, seven);
+    assert_eq!(opened.unreadable_end, None);
+    let read: Vec<Position> = log
+        .read(5)
+        .unwrap()
+        .map(|e| e.unwrap().position())
+        .collect();
+    assert_eq!(read, [entries[4], entries[5], seven]);
+}
+
+/// The fifth review's third finding: a place given up is read again once
+/// a later cut of durable entries takes the log back into its segment. What
+/// was written before that cut never returns; the place is read like any
+/// other: where the log's end falls on it, the open ends unreadable again
+/// and it is given up again; where the log has grown over it, an open that
+/// cannot read it at or before the marker fails `Unreadable`, and one that
+/// can reads every entry. The test's device keeps failing reads of the
+/// place after it is written, until the test says otherwise; a real device
+/// takes a write over a failed sector.
+#[test]
+fn a_place_given_up_is_read_again_after_a_cut_back_into_its_segment() {
+    // Entries 1 and 2 in segment 1, the second ending at 548, where the
+    // next batch's mark cannot be read.
+    let (sim, watched, entries) = small_log(56, &[&[10], &[10]], true);
+    let (one, two) = (entries[0], entries[1]);
+    let seg1 = format::segment_path(1);
+    let set_bad = |bad: bool| {
+        *watched.bad.lock().unwrap() = if bad {
+            vec![(seg1.clone(), 548)]
+        } else {
+            vec![]
+        };
+    };
+    let reopen = || {
+        sim.restart();
+        open_watched(&sim, &watched, SMALL)
+    };
+    let read_all = |log: &Log| -> Vec<Position> {
+        log.read(1)
+            .unwrap()
+            .map(|e| e.unwrap().position())
+            .collect()
+    };
+    set_bad(true);
+    let (mut log, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert_eq!(opened.durable, two);
+    assert!(opened.unreadable_end.is_some());
+    log.give_up_unreadable_end(two.index, two.hash).unwrap();
+    let three = log.append(1, 0, 0, b"three").unwrap();
+    log.flush_batch(None).unwrap();
+
+    // A cut from 2 drops the fresh segment and continues at 338, in
+    // segment 1. Entry 2 again, of the same size: the log's end falls on
+    // the place again.
+    log.set_committed(1).unwrap();
+    let done = log.cut(2).unwrap();
+    assert_eq!((done.last, done.fence, done.removed), (one, None, vec![2]));
+    let two_b = log.append(2, 0, 0, &[2; 10]).unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    let (mut log, opened) = reopen().unwrap();
+    assert_eq!(opened.durable, two_b);
+    assert_eq!(
+        opened.unreadable_end.map(|e| (e.segment, e.offset)),
+        Some((1, 548))
+    );
+    log.give_up_unreadable_end(two_b.index, two_b.hash).unwrap();
+    let three_b = log.append(2, 0, 0, b"three again").unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    let (mut log, opened) = reopen().unwrap();
+    assert_eq!((opened.durable, opened.cut_count), (three_b, 3));
+    assert_eq!(read_all(&log), [one, two_b, three_b]);
+
+    // Cut back again, and a batch that covers the place.
+    log.set_committed(1).unwrap();
+    log.cut(2).unwrap();
+    let two_c = log.append(3, 0, 0, &[3; 200]).unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    match reopen() {
+        Err(failed) => assert!(
+            matches!(failed.error, LogError::Unreadable { segment: 1, .. }),
+            "{}",
+            failed.error
+        ),
+        Ok((_, opened)) => panic!("{opened:?}"),
+    }
+    set_bad(false);
+    let (log, opened) = reopen().unwrap();
+    assert_eq!((opened.durable, opened.cut_count), (two_c, 4));
+    assert_eq!(opened.unreadable_end, None);
+    assert_eq!(read_all(&log), [one, two_c]);
+    assert!(three.index == 3 && three_b.index == 3);
 }

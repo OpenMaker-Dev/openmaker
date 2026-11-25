@@ -17,9 +17,9 @@
 //!   of the next segment.
 //! - **Batches**: [`Log::append`] adds an entry to the open batch in memory;
 //!   [`Log::flush_batch`] writes the batch with synchronous writes, then
-//!   records the marker (the last entry's index and hash, and the highest
-//!   committed position heard) in `state`. An entry is durable when the
-//!   marker covers it.
+//!   records the marker (the last entry's index and hash, and the committed
+//!   position the caller gives, which never passes the log's own entries)
+//!   in `state`. An entry is durable when the marker covers it.
 //! - **Opening** ([`Log::open`]) checks the log against the marker:
 //!   everything through it must be there, whole and chained, else the log
 //!   is damaged ([`LogError::Damaged`]) and nothing is changed. Whole
@@ -33,10 +33,12 @@
 //!   was opened.
 //! - **An unreadable end**: an open that cannot read a place after the
 //!   marker ends the log there for that open and takes no appends. A cut
-//!   past it, or giving it up ([`Log::give_up_unreadable_end`], the
-//!   administrator's "accept the loss" on a single server), discards
-//!   whatever may follow it and lists a fresh segment that continues the
-//!   log from its last entry, so that no open reads past that entry again.
+//!   from the entry after the durable one, or giving it up
+//!   ([`Log::give_up_unreadable_end`], the administrator's "accept the loss"
+//!   on a single server), discards whatever may follow it for good and lists
+//!   a fresh segment that continues the log from its last entry, so that
+//!   walks move to it there. The place itself is read again only if a later
+//!   cut takes the log back into its segment and the log grows over it.
 //!
 //! The caller drives everything; nothing here runs on its own. After a
 //! write, flush or `state` update fails, the log refuses every later call
@@ -157,11 +159,12 @@ pub struct Opened {
     /// The last durable entry: the marker, moved over whatever whole
     /// batches followed it.
     pub durable: Position,
-    /// The highest committed position heard, as the marker recorded it. It
-    /// is not confirmed: a lost or unreadable copy of `state` can have taken
-    /// it back one advance (format section 1.5), so [`Log::cut`] refuses
-    /// until the caller supplies a committed position again
-    /// ([`Log::flush_batch`], [`Log::set_committed`]).
+    /// The committed position the marker recorded (see
+    /// [`Log::set_committed`] for what a caller gives). It is not
+    /// confirmed: a lost or unreadable copy of `state` can have taken it
+    /// back one advance (format section 1.5), so [`Log::cut`] refuses until
+    /// the caller supplies a committed position again ([`Log::flush_batch`],
+    /// [`Log::set_committed`]).
     pub recorded_committed: u64,
     /// The cut count `state` holds: the batches after the marker that carry
     /// it are the only ones kept.
@@ -235,15 +238,17 @@ pub struct CutDone {
     /// and appends are taken again.
     pub unreadable_end: Option<UnreadableEnd>,
     /// The segment `state` now lists after the one the log ended in, whose
-    /// header continues the log from `last`: no walk reads past `last` in
-    /// the segment it ended in again (format section 3.9).
+    /// header continues the log from `last`: walks move to it from `last`
+    /// and read nothing further of the segment the log ended in, until a
+    /// later cut of durable entries drops it (format section 3.9).
     pub fence: Option<u64>,
     /// The numbers of the segment files removed.
     pub removed: Vec<u64>,
 }
 
 impl CutDone {
-    fn nothing(last: Position) -> Self {
+    /// A cut that found nothing at or after its index: nothing changed.
+    pub fn nothing(last: Position) -> Self {
         CutDone {
             last,
             unflushed: 0,
@@ -479,8 +484,9 @@ impl fmt::Debug for Log {
 #[derive(Clone, Copy, Debug)]
 struct Unreadable {
     end: UnreadableEnd,
-    /// The segment the log ends in, as an index into the run.
-    seg: usize,
+    /// The number of the segment the log ends in: a number, not a place in
+    /// the run, which a retirement shortens from the front.
+    segment: u64,
 }
 
 /// A failed read: [`LogError::Unreadable`] when the device failed to read,
@@ -544,8 +550,8 @@ fn segment_for(segs: &[Seg], index: u64) -> Option<usize> {
 struct Recovered {
     segs: Vec<Seg>,
     write: Option<u64>,
-    /// The segment the log ends in, as an index into the run.
-    end_seg: Option<usize>,
+    /// The number of the segment the log ends in.
+    end_segment: Option<u64>,
     durable: Position,
     opened: Opened,
 }
@@ -680,8 +686,8 @@ impl Log {
                     committed_confirmed: false,
                     unreadable: recovered.opened.unreadable_end.map(|end| Unreadable {
                         end,
-                        seg: recovered
-                            .end_seg
+                        segment: recovered
+                            .end_segment
                             .expect("an open that ended unreadable ended in a segment"),
                     }),
                     batch: Vec::new(),
@@ -1009,7 +1015,7 @@ impl Log {
 
         Ok(Recovered {
             write: end.map(|(_, offset)| offset),
-            end_seg: end.map(|(seg, _)| seg),
+            end_segment: end.map(|(seg, _)| segs[seg].number),
             segs,
             durable: last,
             opened: Opened {
@@ -1066,7 +1072,8 @@ impl Log {
         self.appended
     }
 
-    /// The highest committed position heard, as the marker records it.
+    /// The committed position the marker records (see
+    /// [`Log::set_committed`]).
     pub fn committed(&self) -> u64 {
         self.state.values().marker.committed
     }
@@ -1261,9 +1268,11 @@ impl Log {
     }
 
     /// Write the open batch and record the marker over it (format section
-    /// 3.8), with `committed`, when given, as the highest committed position
-    /// heard (it never goes down; giving one confirms it, see
-    /// [`Log::cut`]). Returns the durable position.
+    /// 3.8), with `committed`, when given, as the committed position (it
+    /// never goes down; giving one confirms it, see [`Log::cut`]). Returns
+    /// the durable position. Refused, with nothing written and the log
+    /// going on, when `committed` is past the last entry this flush makes
+    /// durable (see [`Log::set_committed`] for what a caller gives).
     ///
     /// The entries that fit in the current segment are written there as one
     /// batch, with one synchronous write; the rest go to the next segment as
@@ -1278,6 +1287,11 @@ impl Log {
     pub fn flush_batch(&mut self, committed: Option<u64>) -> Result<Position, LogError> {
         self.usable()?;
         self.check_lock()?;
+        if committed.is_some_and(|c| c > self.appended.index) {
+            return Err(LogError::Refused(
+                "a committed position past the log's last entry",
+            ));
+        }
         let values = *self.state.values();
         let recorded = values.marker.committed;
         let new_committed = committed.map_or(recorded, |c| c.max(recorded));
@@ -1342,13 +1356,28 @@ impl Log {
         Ok(last)
     }
 
-    /// Record the highest committed position heard, `committed`, in the
-    /// marker on its own (it never goes down): one write and one flush of
-    /// `state` when it rises. It confirms the committed position for
-    /// [`Log::cut`] either way.
+    /// Record the committed position `committed` in the marker on its own
+    /// (it never goes down): one write and one flush of `state` when it
+    /// rises. It confirms the committed position for [`Log::cut`] either
+    /// way. Refused, with nothing written and the log going on, when it is
+    /// past the durable entry.
+    ///
+    /// What a caller gives is the last entry of this log known to be
+    /// committed, never past the log's own entries: on a single server the
+    /// last entry it made durable; on a cluster the lower of the leader's
+    /// committed position and the last entry of this log known to match the
+    /// leader's (Raft's follower rule). The bound matters: a follower that
+    /// recorded its leader's committed position while its own log held
+    /// stale entries from before it would refuse, for good, the cut that
+    /// removes them (format section 3.8).
     pub fn set_committed(&mut self, committed: u64) -> Result<(), LogError> {
         self.usable()?;
         self.check_lock()?;
+        if committed > self.durable.index {
+            return Err(LogError::Refused(
+                "a committed position past the durable entry",
+            ));
+        }
         if committed > self.committed() {
             self.set_marker(self.durable, committed, None)?;
         }
@@ -1394,9 +1423,11 @@ impl Log {
     /// committed), and before the first entry the log holds.
     ///
     /// - When the log ends at a place it could not read
-    ///   ([`Opened::unreadable_end`]) and `from` is after the durable
-    ///   entry, what may follow that place is given up, as by
-    ///   [`Log::give_up_unreadable_end`].
+    ///   ([`Opened::unreadable_end`]) and `from` is the entry after the
+    ///   durable one, what may follow that place is given up, as by
+    ///   [`Log::give_up_unreadable_end`]. A `from` further on removes
+    ///   nothing, as on any log that holds nothing there, and the log still
+    ///   ends unreadable: a cut never removes anything before `from`.
     /// - Entries of the open batch are dropped in memory.
     /// - When the marker covers entries that are cut, one `state` update,
     ///   written to both slots, lowers the marker, raises the cut count and
@@ -1418,7 +1449,7 @@ impl Log {
                 "entries at or before the committed position are never cut",
             ));
         }
-        if self.unreadable.is_some() && from > self.durable.index {
+        if self.unreadable.is_some() && from == self.durable.index + 1 {
             return self.give_up();
         }
         if from > self.appended.index {
@@ -1548,10 +1579,13 @@ impl Log {
     /// naming the entry after that one as its first and continuing the
     /// chain from it, is written synchronously; then one `state` update,
     /// written to both slots, lists it and raises the cut count. From then
-    /// every walk moves to that segment from the last verified entry and
-    /// reads nothing past it in the segment the log ended in (format
-    /// section 3.5, rule 1), and nothing written before is part of the log
-    /// after it, whatever an open can read later. Appends are taken again.
+    /// nothing written before is part of the log, whatever an open can read
+    /// later: it carries an older cut count. Every walk moves to the fresh
+    /// segment from the last verified entry and reads nothing further of
+    /// the segment the log ended in (format section 3.5, rule 1), until a
+    /// later cut of durable entries drops the fresh segment and the log
+    /// grows in that segment again, over the place too. Appends are taken
+    /// again.
     ///
     /// It needs no committed position: it removes nothing at or before the
     /// durable entry, which the marker covers (server-storage.md 6.3).
@@ -1587,7 +1621,7 @@ impl Log {
         let unreadable = self.unreadable.expect("the log ends unreadable");
         // No append is taken while the log ends unreadable.
         let last = self.durable;
-        if unreadable.seg + 1 != self.segs.len() {
+        if self.segs.last().map(|s| s.number) != Some(unreadable.segment) {
             return Err(LogError::Refused(
                 "state lists segments after the one the log ends in",
             ));
