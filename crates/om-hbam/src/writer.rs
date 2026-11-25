@@ -243,6 +243,31 @@ pub fn unwritable(parents: &[&[u8]], node: &OwnedNode, limit: usize) -> Vec<Unwr
     out
 }
 
+/// What [`unwritable`] reports, at most one node, for a node with no
+/// children at the key path `path` (its own segment last), a list or not,
+/// holding `value` (empty for none): the same check on borrowed parts, as
+/// an import makes it for every node it reads. `None` for an empty path,
+/// which is no node.
+pub fn unwritable_key<S: AsRef<[u8]>>(path: &[S], list: bool, value: &[u8]) -> Option<Unwritable> {
+    let mut open = 0;
+    for (i, segment) in path.iter().enumerate() {
+        let segment = segment.as_ref();
+        let (list, value) = if i + 1 == path.len() {
+            (list, value)
+        } else {
+            (true, &[][..])
+        };
+        if let Some(reason) = refusal_of(segment, list, value, i + 1, open) {
+            return Some(Unwritable {
+                path: path[..=i].iter().map(|s| s.as_ref().to_vec()).collect(),
+                reason,
+            });
+        }
+        open += push_len(segment);
+    }
+    None
+}
+
 /// Whether `node` holds a value: an inline one, or one chunked into pieces
 /// (2.3, as a file stores a value over 1000 bytes). A key is either a value
 /// or a list (2.2: "Can't have both data and children"), so nothing may be
@@ -442,6 +467,29 @@ mod tests {
             let found = unwritable_in_tree(&root, 10);
             assert_eq!(found.is_empty(), writable, "case {i}: {found:?}");
             assert_eq!(rebuild(&root, &superblock).is_ok(), writable, "case {i}");
+            // Each case is a chain: the check of its last node on borrowed
+            // parts finds what the walk finds, and so for an empty list there.
+            let mut chain = vec![&node];
+            while let [child] = &chain[chain.len() - 1].children[..] {
+                chain.push(child);
+            }
+            let path: Vec<&[u8]> = chain.iter().map(|n| &n.segment[..]).collect();
+            let last = chain[chain.len() - 1];
+            let value = last.value.as_deref().unwrap_or_default();
+            assert_eq!(
+                unwritable_key(&path, false, value),
+                unwritable(&[], &node, 1).pop(),
+                "case {i}"
+            );
+            let list = OwnedNode {
+                push: true,
+                ..OwnedNode::list(last.segment.clone(), Vec::new())
+            };
+            assert_eq!(
+                unwritable_key(&path, true, &[]),
+                unwritable(&path[..path.len() - 1], &list, 1).pop(),
+                "case {i}, a list"
+            );
         }
         // Against a real tree: beneath a committed value, inline or chunked,
         // nothing may be put; beneath a list or a missing node, it may.
@@ -476,6 +524,11 @@ mod tests {
         assert_eq!(
             unwritable(&parents, &leaf(vec![2], 1), 10)[0].path.len(),
             MAX_DEPTH
+        );
+        let path = [&parents[..], &[&[2]]].concat();
+        assert_eq!(
+            unwritable_key(&path, false, &[3]),
+            unwritable(&parents, &leaf(vec![2], 1), 1).pop()
         );
     }
 

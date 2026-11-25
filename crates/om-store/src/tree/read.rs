@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::key::{self, Key};
 use super::{fault, Direction, Error, Node, Root};
 use crate::page::{
-    Fault, Hash, Page, PageKind, PageNo, PageStore, Refs, OVERFLOW_DATA, SPILL_INLINE,
+    Fault, Hash, ItemView, Page, PageKind, PageNo, PageStore, Refs, OVERFLOW_DATA, SPILL_INLINE,
 };
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -349,7 +349,11 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
 
     /// The whole key of item `i` of a leaf.
     pub(crate) fn item_key(&self, page: &Page, i: usize) -> Result<Vec<u8>> {
-        let item = page.item(i);
+        self.key_of(page, &page.item(i))
+    }
+
+    /// The whole key of `item`, an item of the leaf `page`.
+    fn key_of(&self, page: &Page, item: &ItemView<'_>) -> Result<Vec<u8>> {
         let (part, complete) = item.key_part();
         if complete {
             return Ok(part.to_vec());
@@ -366,7 +370,11 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
 
     /// The node item `i` of a leaf holds.
     pub(crate) fn item_node(&self, page: &Page, i: usize) -> Result<Node> {
-        let item = page.item(i);
+        self.node_of(page, &page.item(i))
+    }
+
+    /// The node `item`, an item of the leaf `page`, holds.
+    fn node_of(&self, page: &Page, item: &ItemView<'_>) -> Result<Node> {
         let value = match item.value_inline() {
             Some(value) => value.to_vec(),
             None => {
@@ -397,6 +405,15 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
     /// How item `i`'s key compares with `key`.
     pub(crate) fn cmp_item(&self, page: &Page, i: usize, key: &[u8]) -> Result<Ordering> {
         self.cmp_stored(self.stored_item(page, i), key)
+    }
+
+    /// How item `i`'s key compares with `key` where the page's own bytes
+    /// decide it, as [`Pages::cmp_item`] decides it before it reads an
+    /// overflow page; `None` when that needs the key's overflow pages.
+    /// Reads nothing, so fails nothing.
+    pub(crate) fn cmp_known(&self, page: &Page, i: usize, key: &[u8]) -> Option<Ordering> {
+        let s = self.stored_item(page, i);
+        cmp_chunk(s.part, key, &mut 0, s.len)
     }
 
     /// How the separator of child `i` compares with `key`.
@@ -511,6 +528,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             hi: hi.map(<[u8]>::to_vec),
             direction,
             stack: Vec::new(),
+            edge: Edge::First,
             state: State::Start,
         }
     }
@@ -531,6 +549,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             hi: end.map_or(Bound::Unbounded, Bound::Excluded),
             direction: Direction::Forward,
             stack: Vec::new(),
+            edge: Edge::First,
             state: State::Start,
         }
     }
@@ -672,7 +691,25 @@ pub struct Cursor<'t, 's, S: ?Sized> {
     /// The pages from the root to the current leaf, with the child (or item)
     /// each is at.
     stack: Vec<(Arc<Page>, usize)>,
+    /// What the cursor knows of the current leaf's far edge ([`Edge`]).
+    edge: Edge,
     state: State,
+}
+
+/// Whether every item of a cursor's leaf is within the far bound, as the
+/// leaf's last item (first, going backward) is ([`Cursor::within`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    /// The cursor's first step in the leaf: its item is compared alone, so
+    /// that a cursor that takes one step compares one item.
+    First,
+    /// Not compared yet: the leaf's second step compares it.
+    Unknown,
+    /// Every item of the leaf is within: none is compared alone.
+    Within,
+    /// Not shown within: each item is compared alone, as it was before
+    /// the edge was looked at.
+    Past,
 }
 
 impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
@@ -683,6 +720,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         let bound = if forward { &self.lo } else { &self.hi };
         let mut page = self.tree.top.clone();
         self.stack.clear();
+        self.edge = Edge::First;
         while page.kind() == PageKind::Index {
             let c = match bound {
                 Bound::Unbounded if forward => 0,
@@ -737,6 +775,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     fn next_leaf(&mut self) -> Result<bool> {
         let forward = self.direction == Direction::Forward;
         self.stack.pop();
+        self.edge = Edge::First;
         loop {
             let Some((page, c)) = self.stack.last_mut() else {
                 return Ok(false);
@@ -770,49 +809,83 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         }
     }
 
-    /// The item the cursor is at, if it is within the far bound. Reads no
+    /// Whether the item the cursor is at is within the far bound. Reads no
     /// more of the item than the comparison with the bound needs.
-    fn within(&self) -> Result<Option<(Arc<Page>, usize)>> {
+    ///
+    /// On the leaf's second step, if its bytes prove its keys in order
+    /// ([`Page::keys_ordered`]), its far edge (last item, first going
+    /// backward) is compared with the bound as far as the page's bytes
+    /// decide it, reading nothing ([`Pages::cmp_known`]). When they show
+    /// the edge within, every item of the leaf is, and each one's own
+    /// comparison would have been decided by the page's bytes as well: an
+    /// item whose comparison needs its overflow pages has known bytes that
+    /// start the bound, and the next item, past it where the page's bytes
+    /// show it, then lies past the bound, and so would the edge. So no
+    /// item's comparison is left out that could read a page or fail, and
+    /// the walk gives what comparing each item gives, its errors included.
+    /// Otherwise each item is compared alone.
+    fn within(&mut self) -> Result<bool> {
         let Some((leaf, i)) = self.stack.last() else {
-            return Ok(None);
+            return Ok(false);
+        };
+        let far = match self.direction {
+            Direction::Forward => &self.hi,
+            Direction::Backward => &self.lo,
+        };
+        let (Bound::Included(key) | Bound::Excluded(key)) = far else {
+            return Ok(true);
+        };
+        let inside = |order: Ordering| match (self.direction, far) {
+            (Direction::Forward, Bound::Included(_)) => order != Ordering::Greater,
+            (Direction::Forward, _) => order == Ordering::Less,
+            (Direction::Backward, Bound::Included(_)) => order != Ordering::Less,
+            (Direction::Backward, _) => order == Ordering::Greater,
         };
         let pages = &self.tree.pages;
-        let within = match (self.direction, &self.hi, &self.lo) {
-            (Direction::Forward, Bound::Included(k), _) => {
-                pages.cmp_item(leaf, *i, k)? != Ordering::Greater
+        let edge = match self.edge {
+            Edge::First => Edge::Unknown,
+            Edge::Unknown if leaf.keys_ordered() => {
+                let at = match self.direction {
+                    Direction::Forward => leaf.count().saturating_sub(1),
+                    Direction::Backward => 0,
+                };
+                match pages.cmp_known(leaf, at, key) {
+                    Some(order) if inside(order) => Edge::Within,
+                    _ => Edge::Past,
+                }
             }
-            (Direction::Forward, Bound::Excluded(k), _) => {
-                pages.cmp_item(leaf, *i, k)? == Ordering::Less
-            }
-            (Direction::Backward, _, Bound::Included(k)) => {
-                pages.cmp_item(leaf, *i, k)? != Ordering::Less
-            }
-            (Direction::Backward, _, Bound::Excluded(k)) => {
-                pages.cmp_item(leaf, *i, k)? == Ordering::Greater
-            }
-            _ => true,
+            Edge::Unknown => Edge::Past,
+            known => known,
         };
-        Ok(within.then(|| (leaf.clone(), *i)))
+        let within = edge == Edge::Within || inside(pages.cmp_item(leaf, *i, key)?);
+        self.edge = edge;
+        Ok(within)
     }
 
-    /// Moves to the next item within the bounds and returns its leaf and
-    /// place, without reading its value.
-    fn step(&mut self) -> Result<Option<(Arc<Page>, usize)>> {
+    /// Moves to the next item within the bounds, without reading its
+    /// value: whether there is one, at the cursor's place ([`Cursor::at`]).
+    fn step(&mut self) -> Result<bool> {
         let moved = match self.state {
-            State::Done => return Ok(None),
+            State::Done => return Ok(false),
             State::Start => self.position(),
             State::Running => self.advance(),
         };
         self.state = State::Running;
         let at = match moved {
             Ok(true) => self.within(),
-            Ok(false) => Ok(None),
+            Ok(false) => Ok(false),
             Err(e) => Err(e),
         };
-        if !matches!(at, Ok(Some(_))) {
+        if !matches!(at, Ok(true)) {
             self.state = State::Done;
         }
         at
+    }
+
+    /// The leaf the cursor is in and its place there, lent: after a step
+    /// that found an item, that item's.
+    fn at(&self) -> Option<(&Page, usize)> {
+        self.stack.last().map(|(leaf, i)| (&**leaf, *i))
     }
 
     /// The leaf the cursor is in, to name in an error.
@@ -823,19 +896,54 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     }
 }
 
+impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
+    /// The next item, as [`Iterator::next`] gives it, but with its key lent
+    /// to `f` rather than given: from its page when the page holds the key
+    /// whole (a key of up to the 1,024 bytes a spilled item keeps in its
+    /// page), else read whole first. For a reader that needs only part of
+    /// each key, or a copy into its own buffer.
+    pub fn next_lent<T>(&mut self, f: impl FnOnce(&[u8], Node) -> T) -> Option<Result<T>> {
+        let item = self.step().and_then(|found| {
+            let Some((leaf, i)) = self.at().filter(|_| found) else {
+                return Ok(None);
+            };
+            let pages = &self.tree.pages;
+            let item = leaf.item(i);
+            // The key before the value, as [`Iterator::next`] reads them: a
+            // key that breaks the format is the error, before any page of
+            // the value is read.
+            let whole;
+            let key = match item.key_part() {
+                (key, true) => key,
+                (_, false) => {
+                    whole = pages.key_of(leaf, &item)?;
+                    whole.as_slice()
+                }
+            };
+            let node = pages.node_of(leaf, &item)?;
+            Ok(Some(f(key, node)))
+        });
+        if item.is_err() {
+            self.state = State::Done;
+        }
+        item.transpose()
+    }
+}
+
 impl<'t, 's, S: PageStore + ?Sized> Iterator for Cursor<'t, 's, S> {
     type Item = Result<Item>;
 
     fn next(&mut self) -> Option<Result<Item>> {
-        let item = self.step().and_then(|at| {
-            at.map(|(leaf, i)| {
-                let pages = &self.tree.pages;
-                Ok(Item {
-                    key: Key(pages.item_key(&leaf, i)?),
-                    node: pages.item_node(&leaf, i)?,
-                })
-            })
-            .transpose()
+        let item = self.step().and_then(|found| {
+            let Some((leaf, i)) = self.at().filter(|_| found) else {
+                return Ok(None);
+            };
+            let pages = &self.tree.pages;
+            let item = leaf.item(i);
+            Ok(Some(Item {
+                key: Key(pages.key_of(leaf, &item)?),
+                node: pages.node_of(leaf, &item)?,
+            }))
         });
         if item.is_err() {
             self.state = State::Done;
@@ -874,7 +982,8 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
             self.tree.range(lower, bound, Direction::Backward)
         };
         // Only keys are read on the way: the node read is the child's own.
-        let Some((leaf, i)) = cursor.step()? else {
+        let found = cursor.step()?;
+        let Some((leaf, i)) = cursor.at().filter(|_| found) else {
             return Ok(None);
         };
         let orphan = || {
@@ -889,12 +998,12 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
         // in its page; then the found key's overflow pages are read as far
         // as the child's key goes, and no further.
         let child_key = pages
-            .key_through_segment(&leaf, i, self.prefix.len())?
+            .key_through_segment(leaf, i, self.prefix.len())?
             .ok_or_else(orphan)?;
         let child_key = child_key.as_slice();
         let child_end = child_key.len();
         let node = if child_end == item.key_len {
-            pages.item_node(&leaf, i)?
+            pages.item_node(leaf, i)?
         } else if forward {
             // The child sorts before everything under it.
             return Err(orphan());
@@ -931,7 +1040,7 @@ impl<'t, 's, S: PageStore + ?Sized> Iterator for Children<'t, 's, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::{Builder, EntryPages, MemStore, Numbering};
+    use crate::page::{Builder, EntryPages, MemStore, Numbering, PageFault, KIND_VALUE};
     use crate::tree::{check, Edit};
 
     /// Applies an entry in a unit of its own, committed.
@@ -1019,5 +1128,215 @@ mod tests {
             pages.cmp_separator(&index, 1, b"b").unwrap(),
             Ordering::Less
         );
+    }
+
+    /// What a walk gives: its items' keys and nodes, ending at an error.
+    type Walked = Vec<Result<(Vec<u8>, Node)>>;
+
+    /// What a walk of a one-leaf tree gives when each item is compared with
+    /// the far bound before it is given, key before value, ending at the
+    /// first item past the bound or the first error: the cursor's
+    /// reference ([`Cursor::within`]).
+    fn compared_each(
+        store: &MemStore,
+        root: Root,
+        far: Bound<&[u8]>,
+        direction: Direction,
+    ) -> Walked {
+        let pages = Pages { store };
+        let leaf = pages.root(root).unwrap();
+        let order: Vec<usize> = match direction {
+            Direction::Forward => (0..leaf.count()).collect(),
+            Direction::Backward => (0..leaf.count()).rev().collect(),
+        };
+        let mut out = Vec::new();
+        for i in order {
+            let inside = match far {
+                Bound::Unbounded => Ok(true),
+                Bound::Included(k) | Bound::Excluded(k) => {
+                    pages.cmp_item(&leaf, i, k).map(|o| match (direction, far) {
+                        (Direction::Forward, Bound::Included(_)) => o != Ordering::Greater,
+                        (Direction::Forward, _) => o == Ordering::Less,
+                        (Direction::Backward, Bound::Included(_)) => o != Ordering::Less,
+                        (Direction::Backward, _) => o == Ordering::Greater,
+                    })
+                }
+            };
+            let item = inside.and_then(|inside| {
+                inside
+                    .then(|| Ok((pages.item_key(&leaf, i)?, pages.item_node(&leaf, i)?)))
+                    .transpose()
+            });
+            match item {
+                Ok(Some(item)) => out.push(Ok(item)),
+                Ok(None) => break,
+                Err(e) => {
+                    out.push(Err(e));
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// The same walk through the cursor, as items and lent.
+    fn walked(
+        store: &MemStore,
+        root: Root,
+        far: Bound<&[u8]>,
+        direction: Direction,
+    ) -> [Walked; 2] {
+        let tree = Tree::open(store, root).unwrap();
+        let (lo, hi) = match direction {
+            Direction::Forward => (Bound::Unbounded, far),
+            Direction::Backward => (far, Bound::Unbounded),
+        };
+        let items = tree
+            .range(lo, hi, direction)
+            .map(|item| item.map(|item| (item.key.0, item.node)))
+            .collect();
+        let mut cursor = tree.range(lo, hi, direction);
+        let mut lent = Vec::new();
+        while let Some(item) = cursor.next_lent(|key, node| (key.to_vec(), node)) {
+            lent.push(item);
+        }
+        [items, lent]
+    }
+
+    /// The key of the one-segment path `segment`.
+    fn key_of_segment(segment: &[u8]) -> Vec<u8> {
+        key::encode(&[segment])
+    }
+
+    /// A segment that starts with 1,200 bytes `p`, so that its key's first
+    /// 1,024 bytes, all that a spilled item keeps in its page, are the
+    /// same for every such segment, then `tail`.
+    fn long(tail: &[u8]) -> Vec<u8> {
+        [&[b'p'; 1200][..], tail].concat()
+    }
+
+    /// Review of #769, rule 4: a leaf can hold, in an order its parse
+    /// accepts, keys that its bytes cannot order (two spilled keys with the
+    /// same first 1,024 bytes, or a spilled key before a longer whole key
+    /// that starts with those bytes) and that are out of order. A cursor
+    /// that took the leaf's far edge as a bound for every item gave items
+    /// past the bound; it gives what comparing each item gives, in both
+    /// directions.
+    #[test]
+    fn a_leaf_whose_bytes_do_not_order_it_is_compared_item_by_item() {
+        let spilled = |tail: &[u8]| (KIND_VALUE, key_of_segment(&long(tail)), vec![7; 3000]);
+        let whole = |tail: &[u8]| (KIND_VALUE, key_of_segment(&long(tail)), vec![7; 10]);
+        let short = |s: &[u8]| (KIND_VALUE, key_of_segment(s), vec![7; 10]);
+        let cases = [
+            // Forward, bound between the tails: the second item is past it.
+            (
+                vec![short(b"a"), spilled(b"z"), whole(b"c")],
+                b"m",
+                Direction::Forward,
+            ),
+            (
+                vec![short(b"a"), spilled(b"z"), spilled(b"c")],
+                b"m",
+                Direction::Forward,
+            ),
+            // Backward, the same mirrored.
+            (
+                vec![whole(b"m"), spilled(b"a"), short(b"q")],
+                b"f",
+                Direction::Backward,
+            ),
+            (
+                vec![spilled(b"m"), spilled(b"a"), short(b"q")],
+                b"f",
+                Direction::Backward,
+            ),
+        ];
+        for (n, (items, tail, direction)) in cases.into_iter().enumerate() {
+            let store = MemStore::new(Numbering::Sequential);
+            let root = crate::tree::built::tree(&store, &[items], &[]).root;
+            assert!(!Pages { store: &store }.root(root).unwrap().keys_ordered());
+            let bound = key_of_segment(&long(tail));
+            for far in [Bound::Included(&bound[..]), Bound::Excluded(&bound[..])] {
+                let expected = compared_each(&store, root, far, direction);
+                assert_eq!(expected.len(), 1, "case {n}: one item before the bound");
+                for got in walked(&store, root, far, direction) {
+                    assert_eq!(got, expected, "case {n}, {far:?}");
+                }
+            }
+        }
+    }
+
+    /// Review of #769, rule 3: the far edge's comparison reads nothing, so
+    /// a read that fails fails the item whose comparison makes it, once,
+    /// and the walk ends with that error as when each item is compared. A
+    /// cursor that read the edge's overflow page to compare it, dropped the
+    /// failure and read the page again for the same item gave the item.
+    #[test]
+    fn a_failed_read_of_a_compared_key_ends_the_walk() {
+        let store = MemStore::new(Numbering::Sequential);
+        let items = vec![
+            (KIND_VALUE, key_of_segment(b"a"), vec![7; 10]),
+            (KIND_VALUE, key_of_segment(&long(b"c")), vec![7; 3000]),
+        ];
+        let built = crate::tree::built::tree(&store, &[items], &[]);
+        let page = built.overflow[1][0];
+        let bound = key_of_segment(&long(b"z"));
+        let far = Bound::Excluded(&bound[..]);
+        store.fail_reads(page, 1);
+        let expected = compared_each(&store, built.root, far, Direction::Forward);
+        assert!(matches!(expected[..], [Ok(_), Err(_)]), "{expected:?}");
+        let tree = Tree::open(&store, built.root).unwrap();
+        for lent in [false, true] {
+            store.fail_reads(page, 1);
+            let mut cursor = tree.range(Bound::Unbounded, far, Direction::Forward);
+            let mut got = Vec::new();
+            loop {
+                let item = if lent {
+                    cursor.next_lent(|key, node| (key.to_vec(), node))
+                } else {
+                    cursor
+                        .next()
+                        .map(|item| item.map(|item| (item.key.0, item.node)))
+                };
+                let Some(item) = item else { break };
+                got.push(item);
+            }
+            assert_eq!(got, expected, "lent: {lent}");
+        }
+    }
+
+    /// Review of #769, rule 5: a walk reads an item's key before its value,
+    /// so a spilled key that breaks the format is the error, as
+    /// [`Iterator::next`] reports it, before a page holding only the value
+    /// fails.
+    #[test]
+    fn a_broken_key_is_the_error_before_its_value_is_read() {
+        let store = MemStore::new(Numbering::Sequential);
+        let mut key = vec![b'p'; 1024];
+        key.extend_from_slice(b"\x00\x07\x00\x01");
+        let value = vec![7; OVERFLOW_DATA];
+        let built = crate::tree::built::tree(&store, &[vec![(KIND_VALUE, key, value)]], &[]);
+        // The first overflow page holds the key's end and the value's start,
+        // the second only the value's end.
+        assert_eq!(built.overflow[0].len(), 2);
+        store.fail_reads(built.overflow[0][1], u32::MAX);
+        let tree = Tree::open(&store, built.root).unwrap();
+        let next = tree.walk::<Vec<u8>>(&[]).next().unwrap().unwrap_err();
+        assert!(
+            matches!(
+                next,
+                Error::Page(PageFault {
+                    fault: Fault::Malformed(_),
+                    ..
+                })
+            ),
+            "{next}"
+        );
+        let lent = tree
+            .walk::<Vec<u8>>(&[])
+            .next_lent(|_, _| ())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(lent, next);
     }
 }

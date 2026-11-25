@@ -8,11 +8,14 @@
 
 pub mod apply;
 pub mod entry;
+pub mod incident;
+pub mod log;
 pub mod model;
 pub mod os;
 pub mod page;
 pub mod pagefile;
 pub mod sim;
 pub mod state;
+pub mod store;
 pub mod sys;
 pub mod tree;
