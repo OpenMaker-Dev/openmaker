@@ -2,37 +2,47 @@
 //! without a base (`docs/server-storage.md` section 9; `docs/authoring.md`,
 //! "Comparing designs"): the operation [`COMPARE_DESIGNS`].
 //!
+//! **Identities first.** Before a name is decoded or anything is classified
+//! or hashed, every object's identity is checked: its key has the shape its
+//! catalog's spec gives (a font's two bytes, a base directory's four, a
+//! serial key elsewhere), no two objects of one kind (and table) report one
+//! id, and no member is one the decoders could read differently. Any failure
+//! refuses the comparison ([`CompareError::Identity`]).
+//!
 //! **Matching.** With a base, an object of the source is the target's
 //! object of the same kind and id when the base has that object too; one
 //! the base lacks is new, even when the other file has an object with its
 //! id (two files can give one id to unrelated new objects). Without a
-//! base, two objects are matched only when kind, id and name all agree,
-//! the name decoded on both sides and equal byte for byte; one agreeing in
-//! id alone, or in name alone, is listed as a possible match and never
+//! base, two objects of one kind and id are matched when their names,
+//! decoded on both sides, are equal byte for byte, or when neither has a
+//! name and every class of their content is equal: that is no proof that
+//! they share a history, and a deploy must not take it for one. Agreeing
+//! in id alone, or in name alone, is listed as a possible match and never
 //! matched. A field (and a table's field catalog) is matched only when its
-//! table is.
+//! table is, by the same test. Every object matched with none is listed
+//! once, in the file it is in.
 //!
 //! **Differences.** Every matched object is compared by each class of its
-//! content ([`super::design`]), whether it has a design revision or not:
+//! pieces ([`super::design`]), whether it has a design revision or not:
 //! the classes' projections of the two objects are hashed and compared in
 //! the process, and only the [`Difference`] is reported. With a base, each
 //! side is also compared with the base, and a side changed an object when
-//! its Design content, its stored secrets or its unidentified content
-//! differs from the base's.
+//! its Design, its step data or its unidentified pieces differ from the
+//! base's.
 //!
-//! **What a report carries.** Kinds, ids, names, classes of difference and
+//! **What a report carries.** Kinds, ids, names, the parts that differ and
 //! design revisions, and nothing else: no edit token, no hash of content
-//! outside Design, no content. A name is reported only where it is Design
-//! content.
+//! outside Design, no content. A name is reported only where it is one
+//! Design piece.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 
 use super::design::{classify, Class, Classified, DesignRevision, Refusal};
 use super::rules::{Group, CATALOGS};
-use super::{objects, Kind, Object};
+use super::{objects, secrets, Kind, Object};
 use crate::container::HbamFile;
-use crate::slot::KeySegment;
+use crate::slot::{be_uint, KeySegment};
 use crate::tree::{KeyTree, OwnedNode};
 
 /// The operation's stable id: the `om-author` command and its MCP tool
@@ -43,104 +53,64 @@ pub const COMPARE_DESIGNS: &str = "compare_designs";
 /// are counted in [`Comparison::possible_matches_left_out`].
 pub const NAME_CANDIDATES: usize = 8;
 
-/// How two versions of an object differ, decided from their bytes class
-/// by class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Difference {
-    /// No content differs; modification stamps may.
-    Same,
-    /// Design content differs (other content may too).
-    Design,
-    /// Stored secrets differ, every differing Secret path an identified
-    /// credential, and no Design or unidentified content; Data or Derived
-    /// content as said.
-    Secrets { data: bool, derived: bool },
-    /// Only Data or Derived content differs, as said (at least one).
-    Outside { data: bool, derived: bool },
-    /// Unidentified content differs: a path in no group, or Secret because
-    /// it could not be identified; Design content too when `design`.
-    Unidentified { design: bool },
+/// How two versions of an object differ: which kinds of piece differ,
+/// decided from their bytes. All false: the same (modification stamps may
+/// differ).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Difference {
+    pub design: bool,
+    /// The step data of a script or a button: compared as bytes, not read.
+    pub step_data: bool,
+    /// A piece no rule names.
+    pub unidentified: bool,
+    pub data: bool,
+    pub derived: bool,
 }
 
 impl Difference {
+    /// The parts' names in a report, in this order.
+    pub const PARTS: [&'static str; 5] = ["design", "step_data", "unidentified", "data", "derived"];
+
     /// The difference between two objects' class digests.
     pub(crate) fn of(a: &[[u8; 32]; 5], b: &[[u8; 32]; 5]) -> Self {
         let differs = |class: Class| a[class as usize] != b[class as usize];
-        let (data, derived) = (differs(Class::Data), differs(Class::Derived));
-        if differs(Class::Unidentified) {
-            Difference::Unidentified {
-                design: differs(Class::Design),
-            }
-        } else if differs(Class::Design) {
-            Difference::Design
-        } else if differs(Class::Credential) {
-            Difference::Secrets { data, derived }
-        } else if data || derived {
-            Difference::Outside { data, derived }
-        } else {
-            Difference::Same
+        Difference {
+            design: differs(Class::Design),
+            step_data: differs(Class::StepData),
+            unidentified: differs(Class::Unidentified),
+            data: differs(Class::Data),
+            derived: differs(Class::Derived),
         }
     }
 
-    /// Its name in a report.
-    pub fn name(self) -> &'static str {
-        match self {
-            Difference::Same => "same",
-            Difference::Design => "design",
-            Difference::Secrets {
-                data: false,
-                derived: false,
-            } => "secrets",
-            Difference::Secrets {
-                data: true,
-                derived: false,
-            } => "secrets_and_data",
-            Difference::Secrets {
-                data: false,
-                derived: true,
-            } => "secrets_and_derived",
-            Difference::Secrets {
-                data: true,
-                derived: true,
-            } => "secrets_data_and_derived",
-            Difference::Outside {
-                data: true,
-                derived: false,
-            } => "data",
-            Difference::Outside {
-                data: false,
-                derived: true,
-            } => "derived",
-            Difference::Outside { .. } => "data_and_derived",
-            Difference::Unidentified { design: false } => "unidentified",
-            Difference::Unidentified { design: true } => "unidentified_and_design",
-        }
+    /// Whether nothing differs.
+    pub fn is_same(self) -> bool {
+        self == Difference::default()
     }
 
-    /// Every name [`Difference::name`] gives, in that order.
-    pub const NAMES: [&'static str; 11] = [
-        "same",
-        "design",
-        "secrets",
-        "secrets_and_data",
-        "secrets_and_derived",
-        "secrets_data_and_derived",
-        "data",
-        "derived",
-        "data_and_derived",
-        "unidentified",
-        "unidentified_and_design",
-    ];
+    /// The names of the parts that differ, in [`Difference::PARTS`] order;
+    /// none for the same.
+    pub fn parts(self) -> Vec<&'static str> {
+        let flags = [
+            self.design,
+            self.step_data,
+            self.unidentified,
+            self.data,
+            self.derived,
+        ];
+        Self::PARTS
+            .into_iter()
+            .zip(flags)
+            .filter_map(|(name, set)| set.then_some(name))
+            .collect()
+    }
 
     /// Whether a side that differs so from the base changed the object:
-    /// its Design content, its stored secrets or its unidentified content.
-    /// A difference only in Data or Derived content is no change: a serial
-    /// field's next value moves with new records, a checksum with the file.
+    /// its Design, its step data or its unidentified pieces. A difference
+    /// only in Data or Derived content is no change: a serial field's next
+    /// value moves with new records, a checksum with the file.
     pub fn is_change(self) -> bool {
-        matches!(
-            self,
-            Difference::Design | Difference::Secrets { .. } | Difference::Unidentified { .. }
-        )
+        self.design || self.step_data || self.unidentified
     }
 }
 
@@ -323,34 +293,35 @@ impl ReadFailure {
     }
 }
 
-/// Why a comparison could not be made. It names a file, a kind and an id
-/// at most, never a key's bytes or any content.
+/// Why an object's identity is not trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityProblem {
+    /// Its key has another shape than its catalog's spec gives.
+    KeyShape,
+    /// Another object of its kind (and table) reports its id.
+    Duplicate,
+    /// A member with a key the decoders could read as another (`[00 04]`
+    /// as the step list `04`): where its step data is, is in doubt.
+    Misread,
+}
+
+/// Why a comparison could not be made. It names a file, a kind, a table
+/// and an id at most, the id only when the key has its specified shape;
+/// never a key's bytes or any content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompareError {
     /// A file could not be read as a FileMaker file.
     Read { which: Which, failure: ReadFailure },
     /// A tree deeper than a file's keys can be (file-format.md 2.2).
     TooDeep { which: Which },
-    /// A member with a key the decoders could read as another
-    /// (`[00 04]` as the step list `04`): which of its nodes are which is in
-    /// doubt, so it is not compared.
-    Misread {
-        which: Which,
-        kind: Kind,
-        id: Option<u64>,
-    },
-    /// Two objects of one kind (and table) that report one id: matching by
-    /// id would have to guess which is which.
-    Ambiguous {
+    /// An object whose identity is not trusted.
+    Identity {
         which: Which,
         kind: Kind,
         table: Option<u64>,
         id: Option<u64>,
+        problem: IdentityProblem,
     },
-}
-
-fn id_text(id: Option<u64>) -> String {
-    id.map_or_else(|| "no id".to_string(), |id| format!("id {id}"))
 }
 
 impl std::fmt::Display for CompareError {
@@ -369,27 +340,32 @@ impl std::fmt::Display for CompareError {
                 "The {} file's keys are nested deeper than a FileMaker file's can be.",
                 which.name()
             ),
-            CompareError::Misread { which, kind, id } => write!(
-                f,
-                "In the {} file, the {} with {} holds a key the decoders could read as another, \
-                 so what it holds cannot be told; it is not compared.",
-                which.name(),
-                kind.name(),
-                id_text(id)
-            ),
-            CompareError::Ambiguous {
+            CompareError::Identity {
                 which,
                 kind,
                 table,
                 id,
+                problem,
             } => {
                 let table = table.map_or_else(String::new, |t| format!(" of table {t}"));
+                let what = match id {
+                    Some(id) => format!("the {}{table} with id {id}", kind.name()),
+                    None => format!("a {}{table}", kind.name()),
+                };
+                let why = match problem {
+                    IdentityProblem::KeyShape => {
+                        "has a key of another shape than its catalog's spec gives"
+                    }
+                    IdentityProblem::Duplicate => "has an id another object of its kind has",
+                    IdentityProblem::Misread => {
+                        "holds a key the decoders could read as another, so where its step \
+                         data is cannot be told"
+                    }
+                };
                 write!(
                     f,
-                    "In the {} file, two {} objects{table} have {}: they cannot be told apart.",
-                    which.name(),
-                    kind.name(),
-                    id_text(id)
+                    "In the {} file, {what} {why}; nothing is compared.",
+                    which.name()
                 )
             }
         }
@@ -420,16 +396,63 @@ struct Side {
     by_key: BTreeMap<Key, usize>,
 }
 
+/// A member's id when its key has the shape its catalog's spec gives: a
+/// base directory's four bytes (containers.md 8.1) and a font's two
+/// (layout-model.md 8), big-endian; a serial key elsewhere (file-metadata.md
+/// 1), whose encoding is one per id.
+fn checked_id(kind: Kind, key: &[u8]) -> Option<u64> {
+    match kind {
+        Kind::BaseDirectory => (key.len() == 4).then(|| be_uint(key)).flatten(),
+        Kind::Font => (key.len() == 2).then(|| be_uint(key)).flatten(),
+        _ => crate::serial::decode(key),
+    }
+}
+
+/// Check every object's identity (module doc), before anything is read
+/// from them.
+fn check_identities(found: &[Object<'_>], which: Which) -> Result<(), CompareError> {
+    let mut seen = BTreeSet::new();
+    for object in found {
+        let kind = object.kind();
+        let table = object.table().and_then(crate::serial::decode);
+        let refuse = |id, problem| CompareError::Identity {
+            which,
+            kind,
+            table,
+            id,
+            problem,
+        };
+        let id = match object.is_catalog() {
+            true => None,
+            false => Some(
+                checked_id(kind, object.key())
+                    .ok_or_else(|| refuse(None, IdentityProblem::KeyShape))?,
+            ),
+        };
+        if !seen.insert((kind, object.is_catalog(), table, id)) {
+            return Err(refuse(id, IdentityProblem::Duplicate));
+        }
+        if !object.is_catalog() && secrets::misread(kind, object.node()) {
+            return Err(refuse(id, IdentityProblem::Misread));
+        }
+    }
+    Ok(())
+}
+
 impl Side {
     fn of(root: &OwnedNode, which: Which) -> Result<Side, CompareError> {
-        let mut entries = Vec::new();
-        for object in objects(root) {
-            let classified = classify(&object).map_err(|refusal| match refusal {
+        let found = objects(root);
+        check_identities(&found, which)?;
+        let mut entries = Vec::with_capacity(found.len());
+        for object in &found {
+            let classified = classify(object).map_err(|refusal| match refusal {
                 Refusal::TooDeep => CompareError::TooDeep { which },
-                Refusal::Misread => CompareError::Misread {
+                Refusal::Misread => CompareError::Identity {
                     which,
                     kind: object.kind(),
+                    table: object.table().and_then(crate::serial::decode),
                     id: object.id(),
+                    problem: IdentityProblem::Misread,
                 },
             })?;
             entries.push(Entry {
@@ -439,25 +462,10 @@ impl Side {
                     object.table().map(<[u8]>::to_vec),
                     object.key().to_vec(),
                 ),
-                ident: ident(&object, &classified),
+                ident: ident(object, &classified),
                 revision: classified.revision(),
                 digests: classified.digests(),
             });
-        }
-        // One report identity per object: ids that read alike from keys
-        // that differ (a font's `01` and `00 01`), or a key twice in a tree
-        // built in memory, are refused.
-        let mut seen = BTreeSet::new();
-        for e in &entries {
-            let i = &e.ident;
-            if !seen.insert((i.kind, i.catalog, i.table, i.id)) {
-                return Err(CompareError::Ambiguous {
-                    which,
-                    kind: i.kind,
-                    table: i.table,
-                    id: i.id,
-                });
-            }
         }
         let by_key = entries
             .iter()
@@ -470,19 +478,13 @@ impl Side {
     fn get(&self, key: &Key) -> Option<&Entry> {
         self.by_key.get(key).map(|&i| &self.entries[i])
     }
-
-    /// Its table objects.
-    fn tables(&self) -> impl Iterator<Item = &Entry> {
-        self.entries
-            .iter()
-            .filter(|e| e.key.0 == Kind::Table && !e.key.1)
-    }
 }
 
-/// How a report names `object`: its name only where it is a Design piece.
+/// How a report names `object`: its name only where it is one Design
+/// piece.
 fn ident(object: &Object<'_>, classified: &Classified<'_>) -> Ident {
     let name = (object.is_catalog() || classified.design_name())
-        .then(|| object.name().map(str::to_string))
+        .then(|| object.name())
         .flatten();
     Ident {
         kind: object.kind(),
@@ -493,23 +495,17 @@ fn ident(object: &Object<'_>, classified: &Classified<'_>) -> Ident {
     }
 }
 
-/// Whether a field's (or field catalog's) table is matched; true for any
-/// other object.
-fn table_matched(key: &Key, tables: &BTreeSet<Vec<u8>>) -> bool {
-    match (&key.0, &key.2) {
-        (Kind::Field, Some(table)) => tables.contains(table),
-        _ => true,
-    }
-}
-
-/// Whether two objects with one key, the base lacking or not consulted,
-/// are one: their names agree, or neither has one and every class of their
-/// content is equal.
-fn same_object(s: &Entry, t: &Entry) -> bool {
-    match (&s.ident.name, &t.ident.name) {
-        (Some(a), Some(b)) => a == b,
-        (None, None) => s.digests == t.digests,
-        _ => false,
+/// Whether two objects with one key are one: with a base, when the base
+/// has it too; without, when their names agree, or neither has one and
+/// every class of their content is equal.
+fn one_object(s: &Entry, t: &Entry, base: Option<&Side>) -> bool {
+    match base {
+        Some(base) => base.get(&s.key).is_some(),
+        None => match (&s.ident.name, &t.ident.name) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => s.digests == t.digests,
+            _ => false,
+        },
     }
 }
 
@@ -527,21 +523,18 @@ pub fn compare(
 }
 
 fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Comparison {
-    // Which tables are matched: with a base, those the base has too;
-    // without, those whose names agree.
+    // Which tables are matched, by the test every object is matched by.
     let tables: BTreeSet<Vec<u8>> = source
-        .tables()
-        .filter(|s| {
-            let Some(t) = target.get(&s.key) else {
-                return false;
-            };
-            match base {
-                Some(base) => base.get(&s.key).is_some(),
-                None => s.ident.name.is_some() && s.ident.name == t.ident.name,
-            }
-        })
+        .entries
+        .iter()
+        .filter(|s| s.key.0 == Kind::Table && !s.key.1)
+        .filter(|s| target.get(&s.key).is_some_and(|t| one_object(s, t, base)))
         .map(|s| s.key.3.clone())
         .collect();
+    let table_matched = |key: &Key| match (&key.0, &key.2) {
+        (Kind::Field, Some(table)) => tables.contains(table),
+        _ => true,
+    };
     let mut out = Comparison {
         with_base: base.is_some(),
         ..Comparison::default()
@@ -554,12 +547,7 @@ fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Compariso
         };
         let t = &target.entries[ti];
         let in_base = base.and_then(|b| b.get(&s.key));
-        let one = table_matched(&s.key, &tables)
-            && match base {
-                Some(_) => in_base.is_some(),
-                None => same_object(s, t),
-            };
-        if one {
+        if table_matched(&s.key) && one_object(s, t, base) {
             source_matched[si] = true;
             target_matched[ti] = true;
             out.matched.push(Matched {
@@ -580,13 +568,11 @@ fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Compariso
             out.possible_matches.push(possible(s, t, Agreement::Id));
         }
     }
-    let unmatched = |side: &'_ Side, matched: &[bool]| -> Vec<usize> {
+    let unmatched = |side: &Side, matched: &[bool]| -> Vec<usize> {
         (0..side.entries.len()).filter(|&i| !matched[i]).collect()
     };
-    let (source_alone, target_alone) = (
-        unmatched(source, &source_matched),
-        unmatched(target, &target_matched),
-    );
+    let source_alone = unmatched(source, &source_matched);
+    let target_alone = unmatched(target, &target_matched);
     if base.is_none() {
         // Possible matches by name, among the objects matched with none,
         // whether or not they agree with another in id.
@@ -603,19 +589,23 @@ fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Compariso
         for &si in &source_alone {
             let s = &source.entries[si];
             let Some(name) = &s.ident.name else { continue };
-            let Some(candidates) = by_name.get(&(s.key.0, s.key.1, s.key.2.as_deref(), name))
-            else {
+            let Some(bucket) = by_name.get(&(s.key.0, s.key.1, s.key.2.as_deref(), name)) else {
                 continue;
             };
-            let mut listed = 0usize;
-            for t in candidates.iter().filter(|t| t.key != s.key) {
-                if listed == NAME_CANDIDATES {
-                    out.possible_matches_left_out = out.possible_matches_left_out.saturating_add(1);
-                    continue;
-                }
-                listed += 1;
+            // The bucket holds the target with this object's key when that
+            // one is unmatched and of the same name: an id candidate, not a
+            // name one.
+            let same_key = target.by_key.get(&s.key).is_some_and(|&ti| {
+                !target_matched[ti] && target.entries[ti].ident.name == s.ident.name
+            });
+            let eligible = bucket.len() - usize::from(same_key);
+            let listed = eligible.min(NAME_CANDIDATES);
+            for t in bucket.iter().filter(|t| t.key != s.key).take(listed) {
                 out.possible_matches.push(possible(s, t, Agreement::Name));
             }
+            out.possible_matches_left_out = out
+                .possible_matches_left_out
+                .saturating_add(eligible - listed);
         }
     }
     out.only_in_source = alone(source, &source_alone, target, base);

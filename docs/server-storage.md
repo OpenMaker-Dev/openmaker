@@ -208,7 +208,6 @@ member's id; a test keeps this table equal to the code's):
 | `[T, 03, 05, *, 0c]` | the next serial number | Data |  | schema-path.md 5.5; write-path.md 3.2 |
 | `[T, 03, 05, *, fb]` | the field's data version, raised when a change affects stored values | Data |  | schema-path.md 5.5, 5.8 |
 | `[T, 1f]` | table libraries | Data |  | containers.md 1.1 |
-| `[11, 05, *, 05, 00]` | a script's last issued data key | Data |  | script-steps.md 4.2 |
 | `[02]` | the file's status: format, version, history, locale, File Options, icons, page setup, creation stamp | none |  | file-format.md 3.4; file-metadata.md 2, 3 |
 | `[1a]` | the file's own icon image (KOrigThumbImg) | none |  | file-format.md 3.4; containers.md 2.3 |
 | `[T, 00]` | the table's last issued record id | Data |  | write-path.md 5.1 |
@@ -223,27 +222,23 @@ slot `[00 n]` (script-steps.md 4.2) of a step's data that holds a
 password depends on the step, whose id is in the script's step list
 `[11, 5, S, 04]` or the button's object in the layout's object store
 `[4, 5, L, 07]` (layout-model.md 5.3.3). A step keeps its data at
-`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`; `[11, 5, S, 05,
-00]` is the last issued data key, Data. In a step's data, Design is only
-what an identified step's spec names, and each node there is classed by
-its keys, its step and, for a credential slot's other parts, its own
-shape, never by what another node holds. Of a credential slot its
-calculation `05` is Secret (the specs name these credentials as
-calculations), and its text `01` if it has one; the slot's own value,
-which no spec gives one, is not identified; its number `03` is another
-setting (Create PDF's slot 7 also holds "allow screen reader") and, like
-its field spec, occurrence keys and path list, Design only in the shape
-4.2 gives it. A profile `86` is not identified, whatever its type: an
-ODBC profile holds a user name and password beside its query (11.5), and
-profiles are not read here. So is a key, slot part or own value 4.2 does
-not name. A path whose subtree holds a Secret path (the slot, the member)
-is Secret too, and so is a node whose own value is not identified.
-"Not Secret" means identified and known not to hold a credential: when a
-step is not identified with certainty, all of its data is Secret whole.
-The classifier sits below the decoders (`om-scripts`, `om-layout`) and
-cannot call them, so it reads as they do or more strictly, and what it
-cannot read as they do is Secret (`om_hbam::design_paths::STEP_SECRETS`;
-a test keeps this table equal to the code's):
+`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. Of a credential
+slot its calculation `05` is Secret (the specs name these credentials as
+calculations), and its text `01` if it has one; the slot's number `03` is
+another setting (Create PDF's slot 7 also holds "allow screen reader"). A
+credential slot holds no value of its own (no spec gives one); one that
+does is not in its shape. A profile is Secret whole, whatever its type
+word: an ODBC profile holds a user name and password beside its query
+(11.5), and profiles are not read here. A path whose subtree holds a
+Secret path (the slot, the member) is Secret too. "Not Secret" means
+identified and known not to hold a credential: when a step is not
+identified with certainty, every slot of its data is Secret whole. The
+classifier sits below the decoders (`om-scripts`, `om-layout`) and cannot
+call them, so it reads as they do or more strictly, and what it cannot
+read as they do is Secret (`om_hbam::design_paths::STEP_SECRETS`; a test
+keeps this table equal to the code's). This reading is for the report
+and for deploys; design revisions and comparisons do not look into step
+data at all (section 9):
 
 | Step | Slots whose calculation `05` (and text `01`) is Secret | Spec |
 |---|---|---|
@@ -260,8 +255,8 @@ a test keeps this table equal to the code's):
 | 243 Create PDF | 7 the password to open; 8 the password to control | script-steps.md 12.2 |
 | 244 Append PDF | 7 the PDF's password | script-steps.md 12.2 |
 | 246 Open PDF | 7 the PDF's password | script-steps.md 12.2 |
-| any step | not identified: its profile `86`, whole, whatever its type (an ODBC profile holds the user name and password, and profiles are not read here); the profile extension `87` but for Print Setup and Print; any step-level key, slot part or own value of a data node that script-steps.md 4.2 does not name; of a credential slot above, its own value, and a number `03`, field spec `10`, occurrence keys `11` or path list `82` not in the shape 4.2 gives | script-steps.md 4.2, 11.5, 11.6 |
-| a step not identified with certainty | all of its data, whole: no step list or object store, one that does not decode to its end (a protobuf field om-layout's reader refuses or reads otherwise included), a data key that is no serial key, is `00` or that two descriptors or buttons give different steps, a button whose step fields disagree, a step id the step catalog does not have (0 included), a data key no step names; and a script or layout member or attribute record, whole, with a key of more than one byte that reads by number as one the decoders look up there (`[00 04]` as the step list `04`) | script-steps.md 2, 4.2; catalogs/script-steps.csv |
+| any step | its profile `86`, whole, whatever its type word (an ODBC connection profile holds the user name and password, and profiles are not read here) | script-steps.md 11.0, 11.5 |
+| a step not identified with certainty | every slot, whole: no step list or object store, one that does not decode to its end (a protobuf field om-layout's reader refuses or reads otherwise included), a data key that is no serial key or that two descriptors or buttons give different steps, a button whose step fields disagree, a step id the step catalog does not have (0 included), a data key no step names, a credential slot not shaped as script-steps.md 4.2 gives (a value of its own included); and a script or layout member or attribute record, whole, with a key of more than one byte that reads by number as one the decoders look up there (`[00 04]` as the step list `04`) | script-steps.md 2, 4.2; catalogs/script-steps.csv |
 
 There is no grouping by path alone: `om_hbam::design_paths::group_in`
 takes the tree, since a path-only answer of Design for a stored password
@@ -276,8 +271,8 @@ under a key no spec names (a data source's connection settings, if a
 file has them) is in no group: like every path in no group it stays in
 its object's edit token, and the object has no design revision (section
 9). A custom menu item that runs a step, and a button in a table view
-`[4, 5, L, 0d]`, are not looked into; a custom menu's step data is under
-its unexplained key `02`, in no group.
+`[4, 5, L, 0d]`, are not looked into; a custom menu's items are under its
+unexplained key `02`, in no group.
 
 A path in no group is the file as a whole (`[2]`, `[1a]`), or a key no
 rule names: no spec says what it is, so it is not guessed. Neither is an
@@ -1096,14 +1091,11 @@ file library item, a data source, a value list, a base directory, a
 custom menu set or a custom menu; and each Design catalog as a whole
 (`om_hbam::design_paths::objects`). A member is identified by its kind
 and its key (and a field by its table's key), a catalog by its kind (and
-a field catalog by its table). A member object is its member and the
-entries its catalog's index keeps for it of what a tool shows (a
+a field catalog by its table). For edits, a member object is its member
+and the entries its catalog's index keeps for it of what a tool shows (a
 script's cached name and flags, with the full-access badge Script
-Workspace shows, scripts.md). A catalog object is its index, whose
-Design paths are the display order, and so the order of scripts and
-their folders, and the catalog's settings; the name lists, digests,
-counts and dependency lists there are Derived, and the last issued id is
-Data. An emptied member, a deletion, is no object.
+Workspace shows, scripts.md), and a catalog object is its index. An
+emptied member, a deletion, is no object.
 
 An object has two revisions. Its **edit token** (`Object::edit_token`)
 is the `sha256:` of its whole member or index, stored passwords
@@ -1112,90 +1104,119 @@ host checks to guard an edit ([authoring.md](authoring.md),
 "Revisions"), exchanged only between a client that holds the member and
 the host. Its **design revision** (`Object::design_revision`) is the
 revision history, comparisons, the text form and a mirror show and keep:
-the SHA-256 of its Design pieces alone. An object's pieces are, in its
-member (or index) and its index entries, each node below the paths the
-rules name being there, and each node's own value; each piece's group is
-decided by its own path, never by what lies below it, so a node's being
-there is its path's group with or without children (the member itself,
-above the rules, is structure). A catalog's index leaves out the entries
-of its members that are objects, and keeps any other: an entry left
-behind by a member that is gone is the catalog's. Modification stamps are
-left out where schema-path.md 8 places them, on the member or index
-itself; a stamp-shaped key anywhere else is a piece like any other (the
-starter files have none). The design revision is built by walking the
-object and adding its Design pieces, in the edit token's canonical form
-for the kind, each node written with only its children that lead to
-Design pieces, so that no value, length, count or being there of another
-group reaches it. The hashed bytes start with eight `ff` bytes, which no
-edit token's input can start with (they would be a segment length of 2^64
-- 1), then the form's version, 1: a design revision is comparable only
-with one of the same version. Its text is `design-sha256:` and 64 hex
-digits, which no command takes as an edit token. A split value is hashed
-as the value it joins to, as the edit token hashes it; its header's other
-words (a text's character count) are framing that neither covers.
+the SHA-256 of its Design pieces alone.
 
-An object has **no design revision** when it holds an unidentified
-piece: one in no group, or one that is Secret because what it holds
-could not be identified (all the data of a step not identified with
-certainty; a profile, whatever its type; a key, slot part or own value
-script-steps.md 4.2 does not name; a credential slot's own value or its
-other parts out of shape; section 4). Nothing unidentified is ever
-hashed. A member the decoders could read differently, a key of more than
-one byte that reads by number as one they look up, is not classified at
-all and has no design revision: which of its nodes are which is in
-doubt. In FileMaker Pro 26's 66 starter files 6,347 of 7,091 objects have
-a design revision; every script, font and custom menu and 11 layouts hold
-a key no spec explains (file-format.md 3.7,
-[#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)) and have
-none until that key has a rule. By the parameter catalog
-(catalogs/script-step-params.csv) no credential slot of a step in the
-table above is written with a value of its own, so a well-formed one
-costs its object no design revision; every object holding a stored
-profile has none. Derived paths are recomputed by whoever writes the
-paths they come from, a deploy too: a privilege set's checksum covers the
-file's creation stamp, so one copied from another file would fail
-FileMaker's check at open (session-identity.md 4.4).
+For design revisions and comparisons a member object is its member
+alone, and a catalog object is everything in its catalog that is in no
+member object: the catalog's own value, its index with every entry (its
+members' entries too), any branch beside the index and the members, the
+member list's own value, and the members that are no object. Nothing
+moves between objects when a member appears or is emptied, and nothing
+is held by two. The cost: a script's cached name is an entry of its
+catalog's index, so renaming a script changes the script and its
+catalog. An object's pieces are each node's being there and each node's
+own value, and each piece's group is decided by its own path, never by
+what lies below it:
+
+- **Step data**, a script's `[11, 5, S, 05]` and a button's `[4, 5, L,
+  05, O, 11]`, is one opaque piece of a group of its own, with everything
+  below it. Nothing looks inside it: which of its bytes are a stored
+  password depends on the step, and two rounds of review showed that no
+  reading of it below the decoders could be trusted. So an object holding
+  step data has no design revision: every script, and every layout with a
+  button that has step data.
+- Design, Data and Derived by the path rules of section 4; a node above
+  the rules (a member, an index, a catalog) is there as Design, the
+  object's shape, and its own value, which no rule names, is not
+  identified.
+- A key no rule names, with everything below it, is **not identified**.
+
+Modification stamps are left out at exactly two places, where
+schema-path.md 8 places them: the direct stamp keys of a member object's
+own node and of a catalog's index. Anywhere else a stamp-shaped key is a
+piece like any other. The design revision is built by walking the object
+and adding its Design pieces, in the edit token's general form (segments,
+values and child counts, framed, without list flags), each node written
+with only its children that lead to Design pieces, so that no value,
+length, count or being there of another group reaches it; a difference
+only in whether a node is stored as a list is no difference. The hashed
+bytes start with eight `ff` bytes, which no edit token's input can start
+with (they would be a segment length of 2^64 - 1), then the form's
+version, 1: a design revision is comparable only with one of the same
+version. Its text is `design-sha256:` and 64 hex digits, which no command
+takes as an edit token. A split value is hashed as the value it joins
+to, as the edit token hashes it, when all of it is one group (each piece
+of another split value is its own); its header's other words (a text's
+character count) are framing that neither covers.
+
+An object has **no design revision** when it holds step data or a piece
+that is not identified. Neither is ever hashed into one. A member the
+decoders could read differently, a key of more than one byte that reads
+by number as one they look up, is not classified at all: where its step
+data is, is in doubt. In FileMaker Pro 26's 66 starter files 6,138 of
+7,091 objects have a design revision; every script, 220 of 418 layouts
+(those with a button that has step data), and every font and custom menu
+have none, the fonts and custom menus for a key no spec explains
+(file-format.md 3.7,
+[#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)). Giving
+objects with step data a design revision needs step data identified
+exactly, per step
+([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)). Derived
+paths are recomputed by whoever writes the paths they come from, a deploy
+too: a privilege set's checksum covers the file's creation stamp, so one
+copied from another file would fail FileMaker's check at open
+(session-identity.md 4.4).
 
 **Comparison.** `compare_designs` (`om_hbam::design_paths::compare_files`,
 an `om-author` command) compares the designs of two files on this
-computer, a source and a target, with or without a base, as steps 2 and
-3 of a deploy (below) will. Each file is read whole and every slot
-decoded, as the file reader reads files; only its design catalogs are
-kept in the tree, so a comparison holds each file in memory once and the
-tree of its design catalogs, several times their stored size.
+computer, a source and a target, with or without a base. Each file is
+read whole and every slot decoded, as the file reader reads files; only
+its design catalogs are kept in the tree, so a comparison holds each file
+in memory once and the tree of its design catalogs, several times their
+stored size.
 
-Objects are matched as step 2 says. A field is matched only when its
-table is. Without a base, two objects of one kind and id are matched when
-their names, decoded on both sides, are equal byte for byte, or when
-neither has a name and every group of their content is equal; agreeing
-in id alone or in name alone (up to 8 per object) is listed as a
-possible match and never matched. With a base, two new objects that
-share an id are listed as new on each side. Every object matched with
-none is listed once as only in its file, a possible match or not. Two
-objects of one kind (and table) in one file that report one id, from
-keys that differ but read alike, are refused, as is a member the
-decoders could read differently: the comparison fails naming the file,
-the kind and the id, never a key's bytes.
+Before a name is decoded or anything is classified or hashed, every
+object's identity is checked: its key has the shape its catalog's spec
+gives (a font's two bytes, a base directory's four, a serial key
+elsewhere), no two objects of one kind (and table) report one id, and no
+member is one the decoders could read differently. Any failure refuses
+the comparison, naming the file, the kind and, when the key has its
+specified shape, the id; never a key's bytes.
+
+Objects are then matched. With a base, by kind and id when the base has
+the object too; two new objects that share an id are listed as new on
+each side. Without a base, two objects of one kind and id are matched
+when their names, decoded on both sides, are equal byte for byte, or
+when neither has a name and every group of their pieces is equal. That
+match of unnamed objects by equal content is no proof that they share a
+history, and a deploy must not rely on it. A field (and a field catalog)
+is matched only when its table is, by the same test. Every object matched
+with none is listed once, in the file it is in; among them, agreeing in
+id alone, or in name alone (up to 8 per source object, the rest
+counted), is listed as a possible match and never matched.
 
 Every matched object is compared by its pieces group by group inside the
-process, whether it has a design revision or not: the same (modification
-stamps may differ); Design differs; stored secrets differ, said only when
-every differing Secret piece is an identified credential, alone or with
-Data, Derived or both; only Data, only Derived, or both differ;
-unidentified pieces differ, alone or with Design. With a base each side
-is also compared with the base, and a side changed an object when its
-Design, its stored secrets or its unidentified pieces differ from the
+process: each group's projection is hashed there and compared, and none
+of these hashes but the design revision is given out. A comparison
+reports which parts differ: Design, step data, unidentified pieces, Data,
+Derived, or none (the same; modification stamps may differ). With a base
+each side is also compared with the base, and a side changed an object
+when its Design, its step data or its unidentified pieces differ from the
 base's: a serial number taken or a checksum over the file's creation
-stamp is no change, so `changed_by` names no side then. Both sides
-changing an object is a conflict only when the two still differ in
-Design, stored secrets or unidentified pieces: the same change made on
-both sides, with a serial number taken on one, is no conflict. A
-comparison reports kinds, ids, names (only where the name is a Design
-piece), these classes and design revisions, and the design revisions
-only on matched objects, objects in one file and possible matches; never
-an edit token, a hash covering other content, or any content. In the
-starter files 143 relationships, 528 file library items and 66 custom
-menu sets have no name.
+stamp is no change. Both sides changing an object is a conflict only when
+the two still differ in one of those; the same change made on both sides,
+with a serial number taken on one, is no conflict. A comparison reports
+kinds, ids, names (only where the name is one Design piece), these parts
+and design revisions; never an edit token, a hash covering other content,
+or any content. In the starter files 143 relationships, 528 file library
+items and 66 custom menu sets have no name.
+
+Where the comparison differs from what a deploy (below) will need: it
+matches unnamed objects without a base by equal content, which a deploy
+must not take for identity; it does not class a difference by what every
+record must do; it holds no source as of a point in time; and it gives
+step data no reading, where a deploy will need to keep the target's
+stored credentials while taking the source's other changes.
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the

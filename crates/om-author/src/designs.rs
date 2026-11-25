@@ -7,7 +7,7 @@ use std::path::Path;
 
 use om_hbam::design_paths::{
     compare_files, Alone, ChangedBy, CompareError, Comparison, DesignRevision, Difference, Ident,
-    Matched, Presence, ReadFailure, DESIGN_REVISION_VERSION,
+    IdentityProblem, Matched, Presence, ReadFailure, DESIGN_REVISION_VERSION,
 };
 use serde_json::{json, Map, Value};
 
@@ -25,7 +25,8 @@ pub fn compare_designs(params: &CompareDesignsParams) -> Result<Value, AuthorErr
 }
 
 /// The command's error: the comparison's typed error, which names a file,
-/// a kind and an id at most, never a key's bytes.
+/// a kind, a table and an id at most (the id only when the key has its
+/// specified shape), never a key's bytes.
 fn error(error: CompareError) -> AuthorError {
     let (kind, details) = match error {
         CompareError::Read { which, failure } => {
@@ -42,20 +43,24 @@ fn error(error: CompareError) -> AuthorError {
             ErrorKind::InvalidRequest,
             json!({"file": which.name(), "reason": "too_deep"}),
         ),
-        CompareError::Misread { which, kind, id } => (
-            ErrorKind::Unsupported,
-            json!({"file": which.name(), "reason": "misread", "kind": kind.name(), "id": id}),
-        ),
-        CompareError::Ambiguous {
+        CompareError::Identity {
             which,
             kind,
             table,
             id,
-        } => (
-            ErrorKind::InvalidRequest,
-            json!({"file": which.name(), "reason": "ambiguous", "kind": kind.name(),
-                   "table": table, "id": id}),
-        ),
+            problem,
+        } => {
+            let reason = match problem {
+                IdentityProblem::KeyShape => "key_shape",
+                IdentityProblem::Duplicate => "duplicate_id",
+                IdentityProblem::Misread => "misread",
+            };
+            (
+                ErrorKind::InvalidRequest,
+                json!({"file": which.name(), "reason": reason, "kind": kind.name(),
+                       "table": table, "id": id}),
+            )
+        }
     };
     AuthorError::new(kind, error.to_string()).with_details(details)
 }
@@ -87,13 +92,13 @@ fn changed_by(by: Option<ChangedBy>) -> Value {
 fn matched(m: &Matched) -> Value {
     let mut out = ident(&m.source);
     out.insert("target_name".into(), json!(m.target_name));
-    out.insert("difference".into(), json!(m.difference.name()));
+    out.insert("difference".into(), json!(m.difference.parts()));
     out.insert("source_revision".into(), revision(&m.source_revision));
     out.insert("target_revision".into(), revision(&m.target_revision));
     if let Some(base) = &m.base {
         out.insert("base_revision".into(), revision(&base.revision));
-        out.insert("source_change".into(), json!(base.source.name()));
-        out.insert("target_change".into(), json!(base.target.name()));
+        out.insert("source_change".into(), json!(base.source.parts()));
+        out.insert("target_change".into(), json!(base.target.parts()));
         out.insert("changed_by".into(), changed_by(base.changed_by()));
         out.insert("conflict".into(), json!(m.conflict()));
     }
@@ -115,12 +120,21 @@ fn alone(a: &Alone) -> Value {
     Value::Object(out)
 }
 
-/// The result: counts of every class, then the objects.
+/// The result: counts of the matched objects that are the same and of
+/// those in which each part differs, then the objects.
 fn result(comparison: &Comparison, include_same: bool) -> Value {
-    let mut counts: std::collections::BTreeMap<&str, usize> =
-        Difference::NAMES.iter().map(|name| (*name, 0)).collect();
+    let mut counts: std::collections::BTreeMap<&str, usize> = Difference::PARTS
+        .iter()
+        .chain(&["same"])
+        .map(|name| (*name, 0))
+        .collect();
     for m in &comparison.matched {
-        *counts.entry(m.difference.name()).or_default() += 1;
+        if m.difference.is_same() {
+            *counts.entry("same").or_default() += 1;
+        }
+        for part in m.difference.parts() {
+            *counts.entry(part).or_default() += 1;
+        }
     }
     let without_revision = comparison
         .matched
@@ -130,7 +144,7 @@ fn result(comparison: &Comparison, include_same: bool) -> Value {
     let listed: Vec<Value> = comparison
         .matched
         .iter()
-        .filter(|m| include_same || m.difference != Difference::Same)
+        .filter(|m| include_same || !m.difference.is_same())
         .map(matched)
         .collect();
     let possible: Vec<Value> = comparison

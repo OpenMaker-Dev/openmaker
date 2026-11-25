@@ -468,10 +468,7 @@ fn design_revisions_and_names_per_kind() {
         assert_eq!(itself.matched.len(), objects.len());
         assert!(itself.possible_matches.is_empty());
         assert!(itself.only_in_source.is_empty() && itself.only_in_target.is_empty());
-        assert!(itself
-            .matched
-            .iter()
-            .all(|m| m.difference == design_paths::Difference::Same));
+        assert!(itself.matched.iter().all(|m| m.difference.is_same()));
         for object in &objects {
             if !object.is_catalog() && object.design_name().is_none() {
                 table
@@ -487,13 +484,21 @@ fn design_revisions_and_names_per_kind() {
                 continue;
             }
             entry.1 += 1;
+            // Why: step data (a script's `05`, a button's `[05, O, 11]`),
+            // or a key no rule names.
             let mut reasons = object.unclassified();
-            reasons.extend(
-                object
-                    .secrets()
-                    .into_iter()
-                    .map(|(_, holds)| format!("Secret: {holds}")),
-            );
+            let node = object.node();
+            let step_data = !object.is_catalog()
+                && match object.kind() {
+                    Kind::Script => node.child(&[0x05]).is_some(),
+                    Kind::Layout => node
+                        .child(&[0x05])
+                        .is_some_and(|r| r.children.iter().any(|o| o.child(&[0x11]).is_some())),
+                    _ => false,
+                };
+            if step_data {
+                reasons.push("step data".into());
+            }
             assert!(
                 !reasons.is_empty(),
                 "{:?} {:02x?}",
@@ -556,9 +561,15 @@ fn two_language_versions_compare_class_by_class() {
         panic!("no Tasks starter files under re/extracted");
     };
     let print = |label: &str, c: &design_paths::Comparison| {
-        let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut classes: BTreeMap<String, usize> = BTreeMap::new();
         for m in &c.matched {
-            *classes.entry(m.difference.name()).or_default() += 1;
+            let parts = m.difference.parts();
+            let key = if parts.is_empty() {
+                "same".to_string()
+            } else {
+                parts.join("+")
+            };
+            *classes.entry(key).or_default() += 1;
         }
         let by_agreement = |a| c.possible_matches.iter().filter(|p| p.agrees == a).count();
         let without = c
@@ -587,10 +598,7 @@ fn two_language_versions_compare_class_by_class() {
     let same = design_paths::compare_files(&en, &en, None).unwrap();
     print("Tasks en with itself", &same);
     assert!(!same.matched.is_empty() && same.possible_matches.is_empty());
-    assert!(same
-        .matched
-        .iter()
-        .all(|m| m.difference == design_paths::Difference::Same));
+    assert!(same.matched.iter().all(|m| m.difference.is_same()));
     let without = design_paths::compare_files(&en, &de, None).unwrap();
     print("Tasks en and de, no base", &without);
     let with = design_paths::compare_files(&en, &de, Some(&en)).unwrap();
@@ -601,7 +609,7 @@ fn two_language_versions_compare_class_by_class() {
     assert!(with.possible_matches.is_empty());
     assert!(with.matched.iter().all(|m| {
         let base = m.base.as_ref().unwrap();
-        base.source == design_paths::Difference::Same && base.target == m.difference
+        base.source.is_same() && base.target == m.difference
     }));
     assert!(with.matched.len() >= without.matched.len());
 }

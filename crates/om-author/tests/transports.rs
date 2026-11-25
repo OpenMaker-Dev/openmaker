@@ -491,7 +491,10 @@ fn designs_are_compared_from_the_cli_and_mcp_without_a_connection() {
     let mut renamed = base.clone();
     let greeting = om_hbam::design_paths::objects(&base)
         .into_iter()
-        .find(|o| o.kind() == om_hbam::design_paths::Kind::Script && o.name() == Some("Greeting"))
+        .find(|o| {
+            o.kind() == om_hbam::design_paths::Kind::Script
+                && o.name().as_deref() == Some("Greeting")
+        })
         .expect("the Greeting script");
     let mut name_path: Vec<&[u8]> = greeting.path().iter().map(Vec::as_slice).collect();
     name_path.push(&[0x10]);
@@ -520,13 +523,16 @@ fn designs_are_compared_from_the_cli_and_mcp_without_a_connection() {
     assert_eq!(result["counts"]["differences"]["design"], 1, "{result:#}");
     let matched = result["matched"].as_array().unwrap();
     assert_eq!(json!(matched.len()), result["counts"]["matched"]);
-    let changed = matched.iter().find(|m| m["difference"] != "same").unwrap();
+    let changed = matched
+        .iter()
+        .find(|m| m["difference"] != json!([]))
+        .unwrap();
     assert_eq!(changed["kind"], "script");
     assert_eq!(
         (&changed["name"], &changed["target_name"]),
         (&json!("Greeting"), &json!("Hello"))
     );
-    assert_eq!(changed["difference"], "design");
+    assert_eq!(changed["difference"], json!(["design"]));
     assert_eq!(changed["changed_by"], "target");
     assert_eq!(changed["conflict"], false);
     // No edit token of either file is in what is printed; design

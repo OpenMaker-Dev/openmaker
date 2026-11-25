@@ -102,10 +102,10 @@ fn shape(path: &[&[u8]], known: usize, cands: &[&'static Rule], deeper: bool) ->
 }
 
 /// The Secret paths of the member a walk is in: the member's depth and
-/// the paths, relative to it, with what each covers.
+/// the paths, relative to it.
 struct Secrets {
     depth: usize,
-    paths: Vec<(Path, secrets::Scope)>,
+    paths: Vec<Path>,
 }
 
 impl Secrets {
@@ -113,32 +113,23 @@ impl Secrets {
         let (kind, depth) = member_of(path).filter(|&(_, depth)| depth == path.len())?;
         let paths = secrets::of(kind, member)
             .into_iter()
-            .map(|s| (s.path, s.scope))
+            .map(|s| s.path)
             .collect();
         Some(Secrets { depth, paths })
     }
 
-    /// Whether the terminal paths at and below `path` (its node `node`) are
-    /// Secret: a Secret path covering its subtree is there, or one covering
-    /// its own value and it has no children.
-    fn is(&self, path: &[&[u8]], node: &OwnedNode) -> bool {
+    fn is(&self, path: &[&[u8]]) -> bool {
         let below = &path[self.depth..];
-        self.paths.iter().any(|(s, scope)| {
-            s.len() == below.len()
-                && s.iter().zip(below).all(|(a, b)| a == b)
-                && (*scope == secrets::Scope::Subtree || node.children.is_empty())
-        })
+        self.paths
+            .iter()
+            .any(|s| s.len() == below.len() && s.iter().zip(below).all(|(a, b)| a == b))
     }
 
-    /// Whether a Secret path lies below `path`, or covers the own value of
-    /// its node, whose children are then classed on their own.
     fn below(&self, path: &[&[u8]]) -> bool {
         let below = &path[self.depth..];
-        self.paths.iter().any(|(s, scope)| {
-            s.iter().zip(below).all(|(a, b)| a == b)
-                && (s.len() > below.len()
-                    || (*scope == secrets::Scope::Own && s.len() == below.len()))
-        })
+        self.paths
+            .iter()
+            .any(|s| s.len() > below.len() && s.iter().zip(below).all(|(a, b)| a == b))
     }
 }
 
@@ -167,7 +158,7 @@ fn walk<'t>(
             Some(_) => None,
         };
         let secrets = secrets.or(entered.as_ref());
-        if secrets.is_some_and(|s| s.is(path, child)) {
+        if secrets.is_some_and(|s| s.is(path)) {
             *report.groups.entry(Group::Secret).or_default() += terminals(child);
         } else if (deeper.is_empty() && !secrets.is_some_and(|s| s.below(path)))
             || child.children.is_empty()

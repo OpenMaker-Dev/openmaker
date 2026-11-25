@@ -174,7 +174,7 @@ and every response is one JSON object:
 | `get_value_lists` | none | the file's value lists in display order (`om_data::value_lists`, the catalog File > Manage > Value Lists shows): each list's `ref`, `id`, `filemaker_id` (the id FileMaker shows), `name` and `source`: `custom` with its `values`; `field` with the `field`, `second_field`, `related_from` occurrence, `sort_by_second_field` and `show_second_field_only`; `external` with the stored `file_reference` and `list_key`, unresolved; `calculation`; or `unreadable` with the reason. Decoded lists add `sort_language` and `unknown_options`. `editable` is `false` and `read_only` gives the reason. Never reads records |
 | `complete_calculation` | `text` (formula text), optional `cursor` (characters; default the end), `occurrence` or `occurrence_name` (the context; default the first occurrence), `limit` (default 50, at most 1000) | the `prefix` typed at the cursor, the characters it `replace`s, the `candidates` best first (`kind`, `name`, `label`, the text to `insert`, `selection_after`, a function's `category`, a field's `field` and `occurrence` refs), `total`, `truncated`, `refused` when nothing is completed, and each name source's availability. Reads metadata only. [Calculation name completion](#calculation-name-completion) |
 | `create_file` | `path` (on this computer; `.fmp12` added when missing) | the new file's `path`, its `name` (the file name without the extension, also its table's and layout's), and the `account` (`Admin`) and `password` (empty) that open it. Makes a blank file as File > Create New... does ([docs/new-files.md](new-files.md)); never replaces a file (`duplicate_name`); a name the table or layout cannot have is `invalid_name`, a failed write `save_failed`, with nothing left. Needs no connection |
-| `compare_designs` | `source`, `target` (paths on this computer), optional `base` (the copy both were made from) and `include_same` | `with_base`, the `design_revision_version`, `counts` (matched objects, those without a design revision, each class of difference, conflicts, objects in one file only, possible matches), the `matched` objects that differ (all with `include_same`): `kind`, `id`, `table`, `catalog`, `name` and `target_name`, the `difference`, `source_revision` and `target_revision`, and with a base `base_revision`, `source_change`, `target_change`, `changed_by` and `conflict`; `only_in_source` and `only_in_target` (`presence`: `only`, `new` with `id_taken`, `deleted_in_other` with `changed`), and `possible_matches` (`agrees`: `id` or `name`) with `possible_matches_left_out`. Reads the files only; never content, passwords or edit tokens. [Comparing designs](#comparing-designs). Needs no connection |
+| `compare_designs` | `source`, `target` (paths on this computer), optional `base` (the copy both were made from) and `include_same` | `with_base`, the `design_revision_version`, `counts` (matched objects, those without a design revision, the matched objects that are `same` and those in which each part differs, conflicts, objects in one file only, possible matches), the `matched` objects that differ (all with `include_same`): `kind`, `id`, `table`, `catalog`, `name` and `target_name`, the `difference` (the parts that differ: `design`, `step_data`, `unidentified`, `data`, `derived`; none when the same), `source_revision` and `target_revision`, and with a base `base_revision`, `source_change`, `target_change`, `changed_by` and `conflict`; `only_in_source` and `only_in_target` (`presence`: `only`, `new` with `id_taken`, `deleted_in_other` with `changed`), and `possible_matches` (`agrees`: `id` or `name`) with `possible_matches_left_out`. Reads the files only; never content, passwords or edit tokens. [Comparing designs](#comparing-designs). Needs no connection |
 
 **References** are `kind:id@file` with the file's own ids:
 `script:5@Tasks.fmp12`, `table:32769@Tasks.fmp12`,
@@ -198,11 +198,12 @@ and 9). An **edit token**, `sha256:` and 64 hex digits, guards an edit:
 results of the commands above are edit tokens, but for `compare_designs`,
 whose `*_revision` results are design revisions. A **design revision**,
 `design-sha256:` and 64 hex digits, is what `compare_designs` reports: the
-hash of an object's Design content alone, with no byte of a stored
-password or key, safe to show and keep. A design revision is refused
-where an edit token is expected, and it is comparable only with one of
-the same version (`design_revision_version`, now 1). An object holding a
-piece no rule identifies has none ([Comparing designs](#comparing-designs)).
+hash of an object's Design pieces alone, with no step data and so no byte
+of a stored password or key, safe to show and keep. A design revision is
+refused where an edit token is expected, and it is comparable only with
+one of the same version (`design_revision_version`, now 1). An object
+holding step data, or a piece no rule identifies, has none ([Comparing
+designs](#comparing-designs)).
 
 Edit tokens are computed over an object's stored content in a canonical
 form, used by `om-author`, the host and the desktop client alike. A script's
@@ -1145,12 +1146,25 @@ made from, says which side changed what
 reads the files. Each is read whole and every slot decoded, as
 OpenMaker's file reader reads files; only the design catalogs are kept
 (never records, indexes, accounts or the file's status), so it holds
-each file in memory once, and the tree of its design catalogs. Design
-objects are every member of a design catalog (tables, occurrences,
+each file in memory once, and the tree of its design catalogs.
+
+Its objects are every member of a design catalog (tables, occurrences,
 relationships, fields, layouts, themes, custom functions, scripts,
 privilege sets, extended privileges, fonts, file library items, data
-sources, value lists, base directories, custom menu sets and menus) and
-each catalog as a whole.
+sources, value lists, base directories, custom menu sets and menus), and
+for each catalog everything in it that is in no member: its index with
+every entry, any other branch, and the members with no children. A
+script's cached name is an entry of its catalog's index, so renaming a
+script changes the script and its catalog.
+
+Before anything else it checks every object's identity: a key of the
+shape its catalog's spec gives (a font's two bytes, a base directory's
+four, a serial key elsewhere), no two objects of one kind (and table)
+with one id, no member the decoders could read differently. A file that
+fails is refused with `invalid_request`; `details` give the `file`, the
+`reason` (`key_shape`, `duplicate_id` or `misread`), the `kind`, the
+`table` and, when the key has its specified shape, the `id`, never a
+key's bytes.
 
 With a base, an object of the source is the target's object of the same
 kind and id when the base has it too. An object the base lacks is new
@@ -1161,48 +1175,42 @@ objects. One the base has and the other file lacks was deleted there
 since the base. Without a base, two objects of one kind and id are
 matched when their names, decoded on both sides, are equal byte for
 byte, or when neither has a name (relationships, file library items,
-custom menu sets) and every group of their content is equal. Every
+custom menu sets) and all of their content is equal: that is no proof
+that they share a history, and a deploy must not rely on it. Every
 object matched with none is listed once, in `only_in_source` or
 `only_in_target`; among them, one agreeing with another in id alone, or
-in name alone (up to 8 per object; `possible_matches_left_out` counts
-the rest), is also listed as a possible match, which a person settles,
-and is never matched. A field is matched only when its table is. A file
-holding two objects of one kind (and table) that report one id, or a
-member the decoders could read differently, is refused: the error names
-the file, the kind and the id in `details`, never a key's bytes.
+in name alone (up to 8 per source object; `possible_matches_left_out`
+counts the rest), is also listed as a possible match, which a person
+settles, and is never matched. A field is matched only when its table
+is.
 
 Each matched object is compared by its pieces, group by group, whether
-it has a design revision or not, and `difference` is one of: `same`
-(modification stamps may differ); `design`; `secrets`, only stored
-secrets, said only when every differing stored secret is the text or
-calculation of a credential slot of a step identified with certainty;
-`secrets_and_data`, `secrets_and_derived` or `secrets_data_and_derived`,
-those secrets and Data or Derived content, nothing else; `data`,
-`derived` or `data_and_derived`; `unidentified` or
-`unidentified_and_design`, when a piece no rule identifies differs (a
-key no spec explains, a profile, which can hold a password beside its
-query, or anything in the data of a step not identified with certainty).
-With a base, `source_change` and `target_change` are each side's
-difference from it, and a side changed the object when that is
-`design`, a `secrets` one or an `unidentified` one: a serial number
-taken or a checksum over the file's creation stamp is no change.
-`changed_by` is `source`, `target`, `both`, or null when neither side
-changed it; `conflict` is true when both changed it and `difference` is
-itself `design`, a `secrets` one or an `unidentified` one. The same
-change made on both sides, with a serial number taken on one, is
-`changed_by` `both`, `difference` `data` and no conflict.
+it has a design revision or not, and `difference` lists the parts that
+differ: `design`; `step_data`, a script's or a button's step data, which
+is compared as bytes and not read, so a stored password's change and any
+other change of a step's parameters are both `step_data`; `unidentified`,
+a key no spec explains; `data` and `derived`. An empty list is the same
+(modification stamps may differ). With a base, `source_change` and
+`target_change` are each side's difference from it, and a side changed
+the object when it lists `design`, `step_data` or `unidentified`: a
+serial number taken or a checksum over the file's creation stamp is no
+change. `changed_by` is `source`, `target`, `both`, or null when neither
+side changed it; `conflict` is true when both changed it and the two
+still differ in `design`, `step_data` or `unidentified`. The same change
+made on both sides, with a serial number taken on one, is `changed_by`
+`both`, `difference` `data` and no conflict.
 
 Design revisions are given for matched objects (`source_revision`,
 `target_revision`, `base_revision`), for objects in one file
 (`revision`) and for possible matches; null where the object has none.
-An object has a design revision only when it holds no unidentified
-piece. In FileMaker Pro 26's starter files every script holds the
-unexplained key `13`, every font and custom menu a key of their own, so
-they are compared by their content but show no design revision
-([#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)); so does
-every object holding a stored profile. Two copies made separately, such
-as two language versions of a starter solution, give each object its own
-UUID, which is Design: every object they share differs in Design.
+An object has one only when it holds no step data and no piece a rule
+does not name. So no script has one, and no layout with a button that
+has step data; in FileMaker Pro 26's starter files every font and custom
+menu also holds a key of their own no spec explains
+([#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)). Two
+copies made separately, such as two language versions of a starter
+solution, give each object its own UUID, which is Design: every object
+they share differs in Design.
 
 ```sh
 om-author compare-designs --source Tasks-dev.fmp12 --target Tasks.fmp12 --base Tasks-base.fmp12
@@ -1567,12 +1575,14 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   ([#772](https://github.com/OpenMaker-Dev/openmaker/issues/772)). It
   reports differences; it classes none by what every record must do (a
   field's type, a stored calculation), keeps no history, writes no text
-  form, and deploys nothing. Objects holding a stored profile have no
-  design revision until identified plain profiles are given back to
-  Design ([#773](https://github.com/OpenMaker-Dev/openmaker/issues/773)). Which differences FileMaker
-  itself would see as changes is not compared with FileMaker; the
-  grouping of the member lists `07` and the value lists' `06` as Derived
-  is inferred (re/file-format.md 3.7).
+  form, and deploys nothing. Objects holding step data (scripts, and
+  layouts with a button that has step data) have no design revision, and
+  a change in step data is reported without saying what in it changed,
+  until step data is identified exactly per step
+  ([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)). Which
+  differences FileMaker itself would see as changes is not compared with
+  FileMaker; the grouping of the member lists `07` and the value lists'
+  `06` as Derived is inferred (re/file-format.md 3.7).
 - **Not audited.** A dedicated security review of the extension and of
   OpenMaker Server's existing op13 handling (direct catalog uploads need
   the file's [Full Access] set; staged record uploads need only a session

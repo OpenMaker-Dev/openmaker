@@ -12,8 +12,8 @@
 //! name is matched by no rule, so it is in no group and shows in the
 //! report ([`super::report`]).
 //!
-//! **Step rules** ([`STEP_SECRETS`]) find the credentials a script step
-//! stores in its data, and what in it is not identified. Which slot of a step's
+//! **Step rules** ([`STEP_SECRETS`], [`is_odbc_profile`]) find the
+//! credentials a script step stores in its data. Which slot of a step's
 //! data holds a password depends on the step, which the path does not
 //! show: the step's id is in the script's step list or the button's
 //! object, so these rules need the member ([`super::secrets`]).
@@ -829,21 +829,8 @@ pub const CATALOGS: &[Catalog] = &[
     ),
 ];
 
-/// Rules for paths outside the catalogs, and below a catalog member's
-/// first-level keys.
+/// Rules for paths outside the catalogs.
 const TOP: &[(&[Seg], Group, &str, &str)] = &[
-    (
-        &[
-            Seg::Key(&[0x11]),
-            Seg::Key(&[0x05]),
-            Seg::Any,
-            Seg::Key(&[0x05]),
-            Seg::Key(&[0x00]),
-        ],
-        Group::Data,
-        "a script's last issued data key",
-        "script-steps.md 4.2",
-    ),
     (
         &[Seg::Key(&[0x02])],
         Group::None,
@@ -909,9 +896,8 @@ pub struct StepSecret {
 
 /// The steps whose data the specs show holding credentials. A step keeps
 /// its data at `[17, 5, S, 5, K]` in a script and at `[4, 5, L, 5, O, 11]`
-/// on a button (script-steps.md 4.2; layout-model.md 5.3.3); of each slot
-/// here the text `01` and the calculation `05` are Secret with everything
-/// below them, and the slot's own value is not identified.
+/// on a button (script-steps.md 4.2; layout-model.md 5.3.3); each slot
+/// here is Secret with everything below it (its calculation or text).
 pub const STEP_SECRETS: &[StepSecret] = &[
     StepSecret {
         step: 63,
@@ -1006,6 +992,14 @@ pub const STEP_SECRETS: &[StepSecret] = &[
 /// The step key holding an import or export profile (`KProfile`,
 /// script-steps.md 4.2).
 pub const PROFILE: &[u8] = &[0x86];
+
+/// Whether a step's profile `86` is an ODBC connection profile: its value
+/// starts with the type `ODBC` and holds the data source name, the user
+/// name and the password (script-steps.md 11.5). The whole profile is
+/// Secret.
+pub fn is_odbc_profile(value: &[u8]) -> bool {
+    value.starts_with(b"ODBC")
+}
 
 impl Catalog {
     /// The rules this catalog contributes.
@@ -1177,22 +1171,21 @@ pub fn markdown_secrets() -> String {
         ));
     }
     out.push_str(
-        "| any step | not identified: its profile `86`, whole, whatever its type (an ODBC \
-         profile holds the user name and password, and profiles are not read here); the \
-         profile extension `87` but for Print Setup and Print; any step-level key, slot part \
-         or own value of a data node that script-steps.md 4.2 does not name; of a credential \
-         slot above, its own value, and a number `03`, field spec `10`, occurrence keys `11` or \
-         path list `82` not in the shape 4.2 gives | script-steps.md 4.2, 11.5, 11.6 |\n",
+        "| any step | its profile `86`, whole, whatever its type word (an ODBC connection \
+         profile holds the user name and password, and profiles are not read here) | \
+         script-steps.md 11.0, 11.5 |\n",
     );
     out.push_str(
-        "| a step not identified with certainty | all of its data, whole: no step list or \
-         object store, one that does not decode to its end (a protobuf field om-layout's \
-         reader refuses or reads otherwise included), a data key that is no serial key, is `00` \
-         or that two descriptors or buttons give different steps, a button whose step fields \
-         disagree, a step id the step catalog does not have (0 included), a data key no step \
-         names; and a script or layout member or attribute record, whole, with a key of more \
-         than one byte that reads by number as one the decoders look up there (`[00 04]` as \
-         the step list `04`) | script-steps.md 2, 4.2; catalogs/script-steps.csv |\n",
+        "| a step not identified with certainty | every slot, whole: no step list or object \
+         store, one that does not decode to its end (a protobuf field om-layout's reader \
+         refuses or reads otherwise included), a data key that is no serial key or that two \
+         descriptors or buttons give different steps, a button whose step fields disagree, a \
+         step id the step catalog does not have (0 included), a data key no step names, a \
+         credential slot not shaped as script-steps.md 4.2 gives (a value of its own included); \
+         and a script or layout member \
+         or attribute record, whole, with a key of more than one byte that reads by number as \
+         one the decoders look up there (`[00 04]` as the step list `04`) | script-steps.md 2, \
+         4.2; catalogs/script-steps.csv |\n",
     );
     out
 }

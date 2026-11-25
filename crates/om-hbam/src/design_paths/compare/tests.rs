@@ -106,10 +106,26 @@ fn matched(comparison: &Comparison, kind: Kind, id: u64) -> &Matched {
         .unwrap_or_else(|| panic!("{kind:?} {id} is not matched: {comparison:#?}"))
 }
 
-const SAME: Difference = Difference::Same;
-const SECRETS: Difference = Difference::Secrets {
+const SAME: Difference = Difference {
+    design: false,
+    step_data: false,
+    unidentified: false,
     data: false,
     derived: false,
+};
+const DESIGN: Difference = Difference {
+    design: true,
+    ..SAME
+};
+/// A password is in step data: a change of it is a change of step data.
+const STEP_DATA: Difference = Difference {
+    step_data: true,
+    ..SAME
+};
+const DATA: Difference = Difference { data: true, ..SAME };
+const UNIDENTIFIED: Difference = Difference {
+    unidentified: true,
+    ..SAME
 };
 
 #[test]
@@ -154,7 +170,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             |_| {},
             Kind::Script,
             2,
-            [Difference::Design, Difference::Design, SAME],
+            [DESIGN, DESIGN, SAME],
             (Some(ChangedBy::Source), false),
         ),
         (
@@ -163,7 +179,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             |r| password(r, ALPHA, b"new"),
             Kind::Script,
             1,
-            [SECRETS, SAME, SECRETS],
+            [STEP_DATA, SAME, STEP_DATA],
             (Some(ChangedBy::Target), false),
         ),
         (
@@ -172,17 +188,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             |r| set(r, &[TABLE, &[3], &[5], &[1], &[0x0c]], b"8"),
             Kind::Field,
             1,
-            [
-                Difference::Outside {
-                    data: true,
-                    derived: false,
-                },
-                SAME,
-                Difference::Outside {
-                    data: true,
-                    derived: false,
-                },
-            ],
+            [DATA, SAME, DATA],
             (None, false),
         ),
         (
@@ -195,14 +201,16 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::LibraryItem,
             1,
             [
-                Difference::Outside {
+                Difference {
                     data: true,
                     derived: true,
+                    ..SAME
                 },
                 SAME,
-                Difference::Outside {
+                Difference {
                     data: true,
                     derived: true,
+                    ..SAME
                 },
             ],
             (None, false),
@@ -213,11 +221,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             |_| {},
             Kind::Script,
             3,
-            [
-                Difference::Unidentified { design: false },
-                Difference::Unidentified { design: false },
-                SAME,
-            ],
+            [UNIDENTIFIED, UNIDENTIFIED, SAME],
             (Some(ChangedBy::Source), false),
         ),
         (
@@ -230,8 +234,16 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             3,
             [
-                Difference::Unidentified { design: true },
-                Difference::Unidentified { design: true },
+                Difference {
+                    design: true,
+                    unidentified: true,
+                    ..SAME
+                },
+                Difference {
+                    design: true,
+                    unidentified: true,
+                    ..SAME
+                },
                 SAME,
             ],
             (Some(ChangedBy::Source), false),
@@ -242,7 +254,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             |r| rename(r, BETA, "Beta T"),
             Kind::Script,
             2,
-            [Difference::Design, Difference::Design, Difference::Design],
+            [DESIGN, DESIGN, DESIGN],
             (Some(ChangedBy::Both), true),
         ),
         (
@@ -251,7 +263,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             |r| rename(r, BETA, "Beta 2"),
             Kind::Script,
             2,
-            [SAME, Difference::Design, Difference::Design],
+            [SAME, DESIGN, DESIGN],
             (Some(ChangedBy::Both), false),
         ),
         (
@@ -264,12 +276,13 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Field,
             1,
             [
-                Difference::Outside {
+                DATA,
+                DESIGN,
+                Difference {
+                    design: true,
                     data: true,
-                    derived: false,
+                    ..SAME
                 },
-                Difference::Design,
-                Difference::Design,
             ],
             (Some(ChangedBy::Both), false),
         ),
@@ -308,12 +321,14 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
     }
 
     // Matched objects carry design revisions, and one only where the
-    // object holds no unidentified content (Gamma's key `13`).
+    // object holds no step data and no unidentified piece: the library
+    // item and the field, not a script.
     let same = compare(&base, &base, Some(&base)).unwrap();
-    let alpha = matched(&same, Kind::Script, 1);
-    assert!(alpha.source_revision.is_some());
-    assert_eq!(alpha.source_revision, alpha.target_revision);
-    assert_eq!(matched(&same, Kind::Script, 3).source_revision, None);
+    let item = matched(&same, Kind::LibraryItem, 1);
+    assert!(item.source_revision.is_some());
+    assert_eq!(item.source_revision, item.target_revision);
+    assert!(matched(&same, Kind::Field, 1).source_revision.is_some());
+    assert_eq!(matched(&same, Kind::Script, 1).source_revision, None);
     assert!(same.only_in_source.is_empty() && same.only_in_target.is_empty());
     assert!(same.possible_matches.is_empty());
 
@@ -362,6 +377,9 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
         [
             (Kind::Table, Some(129), Some(129), Agreement::Id),
             (Kind::Script, Some(2), Some(2), Agreement::Id),
+            // The table's field catalog, and its field: their table is
+            // not matched.
+            (Kind::Field, None, None, Agreement::Id),
             (Kind::Field, Some(1), Some(1), Agreement::Id),
             (Kind::Script, Some(1), Some(4), Agreement::Name),
         ]
@@ -380,6 +398,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             (Kind::Table, Some(129), Presence::Only),
             (Kind::Script, Some(1), Presence::Only),
             (Kind::Script, Some(2), Presence::Only),
+            (Kind::Field, None, Presence::Only),
             (Kind::Field, Some(1), Presence::Only),
         ]
     );
@@ -389,14 +408,16 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             (Kind::Table, Some(129), Presence::Only),
             (Kind::Script, Some(2), Presence::Only),
             (Kind::Script, Some(4), Presence::Only),
+            (Kind::Field, None, Presence::Only),
             (Kind::Field, Some(1), Presence::Only),
         ]
     );
     assert_eq!(matched(&without, Kind::Script, 3).difference, SAME);
-    assert!(without
-        .matched
-        .iter()
-        .all(|m| m.source.kind != Kind::Field && m.source.kind != Kind::Table));
+    // No table, field or field catalog is matched; the tables' catalog,
+    // which names no table, is.
+    assert!(without.matched.iter().all(
+        |m| m.source.kind != Kind::Field && (m.source.kind != Kind::Table || m.source.catalog)
+    ));
     assert_eq!(serial::decode(TABLE), Some(129));
 }
 
@@ -454,23 +475,35 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
         root
     };
     let same = compare(&relationship(&[1]), &relationship(&[1]), None).unwrap();
+    let members: Vec<&Matched> = same.matched.iter().filter(|m| !m.source.catalog).collect();
     assert_eq!(
         (
-            same.matched.len(),
-            same.matched[0].difference,
+            members.len(),
+            members[0].difference,
             same.possible_matches.len()
         ),
-        (1, Difference::Same, 0)
+        (1, SAME, 0)
     );
+    // A table with no name, matched by its content, makes its fields
+    // eligible by the same test (finding 10 of #768's second review).
+    let mut unnamed_table = OwnedNode::default();
+    unnamed_table.put(
+        &[&[0x03], &[0x10], &[5], TABLE],
+        list(&[], vec![leaf(&[0x03], b"a comment")]),
+    );
+    unnamed_table.put(
+        &[TABLE, &[3], &[5], &[1]],
+        list(&[], vec![leaf(&[0x10], &om_scsu::encode_scsu("Count"))]),
+    );
+    let fields = compare(&unnamed_table, &unnamed_table, None).unwrap();
+    assert!(fields.possible_matches.is_empty() && fields.only_in_source.is_empty());
+    assert_eq!(matched(&fields, Kind::Field, 1).difference, SAME);
     let other = compare(&relationship(&[1]), &relationship(&[2]), None).unwrap();
     assert_eq!(possible(&other), [(Some(1), Some(1), Agreement::Id)]);
     let base = base();
     let itself = compare(&base, &base, None).unwrap();
     assert!(itself.possible_matches.is_empty() && itself.only_in_source.is_empty());
-    assert!(itself
-        .matched
-        .iter()
-        .all(|m| m.difference == Difference::Same));
+    assert!(itself.matched.iter().all(|m| m.difference.is_same()));
     // A name is reported only where it is one Design piece: not from a
     // name node that holds a node of its own.
     let mut odd = scripts(&["Alpha"]);
@@ -479,23 +512,63 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
     assert!(object.name().is_some());
     assert_eq!(object.design_name(), None);
     let compared = compare(&odd, &odd, Some(&odd)).unwrap();
-    assert_eq!(compared.matched[0].source.name, None);
-    // Two fonts whose keys differ but read as one id: refused, by kind and
-    // id.
-    let mut fonts = OwnedNode::default();
-    for key in [&[0x01][..], &[0x00, 0x01]] {
-        fonts.put(
+    assert_eq!(matched(&compared, Kind::Script, 1).source.name, None);
+    // Identities are checked before anything is read: a font key of
+    // another width than two bytes, a base directory's of other than four,
+    // a key that is no serial key (finding 8 of #768's second review: a
+    // token as a key), each refused with its kind and no id; two members
+    // with one key in a tree built in memory, refused with their id.
+    let font = |key: &[u8]| {
+        let mut root = OwnedNode::default();
+        root.put(
             &[&[0x19], &[5], key],
             list(&[], vec![leaf(&[0x10], &om_scsu::encode_scsu("Helvetica"))]),
         );
-    }
+        root
+    };
+    let shape = |kind| CompareError::Identity {
+        which: Which::Target,
+        kind,
+        table: None,
+        id: None,
+        problem: IdentityProblem::KeyShape,
+    };
     assert_eq!(
-        compare(&base, &fonts, None).unwrap_err(),
-        CompareError::Ambiguous {
+        compare(&base, &font(&[0x01]), None).unwrap_err(),
+        shape(Kind::Font)
+    );
+    assert_eq!(
+        compare(&base, &font(b"TOKEN99"), None).unwrap_err(),
+        shape(Kind::Font)
+    );
+    let mut directory = OwnedNode::default();
+    directory.put(
+        &[&[0x26], &[5], &[0, 1]],
+        list(&[], vec![leaf(&[0xf0], &[1])]),
+    );
+    assert_eq!(
+        compare(&base, &directory, None).unwrap_err(),
+        shape(Kind::BaseDirectory)
+    );
+    let mut token = base.clone();
+    token.put(&[&[0x11], &[5], b"\0TOKEN99"], script("Token", b"pw"));
+    let refused = compare(&base, &token, None).unwrap_err();
+    assert_eq!(refused, shape(Kind::Script));
+    for text in [refused.to_string(), format!("{refused:?}")] {
+        assert!(!text.contains("TOKEN"), "{text}");
+    }
+    let mut twice = font(&[0x00, 0x01]);
+    let members = twice.at_mut(&[&[0x19], &[5]]).unwrap();
+    let copy = members.children[0].clone();
+    members.children.push(copy);
+    assert_eq!(
+        compare(&base, &twice, None).unwrap_err(),
+        CompareError::Identity {
             which: Which::Target,
             kind: Kind::Font,
             table: None,
-            id: Some(1)
+            id: Some(1),
+            problem: IdentityProblem::Duplicate
         }
     );
 }
@@ -557,8 +630,6 @@ fn a_file_is_read_for_its_design_alone() {
     assert_eq!(design.at(&[TABLE, &[3]]), root.at(&[TABLE, &[3]]));
     assert_eq!(design.at(&[&[0x11]]), root.at(&[&[0x11]]));
     let comparison = compare(&design, &root, None).unwrap();
-    assert!(comparison
-        .matched
-        .iter()
-        .all(|m| m.difference == Difference::Same));
+    assert!(!comparison.matched.is_empty());
+    assert!(comparison.matched.iter().all(|m| m.difference.is_same()));
 }
