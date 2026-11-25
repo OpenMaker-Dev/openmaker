@@ -1334,23 +1334,34 @@ slot serves it, are the hosting's (`Slot`), as before.
 **A file the server may not write.** A save writes a new copy beside the
 file and renames it over the file, which needs write access to the folder
 only, so a file the server's user may not write (mode 444 in a writable
-folder) would be replaced all the same. The server asks, as it hosts a
-file and before anything is saved (deferred work included), the two
-questions the desktop's host asks as it opens one (`store::save_refused`,
-`local::open_file`): whether the file opens for writing (refused for this
-user or on a read-only file system: `ReadOnlyCause::NotWritable`), and
-whether its folder allows the new copy (`ReadOnlyCause::FolderNotWritable`).
-Either holds the file read-only, with an error in the log, an alert
-(`Database "<name>" is served read-only: <why>.`), the startup event 18
-`Opened database "<name>" read only.`, and the cause in the Admin
-Console's list of files. It is decided when the file is hosted, as the
-other causes are: a file whose permissions change while it is hosted is
-served as it was hosted until it is closed and opened again or the server
-restarts (a file made unwritable is still replaced by the next save; a
-folder made unwritable fails the next save, as any save that cannot write
-its copy does). OpenMaker's own choice: how FileMaker Server hosts a file
-it may not write is unmeasured, though its event catalog has event 18
-(re/server-logs.md).
+folder) would be replaced all the same. An engine that saves to the file
+it loaded (the file engine, `FileEngine::saves_to_source`) asks, as it
+hosts a file and before anything is saved (deferred work included), the
+two questions the desktop's host asks as it opens one
+(`store::save_refused`, `local::open_file`), through the file's folder as a
+save goes, never through a link: whether the entry opens for writing
+(refused for this user or on a read-only file system:
+`ReadOnlyCause::NotWritable`), and whether the folder allows the new copy
+(`ReadOnlyCause::FolderNotWritable`: on Unix write and search permission
+by the process's effective ids, as the save's `openat` is checked; a file
+named without a folder is in the current folder). The entry it opens must
+be the file it just read (its device and inode); when it is another file,
+or that cannot be told, the file is held read-only too (`NotWritable`),
+and the log says why, with no second try. Any of these holds the file
+read-only, with an error in the log, an alert (`Database "<name>" is
+served read-only: <why>.`), the startup event 18 `Opened database "<name>"
+read only.`, and the cause in the Admin Console's list of files, which
+reads it without the store's lock (`Hosted::read_only_cause`), as it reads
+whether a file takes no more changes. It is decided when the file is
+hosted, as the other causes are: a file whose permissions change while it
+is hosted is served as it was hosted until it is closed and opened again
+or the server restarts (a file made unwritable is still replaced by the
+next save; a folder made unwritable fails the next save, as any save that
+cannot write its copy does). On Windows the folder's read-only attribute
+alone decides the second question; its access control list is not read
+([#851](https://github.com/OpenMaker-Dev/openmaker/issues/851)). OpenMaker's
+own choice: how FileMaker Server hosts a file it may not write is
+unmeasured, though its event catalog has event 18 (re/server-logs.md).
 
 **Writes to a file hosted read-only.** No request that would change a
 file hosted read-only is answered with the reply of a change that

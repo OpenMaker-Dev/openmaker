@@ -252,6 +252,9 @@ pub struct Hosted {
     /// store ([`Hosted::writes_refused`]). Set once; hosting the file again
     /// makes a new `Hosted`.
     unknown: std::sync::OnceLock<String>,
+    /// Why the file is served read-only, as its store sets it, read
+    /// without the store's lock ([`Hosted::read_only_cause`]).
+    read_only: Arc<std::sync::OnceLock<crate::store::ReadOnlyCause>>,
     /// Where a failed save is recorded and raised as an alert.
     events: EventLog,
     /// A test's switch that fails one of a script session's reads of the
@@ -434,8 +437,10 @@ impl Hosted {
                 store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
+        let read_only = store.read_only_published();
         Ok(Hosted {
             id,
+            read_only,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
             at,
@@ -612,6 +617,14 @@ impl Hosted {
     /// a write lets go of it. Read without waiting for the store.
     pub fn writes_refused(&self) -> Option<&str> {
         self.unknown.get().map(String::as_str)
+    }
+
+    /// Why the file is served read-only, if it is (`Store::set_read_only`,
+    /// the first cause), read without the store's lock, as
+    /// [`Hosted::writes_refused`] is: for the administrator's list of
+    /// files, which a save holding the store must not hold up.
+    pub fn read_only_cause(&self) -> Option<crate::store::ReadOnlyCause> {
+        self.read_only.get().copied()
     }
 
     /// Whether a request panicked holding the store.
@@ -2170,15 +2183,17 @@ fn load_hosted(
     engine.loaded_from(&loaded, on_disk);
     drop(file);
     // A file this server's user may not write, or whose folder does not
-    // allow a save's new copy, is held read-only before anything is saved,
-    // the deferred work included: a save would replace it all the same.
-    // Decided as it is hosted, as the other causes are (docs/server-
-    // storage.md 5).
-    if let Some(cause) = crate::store::save_refused(at.place()) {
-        let why = cause.why();
-        error!("{:?}: {why}; it is served read-only", hosted.name);
-        events.alert(Event::hosted_read_only(&hosted.name, why));
-        engine.hold_read_only(&loaded, cause);
+    // allow a save's new copy, or whose entry is no longer the file just
+    // read, is held read-only before anything is saved, the deferred work
+    // included: a save would replace it all the same. Decided as it is
+    // hosted, as the other causes are, and only by an engine that saves to
+    // the file it loaded (docs/server-storage.md 5).
+    if engine.saves_to_source() {
+        if let Some((cause, why)) = crate::store::save_refused(at, on_disk) {
+            error!("{:?}: {why}; it is served read-only", hosted.name);
+            events.alert(Event::hosted_read_only(&hosted.name, &why));
+            engine.hold_read_only(&loaded, cause);
+        }
     }
     // Looked at in the file's folder, without following a link; one that
     // cannot be looked at counts.

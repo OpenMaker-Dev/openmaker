@@ -211,6 +211,60 @@ impl Folder {
         Ok(file)
     }
 
+    /// Open entry `name` for reading and writing, as the check that this
+    /// process may write the file it hosts there: never through a link,
+    /// without blocking, and without creating, truncating or writing it;
+    /// refused unless it is a regular file.
+    pub fn open_writable(&self, name: &OsStr) -> io::Result<File> {
+        #[cfg(unix)]
+        let file = {
+            use rustix::fs::{Mode, OFlags};
+            File::from(rustix::fs::openat(
+                &self.fd,
+                name,
+                OFlags::RDWR | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?)
+        };
+        #[cfg(not(unix))]
+        let file = {
+            let path = self.dir.join(name);
+            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("{} is a symbolic link", path.display()),
+                ));
+            }
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?
+        };
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        Ok(file)
+    }
+
+    /// Whether this process may make a new entry in this folder, as a
+    /// save makes its new copy: on Unix, write and search permission by
+    /// its effective ids, as the save's `openat` is checked; on Windows,
+    /// the folder's read-only attribute alone (its access control list is
+    /// not read).
+    pub fn allows_new_entries(&self) -> bool {
+        #[cfg(unix)]
+        {
+            may_create_in(&self.fd, Path::new("."))
+        }
+        #[cfg(not(unix))]
+        {
+            not_read_only(&self.dir)
+        }
+    }
+
     /// Create entry `name` for writing, only where nothing is: owner-only
     /// (0600) when `owner_only`, else a new file's permissions (0666), less
     /// the umask on Unix.
@@ -361,6 +415,42 @@ pub fn file_identity(file: &File) -> io::Result<Option<FileId>> {
     }
 }
 
+/// Whether this process may make a new entry in the folder that holds the
+/// file at `path` (`.` for a bare name), as a save makes its new copy
+/// there: [`Folder::allows_new_entries`], asked by the path, for the
+/// desktop's host, which keeps the file open itself.
+pub fn folder_allows_new_entries(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        may_create_in(rustix::fs::CWD, folder_of(path))
+    }
+    #[cfg(not(unix))]
+    {
+        not_read_only(folder_of(path))
+    }
+}
+
+/// Write and search permission on folder `path` (relative to `dir`) by the
+/// effective ids, which a save's `openat` is checked with (`access` would
+/// ask with the real ones).
+#[cfg(unix)]
+fn may_create_in(dir: impl std::os::fd::AsFd, path: &Path) -> bool {
+    use rustix::fs::{Access, AtFlags};
+    rustix::fs::accessat(
+        dir,
+        path,
+        Access::WRITE_OK | Access::EXEC_OK,
+        AtFlags::EACCESS,
+    )
+    .is_ok()
+}
+
+/// Whether folder `dir` lacks the read-only attribute.
+#[cfg(not(unix))]
+fn not_read_only(dir: &Path) -> bool {
+    std::fs::metadata(dir).is_ok_and(|m| !m.permissions().readonly())
+}
+
 /// The folder `path` names its file in: `.` for a bare name.
 fn folder_of(path: &Path) -> &Path {
     match path.parent() {
@@ -383,4 +473,20 @@ fn mode_bits(mode: rustix::fs::Mode) -> u32 {
 fn identity(stat: &rustix::fs::Stat) -> FileId {
     // `st_dev` is narrower than 64 bits on some systems (macOS).
     (stat.st_dev as u64, stat.st_ino as u64)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::Path;
+
+    /// A file named without a folder is in the current folder, as
+    /// `FileAt` finds it: its folder allows a save's copy as `./` does
+    /// (the review of #842 of github.com/OpenMaker-Dev/openmaker, where an
+    /// empty folder held such a file read-only). The tests run in the
+    /// package's folder, which they may write.
+    #[test]
+    fn a_bare_file_name_is_in_the_current_folder() {
+        assert!(super::folder_allows_new_entries(Path::new("./Tasks.fmp12")));
+        assert!(super::folder_allows_new_entries(Path::new("Tasks.fmp12")));
+    }
 }

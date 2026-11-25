@@ -91,28 +91,33 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     assert!(name_index_on_disk(&file).is_empty());
 }
 
-/// A read that fails, as reads that reach a damaged page fail
-/// (docs/server-storage.md 5, "Views", and 6.12), reaches the client as an
-/// error, never as a reply that looks whole: a download that reaches it
-/// (op90, op92) is answered with a CORBA system exception (`PERSIST_STORE`),
-/// a find that reads it fails with the error slot's code `ffff`, and what
-/// does not reach it is served as before, on the same connection.
-#[cfg(debug_assertions)]
 /// A hosted file this server's user may not write (mode 444), or whose
 /// folder does not allow the new copy a save writes beside it (mode 555), is
 /// served read-only (#827 of github.com/OpenMaker-Dev/openmaker): the
 /// administrator's list of files says why, and a find on a field without an
 /// index, which stores the index it builds on a writable file, and an edit,
 /// which is refused, leave the file's bytes as they were. Permissions do
-/// not bind root (or a user with its override): a run where the file opens
-/// for writing all the same says so and checks nothing.
+/// not bind root (or a user with its override): a case whose forbidden
+/// write succeeds all the same says so on standard error and is skipped.
+/// The permissions are put back and the folder removed however a case ends.
 #[cfg(unix)]
 #[test]
 fn a_file_its_user_may_not_write_is_served_read_only() {
+    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
-    let mode = |path: &std::path::Path, mode: u32| {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-    };
+    use std::path::{Path, PathBuf};
+    /// The case's folder: writable again and removed when it is dropped.
+    struct Folder(PathBuf);
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = mode(&self.0, 0o755);
+            let _ = mode(&self.0.join("Tasks.fmp12"), 0o644);
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn mode(path: &Path, mode: u32) -> std::io::Result<()> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
     for (case, why) in [
         (
             "file",
@@ -123,46 +128,60 @@ fn a_file_its_user_may_not_write_is_served_read_only() {
             "its folder does not allow the new copy a save writes beside it",
         ),
     ] {
-        let folder = std::env::temp_dir().join(format!(
+        let folder = Folder(std::env::temp_dir().join(format!(
             "om-read-only-{case}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&folder).unwrap();
-        let file = fixture::TempFile(folder.join("Tasks.fmp12"));
-        fixture::write_tree(&file.0, &fixture::tree(&[], true));
-        match case {
-            "file" => mode(&file.0, 0o444),
-            _ => mode(&folder, 0o555),
-        }
-        let bypassed = case == "file"
-            && std::fs::OpenOptions::new()
-                .write(true)
-                .open(&file.0)
-                .is_ok();
-        if bypassed {
-            eprintln!("skipped: this user writes a file of mode 444 (root?)");
-        } else {
-            let before = std::fs::read(&file.0).unwrap();
-            let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
-            let path = std::path::absolute(&file.0).unwrap();
-            let listed = handle.files().into_iter().find(|f| f.path == path).unwrap();
-            assert_eq!(listed.read_only, Some(why), "{case}");
-            for (_, found) in find_ship_twice(port) {
-                assert_eq!(found, [2], "{case}");
+        )));
+        std::fs::create_dir_all(&folder.0).unwrap();
+        let path = folder.0.join("Tasks.fmp12");
+        fixture::write_tree(&path, &fixture::tree(&[], true));
+        // The forbidden write, tried: a case it does not forbid is skipped.
+        let binds = match case {
+            "file" => {
+                mode(&path, 0o444).unwrap();
+                std::fs::OpenOptions::new().write(true).open(&path).is_err()
             }
-            let (mut session, _) = server::logged_in(port, "read-only file");
-            assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Changed")]).is_err());
-            session.disconnect().unwrap();
-            assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}");
+            _ => {
+                mode(&folder.0, 0o555).unwrap();
+                let probe = folder.0.join("probe");
+                let made = std::fs::File::create_new(&probe).is_ok();
+                let _ = std::fs::remove_file(&probe);
+                !made
+            }
+        };
+        if !binds {
+            let _ = writeln!(
+                std::io::stderr(),
+                "a_file_its_user_may_not_write_is_served_read_only: the {case} case is \
+                 skipped: this user writes where its permissions forbid it (root?)"
+            );
+            continue;
         }
-        mode(&folder, 0o755);
-        mode(&file.0, 0o644);
-        drop(file);
-        std::fs::remove_dir_all(&folder).unwrap();
+        let file = fixture::TempFile(path);
+        let before = std::fs::read(&file.0).unwrap();
+        let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+        let path = std::path::absolute(&file.0).unwrap();
+        let listed = handle.files().into_iter().find(|f| f.path == path).unwrap();
+        assert_eq!(listed.read_only, Some(why), "{case}");
+        for (_, found) in find_ship_twice(port) {
+            assert_eq!(found, [2], "{case}");
+        }
+        assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}: the finds");
+        let (mut session, _) = server::logged_in(port, "read-only file");
+        assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Changed")]).is_err());
+        session.disconnect().unwrap();
+        assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}: the edit");
     }
 }
 
+/// A read that fails, as reads that reach a damaged page fail
+/// (docs/server-storage.md 5, "Views", and 6.12), reaches the client as an
+/// error, never as a reply that looks whole: a download that reaches it
+/// (op90, op92) is answered with a CORBA system exception (`PERSIST_STORE`),
+/// a find that reads it fails with the error slot's code `ffff`, and what
+/// does not reach it is served as before, on the same connection.
+#[cfg(debug_assertions)]
 #[test]
 fn a_failed_read_reaches_the_client_as_an_error() {
     use om_hbam::serial;

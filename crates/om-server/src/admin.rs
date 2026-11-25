@@ -854,9 +854,11 @@ impl ServerHandle {
                         slot.served()
                             .and_then(|file| file.writes_refused().map(str::to_owned))
                     }),
+                    // Without the store's lock, as `error` is read: a
+                    // save holds it through its write and flush.
                     read_only: slot
                         .served()
-                        .and_then(|file| self.shared.engine.read_only(&file))
+                        .and_then(|file| file.read_only_cause())
                         .map(crate::store::ReadOnlyCause::why),
                 }
             })

@@ -897,7 +897,8 @@ fn open_file(path: &Path) -> Result<(File, Option<ReadOnly>), LocalHostError> {
     match File::options().read(true).write(true).open(path) {
         Ok(file) => Ok((
             file,
-            (!crate::store::folder_allows_save(path)).then_some(ReadOnly::FolderNotWritable),
+            (!crate::anchored::folder_allows_new_entries(path))
+                .then_some(ReadOnly::FolderNotWritable),
         )),
         Err(e) if crate::store::refuses_writing(&e) => File::open(path)
             .map(|file| (file, Some(ReadOnly::NotWritable)))
