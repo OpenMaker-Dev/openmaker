@@ -226,10 +226,9 @@ pub struct Store {
 /// Why a hosted file may not be written ([`Store::set_read_only`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadOnlyCause {
-    /// Its host opened it so: on the desktop it may not be written there,
-    /// it has other names, it cannot be locked, or something is at its
-    /// save's copy name (`crate::local::ReadOnly`); on a server something
-    /// is at its save's copy name ([`copy_beside`]).
+    /// The desktop's host opened it so: it may not be written there, it
+    /// has other names, it cannot be locked, or something is at its save's
+    /// copy name (`crate::local::ReadOnly`).
     Opened,
     /// It holds content the writer cannot write back.
     Unwritable,
@@ -273,6 +272,29 @@ pub enum IssuedKeysAre<'a> {
     Unknown(&'a str),
 }
 
+impl IssuedKeysAre<'_> {
+    /// The FileMaker error an op86 request that issued these keys answers
+    /// with its error slot, or `None` for the program's own answer:
+    /// `draft_failed`, the error of its own draft when that was not
+    /// stored; `own_writes`, whether the program had catalog writes of its
+    /// own besides the keys. The file taking no more changes answers 800
+    /// (an unknown outcome); a key not stored, the draft's error (800 when
+    /// it had none: the keys did not reach a save, the file read-only); keys
+    /// stored, the program's answer, unless its own catalog writes failed,
+    /// which keeps that failure. So for a program whose only write is its
+    /// keys this look decides both ways: a draft that failed and whose keys
+    /// a later write stored answers as stored.
+    pub fn error(&self, draft_failed: Option<u16>, own_writes: bool) -> Option<u16> {
+        match self {
+            IssuedKeysAre::Unknown(why) => Some(crate::hosting::save_error(
+                &std::io::Error::other((*why).to_owned()),
+            )),
+            IssuedKeysAre::NotStored => Some(draft_failed.unwrap_or(800)),
+            IssuedKeysAre::Stored => draft_failed.filter(|_| own_writes),
+        }
+    }
+}
+
 /// A catalog path with the last member id and modification count
 /// GenerateMemberKey issued for it (schema-path.md 3.4).
 pub type MemberKey = (Vec<Vec<u8>>, (u64, u64));
@@ -306,9 +328,12 @@ pub struct Journal {
     /// commit changed or deleted in it and the keys each keeps: when the
     /// commit finishes they leave every other entry ([`Store::sweep_index`]).
     sweep: BTreeMap<IndexId, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
-    /// Whether the commit changed the schema the store reads
-    /// ([`Store::replace_schema_in`]): a roll-back reads it again.
-    schema: bool,
+    /// The schema as the store read it before the commit's first change to
+    /// the catalogs it reads ([`Journal::schema_from`]): a roll-back puts
+    /// it back as it was. Reading the tree put back instead could fail (a
+    /// catalog that does not decode, which the store served with the
+    /// schema it last read) and keep the schema the commit decoded.
+    schema: Option<Catalog>,
     /// Why a write of the commit was refused (for example, a posting
     /// whose RID encoding the writer cannot preserve). The refused write
     /// changed nothing. [`Store::save_commit`] takes back the rest of the
@@ -401,6 +426,14 @@ type Draws<'a> = (
 type Reindex = (Vec<u8>, u8, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>);
 
 impl Journal {
+    /// Keep `catalog`, the schema the store reads, before the commit's
+    /// first change to it ([`Journal::schema`]).
+    fn schema_from(&mut self, catalog: &Catalog) {
+        if self.schema.is_none() {
+            self.schema = Some(catalog.clone());
+        }
+    }
+
     /// Keep the node at `path` of `root` as it is now, unless this commit
     /// already kept it, and what a change there would create on its way
     /// ([`Self::save_parents`]): a missing parent is kept as missing, so a
@@ -553,8 +586,8 @@ fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
 /// named `name` in `folder` (`<name>.omsave`, [`save_copy_path`]), looked
 /// at without following a link: a copy a save left when it stopped part
 /// way, or anything else. Saves of the file fail while it is there, and
-/// nothing removes it: a host opening the file serves it read-only
-/// (docs/server-storage.md 5).
+/// nothing removes it: a server opening the file raises an alert that
+/// names it (docs/server-storage.md 5).
 pub(crate) fn copy_beside(folder: &Folder, name: &std::ffi::OsStr) -> std::io::Result<bool> {
     Ok(folder.entry(&save_copy_name(name))?.is_some())
 }
@@ -857,9 +890,8 @@ impl Store {
     ///
     /// The new copy, [`save_copy_path`], is created only where nothing is:
     /// an entry of that name the store did not make (a copy a crash left,
-    /// a link to another file) stops the save, untouched; a host opening
-    /// the file with one there serves it read-only ([`copy_beside`]). A
-    /// store holding
+    /// a link to another file) stops the save, untouched ([`copy_beside`]).
+    /// A store holding
     /// the file's lock first checks that its locked descriptor is still the
     /// file's entry in its folder, with no other names (a file another
     /// program replaced or linked is not saved over), and locks the new
@@ -1112,7 +1144,7 @@ impl Store {
             deleted_container_refs: BTreeMap::new(),
             recount: BTreeSet::new(),
             sweep: BTreeMap::new(),
-            schema: false,
+            schema: None,
             refused: None,
             basis: Vec::new(),
             lines: Vec::new(),
@@ -1680,8 +1712,8 @@ impl Store {
                 }
             }
         }
-        if journal.schema {
-            self.reread_catalog();
+        if let Some(catalog) = journal.schema {
+            self.catalog = catalog;
         }
         for (table, basis) in journal.basis.into_iter().rev() {
             match basis {
@@ -2421,7 +2453,7 @@ impl Store {
         if writes.is_empty() {
             return released;
         }
-        journal.schema = true;
+        journal.schema_from(&self.catalog);
         for write in writes {
             match write {
                 Write::Put { path: owned, node } => {
@@ -2512,7 +2544,7 @@ impl Store {
             return;
         }
         journal.save_path(&self.root, path.clone());
-        journal.schema = true;
+        journal.schema_from(&self.catalog);
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         self.root.put(&segments, node);
         self.schema_changed();
@@ -2539,7 +2571,7 @@ impl Store {
     /// written.
     pub fn remove_schema_in(&mut self, journal: &mut Journal, path: Vec<Vec<u8>>) {
         journal.save_node(&self.root, path.clone());
-        journal.schema = true;
+        journal.schema_from(&self.catalog);
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         self.root.remove(&segments);
         self.schema_changed();
@@ -2598,7 +2630,7 @@ impl Store {
             return false;
         }
         journal.replace(&mut self.root, path.to_vec(), placed);
-        journal.schema = true;
+        journal.schema_from(&self.catalog);
         self.schema_changed();
         true
     }

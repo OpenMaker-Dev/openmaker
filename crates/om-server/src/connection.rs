@@ -2568,11 +2568,15 @@ fn query(
                 let store = file.hosted.read_store();
                 store.has_issued_member_keys() || store.has_indexes_on_demand()
             };
-            let mut slots = outcome.slots;
+            // Whether the program has catalog writes of its own, besides
+            // the keys it issued.
+            let own_writes = !outcome.writes.is_empty();
+            let answer = outcome.slots;
+            let mut slots = answer.clone();
             // The FileMaker error of this request's own write, when it was
             // not stored.
             let mut not_stored = None;
-            if pending || !outcome.writes.is_empty() {
+            if pending || own_writes {
                 let done: Vec<String> = outcome
                     .writes
                     .iter()
@@ -2628,34 +2632,24 @@ fn query(
                 }
             }
             // The keys this program issued were stored by its own write, or
-            // by another request's write that held the store first, or wait
-            // still. One look, under one hold of the store: a file that takes
-            // no more changes (a save's outcome was unknown, this one's or
-            // another's) answers that; a key its catalog's index does not
-            // hold (no save stored it, or a write dropped it) answers the
-            // error a key not stored answers; else the program's answer
-            // stands (docs/server-storage.md 5, "Keys a request issued").
+            // by another request's write that held the store first, or were
+            // not. One look, under one hold of the store, decides its answer
+            // (`IssuedKeysAre::error`; docs/server-storage.md 5, "Keys a
+            // request issued"): for a program whose only write is its keys,
+            // in both directions; one whose own catalog writes failed keeps
+            // that failure.
             if !issued.is_empty() {
-                use crate::store::IssuedKeysAre;
-                match file.hosted.read_store().issued_keys(&issued) {
-                    IssuedKeysAre::Stored => {}
-                    IssuedKeysAre::Unknown(why) => {
+                let store = file.hosted.read_store();
+                let keys = store.issued_keys(&issued);
+                match keys.error(not_stored, own_writes) {
+                    Some(code) => {
                         warn!(
-                            "{peer}: {:?}: the member keys this query reserved may or may not \
-                             be stored: {why}",
+                            "{peer}: {:?}: the member keys this query reserved: {keys:?}",
                             file.hosted.name
                         );
-                        let why = std::io::Error::other(why.to_owned());
-                        slots = error_slot(crate::hosting::save_error(&why));
+                        slots = error_slot(code);
                     }
-                    IssuedKeysAre::NotStored => {
-                        warn!(
-                            "{peer}: {:?}: the member keys this query reserved are not stored",
-                            file.hosted.name
-                        );
-                        // A read-only file's save answers 800 too.
-                        slots = error_slot(not_stored.unwrap_or(800));
-                    }
+                    None => slots = answer,
                 }
             }
             slots
@@ -2705,7 +2699,7 @@ struct QuerySource<'s> {
     store: &'s crate::store::Store,
     /// The member ids GenerateMemberKey issued, with their catalogs, which
     /// the request looks for when it ends
-    /// ([`crate::store::Store::member_key_waits`]).
+    /// ([`crate::store::Store::issued_keys`]).
     issued: std::cell::RefCell<Vec<(Vec<Vec<u8>>, u64)>>,
     restricted: bool,
     account_key: Option<&'s [u8]>,

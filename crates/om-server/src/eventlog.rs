@@ -284,9 +284,8 @@ impl Event {
         Self::new(Log::Event, Level::Error, number, message)
     }
 
-    /// Hosted file `name` is served read-only, for the reason `why`
-    /// (something is at its save's copy name, its deferred work was left
-    /// part way). OpenMaker's own message.
+    /// Hosted file `name` is served read-only, for the reason `why` (its
+    /// deferred work was left part way). OpenMaker's own message.
     pub fn hosted_read_only(name: &str, why: &str) -> Self {
         Self::new(
             Log::Event,
@@ -296,6 +295,25 @@ impl Event {
                 "Database \"{}\" is served read-only: {}.",
                 database(name),
                 value(why)
+            ),
+        )
+    }
+
+    /// Hosted file `name` was opened with something at `entry`, the name
+    /// its saves write their new copy under (an earlier save's leftover, or
+    /// anything else): its saves fail, each change taken back, until that is
+    /// removed. OpenMaker's own message.
+    pub fn save_copy_in_the_way(name: &str, entry: &str) -> Self {
+        Self::new(
+            Log::Event,
+            Level::Error,
+            0,
+            format!(
+                "Something is at \"{}\", where database \"{}\"'s saves write their new \
+                 copy (an earlier save's leftover?); its changes are not saved until that is \
+                 removed.",
+                value(entry),
+                database(name)
             ),
         )
     }

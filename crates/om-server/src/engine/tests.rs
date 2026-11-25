@@ -2145,6 +2145,13 @@ fn a_request_answers_from_what_became_of_the_keys_it_issued() {
             IssuedKeysAre::NotStored => "not stored",
             IssuedKeysAre::Unknown(_) => "unknown",
         };
+    // The error A answers (`None`: its program's answer), given its own
+    // draft's error and whether it had catalog writes of its own.
+    let answered = |file: &Hosted, issued: &[(Vec<Vec<u8>>, u64)], failed, own_writes| {
+        file.read_store()
+            .issued_keys(issued)
+            .error(failed, own_writes)
+    };
 
     // B's write stores A's key before A's own draft, which has nothing left
     // to store: stored. A key C issued since, which waits, is not A's.
@@ -2160,7 +2167,9 @@ fn a_request_answers_from_what_became_of_the_keys_it_issued() {
     );
     let c = issue(&file);
     assert_eq!(ended(&file, &a), "stored");
+    assert_eq!(answered(&file, &a, None, false), None);
     assert_eq!(ended(&file, &c), "not stored");
+    assert_eq!(answered(&file, &c, None, false), Some(800));
 
     // B's save stores nothing: A's key waits again, and A's own draft
     // stores it.
@@ -2177,13 +2186,27 @@ fn a_request_answers_from_what_became_of_the_keys_it_issued() {
     );
     assert_eq!(ended(&file, &a), "stored");
 
-    // A's own save stores nothing: its key waits.
+    // A's own save stores nothing: its key waits, and A answers the
+    // save's error. B's write then stores the key before A looks: A, whose
+    // only write is its key, answers as stored; a program whose own
+    // catalog writes failed with it keeps that failure.
     let a = issue(&file);
     file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
     let own = engine.submit_draft(&file, draft());
     file.fail_saves(None);
     assert!(is_storage_error(&own.reply), "{own:?}");
     assert_eq!(ended(&file, &a), "not stored");
+    assert_eq!(answered(&file, &a, Some(800), false), Some(800));
+    assert_eq!(
+        engine.submit_draft(&file, draft()).reply,
+        Reply::ChangeSchema(Ok(()))
+    );
+    assert_eq!(answered(&file, &a, Some(800), false), None, "its answer");
+    assert_eq!(
+        answered(&file, &a, Some(809), true),
+        Some(809),
+        "its writes'"
+    );
 
     // The file becomes read-only after A issued its key: A's draft takes
     // nothing and answers as a read; the key waits.
@@ -2197,8 +2220,9 @@ fn a_request_answers_from_what_became_of_the_keys_it_issued() {
     );
     assert_eq!(ended(&file, &a), "not stored");
 
-    // B's draft deletes the table whose field catalog A's key is for: the
-    // key writer drops the key, which neither waits nor is stored.
+    // B's draft writes A's key into the field catalog of a table and then
+    // deletes the table, the counter with it: the key is in no index
+    // (the counter a draft's own writes remove, #736).
     let (_disk, file) = host("keys-dropped", &tree);
     let table = uint_segment(fixture::TABLE);
     let fields = vec![table.clone(), vec![3]];
@@ -2226,6 +2250,7 @@ fn a_request_answers_from_what_became_of_the_keys_it_issued() {
         "{b:?}"
     );
     assert_eq!(ended(&file, &a), "unknown");
+    assert_eq!(answered(&file, &a, None, false), Some(800));
 }
 
 /// What reads leave waiting is taken by the first write that holds the
@@ -3726,7 +3751,7 @@ fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_r
     );
     assert_eq!(
         node_at(&file, &deferred),
-        Some(work),
+        Some(work.clone()),
         "the work list is back"
     );
     assert_eq!(
@@ -3736,6 +3761,20 @@ fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_r
     );
     assert!(!file.read_store().has_unsaved_changes());
     assert_eq!(std::fs::read(&disk.0).unwrap(), bytes);
+    // So on a server, whose file is hosted with something at its save's
+    // copy name: the work's save fails there, and is taken back.
+    drop(file);
+    let copy = crate::store::save_copy_path(&disk.0);
+    std::fs::write(&copy, b"half a save").unwrap();
+    let file = load(&disk);
+    assert_eq!(
+        file.read_store().read_only_cause(),
+        Some(crate::store::ReadOnlyCause::DeferredWork)
+    );
+    assert_eq!(node_at(&file, &deferred), Some(work.clone()));
+    assert_eq!(std::fs::read(&disk.0).unwrap(), bytes);
+    assert_eq!(std::fs::read(&copy).unwrap(), b"half a save", "left");
+    std::fs::remove_file(&copy).unwrap();
     // Hosted again with saves working, it is recovered.
     drop(file);
     let file = load(&disk);
@@ -3774,6 +3813,80 @@ fn deferred_work_a_panic_left_is_not_taken_as_done() {
     );
     assert_eq!(node_at(&file, &deferred), Some(work), "still pending");
     assert_eq!(std::fs::read(&disk.0).unwrap(), bytes);
+}
+
+/// The review's P0 on the decoded schema: taking a change back puts back
+/// the schema the store read before it, as it was. An upload that leaves
+/// the base tables catalog undecodable is stored, and the file is served
+/// with the schema read before it; a change that repairs the catalog and
+/// adds a table, whose save fails, leaves that schema, not the one it
+/// decoded, so an op71 for the table it added is refused and writes
+/// nothing.
+#[test]
+fn a_change_taken_back_leaves_the_schema_the_store_read_before_it() {
+    use om_query::Write;
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let (_disk, file) = host("engine-schema-back", &tree);
+    let engine = engine();
+    let table = uint_segment(fixture::TABLE);
+    let name = vec![vec![3], vec![16], vec![5], table.clone(), vec![16]];
+    let undecodable = vec![0x0e ^ om_scsu::MASK];
+    assert!(om_scsu::decode_scsu(&undecodable).is_err());
+    let before = file.read_store().catalog().clone();
+    let upload = Operation::UploadToCatalog(UploadToCatalog {
+        path: name.clone(),
+        node: OwnedNode::leaf(vec![16], undecodable),
+    });
+    assert_eq!(
+        engine.submit(&file, upload).reply,
+        Reply::UploadToCatalog(Ok(true))
+    );
+    assert_eq!(
+        file.read_store().catalog(),
+        &before,
+        "served as read before"
+    );
+
+    let added = uint_segment(0x8003);
+    let repair = Draft::ChangeSchema {
+        writes: vec![
+            Write::Put {
+                path: name,
+                node: text_node(&[16], "Tasks"),
+            },
+            Write::Put {
+                path: vec![vec![3], vec![16], vec![5], added.clone()],
+                node: OwnedNode::list(added.clone(), vec![text_node(&[16], "Added")]),
+            },
+        ],
+    };
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    let repaired = engine.submit_draft(&file, repair);
+    file.fail_saves(None);
+    assert!(is_storage_error(&repaired.reply), "{repaired:?}");
+    assert_eq!(file.read_store().catalog(), &before);
+
+    let user = LockUser {
+        connection: 1,
+        txn: 7,
+    };
+    let reserve = Operation::ReserveRecordIds(ReserveRecordIds {
+        user,
+        holder: "A (Admin)".into(),
+        request: CreateRecord {
+            table: vec![added.clone()],
+            count: 1,
+            txn: user.txn,
+        },
+        room: writes::MAX_LOCKS,
+        durable: true,
+    });
+    let Reply::ReserveRecordIds(reserved) = engine.submit(&file, reserve).reply else {
+        panic!("not op71's reply");
+    };
+    assert_ne!(reserved.status, 0, "no such table");
+    assert_eq!(node_at(&file, &[added]), None);
 }
 
 /// The review's P2 on account edits: an edit whose save's outcome is

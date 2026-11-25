@@ -347,21 +347,16 @@ impl std::fmt::Debug for Hosted {
 impl Hosted {
     /// The hosted file `hosted`, whose contents `file` holds, with server
     /// id `id`, as the file holds it: deferred field work a stop
-    /// interrupted is finished by [`Hosted::recover`]. It comes with
-    /// whether it is read-only and, a local file, with its lock (none where
-    /// the file cannot be locked here), which its store holds for as long
-    /// as the file is hosted, moved to each new copy a save renames over
-    /// it. `desktop`: a local file served to the desktop. A file FileMaker
-    /// Server calls insecure is refused unless `insecure_files` (a local
-    /// file never is). A failed save is recorded in `events`.
-    #[allow(clippy::too_many_arguments)]
+    /// interrupted is finished by [`Hosted::recover`]. A local file comes
+    /// with its lock and whether it is read-only. A file FileMaker Server
+    /// calls insecure is refused unless `insecure_files` (a local file
+    /// never is). A failed save is recorded in `events`.
     fn load(
         id: u32,
         hosted: &HostedFile,
         at: FileAt,
         file: &HbamFile,
-        (lock, read_only): (Option<FileLock>, bool),
-        desktop: bool,
+        local: Option<(Option<FileLock>, bool)>,
         insecure_files: bool,
         events: &EventLog,
     ) -> Result<Self, HostingError> {
@@ -369,7 +364,7 @@ impl Hosted {
             name: hosted.name.clone(),
             error,
         };
-        if !desktop && !insecure_files {
+        if local.is_none() && !insecure_files {
             if let Some(why) = insecurity(file).map_err(open)? {
                 return Err(HostingError::Insecure {
                     name: hosted.name.clone(),
@@ -383,14 +378,14 @@ impl Hosted {
             }
         })?;
         let mut store = Store::load(file, &hosted.name).map_err(open)?;
-        if desktop {
+        if let Some((lock, local_read_only)) = local {
             store.serve_desktop();
-        }
-        if let Some(lock) = lock {
-            store.set_lock(lock);
-        }
-        if read_only {
-            store.set_read_only(crate::store::ReadOnlyCause::Opened);
+            if let Some(lock) = lock {
+                store.set_lock(lock);
+            }
+            if local_read_only {
+                store.set_read_only(crate::store::ReadOnlyCause::Opened);
+            }
         }
         let accounts = RwLock::new(Accounts::of(&store));
         Ok(Hosted {
@@ -1924,8 +1919,7 @@ impl Hosting {
             hosted,
             at,
             file,
-            (lock, read_only),
-            true,
+            Some((lock, read_only)),
             false,
             &EventLog::default(),
         )?;
@@ -1984,8 +1978,9 @@ impl Hosting {
 /// pending: a server's files are recovered as they are loaded. An insecure
 /// file is refused, before anything is written, unless `insecure_files`. A
 /// file with anything at its save's copy name (`<file>.omsave`, an earlier
-/// save's leftover or not) is hosted read-only, logged and alerted with the
-/// entry's path: it is never removed, and the administrator removes it
+/// save's leftover or not) is hosted as any file is, and an alert names
+/// the entry: each of its saves fails, the change taken back, until the
+/// administrator removes it; nothing removes it here
 /// (docs/server-storage.md 5). A failed save, that of the deferred work
 /// included, is recorded in `events`.
 fn load_hosted(
@@ -2012,21 +2007,12 @@ fn load_hosted(
         name: hosted.name.clone(),
         error,
     })?;
-    // Looked at in the file's folder, without following a link; one that
-    // cannot be looked at counts.
-    let copy = crate::store::save_copy_path(at.path());
-    let copy_in_the_way = !matches!(
-        at.folder()
-            .and_then(|folder| crate::store::copy_beside(&folder, at.name())),
-        Ok(false)
-    );
     let loaded = Arc::new(Hosted::load(
         id,
         hosted,
         at.clone(),
         &file,
-        (None, copy_in_the_way),
-        false,
+        None,
         insecure_files,
         events,
     )?);
@@ -2034,14 +2020,25 @@ fn load_hosted(
     // this file (#468).
     loaded.store_for_writing().set_file(on_disk);
     drop(file);
+    // Looked at in the file's folder, without following a link; one that
+    // cannot be looked at counts.
+    let copy_in_the_way = !matches!(
+        at.folder()
+            .and_then(|folder| crate::store::copy_beside(&folder, at.name())),
+        Ok(false)
+    );
     if copy_in_the_way {
-        let why = format!(
-            "something is at {}, where its saves write their new copy (an earlier save's \
-             leftover?); remove it, then close and open the database to change it",
+        let copy = crate::store::save_copy_path(at.path());
+        error!(
+            "{:?}: something is at {}, where its saves write their new copy (an earlier \
+             save's leftover?); its changes are not saved until that is removed",
+            hosted.name,
             copy.display()
         );
-        error!("{:?}: hosted read-only: {why}", hosted.name);
-        events.alert(Event::hosted_read_only(&hosted.name, &why));
+        events.alert(Event::save_copy_in_the_way(
+            &hosted.name,
+            &copy.display().to_string(),
+        ));
     }
     loaded.recover(engine);
     Ok(loaded)

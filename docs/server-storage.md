@@ -566,8 +566,11 @@ save's outcome ("Failed saves", below):
   reason of its own (`local::ReadOnly::DeferredWork`), and a save whose
   outcome is unknown (this one or any later one) with another
   (`ReadOnly::NoMoreChanges`): what the desktop is told when the login
-  that opened the file ends, and at every later check, is the file's
-  state then (`LocalHost::read_only`). A compacted copy
+  that opened the file ends, and at every later check of the provider, is
+  the file's state then (`LocalHost::read_only`). The window shows the
+  reason given when it opened and does not change after a later save
+  freezes the file; the provider refuses the writes all the same. A
+  compacted copy
   saved before any login (Save a Copy As, which needs no login) is the
   file as its disk holds it, its work list included, so the copy finishes
   the work when an account first logs in to it. (Before, the work was
@@ -706,9 +709,13 @@ counting and deleting (`library::adjust_keys`). What it keeps:
 | op73, the deferred work finished at opening | each record before its first change, the work list, the global values it drops, the indexes it rebuilds or drops (moved), the library entries it releases or stores, and the table's basis of stored calculations |
 | an authoring edit, an account edit, a found set | the catalog members and nodes it replaced, and the parents it created (as before, the parents added) |
 
-What follows from the tree is taken back with it: the schema is read again
-when a catalog was replaced, and the store's schema generation advances,
-so the accounts and the verified-index marks are derived again. The locks
+What follows from the tree is taken back with it: the decoded schema the
+store reads is put back as it was before the operation's first change to
+a catalog (`Journal::schema_from`), not read again from the tree put back
+(a catalog that does not decode is served with the schema last read, and
+reading it again would keep the one the operation decoded); the basis of
+stored calculations is put back too, and the store's schema generation
+advances, so the accounts and the verified-index marks are derived again. The locks
 the operation took are released and the releases that waited for it
 dropped (`Locks::take_back`); an authoring edit's locks are released all
 the same. The member keys and indexes a draft took from what reads left
@@ -779,31 +786,40 @@ there until a write takes it: the program's own draft, or another
 request's write that held the store first and stores it with its own.
 The request keeps the ids it issued, with their catalogs, and once it has
 submitted its own draft it answers from one look at the store, under one
-hold of its lock (`Store::issued_keys`):
+hold of its lock (`Store::issued_keys`, `IssuedKeysAre::error`):
 
 - the file takes no more changes (a save's outcome was unknown, the one
   that wrote the keys or any other): the error slot with 800, whether or
   not its keys are on disk;
-- else a key it issued is not in its catalog's index (the index's last
-  id, `[C, 01, 00]`, is below it: no save stored it, because one failed
-  and the key waits again or because the file became read-only and no
-  write takes it; or a write dropped it, its catalog no longer able to
-  take it): the error slot a key not stored answers, with its own write's
-  code, or 800 when it had none that failed;
-- else its answer stands.
+- else a key it issued is above its catalog index's last id
+  (`[C, 01, 00]`): no save stored it (one failed and the key waits again,
+  or the file became read-only and no write takes it), or a write dropped
+  it (its catalog no longer able to take it) or put the counter back below
+  it: the error slot a key not stored answers, with its own draft's
+  error, or 800 when it had none that failed;
+- else the index covers its keys: a program whose only write is its keys
+  answers its own answer, also when its own draft failed and another
+  request's write stored the keys before the look; a program with catalog
+  writes of its own that failed keeps that failure.
 
-This is enough because neither outcome that must not be answered as
-success can pass unseen. An unknown outcome freezes the file for good
-(until it is hosted again), so the look at the end sees it, whoever's
-save it was and whenever it came before. Any save that stored nothing
-leaves the catalog's index below the key (a save that fails puts back
-what it took), so the look sees a key not stored, whoever's write it was.
-It reads only the index and the file's state, so no state per request is
+This is enough for what it has to show, that no outcome that must not be
+answered as success passes unseen. An unknown outcome freezes the file
+for good (until it is hosted again), so the look at the end sees it,
+whoever's save it was and whenever it came before. Any save that stored
+nothing leaves the index below the key (a save that fails puts back what
+it took), so the look sees a key not stored, whoever's write it was. It
+reads only the index and the file's state, so no state per request is
 kept in the store, and a request that ends by a panic leaves nothing
-behind. A key whose counter a later write's own catalog changes put back
-below it is answered as not stored, but another request can then be
-issued the same id
-([#736](https://github.com/OpenMaker-Dev/openmaker/issues/736)).
+behind. What it establishes is that the catalog's counter covers the key,
+not that no one else was given the id: op240's Create Layout allocates
+layout ids from the index and the members without seeing the keys that
+wait, so it can give out an id a request reserved, and the look then
+answers stored
+([#738](https://github.com/OpenMaker-Dev/openmaker/issues/738)); a write
+whose own catalog changes put the counter back below a stored key lets
+the same id be issued again
+([#736](https://github.com/OpenMaker-Dev/openmaker/issues/736)). Both
+allocations are older than this.
 
 *No more changes.* After an unknown outcome the store refuses every later
 save (`Store::writes_refused`), and `submit` refuses every operation that
@@ -829,28 +845,37 @@ the file (`Hosted::writes_refused`, set once, read without a lock), so that
 the list of files does not wait for a busy store.
 
 *A leftover copy.* A save that stops part way (the process or the machine
-stopped) leaves `<file>.omsave`, whose name a save creates only where
-nothing is, so every later save of the file fails while it is there.
-Nothing in OpenMaker removes it, or anything else at that name: a file
-it did not create in the same call is never unlinked. When a file is
-opened for hosting, anything at its save's copy name (a copy a save left,
-a link, a folder, any other file; looked at in the file's folder without
-following a link, and one that cannot be looked at counts) makes the file
-served read-only, with a reason of its own that names the entry:
+stopped) leaves `<file>.omsave`. A save creates its new copy only where
+nothing is (an exclusive create through the file's folder), so while
+anything is at that name every save of the file fails before its rename:
+the change is not stored, it is taken back, the reply is the storage
+error (800) and the log line and the alert say which entry is in the way
+of the save's new copy. Nothing in OpenMaker removes the entry, or
+anything else at that name: a file it did not create in the same call is
+never unlinked.
 
-- OpenMaker Server logs it and raises an alert naming the entry's path
-  (`Event::hosted_read_only`); the file is served, its writes are refused
-  as a read-only file's are (op72 answers 200, as op71 does), and the
-  administrator removes the entry, then closes and opens the file
-  (`hosting::load_hosted`, `store::copy_beside`);
-- the desktop opens the file read-only (`ReadOnly::CopyInTheWay`), says
-  why in the window and logs the entry's path.
+- OpenMaker Server hosts a file opened with anything at its save's copy
+  name as it hosts any file, and raises an alert that names the entry's
+  path (`Event::save_copy_in_the_way`; `hosting::load_hosted`,
+  `store::copy_beside`, which looks in the file's folder without
+  following a link, and counts an entry it cannot look at). Every change
+  then fails at its save as above, loudly, and that ends by itself when
+  the administrator removes the entry: the next save works, with no need
+  to close and open the file. Deferred field work found as the file is
+  opened ends as the recovery rule says: its save fails, the work is
+  taken back and the file is served read-only, as its disk holds it
+  (above, "finishing deferred work").
+- The desktop opens such a file read-only (`ReadOnly::CopyInTheWay`), as
+  at #715's head, says why in the window and logs the entry's path. It
+  looks with `symlink_metadata` on the path, so an entry it cannot look
+  at counts as nothing there (its save would then fail as above).
 
-Something put there while the file is hosted makes the next save fail
-before its rename: the save's new copy is created only where nothing is,
-so the change is not stored and is taken back, the reply is the storage
-error (800), and the log line and the alert say which entry is in the way
-of the save's new copy. Once it is removed, the next save works.
+What a save checks of its own copy is the base's, unchanged here: after
+writing and before renaming, and again before removing the copy after a
+failure, it checks that the copy is still the entry it created (the same
+device and inode; where there is no file identity, as on Windows, only
+that a regular file is there), and then renames or removes it in a
+second call, so a replacement between the two is not seen.
 
 OpenMaker Server holds no lock on the files it hosts, as before: another
 OpenMaker that opens the same file is not kept out

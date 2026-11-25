@@ -1074,17 +1074,17 @@ fn a_save_whose_outcome_is_unknown_leaves_the_file_taking_no_more_changes_until_
 }
 
 /// A save that stops part way leaves `<file>.omsave` beside the file,
-/// which would stop every later save. Nothing removes it, nor anything
-/// else at that name: a file hosted with something there (a copy a save
-/// left, a folder, a link to another file) is hosted read-only, with an
-/// alert that names the entry, which is left as it is. Something put there
-/// while the file is hosted makes its next save fail: the change is not
-/// stored, the reply is the storage error, and the alert says what is in
-/// the way. Once it is removed, the file saves (docs/server-storage.md 5).
+/// which stops every later save. Nothing removes it, nor anything else at
+/// that name: a file hosted with something there (a copy a save left, a
+/// folder, a link to another file) is hosted as any file is, with an alert
+/// that names the entry, which is left as it is, and each change fails at
+/// its save, taken back, with the storage error. Something put there while
+/// the file is hosted does the same, and the alert of the failed save says
+/// what is in the way. Once it is removed the file saves, without being
+/// opened again (docs/server-storage.md 5).
 #[cfg(unix)]
 #[test]
-fn anything_at_a_files_save_copy_name_is_left_and_keeps_the_file_from_saving() {
-    const ACCESS_DENIED: u32 = 200;
+fn anything_at_a_files_save_copy_name_is_left_and_its_changes_fail_until_it_is_removed() {
     let table = uint_segment(TABLE);
     let count = uint_segment(COUNT);
     let advance = |client: &mut om_session::Session| {
@@ -1114,6 +1114,21 @@ fn anything_at_a_files_save_copy_name_is_left_and_keeps_the_file_from_saving() {
             _ => std::os::unix::fs::symlink(&victim, &copy).unwrap(),
         }
         let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+        let [info] = handle.files().try_into().unwrap();
+        assert_eq!(info.status, om_server::FileStatus::Open, "{tag}: hosted");
+        let named = copy.display().to_string();
+        let alerts = handle.alerts();
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.message.contains(&named) && a.message.contains("not saved")),
+            "{tag}: {alerts:?}"
+        );
+        let bytes = std::fs::read(&file.0).unwrap();
+        let (mut client, _) = server::logged_in(port, tag);
+        assert_eq!(advance(&mut client), u32::from(CANNOT_WRITE), "{tag}");
+        assert_eq!(serial_of(&mut client), None, "{tag}: taken back");
+        assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
         let kept = std::fs::symlink_metadata(&copy).unwrap();
         assert_eq!(
             (kept.is_file(), kept.is_dir(), kept.is_symlink()),
@@ -1124,32 +1139,20 @@ fn anything_at_a_files_save_copy_name_is_left_and_keeps_the_file_from_saving() {
             assert_eq!(std::fs::read(&copy).unwrap(), b"half a save");
         }
         assert_eq!(std::fs::read(&victim).unwrap(), b"not to be removed");
-        let [info] = handle.files().try_into().unwrap();
-        assert_eq!(info.status, om_server::FileStatus::Open, "{tag}: hosted");
-        let alerts = handle.alerts();
-        let named = copy.display().to_string();
-        assert!(
-            alerts
-                .iter()
-                .any(|a| a.message.contains("read-only") && a.message.contains(&named)),
-            "{tag}: {alerts:?}"
-        );
-        let bytes = std::fs::read(&file.0).unwrap();
-        let (mut client, _) = server::logged_in(port, tag);
-        assert_eq!(advance(&mut client), ACCESS_DENIED, "{tag}: read-only");
-        assert_eq!(serial_of(&mut client), None, "{tag}");
-        assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
-        client.disconnect().unwrap();
+        // Removed, the next change is saved.
         if kind == "folder" {
             std::fs::remove_dir(&copy).unwrap();
         } else {
             std::fs::remove_file(&copy).unwrap();
         }
+        assert_eq!(advance(&mut client), 0, "{tag}");
+        assert_eq!(serial_of(&mut client).as_deref(), Some("2"), "{tag}");
+        client.disconnect().unwrap();
         let _ = std::fs::remove_file(&victim);
     }
 
     // Put there while the file is hosted: the next save is not stored, and
-    // says why; the entry is left as it is.
+    // its alert says why; the entry is left as it is.
     let file = TempFile::from_tree("save-leftover-later", &with_photo());
     let copy = copy_of(&file);
     let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);

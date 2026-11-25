@@ -592,11 +592,12 @@ list shows them.
   and opening it again clears it (docs/server-storage.md 5, "Failed
   saves"). The Admin API's and the console's database lists do not show
   the field. A file opened with something at its save's copy name
-  (`<file>.omsave`) is served read-only, and an alert names the entry,
-  which nothing removes: the administrator removes it, then closes and
-  opens the file (docs/server-storage.md 5, "A leftover copy"). Every
-  hosted file is opened at startup; the administrator closes, opens,
-  pauses and resumes it (below).
+  (`<file>.omsave`) is served, and an alert names the entry, which
+  nothing removes: each change fails at its save, taken back, until the
+  administrator removes it, and then the next one is saved
+  (docs/server-storage.md 5, "A leftover copy"). Every hosted file is
+  opened at startup; the administrator closes, opens, pauses and resumes
+  it (below).
 - Each client as its entry holds it, oldest session first, and whether it is
   being disconnected (at once, or with notice during its grace time;
   FileMaker Server's Admin API lists such a client as `NORMAL`, re 9). A

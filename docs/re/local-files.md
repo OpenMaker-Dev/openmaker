@@ -796,7 +796,9 @@ than a second reader and writer.
   a save's outcome was unknown, after which it takes no more changes
   (docs/server-storage.md 5). Each has its own reason (`ReadOnly`), and
   the reason the provider gives when the opening login ends, and at each
-  later check, is the host's state then. The window shows why; the provider
+  later check, is the host's state then. The window shows why (the reason
+  given when it opened: one a later save brings is not shown, though the
+  provider refuses the writes); the provider
   refuses changes before sending them (FileMaker's error 6, also for the
   deletions scripts and portals make), the host refuses every write request
   (record creation, uploads, commits, serials, schema and container
