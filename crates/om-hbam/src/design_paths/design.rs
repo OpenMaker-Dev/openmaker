@@ -23,7 +23,12 @@
 //!   layout's table view `[4, 5, L, 0d, 05, O, 11]` (which keeps a
 //!   layout's own structure, layout-model.md 10.14), each one opaque piece
 //!   with everything below it. Nothing looks inside it: which of its bytes
-//!   are a stored password depends on the step.
+//!   are a stored password depends on the step. Each key after the member
+//!   but `O` (`05`; `05` and `11`; `0d`, `05` and `11`) is matched by
+//!   number, as the decoders look it up (`Node::get`: a key of 1 to 8 bytes
+//!   read big-endian, so `[00 05]` is `05`), so a key any decoder could read
+//!   as the place is step data whatever else refuses it; a member holding
+//!   such a key is also refused ([`misread`]).
 //! - Design, Data and Derived by the path rules ([`super::rules()`]); a
 //!   node above the rules, such as the member itself, is there as Design
 //!   (the object's shape) and its own value, which no rule names, is not
@@ -37,8 +42,10 @@
 //! them; the two differ for a tree in memory that holds such a value
 //! inline.) Modification stamps are left out at exactly two places, where
 //! schema-path.md 8 places them: the direct stamp keys of a member
-//! object's own node, and of a catalog's index. Anywhere else a
-//! stamp-shaped key is a piece like any other.
+//! object's own node, and of a catalog's index, each with the shape a
+//! stamp has (8.1: a key string or text, so a leaf, or a value in pieces
+//! when the text is not ASCII). A stamp key there with any other subtree,
+//! and a stamp-shaped key anywhere else, is a piece like any other.
 //!
 //! **Projections.** A class's projection of an object is built by walking
 //! the object and adding the pieces of that class: the edit token's general
@@ -56,15 +63,16 @@
 //! unidentified piece; otherwise it has none. A design revision is
 //! comparable only with one of the same version. The other projections are
 //! hashed only to compare two objects inside the process and are never
-//! given out. A member the decoders could read differently is not
-//! classified at all ([`Refusal::Misread`]).
+//! given out. A member the decoders could read differently ([`misread`])
+//! is not classified at all ([`Refusal::Misread`]).
 
 use std::borrow::Cow;
 use std::fmt;
 
-use super::revision::is_stamp;
+use super::revision::{is_stamp, split_value};
 use super::rules::{hex, Group, Rule};
 use super::{candidates, secrets, step, Kind, Object};
+use crate::slot::be_uint;
 use crate::tree::OwnedNode;
 
 /// The version of the hashed form, written after the eight `ff` bytes. A
@@ -176,7 +184,7 @@ pub(crate) struct Classified<'t> {
 pub(crate) enum Refusal {
     /// Deeper than [`MAX_DEPTH`].
     TooDeep,
-    /// A member the decoders could read differently (`secrets::misread`).
+    /// A member the decoders could read differently ([`misread`]).
     Misread,
 }
 
@@ -197,26 +205,64 @@ struct Walk {
     part: Part,
 }
 
+/// Whether `segment` reads as `number` the way the decoders look keys up
+/// (`Node::get`: 1 to 8 bytes, big-endian).
+fn reads_as(segment: &[u8], number: u64) -> bool {
+    be_uint(segment) == Some(number)
+}
+
+/// Whether `node` is a modification stamp in a stamp's shape: a stamp key
+/// holding a leaf, or a value in pieces (schema-path.md 8.1: a key string or
+/// text; file-format.md 3.6: text that is not ASCII is kept in pieces).
+fn stamp(node: &OwnedNode) -> bool {
+    is_stamp(&node.segment) && (node.children.is_empty() || split_value(node).is_some())
+}
+
+/// Whether the decoders could find another node than this classing does in
+/// a member of `kind`: `secrets::misread`'s places (a script's step list
+/// and step data, a layout's attribute records, object store and buttons'
+/// step data), and a layout's table view, which om-layout reads by number
+/// (`at(&[0x0d, 5])`): a key in the layout other than `0d` that reads as
+/// 13, in the table view other than `05` that reads as 5, in one of its
+/// records other than `11` that reads as 17.
+pub(super) fn misread(kind: Kind, member: &OwnedNode) -> bool {
+    secrets::misread(kind, member)
+        || (kind == Kind::Layout
+            && (secrets::aliasing(member, &[0x0d])
+                || member.child(&[0x0d]).is_some_and(|view| {
+                    secrets::aliasing(view, &[0x05])
+                        || view.child(&[0x05]).is_some_and(|records| {
+                            records
+                                .children
+                                .iter()
+                                .any(|r| secrets::aliasing(r, &[0x11]))
+                        })
+                })))
+}
+
 impl Walk {
-    /// Whether the node at `rel` (relative to the part's top) is step data.
+    /// Whether the node at `rel` (relative to the part's top) is step data:
+    /// each of the place's keys but the object's matched by number.
     fn step_data(&self, rel: &[&[u8]]) -> bool {
-        matches!(
-            (self.part, rel),
-            (Part::Script, [[0x05]])
-                | (Part::Layout, [[0x05], _, [0x11]])
-                | (Part::Layout, [[0x0d], [0x05], _, [0x11]])
-        )
+        match (self.part, rel) {
+            (Part::Script, [data]) => reads_as(data, 0x05),
+            (Part::Layout, [records, _, data]) => reads_as(records, 0x05) && reads_as(data, 0x11),
+            (Part::Layout, [view, records, _, data]) => {
+                reads_as(view, 0x0d) && reads_as(records, 0x05) && reads_as(data, 0x11)
+            }
+            _ => false,
+        }
     }
 
     /// Whether the child `child` of the node at `rel` is left out: a
-    /// direct stamp of a member's own node or of a catalog's index, or a
-    /// catalog's member that is an object of its own.
+    /// direct stamp of a member's own node or of a catalog's index, in a
+    /// stamp's shape, or a catalog's member that is an object of its own.
     fn left_out(&self, rel: &[&[u8]], child: &OwnedNode) -> bool {
         match (self.part, rel) {
-            (Part::Catalog, [[0x01]]) => is_stamp(&child.segment),
+            (Part::Catalog, [[0x01]]) => stamp(child),
             (Part::Catalog, [[0x05]]) => !child.children.is_empty(),
             (Part::Catalog, _) => false,
-            (_, []) => is_stamp(&child.segment),
+            (_, []) => stamp(child),
             _ => false,
         }
     }
@@ -287,17 +333,24 @@ impl Walk {
     }
 }
 
-/// An object, classified.
+/// An object, classified: refused when it is a member the decoders could
+/// read differently ([`misread`]).
 pub(crate) fn classify<'t>(object: &Object<'t>) -> Result<Classified<'t>, Refusal> {
+    if object.whole.is_none() && misread(object.kind, object.node) {
+        return Err(Refusal::Misread);
+    }
+    walked(object)
+}
+
+/// An object, classified by its paths alone, whether or not the decoders
+/// could read it differently.
+fn walked<'t>(object: &Object<'t>) -> Result<Classified<'t>, Refusal> {
     let (part, path, node) = match (&object.whole, object.kind) {
         (Some((path, node)), _) => (Part::Catalog, path, *node),
         (None, Kind::Script) => (Part::Script, &object.path, object.node),
         (None, Kind::Layout) => (Part::Layout, &object.path, object.node),
         (None, _) => (Part::Member, &object.path, object.node),
     };
-    if matches!(part, Part::Script | Part::Layout) && secrets::misread(object.kind, node) {
-        return Err(Refusal::Misread);
-    }
     let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
     let (cands, best) = candidates(&segments);
     let walk = Walk { part };

@@ -4,22 +4,25 @@
 //! The checks, before anything is read from an object (a name decoded, a
 //! piece classified or hashed): the sibling keys under the root, on the
 //! way to each design catalog and anywhere in it are in order and
-//! unique, as a file's are; every member key has the shape its catalog's
-//! spec gives (a font's two bytes, layout-model.md 8; a base directory's
-//! four, containers.md 8.1; a serial key elsewhere, file-metadata.md 1,
-//! whose encoding is one per id); no two objects of one kind (and table)
-//! report one id; and no member is one the decoders could read
-//! differently (`secrets`' module doc). A refusal names a kind, a table
-//! and an id at most, the id only when the key has its specified shape,
-//! never a key's bytes.
+//! unique, as a file's are; every key under a design catalog's member list
+//! has the shape its catalog's spec gives (a font's two bytes,
+//! layout-model.md 8; a base directory's four, containers.md 8.1; a serial
+//! key elsewhere, file-metadata.md 1, whose encoding is one per id),
+//! whether it is a member object's or, with no children, its catalog's; no
+//! two objects of one kind (and table) report one id; and no member is one
+//! the decoders could read differently (`design::misread`: a script's step
+//! list and step data, a layout's attribute records, object store, table
+//! view and step data, looked up by number). A refusal names a kind, a
+//! table and an id at most, the id only when the key has its specified
+//! shape, never a key's bytes.
 
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Deref;
 
-use super::design::DesignRevision;
+use super::design::{self, DesignRevision};
 use super::rules::{Group, Seg, CATALOGS};
-use super::{objects, secrets, Kind, Object};
+use super::{objects, Kind, Object};
 use crate::slot::be_uint;
 use crate::tree::OwnedNode;
 
@@ -29,7 +32,8 @@ pub enum IdentityProblem {
     /// Sibling keys out of order or repeated: two member lists, two
     /// members with one key.
     Unsorted,
-    /// A member key of another shape than its catalog's spec gives.
+    /// A key under a member list of another shape than its catalog's spec
+    /// gives, whether the member has children or not.
     KeyShape,
     /// Another object of its kind (and table) reports its id.
     Duplicate,
@@ -189,9 +193,21 @@ pub fn inventory(root: &OwnedNode) -> Result<Vec<Checked<'_>>, IdentityError> {
             id,
             problem,
         };
-        let id = match object.is_catalog() {
-            true => None,
-            false => Some(
+        let id = match &object.whole {
+            // Every key under the member list: a member object's, and a
+            // childless member's, which is part of the catalog's object and
+            // whose key the catalog's projection holds.
+            Some((_, catalog)) => {
+                let members = catalog.child(&[0x05]).map_or(&[][..], |m| &m.children);
+                if members
+                    .iter()
+                    .any(|m| checked_id(kind, &m.segment).is_none())
+                {
+                    return Err(refuse(None, IdentityProblem::KeyShape));
+                }
+                None
+            }
+            None => Some(
                 checked_id(kind, object.key())
                     .ok_or_else(|| refuse(None, IdentityProblem::KeyShape))?,
             ),
@@ -199,7 +215,7 @@ pub fn inventory(root: &OwnedNode) -> Result<Vec<Checked<'_>>, IdentityError> {
         if !seen.insert((kind, object.is_catalog(), table, id)) {
             return Err(refuse(id, IdentityProblem::Duplicate));
         }
-        if !object.is_catalog() && secrets::misread(kind, object.node()) {
+        if !object.is_catalog() && design::misread(kind, object.node()) {
             return Err(refuse(id, IdentityProblem::Misread));
         }
     }

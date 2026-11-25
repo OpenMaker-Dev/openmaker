@@ -4,10 +4,10 @@
 //!
 //! **Inventories first.** Every input's [`inventory`] is checked before a
 //! name of any input is decoded or anything is classified or hashed:
-//! sibling keys in order and unique, each key of the shape its catalog's
-//! spec gives, no two objects of one kind (and table) with one id, and no
-//! member the decoders could read differently. Any failure refuses the
-//! comparison ([`CompareError::Identity`]).
+//! sibling keys in order and unique, every key under a member list of the
+//! shape its catalog's spec gives, no two objects of one kind (and table)
+//! with one id, and no member the decoders could read differently. Any
+//! failure refuses the comparison ([`CompareError::Identity`]).
 //!
 //! **Matching.** With a base, an object of the source is the target's
 //! object of the same kind and id when the base has that object too; one

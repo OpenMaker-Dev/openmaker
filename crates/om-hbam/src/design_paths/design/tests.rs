@@ -4,19 +4,20 @@
 //! the cases of #723.
 //!
 //! Both are checked against an oracle of their own: a piece's class read
-//! from its path alone, by the rule table and the two places step data
-//! lives, without the walk under test.
+//! from its path alone, by the rule table and the three places step data
+//! lives (their keys read by number), without the walk under test.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::compare::{compare, CompareError, Difference, Which};
 use super::super::inventory::{inventory, IdentityError, IdentityProblem};
-use super::super::revision::{is_stamp, parse_revision};
+use super::super::revision::{is_stamp, parse_revision, split_value};
 use super::super::rules::{rule_for, rules, Group};
 use super::super::tests::{descriptor, leaf, list, message, varint};
 use super::super::{instances, objects, Kind, Object, Path, CATALOGS};
-use super::{classify, Class, Classed, Classified, Refusal};
+use super::{classify, walked, Class, Classed, Classified, Refusal};
 use crate::serial;
+use crate::slot::be_uint;
 use crate::tree::OwnedNode;
 
 /// A planted secret: 24 bytes no file holds and no framing writes (a hash
@@ -51,12 +52,20 @@ enum Piece {
 
 /// The oracle: a piece's class from its path, by the rule table and the
 /// places step data lives (`[11, 5, S, 05]`, `[4, 5, L, 05, O, 11]`, `[4, 5,
-/// L, 0d, 05, O, 11]`).
+/// L, 0d, 05, O, 11]`), each key after the member but `O` read by number as
+/// the decoders read it.
 fn oracle(path: &[Vec<u8>], piece: Piece) -> Class {
     let p = at(path);
-    let step_data = matches!(&p[..], [[0x11], [0x05], _, [0x05], ..])
-        || matches!(&p[..], [[0x04], [0x05], _, [0x05], _, [0x11], ..])
-        || matches!(&p[..], [[0x04], [0x05], _, [0x0d], [0x05], _, [0x11], ..]);
+    let is = |segment: &[u8], number: u64| be_uint(segment) == Some(number);
+    let step_data = match &p[..] {
+        [[0x11], [0x05], _, data, ..] => is(data, 0x05),
+        [[0x04], [0x05], _, rest @ ..] => {
+            matches!(rest, [records, _, data, ..] if is(records, 0x05) && is(data, 0x11))
+                || matches!(rest, [view, records, _, data, ..]
+                    if is(view, 0x0d) && is(records, 0x05) && is(data, 0x11))
+        }
+        _ => false,
+    };
     if step_data {
         return Class::StepData;
     }
@@ -74,7 +83,8 @@ fn oracle(path: &[Vec<u8>], piece: Piece) -> Class {
 
 /// Every piece under the tree's design catalogs, by path, but the stamps
 /// at the two places they are left out (a member object's own node, a
-/// catalog's index) with what is below them.
+/// catalog's index), when a stamp's shape (a leaf, or a value in pieces),
+/// with what is below them.
 fn tree_pieces(root: &OwnedNode) -> BTreeSet<(Path, Piece)> {
     fn walk(
         node: &OwnedNode,
@@ -101,6 +111,7 @@ fn tree_pieces(root: &OwnedNode) -> BTreeSet<(Path, Piece)> {
             let skip = |p: &Path, n: &OwnedNode| {
                 let rel = &p[base..];
                 is_stamp(&n.segment)
+                    && (n.children.is_empty() || split_value(n).is_some())
                     && match rel {
                         // The index's own stamps.
                         [index, _] => index == &[0x01],
@@ -156,14 +167,26 @@ fn part<'a>(object: &Object<'a>) -> (Path, &'a OwnedNode) {
     }
 }
 
-/// Every piece under the design catalogs is in exactly one object, in the
-/// class the oracle gives it: checked by path, so a miss and a duplicate
-/// cannot cancel. The number of pieces.
+/// How the partition and the sweep classify an object: as revisions and
+/// comparisons do ([`classify`]), or by its paths alone ([`walked`], for a
+/// member the inventory refuses).
+type Classifier = for<'t> fn(&Object<'t>) -> Result<Classified<'t>, Refusal>;
+
+/// [`partition_of`] the objects of a checked inventory.
 fn partition(root: &OwnedNode) -> usize {
+    let found = inventory(root).expect("checked");
+    let objects: Vec<Object<'_>> = found.iter().map(|o| (**o).clone()).collect();
+    partition_of(root, &objects, classify)
+}
+
+/// Every piece under the design catalogs is in exactly one of `objects`, in
+/// the class the oracle gives it: checked by path, so a miss and a
+/// duplicate cannot cancel. The number of pieces.
+fn partition_of(root: &OwnedNode, objects: &[Object<'_>], classifier: Classifier) -> usize {
     let mut seen: BTreeMap<(Path, Piece), usize> = BTreeMap::new();
-    for (i, object) in inventory(root).expect("checked").iter().enumerate() {
+    for (i, object) in objects.iter().enumerate() {
         let (path, node) = part(object);
-        let classified = classify(object).expect("a member read as the decoders read it");
+        let classified = classifier(object).expect("classified");
         for (p, piece, class) in classified_pieces(&path, node, &classified) {
             assert_eq!(class, oracle(&p, piece), "{piece:?} at {p:02x?}");
             if let Some(other) = seen.insert((p.clone(), piece), i) {
@@ -254,8 +277,8 @@ fn changed_exactly(
 /// the projections of exactly the classes of the pieces touched change.
 /// `secrets` are secrets planted in it, which the Design projection must
 /// not hold.
-fn sweep(object: &Object<'_>, secrets: &[Vec<u8>], stats: &mut Stats) {
-    let original = classify(object).expect("a member read as the decoders read it");
+fn sweep(object: &Object<'_>, secrets: &[Vec<u8>], stats: &mut Stats, classifier: Classifier) {
+    let original = classifier(object).expect("classified");
     let before = projections(&original);
     let revision = original.revision();
     assert_eq!(
@@ -287,7 +310,8 @@ fn sweep(object: &Object<'_>, secrets: &[Vec<u8>], stats: &mut Stats) {
             .map(|(_, _, c)| *c)
             .collect()
     };
-    let after = |changed: &OwnedNode| projections(&classify(&with_part(object, changed)).unwrap());
+    let after =
+        |changed: &OwnedNode| projections(&classifier(&with_part(object, changed)).unwrap());
     let member_list = object.whole.is_some();
     for (path, piece, class) in &pieces {
         let rel = path[top_path.len()..].to_vec();
@@ -473,8 +497,9 @@ fn button_member(id: u64, data: Vec<OwnedNode>) -> OwnedNode {
 /// and catalogs with a value of their own, a branch beside the index and
 /// the members, a value on the member list, a member with a value and no
 /// children, an index list shaped like a split value, a stamp-shaped key
-/// inside an index entry, an entry of a member that is gone. The secrets
-/// planted in it.
+/// inside an index entry, an entry of a member that is gone; stamps in a
+/// stamp's shape (a leaf, a value in pieces) and stamp keys holding a
+/// subtree, on a member and on an index. The secrets planted in it.
 fn built() -> (OwnedNode, Vec<Vec<u8>>) {
     let (pw, odbc) = (planted(1), planted(2));
     let mut root = OwnedNode::default();
@@ -580,6 +605,28 @@ fn built() -> (OwnedNode, Vec<Vec<u8>>) {
         &[&[0x80, 0x01], &[3], &[1], &[0x01], b"count"],
         leaf(&[], &[1]),
     );
+    // Stamps: the field's user name in pieces, as text that is not ASCII is
+    // kept (left out); a stamp key on the field and on the scripts' index
+    // holding a subtree of no stamp's shape (content, classified).
+    let field = &[&[0x80, 0x01][..], &[3], &[5], &[1]];
+    root.put(
+        &[field, &[&[0xfc, 0x01][..]][..]].concat(),
+        list(
+            &[],
+            vec![
+                leaf(&[0x00], &[0, 0, 0, 2, 0, 0, 0, 1]),
+                leaf(&[0x01], b"\xc3\xa9"),
+            ],
+        ),
+    );
+    root.put(
+        &[field, &[&[0xfc][..], &[0x7e], &[0x01]][..]].concat(),
+        leaf(&[], b"under a stamp"),
+    );
+    root.put(
+        &[&[0x11], &[1], &[0xfc, 0x02], &[0x7e]],
+        leaf(&[], b"under a stamp"),
+    );
     (root, vec![pw, odbc])
 }
 
@@ -591,7 +638,7 @@ fn every_piece_is_in_one_object_and_moves_only_its_own_class() {
     let mut stats = Stats::default();
     let found = inventory(&root).unwrap();
     for object in &found {
-        sweep(object, &secrets, &mut stats);
+        sweep(object, &secrets, &mut stats, classify);
     }
     println!("{stats:?}");
     // Three scripts, a layout, a field, and the catalogs of scripts,
@@ -693,6 +740,99 @@ fn a_member_gaining_its_first_child_takes_its_own_node_from_its_catalog() {
     shrunk.remove(&[&[0x11], &[5], &[9], &[0x13]]);
     assert_eq!(catalog(&shrunk), before);
     assert_eq!(member_pieces(&shrunk), None);
+}
+
+/// A key the decoders read by number as one of a step-data place's keys
+/// (`[00 05]` as `05`, `[00 11]` as `11`, `[00 0d]` as `0d`; `Node::get`),
+/// at each numbered position of each place, alone or beside the exact key:
+/// the inventory refuses the member, and its paths alone still class the
+/// place as step data, so that a change there moves the step-data
+/// projection only and no planted byte reaches Design.
+#[test]
+fn a_key_the_decoders_read_as_a_step_data_place_is_step_data() {
+    let pw = planted(3);
+    let mut base = OwnedNode::default();
+    base.put(
+        &[&[0x11], &[5], &[1]],
+        script_member(138, vec![slot(0, b"\"me\""), slot(1, &pw)]),
+    );
+    base.put(
+        &[&[0x04], &[5], &[1]],
+        button_member(138, vec![slot(0, b"\"me\""), slot(1, &pw)]),
+    );
+    let view: Path = vec![vec![0x0d], vec![0x05], serial::encode(7), vec![0x11]];
+    base.put(
+        &[&[&[0x04][..], &[5], &[1]][..], &at(&view)].concat(),
+        list(&[], vec![slot(1, &pw)]),
+    );
+    assert!(inventory(&base).is_ok());
+    // Each place below its member, and the positions of its keys that the
+    // decoders read by number.
+    let places: [(Kind, u8, Path, &[usize]); 3] = [
+        (Kind::Script, 0x11, vec![vec![0x05]], &[0]),
+        (
+            Kind::Layout,
+            0x04,
+            vec![vec![0x05], serial::encode(5), vec![0x11]],
+            &[0, 2],
+        ),
+        (Kind::Layout, 0x04, view, &[0, 1, 3]),
+    ];
+    let mut stats = Stats::default();
+    let mut cases = 0;
+    for (kind, catalog, place, numbered) in &places {
+        let member: Path = vec![vec![*catalog], vec![5], vec![1]];
+        for &i in *numbered {
+            for beside in [false, true] {
+                let mut tree = base.clone();
+                let exact: Path = member.iter().chain(&place[..=i]).cloned().collect();
+                let node = tree.at(&at(&exact)).unwrap().clone();
+                let mut alias = exact.clone();
+                alias[member.len() + i] = [&[0x00][..], &place[i]].concat();
+                if !beside {
+                    tree.remove(&at(&exact));
+                }
+                tree.put(&at(&alias), node);
+                let what = format!("{alias:02x?}, beside the exact key: {beside}");
+                assert_eq!(
+                    inventory(&tree).err(),
+                    Some(IdentityError {
+                        kind: Some(*kind),
+                        table: None,
+                        id: Some(1),
+                        problem: IdentityProblem::Misread,
+                    }),
+                    "{what}"
+                );
+                let listed = objects(&tree);
+                assert!(partition_of(&tree, &listed, walked) > 0);
+                let object = listed
+                    .iter()
+                    .find(|o| o.kind == *kind && !o.catalog)
+                    .unwrap();
+                assert_eq!(classify(object).err(), Some(Refusal::Misread), "{what}");
+                let classified = walked(object).unwrap();
+                let (top_path, top) = part(object);
+                let mut aliased: Path = member.iter().chain(place).cloned().collect();
+                aliased[member.len() + i] = alias[member.len() + i].clone();
+                assert!(
+                    classified_pieces(&top_path, top, &classified).contains(&(
+                        aliased,
+                        Piece::Here,
+                        Class::StepData
+                    )),
+                    "{what}"
+                );
+                sweep(object, std::slice::from_ref(&pw), &mut stats, walked);
+                cases += 1;
+            }
+        }
+    }
+    assert_eq!(cases, 12);
+    assert!(stats
+        .ops
+        .get(&("value", "StepData"))
+        .is_some_and(|&n| n > 0));
 }
 
 /// A tree holding `script` as script 1, with its index entry.
@@ -977,7 +1117,7 @@ fn every_template_piece_is_in_one_object_and_moves_only_its_own_class() {
         let root = file.key_tree().unwrap().root.to_owned_node();
         pieces += partition(&root);
         for object in inventory(&root).unwrap() {
-            sweep(&object, &[], &mut stats);
+            sweep(&object, &[], &mut stats, classify);
         }
     }
     println!("{} files, {pieces} pieces: {stats:?}", files.len());

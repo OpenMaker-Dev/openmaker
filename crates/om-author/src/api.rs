@@ -220,12 +220,13 @@ pub struct CompareDesignsParams {
     pub target: String,
     /// The base: the copy the source and the target were both made from.
     /// With it objects are matched by kind and id, and each side's
-    /// changes since it are reported; without it only by kind, id and
-    /// name together.
+    /// changes since it are reported; without it by kind and id when their
+    /// names agree, or when neither has a name and all their content is
+    /// equal.
     #[serde(default)]
     pub base: Option<String>,
     /// Also list the matched objects that are the same; by default only
-    /// those that differ are listed, and every class is counted.
+    /// those that differ are listed, and every part is counted.
     #[serde(default)]
     pub include_same: bool,
 }

@@ -1154,10 +1154,13 @@ of its design catalogs.
 Before anything is named, classified or hashed it checks the inventory
 of every file (`om_hbam::design_paths::inventory`): the sibling keys on
 the way to and within each design catalog in order and unique, as a
-file's are; every member key of the shape its catalog's spec gives (a
-font's two bytes, a base directory's four, a serial key elsewhere); no
-two objects of one kind (and table) with one id; no member the decoders
-could read differently. A file that fails is refused with
+file's are; every key under a catalog's member list, of a member with
+children or without, of the shape its catalog's spec gives (a font's two
+bytes, a base directory's four, a serial key elsewhere); no two objects
+of one kind (and table) with one id; no member the decoders could read
+differently (a key such as `[00 05]` that they read by number as a
+script's step data, a layout's attribute records or table view, or a
+button's step data). A file that fails is refused with
 `invalid_request`; `details` give the `file`, the `reason`
 (`unsorted_keys`, `key_shape`, `duplicate_id` or `misread`), and where
 known the `kind`, the `table` and, when the key has its specified shape,
@@ -1209,9 +1212,10 @@ the base lacks is new on each side.
 Each matched object is compared by its pieces, group by group, whether
 it has a design revision or not, and `difference` lists the parts that
 differ: `design`; `step_data`, a script's or a button's step data (and,
-inferred, a layout table view's), which is compared as bytes and not
-read, so a stored password's change and any other change of a step's
-parameters are both `step_data`; `unidentified`, a key no spec explains;
+inferred, a layout table view's), found as the decoders find it (its
+keys read by number, server-storage.md section 9), which is compared as
+bytes and not read, so a stored password's change and any other change
+of a step's parameters are both `step_data`; `unidentified`, a key no spec explains;
 `data` and `derived`. An empty list is the same (modification stamps may
 differ). With a base, `source_change` and
 `target_change` are each side's difference from it, and a side changed

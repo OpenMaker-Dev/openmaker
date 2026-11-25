@@ -193,7 +193,7 @@ fn slot_shape(slot: &OwnedNode) -> bool {
 
 /// Whether a key of `node` longer than one byte reads by number as one of
 /// `numbers`, which the decoders look up in it by number.
-fn aliasing(node: &OwnedNode, numbers: &[u8]) -> bool {
+pub(super) fn aliasing(node: &OwnedNode, numbers: &[u8]) -> bool {
     node.children.iter().any(|c| {
         c.segment.len() > 1
             && be_uint(&c.segment).is_some_and(|n| numbers.iter().any(|&k| n == u64::from(k)))

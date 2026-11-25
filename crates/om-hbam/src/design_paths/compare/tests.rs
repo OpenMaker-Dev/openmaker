@@ -596,6 +596,25 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
     for text in [error.to_string(), format!("{error:?}")] {
         assert!(!text.contains("TOKEN"), "{text}");
     }
+    // A member with no children is part of its catalog's object, whose
+    // projection holds its key: every key under a member list is checked,
+    // whoever's it is (finding 1 of #768's fourth review).
+    let mut childless = base.clone();
+    childless.put(
+        &[&[0x11], &[5], b"TOKEN99-not-a-serial-key"],
+        OwnedNode::default(),
+    );
+    let error = compare(&base, &childless, None).unwrap_err();
+    assert_eq!(error, shape(Kind::Script));
+    for text in [error.to_string(), format!("{error:?}")] {
+        assert!(!text.contains("TOKEN"), "{text}");
+    }
+    let mut one_byte = font(&[0x00, 0x01]);
+    one_byte.put(&[&[0x19], &[5], &[0x07]], OwnedNode::default());
+    assert_eq!(
+        compare(&base, &one_byte, None).unwrap_err(),
+        shape(Kind::Font)
+    );
     // Keys out of order or repeated, which a file never holds: a member
     // twice, or two member lists, one of which would be enumerated and the
     // other skipped (finding 4 of #768's third review).

@@ -22,38 +22,39 @@
 //! typed into a calculation is formula text, Design).
 //!
 //! **Objects.** [`objects`] lists a tree's design objects: every member
-//! `[cat, 5, id]` of a Design catalog, decoded by OpenMaker or not, and
-//! each Design catalog as a whole. A member object is its member and its
-//! entries in the catalog's index ([`Object::entries`]), where an index
-//! keeps one per member of what a tool shows of it (a script's cached name
-//! and full-access flag, scripts.md). A catalog object is its index: the
-//! display order and the catalog's settings are Design; name lists,
-//! digests, counts and dependency lists are Derived (they follow from the
-//! members, and no tool shows them); the last issued id is Data. A field is an
-//! object of its own; its table's field catalog index `[T, 3, 1]` is the
-//! field catalog's object. A table is its member `[3, 10, 5, T]`; its
-//! fields and its data under `[T]` are not part of it. An emptied member
-//! (a deletion, scripts.md) is no object. That is the object of an edit,
-//! and of its edit token; for design revisions and comparisons a member
-//! object is its member alone and a catalog object all of its catalog
-//! that is in no member object ([`design`]), and every catalog has one.
+//! `[cat, 5, id]` of a Design catalog, decoded by OpenMaker or not, and each
+//! Design catalog as a whole. A member object is its member and its entries
+//! in the catalog's index ([`Object::entries`]), where an index keeps one
+//! per member of what a tool shows of it (a script's cached name and
+//! full-access flag, scripts.md). A catalog object is its index: the display
+//! order and the catalog's settings are Design; name lists, digests, counts
+//! and dependency lists are Derived (they follow from the members, and no
+//! tool shows them); the last issued id is Data. A field is an object of its
+//! own; its table's field catalog index `[T, 3, 1]` is the field catalog's
+//! object. A table is its member `[3, 10, 5, T]`; its fields and its data
+//! under `[T]` are not part of it. An emptied member (a deletion,
+//! scripts.md) is no object. That is the object of an edit, and of its edit
+//! token; for design revisions and comparisons a member object is its member
+//! alone and a catalog object all of its catalog that is in no member object
+//! (`design`'s module doc), and every catalog has one.
 //!
 //! **Edit tokens** ([`revision`]). An object's [`Object::edit_token`]
 //! covers its whole member (or index), stored passwords included, without
 //! modification stamps: what `om-author`, `om-provider` and `om-server`
 //! exchange as a revision to guard an edit.
 //!
-//! **Design revisions** ([`design`]). An object's
-//! [`Object::design_revision`] is the hash of its Design pieces alone: for
-//! a member object its member, for a catalog object all of its catalog
-//! that is in no member object (its index with every entry included). A
-//! script's or a button's step data is one opaque piece, never Design, so
-//! an object holding step data has none, as has one holding a piece no
-//! rule names; a member the decoders could read differently is not
-//! classified at all.
+//! **Design revisions** (`design`'s module doc). The design revision of an
+//! object of a checked inventory ([`inventory`],
+//! [`Checked::design_revision`]) is the hash of its Design pieces alone: for
+//! a member object its member, for a catalog object all of its catalog that
+//! is in no member object (its index with every entry included). A script's
+//! or a button's step data is one opaque piece, never Design, so an object
+//! holding step data has none, as has one holding a piece no rule names; a
+//! tree with a key of another shape under a member list, or a member the
+//! decoders could read differently, has no inventory.
 //!
 //! **Comparison** ([`compare`], [`compare_files`]). Two files' objects,
-//! their identities checked first, matched with or without a base, and
+//! their inventories checked first, matched with or without a base, and
 //! each matched object compared by its pieces group by group, reported as
 //! kinds, ids, names, the parts that differ and design revisions, never
 //! content.
@@ -150,7 +151,8 @@ impl Kind {
 
 /// A design object: a member of a Design catalog, or the catalog as a
 /// whole (its index). Only [`objects`] makes one, from a tree, so what it
-/// holds is that tree's member at its own path.
+/// holds is that tree's member at its own path. Its design revision is
+/// given only through a checked inventory ([`Checked`]).
 #[derive(Clone, Debug)]
 pub struct Object<'t> {
     kind: Kind,
@@ -200,7 +202,7 @@ impl<'t> Object<'t> {
 
     /// The member's name when it has one that decodes: `10`, a theme's
     /// display name `0a` (layout-model.md 7.5); a catalog's name. Decoded
-    /// when asked. For a report, [`Object::design_name`].
+    /// when asked. For a report, [`Checked::design_name`].
     pub fn name(&self) -> Option<String> {
         if self.catalog {
             return Some(Catalog::of(self.kind).name.into());

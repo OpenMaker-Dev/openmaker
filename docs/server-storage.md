@@ -1105,7 +1105,7 @@ is the `sha256:` of its whole member or index, stored passwords
 included, without modification stamps: what `om-author` reports and the
 host checks to guard an edit ([authoring.md](authoring.md),
 "Revisions"), exchanged only between a client that holds the member and
-the host. Its **design revision** (`Object::design_revision`) is the
+the host. Its **design revision** (`Checked::design_revision`) is the
 revision history, comparisons, the text form and a mirror show and keep:
 the SHA-256 of its Design pieces alone.
 
@@ -1113,14 +1113,19 @@ Design revisions and comparisons are given only for the objects of a
 checked inventory (`om_hbam::design_paths::inventory`), the one way to
 them. Before anything is read from an object, it checks that the sibling
 keys on the way to and within each design catalog are in order and
-unique, as a file's are; that every member key has the shape its
-catalog's spec gives (a font's two bytes, a base directory's four, a
-serial key elsewhere); that no two objects of one kind (and table)
-report one id; and that no member is one the decoders could read
-differently (a key of more than one byte that reads by number as one
-they look up, so that where its step data is would be in doubt). A tree
-that fails is refused as a whole, naming the kind, the table and, when
-the key has its specified shape, the id; never a key's bytes.
+unique, as a file's are; that every key under a design catalog's member
+list has the shape its catalog's spec gives (a font's two bytes, a base
+directory's four, a serial key elsewhere), a member object's and a
+member's with no children alike, whose key is in its catalog's object;
+that no two objects of one kind (and table) report one id; and that no
+member is one the decoders could read differently: a key of more than
+one byte that reads by number as one they look up (a script's step list
+`04` and step data `05`; a layout's attribute records `05`, object store
+`07` and table view `0d`; the table view's records `05`; a button's step
+data `11` in an attribute record of either), so that where its step data
+is would be in doubt. A tree that fails is refused as a whole, naming the
+kind, the table and, when the key has its specified shape, the id; never
+a key's bytes.
 
 For design revisions and comparisons a member object is its member, a
 member with children, and a catalog object is everything in its catalog
@@ -1136,18 +1141,23 @@ catalog. An object's pieces are each node's being there and each node's
 own value, as the tree holds them, and each piece's group is decided by
 its own path, never by what lies below or beside it:
 
-- **Step data** is one opaque piece of a group of its own, with
-  everything below it: a script's `[11, 5, S, 05]`, a button's `[4, 5, L,
-  05, O, 11]`, and [I] the same place in a layout's table view `[4, 5, L,
-  0d, 05, O, 11]`, which keeps a layout's own structure (layout-model.md
-  10.14; no starter file holds one). Nothing looks inside it: which of its
-  bytes are a stored password depends on the step, and two rounds of
-  review showed that no reading of it below the decoders could be
+- **Step data** is one opaque piece of a group of its own, with everything
+  below it: a script's `[11, 5, S, 05]`, a button's `[4, 5, L, 05, O,
+  11]`, and [I] the same place in a layout's table view `[4, 5, L, 0d, 05,
+  O, 11]`, which keeps a layout's own structure (layout-model.md 10.14; no
+  starter file holds one). Each key of these places but the member's and
+  `O` is matched by number, as the decoders look it up (a key of 1 to 8
+  bytes read big-endian, so `[00 05]` is `05`): the script's `05`; the
+  layout's `05` and `11`; the table view's `0d`, `05` and `11`. A key any
+  decoder could read as the place is so step data, never Design, even
+  where the inventory would not refuse it. Nothing looks inside it: which
+  of its bytes are a stored password depends on the step, and two rounds
+  of review showed that no reading of it below the decoders could be
   trusted. So an object holding step data has no design revision: every
-  script, and every layout with a button that has step data. These are
-  the places the specs name for a step's stored credentials; the
-  comparison does not claim that no other key of a design catalog holds
-  one (section 4, "What the rules cannot see").
+  script, and every layout with a button that has step data. These are the
+  places the specs name for a step's stored credentials; the comparison
+  does not claim that no other key of a design catalog holds one (section
+  4, "What the rules cannot see").
 - Design, Data and Derived by the path rules of section 4; a node above
   the rules (a member, an index, a catalog) is there as Design, the
   object's shape, and its own value, which no rule names, is not
@@ -1165,8 +1175,10 @@ different; the history will bring such a tree to the stored form first
 tokens, which join values in pieces, differ from design revisions in
 this. Modification stamps are left out at exactly two places, where
 schema-path.md 8 places them: the direct stamp keys of a member object's
-own node and of a catalog's index. Anywhere else a stamp-shaped key is a
-piece like any other. The design revision is built by walking the object
+own node and of a catalog's index, in a stamp's shape (8.1: a key string
+or text, so a leaf, or a value in pieces when the text is not ASCII). A
+stamp key there with any other subtree is content, classified like any
+other piece, and so is a stamp-shaped key anywhere else. The design revision is built by walking the object
 and adding its Design pieces, in the edit token's general form (segments,
 values and child counts, framed, without list flags), each node written
 with only its children that lead to Design pieces, so that no value,

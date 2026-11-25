@@ -221,14 +221,17 @@ pub static COMPARE_DESIGNS: CommandSpec = CommandSpec {
     tool: "openmaker_compare_designs",
     title: "Compare two files' designs",
     description: "Compare the designs of two FileMaker files on this computer, a source and a \
-                  target, with an optional base they were both made from. Objects are matched \
-                  by kind and id when the base has them, or without a base only when kind, id \
-                  and name all agree; an object agreeing in id or name alone is listed as a \
-                  possible match, never matched. For each matched object it says how the two \
-                  differ (same; Design; only stored secrets; only Data or Derived content; \
-                  unidentified content) and, with a base, which side changed it. It reports \
-                  kinds, ids, names, these classes and design revisions, never content, \
-                  passwords or edit tokens. Reads the files only. Needs no connection.",
+                  target, with an optional base they were both made from. With a base, objects \
+                  are matched by kind and id when the base has them. Without one, by kind and \
+                  id when their names agree, or when neither has a name and all their content \
+                  is equal, which does not prove they share a history. An object agreeing in \
+                  id alone, or without a base in name alone, is listed as a possible match, \
+                  never matched. For each matched object it lists the parts that differ \
+                  (design; step_data, any change in a step's stored parameters, a password's \
+                  or another's alike; unidentified; data; derived; none when the same) and, \
+                  with a base, which side changed it. It reports kinds, ids, names, these \
+                  parts and design revisions, never content, passwords or edit tokens. Reads \
+                  the files only. Needs no connection.",
     effect: Effect::Reads,
     needs: Needs::Nothing,
     operation: None,
