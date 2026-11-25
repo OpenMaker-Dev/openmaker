@@ -986,7 +986,7 @@ sent. No build carries a DSN.
 |---|---|
 | `SENTRY_DSN` | The project's DSN, where reports go. Unset or empty: no reports |
 | `SENTRY_ENVIRONMENT` | The reports' environment; default `development` for a debug build, `production` for a release build |
-| `HTTP_PROXY`, `HTTPS_PROXY` | A proxy for the reports, read by Sentry's SDK |
+| `HTTPS_PROXY`, `HTTP_PROXY` | The reports' proxy: `HTTPS_PROXY` for an `https` DSN, else `HTTP_PROXY` (lower-case names too), as Sentry's SDK picks it. `ALL_PROXY` and `NO_PROXY` are not read |
 
 Both programs report to one project, told apart by the `app` tag
 (`om-server` or `om-gui`). The release is `openmaker@<crate version>`,
@@ -996,7 +996,8 @@ without the commit, which the build does not record. What is sent:
   when the program wrote it out in full (`panic!("text")`, `unwrap` on
   `None`); a message formatted at run time (`expect`, `unwrap` on `Err`, an
   index out of bounds, `panic!("{value}")`) can hold any value, such as a
-  field's text, and is withheld.
+  field's text, and is withheld. A panic on one of Sentry's own threads is
+  not reported.
 - Each error-level log line, as an event with the stack of the thread that
   logged it and, as breadcrumbs, the last 100 warning and info lines logged
   on that thread. Warning and error lines of OpenMaker's own crates also go
@@ -1011,22 +1012,26 @@ Every message is scrubbed first, going by how values look in it: a quoted
 string (a field's value, a file, account, script, schedule or machine
 name, a caught panic's message) becomes `"…"`; a bracketed list (key
 paths, index keys, which are made from field values, lists of values)
-becomes `[…]`; everything from the first `{` on (the `Debug` output of a
-structure, such as an operation with the records it commits) becomes
-`{…}`; an IP address, also in a URL, becomes `<address>`. Default
+becomes `[…]`; a key path (`3/5/x6b6579…`, as `om-hbam` writes it in
+its errors) becomes `…`; everything from the first `{` on (the `Debug`
+output of a structure, such as an operation with the records it commits)
+becomes `{…}`; an IP address, also in a URL, becomes `<address>`. Default
 personal data (`send_default_pii`) is off, and no request, record or file
 is attached. The console shows what it showed without Sentry, and each
 line before Sentry reads it.
 
-Each request to Sentry ends after 5 seconds, so an endpoint that does not
-answer holds up a program's end by about 12 seconds at most. Limits: a
-value a log line gives unquoted and outside a list (an error text from a
-lower layer, `{e}`) is sent as it reads; the Admin Console's own account
-name and file names and paths given unquoted are sent; a second signal
-ends `om-server` at once, without sending what is queued. Stack frames
-give file and line only for a build with debug info, and Sentry
-symbolicates them only with the build's debug files uploaded; a panic's
-location is in its message either way.
+Each request to Sentry, its name lookup included, ends after 5 seconds, so
+an endpoint that does not answer delays a program's end by seconds, not
+indefinitely: about 12 seconds, a few more when a panic is being reported
+as the program ends.
+
+Limits: a value a log line gives unquoted and outside a list (an error
+text from a lower layer, `{e}`) is sent as it reads; the Admin Console's
+own account name and file names and paths given unquoted are sent; a
+second signal ends `om-server` at once, without sending what is queued.
+Stack frames give file and line only for a build with debug info, and
+Sentry symbolicates them only with the build's debug files uploaded; a
+panic's location is in its message either way.
 
 ## Reverse-engineering and oracle tools
 

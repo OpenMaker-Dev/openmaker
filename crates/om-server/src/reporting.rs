@@ -34,9 +34,8 @@ use sentry::integrations::backtrace::AttachStacktraceIntegration;
 use sentry::integrations::backtrace::{current_stacktrace, ProcessStacktraceIntegration};
 use sentry::integrations::contexts::ContextIntegration;
 use sentry::integrations::log::{LogFilter, NoopLogger, SentryLogger};
-use sentry::integrations::panic::PanicIntegration;
 use sentry::protocol::{Event, Exception, Level, Mechanism};
-use sentry::types::Dsn;
+use sentry::types::{Dsn, Scheme};
 
 /// The environment variable that turns reports on: the Sentry project's
 /// DSN.
@@ -111,15 +110,13 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
     // The stack of the thread that logged an error, as for a panic.
     options.attach_stacktrace = true;
     options.in_app_include = vec!["om_"];
-    // Sentry's default integrations, but for a panic integration that
-    // withholds messages formatted at run time (only one panic integration
-    // takes effect) and for debug images, which only help with debug files
-    // uploaded to Sentry.
+    // Sentry's default integrations, but for its panic integration (panics
+    // are reported by `report_panics`) and for debug images, which only
+    // help with debug files uploaded to Sentry.
     options.default_integrations = false;
     options.integrations = vec![
         Arc::new(AttachStacktraceIntegration),
         Arc::new(ContextIntegration::default()),
-        Arc::new(PanicIntegration::new().add_extractor(|info| Some(panic_event(info)))),
         Arc::new(ProcessStacktraceIntegration),
     ];
     options.before_send = Some(Arc::new(move |mut event: Event<'static>| {
@@ -149,15 +146,41 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
         entry.attributes.insert("app".into(), app.into());
         Some(entry)
     }));
-    Some(Reporting {
-        _client: sentry::init(options),
-    })
+    let client = sentry::init(options);
+    report_panics();
+    Some(Reporting { _client: client })
+}
+
+/// Report each panic, then send the report, before the panic hook that was
+/// there (std's, which prints it) runs: an abort or the end of `main` may
+/// follow. Not a panic on one of Sentry's own threads: there the report's
+/// flush would wait for that very thread to take it from a full queue.
+fn report_panics() {
+    let next = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if !on_sentry_thread() {
+            sentry::capture_event(panic_event(info));
+            flush();
+        }
+        next(info);
+    }));
+}
+
+/// Whether this is one of Sentry's own threads (`sentry-transport`,
+/// `sentry-logs-batcher`).
+fn on_sentry_thread() -> bool {
+    std::thread::current()
+        .name()
+        .is_some_and(|name| name.starts_with("sentry-"))
 }
 
 /// Sentry's ureq transport, with an agent whose requests end at
 /// [`REQUEST_TIMEOUT`]: ureq sets no deadline of its own. Its TLS is
-/// rustls's with ring and the webpki roots, as the default agent's, and it
-/// takes a proxy from `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`.
+/// rustls's with ring and the webpki roots, as the SDK's own agent's, and
+/// its proxy the one that agent takes: `HTTPS_PROXY` (or `https_proxy`)
+/// for an `https` DSN, else `HTTP_PROXY` (or `http_proxy`), as
+/// `sentry::init` read them; not ureq's own choice, which would put
+/// `ALL_PROXY` first and follow `NO_PROXY`.
 struct Transport;
 
 impl sentry::TransportFactory for Transport {
@@ -165,8 +188,17 @@ impl sentry::TransportFactory for Transport {
         &self,
         options: sentry::TransportOptions,
     ) -> Arc<dyn sentry::Transport> {
+        let proxy = match (
+            options.dsn.scheme(),
+            &options.http_proxy,
+            &options.https_proxy,
+        ) {
+            (Scheme::Https, _, Some(proxy)) | (_, Some(proxy), _) => ureq::Proxy::new(proxy).ok(),
+            _ => None,
+        };
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(REQUEST_TIMEOUT))
+            .proxy(proxy)
             .build()
             .new_agent();
         Arc::new(
@@ -217,12 +249,7 @@ impl<L: log::Log> log::Log for ConsoleFirst<L> {
 
 fn route(metadata: &log::Metadata<'_>) -> LogFilter {
     let target = metadata.target();
-    if target.starts_with("ureq")
-        || target.starts_with("sentry")
-        || std::thread::current()
-            .name()
-            .is_some_and(|name| name.starts_with("sentry-"))
-    {
+    if target.starts_with("ureq") || target.starts_with("sentry") || on_sentry_thread() {
         return LogFilter::Ignore;
     }
     let mut filter = match metadata.level() {
@@ -266,7 +293,8 @@ pub fn flush() {
     }
 }
 
-/// A panic's event: Sentry's own, but for its message, which is kept only
+/// A panic's event, as Sentry's panic integration makes it, but for its
+/// message, which is kept only
 /// when the program wrote it out in full (`panic!("text")`,
 /// `Option::unwrap`'s, an arithmetic overflow's); a message formatted at
 /// run time (`expect`, `Result::unwrap`, an index out of bounds, a string
@@ -316,12 +344,15 @@ fn panic_event(info: &PanicHookInfo<'_>) -> Event<'static> {
 /// - A bracketed list (`Debug` output of bytes or of a list: key paths,
 ///   index keys, which are made from field values, lists of values)
 ///   becomes `[…]`.
+/// - A key path in om-hbam's form (`3/5/x6b6579…`: decimal segments and
+///   `x` and hex ones), and a long `x` and hex segment alone, become `…`:
+///   an index key in one is made from a field's value.
 pub fn scrub(text: &str) -> String {
     let (text, cut) = match text.find('{') {
         Some(at) => (&text[..at], true),
         None => (text, false),
     };
-    let mut scrubbed = without_lists(&without_addresses(&without_quoted(text)));
+    let mut scrubbed = without_key_paths(&without_lists(&without_addresses(&without_quoted(text))));
     if cut {
         scrubbed.push_str("{…}");
     }
@@ -383,6 +414,41 @@ fn without_addresses(text: &str) -> String {
             kept.push_str(&text[copied..start]);
             kept.push_str("<address>");
             copied = start + run.len();
+        }
+    }
+    kept.push_str(&text[copied..]);
+    kept
+}
+
+/// `text` with each run of ASCII letters, digits and slashes that is a key
+/// path, or one long `x` and hex segment, made `…` (see [`scrub`]). A file's
+/// path is not one: it has a name among its segments, or begins with `/`.
+fn without_key_paths(text: &str) -> String {
+    let part = |c: char| c.is_ascii_alphanumeric() || c == '/';
+    let hex = |segment: &str| {
+        segment
+            .strip_prefix('x')
+            .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let mut kept = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut at = 0;
+    while let Some(offset) = text[at..].find(part) {
+        let start = at + offset;
+        let end = text[start..]
+            .find(|c: char| !part(c))
+            .map_or(text.len(), |length| start + length);
+        at = end;
+        let run = &text[start..end];
+        let segments = run.split('/');
+        let key = segments
+            .clone()
+            .all(|s| !s.is_empty() && (s.chars().all(|c| c.is_ascii_digit()) || hex(s)))
+            && (segments.count() > 1 || (hex(run) && run.len() > 8));
+        if key {
+            kept.push_str(&text[copied..start]);
+            kept.push('…');
+            copied = end;
         }
     }
     kept.push_str(&text[copied..]);
@@ -463,6 +529,10 @@ mod tests {
             (
                 "om_server::server: bound to 2001:db8:: at 21:04:32Z",
                 "om_server::server: bound to <address> at 21:04:32Z",
+            ),
+            (
+                "Tasks.fmp12: key out of order or duplicated at 3/5/x6b65792061626364/1; x6b65792061626364 alone, a path /srv/db/1/2, 1/2",
+                "Tasks.fmp12: key out of order or duplicated at …; … alone, a path /srv/db/1/2, …",
             ),
             (
                 "Schedule \"Nightly\" aborted; time limit exceeded.",

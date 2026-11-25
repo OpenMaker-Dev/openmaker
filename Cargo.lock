@@ -6741,7 +6741,6 @@ dependencies = [
  "sentry-contexts",
  "sentry-core",
  "sentry-log",
- "sentry-panic",
  "sentry-tracing",
  "ureq 3.5.2",
 ]
@@ -6791,16 +6790,6 @@ checksum = "c938358d54c65a79fea165a447ae0eabc5717f23ba482ceee279c5645f0ccad3"
 dependencies = [
  "bitflags 2.13.2",
  "log",
- "sentry-core",
-]
-
-[[package]]
-name = "sentry-panic"
-version = "0.49.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ab095af8f107e893941f857d8e204f5d25404247c34af131c7d199e3021679f"
-dependencies = [
- "sentry-backtrace",
  "sentry-core",
 ]
 
