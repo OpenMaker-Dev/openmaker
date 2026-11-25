@@ -396,7 +396,13 @@ the new root and commits nothing. A tree the entry makes starts empty
 and is always written, if only as one empty leaf. The unit names the
 trees too: the caller gives it each changed tree's new root and the
 trees the entry makes, drops and renames, and commits once; the store
-holds each tree's name and root and changes them only then. A failure at
+holds each tree's name and root and changes them only then. Within one
+unit a tree's root is given at most once (made, or given a new root),
+and only a page the unit wrote; a tree dropped is one that existed when
+the unit began and that the unit gave no root; the old root of a tree
+given a new one is released by the unit, either way. A unit that breaks
+any of this is refused whole, by the page file and by the store in
+memory alike. A failure at
 any point leaves the store as it was once the unit is dropped, so the
 entry can be applied again. An entry that changes an existing tree in
 nothing writes nothing and keeps its root. An entry's index must be
@@ -768,7 +774,14 @@ rebuilt for them when those entries are applied again (4.7).
   superblock on disk lists (a checkpoint's own list and, while its
   predecessor is on disk, the retiring list), and the pins. A pin is of
   the trees at an entry, `(entry, 0)`: it keeps no meta page (birth step
-  above 0). A birth not known yet counts as the earliest.
+  above 0), so it takes the roots of its version as it is taken and
+  keeps them: from memory for the newest version, the newest
+  checkpoint's and a version another pin holds; from the meta stream of
+  an older checkpoint or a restore point, read while the I/O lock is
+  held, which a reclaim, a checkpoint and a restore point's drop hold
+  too, so that none of them frees, reuses or retires those pages first. A pin whose roots cannot be had (the
+  version a checkpoint is writing, a meta stream that does not read
+  back) is refused. A birth not known yet counts as the earliest.
 - **Settling** needs the page's bytes: its birth is its stamp (section
   2.2), and an index page's children carry theirs; a dropped page's
   references are what `Page::references` lists. The bytes are at hand
@@ -854,11 +867,14 @@ rebuilt for them when those entries are applied again (4.7).
   6. the page file holds each tree's name and root, and only a unit's
      commit changes them. A root a unit names, for a tree it makes or
      gives a new root, must be a tree's page (not an overflow page) the
-     unit wrote; a tree given a new root must have had its old root
-     released by the unit, and a page the unit releases that is a tree's
+     unit wrote, and a tree's root is given at most once in a unit; a
+     tree given a new root must have had its old root released by the
+     unit (either way), and a page the unit releases that is a tree's
      root must be the old root of a tree it gives a new one; a tree
-     dropped is named, and the page file releases the root it holds for
-     it. A unit that breaks any of this is refused whole;
+     dropped is one that existed when the unit began and that it gave no
+     root, and the page file releases the root it holds for it; a page
+     released that is still in memory must have the hash it is released
+     with. A unit that breaks any of this is refused whole;
   7. the restore point a checkpoint keeps counts in the floor (4.8) from
      its first check, and a checkpoint that keeps one is refused while
      any reservation is open.
@@ -872,8 +888,13 @@ rebuilt for them when those entries are applied again (4.7).
   applier does not pause.
 - **A checkpoint** of the newest version, at entry `E` (every unit
   committed so far is of `E` or earlier), of the trees as the page file
-  holds them: it takes no roots from its caller. The writer keeps every
-  limit the reader enforces
+  holds them: it takes no roots from its caller. Before it writes
+  anything it reads back from the file every tree's root that is not in
+  memory, and checks it, and is refused, naming the tree, when one does
+  not read back: its copies replace the older checkpoint's, so the
+  newest must be usable first, or both checkpoints left on disk would
+  name a root that does not read back. The writer keeps every limit the
+  reader enforces
   (trees, restore points, names, numbers), and the meta stream goes
   through the reader's own decoding before any byte of it is written.
   Short of free pages for its meta stream, it reclaims first.
