@@ -3,8 +3,9 @@
 Baseline: `cee82185c`, before the operations' transaction
 (docs/server-storage.md 5, "The operations' transaction"). Changed: the
 branch of [#776](https://github.com/OpenMaker-Dev/openmaker/issues/776),
-built at `221e99208` (its later commits change docs, test switches and
-debug-only code, none of a release build's code). Measured 2026-11-25.
+built at `221e99208` (its later commits change docs, test switches,
+debug-only code and how op87 and op88 count a library's members, none of
+the code a commit runs). Measured 2026-11-25.
 
 A commit's records still go through the store's own helpers; what the
 transaction adds to every write operation in a release build is a flag of
