@@ -27,6 +27,9 @@ python3 -I tools/fms-calc-harness/make_vectors.py /tmp/results docs/re/catalogs/
 `runbat.sh [-c] [-d] <battery> <file> [results dir] [context]` runs one
 battery; `-c` selects compile mode, `-d` registers the design functions,
 `context` is the table occurrence the run starts in (stored form, below).
+With no results directory, the TSV goes to the git-ignored
+`re/work/fms-calc-harness/`. Review the values and file names before copying
+a result into `tools/fms-calc-harness/results/` as a fixture.
 The image needs network access once (Ubuntu packages); to pull the base
 image through a registry mirror, add `--build-arg
 BASE_IMAGE=<mirror>/library/ubuntu:24.04` to `docker build`. Runs use

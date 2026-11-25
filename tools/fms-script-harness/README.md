@@ -25,7 +25,10 @@ tools/fms-script-harness/runbat.sh -l /dev/null contacts-en.fmp12 /tmp/results  
 ```
 
 `runbat.sh [-l] <battery> <file> [results dir]` writes
-`<battery>.<file>.tsv` (and `.stderr`). Environment: `FMS_ROOT`, `FILES`
+`<battery>.<file>.tsv` and its `.stderr` file. The default directory is
+`re/work/fms-script-harness/`, which Git ignores. Review the values and
+file names before copying a result into `tools/fms-script-harness/results/`.
+Environment: `FMS_ROOT`, `FILES`
 (mounted read-only), `WORK` (writable scratch for the file's saveAsXML
 schema, generated patches and the patched copies; default
 `script-harness-work` next to `$FILES`), `ACCOUNT` (a full access account
@@ -299,7 +302,7 @@ Directives (lines of the run section):
 | `s49-two-hops-<variant>` | contacts-en with `SCHEMA=` the document `s49_two_hop_schema.py` writes: Phone Emails (an occurrence of Email Addresses) related from Phone Numbers, a second hop after Contacts -> Phone Numbers; variants `both`, `firstoff`, `secondoff`, `bothoff` turn creation off on either hop (`@relationship`) | Set Field of a field two relationships away with no related record, and from an existing middle record: the error (0, 101 or 415) and which records the commit creates and links (script-runtime.md 13.24) |
 | `s36-schedule-run` | contacts-en | a schedule's run (script-runtime.md 13.23): script names in other cases, with spaces, missing, empty or shared by two scripts; parameters; the session's Get answers; results and errors; `$$` variables across runs; real logins (wrong password, unknown, lower-case and disabled accounts); a file that cannot be opened (`@path`) |
 
-`results/` holds the outputs. Expressions of a run line are evaluated
+`results/` holds the checked-in fixtures. Expressions of a run line are evaluated
 after the script, with no table occurrence unless `@context` sets one; a
 probe script that `Evaluate`s them answers in the window's occurrence
 instead, and only there do `ValueListItems` and fields named without an

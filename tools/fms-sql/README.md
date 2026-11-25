@@ -36,8 +36,16 @@ CR *in the formula text*, which the calculation parser turns into a space
 
 ```sh
 export FMS_ROOT=.../re/extracted/fms/deb/opt/FileMaker FILES=.../re/work/fms-harness/files
-tools/fms-sql/runq.sh q04-predicates fms-sample-en.fmp12     # writes results/q04-predicates.fms-sample-en.tsv
-tools/fms-sql/view.sh tools/fms-sql/results/q04-predicates.fms-sample-en.tsv
+tools/fms-sql/runq.sh q04-predicates fms-sample-en.fmp12
+tools/fms-sql/view.sh re/work/fms-sql/q04-predicates.fms-sample-en.tsv
+```
+
+`runq.sh <name> <file> [context] [results dir]` writes to the git-ignored
+`re/work/fms-sql/` by default. Review the rows and file names before copying
+a result into `tools/fms-sql/results/`. Rebuild the catalogs from the
+checked-in fixtures with these commands.
+
+```sh
 python3 -I tools/fms-sql/make_sql_vectors.py tools/fms-sql/results docs/re/catalogs/execute-sql-vectors.tsv
 python3 -I tools/fms-sql/make_error_catalog.py tools/fms-sql/results/errors-dump.txt \
     docs/re/catalogs/execute-sql-vectors.tsv docs/re/catalogs/execute-sql-errors.tsv

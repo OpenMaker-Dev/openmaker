@@ -24,7 +24,6 @@ ROOT=$(cd "$H/../.." && pwd)
 : "${FMS_ROOT:?}" "${FILES:?}" "${WORK:?}"
 LOCK=${HARNESS_LOCK:-$(dirname "$FILES")/.run.lock}
 B="$H/batteries"
-R="$H/results"
 
 # rule: data type (1 text, 2 number, 3 date, 4 time, 5 timestamp),
 # validation bits beyond the mode (schema-path.md 5.5), XML edit, good and
@@ -127,7 +126,6 @@ for rule in "${RULES[@]}"; do
             echo '--- run'
             run_lines "$rule"
         } > "$B/$name.txt"
-        "$H/runbat.sh" "$B/$name.txt" "$name.fmp12" "$R" > /dev/null
-        echo "$R/$name.$name.tsv"
+        "$H/runbat.sh" "$B/$name.txt" "$name.fmp12"
     done
 done
