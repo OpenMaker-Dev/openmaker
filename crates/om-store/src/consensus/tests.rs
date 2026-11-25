@@ -448,7 +448,11 @@ impl World {
     fn act(&mut self, i: usize) -> Outcome {
         let member = self.nodes[i].member.as_mut().unwrap();
         let cut = matches!(member.queue.front(), Some(Action::Cut { .. }));
-        match member.perform() {
+        let result = member.perform();
+        if result.is_ok() && self.power_lost(i) {
+            return Ok(());
+        }
+        match result {
             Ok(Some(done)) => {
                 if cut {
                     self.cov.cuts += 1;
@@ -524,6 +528,20 @@ impl World {
             Ok(None) => Ok(()),
             Err(e) => self.failed(i, e.to_string()),
         }
+    }
+
+    /// Whether member `i`'s disk lost power in a call that returned: a
+    /// failure in work the store does not report, such as freeing pages
+    /// after a checkpoint. The process is gone all the same.
+    fn power_lost(&mut self, i: usize) -> bool {
+        if !self.nodes[i].sim.halted() {
+            return false;
+        }
+        let down_until = self.now + 1 + self.rng.below(8);
+        let node = &mut self.nodes[i];
+        node.member = None;
+        node.down_until = down_until;
+        true
     }
 
     /// Member `i`'s store returned an error: its disk's fault, or a defect.
@@ -641,7 +659,15 @@ impl World {
                     .map(|m| (m, opened))
                     .map_err(|e| e.to_string())
             });
+        let halted = node.sim.halted();
+        let faulted = disk_faults(&node.sim) != before;
         match opened {
+            Ok(_) if halted => {
+                // The power failed in work the open does not report.
+                self.cov.failed_opens += 1;
+                self.nodes[i].down_until = self.now + 1 + self.rng.below(4);
+                Ok(())
+            }
             Ok((member, opened)) => {
                 if opened.passed_over_state.is_some() {
                     self.cov.passed_over_state += 1;
@@ -656,7 +682,7 @@ impl World {
                 self.check(i)
             }
             Err(e) => {
-                if !node.sim.halted() && disk_faults(&node.sim) == before {
+                if !halted && !faulted {
                     return Err(self.fail(format!("member {i} did not start, with no fault: {e}")));
                 }
                 self.cov.failed_opens += 1;
@@ -784,7 +810,11 @@ impl World {
 
     fn checkpoint(&mut self, i: usize) -> Outcome {
         let member = self.nodes[i].member.as_mut().unwrap();
-        match member.checkpoint() {
+        let result = member.checkpoint();
+        if result.is_ok() && self.power_lost(i) {
+            return Ok(());
+        }
+        match result {
             Ok(true) => {
                 self.cov.checkpoints += 1;
                 self.check(i)
