@@ -1205,29 +1205,72 @@ of a calculation and a privilege set's record limit (`with_calc_inputs`,
 `record_limit`). The store's own work calls them with a view of its tree,
 so readers and operations share one implementation.
 
-Still kept by the store, outside derived state: the basis of stored
-calculations (`Store::basis`, below), the verified-index marks
-(`Store::verified`), the store's generation (which says when the accounts are
-decoded again and the verified-index marks are stale; server scripts
-cached by it before, and cache by the derived state's version now), and
-the read-only flag and the file's identity on disk.
+Still kept by the store, outside the tree and outside derived state: the
+bases of stored calculations, a version's own state ("The basis of stored
+calculations", below), the store's generation (which says when the
+accounts are decoded again; server scripts cached by it before, and cache
+by the derived state's version now), and the read-only flag and the
+file's identity on disk.
 
-The basis of stored calculations is not computed from the current view. It
-is what the stored values were last computed with, per table and field:
-kind, data type, the options that change stored values, repetitions, and a
-calculation's context and formula (schema-path.md, "Implementation notes
-(recalculation)"). It is taken from the file when the file is loaded,
-except for a table with deferred field work, which gets none, and again
-after each op73 (an authoring edit adds a new field's). op73 compares the
-field definitions as they are with it to find the stored calculations to
-recompute. So an `UpdateTable` replays to the same result only from the
-same basis, for example by replaying the uploads before it from the same
-starting file: on a fresh load of the file as it was just before op73, the
-basis already holds what op13 changed. Deferred work names a formula change
-(`0x40`), so recovery at load still recomputes it. A new stored calculation
-is named by nothing, and a server that stops between op13 and op73 never
-computes it
-([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)).
+**The verified-index marks.** A commit keeps a table's stored indexes
+current only where they agree with its records (`put_record`;
+write-path.md 5): `Store::index_agrees` checks an index against every
+record once (`Store::check_index`) and keeps the answer as a mark. The
+marks are derived state: whether an index agrees can always be checked
+again from the version's tree, so a mark may be missing (after a load,
+once forgotten) but is never wrong. They are kept in the derived state of
+the version (`Derived::marks`) and read and kept only through it, so they
+are carried to the next version with it, and the derived state the
+journal keeps from before the change's first change of it
+(`Journal::schema_from`) puts them back on a roll-back. They are
+forgotten by what can make them wrong: every mark by a write the derived
+state reads and by op73's field work (where the store's generation used
+to empty them); a table's, a field's or an index's by a write at, above
+or below its records, its record list or its index postings
+(`Store::forget_verified`; "The operations' transaction", below); an
+index's when a save that failed took the index out
+(`Store::drop_unwritable_indexes`). A commit's own upkeep keeps them true.
+A roll-back puts back the marks from before the change, where the
+generation's advance forgot them all; nothing a client sees depends on a
+mark, only whether a commit checks an index whole, which it does once per
+index after a load, before and after this change
+([index-checks](performance/index-checks.md)). The store engine keeps
+them the same way, as a cache each server holds for itself: they are not
+logged, a restart begins without them, and a version an entry makes
+carries them, forgotten by the entry's writes by the same rules.
+
+**The basis of stored calculations.** The basis is a version's own state,
+not derived from its tree. It is what each table's stored values were
+last computed with, per field: kind, data type, the options that change
+stored values, repetitions, and a calculation's context and formula
+(schema-path.md, "Implementation notes (recalculation)"). Between a change
+of the field catalog (op13, op86) and the op73 that does its work, the
+tree holds the new definitions and the stored values the old ones gave,
+and only the basis says what those were: the deferred list `[T, 03, 01,
+fd]` names a formula change (`0x40`) but not the old formula, kind or type
+that op73 compares with (`recalc::changed_fields`,
+`recalc::retyped_to_container`, and `Store::deferred_work`'s check of a
+value removal against the old storage), and a new stored calculation is
+named by nothing. So the bases are kept by version as state of their own
+(`Store::bases`), changed only by writes of them, as the tree is by its
+writes: op73 and the deferred work set a table's when they finish its
+work (`Store::set_basis_in`, still on the store), and Create Field adds a
+new field's (op240, `Transaction::add_field_basis` through
+`Transaction::set_basis`). The journal keeps the bases from before the
+change's first write of them, so a roll-back puts them back; a write that
+sets a basis to what it is changes nothing. They are taken from the file
+when it is loaded, except for a table with deferred field work, which
+gets none and has every stored calculation recomputed (`Store::recover`).
+So an `UpdateTable` replays to the same result from the same bases, and
+the file engine, which keeps them in memory only, loses them when it
+stops between op13 and op73: deferred work names a formula change, which
+recovery at load still recomputes, but a new stored calculation is then
+never computed
+([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)). The store
+engine keeps them in its replicated state: a write of a basis is part of
+the entry that makes it, applied by every server of a cluster, and a
+checkpoint holds them, so a server that restarts from a checkpoint and the
+log has the bases the last change left, and #707 does not arise there.
 
 **The engine's state of a file.** Some of what the server asks of a
 hosted file is not a version's: whether it takes changes from its
@@ -1523,7 +1566,10 @@ edits without translation: put a node without its children
 the node, then each node under it in key order, as an entry holds it). A
 put creates missing parents and turns a parent that holds an empty value
 into an empty list, as `OwnedNode::put` does. No operation that moved
-needed a fourth.
+needed a fourth. Besides the tree, a transaction writes the version's own
+state, the bases of stored calculations (`Transaction::set_basis`; "The
+basis of stored calculations", above), which the store engine's entry has
+to carry as well.
 
 What the transaction answers about its own writes is the contract every
 engine's transaction keeps: every read gives the tree as written so far;
@@ -1542,11 +1588,10 @@ under the commit's journal (`Store::write_in`), so a failed operation or
 save puts every node and flag of the tree back as before
 (`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`,
 the seeded test of [#751](https://github.com/OpenMaker-Dev/openmaker/pull/751),
-unchanged); as before too, a roll-back advances the store's generation,
-so the verified-index marks are checked again at their next use, while
-the accounts decoded before the change come back with the derived state
-it puts back, counted as current, so they are not decoded again; and a
-save
+unchanged); a roll-back puts back the derived state from before the
+change, with its decoded accounts and its verified-index marks, and
+advances the store's generation, counting those accounts as current, so
+they are not decoded again; and a save
 that failed on content the tree held before the change takes the field
 indexes among it out (`Store::drop_unwritable_indexes`). Whether a write
 changes nothing is decided on the tree's content: the root's own list
@@ -1563,8 +1608,8 @@ table its root and its field catalog `[T, 03]` do, but for a field's next
 serial value `[T, 03, 05, F, 0c]` and the deferred field work `[T, 03, 01,
 fd]`, which the derived state leaves out; a put that creates a parent or
 turns one that is not a list yet into one counts by that parent's path
-too. Such a write advances the store's generation, which the
-verified-index marks and the accounts follow, and has the schema and the
+too. Such a write advances the store's generation, which the accounts
+follow, forgets every verified-index mark, and has the schema and the
 accounts read again before the derived state is next used, or when the
 operation ends (`Transaction::settle`). A write forgets the
 verified-index marks it can make wrong (`Store::forget_verified`): at,
@@ -1586,7 +1631,7 @@ effect, and which writes do it now:
 | Side effect | Before, after | Now, after |
 | --- | --- | --- |
 | The derived state read again (the catalog, the calculation catalogs, whether the locale record is there; the locale, date order and file language stay those the file was loaded with), and with it the server script sessions' schema, which they keep by the derived state's version | every op13 upload, op86 write and op240 edit, and the account edits (not saved found sets, op71, op72, op87, op88, member keys) | a write at a path the derived state reads, or one that creates or turns such a parent; read at `Transaction::settle` |
-| The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work, a roll-back (the generation); a table's: a write at, above or below `[T, 05]` or `[T, 0d]`, or at `[T, 01]`; a field's: a write at `[T, 01, F]`; an index's: a write at or below `[T, 01, F, 00]` or `[T, 01, F, 01]`, not the counts `[T, 01, F, 10]`, `[T, 01, F, 11]` (`Store::forget_verified`) |
+| The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work; a table's: a write at, above or below `[T, 05]` or `[T, 0d]`, or at `[T, 01]`; a field's: a write at `[T, 01, F]`; an index's: a write at or below `[T, 01, F, 00]` or `[T, 01, F, 01]`, not the counts `[T, 01, F, 10]`, `[T, 01, F, 11]` (`Store::forget_verified`), and a failed save that took the index out. They are kept with the derived state ("The verified-index marks", above), so a roll-back puts back those from before the change instead of forgetting them |
 | The accounts decoded again (`Store::follow_accounts`) | after the operation, when the generation moved | at `Transaction::settle` with the schema, so `derived()` gives an account as written; after the operation when a later write moved the generation |
 | The tree counted as changed | every such write, one equal to what was there included, and an op86 batch of writes even when every one was refused (op13 returned before it on a refusal) | a write that changed the tree |
 | The derived state kept for a roll-back (`Journal::schema_from`) | at each such write | at `Transaction::settle`, before it changes |
@@ -1639,24 +1684,32 @@ what it wrote (its own tests cover it), nor whether a write that it did
 not record (one that changed nothing) left the tree counted as changed.
 A difference
 panics, naming paths only (an account's node holds its password's
-verifier). The server's, `om-author`'s and `om-gui`'s tests run with it. An
-operation not moved at all (a commit's records, op73, the deferred work,
-a find's stored indexes) is not checked: it changes the tree through the
-store's helpers alone. In one that moved, a store helper it calls (op86's
-indexes) changes the tree without saying what; the check does not see
-the helper's own run, and nothing else: when the helper starts, the tree
-must be what the writes made of it, since the start or since the last
-helper returned (`Check::before_store`), and when it returns the check
-takes the tree as it left it (`Check::after_store`). It found
+verifier). It checks the version's own state and the marks too: the
+bases must be those the transaction's basis writes made; whatever of the
+bases and the verified-index marks changed, the journal must keep as it
+was, to put back; every mark that an index agrees must hold for the tree
+at the end; and after a roll-back the bases must be those the operation
+started with, and the marks those it started with but for an index the
+failed save took out (`Settled::after_roll_back`). The server's,
+`om-author`'s and `om-gui`'s tests run with it. An operation not moved at
+all (a commit's records, op73, the deferred work) has its tree writes
+left unchecked, since it changes the tree through the store's helpers
+alone, and only its bases and marks checked. In one that moved and calls
+a store helper (none does now), the helper changes the tree without
+saying what; the check does not see the helper's own run, and nothing
+else: when the helper starts, the tree must be what the writes made of
+it, since the start or since the last helper returned
+(`Check::before_store`), and when it returns the check takes the tree as
+it left it (`Check::after_store`). It found
 one write that bypassed the derived state while the operations moved:
 op13's upload to `[T, 03, 01, fd]` created the missing `[T, 03, 01]`,
 which the calculation catalogs read, without reading the schema again.
 What it cannot catch, besides what it does not compare: a write and a
 reply that agree with each other but are wrong (it compares the file
 engine with itself, not with the base or with FileMaker); the order of
-notices and locks; a roll-back (the seeded test covers it); the
-generation and the verified-index marks; the derived state between
-writes, which it compares only at the end, and not at all when the
+notices and locks; the tree a roll-back leaves (the seeded test covers
+it); the generation; a mark that an index disagrees, which may be stale
+without harm; the derived state between writes, which it compares only at the end, and not at all when the
 catalog does not decode; what a store helper changed; and whatever the
 test suite does not run.
 
@@ -1686,34 +1739,40 @@ first, each with the test view's runs of its tests:
 5. The operations' own reads and writes inside `engine::run`: moved for
    op60's modification count, op71's and op72's counters and Set Next
    Serial Value, op13's upload, op86's member keys and schema writes,
-   op87's and op88's library members, op240's edits, the account edits
-   and the desktop's saved found sets ("The operations' transaction",
-   above). Still on the store, through `Transaction::view() -> &Store`
-   and the transaction's delegates to the store's helpers, whose own
-   changes the checking transaction does not check
-   (`Check::before_store`):
+   op87's and op88's library members, op240's edits, the account edits,
+   the desktop's saved found sets, and the indexes a find stores (op86's
+   `StoreIndexes` and its program's indexes, `schema::store_indexes`:
+   the table's records read through the transaction, each index written
+   whole) ("The operations' transaction", above). Still on the store,
+   through `Transaction::view() -> &Store` and the transaction's
+   delegates to the store's helpers, whose tree writes the checking
+   transaction does not check:
    - a commit's records (op70 and a server script's commit,
      `writes::commit`): one record whole each, with `Store::record_limit`
      and `views::hidden_fields`, written by `Store::write_record`, which
      keeps `[T, 0d]` and the stored indexes current (`put_record`: index
      entries by key, and `Store::index_agrees`, which checks an index
-     whole once), and stores, counts and releases container data. Needs:
-     the verified-index marks by version
-     ([#782](https://github.com/OpenMaker-Dev/openmaker/issues/782)) and
-     `om-query`'s `Index` over a seekable listing instead of a whole index
+     whole once), and stores, counts and releases container data. The
+     verified-index marks it reads and keeps are by version now ("The
+     verified-index marks", above). Needs: `om-query`'s `Index` over a
+     seekable listing instead of a whole index
      ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)), so
      that the indexes' upkeep reads and writes index entries through the
      transaction;
    - op73's field work and the deferred work a file is opened with
      (`Store::update_table`, `Store::recover`): every record of a table,
-     listed with each record whole, the basis of stored calculations, and
-     the indexes it drops and builds. Needs: the basis by version
-     ([#781](https://github.com/OpenMaker-Dev/openmaker/issues/781)) and
-     the two above;
-   - the indexes a find builds and stores (op86's `StoreIndexes` and the
-     indexes of its program, `Store::store_indexes_in`): the table's
-     records listed whole and each index written whole. Needs: the
-     indexes' upkeep above.
+     listed with each record whole, the bases of stored calculations (by
+     version now, "The basis of stored calculations", above), and the
+     indexes it drops and builds whole (writes the transaction can say,
+     as `StoreIndexes` shows; container data it stores and releases goes
+     through the library's rules). Needs: its recalculation over a
+     listing of the records with each changed record written through the
+     transaction, and the container data it reads through a view rather
+     than the library node whole
+     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)); and
+     the read-only decision for work it cannot do as the operation's
+     outcome, not a side effect on the file
+     ([#809](https://github.com/OpenMaker-Dev/openmaker/issues/809)).
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a `Source` method for the head NodeExists and GetKey read,
@@ -2011,24 +2070,24 @@ counting and deleting (`library::adjust_keys`). What it keeps:
 | a find's indexes | the index nodes it put, absent as a rule |
 | op88 | the library header and the new member's absence, or the counts of the member that already held the data; a new library's absence |
 | op87 | the member's counts, or, when it is deleted, the member and the header |
-| op73, the deferred work finished at opening | each record before its first change, the work list, the global values it drops, the indexes it rebuilds or drops (moved), the library entries it releases or stores, and the table's basis of stored calculations |
-| an authoring edit, an account edit, a found set | the catalog members and nodes it replaced, and the parents it created (as before, the parents added) |
+| op73, the deferred work finished at opening | each record before its first change, the work list, the global values it drops, the indexes it rebuilds or drops (moved), the library entries it releases or stores, and the bases of stored calculations before its first write of them |
+| an authoring edit, an account edit, a found set | the catalog members and nodes it replaced, and the parents it created (as before, the parents added); Create Field also the bases before it counted the new field's |
 
 What follows from the tree is taken back with it: the decoded schema the
 store reads is put back as it was before the operation's first change to
 a catalog (`Journal::schema_from`), not read again from the tree put back
 (a catalog that does not decode is served with the schema last read, and
-reading it again would keep the one the operation decoded), and the
-accounts with it; the basis of stored calculations is put back too, and
-the store's schema generation advances, so the verified-index marks and
-a server script's schema are derived again. The locks
+reading it again would keep the one the operation decoded), with the
+accounts and the verified-index marks in it; the bases of stored
+calculations are put back too, and the store's generation advances, so
+the accounts follow it. The locks
 the operation took are released and the releases that waited for it
 dropped (`Locks::take_back`); an authoring edit's locks are released all
 the same. The member keys and indexes a draft took from what reads left
 waiting wait again, for the next write. Thumbnails of the libraries a
-deleted table took or a script's commit emptied are forgotten, a new
-field's basis is counted and the log lines that say a change was made are
-written only for a change the file holds (stored or unknown). A run left
+deleted table took or a script's commit emptied are forgotten and the
+log lines that say a change was made are written only for a change the
+file holds (stored or unknown). A run left
 by a panic is taken back the same way, its locks released and what it
 took of what waits put back, and so is one left by a panic as its accounts
 are decoded after it (`engine::file::unwound`); the store then counts as
