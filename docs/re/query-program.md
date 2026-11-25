@@ -1020,12 +1020,15 @@ missing indexes in key order and changes them in place, so no index it
 serves fails the check. An index held whole that does (keys out of order
 or one repeated) is read as if sorted, the records of a repeated key
 merged, and every lookup then answers as on the sorted index. A listed
-index is checked as it is read instead: a key that does not follow the
-last one in the read's direction (or lies outside the bound its page was
+index is checked as it is read instead, each page whole as it is fetched,
+before any of its keys is taken: a page whose keys do not each follow the
+one before in the read's direction (the first, the bound the page was
 asked from), a page with no key that says more follow, a page with more
-keys than asked for, or a listed key without an entry fails the program, so a broken source can neither repeat
-an entry, nor make a read loop, nor end one early as if the index ended
-there. The entry `ff 80` (long keys, above) is no value's key, so om-query
+keys than asked for, or a listed key without an entry fails the program,
+so a broken source can neither repeat an entry, nor make a read loop, nor
+end one early as if the index ended there (a source that says no more
+follow early, or leaves a key out, cannot be told from an index without
+it). The entry `ff 80` (long keys, above) is no value's key, so om-query
 leaves it out of every index it reads: no lookup, run, count or full read
 meets it, and each of its records is found under its cut key. No value's
 key starts with `ff`, so in an index in order it is the last entry, and an

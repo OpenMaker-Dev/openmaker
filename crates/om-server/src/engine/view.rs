@@ -137,11 +137,6 @@ pub struct Step<'v> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Forward,
-    #[allow(
-        dead_code,
-        reason = "part of a view's reads (docs/server-storage.md 5); no reader moved onto views \
-                  lists backward yet"
-    )]
     Backward,
 }
 

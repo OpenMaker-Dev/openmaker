@@ -70,6 +70,43 @@ pub(crate) fn broken(reason: &'static str) -> om_hbam::Error {
     }
 }
 
+/// Whether `keys`, a page a listing gave from `start`, are each past it in
+/// `direction` (at or past it when included) and in strictly increasing
+/// order (decreasing backward).
+pub(crate) fn page_in_order(
+    keys: &[Cow<'_, [u8]>],
+    start: Bound<&[u8]>,
+    direction: Direction,
+) -> bool {
+    let mut before: Option<&[u8]> = None;
+    keys.iter().all(|key| {
+        let in_order = match direction {
+            Direction::Forward => after(key, start) && before.is_none_or(|b| **key > *b),
+            Direction::Backward => before_bound(key, start) && before.is_none_or(|b| **key < *b),
+        };
+        before = Some(key);
+        in_order
+    })
+}
+
+/// Whether `key` lies at or after `low` (after it, excluded).
+fn after(key: &[u8], low: Bound<&[u8]>) -> bool {
+    match low {
+        Bound::Included(b) => key >= b,
+        Bound::Excluded(b) => key > b,
+        Bound::Unbounded => true,
+    }
+}
+
+/// Whether `key` lies at or before `high` (before it, excluded).
+fn before_bound(key: &[u8], high: Bound<&[u8]>) -> bool {
+    match high {
+        Bound::Included(b) => key <= b,
+        Bound::Excluded(b) => key < b,
+        Bound::Unbounded => true,
+    }
+}
+
 /// A listing of a node held whole that gives at most `cap` keys a page,
 /// so that a test's scans cross pages.
 #[cfg(test)]
