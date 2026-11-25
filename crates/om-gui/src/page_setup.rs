@@ -69,9 +69,16 @@ impl Settings {
                 2 => Orientation::Landscape,
                 _ => return Err("Unsupported page orientation".into()),
             };
-            let (left, top, right, bottom, printable_w, printable_h) = (
-                values[1], values[2], values[3], values[4], values[5], values[6],
-            );
+            let (left, top, right, bottom) = (values[1], values[2], values[3], values[4]);
+            // The rectangle is the upright sheet in either orientation, while
+            // the printable size is the page's own: a landscape US Letter
+            // stores 734 x 576 on the sheet -18, -18 to 594, 774 [O: Comm
+            // chunks FileMaker Pro 26 for macOS saved, #817]. Turned upright,
+            // it is checked against the sheet like a portrait one.
+            let (printable_w, printable_h) = match orientation {
+                Orientation::Portrait => (values[5], values[6]),
+                Orientation::Landscape => (values[6], values[5]),
+            };
             let (width, height) = (right - left, bottom - top);
             // The printable origin must lie inside the sheet. Printer insets
             // are validated but not substituted for fixed layout margins.
@@ -189,6 +196,22 @@ pub(crate) mod tests {
     /// 576 x 734 printable area, the printer's 18 / 40 / 18 / 18 margins.
     pub(crate) const STORED_LETTER: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x90\x00\x00\xc1\x90\x00\x00\x44\x14\x80\x00\x44\x41\x80\x00\x44\x10\x00\x00\x44\x37\x80\x00";
 
+    /// The same, landscape, from a Print Setup step FileMaker Pro 26 for
+    /// macOS saved: the sheet is still upright, and the printable size is
+    /// the page's own, 734 x 576 (#817).
+    const STORED_LETTER_LANDSCAPE: &[u8] = b"Comm\x00\x00\x00\x1d\x02\x3f\x80\x00\x00\xc1\x90\x00\x00\xc1\x90\x00\x00\x44\x14\x80\x00\x44\x41\x80\x00\x44\x37\x80\x00\x44\x10\x00\x00";
+
+    /// `format` (one `Comm` chunk first) turned landscape the way FileMaker
+    /// stores it: the orientation byte, and the printable size swapped.
+    pub(crate) fn landscape(format: &[u8]) -> Vec<u8> {
+        let mut bytes = format.to_vec();
+        bytes[8] = 2;
+        let (width, height) = (bytes[29..33].to_vec(), bytes[33..37].to_vec());
+        bytes[29..33].copy_from_slice(&height);
+        bytes[33..37].copy_from_slice(&width);
+        bytes
+    }
+
     #[test]
     fn page_setup_common_format_is_bounded_and_preserves_native_records() {
         let settings = Settings::restored(A4).unwrap();
@@ -206,6 +229,16 @@ pub(crate) mod tests {
             ),
             (612.0, 792.0, Orientation::Portrait)
         );
+        let stored = Settings::restored(STORED_LETTER_LANDSCAPE).unwrap();
+        assert_eq!(
+            (
+                stored.paper.width,
+                stored.paper.height,
+                stored.paper.orientation
+            ),
+            (612.0, 792.0, Orientation::Landscape)
+        );
+        assert_eq!(landscape(STORED_LETTER), STORED_LETTER_LANDSCAPE);
         for bad in [
             A4[..A4.len() - 1].to_vec(),
             {

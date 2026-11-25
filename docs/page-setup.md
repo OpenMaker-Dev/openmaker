@@ -54,24 +54,27 @@ FileMaker, which saves the choice in the file.
   open a hardware dialog or submit a job.
 
 The decoder accepts exactly one 29-byte `Comm` chunk: orientation 0/2, scale 1.0,
-finite paper rectangle and positive printable dimensions within the sheet. The
+finite paper rectangle and positive printable dimensions within the sheet,
+turned upright first for landscape. The
 step bounds the value to 1 MiB before reassembly, as opening a file bounds its
 stored setup, validates every chunk boundary and
 rejects missing/duplicate common chunks, invalid sizes/numbers, and scale other
 than 100%. Paper size is `(right-left, bottom-top)`; printable-origin offsets are
 validated but do not replace the printer's margins. The rectangle is interpreted
-as the unrotated sheet and orientation is applied once. The common chunk a
-FileMaker Pro 26 for macOS file stored at `[2, 87]` reads this way as US Letter
-portrait (the sheet -18, -18 to 594, 774 around a 576 x 734 printable area), so
-the big-endian float order holds for native bytes; landscape and other papers
-are still synthetic.
+as the unrotated sheet and orientation is applied once; the printable size is
+the page's own, so landscape stores it turned (script-steps.md 11.6). The
+common chunk a FileMaker Pro 26 for macOS file stored at `[2, 87]` reads this
+way as US Letter portrait (the sheet -18, -18 to 594, 774 around a 576 x 734
+printable area), and one a Print Setup step stored as US Letter landscape (the
+same sheet around 734 x 576), so the big-endian float order holds for native
+bytes; other papers are still synthetic.
 
 The tagged stream's big-endian u32 lengths follow the existing
 `om-scripts/examples/stored_specs.rs` decoder/re-encoder and
 `docs/re/script-steps.md` 11.0/11.6. Common f32 values use big-endian order, inferred
 from the Swap-stream convention and the existing BE paragraph-style f32 decoder
-in `om-layout/src/rich_text.rs`. One native comparison confirms it: the US
-Letter portrait chunk above. No native landscape or other paper was compared.
+in `om-layout/src/rich_text.rs`. Native chunks confirm it: the US Letter
+portrait and landscape chunks above. No other native paper was compared.
 Original key `87` bytes, including opaque `M_PM`, `M_PD`, `MMod`, printer names and
 unknown chunks, remain intact in the script codec and session source record. UI
 edits change the portable paper preference, not those source bytes. Undecoded
@@ -87,7 +90,9 @@ accept/reopen with Preview repagination. The existing Preview isolation test als
 checks cached-plan replacement, same-file/new-window inheritance and peer-file
 isolation while retaining its stale-range/reload-error checks. These use the
 existing synthetic report/provider and literal synthetic page-format bytes, and
-the decoder check also reads the one native US Letter `Comm` chunk.
+the decoder check also reads the two native US Letter `Comm` chunks, portrait and
+landscape. The synthetic landscape formats are turned the way FileMaker stores
+them, with the printable size swapped.
 
 A4 landscape produces five physical pages for the nine-record fixture; both
 Preview and PDF use that plan, including report page-number calculations. Existing
