@@ -34,6 +34,10 @@
 //! every key not decoded into a typed struct (reachable via [`KeyTree`]).
 //! Nothing is copied or rewritten, so [`HbamFile::as_bytes`] round-trips.
 //!
+//! Which paths of a tree are Design, Data or Access, the file's design
+//! objects and their revisions, and the comparison of two files' designs:
+//! [`design_paths`] (`docs/server-storage.md` sections 4 and 9).
+//!
 //! Written: a whole file from a key tree, in the shape of FileMaker's
 //! compacted copies ([`writer`], `docs/re/hbam-writer.md` 7.2). The nodes
 //! go in key order through [`writer::NodeWriter`], which writes the pages
@@ -44,6 +48,7 @@
 
 pub mod catalog;
 pub mod container;
+pub mod design_paths;
 pub mod error;
 pub mod field_options;
 pub mod record;

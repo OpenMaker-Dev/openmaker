@@ -249,7 +249,12 @@ text, then calculation slot 2 when `kCalculation` is set) [O shape, Med slots].
 `[17, 5, S, 5, K]` where K is the segment of `mDataKey`.
 `ScriptStep::MakeDataKey` allocates K as the next serial key in `[17, 5, S, 5]`
 (`DBCatalogItemList::MakeDataKey` -> `HBAbstractKey::GenerateSerialKey`) [O].
-Steps without data still get a key and UUIDs.
+Steps without data still get a key and UUIDs. `[17, 5, S, 5, 00]` holds a
+key string, its length then a key (`01 21` for key `21`): in the 66
+FileMaker Pro 26 starter files it is in each of the 198 scripts with step
+data and equals the highest data key there [O]; [I] the last issued data
+key, kept as a catalog keeps its last issued id `[cat, 1, 00]`
+(schema-path.md 5.1).
 
 Slot nodes are two-byte segments `[00 nn]` (`HBInt16Key(slot)`) [O]:
 
@@ -1059,7 +1064,11 @@ extracting pages), slot 6 u8 enable copying, slot 7 u8 screen reader,
 slot 8 u16 initial view (2 pages panel and page), slot 9 u16 page layout
 (1 single page), slot 10 u16 magnification (7 = 100%). Calculations: the
 XML `position` of each calculation is its slot (page from = 4, and the
-document metadata and passwords at the positions the XML gives). So slot 4
+document metadata and passwords at the positions the XML gives). The
+passwords to open and to control are taken to be the calculations of
+slots 7 and 8, beside the numbers of slots 7 and 8, as Create PDF's
+(12.2), whose slots 2-10 are these [I: no stored step with a password was
+compared]. So slot 4
 can hold both the print permission number (`03`) and the page-from
 calculation (`05`). A production step with Restore and All pages stores
 exactly that: the number 2 and the calculation `1`, with slots 8-10 =

@@ -43,12 +43,11 @@ use om_data::value_lists::{CatalogList, FieldSource, ListSource, OccurrenceSourc
 use om_data::{
     DataProvider, DatabaseSchema, FieldKind, SchemaField, SchemaFieldKind, Script, ScriptKind,
 };
+use om_hbam::design_paths::{self, is_stamp, Kind, Revision};
 use om_hbam::slot::uint_segment;
 use om_hbam::OwnedNode;
 use om_layout::{LayoutObject, ObjectKind, PartKind, Rect};
-use om_protocol::authoring::{
-    self as wire, catalog_revision, content_revision, is_stamp, status, Revision,
-};
+use om_protocol::authoring::{self as wire, status};
 use om_provider::{Authoring, AuthoringError, NativeProvider, ScriptDefinitions};
 use om_scripts::display::{Lookup, StepNames, MAX_PASTE_BYTES, MAX_PASTE_STEPS};
 use serde_json::{json, Value};
@@ -76,7 +75,7 @@ pub struct Service {
 }
 
 /// An open file, closed when dropped.
-struct Opened(NativeProvider);
+pub(crate) struct Opened(NativeProvider);
 
 impl Deref for Opened {
     type Target = NativeProvider;
@@ -136,12 +135,23 @@ struct TableFields {
 }
 
 /// The revision of a table's fields `[T, 3]` (none: an empty catalog), as
-/// the host computes it.
+/// the host computes it: the general form over the whole catalog
+/// (`om_hbam::design_paths`).
 fn fields_revision(catalog: Option<&OwnedNode>) -> Revision {
     match catalog {
-        Some(catalog) => catalog_revision(catalog),
-        None => catalog_revision(&OwnedNode::list(vec![3], Vec::new())),
+        Some(catalog) => design_paths::catalog_revision(catalog),
+        None => design_paths::catalog_revision(&OwnedNode::list(vec![3], Vec::new())),
     }
+}
+
+/// A script's revision, the edit token of its member `[17, 5, S]`.
+fn script_revision(definition: &OwnedNode) -> Revision {
+    design_paths::edit_token(Some(Kind::Script), definition)
+}
+
+/// A layout's revision, the edit token of its member `[4, 5, L]`.
+fn layout_revision(member: &OwnedNode) -> Revision {
+    design_paths::edit_token(Some(Kind::Layout), member)
 }
 
 fn scalar(field_type: FieldType) -> ScalarType {
@@ -194,27 +204,17 @@ fn refusal_error(refusal: Refusal, table: u64, file: &str) -> AuthorError {
 
 /// A revision as text.
 pub fn revision_text(revision: &Revision) -> String {
-    let hex: String = revision.iter().map(|b| format!("{b:02x}")).collect();
-    format!("sha256:{hex}")
+    design_paths::revision_text(revision)
 }
 
 /// A revision from text.
 fn parse_revision(text: &str) -> Result<Revision, AuthorError> {
-    let invalid = || {
+    design_paths::parse_revision(text).ok_or_else(|| {
         AuthorError::new(
             ErrorKind::InvalidRequest,
             format!("“{text}” is not a revision such as get_script returns (sha256:…)."),
         )
-    };
-    let hex = text.strip_prefix("sha256:").ok_or_else(invalid)?;
-    if hex.len() != 64 || !hex.is_ascii() {
-        return Err(invalid());
-    }
-    let mut revision = [0u8; 32];
-    for (i, byte) in revision.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| invalid())?;
-    }
-    Ok(revision)
+    })
 }
 
 /// The keys of a definition every edit keeps as stored: all but the step
@@ -489,6 +489,10 @@ pub fn handle_offline(command: &Command) -> Option<Value> {
     match command {
         Command::Commands => Some(api::response(command.name(), Ok(catalog::describe()))),
         Command::CreateFile(params) => Some(api::response(command.name(), create_file(params))),
+        Command::CompareDesigns(params) => Some(api::response(
+            command.name(),
+            crate::designs::compare_designs(params),
+        )),
         _ => None,
     }
 }
@@ -682,6 +686,7 @@ impl Service {
         match command {
             Command::Commands => Ok(catalog::describe()),
             Command::CreateFile(params) => create_file(params),
+            Command::CompareDesigns(params) => crate::designs::compare_designs(params),
             Command::Capabilities => self.capabilities(),
             Command::Inspect(params) => self.inspect(params),
             Command::GetScript(params) => self.get_script(params),
@@ -716,15 +721,19 @@ impl Service {
             Command::GetSecurity => self.get_security(),
             Command::GetValueLists(_) => self.get_value_lists(),
             Command::CompleteCalculation(params) => self.complete_calculation(params),
+            Command::FindUses(params) => self.find_uses(params),
+            Command::BrokenReferences(params) => self.broken_references(params),
+            Command::UnusedObjects(params) => self.unused_objects(params),
+            Command::ScriptCalls(params) => self.script_calls(params),
         }
     }
 
     /// The file's name as references give it.
-    fn file(&self) -> String {
+    pub(crate) fn file(&self) -> String {
         om_data::file_refs::hosted_name(&self.target.file)
     }
 
-    fn open(&self) -> Result<Opened, AuthorError> {
+    pub(crate) fn open(&self) -> Result<Opened, AuthorError> {
         let mut provider = NativeProvider::new(self.target.tls.clone());
         let mut connection = self.target.connection();
         let opened = provider.open_metadata(&connection);
@@ -746,7 +755,7 @@ impl Service {
         Ok(Opened(provider))
     }
 
-    fn read_error(e: om_data::DataError) -> AuthorError {
+    pub(crate) fn read_error(e: om_data::DataError) -> AuthorError {
         AuthorError::new(ErrorKind::Connection, e.to_string())
     }
 
@@ -921,7 +930,7 @@ impl Service {
             value["full_access"] = json!(script.runs_with_full_access());
             value["steps"] = json!(script.steps.len());
             if let Some(definition) = definitions.definitions.get(&script.id) {
-                value["revision"] = json!(revision_text(&content_revision(definition)));
+                value["revision"] = json!(revision_text(&script_revision(definition)));
             }
         }
         value
@@ -1527,7 +1536,7 @@ impl Service {
         let count = |fidelity: &str| steps.iter().filter(|s| s.fidelity == fidelity).count();
         let mut out = json!({
             "script": self.script_json(script, &loaded.definitions),
-            "revision": revision_text(&content_revision(loaded.definition())),
+            "revision": revision_text(&script_revision(loaded.definition())),
             "source_format": SOURCE_FORMAT,
             "source": text,
             "steps": steps,
@@ -1565,7 +1574,7 @@ impl Service {
 
     fn validate(&mut self, params: &EditParams) -> Result<Value, AuthorError> {
         let loaded = self.load(&params.target())?;
-        let current = content_revision(loaded.definition());
+        let current = script_revision(loaded.definition());
         let script = self.script_json(loaded.script(), &loaded.definitions);
         match source::compile(
             loaded.script(),
@@ -1574,7 +1583,7 @@ impl Service {
             &params.source,
         ) {
             Ok(compiled) => {
-                let after = content_revision(&compiled.definition);
+                let after = script_revision(&compiled.definition);
                 if let Some(expected) = &params.expected_revision {
                     let expected = parse_revision(expected)?;
                     if expected != current && after != current {
@@ -1606,8 +1615,8 @@ impl Service {
     fn plan(&mut self, params: &EditParams) -> Result<Value, AuthorError> {
         let mut loaded = self.load(&params.target())?;
         let compiled = Self::compile(&loaded, &params.source)?;
-        let current = content_revision(loaded.definition());
-        let after = content_revision(&compiled.definition);
+        let current = script_revision(loaded.definition());
+        let after = script_revision(&compiled.definition);
         let expected = params
             .expected_revision
             .as_deref()
@@ -1672,8 +1681,8 @@ impl Service {
         let compiled = Self::compile(&loaded, &params.source)?;
         let id = loaded.id;
         let label = reference("script", id, &self.file());
-        let current = content_revision(loaded.definition());
-        let after = content_revision(&compiled.definition);
+        let current = script_revision(loaded.definition());
+        let after = script_revision(&compiled.definition);
         if let Some(planned) = expected_after.filter(|planned| *planned != after) {
             return Err(AuthorError::new(
                 ErrorKind::Conflict,
@@ -1785,7 +1794,7 @@ impl Service {
                 format!("The host reported {label} saved, but a new connection does not find it."),
             ));
         };
-        let found = content_revision(definition);
+        let found = script_revision(definition);
         let kept = preserved_keys(base);
         let kept_as_stored = preserved_keys(definition) == kept
             && base
@@ -3875,7 +3884,7 @@ impl Service {
                 .and_then(|s| s.table_id)
         });
         Ok(LoadedLayout {
-            revision: catalog_revision(&member),
+            revision: layout_revision(&member),
             opened,
             id,
             name,
@@ -4359,7 +4368,7 @@ impl Service {
             Ok(names) => names,
             Err(e) => return Ok(unverified(Self::read_error(e))),
         };
-        let found = catalog_revision(&member);
+        let found = layout_revision(&member);
         let decoded = layout_placement::decode(&member);
         let label_object = Some(placed.label_object).filter(|&k| k != 0);
         let field_object = decoded
@@ -4558,7 +4567,7 @@ impl Service {
             .find(|s| s.id == id)
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        let current = content_revision(&definitions.definitions[&id]);
+        let current = script_revision(&definitions.definitions[&id]);
         if let Some(expected) = expected.filter(|expected| *expected != current) {
             return Err(AuthorError::new(
                 ErrorKind::Conflict,
@@ -4661,7 +4670,7 @@ fn layout_request_uuid(expected: &Revision, occurrence: u64, like: u64, name: &s
             OwnedNode::leaf(vec![4], name.as_bytes().to_vec()),
         ],
     );
-    let hash = content_revision(&request);
+    let hash = design_paths::script_form_revision(&request);
     let mut uuid: [u8; 16] = hash[..16].try_into().expect("16 bytes");
     uuid[6] = (uuid[6] & 0x0f) | 0x50;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
@@ -4678,7 +4687,7 @@ fn duplicate_request_uuid(expected: &Revision, layout: u64) -> [u8; 16] {
             OwnedNode::leaf(vec![2], layout.to_be_bytes().to_vec()),
         ],
     );
-    let hash = content_revision(&request);
+    let hash = design_paths::script_form_revision(&request);
     let mut uuid: [u8; 16] = hash[..16].try_into().expect("16 bytes");
     uuid[6] = (uuid[6] & 0x0f) | 0x50;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
@@ -4688,7 +4697,7 @@ fn duplicate_request_uuid(expected: &Revision, layout: u64) -> [u8; 16] {
 /// The layout catalog index's revision (`[4, 1]`): what create_layout's
 /// `expected_revision` names.
 fn layouts_revision(index: Option<&OwnedNode>) -> Revision {
-    catalog_revision(index.unwrap_or(&OwnedNode::list(vec![1], Vec::new())))
+    design_paths::catalog_revision(index.unwrap_or(&OwnedNode::list(vec![1], Vec::new())))
 }
 
 fn authoring_error(

@@ -72,16 +72,17 @@ use om_hbam::slot::uint_segment;
 use om_hbam::tree::memory;
 use om_hbam::{serial, Catalog, KeySegment, OwnedNode};
 use om_protocol::authoring::{
-    self, catalog_revision, content_revision, status, ChangeParts, CreateField, CreateLayout,
-    Created, DeleteLayout, DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame,
-    Framed, LayoutCreated, LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton,
-    PlaceButtonStep, PlaceField, PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced,
-    Reply, Request, Revision, SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES,
-    MOD_ACCOUNT, MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT,
-    OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT,
-    OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON,
-    OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    self, catalog_revision, content_revision, layout_revision, legacy_catalog_revision,
+    legacy_content_revision, status, ChangeParts, CreateField, CreateLayout, Created, DeleteLayout,
+    DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame, Framed, LayoutCreated,
+    LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep, PlaceField,
+    PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request, Revision,
+    SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT,
+    MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT,
+    OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
+    OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP,
+    OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS, OP_SAVE,
+    OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
@@ -800,13 +801,19 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
     }
     let revision = content_revision(&request.definition);
     let current_revision = content_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        content_revision,
+        legacy_content_revision,
+    );
     if current_revision == revision {
         return Reply::Replaced(Replaced {
             changed: false,
-            revision,
+            revision: answer(older, &current, content_revision, legacy_content_revision),
         });
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         return Reply::Refused {
             status: status::CONFLICT,
             message: format!("Script {id} was changed since the revision the edit was made to."),
@@ -851,7 +858,12 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
     );
     Reply::Replaced(Replaced {
         changed: true,
-        revision,
+        revision: answer(
+            older,
+            &request.definition,
+            content_revision,
+            legacy_content_revision,
+        ),
     })
 }
 
@@ -924,10 +936,13 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
         );
     }
     let current = ed.node(&[&table, &[FIELDS]]).map(Cow::into_owned);
-    let current_revision = catalog_revision(
-        current
-            .as_ref()
-            .unwrap_or(&OwnedNode::list(vec![FIELDS], Vec::new())),
+    let empty = OwnedNode::list(vec![FIELDS], Vec::new());
+    let current_revision = catalog_revision(current.as_ref().unwrap_or(&empty));
+    let (expected, older) = expected_now(
+        &request.expected,
+        current.as_ref().unwrap_or(&empty),
+        catalog_revision,
+        legacy_catalog_revision,
     );
     let conflict = || Reply::Refused {
         status: status::CONFLICT,
@@ -942,15 +957,20 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
         .and_then(|catalog| field_catalog::same_name(catalog, &field.name))
     {
         // Made by an earlier request whose answer was lost: nothing to do.
-        if field_catalog::is_made_by(member, &field) && current_revision != request.expected {
+        if field_catalog::is_made_by(member, &field) && current_revision != expected {
             return Reply::Created(Created {
                 changed: false,
                 field: id,
-                revision: current_revision,
+                revision: answer(
+                    older,
+                    current.as_ref().unwrap_or(&empty),
+                    catalog_revision,
+                    legacy_catalog_revision,
+                ),
             });
         }
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         return conflict();
     }
     let planned = match field_catalog::plan(current.as_ref(), &field) {
@@ -994,7 +1014,7 @@ fn create_field(ed: &mut Editor<'_, '_, '_>, request: &CreateField) -> Reply {
     if let Some(index) = catalog.child(&[1]).cloned() {
         catalog.set_child(ed.stamped(index, &time));
     }
-    let revision = catalog_revision(&catalog);
+    let revision = answer(older, &catalog, catalog_revision, legacy_catalog_revision);
     ed.write(catalog_path.clone(), Some(catalog));
     ed.tx.add_field_basis_once_stored(table, planned.field);
     let account = ed.account;
@@ -1045,6 +1065,8 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
         );
     }
     let like = (request.like != 0).then_some(request.like);
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
         let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
@@ -1064,11 +1086,16 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
                 );
             }
         }
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
+        older = was_older;
         let Some((theme, width)) = layout_catalog::model(layouts, like) else {
             return refused(
                 status::UNSUPPORTED,
@@ -1089,10 +1116,10 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
             return Reply::LayoutCreated(LayoutCreated {
                 changed: false,
                 layout: om_hbam::slot::be_uint(&made.segment).unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
             });
         }
-        if current_revision != request.expected {
+        if current_revision != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: "The file's layouts were changed since the revision the request was \
@@ -1132,7 +1159,7 @@ fn create_layout(ed: &mut Editor<'_, '_, '_>, request: &CreateLayout) -> Reply {
     let mut member = ed.stamped(member, &time);
     member.children.retain(|c| c.segment != MOD_COUNT);
     let index = ed.stamped(planned.index, &time);
-    let revision = catalog_revision(&index);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
     ed.write(member_path, Some(member));
     ed.write(index_path, Some(index));
@@ -1195,7 +1222,13 @@ fn field_control(ed: &mut Editor<'_, '_, '_>, request: &FieldControl) -> Reply {
         };
         // At another revision, `edit_objects` answers: already applied, or
         // a conflict (306), even when the object is gone since.
-        if catalog_revision(&member) == request.expected {
+        let (expected, _) = expected_now(
+            &request.expected,
+            &member,
+            layout_revision,
+            legacy_catalog_revision,
+        );
+        if layout_revision(&member) == expected {
             if let Err((status, why)) = control_facts(&schema, &member, request) {
                 return refused(status, why);
             }
@@ -1497,10 +1530,19 @@ where
             format!("The file has no layout {id}."),
         ));
     };
-    let current_revision = catalog_revision(&current);
-    if current_revision != edit.expected {
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &edit.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
         if (edit.already)(&current, &ed.schema()) {
-            return Ok((false, current_revision));
+            return Ok((
+                false,
+                answer(older, &current, layout_revision, legacy_catalog_revision),
+            ));
         }
         return Err(Reply::Refused {
             status: status::CONFLICT,
@@ -1518,7 +1560,7 @@ where
     }
     let time = ed.time();
     let member = ed.stamped(planned.member, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
@@ -1552,6 +1594,8 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
         let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(status::UNSUPPORTED, "The file has no layout catalog [4].");
@@ -1563,7 +1607,14 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
                 format!("The file has no layout {id}."),
             );
         };
-        let current = catalog_revision(member);
+        let current = layout_revision(member);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            member,
+            layout_revision,
+            legacy_catalog_revision,
+        );
+        older = was_older;
         let planned =
             layout_catalog::plan_setup(layouts, id, &request.name, request.flags, request.hidden);
         // A layout that holds the setup already answers it unchanged: an
@@ -1571,10 +1622,10 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
         if planned.as_ref().is_ok_and(|p| !p.changed) {
             return Reply::Framed(Framed {
                 changed: false,
-                revision: current,
+                revision: answer(older, member, layout_revision, legacy_catalog_revision),
             });
         }
-        if current != request.expected {
+        if current != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: format!(
@@ -1620,7 +1671,7 @@ fn layout_setup(ed: &mut Editor<'_, '_, '_>, request: &LayoutSetup) -> Reply {
     let time = ed.time();
     let member = ed.stamped(planned.member, &time);
     let index = ed.stamped(planned.index, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     ed.write(member_path, Some(member));
     ed.write(index_path, Some(index));
     let account = ed.account;
@@ -1656,6 +1707,8 @@ fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> 
         vec![VALUE_LIST_MEMBERS],
         uint_segment(id),
     ];
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let planned = {
         let Some(catalog) = ed.node(&[&[VALUE_LISTS]]) else {
             return refused(
@@ -1675,19 +1728,31 @@ fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> 
                 return refused(code, refusal.to_string());
             }
         };
-        let current = catalog_revision(&planned.member);
+        let stored_member = catalog.at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)]);
+        let stored = stored_member.map(catalog_revision);
+        let (expected, was_older) = stored_member.map_or((request.expected, false), |member| {
+            expected_now(
+                &request.expected,
+                member,
+                catalog_revision,
+                legacy_catalog_revision,
+            )
+        });
+        older = was_older;
         // A list that holds the values already answers unchanged: an
         // earlier sending's, whose answer was lost, or the same values.
         if !planned.changed {
             return Reply::Framed(Framed {
                 changed: false,
-                revision: current,
+                revision: answer(
+                    older,
+                    &planned.member,
+                    catalog_revision,
+                    legacy_catalog_revision,
+                ),
             });
         }
-        let stored = catalog
-            .at(&[&[VALUE_LIST_MEMBERS], &uint_segment(id)])
-            .map(catalog_revision);
-        if stored != Some(request.expected) {
+        if stored != Some(expected) {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: format!(
@@ -1722,7 +1787,7 @@ fn value_list_values(ed: &mut Editor<'_, '_, '_>, request: &ValueListValues) -> 
     let time = ed.time();
     let member = ed.stamped(planned.member, &time);
     let index = ed.stamped(planned.index, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, catalog_revision, legacy_catalog_revision);
     ed.write(member_path, Some(member));
     ed.write(index_path, Some(index));
     let account = ed.account;
@@ -1781,7 +1846,13 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
     // The field: one of the layout's occurrence's table with a value
     // Browse edits as text in an edit box.
     let derived = ed.tx.derived();
@@ -1821,7 +1892,7 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
             ),
         );
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some((field_object, label_object)) =
             layout_placement::already_placed(&current, &placement)
@@ -1830,7 +1901,7 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
                 changed: false,
                 field_object,
                 label_object: label_object.unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -1866,7 +1937,7 @@ fn place_field(ed: &mut Editor<'_, '_, '_>, request: &PlaceField) -> Reply {
         }
     }
     let member = ed.stamped(member, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
@@ -1912,6 +1983,8 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
         );
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let (duplicated, items) = {
         let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
@@ -1920,11 +1993,16 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
             );
         };
         let layouts: &OwnedNode = &layouts;
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
+        older = was_older;
         // Made by an earlier sending of this request, whose answer was
         // lost: its UUID is on the copy. Nothing to do.
         if let Some(made) = layout_catalog::members(layouts).iter().find(|m| {
@@ -1933,7 +2011,7 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
             return Reply::LayoutCreated(LayoutCreated {
                 changed: false,
                 layout: om_hbam::slot::be_uint(&made.segment).unwrap_or(0),
-                revision: current_revision,
+                revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
             });
         }
         if layouts
@@ -1945,7 +2023,7 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
                 format!("The file has no layout {}.", request.layout),
             );
         }
-        if current_revision != request.expected {
+        if current_revision != expected {
             return Reply::Refused {
                 status: status::CONFLICT,
                 message: "The file's layouts were changed since the revision the request was \
@@ -2053,7 +2131,7 @@ fn duplicate_layout(ed: &mut Editor<'_, '_, '_>, request: &DuplicateLayout) -> R
         None => member.children.retain(|c| c.segment != MOD_COUNT),
     }
     let index = ed.stamped(planned.index, &time);
-    let revision = catalog_revision(&index);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], planned.key.clone()];
     ed.write(member_path, Some(member));
     ed.write(index_path, Some(index));
@@ -2092,6 +2170,8 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
     }
     let index_path = vec![vec![LAYOUTS], vec![INDEX]];
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], uint_segment(id)];
+    // Whether the request names the older token form, to answer in it.
+    let older;
     let (planned, released) = {
         let Some(layouts) = ed.node(&[&[LAYOUTS]]) else {
             return refused(
@@ -2100,21 +2180,26 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
             );
         };
         let layouts: &OwnedNode = &layouts;
-        let current_revision = catalog_revision(
-            layouts
-                .child(&[INDEX])
-                .unwrap_or(&OwnedNode::list(vec![INDEX], Vec::new())),
+        let empty_index = OwnedNode::list(vec![INDEX], Vec::new());
+        let index_now = layouts.child(&[INDEX]).unwrap_or(&empty_index);
+        let current_revision = catalog_revision(index_now);
+        let (expected, was_older) = expected_now(
+            &request.expected,
+            index_now,
+            catalog_revision,
+            legacy_catalog_revision,
         );
+        older = was_older;
         let exists = layouts
             .at(&[&[LAYOUT_MEMBERS], &uint_segment(id)])
             .is_some();
-        if current_revision != request.expected {
+        if current_revision != expected {
             // Deleted by an earlier sending whose answer was lost: layout
             // ids are not issued again, so a missing one stays deleted.
             if !exists {
                 return Reply::Deleted(Deleted {
                     changed: false,
-                    revision: current_revision,
+                    revision: answer(older, index_now, catalog_revision, legacy_catalog_revision),
                 });
             }
             return Reply::Refused {
@@ -2177,7 +2262,7 @@ fn delete_layout(ed: &mut Editor<'_, '_, '_>, request: &DeleteLayout) -> Reply {
     }
     let time = ed.time();
     let index = ed.stamped(planned.index, &time);
-    let revision = catalog_revision(&index);
+    let revision = answer(older, &index, catalog_revision, legacy_catalog_revision);
     ed.write(member_path, None);
     ed.write(index_path, Some(index));
     if let Some(released) = released {
@@ -2233,15 +2318,21 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
-    if current_revision != request.expected {
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(text_object) = layout_placement::already_placed_text(&current, &text) {
             return Reply::Placed(Placed {
                 changed: false,
                 field_object: text_object,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2277,7 +2368,7 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
         record.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
     }
     let member = ed.stamped(member, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     // The text itself stays out of the log.
@@ -2364,7 +2455,13 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
     // The fields: of the occurrence's table, with values Browse edits as
     // text in an edit box.
     let derived = ed.tx.derived();
@@ -2406,14 +2503,14 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
             );
         }
     }
-    if current_revision != request.expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some((portal, _)) = layout_placement::already_placed_portal(&current, &placement) {
             return Reply::Placed(Placed {
                 changed: false,
                 field_object: portal,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2463,7 +2560,7 @@ fn place_portal(ed: &mut Editor<'_, '_, '_>, request: &PlacePortal) -> Reply {
         }
     }
     let member = ed.stamped(member, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
@@ -2607,7 +2704,9 @@ fn place_planned_button(
             format!("The file has no layout {id}."),
         );
     };
-    let current_revision = catalog_revision(&current);
+    let current_revision = layout_revision(&current);
+    let (expected, older) =
+        expected_now(expected, &current, layout_revision, legacy_catalog_revision);
     // A script the step names: one of the file's, not a folder or
     // separator.
     if let Some(key) = step.script_key() {
@@ -2634,14 +2733,14 @@ fn place_planned_button(
         }
     }
     let action = om_scripts::step_name(step.id()).unwrap_or("a step");
-    if current_revision != *expected {
+    if current_revision != expected {
         // Placed by an earlier request whose answer was lost: nothing to do.
         if let Some(button) = layout_placement::already_placed_button(&current, placement) {
             return Reply::Placed(Placed {
                 changed: false,
                 field_object: button,
                 label_object: 0,
-                revision: current_revision,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
             });
         }
         return Reply::Refused {
@@ -2668,7 +2767,7 @@ fn place_planned_button(
         record.set_child(OwnedNode::leaf(vec![SOURCE_ID], ed.uuid()));
     }
     let member = ed.stamped(member, &time);
-    let revision = catalog_revision(&member);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
     ed.write(member_path.clone(), Some(member));
     let account = ed.account;
     ed.once_stored(
@@ -2686,6 +2785,42 @@ fn place_planned_button(
         label_object: 0,
         revision,
     })
+}
+
+/// The revision a request names, read as the current content's edit
+/// token when it is the token a client one version behind computes for
+/// that content: before split values were hashed as the value they join to
+/// (`om_hbam::design_paths`; docs/authoring.md, "Revisions"); and whether
+/// it was, so the answer is given in that form ([`answer`]). Any other
+/// revision is kept as sent, so a stale one is still a conflict.
+fn expected_now(
+    expected: &Revision,
+    current: &OwnedNode,
+    token: fn(&OwnedNode) -> Revision,
+    legacy: fn(&OwnedNode) -> Revision,
+) -> (Revision, bool) {
+    let now = token(current);
+    if *expected != now && *expected == legacy(current) {
+        (now, true)
+    } else {
+        (*expected, false)
+    }
+}
+
+/// A revision in the form the request was made in: the older form when
+/// its token was in that form ([`expected_now`]), so a client always reads
+/// back the token it computes itself.
+fn answer(
+    older: bool,
+    node: &OwnedNode,
+    token: fn(&OwnedNode) -> Revision,
+    legacy: fn(&OwnedNode) -> Revision,
+) -> Revision {
+    if older {
+        legacy(node)
+    } else {
+        token(node)
+    }
 }
 
 #[cfg(test)]
