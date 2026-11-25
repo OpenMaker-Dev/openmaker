@@ -626,6 +626,17 @@ fn built() -> (OwnedNode, Vec<Vec<u8>>) {
         &[&[0x11], &[1], &[0xfc, 0x02], &[0x7e]],
         leaf(&[], b"under a stamp"),
     );
+    // A font with its family and PostScript names (layout-model.md 8).
+    root.put(
+        &[&[0x19], &[5], &[0x00, 0x01]],
+        list(
+            &[],
+            vec![
+                leaf(&[0x03], &om_scsu::encode_scsu("HelveticaNeue-Light")),
+                leaf(&[0x10], &om_scsu::encode_scsu("Helvetica Neue")),
+            ],
+        ),
+    );
     (root, vec![pw, odbc])
 }
 
@@ -640,12 +651,13 @@ fn every_piece_is_in_one_object_and_moves_only_its_own_class() {
         sweep(object, &secrets, &mut stats, classify);
     }
     println!("{stats:?}");
-    // Three scripts, a layout, a field, and the catalogs of scripts,
-    // layouts and fields; a design revision for those without step data
-    // or an unidentified piece: the field and its catalog, and the
-    // layouts' catalog.
-    assert_eq!(stats.objects, 8);
-    assert_eq!(stats.with_revision, 3);
+    // Three scripts, a layout, a field, a font, and the catalogs of
+    // scripts, layouts, fields and fonts; a design revision for those
+    // without step data or an unidentified piece: the field and its
+    // catalog, the font (its PostScript name a Design piece) and its
+    // catalog, and the layouts' catalog.
+    assert_eq!(stats.objects, 10);
+    assert_eq!(stats.with_revision, 5);
     for (op, class) in [
         ("value", "Design"),
         ("value", "Data"),

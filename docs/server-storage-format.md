@@ -21,7 +21,7 @@ cover only the copy, and what follows a copy's hash is not read.
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 8 | `OMSTATE` followed by a zero byte |
-| 8 | 2 | format version, 1 |
+| 8 | 2 | format version, 3 (versions 1 and 2 are read too, 1.2) |
 | 10 | 2 | zero (reserved) |
 | 12 | 4 | body length `L` |
 | 16 | 8 | copy number |
@@ -38,9 +38,13 @@ hash matches and whose version is newer than the server reads makes the
 open fail ("newer format"): the server does not pass over it as damaged
 and fall back to an older copy.
 
-### 1.2 The body, version 1
+### 1.2 The body, version 3
 
-`L` is 122.
+`L` is 139. Version 2 is the same body without its last two fields, the
+mark (`L` is 130); it is read with no mark. Version 1 is version 2's body
+without the cut count (`L` is 122); it is read with a cut count of 0 and
+no mark. The next copies an open writes are of version 3 (1.3, "A format
+change").
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -53,13 +57,16 @@ and fall back to an older copy.
 | 57 | 8 | how many log segments are in use |
 | 65 | 8 | marker: the index of the last entry of the last flushed batch (section 6.3) |
 | 73 | 32 | marker: that entry's hash |
-| 105 | 8 | marker: the highest committed index the server has heard of |
+| 105 | 8 | marker: the committed position: the last entry of this server's log known to be committed, never past the marker's index (3.8) |
 | 113 | 1 | 1 while the server is in repair (section 7.5), otherwise 0 |
 | 114 | 8 | the repair's required end, or zero |
+| 122 | 8 | the cut count: how many times the log was cut back over entries the marker covered (section 3.9); it never goes down |
+| 130 | 1 | the mark: 1 from an open that passed over a copy until the update that settles it, otherwise 0 (1.3) |
+| 131 | 8 | with the mark, the marker's index in the copy that open read; otherwise zero |
 
-A flag byte other than 0 or 1, an id or required end that is not zero
-where its flag is 0, a reserved field that is not zero, or a segment
-number and count whose sum overflows, makes the copy malformed.
+A flag byte other than 0 or 1, an id, required end or marked index that
+is not zero where its flag is 0, a reserved field that is not zero, or a
+segment number and count whose sum overflows, makes the copy malformed.
 
 **The segments in use** are a contiguous run of numbered files: the log
 retires segments from its front and cuts them from its back
@@ -72,7 +79,8 @@ log.
 
 - **Creation.** Both copies, numbered 1 and 2 and holding the same values
   (start count 1, term 0, no vote, segments from 1 with none in use,
-  marker index 0 with a zero hash, not in repair), are written to
+  marker index 0 with a zero hash, cut count 0, not in repair), are
+  written to
   `state.new`, which is flushed, renamed to `state`, and the store folder
   flushed. So `state` exists only whole. A `state.new` left by a creation
   that did not finish is removed first. A store folder whose `state` is
@@ -82,22 +90,38 @@ log.
   neither its index nor its committed position, and keeps the hash when
   the index is the same - writes the next copy number into the slot that
   does not hold the current copy and flushes the file (`fdatasync`): one
-  write of 178 bytes in place and one flush. `state` is rewritten once
+  write of 195 bytes in place and one flush. `state` is rewritten once
   per commit batch (server-storage.md 6.3), so this is never a new file
   and a rename.
-- **Any other update** - the term, the vote, the segments, the repair
-  record and its required end, a marker that goes back - is written
-  twice before it counts: as the next number into the other slot,
+- **Any other update** - the term, the vote, the segments, the cut count,
+  the repair record and its required end, the mark settled, a marker that
+  goes back - is written twice before it counts: as the next number into the other slot,
   flushed, then as the number after into the first slot, flushed. What
   such an update confirmed is then in both slots.
 - **An update that changes nothing** writes nothing.
 - **An open** flushes the store folder, reads the two slots one at a
   time, and takes the valid copy with the highest number (slot 0 between
-  equal numbers). It writes that copy back into its own slot and flushes
-  it; then it writes the same values with the start count raised by one
-  as the next number into the other slot and flushes, and as the number
-  after into the first slot and flushes, before it returns. So an open
-  costs three writes, three file flushes and a folder flush.
+  equal numbers). It writes that copy back into its own slot, as the very
+  bytes it read, and flushes it; then it writes the same values with the
+  start count raised by one as the next number into the other slot and
+  flushes, and as the number after into the first slot and flushes,
+  before it returns. So an open costs three writes, three file flushes
+  and a folder flush.
+  - **A copy passed over** (the other slot gave no valid copy: damaged,
+    or not readable) may have held a newer marker, which the open cannot
+    tell (server-storage.md 6.1). The two copies it writes then carry the
+    **mark**, with the marker's index of the copy it read (or that copy's
+    own mark, when it carried one, unchanged). The first of them goes into
+    the slot passed over, and only after its flush is the copy read
+    written over: one durable copy exists at every point, and from the
+    moment the first lands, every later open reads a copy that carries the
+    mark, or passes over a slot again and marks it again. A mark is kept,
+    however whole the two copies are, until an update settles it: an
+    update that clears it, written to both slots. Only an open sets a
+    mark; an update that sets or changes one is refused. Who settles it is
+    the log (the marker moved over a whole batch after it, 3.6) or the
+    store, once it has recorded that the last batch confirmed may be lost
+    (section 7; server-storage.md 6.12).
   - The folder flush makes `state`'s own name durable, in case an earlier
     creation stopped between its rename and its folder flush.
   - The write back is there because an earlier process may have stopped
@@ -105,7 +129,17 @@ log.
     cache can then show a copy the device does not hold
     (server-storage.md 6.12). Only once the copy read is on the device
     does the open write over the other slot.
-  - A slot the device fails to read is passed over like an invalid one.
+  - **A format change** never rewrites a copy in place in the new form.
+    The write back is the bytes read, so a write cut short there leaves
+    the copy as it was, of whatever version; the new form reaches the
+    disk only as new copies, through the two writes that follow (next
+    number into the other slot, flushed, then the first slot, flushed).
+    Version 1 and 2 copies become version 3 this way at the first open by
+    this code. Every later version keeps this rule.
+  - A slot the device fails to read is read again, up to three times in
+    all; one that fails every time is passed over like an invalid one,
+    and written over before the open returns, so that its copy is lost:
+    with a marker advance in it, that advance (1.5).
   - An open cut short may have written a raised start count that no start
     used; the next open raises from it. So start counts can skip values,
     and are never issued twice.
@@ -122,8 +156,8 @@ log.
 
 ### 1.4 Cost and bounds
 
-- A copy is at most one slot, 4096 bytes; version 1 uses 178 of them.
-- A marker advance is one 178-byte write in place and one flush of the
+- A copy is at most one slot, 4096 bytes; version 3 uses 195 of them.
+- A marker advance is one 195-byte write in place and one flush of the
   file. Any other update is two such writes and two flushes. An open is
   three writes, three file flushes and one folder flush. Before it, the
   server makes sure of the store folder itself (`Fs::create_root`): it
@@ -142,9 +176,14 @@ any time:
 
 - **No start count is issued twice**: the raised count is in both slots
   before an open returns.
-- **The term and vote, the segment run, the repair record and its
-  required end** are in both slots once their update has returned, so
-  losing either slot loses none of them.
+- **The term and vote, the segment run, the cut count, the repair record
+  and its required end** are in both slots once their update has
+  returned, so losing either slot loses none of them. An update of both
+  slots counts from the moment the first slot's flush returns: an open
+  takes the higher-numbered copy and writes it to both slots.
+- **That a copy was passed over** is not forgotten: the mark is in the
+  slot passed over before anything is written over the copy read, and in
+  both slots once the open returns, until an update settles it.
 - **The marker** goes back by at most one advance: an advance is in one
   slot, and the other holds the copy before it. Recovery re-establishes
   the lost advance's index and hash from the log, whose entries through
@@ -153,6 +192,9 @@ any time:
   marker carries is not in the log: on one server it equals the durable
   position, so it comes back with the index; a member of a cluster
   learns it again from the leader (server-storage.md 6.7 step 4, 7.1).
+  Until it has, the committed position recorded is not to be trusted as
+  high as it was: the log refuses to cut until it is given one again
+  (section 3.9).
 - **Damage to both slots, or one slot lost together with the other
   failing to read**: no copy, and the open fails.
 
@@ -160,8 +202,15 @@ What is not covered:
 
 - **One slot lost and the log's tail damaged at once**: the marker goes
   back one advance and the log no longer holds the entries of that
-  advance whole, so the batch it confirmed is lost without a sign. This
-  is a double fault; a single one of them is found.
+  advance whole, so the batch it confirmed may be lost. The open finds
+  the mark, and no whole batch after the later of the marker and the
+  checkpoint's entry; before it settles the mark it records, in the
+  incident journal, that the last batch confirmed may be lost (section
+  7, `LastBatch`), and every open that succeeds reports that until it is
+  acknowledged. An open that cannot get that far (the log does not reach
+  the marker read, for one) records nothing and fails.
+  What the batch held is not known. This is a double fault; a single one
+  of them is found.
 - **One slot changed on the device while a write to the other is cut
   short**: this can leave neither slot with a valid copy, and then the
   server does not start (server-storage.md 6.12); a cut that leaves the
@@ -175,6 +224,15 @@ What is not covered:
 The seeded tests (`crates/om-store/src/state/tests.rs`) check each of
 these: every open against the copies each slot can hold, and every
 confirmed value against what the open returns.
+
+The design asks for one thing more that the format does not have yet
+(server-storage.md 7.5): a repair record whose required end is not yet
+known, for a cluster member whose start passed over a copy and found no
+whole batch after the marker. It waits for replication
+([issue #673](https://github.com/OpenMaker-Dev/openmaker/issues/673), step
+3); on
+one server the mark is settled by the store's record of the possible loss
+instead (section 7).
 
 ## 2. Pages and trees
 
@@ -616,6 +674,689 @@ the path. For the root path it is exact: yes exactly when an entry after
 - Keys longer than 1,024 bytes are compared and listed with reads of
   their overflow pages, as far as the comparison or the child's key goes
   (2.6).
+
+## 3. The log
+
+`<store>/log/` (server-storage.md section 6.3), read and written by
+`om_store::log`. Every entry is first written here, in batches; the
+marker in `state` (section 1.2) records which of them are durable, and the
+cut count there which batches are still part of the log. All the hashes
+are SHA-256. The log owns the store's `state`, and with it the store
+folder's lock, for as long as it is open: one store has one log.
+
+### 3.1 Files
+
+- **Segments** are files named by their number as 16 lowercase hex digits
+  (`log/0000000000000001`). The segments in use are the contiguous run
+  `state` lists (section 1.2); entries are written only to the last of
+  them.
+- **A segment's size** is fixed when it is made, 64 MiB by default
+  (`Config::segment_size`, from 512 bytes to 1 GiB), and recorded in its
+  header; segments made earlier keep theirs when the setting changes. Its
+  space is taken when it is made (`File::allocate`), so writes into it
+  never need more space.
+- **The spare** is the next segment, made ahead of need (3.7): its number
+  follows the run, its space is taken and flushed, its name is durable,
+  and `state` does not list it. It holds only zeros until it is used.
+- **Any other segment file** `state` does not list - a segment retired or
+  cut by a process that stopped before removing it, or a spare - is
+  removed by the next open. Files whose names are not segment numbers are
+  left alone.
+
+A segment holds its header (3.2) and then batches (3.3), one after the
+other, each a batch header followed by its entries (3.4). What follows the
+last batch is zeros, or batches written before a cut (3.9), which carry an
+older cut count and are never part of the log again.
+
+### 3.2 A segment's header
+
+At offset 0, 128 bytes:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMLOGSG` followed by a zero byte |
+| 8 | 2 | format version, 1 |
+| 10 | 6 | zero |
+| 16 | 16 | the store's id: the server id in `state` |
+| 32 | 8 | the segment's number, as in its name |
+| 40 | 8 | the segment's size in bytes |
+| 48 | 8 | the index of its first entry (of the next entry, while it holds none) |
+| 56 | 8 | the term of the entry before that one, 0 before the first |
+| 64 | 32 | the hash of the entry before that one, zeros before the first |
+| 96 | 32 | SHA-256 of bytes 0 to 96 |
+
+A header is **valid** when it begins with the mark, its hash matches, its
+reserved bytes are zero, its first index is from 1 to the largest index
+(3.4) and its size is within bounds. A valid header of a newer version
+makes the open fail ("newer format") rather than count as damage. A listed
+segment's header must also name this store and the number in the file's
+name, and the file must be at least as long as the size; the segments'
+first indexes must not go back along the run. Two segments may have the
+same first index: a cut back to a segment's first entry leaves it empty
+(3.9), and the next one begins where it would have.
+
+### 3.3 A batch
+
+The entries one batch flush writes to one segment. Its header, 136 bytes:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMBATCH` followed by a zero byte |
+| 8 | 2 | format version, 1 (the segment's) |
+| 10 | 2 | zero |
+| 12 | 4 | entry count, at least 1 |
+| 16 | 8 | the index of its first entry |
+| 24 | 8 | the bytes its entries take |
+| 32 | 8 | the cut count `state` held when the batch was written (1.2) |
+| 40 | 32 | the hash of the entry before its first, which that entry chains from |
+| 72 | 32 | the hash of its last entry |
+| 104 | 32 | SHA-256 of bytes 0 to 104 |
+
+A batch header is valid when it begins with the mark, its hash matches,
+its version is the segment's, the reserved bytes are zero, the count is not
+0, the first index is from 1 to the largest index, the length leaves at
+least 64 bytes for each entry, and the batch ends within the segment. A
+batch is **whole** when its header is valid, all `count` of its entries
+follow it whole and chained (3.4), they fill exactly its length, and the
+last one has the hash the header names. The header names the last hash so
+that a batch whose write was cut short, or one whose header survived an
+overwrite that did not, is never taken for whole, even when every entry
+read under it chains. It names the cut count so that a batch written before
+a cut is never taken for part of the log after it, even when its entries
+chain from entries appended again after the cut, byte for byte (3.9). It
+names the entry before its first so that a header that does not continue
+the chain is passed over without anything of its entries being read.
+
+**Segment boundaries.** An entry never spans segments. A batch flush
+writes the entries that fit in what is left of the current segment as one
+batch there, and the rest as a second batch at the start of the next
+segment, after its header. So an append's payload is bounded by what an
+empty segment holds (`Config::max_payload`, 16 MiB by default; it must
+fit in a segment with its headers, and be at most the format's bound,
+3.4), and a batch never spans more than two segments: an append that would
+make it do so is refused (`LogError::BatchFull`) until the batch is
+flushed. While the log keeps room at a segment's end (3.7), an entry that
+fits an empty segment alone but not beside that room is refused
+(`LogError::BesideKeptRoom`, naming its size and the room kept), even
+with space on the disk for a new segment: with the store's default 64 MiB
+segments and 16 MiB payloads that cannot happen (the room is at most
+54,050 bytes), but a configuration whose largest payload nearly fills a
+segment meets it while groups are open.
+
+### 3.4 An entry
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | index, counted from 1 |
+| 8 | 8 | term |
+| 16 | 8 | the file it belongs to (0: none); not interpreted by the log |
+| 24 | 2 | kind (server-storage.md 6.3); not interpreted by the log |
+| 26 | 2 | zero |
+| 28 | 4 | payload length `P` |
+| 32 | `P` | payload |
+| 32 + `P` | 32 | SHA-256 of the previous entry's hash followed by bytes 0 to 32 + `P` |
+
+The previous entry's hash of entry 1 is 32 zero bytes. An entry is
+**whole and chained** when its index is the one expected, its reserved
+bytes are zero, it fits in its batch and segment, and its hash matches.
+Terms do not go down along the log (the append refuses a lower one).
+
+**Bounds the format sets, whatever the configuration.** A payload is at
+most 64 MiB, and an index at most 2^54 - 1. An entry's first 8 bytes are
+its index, and the batch mark `OMBATCH\0` read as a little-endian number
+is about 2.03 * 10^16, above the bound: so no valid entry begins with the
+mark, and a walk never takes an entry for a batch header (3.5, rule 2) or
+reads past an entry to rule one out. The bound also leaves the index after
+every entry representable. An entry whose fixed fields declare more is not
+valid, and nothing is read for its payload: the fixed fields are checked
+before anything else is read. An entry written under a larger
+`Config::max_payload` than the current one stays readable within the
+format's bound. The bound holds wherever an index enters the log: the
+append refuses an index past it, a segment header or batch header that
+names one is not valid, and an open refuses a start or a marker past it.
+
+### 3.5 Walking the log
+
+Opening, reading and cutting all walk the log the same way, from the start
+of a listed segment, expecting the index its header names and chaining
+from the hash it names. At each place, in this order:
+
+1. **The next segment.** If the next listed segment's header names the
+   index expected next, with the hash and term of the entry just read, the
+   writer moved to it at this point: the walk continues at its first
+   batch, and nothing more of the current segment is read.
+2. **Inside a batch** that has entries left: a valid batch header whose
+   first index is the one expected, and that names the entry just read
+   as the one before it, ends the batch (a cut, 3.9, and the batch written
+   after it); otherwise the next entry must be whole and chained, or the
+   walk ends there.
+3. **Between batches**: a valid batch header whose first index is the one
+   expected, and that names the entry just read as the one before it,
+   begins a batch; otherwise the walk ends.
+
+The walk itself takes batches of any cut count. Up to the marker that is
+right: what the marker covers was written and flushed, and is chained to
+the marker's hash, whatever cut count its batch carries. After the marker,
+only batches of the current cut count count (3.6).
+
+**What the walk reads.** Each place the walk decides on is read once,
+into one buffer, in steps that each go only as far as the decision at hand
+needs, and nothing ahead of it (3.11, "Whatever is checked is what is
+used"):
+
+- where a batch may begin (rule 3, and rule 2's header): nothing when
+  fewer bytes are left in the segment than a header and one entry of no
+  payload (200); else the 8-byte mark; only if it is there, the rest of
+  the header's start, to byte 72 (version, count, first index, length,
+  cut count, the previous hash); only if those name the index expected and
+  the entry just read, and the batch fits in the segment, the rest, to
+  byte 136, and the header's hash. At an open, a header of another cut
+  count after the firm position is settled by its start alone (3.6);
+- where an entry is expected (rule 2): its 32 fixed bytes, which also hold
+  a header's mark if a header begins there (the rest of the header is then
+  read as above, into the same buffer); then, once the fixed fields are
+  checked, the rest of the entry, once. Its hash is checked over the bytes
+  the fields were decoded from, and every field returned comes from them.
+  Where the batch has no room left for an entry, only a header can be
+  there, and only its mark is read first.
+
+So a place the device cannot read is met only by a decision that needs it,
+and a read error is that decision's: no error in bytes the walk does not
+need (a stale payload, the rest of a batch it has judged, the bytes past a
+whole batch that a header's mark already rules out) can fail a decision
+about the records before them.
+
+**Anchored walks.** A walk that begins before the entry the log was
+opened from (the start, a checkpoint's entry) reaches it by the framing
+alone: an entry's fixed fields (its index must be the one expected, its
+length within the batch), a batch header's start and its own hash, the
+lengths of entries and batches; not the chain, since nothing before the
+start is needed after it. A batch whose last entry comes before the start
+is crossed by its header when its entries do not frame or its framing does
+not end where the header says: the header, checked by its own hash, says
+where the batch ends, the hash of its last entry and so the index the next
+batch must name, which is all the walk needs from it (the term of that last
+entry it does not say; the next entry's bytes, or the next segment's header,
+which must continue from that hash, give it). Inside the start's own batch
+the entries are framed one by one, since the start's end must be placed.
+The start's entry takes the start's hash and term, whatever its bytes say,
+and the entry after it is checked by the chain from that hash: a batch that
+begins there names the start's index and hash, which anchors it without
+the start's own bytes. On the way, the entries before the start are still
+checked by the chain from the segment's header, through each batch header,
+as far as it holds; where it stops is noted (an entry that does not frame
+in a batch crossed by its header, too), and a read the device fails of an
+entry's bytes past its fixed fields is noted the same way rather than
+ending the walk. The open, a read and a cut walk so; so does accepting a
+loss (6.2), which refuses when the framing breaks before the start where
+no header crosses it (a batch's mark or header, an entry in the start's
+own batch), so that where the start's successor begins cannot be
+established (`LogError::FramingBroken`).
+
+**Reading** (`Log::read`) walks from the segment that holds the first
+entry asked for, through the entries before it in that segment (anchored
+at the start when the entry asked for comes after it), and returns the
+durable entries from it on; a walk that ends before the durable entry is
+damage, reported to the reader. An entry larger than 64 KiB is read into a
+buffer of its own, which becomes the payload returned, so a read holds at
+most one copy of a payload.
+
+### 3.6 Opening
+
+`Log::open` (server-storage.md 6.7 step 3) is given `state` and the entry
+the checkpoint it starts from covers (index, term and hash; index 0 for the
+start of the log). The **firm** position is the later of that entry and
+the marker.
+
+1. Every segment `state` lists is opened and its header checked (3.2).
+   One missing, or with no valid header, is damage, whatever the others
+   hold.
+2. The walk starts at the last segment whose first index is at or before
+   the entry after the start. A log whose first segment begins later has a
+   gap, which is damage. The entry at the start's index, and the entry at
+   the marker's index, wherever the walk meets them (a segment header's
+   previous hash counts), must have the hashes those name, or the log is
+   damaged.
+3. Entries up to the firm position are taken one by one: each after the
+   start must be whole and chained. A walk that ends before the marker's
+   index, or before the start's, is damage. Entries before the start in
+   the first segment walked are read through by their framing alone, since
+   the log keeps no index of where entries are (3.5, "Anchored walks"):
+   the checkpoint covers them, and damage to them does not stop the open
+   unless it breaks the framing. They are still checked by the chain from
+   that segment's header, and the first place it stops holding, bytes that
+   do not check or a read the device fails past an entry's fixed fields,
+   is reported (`Opened::before_start`: the segment, the offset, the first
+   entry from which it does not hold, and whether the read failed; and
+   `Opened::walked_before_start`, the segment so walked): an open
+   from a checkpoint before that place could not replay past it. Nothing
+   is given up for it. Segments listed wholly before that segment are not
+   read at open beyond their headers (step 1); damage in them is found when
+   they are read, or by the background check of server-storage.md 6.12
+   ("Slow damage"), which is not built.
+4. After the firm position, an entry counts only once its whole batch has
+   been read, found whole (3.3), and found to carry the cut count `state`
+   holds. What its header settles is settled before anything else is
+   read: of a batch with an older count, no entry past the firm position
+   is read at all. The first batch that is not whole, or carries an older
+   count, and everything after it, is **cut**; so is anything after a walk
+   that ended.
+5. **Where the log ends** after the firm position is decided from what
+   must be there, reading only what decides it (3.5, "What the walk
+   reads"). After a whole batch, the log ends there when fewer bytes are
+   left in the segment than a header and one entry of no payload, or when
+   the bytes that would hold the next header's start can be read and do
+   not begin a valid header that follows the entry just read and carries
+   the current cut count (a wrong mark settles it in 8 bytes). Inside a
+   batch, the next entry's own bytes decide, or a header's. Only when the
+   bytes a decision needs cannot be read is the end unreadable.
+6. After the firm position, a read the device fails ends the log **for
+   this open only** (`Opened::unreadable_end`: the segment, the offset of
+   the read that failed and the index expected there). Nothing past it is
+   cut, dropped or written over, and the cut count stays: the log may
+   continue past it, and the caller can tell that from an end the open
+   found. The log refuses appends (`LogError::EndUnreadable`) until it is
+   opened again, or until a cut (3.9) or giving it up (3.9, "Giving up an
+   unreadable end") discards what may follow. An open that can read it
+   takes what follows as any whole tail of the current cut count. At or
+   before the firm position a read the device fails is
+   `LogError::Unreadable`, which the caller tells apart from damage.
+
+On damage the open returns it (`LogError::Damaged`: what, the segment, the
+offset and the index expected there) and writes nothing: nothing is cut,
+and the marker and the segment run stand. It hands `state` back
+(`OpenFailed`), so that the caller can record what it decides
+(server-storage.md 6.12): in repair on a cluster, stop on a single server.
+It hands `state` back on every other error too, so that the open can be
+tried again in the same process; a `state` whose own write failed refuses
+every update until it is opened again.
+
+Every batch kept after the firm position is **written again** as the
+walk goes, with synchronous writes, from the buffers the walk verified it
+in (3.11): its entries as they are read, held up to 1 MiB and written in
+runs, and its header last, once the batch is found whole and current
+(header and entries in one write when they were held together). Nothing is
+read for it a second time. An earlier process may have written the batch
+and stopped without a power failure, or seen a flush of it fail, leaving it
+whole in the system's cache only: a flush would find nothing to do and
+vouch for bytes the device does not hold. A batch that is not kept has its
+header never written, and the entries of it already written are the bytes
+the walk read there, so the next walk finds it as this one did. Entries at
+or before the firm position are not written again: what the marker covers
+was written by a synchronous write that returned, and what the start
+covers is in a checkpoint, which covers only published entries, published
+only once a marker covered them (server-storage.md 6.5 and 6.7); the
+marker is behind the start only when a lost copy of `state` took it back
+(1.5), after those entries were on the device. Then, in this order:
+
+1. `log/` is made if it is missing, and the store folder flushed, on every
+   open: an earlier open may have made `log/` and failed to flush, and a
+   later one that finds it must not take its name for durable. The same
+   rule holds for every name the log makes: its folder is flushed after
+   it, whoever made it and whenever (3.7).
+2. One `state` update moves the marker to the last entry kept (its
+   committed position unchanged) and drops the listed segments after the
+   one the log ends in (none when the log ends at an unreadable place): a
+   marker advance in one slot when only the marker moves, both slots
+   otherwise.
+3. Segment files `state` does not list are removed, and `log/` is flushed,
+   on every open.
+
+A crash at any point leaves a log that the next open reads to the same end:
+what is written again during the walk is what the walk found, as it found
+it; until step 2 the marker is where it was, and the dropped segments are
+after the end; step 3 removes only what `state` no longer lists. Nothing
+after the end is changed at the open (what was written again of a batch
+that is not kept is the bytes the walk read there, and never its header):
+a torn batch stays torn, and a batch of an older cut count stays older,
+however a later crash settles the system's cache, so nothing there decides
+the end differently. The next batch is written where the log ends.
+
+**A tail that comes back is harmless.** A later open keeps what follows
+an earlier open's end when it finds it whole, chained and of the current
+cut count. Only an unreadable end can give that: a torn batch cannot
+become whole (the device holds a subset of what was written), and a batch
+of an older count stays older. Such a batch was written by this server
+after the marker the earlier open ended at:
+
+- On a single server nothing after the marker was confirmed, unless the
+  marker itself went back with a lost copy of `state` (1.5); then the
+  batch is one that was confirmed, and getting it back is what is wanted.
+  An open that ended at an unreadable place takes no appends, so nothing
+  is written over such a batch before an open can read it.
+- On a member of a cluster, a log longer than it last reported is an
+  ordinary case for the leader: its consistency check keeps the entries
+  that match, and has the follower cut those that do not (7.1), which the
+  cut count then keeps out for good.
+
+**What appends leave behind.** Appends write at the end the open found.
+After an open that ended at an unreadable place they are refused, so they
+never write over a batch a lost marker may have confirmed; after a cut
+that moved the end before that place (which raises the cut count), after
+what may follow it was given up (which lists a fresh segment, 3.9), or
+after an open that read past it, they go on. What remains past a new batch
+is never read as part of the log unless it truly continues it: a batch
+counts after the marker only if its header names the entry just read as
+the one before its first (a SHA-256 hash, so an old batch cannot name an
+entry written after it) and carries the current cut count, and an entry is
+read only inside such a batch. Old bytes inside a new batch's span are
+overwritten, or end the walk where they do not chain.
+
+A part of a batch written to a new segment whose `state` update was lost is
+not kept: the segment is not listed, so it is not part of the log. Its
+entries were never reported durable.
+
+The open returns the committed position the marker recorded as
+**unconfirmed** (`Opened::recorded_committed`): a lost or unreadable copy
+of `state` can have taken it back one advance (1.5).
+
+### 3.7 Making the next segment
+
+`Log::prepare`, called by the caller ahead of need, and by an append that
+needs the next segment and finds it missing:
+
+1. create the file (or open the one a refused attempt left), take its space
+   (`File::allocate`), flush it;
+2. flush the folder, so that its name is durable before `state` can list
+   it;
+3. open it for synchronous writes.
+
+A disk too full for it refuses the append (`LogError::NoSpace`) before
+anything of the entry is kept, and so does an allocation that fails part
+way; neither stops the log, since nothing listed changed, and a later call
+finishes the file: it opens the file the refused call made, and flushes it
+and the folder as if it had made it. A failed flush stops the log. A
+segment number whose run `state` could not list (the run's end past the
+largest number, 1.2) is refused before anything is made, so that no batch
+is written into a segment `state` would then refuse. A crash at any point
+leaves an unlisted file, which the next open removes.
+
+**Room kept at a segment's end.** The caller can ask the log to keep a
+number of bytes free at the end of the segment entries go to
+(`Log::keep`). An entry appended with `Log::append` leaves them free: one
+that would reach into them goes to the next segment instead, as one that
+does not fit at all does, and is refused for the disk like any such
+entry when the next segment cannot be made (`LogError::NoSpace`, nothing
+kept). An entry appended with `Log::append_kept` may take them. The log
+writes nothing for the room: it is a rule on where entries go, so a
+segment can end short by up to that many bytes. The store keeps the room
+the entries that end its open groups need (6.3); with no group open it
+keeps none. An entry that cannot fit in an empty segment beside the room
+kept is refused (`LogError::BesideKeptRoom`), so that a caller can tell it
+from an entry that cannot be right.
+
+### 3.8 A batch flush
+
+`Log::flush_batch` writes the open batch (3.3), every batch carrying the
+current cut count:
+
+1. the entries that fit in the current segment, as one batch, with one
+   synchronous write after the last batch there;
+2. the rest, if any, as one synchronous write at offset 0 of the spare:
+   its header (first index: the batch's first entry there; previous hash
+   and term: the entry before) followed by the second batch;
+3. one `state` update: the marker (the last entry's index and hash, and the
+   committed position, which never goes down) and, when step 2 ran, the
+   run with the spare added. The marker alone is a marker advance (one
+   write and one flush of `state`); with the run, both slots.
+
+A synchronous write is on the device when it returns (`O_DSYNC` on Linux;
+elsewhere each write is followed by `sync_data`), so that it is the log's
+flush: steps 1 and 2 are durable before step 3 begins, and a failed write
+is reported by the write itself. The entries become durable when step 3
+returns. A batch that stays in one segment costs one synchronous write and
+one write and flush of `state`; one that reaches the next segment costs two
+synchronous writes and both slots of `state`, two writes and two flushes.
+
+| A crash | leaves |
+|---|---|
+| before or during step 1 | the old marker; the batch absent, torn, or (if the write landed whole) whole after the marker, kept by the next open |
+| during step 2 | the same, for the part in the current segment; the spare unlisted, removed by the next open |
+| during step 3 | the old copy of `state` or the new one: the batch is durable on the device either way, and the next open moves the marker over it if the copy is the old one (a part in the spare is lost with the old copy, 3.6) |
+| after step 3 | the batch durable |
+
+Any failure stops the log. An entry the failed call wrote may be found
+whole at the next open; the failed call reported nothing durable.
+
+`Log::set_committed` records a higher committed position on its own: a
+marker advance in `state`. Giving a committed position, through either
+call, confirms it for cuts (3.9).
+
+**The committed position is bounded by the log's own entries.** What a
+caller gives is the last entry of this log known to be committed: on a
+single server the last entry of the flush; on a cluster the lower of the
+leader's committed position and the last entry of this log known to match
+the leader's (Raft's rule for a follower's commit index). `flush_batch`
+refuses one past the last entry it makes durable, and `set_committed` one
+past the durable entry, with nothing written and the log going on. The
+bound matters because a cut is refused at or before the committed
+position: a follower that recorded its leader's committed position while
+its own log held stale entries from before it (never committed, from an
+old term) would refuse, for good, the cut that removes them; and a
+position past the log's end would protect entries the log does not hold
+while letting a cut after it remove what lies between. So every `state`
+update keeps the committed position at or before the marker's index, when
+the copy it starts from does: a flush and `set_committed` by the bound; a
+cut lowers the marker only to the entry before an index past the
+committed position; an open, giving up and retiring move the marker
+forward or leave it; the first open of a version 1 copy writes its values
+unchanged. A copy this log did not write may hold a committed position
+past its marker: the open keeps it as it is, nothing repairs it, and the
+cut guard protects every entry through it. With the durable entry at 6
+and a recorded committed position of 7, `set_committed(6)` confirms and 7
+stays; a cut from 7 or before is refused, and a cut from 8 finds nothing
+to remove.
+
+### 3.9 A cut
+
+`Log::cut` removes the entries from an index on (server-storage.md 7.1).
+
+**What it refuses**, with nothing changed: every cut until the caller has
+given a committed position since the log was opened
+(`LogError::CommittedUnconfirmed`), because the one the marker recorded
+can be one advance behind (1.5); then an index at or before the committed
+position recorded (3.8), at or before the entry the log was opened from,
+or at or before the one before the oldest entry its last retirement still
+needed, which are all committed; and an index before the first entry the
+log holds. On a single server nothing cuts; on a cluster the caller learns
+the committed position from the current leader before it cuts.
+
+Entries of the open batch are dropped in memory. When the marker covers
+entries that are cut:
+
+1. the walk finds the first cut entry: the place the log will continue
+   from is its batch's header when it is its batch's first entry, else the
+   entry itself;
+2. one `state` update, written to both slots, lowers the marker to the
+   entry before it, raises the cut count by one and drops the listed
+   segments after the one that holds it. **The cut is done from the moment
+   the first slot's flush returns**: an open takes that copy (1.3);
+3. the files of the dropped segments, and of the spare if segments were
+   dropped (its number changed), are removed, and `log/` is flushed, on
+   every cut.
+
+Nothing is written to the segments. The batches written before the cut
+stay where they were, after the lowered marker, and carry the old cut
+count, so no walk takes them for part of the log again (3.6), even when
+the cut entries are appended again, byte for byte, and the batch after
+them chains from them. Appends continue from the place found in step 1:
+the next batch is written over it, and a walk then meets that batch's
+header where the cut entry was, which ends the batch the cut entry was in
+(3.5 rule 2).
+
+| A crash | leaves |
+|---|---|
+| before step 2 | the old marker, cut count and run; nothing was cut |
+| during step 2, before the first slot's flush returns | the old copy of `state`, or the new one if its write landed: nothing cut, or the cut done |
+| after the first slot's flush returns | the cut done: the next open reads the new copy, writes it to both slots, ends the log at the entry before the cut and removes the dropped segments' files. Unless that slot, the only one with the new copy, is lost or cannot be read before that open: the open then takes the old copy, and the cut is undone, as one slot lost costs the update it held alone (1.5) |
+| after step 2 | the cut done; dropped files still there are removed by the next open |
+
+**What it returns** (`CutDone`) says what it did: the last entry left, how
+many entries of the open batch were dropped, how many durable entries were
+cut, the cut count `state` recorded (none when nothing was written), the
+unreadable end it discarded what may follow, if the log had one, the fresh
+segment it listed, and the segment files it removed. A cut that finds
+nothing at or after its index changes nothing and says so.
+
+**A log that ends at an unreadable place** (3.6) has no durable entry past
+its end, and takes no appends. A cut at or before its durable entry is the
+cut above: the log then ends before the place, the batch that follows the
+new end carries an older cut count, and appends go on from the new end. A
+cut from the entry after the durable one gives up what may follow the
+place, as below; it is judged by the same refusals as any cut, and once a
+committed position is confirmed it always passes them (the committed
+position is at or before the durable entry, 3.8). A cut from an index
+further on removes nothing, as on any log that holds nothing there, and
+the log still ends unreadable: a cut never removes anything before its
+index.
+
+**After a cut of durable entries that ends the log before a place that
+failed to read** (whether the place was given up behind a fresh segment,
+which the cut drops, or the cut was the first thing done about it), what
+is certain is that nothing written before that cut is part of the log
+again: it carries an older cut count. The place itself is not settled.
+Appends continue in that segment from the cut. When it has room for the
+next batch, batches are written over the place in time, with synchronous
+writes like every batch; when it has too little, the writer starts the
+next segment (3.3), and walks move to it before they reach the old range
+(3.5, rule 1). Wherever a later walk still needs bytes at the place, an
+open that cannot read them at or before the marker fails
+`LogError::Unreadable`, as for any place, and one whose end falls on them
+ends unreadable again, and it is given up again.
+
+**Giving up an unreadable end** (`Log::give_up_unreadable_end`, and a cut
+from the entry after the durable one of a log that ends at an unreadable
+place) discards whatever may follow the place, for good, whatever an open
+can read there later: it carries an older cut count. Raising the cut count
+alone would not do: the next open
+would still read the bytes after the last entry to decide whether a batch
+begins there, and fail on the same place. So the log continues in a fresh
+segment that a walk moves to from the last entry, by rule 1 of 3.5, before
+it reads anything more of the segment it ended in:
+
+1. the next segment is made as in 3.7, and its header, naming the entry
+   after the last verified one as its first and that entry's hash and term
+   as the previous ones, is written with a synchronous write;
+2. one `state` update, written to both slots, lists it and raises the cut
+   count by one; the marker stays at the last verified entry. **It is
+   done from the moment the first slot's flush returns**, as a cut is.
+
+Appends then go to the fresh segment, and walks read nothing more of the
+segment the log ended in past the last verified entry, until a later cut
+of durable entries drops the fresh segment and takes the log back into
+that segment (above, "After a cut of durable entries"). The operation is
+refused, with nothing written, when the log does not end at
+an unreadable place, when the entry the caller names (index and hash) is
+not the last one the open verified, and when `state` lists segments after
+the one the log ends in. No write of this log leaves that. Every `state`
+update keeps the marker's entry in the last listed segment, or just before
+its first entry: a batch flush lists a segment only with the marker in it
+(3.8); a cut keeps the run to the segment that holds the place it cuts at;
+an open moves the marker to the entry it ends at and keeps the run to the
+segment that holds that end; retiring never drops the last segment (3.10);
+giving up lists one that begins right after the marker. A lost copy of
+`state` goes back to an older copy, made under the same rule. So a walk is
+in the last listed segment once it has passed the marker, and an open can
+end unreadable only there. A disk too full for the segment refuses it as it
+refuses an append (`LogError::NoSpace`, 3.7). It needs no committed
+position: it removes nothing at or before the durable entry
+(server-storage.md 6.3).
+
+| A crash | leaves |
+|---|---|
+| before step 2 | the old copy of `state`: nothing given up; the fresh segment is unlisted, removed by the next open, which ends at the unreadable place again |
+| during step 2, before the first slot's flush returns | the old copy, or the new one if its write landed: nothing given up, or given up |
+| after the first slot's flush returns | given up, unless that slot is lost or cannot be read before the next open (1.5) |
+
+### 3.10 Retiring
+
+`Log::retire` is given the oldest entry still needed (the entry after the
+oldest kept checkpoint, or older for another server, server-storage.md 6.7
+and 7.5). It retires, from the front, every segment whose next segment
+begins at or before that entry, never the last:
+
+1. one `state` update, written to both slots, drops them from the run;
+2. their files are removed and the folder flushed.
+
+A crash between the steps leaves unlisted files, removed by the next open;
+`state` never lists a segment that is gone. No cut reaches back before the
+oldest entry needed afterwards.
+
+### 3.11 Faults and bounds
+
+- **What is read back is never made durable by a flush alone.** After a
+  flush fails the system can drop the unwritten bytes and still show them
+  from its cache; a later flush, by this process or another, finds nothing
+  to do and succeeds. So what must become durable is written again by
+  this process with a synchronous write, and only that write's success
+  counts. Where it applies:
+  - the tail an open keeps after the firm position is written again, from
+    the buffers the walk verified it in, before the marker moves over it;
+    what is at or before the firm position is on the device already (3.6);
+  - `state`'s open writes the copy it chose back, as the bytes it read,
+    before it writes over the other slot (1.3);
+  - every batch and segment header is written with synchronous writes, so
+    nothing the log writes waits on a flush;
+  - `Log::prepare` may find a file a refused call of this log made; its
+    pending writes were never dropped, since a failed flush stops the log,
+    and it is flushed after it is finished. An open removes such files, so
+    no later process uses one;
+  - segment headers are read back at an open and never flushed by it:
+    they were written synchronously before their segment was listed;
+  - for folders, the same rule is a flush of the folder after every
+    change the log makes and at every open, whoever made the change and
+    whenever (3.6, 3.7, 3.9, 3.10).
+- **Whatever is checked is what is used.** A range of a file is read once
+  into memory, and every decision about it (hashes, counts, lengths, the
+  fields returned to the caller) and every write-back of it uses that
+  buffer; nothing is read a second time to be acted on. A second read can
+  return other bytes than the first (a cache that dropped what a failed
+  flush left, a device that misreads), and bytes that were not checked are
+  not known. Every read of the log and of `state`:
+  - the walk (3.5), for an open, a read and a cut: each place once, in
+    steps that each read only bytes not read before; a header's fields
+    and hash, and an entry's fields, hash and payload, from one buffer.
+    `Log::read` returns the fields and payloads of that buffer;
+  - the open's write-back of the tail: the walk's buffers (3.6);
+  - segment headers at an open: each read once, 128 bytes, checked and
+    decoded from them, and not read again: the walk starts after them, from
+    the header decoded at the open;
+  - a cut's walk to its first cut entry is the walk above; the cut writes
+    only `state`. Giving up an unreadable end reads nothing: it uses the
+    last entry the open verified;
+  - `Log::prepare` reads nothing of a file it finds;
+  - `state`'s open reads each slot once (again only after a read that
+    failed, which gave no bytes), and decodes the copy it chooses, and
+    writes it back, from that buffer (1.3).
+- **After a failed write, flush or `state` update** the log refuses every
+  call (`LogError::Poisoned`): what reached the device is unknown, the
+  failed flush is never retried, and the store stops and opens again
+  (server-storage.md 6.12). The refusals of 3.7 are the exceptions: they
+  touch only the unlisted spare. A `state` update `state` refuses writes
+  nothing to `state`; it stops the log when the call had already written
+  to a segment (a batch flush, giving up), since what reached the segment
+  is then not recorded and the log's memory no longer matches it. Calls
+  that write nothing before their update (`Log::set_committed`, a flush of
+  an empty batch, `Log::update_state`, a cut, a refused `Log::prepare`) go
+  on after a refusal. A segment number `state` could not list is refused
+  by `Log::prepare` before anything is written (3.7); a copy number at its
+  limit is refused only at the update.
+- **Everything the log reads is checked before it is used**: headers by
+  their hashes, lengths against the batch, the segment and the format's
+  bounds (3.4), entries by the chain. No length read from disk makes the
+  log hold more than one record in memory, a payload of at most 64 MiB or
+  a header, besides what an open holds of a batch it writes again: at most
+  1 MiB of its entries and one more entry (3.6).
+- **One owner.** The log owns `state` and the store folder's lock from its
+  open until it is dropped (`Log::into_state` hands `state` back). Every
+  call that writes checks that the lock is still held, so a log of a
+  process that has stopped writes nothing. The other fields of `state`
+  (the term and vote, the repair record) change through
+  `Log::update_state`, which refuses to touch the segment run, the marker
+  and the cut count.
+- **The open batch** is at most what is left of the current segment and one
+  more segment.
+- Every listed segment is kept open while the log is.
 
 ## 4. The page file
 
@@ -1221,6 +1962,47 @@ rebuilt for them when those entries are applied again (4.7).
   carry it, and recovery and followers reserve exactly that.
   `Reservation::extend` adds to a reservation whose units ran out (the
   apply that ran out changed nothing).
+- **Holds for groups** (server-storage.md 6.9). Before the entry that
+  opens a group is applied, the store holds the room for the entry that
+  will end it (`PageFile::hold`): `entry_bound` of that entry's
+  store-tree edits, the group's rows and index rows deleted and the last
+  entry's position written; for a staged group, the session row of the
+  operation its close may complete, with a reply of the largest size
+  (65,535 bytes); for a new file, its catalog rows with a name and a page
+  0 of the largest size, and the table room of its tree's new name. The
+  bound is at the store tree's height when the group opens, plus one: an
+  ending entry that finds that tree taller takes what it needs past the
+  hold as any entry extends its reservation, from free pages and the
+  reserve, and can be refused as full on a disk with neither, the same
+  kind of limit as the close's below. Before a staged group's part is applied, the
+  store holds, for the close that will apply it, the pages section 5.8
+  says. Holds are set aside as a reservation's pages are, judged against
+  the same floor and grown for the same way, but kept past the entry,
+  counted in `Space::groups` and recorded in the group's row. The entry
+  that ends groups (a close, a publication, a discard, an `empty` entry
+  for every open group) takes what they hold as its reservation
+  (`PageFile::reserve_held`, which the budget of pages waiting for a
+  checkpoint judges as any reservation), extended like any; what it
+  writes past that may take the reserve (`Purpose::Discard`). What it
+  does not take goes back to the free pages when it is done, so a
+  discard is funded by the hold it ends and needs no room the disk does
+  not have, within the hold's bound: an ending entry, a discard
+  included, that finds the store tree taller than at the group's open
+  plus one level takes what it needs past the hold from free pages and
+  the reserve, and can be refused as full on a disk with neither (above,
+  and #787's kind of limit). An entry not applied leaves the holds as they
+  were. A page file keeps no holds on
+  disk: the store's recovery holds again, before the replay, what the
+  checkpoint's state records for its open groups (6.2 step 4), so the
+  replay's parts and closes find what the first run held. The bound
+  is our own and not a proof: it covers the close when the file's tree
+  at the close is at most one level taller than at each part, beyond the
+  `1 + log2(sets)` levels each part's own edits are counted to add. A
+  close that needs more takes it as any entry extends, from free pages
+  and the reserve, and can be refused as full. It is loose: a 4 KiB put
+  holds 59 pages and its close writes about one, so a group of 10,000
+  such parts grows the page file by 9 GiB while it is open, and that
+  space stays in the file.
 - **Pages waiting for a checkpoint** have a budget (16,384 pages, 256 MiB,
   by default): once as many pages of the newest version wait in memory,
   a reservation is refused with "checkpoint needed" until a checkpoint
@@ -1283,7 +2065,7 @@ payload without interpreting them. Here they mean:
 |---|---|
 | index | its place in the log, counted from 1 |
 | term | the leader's term; never below the previous entry's |
-| kind | 1 change, 2 session, 3 file, 4 members, 5 mark, 6 empty. Any other code is refused |
+| kind | 1 change, 2 session, 3 file, 4 members, 5 mark, 6 empty, 7 group. Any other code is refused |
 | file | the **id** of the file the entry belongs to, or 0 for none. A file's id is the index of the `file` entry that added it, so ids are never reused, and every server gives a file the same id |
 | payload | 5.2 |
 | hash | SHA-256 over the previous entry's hash and the entry's bytes before the hash, as section 3.4 writes them: index, term and file (8 bytes each), kind (2), two zero bytes, the payload's length (4), the payload. Before entry 1 the previous hash is 32 zero bytes (`om_store::entry::entry_hash`) |
@@ -1292,8 +2074,11 @@ The file field must fit the kind, or the entry is refused (5.6):
 
 | Kind | File field |
 |---|---|
-| change | a file the state has |
+| change | a file the state has; for a part of a group making a new file, that file |
 | session, members, empty | 0 |
+| group, discard | 0 |
+| group, new file | the entry's own index |
+| group, publish | the group's id: the file it made |
 | file, added | the entry's own index |
 | file, removed or renamed | a file the state has |
 | mark | 0, or a file the state has |
@@ -1315,7 +2100,7 @@ start count (8) and the connection number (8).
 | Field | Bytes |
 |---|---|
 | version | 1 |
-| group | 8: the group the change is part of (server-storage.md 6.9), 0 for none. Reserved: anything else is refused as unsupported |
+| group | 8: the id of the group the change is part of (server-storage.md 6.9), 0 for none. When it is not 0, a step (1): 1 **open**, then the paths the group declares, a count (4, 1 to 64) and for each a file's id (8) and a path (its number of segments (1), 0 to 64, then each segment `len2`); 2 **part**; 3 **close** |
 | op | 1: 0 for none, 1 for an operation, then its session (32) and sequence number (8) |
 | reply | `len4`, at most 65,535 bytes; empty when there is no op |
 | notices | count, at most 65,536; each `len4`, at most 65,535 bytes |
@@ -1325,6 +2110,17 @@ start count (8) and the connection number (8).
 A tree edit is held to the tree's bounds (2.1) as it is decoded: at most
 64 segments, an encoded path of at most 65,535 bytes, a value of at most
 65,535 bytes, and no put at the empty path.
+
+A change in a group is held to its step as it is decoded: a part (an
+open or a part) carries tree edits only, with no operation, reply,
+notices or lock edits; a close carries no tree edits and no lock edits,
+and may carry the operation it completes, with its reply and notices; an
+open declares at least one path, each of at most 64 segments and an
+encoded key of at most 65,535 bytes (the path with no segment declares
+the whole file); and the id is never 0. Payload version 1 reserved the
+group field, and builds before groups refused any group but 0 as
+unsupported, so the version stays 1: such a build refuses a group's
+entries rather than reading them otherwise.
 
 **session** (kind 2): version, then a tag: 1 **opened** and a session; 2
 **closed** and a session; 3 **started**, a server's id (16) and its start
@@ -1344,6 +2140,12 @@ and refused as unsupported.
 comparison) and a name (`len2`, 1 to 1,024 bytes).
 
 **empty** (kind 6): no bytes.
+
+**group** (kind 7): version, then a tag: 1 **discard** and the group's
+id (8, not 0); 2 **new file**, nothing more (it opens a group that makes
+a new file, server-storage.md 6.9, whose id, the file's and the group's,
+is the entry's own index); 3 **publish**, the group's id (8, not 0), then
+a name, flags and page 0 as in a `file` entry's *added*.
 
 Nothing may follow the last field. Decoding checks every length against
 its bound and against the bytes left before it takes anything, never
@@ -1367,6 +2169,13 @@ page file keeps them, outside any tree:
 |---|---|---|
 | the store's own | `store` | 5.3's table below |
 | a file's | `file:` and the id in decimal | exactly the file's key tree, nothing else |
+| an open group's | `group:` and the group's id in decimal | a staged group's staging, the edits of its parts (below); or the file a new file group is making, its key tree as its parts left it |
+
+A file a group is making has no tree of a file's name, no catalog row
+(`[03, id]`) and no name until the group publishes it: its tree is the
+group's, `group:<id>`, which no reader of files asks for, and its
+publication renames it `file:<id>` in the unit that writes the catalog
+rows.
 
 No item of any tree holds a page number, so a root hash depends on
 content alone: servers that place pages differently have the same root
@@ -1390,6 +2199,10 @@ little-endian.
 | `[06, server, start connection, 01]` | value: its last completed sequence number (8), 0 for none |
 | `[06, server, start connection, 02]` | value: that operation's reply, empty for none |
 | `[07, server, start connection, file, lock]` | value: a lock's value. `lock` is the key's length (2, big-endian), the key, then the user |
+| `[0a, 01, id]` | list: an open group's row, there exactly while it is open; `id` is the group's id (8) |
+| `[0a, 01, id, 01]` | value: the pages the group holds for its end (8, 4.8), the number of its parts (8), the bytes and the edits its parts staged (8 each, 0 for a new file) and its kind (1: 1 staged, 2 new file) |
+| `[0a, 01, id, 02, file, n]` | value: the group's declared path number `n` (2) in file `file` (8), as a key (2.1) |
+| `[0a, 02, file, id]` | value, empty: group `id` declared a path in file `file`; the index the checks of 5.6 read. A group making a new file declares the file's whole tree, the empty path |
 
 A file's row is the list `[03, id]`, made by its first child, and so is a
 session's. A session's sequence number and reply are leaves under its
@@ -1413,16 +2226,37 @@ it applies.
 With the largest key and user, a lock's path is at most 34,911 bytes
 encoded, within the 65,535 of 2.1.
 
+A staged group's staging tree holds each part's tree edits as the change
+carries them (5.2: their count, then each), cut into chunks of at most
+16,344 bytes, what one overflow page holds, so that a chunk takes its
+place in a leaf and one overflow page: the item `[file, part, chunk]`
+holds chunk number `chunk` (4) of the part whose entry's index is `part`
+(8), in file `file` (8). Read in key order, the chunks join into each
+part's edits, a file's parts in the order of their entries. A part with
+no edits writes no item, and the tree, made by the group's first part,
+exists while the group is open. No other entry reads or writes it. Keys
+sort by file first: a part for a file numbered below one the group
+staged for already is inserted before the tree's end, not appended. Such
+an insert costs a put in the middle of the tree, a path's pages and the
+splits it makes, against the append path's last pages. A part with edits
+writes one chunk for every 16,344 bytes of them, at least one; an empty
+part writes none but counts toward the part bound. So the bounds of 5.6
+keep the tree within 65,536 + 4,106 chunks: one a part for 65,536
+one-edit parts, about 4,100 for parts that fill their chunks.
+
+The list `[0a, 02, file]` stays, empty, after the last group with paths
+in a file ends, and goes with the file: a removal deletes it, and so
+does the end of a group that made a file, whose list holds no other.
+
 ### 5.4 Reserved
 
-- In a change: the group field (5.2).
 - In a `file` entry: tag 4, a clone. In a `members` entry: tag 2, the
   members.
 - In the store's own tree: under a file's row, segments `04` (its
   container files, server-storage.md 8), `05` (its design history, 9),
   `06` (its kept original image, 6.10) and `07` (the file it was cloned
-  from, 6.8); at the top, `08` (the members), `09` (blob reference
-  counts, 8) and `0a` (open groups, 6.9).
+  from, 6.8); at the top, `08` (the members) and `09` (blob reference
+  counts, 8).
 
 A build that meets a reserved form in an entry refuses the entry (5.6).
 
@@ -1516,7 +2350,44 @@ Then, by kind:
   counting this entry's earlier lock edits (*no such lock*). Then: the
   lock edits are made under the entry's file, the session's row records
   the sequence number and the reply, and the tree edits (5.5) are applied
-  to the file's tree.
+  to the file's tree, unless the change is a group's part (below).
+- **A part of a group making a new file.** When a change names a group
+  and that group is open and making a new file, the change must be a
+  part (*group kind*) for that file (*group file*); its edits are
+  applied to the file's tree at once, as a change's are, and the group's
+  row counts one more part. These checks come before the file field's:
+  no other entry reaches the file, which is in no catalog (*no such
+  file*).
+- **A change and the open groups** (server-storage.md 6.9). Two paths
+  *meet* when one is a prefix of the other, segment by segment: an edit at
+  one changes the other or something above or below it. A path an edit
+  changes is the one it puts or deletes; the ancestors a put makes, or
+  changes to hold both, are not counted, since they change no item at or
+  below a declared path. Checked after the lock edits, in this order:
+  - an open's id must be its own index (*group id*), at most 256 groups
+    may be open after it (*too many groups*), each path it declares must
+    be in a file the state has (*no such file*), and none may meet a path
+    an open group declared in that file (*group overlap*);
+  - a part or a close must name an open group (*no such group*), and an
+    open, a part or a close must be for a file its group declared a path
+    in (*group file*);
+  - each edit of an open or a part must be at or below a path its group
+    declared in the entry's file (*outside group*, naming the edit);
+  - no edit of any change may meet a path another open group declared in
+    the entry's file (*in group*, naming the group and the edit);
+  - an open or a part must not take its group past its bounds, checked in
+    this order (*group too large*, naming the bound): 65,536 parts
+    (`MAX_GROUP_PARTS`), 1,048,576 edits (`MAX_GROUP_EDITS`, the most one
+    change carries), and 64 MiB of edits as they encode (5.2,
+    `MAX_GROUP_STAGED`, the largest payload).
+
+  An open writes the group's row, its declared paths and the index rows
+  of its files (5.3), and makes the staging tree. An open or a part writes
+  nothing to the file's tree: its edits are added to the staging tree,
+  and the row counts one more part and the pages it holds (5.8). A close
+  applies each file's staged edits, in the order of their parts, to the
+  file's tree, deletes the group's rows and drops the staging tree, and
+  records its operation, reply and notices as any change does.
 - **session.** *Opened* is applied only when the server's row records
   the session's start count and the session's connection number is above
   the highest recorded; then the session's row is made with sequence
@@ -1536,12 +2407,25 @@ Then, by kind:
   entry. *Removed*: the row, the name and every session's locks on the
   file are deleted, and the file's tree is dropped. *Renamed*: the new
   name must be free (*name taken*, also when it is the file's own); the
-  row's name and the name rows change.
+  row's name and the name rows change. A file in which an open group
+  declared a path is not removed (*file in group*); a removal deletes the
+  file's list of the groups that had paths in it (5.3).
 - **members.** The version must be one this build knows (*unknown format
   version*) and not below the state's (*format version lowered*, which
   cannot arise while 1 is the only version); it is recorded.
-- **mark** and **empty** change nothing else. An `empty` entry, a new
-  leader's first, would discard the open groups; no build yet has any.
+- **group.** *Discard*: the group must be open (*no such group*); its
+  rows are deleted and its tree `group:<id>` dropped, a staged group's
+  staging or the file a group was making, and nothing of it shows. *New
+  file*: at most 256 groups may be open after it (*too many groups*);
+  the file's tree is made empty, named `group:<id>`, and the group's row
+  (of kind 2), its declared path (the whole file) and its index row are
+  written. *Publish*: the group must be open (*no such group*) and making
+  a new file (*group kind*), and the name free (*name taken*); the file's
+  catalog rows are written as a `file` entry's *added* writes them, the
+  group's rows deleted, and its tree, as its parts left it, renamed
+  `file:<id>`: the work does not depend on the group's size.
+- **empty** discards every open group, as a discard each: a new leader's
+  first entry, and a restart's (6.2). **mark** changes nothing else.
 
 Last, every entry records itself as the last applied.
 
@@ -1552,7 +2436,14 @@ the state and the entry, so every server, given the same state, refuses
 the same entry in the same way: an entry repeated, skipped or out of
 order; a broken chain or a term that goes back; an unknown kind,
 payload version or tag; a malformed payload or one beyond a bound; a
-group, a clone or a members list; a state or a `members` entry of a tree
+clone or a members list; a group's id that is not its open's index, or of
+a group not open; a 257th open group; a declared path that meets an open
+group's; a part or close for a file its group declared no path in; a
+part's edit outside its group's paths; an edit that meets a path another
+open group declared; the removal of a file an open group declared a path
+in; an entry for the other kind of group; a staged group past 64 MiB; a
+publication under a name taken; any other entry for a file a group is
+making; a state or a `members` entry of a tree
 format version this build does not know, or a lower version; a file
 field that does not fit; a file that does not exist; a name taken; an
 operation or a lock edit for a session that is not open; a sequence
@@ -1572,8 +2463,15 @@ unit (`set_root`). A file's tree made is the empty tree written into the
 unit (`tree::apply` from nothing) and named with `add_tree`; a file's
 tree removed is named with `drop_tree`, and the page store releases the
 root it holds for it. The store's own tree is made the same way by entry
-1: before it the store holds no tree. Each tree is changed at most once
-per entry, so no tree reads a page of the unit before it is committed.
+1: before it the store holds no tree. A staged group's staging tree is
+made by its open with `add_tree`, changed by each part with `set_root`,
+and dropped by its close or discard with `drop_tree`. The tree of a file
+a group is making is made by the group's open under the group's name,
+changed by its parts like any file's, renamed by its publication with
+`rename_tree`, and dropped by a discard. Each tree is changed
+at most once per entry (a close, which carries no edits of its own,
+changes each of its files' trees once, with all their staged edits), so
+no tree reads a page of the unit before it is committed.
 `apply` writes or releases no root on its own account, and the trees it
 changed are read from the page store, which holds every tree's name and
 root.
@@ -1613,14 +2511,58 @@ listings visited and the most held at once.
   edit (under 100 bytes) for each session that has a list for the file
   and nothing for the others, and releases the file's tree with one
   release, whatever its size.
-- **A session's close, an opening, a rename, a mark, an empty or a
-  members entry** read and write a fixed number of rows.
+- **A session's close, an opening, a rename, a mark or a members
+  entry** read and write a fixed number of rows.
+- **A change while groups are open** reads the index of the groups with
+  paths in its file and each one's paths there (at most 64 a group, 256
+  groups), and compares each edit's path with them: the work is linear
+  in edits times paths. A change in a file no group declared a path in
+  reads one row.
+- **A staged group's open or part** reads the group's row and paths in
+  its file, and the height of the file's tree. It encodes its edits once,
+  writes them into the staging tree at the end of its file's items, and
+  the row. It holds `entry_bound(edits, height + 1)` pages of the file's
+  tree for the close (4.8), recorded in the row; an open also holds the
+  room for the group's end.
+- **A new file's open** makes an empty tree and four rows and holds the
+  room for its end; **a part** reads the group's row and is a change to
+  the file's tree, at what any change costs, with no hold; **its
+  publication** writes the catalog rows, deletes the group's and renames
+  the tree: a fixed number of rows and one name, whatever the group's
+  size.
+- **A close** reads the whole staging tree and holds every staged edit,
+  decoded, at once, with the bytes of the part it is decoding and the
+  tree writer's working copy. The bounds of 5.6 (1,048,576 edits, 64 MiB
+  encoded) bound the decoded edits by the largest change's; the whole
+  close is measured, not bounded: for the worst shape found, a million
+  puts at paths of 26 segments (66 MB encoded), the decoded edits
+  peaked at 971 MiB and the apply at 1,086 MiB; for the 4 KiB puts of
+  the measurements at the bound, 134 and 362 MiB
+  (performance/store-groups.md). It applies each file's edits with one
+  `tree::apply`, so it writes what one entry with all of them writes
+  (2.7: each page once, in place of once a part), and drops the staging
+  tree with one release.
+- **A discard, and an `empty` entry with groups open,** list the open
+  groups (at most 256) and their files, delete their rows and index rows
+  (for a new file, its whole list), and drop each group's tree,
+  `group:<id>`, with one release whatever its size: a staged group's
+  staging, or the file a new file group was making, whose pages go back
+  as any dropped tree's do. Neither reads the trees it drops. The pages
+  each writes are the store tree's: the group's held end pays for them
+  (4.8).
 
 ### 5.9 Limits
 
-- Groups, clones, the members list, blob reference counts, design
-  history, container file lists and the kept original image are not
-  built; their entries are refused (5.4).
+- Clones, the members list, blob reference counts, design history,
+  container file lists and the kept original image are not built; their
+  entries are refused (5.4).
+- Groups are their entries and their effect on the state. Which
+  operations use a group, the check of what a group read
+  (server-storage.md 6.9), the protocol locks a group takes, a close's
+  lock edits (refused in this build) and replication's handling are not
+  built. No observation of FileMaker is behind a group's fields in 5.2,
+  the rules of 5.6 for them or their bounds (64 paths, 256 open groups,
+  64 MiB staged): they are OpenMaker's own design.
 - A file's flags and page 0 are set when it is added; no entry changes
   them later.
 - The bounds of 5.2 (names, replies, lock keys and users, counts) are
@@ -1633,3 +2575,674 @@ listings visited and the most held at once.
 - The decoder holds tree edits to the tree's bounds with the tree's own
   check (`tree::check_edits`), so the model, which shares the decoder,
   does not check those bounds a second time.
+
+## 6. The store
+
+How `om_store::store` joins `state` (section 1), the page file (section
+4), the log (section 3) and applying entries (section 5) on one server:
+the order of every write of its operations, and what a crash at each step
+leaves. Its one file of its own is the incident journal (section 7). The
+store is driven by its
+caller: no thread, timer or background work, so every step below is a
+call the simulated disk can stop.
+
+### 6.1 Creating
+
+0. the configuration is checked as an open checks it (6.2, step 0);
+1. the store folder's lock is taken; a folder with `state` holds a store
+   already, and is refused. A folder without `state` that holds the log's
+   folder `log/` (which only an open makes, once `state` exists), or a
+   `pages` without the creation's marker, holds a store whose `state` is
+   gone: it is refused, and reported as `OpenError::NoState`, never
+   created over;
+2. the creation's marker, an empty file named `creating`, is made, and
+   the store folder flushed, so that its name is durable before anything
+   else is made (a creation begun again finds it there);
+3. a `pages` left by a creation that did not reach `state` is removed,
+   and the page file is created (4.6: checkpoint 1 at entry 0, written to
+   `pages.new`, flushed, renamed, the folder flushed); then the incident
+   journal, holding its base record (section 7.4: written to
+   `incidents.new`, flushed, renamed, the folder flushed), so that a store
+   whose journal is missing, or holds no record, lost it;
+4. `state` is created (1.3: both copies in `state.new`, flushed, renamed,
+   the folder flushed);
+5. the marker is removed and the store folder flushed;
+6. the store is opened (6.2), which writes the first start's entry.
+
+| A crash | leaves |
+|---|---|
+| before step 2 is done | at most an empty `creating` and no other file: no store |
+| after step 2, before step 4 is done | no `state`, and the marker: what a creation cut short left. An open reports no store (`OpenError::Missing`); a creation begun again removes the `pages` it finds |
+| after step 4 | a store, opened as any (6.2); the log is empty. An open removes a marker step 5 did not |
+
+A folder without `state` is so told apart: the marker means a creation
+cut short, created over; `log/`, or a `pages` without the marker, means a
+store whose `state` is gone, reported for a restore (server-storage.md
+6.12, "`state` has no valid copy"); nothing at all means no store.
+
+### 6.2 Opening
+
+0. the configuration checked against what the store must write (the
+   log's and the page file's bounds, and this start's entry within the
+   largest payload): one that cannot hold it is refused
+   (`OpenError::Config`) before anything is opened, so no start is
+   counted;
+1. the lock, and `state` opened (1.3), which raises the start count in
+   both slots; a creation's marker left by step 5 of 6.1 is removed. A
+   folder without `state` is looked at under the lock taken again: when
+   `state` has appeared (another process created the store meanwhile), it
+   is opened; otherwise the folder is told apart as 6.1 says. When `state`
+   passed over a copy, the mark is durable in both slots before anything
+   else is written (1.3). The incident journal is read (section 7); a
+   lost one (missing, or holding no record) is recorded as such
+   (`JournalLost`: in a journal made again when the file is missing,
+   after what the file holds otherwise; 7.4);
+2. the page file opened (4.6) on its newest checkpoint; its entry is the
+   **start**. When the page file answers that the checkpoint does not
+   check (`Damaged`) with an approval, the store records the approval
+   (with the restore points that go with it) in the journal, flushed, and
+   then calls `PageFile::open_giving_up` with it; when that call answers
+   damage again (the damage changed meanwhile), that approval is recorded
+   and given in turn, at most eight times; when it is refused because
+   nothing stops the open any more, the page file is opened plainly.
+   When the device fails a read the page file needs (`Unreadable`), the
+   open fails (`OpenError::Pages`, with the approval and its remedy):
+   only the administrator's call `Store::give_up_pages`, given that
+   approval, records it and gives it up, as above. The page file keeps
+   the restore points of the checkpoint it opens; the store keeps none of
+   its own, so those given up are gone from it with the checkpoint, and
+   named by the incident;
+3. the log opened from the start (3.6), checked against the marker. When
+   `state` carries a mark, the log's open first walks the log writing
+   nothing; that walk only decides whether the open may go on. When it
+   finds no whole batch after `N`, the later of the marker and the
+   start, it says so (`LogError::LossNotRecorded`, with `N`), having
+   written nothing: the store records that whatever this server confirmed
+   after `N` may be lost (`LastBatch`), once, and opens the log again
+   (`Log::open_settling`), which walks it as any open does, goes on
+   whatever it finds after `N`, and settles the mark in its update. When
+   the first walk found a whole batch after `N`, the open's own walk runs
+   as any open's does, and everything the open writes and publishes (the
+   marker, where the next append goes, the cut, the run) comes from that
+   walk alone. If that walk finds no whole batch after `N` after all, the
+   open fails before `state` is written (`LossNotRecorded` again, which
+   the store records), having written again only bytes it had just read
+   and checked. An open of a `state` without a mark walks once and writes
+   again what it keeps as it goes; like any open (3.6), it can write again
+   a checked prefix of a batch it then cuts;
+4. the entries after the start applied again, each once, in order,
+   through the durable entry: each is reserved with the reserve allowed
+   (`Purpose::Recovery`), applied in its one unit of work, and the
+   reservation extended while the entry runs short. The log is not
+   retired meanwhile, and the store asks the page file for no reclaim and
+   no checkpoint but in one case: a reservation refused because the pages
+   waiting for a checkpoint are past their budget (4.8) has the last
+   entry applied, which is durable, checkpointed, and the entry reserved
+   again. The page file itself frees during the replay what normal
+   running frees (4.8), as its reservations do. Before the first entry,
+   the pages the checkpoint's open groups hold, which the checkpoint's
+   state records, are held again (4.8);
+5. the version the last entry made (or the checkpoint's, with none) is
+   pinned and is the published one. When its state has groups open, an
+   `empty` entry is appended, which discards them all (5.6,
+   server-storage.md 6.9), before this start's entry and flushed with
+   it. Its reservation is what the groups hold (4.8). Refused
+   for the budget of pages waiting for a checkpoint or for room, it is
+   treated as this start's entry is (step 6): the recovered version is
+   checkpointed and the entry appended again, once. A failure fails the
+   open with `OpenError::Start`, which says whether the log took the
+   `empty` entry (`StartFailed::discarded`). The `empty` entry and this
+   start's entry may take the room the log kept for them (6.3), so on a
+   disk that cannot give the log a segment they still fit. Each
+   start begins a new term, one above every term `state` and the log
+   recorded, and writes its entries in it: the `empty` entry and this
+   start's entry make it durable when they are. `state`'s own term, for
+   replication's votes (server-storage.md 7.1), is not raised;
+6. this start's own entry is appended and flushed (6.3): a `session`
+   entry that records the start count (server-storage.md 7.3), the first
+   write of every start. It is part of the recovery for space: it is
+   reserved with the reserve allowed, and when it is refused because the
+   pages waiting for a checkpoint are past their budget, or because the
+   disk has no room for it (pages past the reserve, or the log's next
+   segment), the `empty` entry of step 5, if any, is flushed, the
+   version then published, which is durable, is checkpointed first (6.6:
+   the log retired and dying pages freed as far as the checkpoints and
+   restore points on disk allow), and the entry is appended again, once. A disk that still has no room fails the open
+   with `OpenError::Start`, whose remedy is to free space; so does a write
+   of the entry, or of the marker, that the disk refuses for room, the
+   cause kept through the error.
+
+Steps 1 to 3 write what their own opens write, and the journal's records
+before what they name. Step 4 writes nothing to
+disk but what a forced checkpoint writes. A crash at any step leaves what
+the piece's own table says, and the next open does the same work again:
+the entries step 4 applied are in memory only until a checkpoint, and are
+applied again. A crash in step 6 after the log took the start's entry
+can leave that entry durable; the failed open reports it
+(`OpenError::Start`), and the next open applies it as any entry.
+
+What the open cannot do is reported, typed, with what the administrator
+can do (`OpenError::remedy`): no store; a store whose `state` is gone
+(6.1); no valid copy of `state`; no checkpoint that reads back; a log
+that does not hold, whole, every entry through its marker; a log that
+ends at a place it cannot read; a place at or before the marker it cannot
+read; an entry the log holds that cannot be applied (a page that does not
+check); no space to apply the log's entries, or for this start's own
+entry. Two calls go past two of them, and nothing else does:
+
+- Accepting the loss is two calls. `Store::plan_damage`
+  (`Log::plan_damage`, server-storage.md 6.12) shows what would be kept and
+  given up, and writes nothing to the log (the store's open steps 0 to 2
+  run as in any open): the entry kept, the run listed before and after,
+  where the open after the acceptance will end the log, and each segment
+  file's fate (kept, lengthened, set aside and why, missing) with the
+  entries it held as far as the headers say. `Store::accept_damage` takes
+  that plan and does exactly that, or refuses with nothing changed when a
+  fresh plan differs (`LogError::PlanChanged`); an administrator who would
+  rather keep what a plan gives up restores, or repairs by hand. Before it
+  changes anything it records the plan in the incident journal (section
+  7: `LogDamage`, with where each file goes and the entries it holds),
+  flushed; when `state` carries a mark the plan does not make up for (no
+  whole batch kept after the later of the marker and the start), the same
+  record says that whatever was confirmed after that entry may be lost
+  too. A plan made after an acceptance
+  that failed or was cut short before its `state` update names each
+  listed segment that acceptance renamed, from its record, with where it
+  went and its entries (`Fate::MovedEarlier`), while the record is not
+  acknowledged and only while `state` still holds the run, the marker and
+  the cut count that acceptance's plan was made against: once `state`
+  changed, the number may have been listed again for another segment, and
+  a listed segment not there is `Missing` (this holds for one generation
+  of a store: 7.7). The plan
+  is made from the start, the checkpoint the store opens on. Every listed
+  segment the folder holds is opened, and a file shorter than its header
+  says is read as it will read once lengthened: its bytes, then zeros to
+  its header's size. The rule:
+  - **kept**: in the listed segment that holds the entry after the start,
+    the start reached by framing alone (3.5, "Anchored walks": a whole
+    batch before the start's is crossed by its header; what does not frame
+    or check before the start, or a read the device fails of an entry's
+    payload or hash there, is reported in the plan and does not count), then the
+    chain checked forward from the start's hash through the listed
+    segments that follow without a gap, no further than the later of the
+    marker and the start; the last entry so reached is `kept`. With it, the
+    listed segments before that segment that follow one another without a
+    gap. The run is then walked as the open after the acceptance will walk
+    it (the open's own walk, writing nothing), and listed only as far as
+    that walk goes, so that the open keeps exactly the plan. A kept file
+    that is short is lengthened to its header's size with zeros, flushed,
+    before `state` changes. Those zeros are bytes like any: where they
+    complete a batch whose hashes all check (a file short only by trailing
+    zero bytes), the batch is whole, as it was written, and the plan, which
+    read the file so, says the open keeps it;
+  - **given up**: every other listed segment (one whose own header does
+    not check is not looked into), every segment file the run does not
+    list, and whatever follows `kept`. Nothing is destroyed: every file
+    given up is renamed, in `log/`, to `given-up-<k>.<number>` (`k` the
+    next number no name uses, one per acceptance; refused when none is
+    left, and never over a file of that name), a name no open removes,
+    since an open removes only files named as segments; the kept segment
+    whose bytes after `kept` are given up stays in use, and is copied to
+    `given-up-<k>.<number>.tail`, a block the device cannot read written as
+    zeros and said so. The folder and the copy are flushed before `state`
+    changes. A rename is used, not a copy into a folder of its own beside
+    `log/`: the file system renames within one folder only, and a file
+    given up is often one the device cannot read, which a rename keeps
+    whole without reading it. The plan says why of each file: it holds only
+    entries up to the start's (only an older checkpoint needs them);
+    nothing after the start could be kept, and why (the segment that would
+    hold the start's successor is missing, or does not continue from the
+    start's entry, or the walk ended cleanly before the start and the
+    segment after is missing); it follows a segment that is missing or
+    whose header does not check; it holds entries after `kept`; its own
+    header does not check; the run does not list it;
+  - **refused**, with nothing in the log changed: when the walk cannot say
+    where the entry after the start begins (`LogError::FramingBroken`): it
+    stops before any entry after the start, at a batch's mark or header,
+    at bytes that do not frame in the start's own batch, or past a start
+    whose own end its hash does not place (a damaged length would place
+    its successor wrong), unless it reached the clean end of its last
+    segment, every byte after that in the segment, to its header's size, is
+    zero, and the listed segment after it is missing. A segment is made of
+    zeros (3.2), so a byte that is not zero there is something written (a
+    batch whose mark was damaged still has its header's rest and its
+    entries): this refuses too a segment that holds bytes after its end
+    from before an earlier cut, when the segment after it is missing. Also
+    refused when a listed segment whose header does not check could hold
+    that entry; when nothing would change; on a segment of a newer format;
+    on a read the device fails of anything the decision depends on (an
+    error that is not the device's, such as a stopped process, is the
+    call's error, never a report).
+
+  Then one `state` update, written to both slots, lists the kept segments,
+  lowers the marker to `kept`, and raises the cut count when anything after
+  `kept` is given up; the log is opened as any open opens it, except that
+  it writes `state` and removes files only when its walk ends the log where
+  the plan says, with the run it says, and no segment file would be
+  removed: otherwise it fails having done none of that
+  (`LogError::NotAsPlanned`, naming what it would have removed; the
+  decision stands, and a new plan that still finds a loss sets those files
+  aside, while one that finds none refuses and the next ordinary open
+  removes them, as any open removes segment files the run does not list).
+  The report
+  (`DamageAccepted`) carries the plan and says it all: `kept`, the marker
+  before, the cut count, the run before and after, every segment file
+  given up with the entries it held as far as the headers say (its first
+  from its own header, its last from the next one's; unknown where a
+  header is missing or not valid, and for a file the run did not list)
+  and where it went, the kept segment whose tail is given up (and the
+  places of it that could not be read), the segments lengthened, and the
+  names given.
+
+  | A crash | leaves |
+  |---|---|
+  | before the record is flushed | nothing changed; the record may be there or not, cut short (section 7) |
+  | after some renames, before `state`'s update | `state` listing segments whose files were renamed: the open reports them missing; a new plan names each with where it went and its entries, from the record, and gives it up |
+  | while copying the tail, before `state`'s update | a partial copy under its new name, the log otherwise as the renames left it |
+  | after lengthening a kept file, before `state`'s update | that file at its header's size; nothing else changed |
+  | after `state`'s first slot is flushed | the decision, which stands |
+- `Store::give_up_unreadable_end` (`Log::give_up_unreadable_end`, 3.9),
+  after it has recorded what it gives up (`UnreadableEnd`: the last entry
+  kept and the place), flushed.
+
+Each is done from the moment its `state` update's first slot is flushed,
+whether or not the open goes on to succeed. An open that fails after the
+decision, an unreadable end the log's open then meets included, says what
+was given up (`OpenError::AfterGivingUp`): with
+`Recorded::Done` it stands, and the next open starts from it without
+reporting it again; with `Recorded::Unknown` the `state` update failed
+part way, and the next open shows which (it ends the log where the
+decision does, or reports the damage again). Either way the decision's
+record is in the journal, and an open that failed after recording says
+so (`OpenError::AfterIncidents`). When `state` carries a mark and the log
+kept no whole batch after the later of the marker and the start, the open
+records that the last batch confirmed may be lost before it settles the
+mark, and says so (`Opened::last_batch_may_be_lost`). Every open that
+succeeds reports every incident no administrator has acknowledged
+(`Opened::incidents`), and what the read of the journal found
+(`Opened::journal`); `Store::incidents` reads the journal again, and
+`Store::acknowledge` acknowledges everything that read showed (with the
+store closed, `Store::read_incidents` and `Store::acknowledge_incidents`;
+7.5). When the
+chain of entries before the
+checkpoint's entry, in the segment that holds the one after it, stops
+checking (3.6, step 3), the open succeeds and says where
+(`Opened::before_start`), and whether the checkpoint on disk before the
+newest, once the open is done (it may have taken checkpoints of its own),
+comes before that place, so that an open falling back to it could not
+replay past it (`Opened::fallback_cannot_replay`).
+
+### 6.3 Writing one entry
+
+`Store::append(file, payload)` gives the entry the next index and the
+store's term. What a payload says of this server's own starts is the
+store's too: a `session` entry that says this server started (the store
+writes one at each open, 6.2), or that opens a session of this server in
+another start than the current one, is refused from the caller with
+nothing changed. Then it:
+
+1. asks the log whether it would take an entry of that size and term
+   (`Log::ready_for`, every refusal of an append, the next segment made
+   when it would need one): a refusal changes nothing. While groups are
+   open, the log keeps room at its segment's end (3.7) for a discard of
+   each group open after this entry, each in a batch of its own, and for
+   the next start's `empty` entry and its own entry in one batch:
+   `136 + 2 × 64 + 26` bytes and `136 + 64 + 10` more a group, so 500
+   bytes for one group and 54,050 for 256. A discard and an `empty`
+   entry may take that room (`Log::append_kept`), and so may the entries
+   the store's own open appends (6.2), told apart by how they are
+   appended and not by their kind: a caller's `session` entry of another
+   server's start is an ordinary entry. Every other entry, a close and a
+   publication included, leaves the room, and
+   on a full disk is refused as an entry that needs a segment the disk
+   cannot give (`WriteError::Log` with `LogError::NoSpace`), with nothing
+   changed. So an entry that only gives back never needs a new segment;
+2. reserves pages for the entry (`Purpose::Entry`, never the reserve)
+   and applies it (`apply::apply`) in its one unit of work, which commits
+   at its end; a unit that runs short is dropped, the reservation
+   extended (doubling), and the entry applied again. A group's part
+   first holds its pages for the close, a close's reservation is what its
+   group holds, and a close or a discard may take the reserve (4.8,
+   `apply::group_space`). A full disk, a
+   reservation refused for a checkpoint, a refused entry or a page that
+   cannot be read refuses the entry with nothing changed;
+3. pins the newest version (`PageFile::pin_newest`), which is the one
+   the unit made: every entry commits a unit, since its unit records it
+   as the store tree's last applied entry, and the store checks that the
+   pin is of that entry;
+4. appends the entry to the log's open batch, in memory, and checks that
+   the log hashed it as it was applied.
+
+Steps 1 and 2 write nothing to disk but what a reservation's growth of
+the page file writes (4.8, the file's own rules). From step 3 on, a
+failure stops the store: the unit's changes are in memory and cannot be
+taken back, so every later call is refused, and the store is opened
+again.
+
+### 6.4 A flush
+
+`Store::flush` writes the log's open batch and advances the marker (3.8),
+with the flush's last entry as the committed position (on one server
+every durable entry is committed), then **publishes** every entry the
+batch held, in order: the last one's pin becomes the published version,
+and each entry's notices and reply are handed back. All of the batch is
+published, or none. A failure of the write or of the marker stops the
+store.
+
+| A crash | leaves |
+|---|---|
+| before the batch's write | the entries in memory only: lost, never answered |
+| after the write, before the marker | the batch whole after the marker or torn; the next open keeps it whole (3.6) and applies it, or cuts it. Never answered |
+| after the marker's flush | the entries durable, answered or not: the next open applies them |
+
+### 6.5 Views
+
+A view is the published entry and its pin, which holds the version's
+roots and keeps its pages from reuse while the view lives; views share
+the pin of the version they are of. A view holds the page file, not the
+store: it lives across later writes, checkpoints, and the store itself.
+After the store is opened again, a view taken before is kept only by the
+checkpoints on disk (pins are in memory): once later checkpoints retire
+those, its pages can be reused, and a read of one fails its hash check
+instead of returning another page. A view of a restore point pins the
+point's version from its meta stream; one whose meta stream the device
+fails to read, or that does not check, is answered as such
+(`WriteError::Unreadable`, with the page file's reason), and the store
+goes on. A view, and the store, hand out nothing of the page file, the
+log or `state`: no read of the working state and no write that would
+pass the store's rules (a checkpoint of an entry not yet published, say).
+
+### 6.6 A checkpoint
+
+`Store::checkpoint(keep_as)` is refused while entries are applied past
+the published one (flush first): a checkpoint is of the published entry
+only. Then:
+
+1. the page file's checkpoint of that entry (4.6), kept as a restore
+   point when named;
+2. the log retired up to the entry after the oldest checkpoint or
+   restore point a superblock on disk names (3.10), never past it. A
+   restore point dropped since counts until no superblock on disk lists
+   it: an open that falls back to the older checkpoint lists it again;
+3. a reclaim of dying pages, bounded.
+
+A crash leaves what 4.6 and 3.10 say; the next open starts from the
+newest checkpoint on disk, and the log still holds every entry after the
+oldest. A failed write stops the store.
+
+When a reservation is refused because the pages waiting for a checkpoint
+are past their budget, the caller flushes, checkpoints, and appends
+again: a checkpoint cannot be taken while an entry is applied and not
+published.
+
+### 6.7 Limits
+
+- The store does not keep a mark that a start passed over a copy of
+  `state` (a design change under review, not in section 1 or
+  server-storage.md yet): an open reports the possible loss once, and
+  only when it succeeds. `state`'s own open rewrites both slots (1.3), so
+  an open that fails after it (the page file's open, the log's, the
+  replay, this start's entry) or a crash before it returns leaves two
+  whole copies of `state`, and the next open sees nothing to report; so
+  does a crash right after an open that reported it. The mark is
+  [issue #748](https://github.com/OpenMaker-Dev/openmaker/issues/748).
+- On a disk with no room, an open that cannot make room for this start's
+  entry by checkpointing (the log retired and dying pages freed as far as
+  the checkpoints and restore points on disk allow) fails, and says to
+  free space. The log keeps room for the next start's entry only while
+  groups are open (6.3), and for one start: after an open that used it,
+  with no group open, a disk that filled can need space freed before the
+  store opens again.
+- Recovery reserves a fixed few pages for each entry and extends them,
+  rather than the count each entry took the first time (`Reservation::taken`):
+  entries do not carry it. An entry the replay extends may take the
+  reserve (4.8).
+- The threaded front of the engine (an applying thread, group commit
+  across callers, background checkpoints, the limits of server-storage.md
+  6.11) is not built: the caller drives every step.
+- Accepting a loss (6.2) gives up, set aside and shown in the plan, entries
+  it could check in two shapes: a listed segment that is missing (an empty
+  segment that giving up an unreadable end made, say) before one whose
+  header continues from the last entry kept; and a listed segment whose
+  header does not check, one segment or more after the one that holds the
+  start's successor, with what follows it, although its entries chain. The
+  plan does not look across either.
+- A plan names what an earlier acceptance set aside only from that
+  acceptance's record while it is not acknowledged: once it is, a listed
+  segment that acceptance renamed shows as missing.
+
+## 7. The incident journal
+
+`<store>/incidents` (server-storage.md 6.1 and 6.12), read and written by
+`om_store::incident`. What the store is approved to give up, it records
+here first: the record is written and the file flushed (and, for a journal
+made, renamed into place and the store folder flushed) before the store
+acts, and the store acts only on a record whose flush returned. One act is
+one record. A record says what was approved and about to be done, never
+that it was done: a crash, or a call that then does nothing, leaves a
+record of an act that may never have run. Every open that succeeds
+reports the records no administrator has acknowledged; an open that fails
+reports those it recorded itself before failing. The journal is the
+store's own: it is read without `state`, the log or the page file, so a
+store whose log or page file cannot be read still says what it gave up
+(`Store::read_incidents`). The store opens it once for each start; with
+the store closed, it is only read and acknowledged.
+
+### 7.1 Records
+
+The file is a sequence of records, each beginning at a multiple of 512
+bytes:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMINCID` followed by a zero byte |
+| 8 | 2 | format version, 1 |
+| 10 | 2 | kind (7.2) |
+| 12 | 4 | payload length `L`, at most 65,536 |
+| 16 | 8 | record number (7.3), never used twice; 0 for a base record, and only for one |
+| 24 | 8 | the start count of the open that wrote it (0 when written with the store closed) |
+| 32 | `L` | payload (7.2) |
+| 32 + `L` | 32 | SHA-256 of bytes 0 to 32 + `L` |
+
+Then zeros to the next multiple of 512. Integers are little-endian; a
+count is 4 bytes; a text is its length in two bytes (at most 2,048) and
+its UTF-8 bytes; an optional field is a byte 0 (none) or 1 followed by the
+field; a position is an index, a term and a 32-byte hash; a place the log
+could not read is a segment, an offset and an index; a checkpoint is its
+number, its meta stream's first page and its hash.
+
+A record **checks** when it begins with the mark, its length fits, its
+hash matches, its payload is exactly what its kind says, and its number
+is 0 if and only if it is a base record. A record of a newer version
+whose hash matches makes the read fail ("newer format"): the store does
+not write to a journal it cannot read.
+
+### 7.2 Kinds
+
+Each payload's fields, in the order they are written:
+
+| Kind | Name | Payload |
+|---:|---|---|
+| 0 | base | the number the next record takes (8 bytes) |
+| 1 | `Checkpoints` | whether the page file found damage (1) or a read failed (0); whether the administrator gave it (1) or the store by itself (0); the error's text; the approval as recorded: the checkpoints given up (a count, then each one's checkpoint and the restore points lost with it: 0, a count and each name and checkpoint number, or 1 for unknown), the slots written over unread (a count, then each as 8 bytes), and the checkpoint landed on; then, for each checkpoint given up (a count, then 8 bytes each), how many of its restore points the record leaves out; then the SHA-256 of the whole approval as given to the page file, encoded as above with every name (each as the text field writes it: a name over 2,048 bytes is cut, and the page file's are at most 64) |
+| 2 | `LogDamage` | the plan of an acceptance (format 6.2): the start and the entry kept (positions), the marker's index, the cut count `state` held when the plan was made, the cut count raised to (optional), the segments listed before and after (first, count each, 8 bytes each), the position it opens at; then its rows (a count, then each: the first segment's number, how many consecutive segments the row holds (4 bytes), the fate (0 kept, 1 lengthened with its size, 2 set aside with its reason's place in the list of reasons, 3 missing, 4 set aside earlier with where), the first entry of its first segment and the last of its last, both optional); then the segment whose tail is copied (optional), where the chain before the start stops (optional: segment, offset, index, unreadable), the prefix of the names it gives (optional); and last, when `state` carried a mark the plan does not make up for, the entry after which whatever this server confirmed may be lost too (optional) |
+| 3 | `UnreadableEnd` | the log's own last entry before the place (a position) and the place |
+| 4 | `LastBatch` | the entry `N` (8 bytes), the later of the marker and the checkpoint's entry: a copy of `state` was passed over, and no whole batch was found after `N`, so whatever this server confirmed after `N` may be lost |
+| 5 | `JournalLost` | none: the journal was missing, or held no record that checks, at an open, so incidents recorded before and not acknowledged are unknown |
+
+A `Checkpoints` record names at most 128 restore points of each
+checkpoint it gives up and counts the rest; its hash of the whole
+approval says which approval it was, and its text says how many names it
+left out. A `LogDamage` row holds consecutive segments with one fate:
+kept, lengthened (to one size) and missing segments of any run, whose
+entries the row gives for the run as a whole; segments set aside for one
+reason only where neither says an entry at the join, since a segment set
+aside keeps its own entries (they say what its file holds); a segment set
+aside earlier always a row of its own. A row's last segment is its
+number plus its count less one, which may be the greatest number. A plan
+names at most 65,536 segment files. Read, the rows stay rows: a segment
+inside a row says no entries of its own.
+
+### 7.3 Reading
+
+At most the first 16,974,336 bytes of the file are read (257 records of
+the largest size: the base and 256 records), and each multiple of 512 is
+looked at:
+
+- a record that checks is taken, and the read goes on after it; an
+  incident whose number is not higher than the incident before it is
+  passed over whole, and its beginning reported as a place that does not
+  check. A base record is taken wherever it is, and the largest next
+  number of those read counts;
+- 512 bytes of zeros are passed over;
+- anything else is a place that does not check: the read passes over 512
+  bytes and looks again. A record a crash cut short, or bytes damaged
+  since, so cost what was in them and nothing after; a record of several
+  sectors damaged is a place for each of its sectors that is not all
+  zeros. The zeros after a record, to the next multiple of 512, are
+  outside its hash, and are not looked at.
+
+A block the device fails to read is read again a sector at a time; a
+sector it still fails is taken as zeros, and the read says so. What the
+read found besides its records is reported with them (`Found`): the
+journal lost (no file, or a file that holds no record that checks, not
+even a base record: one whose writer did not finish, or whose records are
+damaged or cannot be read now), the places that do not check (the first
+16 and how many), whether the last of them comes after the last record (a
+record cut short, on which nothing was acted, or one damaged since, whose
+incident is unknown), the places the device failed, and a file longer than
+the read takes. A read also gives what it showed (`Shown`, 7.5).
+
+What a read decodes is bounded by the bytes it read: a plan's row takes
+at least 15 bytes in the file and at most 80 in memory, with its text no
+longer than in the file; a restore point at least 10 bytes, and 32 in
+memory with its name's bytes; each record's own part less than the 512
+bytes a record takes at least; everything else no more memory than file:
+at most 7 bytes of memory for each byte read. The bytes read themselves,
+and the copies an open's report makes, come on top. The list a plan is
+made against (7.6, earlier moves) holds a record's path prefix once, for
+all its rows.
+
+Numbers. The store opens the journal once for each start, with that
+start's count `c`; its records take the numbers from `c` × 2^20 up to,
+not including, (`c` + 1) × 2^20, and none below what the records read
+allow. That is the larger of one past the last incident's number and the
+number the base record carries (it is the next number itself), and of
+`c` × 2^20; to it is added one for each place after the last record that
+does not check, and one for each sector the device failed to read there
+(each could have begun one). A record that would take a number at or past
+(`c` + 1) × 2^20 is refused (`NumbersSpent`), and so is an open whose
+start count's range does not fit in 8 bytes. `state` never issues a start
+count twice, so a number is never used twice, whatever happened to the
+journal (a damaged base record, a lost file). Numbers are skipped, and
+order the records in time.
+
+### 7.4 Writing
+
+A record that says the same as one not acknowledged (number and start
+count apart) is not written again: that one is returned, and the act
+goes on under it. An act stopped after its record and tried again at
+every start is so recorded once, and its tries do not fill the journal.
+
+Any other record is checked before it is written: the records not acknowledged
+stay at most 256, its number fits the open's range, its payload is at
+most 65,536 bytes (a plan of more than 65,536 files is refused before it
+is encoded), and the file stays within what the read takes. When it does
+not fit, it is refused, with nothing written and nothing given up
+(`OpenError::Journal`: `Full`, whose remedy is to read the journal and
+acknowledge it; `TooLarge`, whose remedy is to restore; `NumbersSpent`).
+Then it goes in one write after everything the file holds, at the next
+multiple of 512 past its end, and the file is flushed: nothing is written
+over, so a record cut short or damaged stays where it is and is reported
+until acknowledged, wherever its bytes are not all zeros (a record of
+which nothing reached the device leaves nothing to report). After a write or flush fails, nothing more is written
+until the store is opened again.
+
+The name `incidents` is given only to a file that already holds a flushed
+record. A store is made with a journal holding a base record (6.1, step
+3); an open that finds the file missing records `JournalLost` in a new
+one. Both are written under `incidents.new` (one left by a call cut short
+removed first), flushed, renamed to `incidents`, and the store folder
+flushed. A crash before the rename lands leaves the journal missing, and
+the next open records that again. An open that finds a file of that name
+holding no record that checks records `JournalLost` after what it holds,
+which stays (records there may read again). A file at the read's limit
+has no room for that: the open fails with `Full`, and reading the journal
+and acknowledging it (7.5) is the way on.
+
+### 7.5 Acknowledging
+
+A read of the journal (`Store::incidents`, or `Store::read_incidents`
+with the store closed) gives, with its records, what it showed
+(`Shown`): a SHA-256 over whether there was a file and its size, the
+bytes read (the places the device failed to read as zeros), and those
+places. `Store::acknowledge(&shown)` (`Store::acknowledge_incidents` with
+the store closed) reads the journal again and is refused, with nothing
+written, unless that read shows the same: a change the read can see
+refuses it (a record added since, a place that starts or stops reading,
+bytes that change where the read reads them). Then the journal is replaced by one that holds only a
+base record carrying the next number: written under `incidents.new` (one
+left by a call cut short removed first), flushed, renamed over
+`incidents`, and the store folder flushed. A crash leaves the journal as
+it was or as it is now. Everything the read showed is acknowledged: its
+records, the places that do not check, the places the device failed to
+read, and what lies past the read's limit, whose incidents cannot be
+known: a place that fails at both reads, with any record in it, and bytes
+past the limit that change while the file keeps its size, go unseen.
+There is no acknowledging a part.
+
+### 7.6 Who records what
+
+| Give-up | Recorded before |
+|---|---|
+| the page file's newest checkpoint does not check | the store's own call of `PageFile::open_giving_up` with the approval (`Checkpoints`, by the store) |
+| the device keeps failing a read the page file needs | the administrator's call `Store::give_up_pages`, which records it and then calls `PageFile::open_giving_up` (`Checkpoints`, by the administrator) |
+| accepting the log's damage | the acceptance's renames, copy, lengthening and `state` update (`LogDamage`, which says too when the last batch confirmed may be lost) |
+| whatever may follow an unreadable end | the log's give-up (`UnreadableEnd`) |
+| a copy of `state` passed over, no whole batch found after the later of the marker and the checkpoint's entry | the log's open that settles the mark (`LastBatch`, at most one each start). That open goes on whatever it finds after that entry: the record covers it. Before the record, the open's own walk may have written again a checked prefix of the batch it then found incomplete (when its first walk had found a whole batch there); nothing else |
+
+What a start does before an act it records cannot be refused with the
+act: its first steps have already raised `state`'s start count, and may
+have settled the page file's slots and given up a damaged newest
+checkpoint (recorded first). A refused record leaves those.
+
+### 7.7 Limits
+
+- A record damaged after it was written loses what it said: the read
+  reports the place, and an incident there is unknown until acknowledged.
+- A record cut short by a crash is reported as a place that does not
+  check until an acknowledgement, where any of its bytes reached the
+  device; nothing was acted on it.
+- A record describes an approved act, which may not have run.
+- The read takes at most 16,974,336 bytes into memory, which decode to at
+  most 7 bytes of memory each; the bytes read and an open's report come
+  on top.
+- An acknowledgement acknowledges everything the read showed, including
+  places that do not check, places the device failed to read (which can
+  hold a record that was never shown) and bytes past the read's limit; a
+  change between the read and the call refuses it when the read can see
+  it.
+- An acknowledgement that fails may have taken effect (its rename can land
+  before the failure); the next read shows which.
+- A journal made again whose rename landed and whose folder flush did not
+  can be lost again by a crash: the next open records `JournalLost` again.
+- Every hash a read shows covers the bytes the read takes; bytes past the
+  limit are covered only by the file's size.
+- A `Checkpoints` record names at most 128 restore points of each
+  checkpoint; the rest are counted, and the hash says which approval it
+  was, but their names are not in the journal. A page file approval
+  gives up at most two checkpoints and writes over at most four slots;
+  the largest such record, at this code's limits (4 checkpoints counted,
+  128 names of 64 bytes each, the longest text), is 40,340 bytes. An
+  approval the administrator writes by hand that does not fit is refused
+  (`TooLarge`), with nothing given up.
+- A `LogDamage` record holds at most 65,536 segment files and 65,536
+  bytes. A row that gives both its entries takes 32 bytes, and one for a
+  segment set aside earlier up to 83 with its path; segments set aside
+  with their own entries take a row each, so a plan of about 2,000 of
+  them, or more files, is refused (`TooLarge`), with nothing given up and
+  nothing in the log changed (the start's first steps have run).
+- A plan names what an earlier acceptance set aside, from its record,
+  only while `state` holds what that plan was made against. That holds
+  for one generation of a store: a `state` restored from before an
+  acceptance over the log and the journal after it can match again.
