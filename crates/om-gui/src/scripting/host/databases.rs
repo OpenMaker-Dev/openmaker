@@ -479,9 +479,8 @@ impl WorkerHost<'_> {
         let host_version = self.p().host_application_version().unwrap_or_default();
         let privileges = self.p().account_privileges();
         // Without it the window this builds has empty layout menus outside
-        // Layout mode (#855). The provider computes it from the catalog it
-        // read at open; a catalog it cannot decode leaves them empty.
-        let layout_menu = self.p().layout_menu().unwrap_or_default();
+        // Layout mode (#855).
+        let layout_menu = self.p().layout_menu();
         self.send(ScriptEvent::FileOpened(Box::new(
             crate::scripting::OpenedFile {
                 id: self.s.file.id,

@@ -942,7 +942,18 @@ impl OpenMakerApp {
             crate::session::DEFAULT_PAGE_SIZE,
         );
         session.set_layouts_for(opened.layouts, doc.calcs.schema().map(AsRef::as_ref));
-        session.layout_menu = opened.layout_menu;
+        // A catalog the provider could not read is said, as for a file
+        // opened from Home (`Reply::Layouts`); the window still opens on
+        // its layout, with empty layout menus outside Layout mode.
+        match opened.layout_menu {
+            Ok(menu) => session.layout_menu = menu,
+            Err(err) => {
+                self.error = Some(format!(
+                    "The layout menus of \"{}\" could not be read. {}",
+                    session.target.file, err.message
+                ));
+            }
+        }
         // The page setup the file stores, as a file the user opens starts
         // with it (`accept_calc_schema`).
         if let Some(paper) =

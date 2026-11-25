@@ -672,6 +672,11 @@ fn a_visible_peer_open_is_presented_even_when_the_script_returns_to_its_caller()
     )
     .encode();
     peer.put(&[&[17], &[5], &startup.segment.clone()], startup);
+    // A layout name only the other file has, for its window's layout menu.
+    peer.put(
+        &[&[4], &[5], &[2], &[16]],
+        om_scripts::text_node(&[], "Peer Notes"),
+    );
     peer.put(
         &[&[2], &[0x18]],
         OwnedNode::leaf([], vec![0, 0, 4, 3, 0, 0, 2, 1, 9, 0, 0]),
@@ -709,6 +714,16 @@ fn a_visible_peer_open_is_presented_even_when_the_script_returns_to_its_caller()
             && a.state().window_name() == "Peer (127.0.0.1)"
     });
     assert_eq!(app.state().window_name(), "Peer (127.0.0.1)");
+    // The window the script opened lists that file's layouts in Browse
+    // mode, as a window opened from Home does (#855).
+    app.query_all(By::new().role(egui::Role::ComboBox).label("Layout"))
+        .nth(1)
+        .unwrap()
+        .click();
+    app.run_steps(2);
+    app.get_by_role_and_label(egui::Role::Button, "Peer Notes");
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
     run(&mut app, "Select caller");
     assert_eq!(app.state().window_name(), "Root (127.0.0.1)");
     run(&mut app, "Open hidden peer");
