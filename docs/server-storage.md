@@ -11,15 +11,15 @@ it except the contract in section 2.
 (`crates/om-server/src/store.rs`). Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them, and every save's outcome is reported
-(section 5). Views are built, and every reader outside server scripts
-and the operations' own reads reads through them: downloads, finds,
-logins, thumbnails, op88's check of a library, Describe Security, the
-desktop's private host and a schedule's login. `export` is built, and
-backups and the desktop's Save a Copy as make their copies with it. What
-the engine says of a file that is not a version's (whether it takes
-changes, its file on disk) it offers itself. Server scripts and the
-operations' own reads still hold the file engine's store (section 5,
-"Moving the other readers"). Still to come: `import` and `capabilities` (section 5),
+(section 5). Views are built, and every reader outside the operations'
+own reads reads through them: downloads, finds, logins, thumbnails,
+op88's check of a library, Describe Security, the desktop's private
+host, a schedule's login and server scripts, whose finds inside a
+transaction read an overlay view. `export` is built, and backups and the
+desktop's Save a Copy as make their copies with it. What the engine says
+of a file that is not a version's (whether it takes changes, its file on
+disk) it offers itself. The operations' own reads still hold the file
+engine's store (section 5, "Moving the other readers"). Still to come: `import` and `capabilities` (section 5),
 the store engine and everything in sections 6 to 12, which are specified
 here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
@@ -282,8 +282,8 @@ The readers that read through views:
   as the view lists it (`derived::index_on_demand`); GenerateMemberKey
   reads the catalog's index nodes (`derived::issue_member_key`).
   `Source` gained `record_ids`, a table's record list read entry by entry
-  (`[T, 0d]`); its default, which the other sources (`HbamFile`, the
-  store's own for server scripts) keep, decodes `Source::node`'s node.
+  (`[T, 0d]`); its default, which the other sources (`HbamFile`, a server
+  script's `FindSource`) keep, decodes `Source::node`'s node.
   What `om-query` still asks of `Source::node` whole: a field's index (`Indexes::load`: `Index` finds keys by position,
   checks their order once and reads entries by position, so it needs the
   entries at hand), a record's cell (`Indexes::stored_text`), the node
@@ -292,6 +292,11 @@ The readers that read through views:
   UploadMultiple, which is measured whole as the program's work
   (`exec::upload_multiple`). The view filter evaluates a view limit on
   the record as stored (`ViewFilter::viewable`, a record whole);
+- a server script's find (`scripts::host::FindSource`): `om_query::Source`
+  over a read, its catalog the derived state's, a node the view's
+  subtree, an index built on demand as op86's, and no GenerateMemberKey;
+  a find inside a transaction reads an overlay of the version ("The
+  overlay view", below);
 - op80 (`connection::login`): the account the login names, looked up in
   the derived state's accounts (`Derived::account`, "Derived state"
   below) as it was looked up before, by its name in any case. Its password
@@ -421,10 +426,10 @@ only by the outcome: each is one lookup in the same list and one hash.
 A schedule's login and the desktop host's account facts take the store's
 read lock too, which they did not: they read the published accounts. The
 desktop host's suggested account and stored login, and Describe
-Security, took it before. The one reader of the accounts that does not
-read through a view is a server script's (its account facts, "Derived
-state" below), which reads them as before, without waiting for the
-store.
+Security, took it before. So do a server script's account facts and
+Change Password's check of the account's kind now, the last readers of
+the published accounts, which are gone ("A script session's reads",
+below).
 
 Each of these reads may run twice (`Reading::serve`, below): the login's
 lookup, op96's two reads, op88's list of tables, Describe Security's
@@ -848,18 +853,43 @@ at any time from a running server, at a clean stop, and `om-server export`
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
-file's locale and the order of its stored dates, two facts not in the
-tree that compiling its calculations needs, the file's name and whether
-it is served to a desktop client, and one an export needs, the file's
-page 0 as it was loaded (`Derived::page_zero`; its change number is the
-engine's, per version). It is computed from a view
+file's locale and the order of its stored dates, whether its locale
+record is there and does not decode (its language is then unknown,
+`Derived::file_language`), the calculation schema a server script's
+record rules and calculations read (`derived::CalcCatalogs`), two facts
+not in the tree that compiling its calculations needs, the file's name
+and whether it is served to a desktop client, and one an export needs,
+the file's page 0 as it was loaded (`Derived::page_zero`; its change
+number is the engine's, per version). It is computed from a view
 (`Derived::new`, `derived::read_catalog`, `derived::read_accounts`) and
 carries the version it was computed from. It is not part of an engine; an
 engine decides when to compute it. The file engine computes it when it
 loads a file and reads the catalog again after each change of the schema,
 at the moments the store always read its catalog again
 (`Store::reread_catalog`); the locale and the date order stay those the
-file was loaded with, as before. Every reading shares the store's current
+file was loaded with, as before.
+
+The calculation schema is the catalogs a script's rules and calculations
+read, the schema `[3]`, the custom functions `[16]`, the value lists
+`[21]` and each table's field catalog `[T, 03]`, as one slot list, and the
+schema compiled from it with the file's locale (`calc_schema`, without
+the functions FileMaker Server's engine lacks). Each session compiled it
+for itself before, when it started and after each move of the schema
+generation. It is computed with the rest of derived state, at the same
+moments, so each version's sessions share one, and a roll-back puts back
+the derived state from before whole, this with it
+(`engine::tests::the_calculation_schema_follows_the_schema_and_is_put_back_with_it`).
+It leaves out what changes without a change of the schema and neither the
+rules nor the calculations read: a table's deferred field work `[T, 03,
+01, fd]` and each field's next serial value `[T, 03, 05, F, 0c]` (the
+Design functions read the stored one from their own catalogs). So it is
+the same between changes of the schema whenever it is computed, and the
+test view's own, computed later, equals the file engine's. An edit of a
+catalog the decoded schema does not hold, a script `[17]` or a layout
+(`Store::replace_members_in`), now replaces the derived state too, kept
+in the journal, so that a session keyed by its version reads it again.
+
+Every reading shares the store's current
 value (`Arc`), and the catalog within it is shared too, so replacing the
 accounts copies no catalog. An engine with versions keeps it by version,
 and gives it to a later view when `changed_since` says no path it was
@@ -888,23 +918,14 @@ deleted or a password since changed; every login to the file is then
 refused (Views, above). The file engine reads them from its tree, which
 never fails.
 
-Every reader of the accounts reads them through a reading but one: a
-server script's account facts and Change Password's check of the
-account's kind (`Hosted::accounts`, `Hosted::account`), which a
-calculation asks for (`Get ( AccountType )`) while the script host may
-hold the store already, and must not take its lock again. They read the
-derived state of a version published with that version
-(`hosting::Published`): the version the store holds when a write lets go
-of it and that version's derived state, the same `Arc` every reading of
-it shares. It is published while the write still holds the store's write
-lock, after the write, its save or roll-back and its accounts, and
-before the lock is let go (`StoreWriteGuard`'s drop). So a reader that
-takes the store after a write finds the version that write published,
-which a reading checks in debug builds (`FileEngine::read`), and a reader
-of the published state gets the last version a write let go: while a
-write runs, the one before it, which every reader of the store had until
-then. Its lock is its own, taken after the store's by a writer and alone
-by a reader, never the other way.
+Every reader of the accounts reads them through a reading, a server
+script's account facts and Change Password's check of the account's kind
+too (`ServerHost::read_accounts`). Before, those two read the derived
+state of the last version a write let go, published beside the store
+(`hosting::Published`, `Hosted::accounts`), because a calculation could
+ask for them while the script host held the store; the session holds no
+reading while it asks now, and the published state is gone. Tests read
+the accounts the store holds (`Hosted::accounts`, test builds only).
 
 The reads of a file through a view and derived state are functions beside
 it (`derived`): the catalogs, an index built on demand
@@ -918,10 +939,9 @@ so readers and operations share one implementation.
 Still kept by the store, outside derived state: the basis of stored
 calculations (`Store::basis`, below), the verified-index marks
 (`Store::verified`), the schema generation (`Store::schema_generation`,
-which server scripts cache by and which says when the accounts are
-decoded again), the file's language as its locale record is now
-(`Store::file_language`), and the read-only flag and the file's identity
-on disk.
+which says when the accounts are decoded again; server scripts cached by
+it before, and cache by the derived state's version now), and the
+read-only flag and the file's identity on disk.
 
 The basis of stored calculations is not computed from the current view. It
 is what the stored values were last computed with, per table and field:
@@ -974,48 +994,120 @@ slot's file on disk for backups (`Slot::saved_file`) and for a close
 the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
 
+**A script session's reads.** A server script session reads its file
+through readings of its own (`ServerHost::read`), each taken for one read
+and let go when that read returns, at the points where it took the store's
+read lock before: the schema when the session starts and before a step
+when the derived state's version moved (`SchemaParts`), a record, a cell,
+a table's record ids, a global value, the entries of a value index a
+validation checks (unique, existing, a value list from a field), each
+batch of a find's finders (`FindSource`), the Design functions'
+catalogs, a field's next serial value, a container's library member, the
+privilege set, a related-record lookup, and the account facts. A read
+returns what it read, owned where the work after it needs it, and does
+that work after the reading is let go: a record's values for a
+calculation from a copy of the record, then each container's file name
+through a reading of its own, where before the store's lock was held
+across both and passed down so that it was not taken twice. It never
+holds a reading across a write it submits (every write is submitted with
+none held), so a read after the session's commit, reservation or account
+edit reads the version that write made: the session sees what it wrote
+(`scripts::tests::a_session_reads_what_it_committed`). Its schema is
+cached by the version of the derived state it was read from, and read
+again before a step whenever the engine's is another (a schema change, a
+script or layout edit, a roll-back that put one back). The account facts
+and Change Password's check read the reading's accounts
+(`Reading::serve_with_accounts`). The privilege set is read through the
+security catalog's names and set references alone (each account's `10`
+and `0b`, a set's member, each extended privilege's `10` and its set
+keys); before, it borrowed the catalog `[23]` whole, the passwords' `06`
+with it. How long the store's lock is held, before and after, is in the
+pull request that moved them ([#755](https://github.com/OpenMaker-Dev/openmaker/issues/755)).
+
+Lock order: a reading holds the store's read lock, and a write the store's
+write lock, then the lock table. A thread that took a second reading while
+it held one, or submitted a write while it held one, would wait behind a
+writer queued meanwhile, which waits for the first (#421). In debug builds
+every reading and every submitted operation checks that the thread holds
+no reading, and fails at once if it does
+(`engine::reading::assert_no_reading_held`), so a test that would take the
+store's lock twice on one thread fails rather than hang only when a writer
+happens to queue. `FileEngine::try_submit` is not checked: it takes the
+store only when no one holds it, and never waits. Every test of
+`om-server` runs with the check, and the test view answers every read of
+the fixtures' servers and of the in-crate script sessions.
+
+A read that fails is 802, "Unable to open file", as a login, Describe
+Security and a schedule answer one; FileMaker's answer when it cannot
+read part of a file in a script is unmeasured. By the kind of read:
+
+| Read | What the script gets |
+|---|---|
+| the schema when the session starts | it runs nothing; the request's error is 802 |
+| the schema before a step | the session keeps the schema it read, and the step fails with 802 |
+| a record, a cell, a table's record ids, a global value, the Design functions' catalogs and a next serial value, a container's file name, the privilege set, the account facts | read as missing; the step fails with 802 |
+| a container's data in a calculation, a related-record lookup | the calculation's error 802; the step fails with 802 |
+| a find | the find's error 802 |
+| a validation's index entries | the commit is refused with 802 |
+| the accounts Change Password checks | the step is refused with 802 before anything is changed |
+
+After a read failed in a step, the session submits no change to the file
+until the step ends (a commit, a serial number, a record id, Set Next
+Serial Value and the account edits are refused with 802), so nothing read
+as missing is written, and the step fails with 802 unless it failed with
+an error of its own (`ScriptHost::take_step_error`). A step that reads
+nothing that fails is unchanged. Accounts the file engine could not
+decode are a read that failed too: Change Password was refused with 3 and
+the account facts read as none before; both are 802 now
+(`scripts::tests::each_kind_of_read_that_fails_is_802`).
+
+**The overlay view.** A view of one version with some subtrees covered
+(`engine::Overlay`): a covered path is read from the node laid over it,
+or as missing when nothing is, never from the version; a node above a
+covered path is the version's node with each covered child laid in its
+place, removed or added in key order (a list when the version lacks it
+and something is laid below it), and its subtree the version's with the
+covers applied; every other path is the version's. A walk across covered
+and uncovered nodes gives them in the key order of the tree the rule
+describes: the version's nodes up to a covered one, the covered node's
+subtree as laid, then the version's after it. It reads the version's
+version, and anything at, above or below a cover counts as changed since
+any other. It answers every view operation with the same paging and
+limits as the others, and is answered through the test view in tests.
+
+A server script's find inside an open transaction is two finds, as
+before: one over the reading's version for the records the transaction
+did not change, the records it changed or deleted taken out of its
+answer, and one over an overlay of that version for the records it wrote
+(`scripts::host::transaction_cover`). The overlay covers the table's
+record list `[T, 05]` with the transaction's records alone, its record-id
+list `[T, 0d]` with their ids, and its indexes `[T, 01]` with nothing, so
+that a find builds each index it reads from those records alone, into a
+list of what waits of its own, none of which is stored: what it read from
+a store that held those records alone before (`Store::scratch`, kept in
+the tests as the reference,
+`scripts::tests::a_find_in_a_transaction_answers_as_the_scratch_store_did`).
+A covered record's entries in the version's indexes are not seen. Laying
+the transaction's records into the version's indexes instead would have
+answered a find for duplicates (`!`) and the form checks of a text
+field's language otherwise than before.
+
 **Moving the other readers.** The readers below, but those marked moved,
 still hold the store (`Hosted::read_store`, or
-`Transaction::view() -> &Store` inside `run`), or read the accounts the
-store published (`Hosted::accounts`, `Hosted::account`). Each is listed
+`Transaction::view() -> &Store` inside `run`). Each is listed
 with the `Store` helpers it reads through, what it reads (one node, a
 list a node's children make, or a subtree whole), and what it needs that
 views and derived state do not give yet. No connection handler is among
 them, nor anything of the hosting, the desktop's private host, the
-authoring extension or schedules: outside the file engine itself
-(`engine`, `Hosted`'s store and its guard), only server scripts and the
+authoring extension, schedules or server scripts: outside the file
+engine itself (`engine`, `Hosted`'s store and its guard), only the
 operations' own reads take `Store`. They move in this order, the smaller
 first, each with the test view's runs of its tests:
 
 1. The security catalog, the desktop's private host and schedules: moved
    (Views, above).
-2. Server scripts and their host (`scripts/host.rs` and `scripts/host/`).
-   `Schema::load` and `refresh_schema` (`Store::catalog`, `locale`,
-   `file_language`, `schema_generation`, and the design catalogs `[3]`,
-   `[4]`, `[16]`, `[17]` whole, `design::design_catalogs`): derived state
-   plus a calculation schema, which should join it, cached by version.
-   `committed_records` (`[T, 0d]` decoded, else `[T, 05]` listed), and
-   `with_record_view` and `committed_node` (one record whole).
-   `field_holds` and `value_held_elsewhere` (`Store::value_keys`, then one
-   entry of a value index by key: `children` from that key). `global_value`
-   (`[T, 08, F]` whole). `query_store` (`om_query::Source for Store` and
-   `Store::has_indexes_on_demand`): the find path's source over a read, as
-   op86 has now. `query` (`Store::scratch`: a store holding the
-   transaction's records alone): needs a view that lays a script's
-   uncommitted records over a version, which no view gives yet.
-   `design::next_serial_value` (`Store::serial_value`'s node, one node),
-   `containers.rs`' `value`, `data` and `pending_tokens`
-   (`Store::container`, `member_data`: a library member whole), `get.rs`'
-   `privilege_set` (the security catalog's set `[23, 2, 5, P]` whole),
-   `related.rs`' `index_lookup` (an index entry by key), and the session's
-   account facts (`ServerHost::authenticated_account_info`, Change
-   Password's check of the account's kind: the published accounts, which
-   a calculation reads while the host may hold the store). Needs: the
-   overlay view, the calculation schema in derived state, and the script
-   session's cache keyed by a design version rather than the store's
-   schema generation; once a session reads through a reading of its own,
-   its account facts come from that reading's derived state, and the
-   published accounts can go.
+2. Server scripts and their host: moved ("A script session's reads",
+   above).
 3. Backups and exports: moved ("Exports", above). A backup takes one
    reading for one open of the file on disk (`FileEngine::stored`), as it
    opened the file under the store before, and copies it after;
