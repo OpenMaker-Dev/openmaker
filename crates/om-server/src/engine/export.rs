@@ -435,8 +435,7 @@ pub fn write_checked(
 /// ([`write_checked`]): the export of an engine whose versions no file on
 /// disk holds (the store engine's, `super::paged`). A folder's file is
 /// published once it checks. When it fails, what is under its name is
-/// what [`ExportError`] says: nothing where it was made unnamed, what was
-/// written where it was made under its name
+/// what [`ExportError`] says
 /// ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 #[cfg_attr(
     not(test),

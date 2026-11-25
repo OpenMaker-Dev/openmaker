@@ -894,14 +894,22 @@ hosted on it, and nothing of its write side is built.
   fit below the last index an entry can have. When the store's write
   path takes it, its batches become the parts of a group whose last entry
   adds the file (sections 6.9, 6.10). What it accepts, an export gives
-  back: the export succeeds, and holds the same nodes, kinds and values;
-  imported at the same entry in the same batches, it has the same root
-  hash (a page's hash covers the entry that wrote it, so other entries or
-  batches give another root hash over the same nodes). The one exception
-  is page 0's change number, which an export advances by the pages it
-  writes: the export of a file within that many of the bound below may
-  itself be refused. So it refuses, typed (`paged::ImportError`) and with
-  the tree it made dropped again:
+  back: an export can be written, for a file whose export numbers fewer
+  than 2^32 pages (the writer's page numbers are 32 bits, and an export
+  can number more pages than its source, which matters only near the
+  format's 16 TiB) and whose change number has the room for them; it
+  holds the same nodes, kinds and values; and imported at the same entry
+  in the same batches, it has the same root hash (a page's hash covers
+  the entry that wrote it, so other entries or batches give another root
+  hash over the same nodes). That second import has two boundaries:
+  page 0's change number, which an export advances by the pages it
+  writes, so the export of a file within that many of the bound below
+  may itself be refused; and the entries, whose check is worked out from
+  the file's length, while an export can be a page or more longer than
+  its source, so at a first entry within a few pages' worth of the last
+  index an entry can have, the export's re-import may be refused. Accepted
+  means exportable once. So it refuses, typed (`paged::ImportError`) and
+  with the tree it made dropped again:
   - a file that does not read, an encrypted one among them, whose pages
     do not decode, and five shapes `om_hbam`'s streaming reader refuses
     and the file engine's reader (`HbamFile`) reads: a leaf chain that
@@ -922,12 +930,16 @@ hosted on it, and nothing of its write side is built.
     image (section 6.10, not built);
   - a node whose entry in an export's index could cost more than 1,019
     bytes (section 6.11): past it the file writer's index can grow past
-    the 16 levels it writes, and an export would fail. The file engine
-    hosts such a file, and its saves fail only where the index does;
+    the 16 levels it writes, and an export would fail. The bound is
+    conservative, so some files past it could be written (a chain of five
+    empty lists with 219-byte segments). The file engine hosts such a
+    file, and its saves fail only where the index does;
   - a page 0 the writer does not write: not one 4,096-byte page, or a
     change number above `u64::MAX - u32::MAX`, which leaves no room for
-    the 2^32 pages an export may number from it. The file engine hosts
-    such a file, and each of its saves fails before it writes anything;
+    the 2^32 pages an export may number from it. That is a worst case: a
+    file whose export numbers fewer pages is refused too. The file engine
+    hosts such a file, and a save of it fails, before it writes anything,
+    only when its pages pass the room the change number leaves;
   - an item past the bounds of section 6.11, which no file the reader
     reads holds.
 - **Page 0** comes back with the import (`Imported::page_zero`), as read.
@@ -942,9 +954,8 @@ hosted on it, and nothing of its write side is built.
   second walk. It is the file engine's compacted copy of the same file,
   byte for byte. A read that fails fails it; what is then left under the
   export's name is what every export leaves ("Where an export goes",
-  above): nothing where the file was made unnamed, what was written where
-  it was made under its name
-  ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
+  above, and `engine::ExportError`;
+  [#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
@@ -2143,9 +2154,13 @@ store take unbounded memory or disk:
   of its level holds four entries or more, since the writer closes a page
   only when the next entry does not fit and four entries of 1,019 bytes
   fill its 4,076 bytes, so 16 levels index 4^16 = 2^32 pages, every page
-  a file can number (the derivation is at `MAX_INDEX_ENTRY`). It is not
-  tight: a file with entries past it fails only when enough of them make
-  pages of one entry in a row. FileMaker's 66 templates reach 155 bytes,
+  a file can number (the derivation is at `MAX_INDEX_ENTRY`). For four
+  entries it is tight: at 1,020 bytes four entries no longer fit a page.
+  For a file it is conservative: past it an index page may hold fewer
+  than four entries, and a file fails only when its index's fan-out is
+  too small for its pages (at two entries a page, 16 levels index 2^16
+  pages), so some files past it could be written. FileMaker's 66
+  templates reach 155 bytes,
   the tests' fixtures 34. Import refuses a file past it, so that what the
   store holds can always be exported; the store's write path will have to
   keep every change within it too

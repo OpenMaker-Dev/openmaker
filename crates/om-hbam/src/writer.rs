@@ -71,10 +71,17 @@ pub const MAX_DEPTH: usize = 16;
 ///   and since page numbers are 32 bits, `n < 2^32 = 4^16`: level 16 has
 ///   one page, the root.
 ///
-/// The bound is not tight: a tree with a few nodes past it can be written
-/// (each costs a level only when such entries fill a page each, and 16 of
-/// them in a row are needed), and a tree of nodes within it never fails for
-/// its index.
+/// Within the bound a tree never fails for its index, and the bound is
+/// tight for the four entries: four entries without a shared prefix that
+/// cost 1,019 bytes each fill a body exactly, and at 1,020 the fourth does
+/// not fit. Past it, an index page may hold fewer than four entries, and
+/// what makes a tree fail is too little fan-out over the whole index, not
+/// pages of one entry alone: at two entries a page, for one, 16 levels
+/// index 2^16 pages, so a file of more leaf pages whose entries all cost
+/// over 2,038 bytes passes the cap. The bound is conservative: a tree with
+/// a few nodes past it is written (a chain of five empty lists with
+/// 219-byte segments fits one leaf page), and the store engine's import,
+/// which refuses every node past it, refuses such a tree.
 pub const MAX_INDEX_ENTRY: usize = BODY / 4;
 
 /// The most the index entry of a page whose first key is at the node at
@@ -490,11 +497,12 @@ mod tests {
         entries
     }
 
-    /// [`MAX_INDEX_ENTRY`] on the writer's own index: with every node's
-    /// entry near the bound (pages that start below four 219-byte lists),
-    /// every index page but the last of its level holds four entries or
-    /// more, so each level has a quarter of the pages of the one below at
-    /// most.
+    /// Below [`MAX_INDEX_ENTRY`] on the writer's own index: with every
+    /// node's entry near the bound (pages that start below four 219-byte
+    /// lists, 891 bytes at most), every index page but the last of its level
+    /// holds four entries or more, so each level has a quarter of the pages
+    /// of the one below at most. The bound itself is pinned on one index
+    /// page (`node_writer`'s `four_entries_at_the_index_bound_fill_a_page`).
     #[test]
     fn index_pages_hold_four_entries_within_the_bound() {
         let superblock = {

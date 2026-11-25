@@ -77,9 +77,10 @@
 //! - a node whose entry in an export's index could cost more than
 //!   `om_hbam::writer::MAX_INDEX_ENTRY`, 1,019 bytes (a path of long
 //!   segments, deep): within it the writer's index never passes the 16
-//!   levels it writes, and past it enough such pages in a row make the
-//!   export fail. The file engine hosts such a file and its saves fail
-//!   only when they meet the 16 levels;
+//!   levels it writes, and past it an index with too little fan-out for
+//!   its pages does, and the export fails. The bound is conservative: some
+//!   files past it could be written. The file engine hosts such a file and
+//!   its saves fail only when they meet the 16 levels;
 //! - an item past the store's bounds (section 6.11), which no file the
 //!   reader reads can hold: a slot's value has a 2-byte length and a path
 //!   at most 17 segments of at most 255 bytes, within the 64 KiB of each;
@@ -108,10 +109,9 @@
 //! read back and compared with a second walk, with the imported page 0 and
 //! its own change number, so that it is the file engine's compacted copy
 //! of the same file byte for byte. A read of the view that fails is
-//! [`ExportError::Read`]. Where the export is made unnamed and linked to
-//! its name only once it checks (Linux with unnamed files), nothing is left
-//! under its name; where it is made under its name, a failed export leaves
-//! what was written there, as every export does (`crate::staged`).
+//! [`ExportError::Read`], and what a failed export leaves under its name
+//! is what [`ExportError`] says for every export
+//! ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 
 use std::borrow::Cow;
 use std::fmt;
@@ -687,15 +687,24 @@ impl std::error::Error for ImportError {}
 ///
 /// **What import accepts, export gives back.** For every file it accepts:
 ///
-/// - [`export`] of the tree succeeds, as far as what the file holds goes;
+/// - [`export`] of the tree can be written, for a file whose export numbers
+///   fewer than 2^32 pages (the writer's page numbers are 32 bits; an
+///   export can number more pages than its source, and a source near the
+///   format's 16 TiB may need more than that) and whose change number has
+///   the room for them (checked below);
 /// - an import of that export holds the same nodes, kinds and values, and,
 ///   imported at the same entry in the same batches, has the same root
 ///   hash (a page's hash covers the entry that wrote it, so another first
 ///   entry or other batches give another root hash over the same nodes);
-/// - but for page 0's change number: an export advances it by the pages it
-///   writes, so the export of a file whose change number is within that
-///   many of the bound below may itself be refused. Accepted means
-///   exportable once, not exportable and accepted again.
+/// - but for two boundaries of that second import. Page 0's change number:
+///   an export advances it by the pages it writes, so the export of a file
+///   whose change number is within that many of the bound below may itself
+///   be refused. And the entries: their check is worked out from the
+///   file's length, and an export can be a page or more longer than its
+///   source (a source that leaves out the root's begin, for one), so at a
+///   first entry within a few pages' worth of the last index an entry can
+///   have, the export's re-import may be refused ([`ImportError::Entries`]).
+///   Accepted means exportable once, not exportable and accepted again.
 ///
 /// So it refuses ([`ImportError::Unwritable`]):
 ///
@@ -824,8 +833,11 @@ fn fill<R: IoRead + Seek, U: Units + ?Sized>(
 /// Refuse a page 0 an export could not write the file with: one that is
 /// not one 4,096-byte page, the only page size the file writer writes, or
 /// whose change number leaves no room for the pages an export numbers from
-/// it (one each; an `.fmp12` has at most 2^32 pages). The reader checked the
-/// rest the writer copies: the magic and the page size it gives.
+/// it (one each; an `.fmp12` has at most 2^32 pages). The room is a worst
+/// case: a file whose export numbers far fewer pages is refused too,
+/// though the file engine could still save it and the writer write it. The
+/// reader checked the rest the writer copies: the magic and the page size
+/// it gives.
 fn check_page_zero(page_zero: &[u8]) -> Result<(), ImportError> {
     let refuse = |reason| {
         Err(ImportError::Unwritable {
@@ -911,7 +923,8 @@ fn check(path: &[Vec<u8>], node: &Node) -> Result<(), ImportError> {
 /// with that page 0 from the change number it holds and checked against a
 /// second walk. It is what the file engine's compacted copy of the same
 /// file holds. When it fails, what is left under a folder's name is what
-/// `crate::staged` leaves: nothing where the file was made unnamed.
+/// [`ExportError`] says
+/// ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 pub fn export(
     view: &dyn View,
     page_zero: &[u8],
