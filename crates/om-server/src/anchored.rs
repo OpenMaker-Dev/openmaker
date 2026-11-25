@@ -181,13 +181,38 @@ impl Folder {
     /// database would hold the caller): so that a file swapped in after a
     /// check cannot be read instead.
     pub fn open_regular(&self, name: &OsStr) -> io::Result<File> {
+        self.open_regular_as(name, false)
+    }
+
+    /// [`Folder::open_regular`] for an exclusive lock: open for reading and
+    /// writing, as an exclusive `flock` needs on file systems that build it
+    /// from byte-range locks (NFS on Linux, flock(2), "NFS details"), or,
+    /// when this user may not write the file (or the file system is
+    /// read-only), for reading. Nothing is written through it: saves write
+    /// a new copy and rename it.
+    pub fn open_regular_for_lock(&self, name: &OsStr) -> io::Result<File> {
+        match self.open_regular_as(name, true) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+                ) =>
+            {
+                self.open_regular_as(name, false)
+            }
+            opened => opened,
+        }
+    }
+
+    fn open_regular_as(&self, name: &OsStr, write: bool) -> io::Result<File> {
         #[cfg(unix)]
         let file = {
             use rustix::fs::{Mode, OFlags};
+            let mode = if write { OFlags::RDWR } else { OFlags::RDONLY };
             File::from(rustix::fs::openat(
                 &self.fd,
                 name,
-                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                mode | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
             )?)
         };
@@ -203,7 +228,10 @@ impl Folder {
                     ),
                 ));
             }
-            File::open(path)?
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(write)
+                .open(path)?
         };
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(

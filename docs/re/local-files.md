@@ -784,17 +784,27 @@ than a second reader and writer.
   the same way (`filelock::open_locked`), so a file a server hosts on this
   computer is in use too (docs/server-storage.md 5, "The file's lock"). Its bytes are read through the locked descriptor and decoded; a file
   that is not HBAM7 is refused with 807, one that does not decode (damaged
-  or encrypted) with 805. Nothing is written before an admitted login.
+  or encrypted) with 805. A file named as a save's copy (ending in
+  `.omsave`, in any case) is refused with 807 before it is read: opening
+  the file it would be the copy of removes it (OpenMaker's own rule,
+  docs/server-storage.md 5, "A leftover copy"). Nothing is written before
+  an admitted login.
 - **Read-only files.** A file is opened read-only when it cannot be written
   safely: this user or its file system may not write it, its folder does not
   allow the new copy a save writes, it has other names (hard links, which
   the renamed copy would leave with old contents), it cannot be locked here
-  (Windows; file systems without `flock`), or an entry that a save does
-  not leave has the name of a save's copy (`<file>.omsave`: a link, a
-  folder, a file with other names). A copy a save left when it stopped
-  part way, a regular file with no other name, is removed once the open
-  holds the lock for writing, as OpenMaker Server removes one
-  (docs/server-storage.md 5, "Failed saves"). The window shows why; the provider
+  (Windows; file systems without `flock`; a lock refused for the
+  descriptor's mode, as NFS refuses an exclusive lock for a descriptor open
+  only for reading), or an entry that a save does not leave has the name
+  of a save's copy (`<file>.omsave`: a link, a folder, a file with other
+  names, a copy another program holds locked). A copy a save left when it
+  stopped part way, a regular file with no other name, is removed once the
+  open holds the lock for writing and the copy's own lock, as OpenMaker
+  Server removes one (docs/server-storage.md 5, "Failed saves"). A file
+  also becomes read-only when the deferred field work it held could not be
+  saved at the first admitted login (docs/server-storage.md 5): the
+  reason the provider gives when that login ends, and at each later check,
+  is the host's state after it. The window shows why; the provider
   refuses changes before sending them (FileMaker's error 6, also for the
   deletions scripts and portals make), the host refuses every write request
   (record creation, uploads, commits, serials, schema and container
@@ -835,7 +845,9 @@ than a second reader and writer.
     has, whatever is renamed over the path meanwhile. A compacted copy is
     the key tree written as a new packed file (hbam-writer.md 7.2). So is a
     copy while changes a failed save left wait in memory, or of a file the
-    host could not lock.
+    host could not lock. Before any login the tree is the file as its disk
+    holds it, deferred field work list included, so a compacted copy saved
+    then finishes that work when an account first logs in to it.
   - *Destinations.* Linux only. The resolved path must lead through
     existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
     be owned by root or the effective user and either deny group and other

@@ -99,6 +99,13 @@ pub enum ReadOnly {
     /// folder, a file with other names), or a copy a save left that could
     /// not be removed.
     CopyInTheWay,
+    /// It holds content OpenMaker cannot write back (found when it was
+    /// read).
+    Unwritable,
+    /// Its deferred field work, finished when an account it admits first
+    /// logged in, could not be saved, or cannot be done: the file is served
+    /// as its disk holds it, the work pending.
+    DeferredWork,
 }
 
 impl std::fmt::Display for ReadOnly {
@@ -111,6 +118,11 @@ impl std::fmt::Display for ReadOnly {
             ReadOnly::CopyInTheWay => {
                 "an entry named like a save's copy (.omsave) is beside it; remove that to save \
                  changes"
+            }
+            ReadOnly::Unwritable => "it holds content OpenMaker cannot write back",
+            ReadOnly::DeferredWork => {
+                "the field changes it was waiting to finish could not be saved; it is shown as \
+                 saved before them"
             }
         })
     }
@@ -219,6 +231,15 @@ impl LocalHost {
         })?;
         if !path.is_file() {
             return Err(LocalHostError::NotAFile(path));
+        }
+        // A file named as a save's copy is never opened: opening the file
+        // it would be the copy of removes it (OpenMaker's own rule,
+        // `store::is_save_copy_name`). It is not a database to open.
+        if path
+            .file_name()
+            .is_some_and(crate::store::is_save_copy_name)
+        {
+            return Err(LocalHostError::NotFileMaker);
         }
         let name = path
             .file_name()
@@ -334,12 +355,24 @@ impl LocalHost {
 
     /// Whether the file is served read-only.
     pub fn is_read_only(&self) -> bool {
-        self.read_only.is_some()
+        self.read_only().is_some()
     }
 
-    /// Why the file is served read-only, if it is.
+    /// Why the file is served read-only, if it is, as its store is now: the
+    /// reason it was opened read-only, or what made it read-only since (its
+    /// deferred work, finished at the first admitted login, could not be
+    /// saved).
     pub fn read_only(&self) -> Option<ReadOnly> {
-        self.read_only
+        self.read_only.or_else(|| {
+            let (_, file) = self.served()?;
+            let cause = file.read_store().read_only_cause()?;
+            Some(match cause {
+                crate::store::ReadOnlyCause::Unwritable => ReadOnly::Unwritable,
+                crate::store::ReadOnlyCause::DeferredWork => ReadOnly::DeferredWork,
+                // Opened so: the reason it was opened with, which is set.
+                crate::store::ReadOnlyCause::Opened => ReadOnly::NotWritable,
+            })
+        })
     }
 
     /// The account the file names in its account catalog's header (`[23,
@@ -857,6 +890,24 @@ mod tests {
             saved_over(&path, b"again", false);
         });
         assert!(matches!(refused, Err(LocalHostError::InUse(_))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// On NFS an exclusive lock is refused for a descriptor open for
+    /// reading (`EBADF`): the file cannot be locked here, and opens
+    /// unlocked and read-only, as on a file system without locks.
+    #[test]
+    fn a_lock_refused_for_the_descriptors_mode_opens_the_file_unlocked_and_read_only() {
+        let dir = folder("unlockable");
+        let path = dir.join("file.fmp12");
+        std::fs::write(&path, b"initial").unwrap();
+        let fail = |errno| crate::filelock::FAIL_LOCKS.with(|fail| fail.set(errno));
+        fail(Some(rustix::io::Errno::BADF));
+        let opened = open_locked(&path, &mut |_| {});
+        fail(None);
+        let (locked, read_only) = opened.unwrap();
+        assert!(matches!(locked, Locked::Unlocked(_)));
+        assert_eq!(read_only, Some(ReadOnly::NoLocks));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

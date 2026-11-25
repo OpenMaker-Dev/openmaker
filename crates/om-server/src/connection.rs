@@ -2514,7 +2514,7 @@ fn query(
             // instructions, a key it reserves. Only such a program fails
             // when what it stores is not stored.
             let changes = query_changes_file(&program);
-            let outcome = {
+            let (outcome, ticket) = {
                 let store = file.hosted.read_store();
                 if store.is_read_only() && changes {
                     return Err(Refused.into());
@@ -2533,8 +2533,12 @@ fn query(
                         .to_result_within(max_return as usize));
                 }
                 let restricted = !full_access(file);
+                // The keys its GenerateMemberKey issues are its own, so
+                // that it learns what became of them whoever stores them.
+                let ticket = store.issue_ticket();
                 let source = QuerySource {
                     store: &store,
+                    ticket,
                     restricted,
                     account_key: file
                         .account
@@ -2553,7 +2557,7 @@ fn query(
                 if let Some(view) = &source.view {
                     note_withheld(file, view);
                 }
-                outcome
+                (outcome, ticket)
             };
             if let Some(error) = &outcome.error {
                 info!("{peer}: query on {:?} failed: {error}", file.hosted.name);
@@ -2568,6 +2572,9 @@ fn query(
                 store.has_issued_member_keys() || store.has_indexes_on_demand()
             };
             let mut slots = outcome.slots;
+            // What became of the keys this program issued, once a write took
+            // them: this request's own below, or another request's before.
+            let mut settled = None;
             if pending || !outcome.writes.is_empty() {
                 let done: Vec<String> = outcome
                     .writes
@@ -2580,7 +2587,9 @@ fn query(
                 let draft = Draft::ChangeSchema {
                     writes: outcome.writes,
                 };
-                match shared.engine.submit_draft(&file.hosted, draft).reply {
+                let draft = shared.engine.submit_draft(&file.hosted, draft).reply;
+                settled = Some(file.hosted.read_store().finish_ticket(ticket));
+                match draft {
                     Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes(Ok(())) => {
                         for done in done {
                             info!("{peer}: {:?}: {done}", file.hosted.name);
@@ -2621,6 +2630,20 @@ fn query(
                     }
                     other => return Err(mismatched(&other)),
                 }
+            }
+            // The keys this program issued may have been taken and written
+            // by another request's write before its own: its answer is how
+            // that save ended. Stored, it stands; not stored, the keys
+            // waited again and its own write above answered for them;
+            // unknown, it is the error slot, never success.
+            let settled = settled.unwrap_or_else(|| file.hosted.read_store().finish_ticket(ticket));
+            if let Some(crate::store::KeysSettled::Unknown(code)) = settled.filter(|_| changes) {
+                warn!(
+                    "{peer}: {:?}: the member keys this query reserved were written with an \
+                     unknown outcome",
+                    file.hosted.name
+                );
+                slots = error_slot(code);
             }
             slots
         }
@@ -2667,6 +2690,9 @@ fn query_changes_file<E>(program: &Result<om_query::Program, E>) -> bool {
 /// behavior (query-program.md 7.1).
 struct QuerySource<'s> {
     store: &'s crate::store::Store,
+    /// The request's own, for the member keys it issues
+    /// ([`crate::store::Store::generate_member_key_for`]).
+    ticket: u64,
     restricted: bool,
     account_key: Option<&'s [u8]>,
     late: bool,
@@ -2732,7 +2758,7 @@ impl om_query::Source for QuerySource<'_> {
     }
 
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
-        om_query::Source::generate_member_key(self.store, catalog)
+        self.store.generate_member_key_for(catalog, self.ticket)
     }
 }
 

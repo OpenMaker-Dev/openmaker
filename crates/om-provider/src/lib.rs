@@ -2914,7 +2914,6 @@ impl NativeProvider {
             account: account.clone(),
             password: password.to_string(),
         };
-        let read_only = host.read_only().map(|reason| reason.to_string());
         let endpoint = Endpoint {
             ca_pem: host.certificate_pem().to_vec(),
             // No client license goes to a file OpenMaker opens itself.
@@ -2931,7 +2930,15 @@ impl NativeProvider {
         use zeroize::Zeroize;
         connection.password.zeroize();
         match opened {
-            Ok(()) => Ok(om_data::LocalOpen::Opened { read_only }),
+            // As the file is after the login, which may have made it
+            // read-only (its deferred work could not be saved).
+            Ok(()) => Ok(om_data::LocalOpen::Opened {
+                read_only: self
+                    .local
+                    .as_ref()
+                    .and_then(|host| host.read_only())
+                    .map(|reason| reason.to_string()),
+            }),
             // A refused account keeps the file waiting for another.
             Err(error) if error.code.is_some_and(local_refusal) => Err(error),
             Err(error) => {

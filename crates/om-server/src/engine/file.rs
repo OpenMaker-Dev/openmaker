@@ -9,7 +9,7 @@ use super::{
     HostEnvironment, Operation, Outcome, Reply, StorageError, StoreIndexes, WRITER,
 };
 use crate::hosting::{Hosted, Saving, StoreWriteGuard};
-use crate::store::{IndexId, MemberKey, SaveError, Store};
+use crate::store::{IndexId, KeysSettled, MemberKey, SaveError, Store};
 
 /// The file engine. Its environment is the one operations read the clock
 /// and randomness from ([`Environment`]).
@@ -161,11 +161,14 @@ fn changes_file(operation: &Operation) -> bool {
 
 /// What a completed draft took of what reads left waiting: the member keys
 /// and indexes, small values, which wait again when the operation is not
-/// stored or its run is left by a panic.
+/// stored or its run is left by a panic, and the tickets of the requests
+/// whose keys these are, which learn what became of them
+/// (`Store::settle_key_tickets`).
 #[derive(Default)]
 struct Taken {
     member_keys: Vec<MemberKey>,
     indexes: Vec<IndexId>,
+    tickets: Vec<u64>,
 }
 
 impl Taken {
@@ -173,6 +176,7 @@ impl Taken {
     fn put_back(self, store: &mut Store) {
         store.put_back_member_keys(self.member_keys);
         store.put_back_indexes(self.indexes);
+        store.put_back_key_tickets(self.tickets);
     }
 }
 
@@ -194,14 +198,15 @@ fn complete(draft: Draft, store: &mut Store) -> (Operation, Taken) {
                 return (refused, Taken::default());
             }
             let indexes = store.take_indexes_on_demand();
-            let member_keys = if store.is_read_only() {
-                Vec::new()
+            let (member_keys, tickets) = if store.is_read_only() {
+                (Vec::new(), Vec::new())
             } else {
-                store.take_issued_member_keys()
+                (store.take_issued_member_keys(), store.take_key_tickets())
             };
             let taken = Taken {
                 member_keys: member_keys.clone(),
                 indexes: indexes.clone(),
+                tickets,
             };
             let operation = if writes.is_empty() && member_keys.is_empty() {
                 Operation::StoreIndexes(StoreIndexes { indexes })
@@ -219,6 +224,7 @@ fn complete(draft: Draft, store: &mut Store) -> (Operation, Taken) {
             let taken = Taken {
                 member_keys: Vec::new(),
                 indexes: indexes.clone(),
+                tickets: Vec::new(),
             };
             (Operation::StoreIndexes(StoreIndexes { indexes }), taken)
         }
@@ -403,6 +409,7 @@ impl FileEngine {
                 let journal = tx.journal;
                 store.roll_back(journal);
                 store.put_back_member_keys(taken.member_keys);
+                store.put_back_key_tickets(taken.tickets);
                 std::panic::resume_unwind(panic)
             }
         };
@@ -454,6 +461,8 @@ impl FileEngine {
         };
         let outcome = match saved {
             Ok(()) => {
+                // The requests whose keys this stored learn so.
+                store.settle_key_tickets(taken.tickets, KeysSettled::Stored);
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
                 for (table, field) in field_bases {
@@ -468,6 +477,10 @@ impl FileEngine {
                 // The renamed file holds the change: the tree keeps it, as
                 // what was derived from it does, and the file takes no
                 // more changes (`Hosted::save_change`).
+                let error = StorageError::of(&error);
+                // The requests whose keys this wrote learn that whether
+                // they are on disk is unknown.
+                store.settle_key_tickets(taken.tickets, KeysSettled::Unknown(error.code));
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
                 for (table, field) in field_bases {
@@ -476,7 +489,6 @@ impl FileEngine {
                 for line in stored_lines.into_iter().chain(lines) {
                     info!("{line} (not confirmed on disk)");
                 }
-                let error = StorageError::of(&error);
                 if effects || outcome.reply == Reply::SaveFile(Ok(())) {
                     outcome.not_stored(&error)
                 } else {
@@ -487,7 +499,9 @@ impl FileEngine {
                 let error = StorageError::of(&error);
                 if !effects {
                     // Nothing of its own to take back: what others left
-                    // waiting waits on (`Hosted::save_change` alerted it).
+                    // waiting waits on (`Hosted::save_change` alerted it),
+                    // and what it took waits again.
+                    taken.put_back(&mut store);
                     locks.keep();
                     if outcome.reply == Reply::SaveFile(Ok(())) {
                         outcome.reply = Reply::SaveFile(Err(FileNotSaved::Failed(error)));
@@ -514,7 +528,7 @@ impl FileEngine {
                     // work finished: served read-only, as when the work
                     // cannot be done (`Store::recover`).
                     if outcome.reply == Reply::FinishDeferredWork(Ok(true)) {
-                        store.set_read_only();
+                        store.set_read_only(crate::store::ReadOnlyCause::DeferredWork);
                     }
                     outcome.not_stored(&error)
                 }

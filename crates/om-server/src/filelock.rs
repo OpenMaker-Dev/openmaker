@@ -61,6 +61,46 @@ impl FileLock {
     }
 }
 
+/// Set once a hosted file's store, which holds the file's lock, has let
+/// go of it, its descriptor closed (`Store`'s drop): what
+/// `ServerHandle::release_files` waits for.
+#[derive(Debug, Default)]
+pub(crate) struct Released {
+    done: std::sync::Mutex<bool>,
+    signal: std::sync::Condvar,
+}
+
+impl Released {
+    /// The lock is let go of.
+    pub fn set(&self) {
+        *self
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        self.signal.notify_all();
+    }
+
+    /// Wait until the lock is let go of, or `deadline`: whether it is.
+    pub fn wait(&self, deadline: std::time::Instant) -> bool {
+        let mut done = self
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*done {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            done = self
+                .signal
+                .wait_timeout(done, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+}
+
 /// A host's file: locked, or open without a lock where it cannot be locked
 /// here.
 #[derive(Debug)]
@@ -191,20 +231,48 @@ fn lock(file: &File, kind: LockKind) -> io::Result<()> {
         LockKind::Exclusive => FlockOperation::NonBlockingLockExclusive,
         LockKind::Shared => FlockOperation::NonBlockingLockShared,
     };
-    flock(file, operation).map_err(|errno| {
-        use rustix::io::Errno;
-        // A file system without locks (or a lock manager that is down).
-        if [Errno::OPNOTSUPP, Errno::NOTSUP, Errno::NOSYS, Errno::NOLCK].contains(&errno) {
-            io::ErrorKind::Unsupported.into()
-        } else {
-            io::Error::from(errno)
-        }
-    })
+    #[cfg(test)]
+    if let Some(errno) = FAIL_LOCKS.with(std::cell::Cell::get) {
+        return Err(unlockable(errno));
+    }
+    flock(file, operation).map_err(unlockable)
+}
+
+/// `errno` from `flock` as an error: [`io::ErrorKind::Unsupported`] where
+/// the file cannot be locked here. That is a file system without locks (or
+/// a lock manager that is down), and a descriptor whose mode the lock does
+/// not allow: on NFS, Linux builds `flock` from byte-range locks, and an
+/// exclusive one refuses a descriptor not open for writing with `EBADF`
+/// (flock(2), "NFS details"; [`crate::anchored::Folder::open_regular_for_lock`]).
+#[cfg(unix)]
+fn unlockable(errno: rustix::io::Errno) -> io::Error {
+    use rustix::io::Errno;
+    if [
+        Errno::OPNOTSUPP,
+        Errno::NOTSUP,
+        Errno::NOSYS,
+        Errno::NOLCK,
+        Errno::BADF,
+    ]
+    .contains(&errno)
+    {
+        io::ErrorKind::Unsupported.into()
+    } else {
+        io::Error::from(errno)
+    }
 }
 
 #[cfg(not(unix))]
 fn lock(_file: &File, _kind: LockKind) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    /// Makes every lock taken on this thread fail with this errno, as a
+    /// file system would (tests).
+    pub(crate) static FAIL_LOCKS: std::cell::Cell<Option<rustix::io::Errno>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(all(test, unix))]

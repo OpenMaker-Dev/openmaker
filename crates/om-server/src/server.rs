@@ -1021,28 +1021,21 @@ impl ServerHandle {
     /// desktop's local host, may open them in this process: each file is
     /// closed at once, and its store, which holds the file's lock
     /// (`crate::filelock`), goes once the last connection or run using it
-    /// has ended. Waits up to `timeout` for that; returns whether every
-    /// file was let go in time. A process that ends lets go of its files
-    /// anyway. Call it after [`ServerHandle::close_event_log`], which
-    /// records each hosted file closed.
+    /// has ended: the store tells once its lock's descriptor is closed.
+    /// Waits up to `timeout`, counted from the call, for every file this
+    /// server let go of, in this call or an earlier one, whose lock is still
+    /// held; returns whether all are let go of. A process that ends lets go
+    /// of its files anyway. Call it after [`ServerHandle::close_event_log`],
+    /// which records each hosted file closed.
     pub fn release_files(&self, timeout: Duration) -> bool {
-        let released: Vec<_> = self
-            .shared
-            .hosting
-            .slots()
-            .iter()
-            .filter_map(crate::hosting::Slot::release)
-            .collect();
         let deadline = Instant::now() + timeout;
-        loop {
-            if released.iter().all(|file| file.strong_count() == 0) {
-                return true;
+        let mut released = true;
+        for slot in self.shared.hosting.slots() {
+            for file in slot.release() {
+                released &= file.wait(deadline);
             }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(5));
         }
+        released
     }
 
     /// End the event log of a server that has stopped

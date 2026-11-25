@@ -1994,6 +1994,18 @@ fn a_save_whose_folder_flush_fails_leaves_the_file_taking_no_more_changes() {
         Reply::AdjustContainerCount(COUNT_FAILED),
         "a change is refused"
     );
+    // A program that only reads, with nothing waiting, submits a draft
+    // that stores nothing: it is answered, as a read.
+    assert_eq!(
+        engine.submit_draft(&file, Draft::StoreIndexes).reply,
+        Reply::StoreIndexes(Ok(()))
+    );
+    assert_eq!(
+        engine
+            .submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() })
+            .reply,
+        Reply::StoreIndexes(Ok(()))
+    );
     assert_eq!(untouched(&file, &disk), before);
 
     // Lock requests and their releases go on.
@@ -2102,6 +2114,86 @@ fn what_a_draft_took_waits_again_when_its_operation_is_not_stored() {
     assert_eq!(
         file.read_store().waiting_for_tests(),
         (Vec::new(), Vec::new())
+    );
+}
+
+/// The review's P1 on GenerateMemberKey: request A's key may be taken and
+/// written by request B's write before A's own draft runs. A learns what
+/// became of it from its ticket: stored, or written with an unknown
+/// outcome; when B's save did not store it, the key waits again, with
+/// A's ticket, and A's own draft decides.
+#[test]
+fn a_request_learns_what_became_of_the_keys_another_write_took() {
+    use crate::store::KeysSettled;
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let engine = engine();
+    let layouts = [vec![4]];
+    let b_draft = || Draft::ChangeSchema { writes: Vec::new() };
+    let issue = |file: &Hosted| {
+        let store = file.read_store();
+        let ticket = store.issue_ticket();
+        store.generate_member_key_for(&layouts, ticket).unwrap();
+        ticket
+    };
+
+    // B's write stores A's key: A's answer stands.
+    let (_disk, file) = host("tickets-stored", &tree);
+    let a = issue(&file);
+    assert_eq!(
+        engine.submit_draft(&file, b_draft()).reply,
+        Reply::ChangeSchema(Ok(()))
+    );
+    assert_eq!(
+        file.read_store().finish_ticket(a),
+        Some(KeysSettled::Stored)
+    );
+    assert_eq!(file.read_store().finish_ticket(a), None, "asked once");
+
+    // B's save is not stored: the key and A's ticket wait again, and A's
+    // own draft stores them.
+    let (_disk, file) = host("tickets-not-stored", &tree);
+    let a = issue(&file);
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    let b = engine.submit_draft(&file, b_draft());
+    file.fail_saves(None);
+    assert!(is_storage_error(&b.reply), "{b:?}");
+    assert_eq!(file.read_store().waiting_for_tests().1.len(), 1);
+    let own = engine.submit_draft(&file, b_draft());
+    assert_eq!(own.reply, Reply::ChangeSchema(Ok(())));
+    assert_eq!(
+        file.read_store().finish_ticket(a),
+        Some(KeysSettled::Stored)
+    );
+
+    // A's own draft is not stored: A answers that, and its key, which
+    // waits, is no longer its to learn about.
+    let a = issue(&file);
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    let own = engine.submit_draft(&file, b_draft());
+    file.fail_saves(None);
+    assert!(is_storage_error(&own.reply), "{own:?}");
+    assert_eq!(file.read_store().finish_ticket(a), None);
+    assert_eq!(
+        engine.submit_draft(&file, b_draft()).reply,
+        Reply::ChangeSchema(Ok(()))
+    );
+    assert_eq!(file.read_store().finish_ticket(a), None);
+
+    // B's save has an unknown outcome: A is told so, even with nothing of
+    // its own left to store.
+    let (_disk, file) = host("tickets-unknown", &tree);
+    let a = issue(&file);
+    file.fail_saves(Some(crate::store::SaveFault::FolderFlush));
+    let b = engine.submit_draft(&file, b_draft());
+    file.fail_saves(None);
+    assert!(
+        matches!(&b.reply, Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(e))) if e.unknown),
+        "{b:?}"
+    );
+    assert_eq!(
+        file.read_store().finish_ticket(a),
+        Some(KeysSettled::Unknown(800))
     );
 }
 

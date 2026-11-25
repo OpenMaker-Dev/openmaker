@@ -1241,8 +1241,16 @@ fn a_program_that_only_reads_keeps_its_answer_when_what_waits_cannot_be_stored()
         .unwrap();
     assert!(handle.failing_saves(id, None));
     assert_eq!(serial.status, u32::from(CANNOT_WRITE));
+    let layouts = [vec![4]];
+    let keys = handle.member_keys(id, &layouts).unwrap();
+    assert_eq!(keys.0, None, "nothing waits");
     let reply = client.query(&generate).unwrap();
     assert!(failed_to_store(&reply.slots), "{:02x?}", reply.slots);
+    assert_eq!(
+        handle.member_keys(id, &layouts).unwrap(),
+        keys,
+        "no key reserved: nothing waits, the next key is the same"
+    );
     assert_eq!(client.query(&read).unwrap().slots, answer);
     client.disconnect().unwrap();
 }

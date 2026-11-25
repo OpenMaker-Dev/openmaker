@@ -678,6 +678,13 @@ impl Write for ClientSocket {
     }
 }
 
+/// For one catalog: the last member id and modification count
+/// GenerateMemberKey issued that wait to be written, and those the tree
+/// holds ([`ServerHandle::member_keys`]).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub type MemberKeys = (Option<(u64, u64)>, (u64, u64));
+
 impl ServerHandle {
     /// The server: its identity, when it started, where it listens and how
     /// many files it hosts.
@@ -736,6 +743,25 @@ impl ServerHandle {
         };
         hosted.fail_saves(fault);
         true
+    }
+
+    /// For catalog `catalog` of hosted file `id`: the last member id and
+    /// modification count GenerateMemberKey issued that wait to be
+    /// written, and those its tree holds, from which the next key is one
+    /// more. `None` when the file is not served. Only in debug builds, for
+    /// tests that check a refused request reserved no key.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn member_keys(&self, id: u32, catalog: &[Vec<u8>]) -> Option<MemberKeys> {
+        let hosted = self
+            .shared
+            .hosting
+            .slots()
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.served())?;
+        let keys = hosted.read_store().member_keys_for_tests(catalog);
+        Some(keys)
     }
 
     /// The hosted files in id order, open or not, each with its state and

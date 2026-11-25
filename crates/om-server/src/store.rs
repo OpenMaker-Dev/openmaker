@@ -197,6 +197,9 @@ pub struct Store {
     /// [`Store::take_issued_member_keys`] takes them to be written into the
     /// catalogs (schema-path.md 3.4).
     issued: Mutex<IssuedKeys>,
+    /// Which requests' GenerateMemberKey issued the keys waiting, and what
+    /// became of those a write took ([`Store::finish_ticket`]).
+    tickets: Mutex<Tickets>,
     /// The indexes (table, field, kind) queries built on demand while the
     /// tree was shared for reading, until [`Store::take_indexes_on_demand`]
     /// takes them to be stored.
@@ -210,17 +213,44 @@ pub struct Store {
     /// a file hosted privately for a local client; each save moves it to
     /// the file it writes.
     lock: Option<FileLock>,
+    /// Set when the store goes, once its lock is let go of (its drop): a
+    /// hosted file's, which `ServerHandle::release_files` waits for.
+    released: Option<std::sync::Arc<crate::filelock::Released>>,
     /// The device and inode of the file on disk the store was read from or
     /// last saved as, where it has them ([`Store::set_file`]): a save
     /// without a lock writes only where the path still leads to it (#468).
     file: Option<FileId>,
-    /// The file may not be written: saves fail, their changes stay in
-    /// memory ([`Store::set_read_only`]).
-    read_only: bool,
+    /// Why the file may not be written, if it may not: saves fail, their
+    /// changes stay in memory ([`Store::set_read_only`]).
+    read_only: Option<ReadOnlyCause>,
     /// Served privately to a desktop client ([`crate::LocalHost`]): its
     /// calculations are FileMaker Pro's, which has the location functions
     /// FileMaker Server's engine lacks (`om_data::host::device`).
     desktop: bool,
+}
+
+/// Why a hosted file may not be written ([`Store::set_read_only`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOnlyCause {
+    /// Its host opened it so: it may not be written there, it has other
+    /// names, it cannot be locked (`crate::local::ReadOnly`).
+    Opened,
+    /// It holds content the writer cannot write back.
+    Unwritable,
+    /// Its deferred field work cannot be done, or could not be saved, and
+    /// is kept (`Store::recover`, op73).
+    DeferredWork,
+}
+
+/// The store's lock goes first, its descriptor closed, and only then is
+/// the release told ([`Store::set_release_signal`]).
+impl Drop for Store {
+    fn drop(&mut self) {
+        drop(self.lock.take());
+        if let Some(released) = &self.released {
+            released.set();
+        }
+    }
 }
 
 /// An index: its table, field and kind (value 0, word 1).
@@ -244,6 +274,26 @@ impl SavedFile {
 
 /// Per catalog path: the last member id and modification count issued.
 type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
+
+/// The requests that issued member keys ([`Store::issue_ticket`]): those
+/// whose keys wait, and what became of those a write took, until each
+/// request asks ([`Store::finish_ticket`]).
+#[derive(Debug, Default)]
+struct Tickets {
+    next: u64,
+    waiting: BTreeSet<u64>,
+    settled: HashMap<u64, KeysSettled>,
+}
+
+/// What became of the member keys a request issued, taken and written by
+/// a write (its own or another request's): stored, or written with an
+/// unknown outcome (the save's FileMaker error). Keys that were not stored
+/// wait again, with their requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeysSettled {
+    Stored,
+    Unknown(u16),
+}
 
 /// A catalog path with the last member id and modification count
 /// GenerateMemberKey issued for it (schema-path.md 3.4).
@@ -514,6 +564,21 @@ pub(crate) fn save_copy_path(path: &Path) -> PathBuf {
     PathBuf::from(temporary)
 }
 
+/// The suffix of a save's new copy's name ([`save_copy_path`]).
+const SAVE_COPY_SUFFIX: &[u8] = b".omsave";
+
+/// Whether a file named `name` has the name of a save's new copy: it ends
+/// in `.omsave`, compared without regard to ASCII case, as a file system
+/// that ignores case would find `A.fmp12.OMSAVE` under `A.fmp12.omsave`.
+/// OpenMaker never hosts or opens such a file (OpenMaker's own rule):
+/// opening `A.fmp12` removes a leftover copy of that name
+/// ([`clear_leftover_copy`]), and a save of `A.fmp12` writes there.
+pub(crate) fn is_save_copy_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.as_encoded_bytes();
+    name.len() >= SAVE_COPY_SUFFIX.len()
+        && name[name.len() - SAVE_COPY_SUFFIX.len()..].eq_ignore_ascii_case(SAVE_COPY_SUFFIX)
+}
+
 /// The name of a save's new copy of the file named `name`, beside it.
 fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
     let mut temporary = name.to_owned();
@@ -561,12 +626,18 @@ pub(crate) fn copy_beside(
 /// hosting and holds its lock ([`crate::filelock`], exclusive): an
 /// OpenMaker that has the file open holds that lock from its opening to
 /// its closing, its saves included, so none can be in the middle of a save
-/// of the file. Only a regular file with no other name is removed: the
-/// entry is looked at once without following a link, then removed by name
-/// through the same folder handle, which never follows one either. A link,
-/// a folder, a file with other names or anything else is left as it is,
-/// as is a copy whose removal fails. The caller logs what it found.
+/// of the file. And no OpenMaker hosts or opens a file of the copy's name
+/// ([`is_save_copy_name`]), so the entry is not a database in use. Even so
+/// the copy itself is locked before it goes: the entry is looked at without
+/// following a link; a regular file with no other name is opened without
+/// following one either and locked, exclusive and without waiting; still
+/// that entry, with no other name, it is removed by name through the same
+/// folder handle, which never follows a link, and its lock goes with it. A
+/// link, a folder, a file with other names, a copy whose lock another
+/// holds or that cannot be locked here, one that changed meanwhile and one
+/// whose removal fails are left as they are. The caller logs what it found.
 pub(crate) fn clear_leftover_copy(folder: &Folder, name: &std::ffi::OsStr) -> LeftoverCopy {
+    use crate::filelock::LockKind;
     let copy = save_copy_name(name);
     let entry = match folder.entry(&copy) {
         Ok(None) => return LeftoverCopy::None,
@@ -582,10 +653,31 @@ pub(crate) fn clear_leftover_copy(folder: &Folder, name: &std::ffi::OsStr) -> Le
             entry.links
         ));
     }
-    match folder.remove(&copy) {
+    let file = match folder.open_regular_for_lock(&copy) {
+        Ok(file) => file,
+        Err(e) => return LeftoverCopy::Kept(format!("it could not be opened: {e}")),
+    };
+    let lock = match FileLock::acquire(file, LockKind::Exclusive) {
+        Ok(lock) => lock,
+        Err((e, _)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            return LeftoverCopy::Kept("another program has it open (it holds its lock)".into())
+        }
+        Err((e, _)) if e.kind() == std::io::ErrorKind::Unsupported => {
+            return LeftoverCopy::Kept("it cannot be locked here".into())
+        }
+        Err((e, _)) => return LeftoverCopy::Kept(format!("it could not be locked: {e}")),
+    };
+    let unchanged = folder.is_entry(lock.file(), &copy).unwrap_or(false)
+        && matches!(crate::filelock::link_count(lock.file()), Ok(1));
+    if !unchanged {
+        return LeftoverCopy::Kept("it changed while it was looked at".into());
+    }
+    let removed = match folder.remove(&copy) {
         Ok(()) => LeftoverCopy::Removed,
         Err(e) => LeftoverCopy::Kept(format!("removing it failed: {e}")),
-    }
+    };
+    drop(lock);
+    removed
 }
 
 /// Whether `file`, the copy a save created, is still entry `name` of the
@@ -662,11 +754,13 @@ impl Store {
             unknown: None,
             generation: 0,
             issued: Mutex::new(HashMap::new()),
+            tickets: Mutex::default(),
             on_demand: Mutex::new(BTreeSet::new()),
             verified: (0, BTreeMap::new()),
             lock: None,
+            released: None,
             file: None,
-            read_only: false,
+            read_only: None,
             desktop: false,
         };
         store.locale = store
@@ -691,7 +785,7 @@ impl Store {
                  it is hosted read-only",
                 describe(&unwritable)
             );
-            store.read_only = true;
+            store.read_only = Some(ReadOnlyCause::Unwritable);
         }
         // Tables with deferred work pending (the server stopped between a
         // client's op13 and its op73) get no basis: [`Store::recover`]
@@ -745,7 +839,7 @@ impl Store {
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
-                self.set_read_only();
+                self.set_read_only(ReadOnlyCause::DeferredWork);
                 return false;
             }
         }
@@ -844,17 +938,31 @@ impl Store {
         self.lock = Some(lock);
     }
 
+    /// Set `released` when the store goes, once its lock is let go of.
+    pub(crate) fn set_release_signal(
+        &mut self,
+        released: std::sync::Arc<crate::filelock::Released>,
+    ) {
+        self.released = Some(released);
+    }
+
     /// Refuse to write the file: a save fails without touching it, and its
     /// changes stay in memory (a commit's are taken back,
     /// [`Store::save_commit`]).
-    pub fn set_read_only(&mut self) {
-        self.read_only = true;
+    pub fn set_read_only(&mut self, cause: ReadOnlyCause) {
+        self.read_only.get_or_insert(cause);
+    }
+
+    /// Why the file may not be written ([`Store::set_read_only`]), the
+    /// first cause that made it so.
+    pub fn read_only_cause(&self) -> Option<ReadOnlyCause> {
+        self.read_only
     }
 
     /// Whether the file may not be written: [`Store::set_read_only`], or it
     /// loaded with content the writer cannot write back.
     pub fn is_read_only(&self) -> bool {
-        self.read_only
+        self.read_only.is_some()
     }
 
     /// How many saves have written the file since it was loaded. The file
@@ -963,7 +1071,7 @@ impl Store {
         created: &mut dyn FnMut(&Path),
     ) -> std::io::Result<Folder> {
         use std::io::{Error, ErrorKind};
-        if self.read_only {
+        if self.read_only.is_some() {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "the file is open read-only",
@@ -1598,7 +1706,7 @@ impl Store {
     /// indexes taken out (each once) and what stays.
     pub fn drop_unwritable_indexes(&mut self) -> (Vec<Unwritable>, Vec<Unwritable>) {
         let (mut dropped, mut kept): (Vec<Unwritable>, Vec<Unwritable>) = (Vec::new(), Vec::new());
-        if self.read_only {
+        if self.read_only.is_some() {
             return (dropped, kept);
         }
         loop {
@@ -2256,6 +2364,64 @@ impl Store {
         self.issued.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn tickets(&self) -> MutexGuard<'_, Tickets> {
+        self.tickets.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A new request's ticket, for the member keys its GenerateMemberKey
+    /// may issue ([`Store::generate_member_key_for`]).
+    pub fn issue_ticket(&self) -> u64 {
+        let mut tickets = self.tickets();
+        tickets.next += 1;
+        tickets.next
+    }
+
+    /// GenerateMemberKey for the request holding `ticket`
+    /// (`om_query::Source::generate_member_key`): the key waits, and so
+    /// does the ticket, until a write takes them. Under the store's read
+    /// lock, as a query runs, so no write takes the key before its ticket.
+    pub fn generate_member_key_for(
+        &self,
+        catalog: &[Vec<u8>],
+        ticket: u64,
+    ) -> Option<(Vec<u8>, Vec<u8>)> {
+        let issued = om_query::Source::generate_member_key(self, catalog)?;
+        self.tickets().waiting.insert(ticket);
+        Some(issued)
+    }
+
+    /// The tickets of the requests whose keys wait, for the write that
+    /// takes the keys ([`Store::take_issued_member_keys`]).
+    pub fn take_key_tickets(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.tickets().waiting)
+            .into_iter()
+            .collect()
+    }
+
+    /// Put `tickets` back among those whose keys wait: the write that took
+    /// them did not store their keys, which wait again.
+    pub fn put_back_key_tickets(&mut self, tickets: Vec<u64>) {
+        self.tickets().waiting.extend(tickets);
+    }
+
+    /// Record what became of the keys of `tickets`, which a write took and
+    /// wrote: `how` its save ended.
+    pub fn settle_key_tickets(&mut self, tickets: Vec<u64>, how: KeysSettled) {
+        let mut ledger = self.tickets();
+        for ticket in tickets {
+            ledger.settled.insert(ticket, how);
+        }
+    }
+
+    /// What became of the keys the request holding `ticket` issued, once
+    /// it is done: `None` while they wait (a write that takes them later
+    /// records nothing for it), else how the write that took them saved.
+    pub fn finish_ticket(&self, ticket: u64) -> Option<KeysSettled> {
+        let mut tickets = self.tickets();
+        tickets.waiting.remove(&ticket);
+        tickets.settled.remove(&ticket)
+    }
+
     /// Whether GenerateMemberKey issued ids not yet written.
     pub fn has_issued_member_keys(&self) -> bool {
         !self.issued().is_empty()
@@ -2628,7 +2794,7 @@ impl Store {
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
-                self.set_read_only();
+                self.set_read_only(ReadOnlyCause::DeferredWork);
                 return Err(reason);
             }
         };
@@ -3753,11 +3919,13 @@ impl Store {
             unknown: None,
             generation: 0,
             issued: Mutex::new(HashMap::new()),
+            tickets: Mutex::default(),
             on_demand: Mutex::new(BTreeSet::new()),
             verified: (0, BTreeMap::new()),
             lock: None,
+            released: None,
             file: None,
-            read_only: false,
+            read_only: None,
             desktop: self.desktop,
         }
     }
@@ -4551,6 +4719,25 @@ fn increment_serial(text: &str, by: i32) -> String {
     )
 }
 
+#[cfg(debug_assertions)]
+impl Store {
+    /// The last member id and modification count issued for `catalog`
+    /// that wait to be written, and those the tree holds (the inputs of
+    /// GenerateMemberKey, `om_query::Source::generate_member_key`).
+    pub(crate) fn member_keys_for_tests(
+        &self,
+        catalog: &[Vec<u8>],
+    ) -> (Option<(u64, u64)>, (u64, u64)) {
+        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
+        let index = self.node(&path).and_then(|c| c.child(&[CATALOG_INDEX]));
+        let stored = (
+            modcount::serial_value(index.and_then(|i| i.child(&[LAST_MEMBER_ID]))),
+            modcount::serial_value(index.and_then(|i| i.child(&[MOD_COUNT]))),
+        );
+        (self.issued().get(catalog).copied(), stored)
+    }
+}
+
 #[cfg(test)]
 impl Store {
     /// The basis of stored calculations, by table ([`recalc`]): tests check
@@ -4652,11 +4839,13 @@ mod tests {
             unknown: None,
             generation: 0,
             issued: Mutex::new(HashMap::new()),
+            tickets: Mutex::default(),
             on_demand: Mutex::new(BTreeSet::new()),
             verified: (0, BTreeMap::new()),
             lock: None,
+            released: None,
             file: None,
-            read_only: false,
+            read_only: None,
             desktop: false,
         }
     }
