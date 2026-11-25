@@ -110,8 +110,9 @@ fn bind_files_on(files: &[(&str, &TempFile)], settings: &EngineSettings) -> Serv
     let identity = Identity::self_signed(vec!["localhost".into()]).unwrap();
     let server = Server::bind_on("127.0.0.1:0", config, identity, settings).unwrap();
     // Every download and find is answered through the test view too, and
-    // checked against the file engine's view (docs/server-storage.md 5,
-    // "Views").
+    // checked against the file engine's view, and every operation's writes
+    // are checked (docs/server-storage.md 5, "Views", "The operations'
+    // transaction").
     #[cfg(debug_assertions)]
     let server = server.checking_reads();
     server

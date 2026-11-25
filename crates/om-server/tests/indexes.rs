@@ -716,6 +716,53 @@ fn a_changed_record_leaves_entries_another_rule_wrote() {
     session.disconnect().unwrap();
 }
 
+/// An upload (op13) into an index whose agreement with its records a
+/// commit has checked: the index is checked again at the next commit,
+/// which sweeps a posting the upload planted for a record under a key its
+/// value does not give (review of #785, round 1). The check is kept per
+/// index, and a write into the index or the records that is not a commit's
+/// own upkeep forgets it (`Store::forget_verified`).
+#[test]
+fn an_upload_into_an_index_has_it_checked_again() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{OwnedNode, RidList};
+    let written = om_collate::text_key("Write tests");
+    let ship = om_collate::text_key("Ship");
+    let entry = |key: &[u8], id: u64| [id].into_iter().collect::<RidList>().to_node(key.to_vec());
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let index: [&[u8]; 4] = [&table, &[1], &name, &[0]];
+    let mut root = fixture::tree(&[], true);
+    let mut entries = vec![entry(&written, 1), entry(&ship, 2)];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    root.put(&index, OwnedNode::list(vec![0], entries));
+    let file = fixture::TempFile::from_tree("upload-into-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "upload into index");
+
+    // An ordinary edit: the index agrees with its records, and the commit
+    // keeps it so.
+    commit_name(&mut session, 1, "Written");
+    let written = om_collate::text_key("Written");
+    // The index uploaded again with record 2 also under a key its value
+    // does not give.
+    let unrelated = om_collate::text_key("Unrelated");
+    let mut entries = vec![entry(&written, 1), entry(&ship, 2), entry(&unrelated, 2)];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    session
+        .upload_to_host(&index, &OwnedNode::list(vec![0], entries))
+        .unwrap();
+    // Record 2's edit finds the index disagreeing and sweeps the posting.
+    commit_name(&mut session, 2, "Shipped");
+    let mut expected = vec![
+        (written, vec![1]),
+        (om_collate::text_key("Shipped"), vec![2]),
+    ];
+    expected.sort();
+    assert_eq!(name_index_on_disk(&file), expected);
+    session.disconnect().unwrap();
+}
+
 /// A German file's legacy Number index used a period as the decimal
 /// separator. Both spellings now key as 15, so only the sweep can move
 /// the edited record; the untouched record keeps its old membership.

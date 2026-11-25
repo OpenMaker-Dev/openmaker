@@ -1090,7 +1090,8 @@ mod tests {
             assert!(failed(export(Kind::Compacted, "compacted.fmp12")));
             assert_eq!(scratch.names(), ["copied.fmp12"]);
             std::fs::remove_file(scratch.0.join("copied.fmp12")).unwrap();
-            change(&file, "Changed");
+            // Each time a change: a write of what is there is none.
+            change(&file, if saved { "Changed again" } else { "Changed" });
             assert!(!on_disk(&engine, &file));
             assert!(failed(export(Kind::Current, "changed.fmp12")));
             assert!(scratch.names().is_empty(), "{:?}", scratch.names());
@@ -1215,13 +1216,14 @@ mod tests {
             );
             assert!(scratch.names().is_empty());
             // The file on disk as the tree holds it again.
-            save_fresh(&file);
+            save_fresh(&file, name);
         }
     }
 
-    /// Make the file on disk the tree's again: a change, then a save.
-    fn save_fresh(file: &Hosted) {
-        change(file, "Fresh");
+    /// Make the file on disk the tree's again: a change (to `name`, which
+    /// differs from what the tree holds), then a save.
+    fn save_fresh(file: &Hosted, name: &str) {
+        change(file, name);
         save(file);
     }
 

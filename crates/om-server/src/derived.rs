@@ -555,36 +555,6 @@ pub fn read_accounts(view: &dyn View) -> Accounts {
 
 /// The schema catalogs of the tree `view` reads: the catalogs `[3]` and
 /// layouts `[4]`, and each table's field catalog `[T, 03]`.
-/// The modification count of the node at `path` as op60 answers it,
-/// read through `view` ([`crate::store::Store::mod_count`], which reads
-/// the file engine's tree): empty for a node that is not there, `01 00`
-/// for one with no count or with one that is not a count (logged).
-pub(crate) fn mod_count(
-    view: &dyn View,
-    path: &[Vec<u8>],
-    name: &str,
-) -> Result<Vec<u8>, ReadError> {
-    let mut segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-    if view.node(&segments)?.is_none() {
-        return Ok(Vec::new());
-    }
-    segments.push(&[MOD_COUNT]);
-    // A count is a few bytes: a node larger than this is no count.
-    match view.subtree(&segments, 1 << 10) {
-        Ok(Some(count)) if modcount::is_count(&count) => {
-            Ok(count.value.clone().unwrap_or_default())
-        }
-        Ok(None) => Ok(modcount::key_string(0)),
-        Ok(Some(_)) | Err(ReadError::TooLarge { .. }) => {
-            warn!(
-                "{name}: {path:02x?} holds a modification count that is not one; reported as none"
-            );
-            Ok(modcount::key_string(0))
-        }
-        Err(error) => Err(error),
-    }
-}
-
 pub fn read_catalog(view: &dyn View) -> om_hbam::Result<Catalog> {
     let mut schema = Vec::new();
     for child in view.children(&[], Bound::Unbounded, Direction::Forward) {
@@ -832,7 +802,10 @@ pub(crate) fn index_on_demand(
 /// view): a value of its own, or one split into pieces below it (a list
 /// with no value of its own whose first child is the header `0` of a
 /// chunked value, `OwnedNode::assembled`), which only then is read whole.
-fn value_on_path(view: &dyn View, path: &[&[u8]]) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+pub(crate) fn value_on_path(
+    view: &dyn View,
+    path: &[&[u8]],
+) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
     for depth in 1..=path.len() {
         let at = &path[..depth];
         let Some(head) = view.node(at)? else {
@@ -911,7 +884,7 @@ pub(crate) fn stored_member_key(view: &dyn View, path: &[&[u8]]) -> Result<(u64,
 /// id and modification count, one more than its last issued id
 /// `[C, 01, 00]` and count `[C, 01, fc]` (or than what `waiting` says was
 /// issued since), and note them there as issued. The tree is only read
-/// here; `Store::write_member_keys` stores them. `None` for a catalog the
+/// here; op86 writes them (`engine::schema`). `None` for a catalog the
 /// tree cannot take them under as it is, and past the largest a serial key
 /// holds.
 pub(crate) fn issue_member_key(

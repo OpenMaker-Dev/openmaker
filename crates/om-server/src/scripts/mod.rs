@@ -768,6 +768,7 @@ mod tests {
         let engine = crate::engine::Engine::default();
         // Every read answered through both views (`engine::copies`).
         engine.check_reads();
+        engine.check_writes();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),
@@ -1141,6 +1142,29 @@ mod tests {
             Value::number(1),
         );
         assert_eq!(rep, Err(HostError::Error(ErrorCode(111))));
+        host.close();
+    }
+
+    /// Set Field on a file hosted read-only is refused (3) before a
+    /// container's data is held for the edit: the refused step leaves
+    /// nothing in the session.
+    #[test]
+    fn a_refused_set_field_holds_no_container_data() {
+        let mut root = fixture::tree(&[], true);
+        fixture::add_photo(&mut root);
+        let file = TempFile::from_tree("refused-container", &root);
+        let shared = shared(&file);
+        crate::engine::Engine::as_ref(&shared.engine)
+            .hold_read_only(&hosted(&shared), crate::store::ReadOnlyCause::DeferredWork);
+        let mut host = session(&shared);
+        host.go_to_record(om_scripts::runtime::RecordMove::First, false)
+            .unwrap();
+        let data = Value::Container(om_calc::Container::file("a.txt", b"hello".to_vec()));
+        assert_eq!(
+            host.set_field(field(fixture::PHOTO), data),
+            Err(HostError::Error(ErrorCode(3)))
+        );
+        assert_eq!(host.pending_data(), 0);
         host.close();
     }
 

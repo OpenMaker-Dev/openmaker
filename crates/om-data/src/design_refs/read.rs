@@ -1,0 +1,855 @@
+//! Building the graph from a file's catalogs: each catalog read with the
+//! decoder OpenMaker has for it, each reference resolved once every object
+//! is known.
+//!
+//! The catalogs are reached only through the access layer
+//! ([`super::access`]), which marks every stored node a reader takes,
+//! looks into or declares; [`Layer::sweep`] reports the rest at the end.
+//! A value a decoder rejects and a variant a reader does not handle are
+//! reported where they are met.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use om_formula::{NameTable, Names};
+use om_hbam::slot::uint_segment;
+use om_hbam::{serial, KeyTree};
+use om_scripts::display::StepNames;
+
+use super::access::{At, Declared, Layer, Read};
+use super::formula::{self, FormulaRef};
+use super::{catalogs, layouts, steps};
+use super::{
+    ByName, Coverage, DesignGraph, Kind, NameUse, Object, ObjectId, Omitted, OmittedEntry, Place,
+    ScriptRole, Target, Unavailable, Unread, UnreadReason, Use, MAX_ENTRIES, MAX_WORK,
+};
+
+/// The catalogs [`build`] reads, by their paths in the file's key tree, and
+/// besides them each table's field catalog `[T, 3]`. A source gives these;
+/// one it cannot give is passed to `build` as [`Unavailable`]. Catalogs
+/// outside the list (themes, fonts, the image library, accounts) hold no
+/// reference to a design object the graph has.
+pub const DESIGN_CATALOGS: [(&[u64], &str); 10] = [
+    (&[2], "the file's options"),
+    (&[3], "tables, table occurrences and relationships"),
+    (&[4], "layouts"),
+    (&[16], "custom functions"),
+    (&[17], "scripts"),
+    (&[23, 2], "privilege sets"),
+    (&[32], "data sources"),
+    (&[33], "value lists"),
+    (&[64], "catalog 64, whose meaning is not known"),
+    (&[65], "custom menus"),
+];
+
+/// Keys every catalog member may carry that name no object: its owner,
+/// UUIDs and tags (`d7`-`da`, script-steps.md 4.3) and its modification
+/// stamps (`fc`, `fc01`-`fc03`, schema-path.md 8.1).
+pub(super) const MEMBER_STAMPS: [u64; 8] = [0xd7, 0xd8, 0xd9, 0xda, 0xfc, 0xfc01, 0xfc02, 0xfc03];
+/// A catalog member's name (file-format.md 3.4).
+pub(super) const NAME: u64 = 0x10;
+
+/// The data source id of a key read big-endian, as occurrence definitions
+/// and value lists store it: its segment's serial decode, the id `inspect`
+/// gives data sources.
+pub(super) fn data_source_id(key: u64) -> Option<u64> {
+    serial::decode(&uint_segment(key)).filter(|id| *id != 0)
+}
+
+/// Build the reference graph of the file whose catalogs `tree` holds
+/// ([`DESIGN_CATALOGS`]). `unavailable` lists the catalogs the source
+/// could not give: references into them are left unresolved, and the
+/// file is not read cleanly.
+pub fn build(tree: &KeyTree<'_>, unavailable: Vec<Unavailable>) -> DesignGraph {
+    build_within(tree, unavailable, MAX_ENTRIES, MAX_WORK)
+}
+
+/// [`build`] with other budgets, for tests.
+pub(super) fn build_within(
+    tree: &KeyTree<'_>,
+    unavailable: Vec<Unavailable>,
+    max_entries: usize,
+    max_work: usize,
+) -> DesignGraph {
+    build_traced(tree, unavailable, max_entries, max_work).0
+}
+
+/// What a build met, for the tests: the reader structures, the
+/// declarations used, and each declared node's path.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) struct Trace {
+    pub(super) visited: BTreeSet<Structure>,
+    pub(super) declared: BTreeSet<Declared>,
+    pub(super) declared_paths: Vec<(Vec<Vec<u8>>, Declared)>,
+}
+
+/// [`build_within`], with what it met ([`Trace`]).
+pub(super) fn build_traced(
+    tree: &KeyTree<'_>,
+    unavailable: Vec<Unavailable>,
+    max_entries: usize,
+    max_work: usize,
+) -> (DesignGraph, Trace) {
+    let mut b = Builder {
+        graph: DesignGraph {
+            coverage: Coverage {
+                unavailable,
+                ..Coverage::default()
+            },
+            ..DesignGraph::default()
+        },
+        pending: Vec::new(),
+        step: None,
+        entries: 0,
+        work: 0,
+        max_entries,
+        max_work,
+        stopped: false,
+        groups: HashMap::new(),
+        visited: BTreeSet::new(),
+    };
+    let layer = Layer::new(tree);
+    catalogs::data_sources(&mut b, &layer);
+    catalogs::tables(&mut b, &layer);
+    catalogs::occurrences(&mut b, &layer);
+    catalogs::relationships(&mut b, &layer);
+    catalogs::custom_functions(&mut b, &layer);
+    catalogs::value_lists(&mut b, &layer);
+    layouts::layouts(&mut b, &layer);
+    steps::scripts(&mut b, &layer);
+    catalogs::file_options(&mut b, &layer);
+    catalogs::custom_menus(&mut b, &layer);
+    catalogs::privilege_sets(&mut b, &layer);
+    catalogs::unknown_catalog(&mut b, &layer);
+    // What no reader accounted for, by its path. After a stop the read is
+    // not clean already, and the rest was not read by design.
+    if !b.stopped {
+        layer.sweep(&mut b);
+    }
+    let declared = layer.declared();
+    let declared_paths = layer.declared_paths();
+    let Builder {
+        mut graph,
+        pending,
+        visited,
+        ..
+    } = b;
+    // Resolved once the read is known clean or not: a target is
+    // `target_not_found` only then.
+    let uses: Vec<Use> = pending
+        .into_iter()
+        .map(|(holder, place, target, script_role)| Use {
+            holder,
+            resolution: graph.resolve(target),
+            script_role,
+            place,
+            target,
+        })
+        .collect();
+    graph.uses = uses;
+    (
+        graph,
+        Trace {
+            visited,
+            declared,
+            declared_paths,
+        },
+    )
+}
+
+/// Declares the reader structures and `ALL`, generated from the same list
+/// so that it cannot miss one.
+macro_rules! structures {
+    ($($variant:ident),* $(,)?) => {
+        /// The kinds of stored structure the readers know, each recorded
+        /// when a reader meets one ([`Builder::visit`]): the test of every
+        /// stored node requires its fixture to hold each.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        pub(super) enum Structure {
+            $($variant),*
+        }
+
+        impl Structure {
+            /// Every structure, for the test that each is exercised.
+            #[cfg(test)]
+            pub(super) const ALL: &'static [Structure] = &[$(Structure::$variant),*];
+        }
+    };
+}
+
+structures!(
+    DataSource,
+    Table,
+    Field,
+    Occurrence,
+    OccurrenceRelationIndex,
+    Relationship,
+    CustomFunction,
+    ValueList,
+    Layout,
+    LayoutFolder,
+    LayoutIndexEntry,
+    Part,
+    TableView,
+    LayoutObject,
+    Attributes,
+    ButtonStep,
+    WebAddress,
+    Items,
+    ConditionalFormat,
+    Triggers,
+    FieldIndex,
+    PortalSort,
+    Script,
+    ScriptFolder,
+    Step,
+    StepCalculation,
+    Requests,
+    SortOrder,
+    Transfer,
+    FileOptions,
+    CustomMenu,
+    PrivilegeSet,
+    RecordAccess,
+    UnknownCatalog,
+    Formula,
+    InactiveFormula,
+);
+
+/// What reading one stored value found, to be recorded at each place that
+/// holds it: a value many steps share is read once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Found {
+    Reference(Target),
+    /// A formula's context occurrence: recorded under the place's part
+    /// with ` context` after it.
+    Context(u64),
+    ByName {
+        how: NameUse,
+        function: Option<String>,
+        kinds: Vec<Kind>,
+    },
+    Unread {
+        reason: UnreadReason,
+        detail: String,
+        kinds: Vec<Kind>,
+    },
+}
+
+impl Found {
+    pub(super) fn unread(reason: UnreadReason, detail: impl Into<String>, kinds: &[Kind]) -> Found {
+        Found::Unread {
+            reason,
+            detail: detail.into(),
+            kinds: kinds.to_vec(),
+        }
+    }
+}
+
+/// A Polish stream's references (calc-encoding.md 1, 2.5), with its
+/// context occurrence, and the nodes walked.
+pub(super) fn polish_found(polish: &[u8], context: Option<&[u8]>) -> (Vec<Found>, usize) {
+    let expr = match om_formula::polish::decode(polish) {
+        Ok(expr) => expr,
+        Err(e) => {
+            return (
+                vec![Found::unread(
+                    UnreadReason::Malformed,
+                    format!("a formula that does not decode: {e}"),
+                    &Kind::ANY,
+                )],
+                1,
+            )
+        }
+    };
+    let mut found = Vec::new();
+    // A context is a key string naming the occurrence; one that does not
+    // read is unread, not taken for "no context".
+    if let Some(key) = context.filter(|key| !key.is_empty()) {
+        match om_formula::Key(key.to_vec()).id() {
+            Some(0) => {}
+            Some(occurrence) => found.push(Found::Context(occurrence)),
+            None => found.push(Found::unread(
+                UnreadReason::Malformed,
+                "a formula context whose key does not read",
+                &[Kind::Occurrence],
+            )),
+        }
+    }
+    let (references, nodes) = formula::references(&expr);
+    found.extend(references.into_iter().map(|r| match r {
+        FormulaRef::Field { occurrence, field } => {
+            Found::Reference(Target::Field { occurrence, field })
+        }
+        FormulaRef::CustomFunction(id) => {
+            Found::Reference(Target::Object(ObjectId::CustomFunction(id)))
+        }
+        FormulaRef::ByName {
+            how,
+            function,
+            could_refer_to,
+        } => Found::ByName {
+            how,
+            function,
+            kinds: could_refer_to,
+        },
+        FormulaRef::Unreadable(what) => Found::unread(
+            UnreadReason::Malformed,
+            what,
+            &[Kind::Field, Kind::Occurrence, Kind::CustomFunction],
+        ),
+    }));
+    (found, nodes)
+}
+
+/// A stored formula node's references, read through the layer: its
+/// context `04` and compiled stream `06`; its formatted stream `05` is the
+/// text it shows. One without a compiled stream is unread (the text is not
+/// what runs); a context or stream that does not read is unread, never
+/// taken for an absent one. Any other key is left to the sweep.
+pub(super) fn formula_found(node: At<'_, '_>) -> Vec<Found> {
+    let mut found = Vec::new();
+    // The formatted stream `05` is the text the formula shows; `06` holds
+    // what runs (calc-encoding.md 1, 2). It must still read.
+    node.take_at(5);
+    let context = match node.bytes_at(4) {
+        Read::Ok(context) => Some(context),
+        Read::Unreadable => {
+            found.push(Found::unread(
+                UnreadReason::Malformed,
+                "a formula's context that does not read",
+                &[Kind::Occurrence],
+            ));
+            None
+        }
+        Read::Absent => None,
+    };
+    match node.bytes_at(6) {
+        Read::Ok(polish) => found.extend(polish_found(&polish, context.as_deref()).0),
+        Read::Unreadable => found.push(Found::unread(
+            UnreadReason::Malformed,
+            "a formula whose compiled stream does not read",
+            &Kind::ANY,
+        )),
+        Read::Absent => found.push(Found::unread(
+            UnreadReason::NotDecoded,
+            "a formula stored without its compiled form",
+            &Kind::ANY,
+        )),
+    }
+    found
+}
+
+/// The bytes and nodes an owned subtree (a step's data) holds: what
+/// reading it costs. Counted without recursion.
+pub(super) fn owned_size(node: &om_hbam::OwnedNode) -> usize {
+    let mut total = 0usize;
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        total = total.saturating_add(1 + node.value.as_ref().map_or(0, Vec::len));
+        stack.extend(node.children.iter());
+    }
+    total
+}
+
+/// Entries of one kind of place kept in full; past it they are counted.
+const KEPT_PER_PLACE: usize = 20;
+/// The most of a detail kept.
+const DETAIL_CHARS: usize = 300;
+
+/// A place's shape for counting repeated entries: its text with digits
+/// folded, so the same kind of place in each object counts together.
+fn shape(part: &str) -> String {
+    part.chars()
+        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+        .collect()
+}
+
+fn bounded(detail: String) -> String {
+    if detail.chars().count() <= DETAIL_CHARS {
+        return detail;
+    }
+    let mut out: String = detail.chars().take(DETAIL_CHARS).collect();
+    out.push_str("...");
+    out
+}
+
+/// The graph as it is being read.
+pub(super) struct Builder {
+    pub(super) graph: DesignGraph,
+    pending: Vec<(ObjectId, Place, Target, Option<ScriptRole>)>,
+    /// The id of the script step being read (a script's, or a button's),
+    /// for what it does with a script it names ([`Self::reference`]).
+    pub(super) step: Option<u16>,
+    /// References, unread places and names recorded, against
+    /// [`MAX_ENTRIES`].
+    entries: usize,
+    /// Work done, against [`MAX_WORK`].
+    work: usize,
+    max_entries: usize,
+    max_work: usize,
+    /// A budget was spent: nothing more is read or recorded.
+    stopped: bool,
+    /// The reader structures met.
+    visited: BTreeSet<Structure>,
+    /// Entries recorded per kind of place, to keep the first few in full,
+    /// and where the rest are counted in [`Coverage::omitted`].
+    groups: HashMap<String, (usize, Option<usize>)>,
+}
+
+impl Builder {
+    pub(super) fn object(
+        &mut self,
+        id: ObjectId,
+        name: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        self.graph.objects.insert(
+            id,
+            Object {
+                id,
+                name: name.into(),
+                detail: detail.into(),
+            },
+        );
+    }
+
+    pub(super) fn count(&mut self, what: &'static str) {
+        self.graph.coverage.count(what, 1);
+    }
+
+    /// Whether a budget was spent, so that readers stop.
+    pub(super) fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// Record that a reader met a structure of `kind`.
+    pub(super) fn visit(&mut self, kind: Structure) {
+        self.visited.insert(kind);
+    }
+
+    /// The members of a catalog's member list `[.., 5]` with their ids. A
+    /// member list that does not read, and a member whose key does not
+    /// read, are failed or left unread, and reported by the sweep; the
+    /// `00` entry is not a member, and is left to the sweep too. Emptied
+    /// (deleted) members are no members.
+    pub(super) fn members<'t, 'a>(&mut self, list: Option<At<'t, 'a>>) -> Vec<(u64, At<'t, 'a>)> {
+        let Some(list) = list else {
+            return Vec::new();
+        };
+        // Charged before the handles are made.
+        if !self.spend(list.child_count(), ObjectId::File, &Place::new("members")) {
+            return Vec::new();
+        }
+        let Read::Ok(children) = list.children() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for member in children {
+            if member.is_empty() {
+                member.declare(Declared::Deleted);
+                continue;
+            }
+            if let Some(id) = member.id().filter(|id| *id != 0) {
+                out.push((id, member));
+            }
+        }
+        out
+    }
+
+    /// A member's name `10` as text, charged first; one that does not read
+    /// is failed on its node (an anomaly) and the object listed unnamed.
+    pub(super) fn name(&mut self, member: At<'_, '_>, holder: ObjectId) -> String {
+        let Some(name) = member.get(NAME) else {
+            return String::new();
+        };
+        if !self.charge(name, holder, &Place::new("name")) {
+            return String::new();
+        }
+        match name.text() {
+            Read::Ok(name) => name,
+            Read::Absent | Read::Unreadable => String::new(),
+        }
+    }
+
+    /// Charge what decoding `node` costs, before it is decoded: its stored
+    /// bytes and nodes, counted no further than the budget left. False once
+    /// the work budget is spent: the reader stops there.
+    pub(super) fn charge(&mut self, node: At<'_, '_>, holder: ObjectId, place: &Place) -> bool {
+        if self.stopped {
+            return false;
+        }
+        let left = self.max_work.saturating_sub(self.work);
+        let cost = node.size_within(left).unwrap_or(left.saturating_add(1));
+        self.spend(cost, holder, place)
+    }
+
+    /// Spend `units` of work at `place` in `holder`. False once the work
+    /// budget is spent: the reader stops there.
+    pub(super) fn spend(&mut self, units: usize, holder: ObjectId, place: &Place) -> bool {
+        if self.stopped {
+            return false;
+        }
+        self.work = self.work.saturating_add(units);
+        if self.work > self.max_work {
+            let budget = format!("work budget ({} units)", self.max_work);
+            self.stop(holder, place, budget);
+            return false;
+        }
+        true
+    }
+
+    /// Room for one more entry at `place`; recording stops at
+    /// [`MAX_ENTRIES`].
+    fn admit(&mut self, holder: ObjectId, place: &Place) -> bool {
+        if self.stopped {
+            return false;
+        }
+        if self.entries >= self.max_entries {
+            let budget = format!("entry budget ({})", self.max_entries);
+            self.stop(holder, place, budget);
+            return false;
+        }
+        self.entries += 1;
+        true
+    }
+
+    /// Stop the build at `place`: [`Coverage::stopped`] says where, and
+    /// that nothing after it was read; every kind is incomplete.
+    fn stop(&mut self, holder: ObjectId, place: &Place, budget: String) {
+        self.stopped = true;
+        self.graph.coverage.stopped = Some(Unread {
+            holder,
+            place: place.clone(),
+            reason: UnreadReason::Limit,
+            detail: format!(
+                "the analysis's {budget} was spent here: this place and every place after it \
+                 are not read"
+            ),
+            could_refer_to: Kind::ALL.to_vec(),
+        });
+    }
+
+    /// Whether an entry of this kind of place is kept in full, or counted
+    /// with the others like it ([`Coverage::omitted`]).
+    fn keep(&mut self, group: String, omitted: impl FnOnce() -> Omitted) -> bool {
+        let (seen, at) = self.groups.entry(group).or_default();
+        *seen += 1;
+        if *seen <= KEPT_PER_PLACE {
+            return true;
+        }
+        let list = &mut self.graph.coverage.omitted;
+        match at {
+            Some(i) => list[*i].count += 1,
+            None => {
+                *at = Some(list.len());
+                list.push(omitted());
+            }
+        }
+        false
+    }
+
+    /// Record a reference. One to a script gets what its holder does
+    /// with it: in a step being read (a script's, or a button's), what
+    /// that step does with the script ([`steps::script_role`]); outside
+    /// a step, a script trigger (a layout's, a layout object's or the
+    /// file's), the only other place a script is stored, which installs
+    /// it.
+    pub(super) fn reference(&mut self, holder: ObjectId, place: Place, target: Target) {
+        let script_role = matches!(
+            target,
+            Target::Object(ObjectId::Script(_)) | Target::ExternalScript { .. }
+        )
+        .then(|| match self.step {
+            Some(step) => steps::script_role(step, &place.part),
+            None => ScriptRole::Installs,
+        });
+        if self.admit(holder, &place) {
+            self.pending.push((holder, place, target, script_role));
+        }
+    }
+
+    pub(super) fn by_name(
+        &mut self,
+        holder: ObjectId,
+        place: Place,
+        how: NameUse,
+        function: Option<String>,
+        could_refer_to: Vec<Kind>,
+    ) {
+        if !self.admit(holder, &place) {
+            return;
+        }
+        let group = format!(
+            "by_name|{:?}|{}|{:?}|{:?}",
+            holder.kind(),
+            shape(&place.part),
+            how,
+            could_refer_to
+        );
+        let omitted = || Omitted {
+            entry: OmittedEntry::ByName(how),
+            holder: holder.kind(),
+            place: shape(&place.part),
+            could_refer_to: could_refer_to.clone(),
+            count: 1,
+        };
+        if self.keep(group, omitted) {
+            self.graph.coverage.by_name.push(ByName {
+                holder,
+                place,
+                how,
+                function,
+                could_refer_to,
+            });
+        }
+    }
+
+    /// Report a place unread as an anomaly: something stored that does
+    /// not read, or that OpenMaker does not understand. The read is then
+    /// not clean ([`Coverage::read_cleanly`]).
+    pub(super) fn unread(
+        &mut self,
+        holder: ObjectId,
+        place: Place,
+        reason: UnreadReason,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        self.record(holder, place, reason, detail.into(), could_refer_to, true);
+    }
+
+    /// Report a known structure OpenMaker does not decode (a custom menu's
+    /// items, a chart's setup, a step's list of several occurrences):
+    /// coverage with the kinds it could name, not an anomaly.
+    pub(super) fn undecoded(
+        &mut self,
+        holder: ObjectId,
+        place: Place,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        self.record(
+            holder,
+            place,
+            UnreadReason::NotDecoded,
+            detail.into(),
+            could_refer_to,
+            false,
+        );
+    }
+
+    fn record(
+        &mut self,
+        holder: ObjectId,
+        place: Place,
+        reason: UnreadReason,
+        detail: String,
+        could_refer_to: &[Kind],
+        anomaly: bool,
+    ) {
+        if !self.admit(holder, &place) {
+            return;
+        }
+        if anomaly {
+            let coverage = &mut self.graph.coverage;
+            coverage.anomaly_count += 1;
+            if coverage.anomalies.len() < KEPT_PER_PLACE {
+                coverage.anomalies.push(Unread {
+                    holder,
+                    place: place.clone(),
+                    reason,
+                    detail: bounded(detail.clone()),
+                    could_refer_to: could_refer_to.to_vec(),
+                });
+            }
+        }
+        let group = format!(
+            "unread|{:?}|{}|{:?}|{:?}",
+            holder.kind(),
+            shape(&place.part),
+            reason,
+            could_refer_to
+        );
+        let omitted = || Omitted {
+            entry: OmittedEntry::Unread(reason),
+            holder: holder.kind(),
+            place: shape(&place.part),
+            could_refer_to: could_refer_to.to_vec(),
+            count: 1,
+        };
+        if self.keep(group, omitted) {
+            self.graph.coverage.unread.push(Unread {
+                holder,
+                place,
+                reason,
+                detail: bounded(detail),
+                could_refer_to: could_refer_to.to_vec(),
+            });
+        }
+    }
+
+    /// Report the stored `node` unread at `place`, as its reader sees it,
+    /// and account for it: the sweep does not report it again.
+    pub(super) fn unread_node(
+        &mut self,
+        node: At<'_, '_>,
+        holder: ObjectId,
+        place: Place,
+        reason: UnreadReason,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        node.declare(Declared::Reported);
+        self.unread(holder, place, reason, detail, could_refer_to);
+    }
+
+    /// [`Self::undecoded`] for the stored `node`, accounted for as
+    /// reported: a known structure OpenMaker does not decode.
+    pub(super) fn undecoded_node(
+        &mut self,
+        node: At<'_, '_>,
+        holder: ObjectId,
+        place: Place,
+        detail: impl Into<String>,
+        could_refer_to: &[Kind],
+    ) {
+        node.declare(Declared::Reported);
+        self.undecoded(holder, place, detail, could_refer_to);
+    }
+
+    /// Record what reading one stored value found, at `place`.
+    pub(super) fn apply(&mut self, holder: ObjectId, place: &Place, found: &[Found]) {
+        for found in found {
+            match found {
+                Found::Reference(target) => self.reference(holder, place.clone(), *target),
+                Found::Context(occurrence) => self.reference(
+                    holder,
+                    Place {
+                        step: place.step.clone(),
+                        part: format!("{} context", place.part),
+                    },
+                    Target::Object(ObjectId::Occurrence(*occurrence)),
+                ),
+                Found::ByName {
+                    how,
+                    function,
+                    kinds,
+                } => self.by_name(holder, place.clone(), *how, function.clone(), kinds.clone()),
+                Found::Unread {
+                    reason,
+                    detail,
+                    kinds,
+                } => self.unread(holder, place.clone(), *reason, detail.clone(), kinds),
+            }
+        }
+    }
+
+    /// The formula stored at `node`, at `place`: charged by its size
+    /// before it is decoded ([`formula_found`]).
+    pub(super) fn formula(&mut self, holder: ObjectId, place: Place, node: At<'_, '_>) {
+        if !self.charge(node, holder, &place) {
+            return;
+        }
+        self.visit(Structure::Formula);
+        let found = formula_found(node);
+        self.count("formulas");
+        self.apply(holder, &place, &found);
+    }
+
+    /// A formula stored for an option that is off (an auto-enter
+    /// calculation of a field that does not auto-enter one, a tooltip
+    /// without its flag): kept by FileMaker, never evaluated, so what it
+    /// names is no use. Its stored form is still read: its context and its
+    /// two streams must read, and any other key is left to the sweep.
+    pub(super) fn inactive_formula(&mut self, holder: ObjectId, place: Place, node: At<'_, '_>) {
+        if !self.charge(node, holder, &place) {
+            return;
+        }
+        self.visit(Structure::InactiveFormula);
+        for key in [4, 5, 6] {
+            node.take_at(key);
+        }
+    }
+
+    /// Account for a key whose meaning is not specified when it is in the
+    /// one form every observation shows (`expected`, exactly); otherwise it
+    /// is failed and the sweep reports it.
+    pub(super) fn observed(&mut self, node: Option<At<'_, '_>>, expected: &[u8]) {
+        if let Some(node) = node {
+            node.observed(expected);
+        }
+    }
+}
+
+/// The names a step's text shows, from the objects read: what numbering
+/// a step's lines as `get_script` does needs.
+pub(super) struct GraphNames {
+    calc: NameTable,
+    layouts: BTreeMap<u64, String>,
+    scripts: BTreeMap<u64, String>,
+    tables: BTreeMap<u64, String>,
+    data_sources: BTreeMap<u64, String>,
+}
+
+impl GraphNames {
+    pub(super) fn new(graph: &DesignGraph) -> GraphNames {
+        let mut names = GraphNames {
+            calc: NameTable::default(),
+            layouts: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            tables: BTreeMap::new(),
+            data_sources: BTreeMap::new(),
+        };
+        for object in graph.objects() {
+            let name = object.name.clone();
+            match object.id {
+                ObjectId::Table(id) => {
+                    names.tables.insert(id, name);
+                }
+                ObjectId::Field { table, field } => names.calc.add_field(table, field, &name),
+                ObjectId::Occurrence(id) => {
+                    if let Some(table) = graph.occurrence_table(id) {
+                        names.calc.add_occurrence(id, &name, table);
+                    }
+                }
+                ObjectId::Layout(id) => {
+                    names.layouts.insert(id, name);
+                }
+                ObjectId::Script(id) => {
+                    names.scripts.insert(id, name);
+                }
+                ObjectId::CustomFunction(id) => names.calc.add_custom_function(id, &name, 0),
+                ObjectId::DataSource(id) => {
+                    names.data_sources.insert(id, name);
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+}
+
+impl StepNames for GraphNames {
+    fn calc_names(&self) -> &dyn Names {
+        &self.calc
+    }
+    fn layout_name(&self, id: u64) -> Option<&str> {
+        self.layouts.get(&id).map(String::as_str)
+    }
+    fn script_name(&self, id: u64) -> Option<&str> {
+        self.scripts.get(&id).map(String::as_str)
+    }
+    fn table_name(&self, id: u64) -> Option<&str> {
+        self.tables.get(&id).map(String::as_str)
+    }
+    fn data_source_name(&self, id: u64) -> Option<&str> {
+        self.data_sources.get(&id).map(String::as_str)
+    }
+}
+
+/// Account for a member's stamps ([`MEMBER_STAMPS`]).
+pub(super) fn stamps(member: At<'_, '_>) {
+    for key in MEMBER_STAMPS {
+        member.take_at(key);
+    }
+}

@@ -2,6 +2,7 @@
 //! by the administrator (`ServerHandle::close_file`, `open_file`), each in a
 //! [`Slot`] that keeps its id, name and path meanwhile.
 
+use std::borrow::Cow;
 use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -895,7 +896,7 @@ pub(crate) fn change_password(
         return Err(PasswordChangeError::TooLong);
     }
     let now = environment.now();
-    let Some(record) = find_account(tx.view(), &account) else {
+    let Some(record) = find_account(tx, &account) else {
         return Err(PasswordChangeError::Refused);
     };
     let view = crate::store::view(&record);
@@ -926,14 +927,18 @@ pub(crate) fn change_password(
         .and_then(|r| r.split_first())
         .filter(|(length, key)| usize::from(**length) == key.len())
         .and_then(|(_, key)| {
-            tx.node(&[
+            let path = [
                 PRIVILEGE_SETS_PATH[0],
                 PRIVILEGE_SETS_PATH[1],
                 PRIVILEGE_SETS_PATH[2],
                 key,
-            ])
-        })
-        .map(crate::store::view);
+            ];
+            tx.subtree(&path, NO_LIMIT)
+                .ok()
+                .flatten()
+                .map(Cow::into_owned)
+        });
+    let set = set.as_ref().map(crate::store::view);
     let Some(set) = set else {
         return Err(PasswordChangeError::NotAllowed);
     };
@@ -999,8 +1004,7 @@ pub(crate) fn reset_account_password(
         return Err(AccountEditError::TooLong);
     }
     let now = environment.now();
-    let record =
-        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let record = find_account(tx, &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
     let view = crate::store::view(&record);
     if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
         return Err(AccountEditError::NotFileAccount);
@@ -1038,8 +1042,7 @@ pub(crate) fn enable_account(
         active,
         stamp,
     } = op;
-    let record =
-        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let record = find_account(tx, &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
     let view = crate::store::view(&record);
     // The file's own accounts and external server groups (kind 1);
     // OAuth identities are `provider << 3 | 2` (local-files.md 2.2).
@@ -1081,8 +1084,7 @@ pub(crate) fn delete_account(
     environment: &dyn Environment,
 ) -> Result<(), AccountEditError> {
     let DeleteAccount { account, stamp } = op;
-    let record =
-        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let record = find_account(tx, &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
     let view = crate::store::view(&record);
     // [Guest] (key 1) is the file's own; OAuth and Claris ID
     // identities are not the step's (Claris, "Delete Account").
@@ -1096,31 +1098,39 @@ pub(crate) fn delete_account(
     if account_set(&view) == Some(FULL_ACCESS_SET) {
         return Err(AccountEditError::FullAccess);
     }
-    let mut accounts = tx
-        .node(&ACCOUNTS_PATH)
-        .cloned()
-        .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
+    // The catalog's members by key, listed: their records are not read.
+    let view: &dyn View = tx;
+    let members: Vec<Vec<u8>> = view
+        .children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward)
+        .map(|child| child.map(|child| child.segment.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| AccountEditError::Unwritten(e.to_string()))?;
+    if members.is_empty() && View::node(tx, &ACCOUNTS_PATH).ok().flatten().is_none() {
+        return Err(AccountEditError::Unwritten("no account catalog".into()));
+    }
     let index = tx
-        .node(&ACCOUNT_INDEX_PATH)
-        .cloned()
+        .subtree(&ACCOUNT_INDEX_PATH, NO_LIMIT)
+        .ok()
+        .flatten()
+        .map(Cow::into_owned)
         .ok_or_else(|| AccountEditError::Unwritten("the account catalog has no index".into()))?;
-    let members: Vec<Vec<u8>> = accounts
-        .children
-        .iter()
-        .map(|a| a.segment.clone())
-        .collect();
     let mut index =
         index_without(index, &record.segment, &members).map_err(AccountEditError::Unwritten)?;
     if let Some(stamp) = &stamp {
         let time = host_time_key_at(&environment.now());
         index = crate::authoring::stamped(index, &stamp.user, &stamp.account, &time);
     }
-    accounts.children.retain(|a| a.segment != record.segment);
-    let path = |segments: &[&[u8]]| segments.iter().map(|s| s.to_vec()).collect();
-    tx.replace_members(vec![
-        (path(&ACCOUNTS_PATH), accounts),
-        (path(&ACCOUNT_INDEX_PATH), index),
-    ]);
+    let path =
+        |segments: &[&[u8]]| -> Vec<Vec<u8>> { segments.iter().map(|s| s.to_vec()).collect() };
+    let mut member = path(&ACCOUNTS_PATH);
+    member.push(record.segment.clone());
+    tx.begin_commit();
+    if let Err(reason) = tx.remove(member) {
+        tx.refuse(reason);
+    }
+    if let Err(reason) = tx.replace(path(&ACCOUNT_INDEX_PATH), index) {
+        tx.refuse(reason);
+    }
     Ok(())
 }
 
@@ -1155,16 +1165,19 @@ fn rewrite_account(
     let description = view.child(ACCOUNT_DESCRIPTION).and_then(|n| n.text()?.ok());
     let kind = member(&view, ACCOUNT_KIND).and_then(|v| v.first().copied());
     let set = member_owned(&view, ACCOUNT_PRIVILEGES);
-    let store = tx.view();
-    let version = store
-        .node(&[&[2], &[5]])
-        .and_then(|n| n.value.as_deref())
-        .and_then(|v| <[u8; 2]>::try_from(v).ok())
+    let value = |tx: &Transaction<'_>, path: &[&[u8]]| -> Option<Vec<u8>> {
+        View::node(tx, path)
+            .ok()
+            .flatten()
+            .and_then(|head| head.value)
+            .map(Cow::into_owned)
+    };
+    let version = value(tx, &[&[2], &[5]])
+        .and_then(|v| <[u8; 2]>::try_from(v.as_slice()).ok())
         .map(u16::from_be_bytes);
-    let access_uuid = store
-        .node(&[&[23], &[4], &[1], &[0x10]])
-        .and_then(|n| n.value.as_deref());
-    let creation = store.node(&[&[2], &[254]]).and_then(|n| n.value.as_deref());
+    let access_uuid = value(tx, &[&[23], &[4], &[1], &[0x10]]);
+    let creation = value(tx, &[&[2], &[254]]);
+    let (access_uuid, creation) = (access_uuid.as_deref(), creation.as_deref());
     let checksum = |password: &[u8], status: Option<&[u8]>| {
         crate::accounts::checksum(&crate::accounts::ChecksumInput {
             version,
@@ -1207,9 +1220,11 @@ fn rewrite_account(
         .collect();
     let mut members = Vec::new();
     if let Some(stamp) = stamp {
-        let index = store
-            .node(&ACCOUNT_INDEX_PATH)
-            .cloned()
+        let index = tx
+            .subtree(&ACCOUNT_INDEX_PATH, NO_LIMIT)
+            .ok()
+            .flatten()
+            .map(Cow::into_owned)
             .ok_or("the account catalog has no index")?;
         changed = crate::authoring::stamped(changed, stamp.user, stamp.account, stamp.time);
         members.push((
@@ -1218,7 +1233,14 @@ fn rewrite_account(
         ));
     }
     members.insert(0, (path, changed));
-    tx.replace_members(members);
+    // One commit; a member the file cannot hold fails it, the others kept
+    // out with it.
+    tx.begin_commit();
+    for (path, node) in members {
+        if let Err(reason) = tx.replace(path, node) {
+            tx.refuse(reason);
+        }
+    }
     Ok(())
 }
 
@@ -1373,24 +1395,39 @@ pub(crate) struct ModStamp<'a> {
     pub time: &'a [u8],
 }
 
-/// The record of `account` as `store` holds it: by key, or by name as
-/// FileMaker matches names, ignoring case. [Guest], whose name is not
-/// text, is found only by its key.
-fn find_account(store: &Store, account: &AccountRef) -> Option<om_hbam::OwnedNode> {
-    let accounts = store.node(&ACCOUNTS_PATH)?;
-    match account {
-        AccountRef::Key(key) => accounts.children.iter().find(|a| a.segment == *key),
+/// The record of `account` as `view` holds it, whole: by key, or by name
+/// as FileMaker matches names, ignoring case, the catalog `[23, 1, 5]`
+/// listed and each account's name read. [Guest], whose name is not text,
+/// is found only by its key.
+fn find_account(view: &dyn View, account: &AccountRef) -> Option<om_hbam::OwnedNode> {
+    let key = match account {
+        AccountRef::Key(key) => key.clone(),
         AccountRef::Name(name) => {
             let wanted = name.to_lowercase();
-            accounts.children.iter().find(|a| {
-                crate::store::view(a)
-                    .child(ACCOUNT_NAME)
-                    .and_then(|n| n.text()?.ok())
-                    .is_some_and(|text| text.to_lowercase() == wanted)
-            })
+            view.children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward)
+                .map_while(Result::ok)
+                .map(|child| child.segment.into_owned())
+                .find(|key| {
+                    let path = [
+                        ACCOUNTS_PATH[0],
+                        ACCOUNTS_PATH[1],
+                        ACCOUNTS_PATH[2],
+                        key,
+                        ACCOUNT_NAME,
+                    ];
+                    view.subtree(&path, NO_LIMIT)
+                        .ok()
+                        .flatten()
+                        .and_then(|name| crate::store::view(&name).text()?.ok())
+                        .is_some_and(|text| text.to_lowercase() == wanted)
+                })?
         }
-    }
-    .cloned()
+    };
+    let path = [ACCOUNTS_PATH[0], ACCOUNTS_PATH[1], ACCOUNTS_PATH[2], &key];
+    view.subtree(&path, NO_LIMIT)
+        .ok()
+        .flatten()
+        .map(Cow::into_owned)
 }
 
 /// The key of the privilege set account `view` is in (`0b`, a key string).
@@ -1694,23 +1731,31 @@ pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadErr
     let sets = view.subtree(&PRIVILEGE_SETS_PATH, NO_LIMIT)?;
     let sets = sets.as_deref().map(crate::store::view);
     let mut accounts = Vec::new();
-    for account in view.subtrees(
-        &ACCOUNTS_PATH,
-        Bound::Unbounded,
-        Direction::Forward,
-        NO_LIMIT,
-    ) {
-        // A copy the view made of the record, its password verifier with
-        // it, is wiped once decoded (the test view's; the file engine's
-        // view lends its tree).
-        let account = crate::engine::Wiped(account?);
-        let account = &account.0;
+    // One account's record whole at a time, never a page of them: what a
+    // view's limit caps (the store engine's, `HOSTING_LIMIT`) is all that is
+    // held at once.
+    for child in view.children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward) {
+        let segment = child?.segment;
         // A Login reply names the account by its record key as a key path
         // with one-byte lengths (`[len][key]`, network-protocol.md 5.6.5):
         // an account whose key is too long for that is not admitted.
-        if account.segment.len() >= usize::from(u8::MAX) {
+        if segment.len() >= usize::from(u8::MAX) {
             continue;
         }
+        let path = [
+            ACCOUNTS_PATH[0],
+            ACCOUNTS_PATH[1],
+            ACCOUNTS_PATH[2],
+            &segment,
+        ];
+        let Some(account) = view.subtree(&path, NO_LIMIT)? else {
+            continue;
+        };
+        // A copy the view made of the record, its password verifier with
+        // it, is wiped once decoded (the test view's; the file engine's
+        // view lends its tree).
+        let account = crate::engine::Wiped(account);
+        let account = &account.0;
         let account = crate::store::view(account);
         let decoded = (|| {
             let name = account.child(ACCOUNT_NAME)?.text()?.ok()?;
@@ -2556,7 +2601,7 @@ mod tests {
 
     /// A password changed over the wire (#732's review: FileMaker Pro's
     /// Manage Security uploads the account's record with op13,
-    /// `Store::put_subtree`) counts from the next login on, and the old
+    /// `engine::schema::upload_to_catalog`) counts from the next login on, and the old
     /// one no more.
     #[test]
     fn logins_follow_the_security_catalog_as_the_store_holds_it() {

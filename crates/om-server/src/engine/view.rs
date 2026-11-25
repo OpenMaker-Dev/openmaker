@@ -256,6 +256,25 @@ pub trait View {
     /// Whether anything at or below `path` changed after version `since`.
     /// Never false when something did; it may be true when nothing did.
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError>;
+
+    /// How many children the node at `path` has; 0 for a missing node.
+    /// Counted by listing them ([`View::children_page`]) unless the view
+    /// knows the count, as the file engine's tree does.
+    fn count_children(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
+        let mut count = 0;
+        let mut after: Option<Vec<u8>> = None;
+        let mut page = Vec::new();
+        loop {
+            page.clear();
+            let from = after.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+            let more = self.children_page(path, from, Direction::Forward, PAGE, &mut page)?;
+            count += page.len();
+            match page.last() {
+                Some(last) if more => after = Some(last.segment.to_vec()),
+                _ => return Ok(count),
+            }
+        }
+    }
 }
 
 /// A view over another that keeps the first of its reads that failed, for
@@ -349,6 +368,10 @@ impl View for Noted<'_> {
 
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
         self.note(self.inner.changed_since(path, since))
+    }
+
+    fn count_children(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
+        self.note(self.inner.count_children(path))
     }
 }
 
@@ -805,6 +828,10 @@ impl View for TreeView<'_> {
 
     fn changed_since(&self, _path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
         Ok(self.version > since)
+    }
+
+    fn count_children(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
+        Ok(self.root.at(path).map_or(0, |node| node.children.len()))
     }
 }
 
