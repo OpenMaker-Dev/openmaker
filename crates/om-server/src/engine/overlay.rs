@@ -11,10 +11,19 @@
 //!   alone, never from the version.
 //! - **Above a covered path** (a node on the way to one): the version's
 //!   node, with each covered child laid in its place, removed or added in
-//!   key order; a node on the way that the version lacks is a list when
-//!   something is laid below it. Its subtree is the version's with the
-//!   covers applied.
+//!   key order. The tree is the version's with each cover applied as
+//!   `OwnedNode::put` and `OwnedNode::remove` apply it, and every read
+//!   gives that tree's answer: a node with something laid below it is a
+//!   list, one the version lacks with no value, and a leaf that held an
+//!   empty value loses it (`OwnedNode::become_list`); a node with only
+//!   removals below it is the version's.
 //! - **Elsewhere**: the version's.
+//!
+//! What a cover hides is never read: the children of a node above covers
+//! are the version's listing with each covered child substituted, and a
+//! covered child the version cannot read does not fail the listing. A
+//! subtree above covers is built from that listing, a child at a time, and
+//! refused once what it holds passes the limit, before the rest is read.
 //!
 //! A walk across covered and uncovered nodes gives them in the key order of
 //! the tree the rule describes: the version's nodes up to a covered one,
@@ -30,6 +39,9 @@ use om_hbam::OwnedNode;
 
 use super::view::{page_of, within, Child, Direction, Head, ReadError, Step, Version, View};
 use super::{TreeView, NO_LIMIT};
+
+/// The children a subtree above covers is built from at a time.
+const PAGE: usize = 256;
 
 /// A covered path and what lies over it: a node, named by the path's last
 /// segment, or nothing.
@@ -124,6 +136,107 @@ impl<'v> Overlay<'v> {
         }
         Ok(decided)
     }
+
+    /// The child of `path` a failed read of the version reached, when the
+    /// failure is at or below a cover: what the overlay does not read.
+    fn hidden_failure(&self, path: &[&[u8]], error: &ReadError) -> Option<Vec<u8>> {
+        let ReadError::Unreadable { path: failed, .. } = error else {
+            return None;
+        };
+        let failed_path = path_of(failed);
+        let hidden = failed.len() > path.len()
+            && starts_with(&failed_path, &owned(path))
+            && self
+                .covered
+                .iter()
+                .any(|(covered, _)| starts_with(&failed_path, covered));
+        hidden.then(|| failed[path.len()].clone())
+    }
+
+    /// The subtree at `path`, a node above covers, built from its children
+    /// as the overlay lists them: each covered child from what lies over
+    /// it, each child above covers built so in turn, each other child from
+    /// the version, so that nothing a cover hides is read. What it holds
+    /// is counted as it is built against `limit`, `room` being what is
+    /// left of it, and the subtree at `top` refused once it passes.
+    fn build_above(
+        &self,
+        path: &[&[u8]],
+        top: &[&[u8]],
+        limit: usize,
+        room: &mut usize,
+    ) -> Result<Option<OwnedNode>, ReadError> {
+        let too_large = || ReadError::TooLarge {
+            path: owned(top),
+            limit,
+        };
+        let charge = |room: &mut usize, cost: usize| {
+            if limit == NO_LIMIT {
+                return Ok(());
+            }
+            *room = room.checked_sub(cost).ok_or_else(too_large)?;
+            Ok(())
+        };
+        let Some(head) = self.node(path)? else {
+            return Ok(None);
+        };
+        let mut node = OwnedNode {
+            segment: path.last().map(|s| s.to_vec()).unwrap_or_default(),
+            value: head.value.map(Cow::into_owned),
+            push: head.list,
+            children: Vec::new(),
+        };
+        charge(
+            room,
+            size_of::<OwnedNode>() + node.segment.len() + node.value.as_ref().map_or(0, Vec::len),
+        )?;
+        let mut from: Option<Vec<u8>> = None;
+        loop {
+            let mut page = Vec::new();
+            let bound = match &from {
+                Some(segment) => Bound::Excluded(segment.as_slice()),
+                None => Bound::Unbounded,
+            };
+            let more = self.children_page(path, bound, Direction::Forward, PAGE, &mut page)?;
+            let Some(last) = page.last().map(|child| child.segment.to_vec()) else {
+                break;
+            };
+            for child in page {
+                let mut at = path.to_vec();
+                at.push(&child.segment);
+                let built = match self.place(&at) {
+                    Place::Covered(None) => None,
+                    Place::Covered(Some(laid)) => {
+                        if limit != NO_LIMIT {
+                            let held =
+                                om_hbam::tree::memory_within(laid, *room).ok_or_else(too_large)?;
+                            charge(room, held)?;
+                        }
+                        Some(laid.clone())
+                    }
+                    Place::Above => self.build_above(&at, top, limit, room)?,
+                    Place::Base => {
+                        let read = match self.base.subtree(&at, *room) {
+                            Err(ReadError::TooLarge { .. }) => return Err(too_large()),
+                            read => read?,
+                        };
+                        let built = read.map(Cow::into_owned);
+                        if let Some(built) = &built {
+                            charge(room, om_hbam::tree::memory(built))?;
+                        }
+                        built
+                    }
+                };
+                node.children.extend(built);
+            }
+            if !more {
+                break;
+            }
+            from = Some(last);
+        }
+        node.children.shrink_to_fit();
+        Ok(Some(node))
+    }
 }
 
 fn path_of(path: &[Vec<u8>]) -> Vec<&[u8]> {
@@ -166,10 +279,13 @@ impl View for Overlay<'_> {
                 if !self.laid_below(path) {
                     return Ok(head);
                 }
-                Ok(Some(Head {
-                    list: true,
-                    value: head.and_then(|head| head.value),
-                }))
+                // A list, as `OwnedNode::put` makes it: the empty value of
+                // a leaf goes, any other value stays.
+                let value = head.and_then(|head| match head.value {
+                    Some(value) if !head.list && value.is_empty() => None,
+                    value => value,
+                });
+                Ok(Some(Head { list: true, value }))
             }
             Place::Base => self.base.node(path),
         }
@@ -186,24 +302,10 @@ impl View for Overlay<'_> {
                 within(node, || owned(path), limit).map(|node| Some(Cow::Borrowed(node)))
             }
             Place::Above => {
-                let base = self.base.subtree(path, NO_LIMIT)?.map(Cow::into_owned);
-                let mut node = match base {
-                    Some(node) => node,
-                    None if self.laid_below(path) => OwnedNode::list(
-                        path.last().map(|s| s.to_vec()).unwrap_or_default(),
-                        Vec::new(),
-                    ),
-                    None => return Ok(None),
+                let mut room = limit;
+                let Some(node) = self.build_above(path, path, limit, &mut room)? else {
+                    return Ok(None);
                 };
-                for (rest, laid) in self.below(path) {
-                    let rest = path_of(rest);
-                    match laid {
-                        Some(laid) => node.put(&rest, laid.clone()),
-                        None => {
-                            node.remove(&rest);
-                        }
-                    }
-                }
                 within(&node, || owned(path), limit)?;
                 Ok(Some(Cow::Owned(node)))
             }
@@ -238,14 +340,32 @@ impl View for Overlay<'_> {
                 };
                 loop {
                     let mut page = Vec::new();
-                    let more = self.base.children_page(
+                    let listed = self.base.children_page(
                         path,
                         from.as_ref().map(Vec::as_slice),
                         direction,
                         max,
                         &mut page,
-                    )?;
-                    let last = page.last().map(|child| child.segment.to_vec());
+                    );
+                    let (more, last) = match listed {
+                        Ok(more) => (more, page.last().map(|child| child.segment.to_vec())),
+                        Err(error) => match self.hidden_failure(path, &error) {
+                            // A covered child the version could not read,
+                            // which the overlay does not read: the listing
+                            // goes on after it. A view gives the children
+                            // before one it cannot read and fails when that
+                            // one comes first (`super::copies`), so nothing
+                            // unlisted lies before it.
+                            Some(hidden) => {
+                                let last = match page.last() {
+                                    Some(child) => child.segment.to_vec(),
+                                    None => hidden,
+                                };
+                                (true, Some(last))
+                            }
+                            None => return Err(error),
+                        },
+                    };
                     // The version's children the covers do not decide, and
                     // the decided ones in this page's range: up to its last
                     // child when more may follow it.
@@ -421,5 +541,186 @@ impl Overlay<'_> {
             given += 1;
         }
         Ok(Some(at))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::copies::Copies;
+    use crate::engine::view::wire;
+
+    fn leaf(value: &[u8]) -> OwnedNode {
+        OwnedNode::leaf(Vec::new(), value.to_vec())
+    }
+
+    /// Every path of `node`'s tree below `at`, `at` first.
+    fn paths(node: &OwnedNode, at: Vec<Vec<u8>>, out: &mut Vec<Vec<Vec<u8>>>) {
+        out.push(at.clone());
+        for child in &node.children {
+            let mut path = at.clone();
+            path.push(child.segment.clone());
+            paths(child, path, out);
+        }
+    }
+
+    /// The children of `path` from `from` in `direction`, read `max` at a
+    /// time.
+    fn listed(
+        view: &dyn View,
+        path: &[&[u8]],
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+    ) -> Result<Vec<Child<'static>>, ReadError> {
+        let mut all: Vec<Child<'static>> = Vec::new();
+        let mut from = from.map(<[u8]>::to_vec);
+        loop {
+            let mut page = Vec::new();
+            let more = view.children_page(
+                path,
+                from.as_ref().map(Vec::as_slice),
+                direction,
+                max,
+                &mut page,
+            )?;
+            all.extend(page.into_iter().map(|child| Child {
+                segment: Cow::Owned(child.segment.into_owned()),
+                head: child.head.into_owned(),
+            }));
+            match (more, all.last()) {
+                (true, Some(last)) => from = Bound::Excluded(last.segment.to_vec()),
+                _ => return Ok(all),
+            }
+        }
+    }
+
+    /// Whether `a` answers every read of `path` as `b` does.
+    fn same_answers(a: &dyn View, b: &dyn View, path: &[&[u8]]) {
+        let at = format!("{path:02x?}");
+        assert_eq!(a.node(path), b.node(path), "node {at}");
+        let subtree = |view: &dyn View| {
+            view.subtree(path, NO_LIMIT)
+                .map(|node| node.map(Cow::into_owned))
+        };
+        assert_eq!(subtree(a), subtree(b), "subtree {at}");
+        assert_eq!(wire(a, path), wire(b, path), "walk {at}");
+        let children = listed(b, path, Bound::Unbounded, Direction::Forward, NO_LIMIT).unwrap();
+        let mut bounds = vec![Bound::Unbounded];
+        for child in &children {
+            bounds.push(Bound::Included(child.segment.to_vec()));
+            bounds.push(Bound::Excluded(child.segment.to_vec()));
+        }
+        for from in &bounds {
+            let from = from.as_ref().map(Vec::as_slice);
+            for direction in [Direction::Forward, Direction::Backward] {
+                for max in [1, 2, NO_LIMIT] {
+                    assert_eq!(
+                        listed(a, path, from, direction, max),
+                        listed(b, path, from, direction, max),
+                        "children {at} from {from:02x?} {direction:?} by {max}"
+                    );
+                }
+                let subtrees = |view: &dyn View| -> Vec<_> {
+                    view.subtrees(path, from, direction, NO_LIMIT)
+                        .map(|node| node.map(Cow::into_owned))
+                        .collect()
+                };
+                assert_eq!(subtrees(a), subtrees(b), "subtrees {at} from {from:02x?}");
+            }
+        }
+    }
+
+    /// The overlay answers every read as a tree view of the version with
+    /// the covers applied by `OwnedNode::put` and `OwnedNode::remove`, the
+    /// reference: a record replaced, removed and added; a cover two deep
+    /// below a leaf that held an empty value, which becomes a list without
+    /// it; below a leaf with a value, which keeps it; only removals below a
+    /// list; covers below nodes the version lacks. Through a view that
+    /// fails reads of what the covers hide, it answers the same; and a
+    /// subtree above covers is refused at its limit before it reads past
+    /// it.
+    #[test]
+    fn the_overlay_reads_as_the_version_with_its_covers_applied() {
+        let mut base = OwnedNode::default();
+        for id in 1..=6u8 {
+            base.put(&[&[1], &[id], &[0]], leaf(&[id]));
+            base.put(&[&[1], &[id], &[1]], leaf(b"text"));
+        }
+        base.put(&[&[2]], leaf(b""));
+        base.put(&[&[3]], leaf(b"three"));
+        for id in 1..=3u8 {
+            base.put(&[&[4], &[id]], leaf(&[id]));
+        }
+        base.put(&[&[5]], leaf(b"five"));
+        let mut changed = OwnedNode::list(Vec::new(), vec![leaf(b"changed")]);
+        changed.children[0].segment = vec![0];
+        // Each laid node named by its path's last segment (`Cover`).
+        let laid = |path: Vec<Vec<u8>>, node: Option<OwnedNode>| -> Cover {
+            let node = node.map(|mut node| {
+                node.segment = path.last().unwrap().clone();
+                node
+            });
+            (path, node)
+        };
+        let covers: Vec<Cover> = vec![
+            laid(vec![vec![1], vec![2]], Some(changed.clone())),
+            laid(vec![vec![1], vec![4]], None),
+            laid(vec![vec![1], vec![9]], Some(changed.clone())),
+            laid(vec![vec![2], vec![1], vec![1]], Some(leaf(b"below"))),
+            laid(vec![vec![3], vec![1]], Some(leaf(b"below"))),
+            laid(vec![vec![4], vec![2]], None),
+            laid(vec![vec![6], vec![1]], Some(leaf(b"added"))),
+            laid(vec![vec![7], vec![1]], None),
+        ];
+        let mut reference = base.clone();
+        for (path, laid) in &covers {
+            let path = path_of(path);
+            match laid {
+                Some(laid) => reference.put(&path, laid.clone()),
+                None => {
+                    reference.remove(&path);
+                }
+            }
+        }
+        // The rule's two heads for a node above a cover.
+        assert_eq!(reference.at(&[&[2]]).unwrap().value, None);
+        assert_eq!(
+            reference.at(&[&[3]]).unwrap().value.as_deref(),
+            Some(&b"three"[..])
+        );
+        let version = TreeView::new(&base, 3);
+        let expected = TreeView::new(&reference, 3);
+        let mut all = Vec::new();
+        paths(&reference, Vec::new(), &mut all);
+        paths(&base, Vec::new(), &mut all);
+        all.extend([vec![vec![7]], vec![vec![7], vec![1]], vec![vec![8]]]);
+        all.sort();
+        all.dedup();
+        let hiding: Vec<Vec<Vec<u8>>> = vec![
+            vec![vec![1], vec![2]],
+            vec![vec![1], vec![4]],
+            vec![vec![4], vec![2]],
+        ];
+        let failing = Copies::new(&version, &hiding);
+        for base in [&version as &dyn View, &failing] {
+            let overlay = Overlay::new(base, &covers);
+            for path in &all {
+                same_answers(&overlay, &expected, &path_of(path));
+            }
+        }
+        // A subtree above covers is refused at its limit, before it reads
+        // a record that cannot be read further on.
+        let later: Vec<Vec<Vec<u8>>> = vec![vec![vec![1], vec![6]]];
+        let failing = Copies::new(&version, &later);
+        let overlay = Overlay::new(&failing, &covers);
+        assert!(matches!(
+            overlay.subtree(&[&[1]], 200),
+            Err(ReadError::TooLarge { limit: 200, .. })
+        ));
+        assert!(matches!(
+            overlay.subtree(&[&[1]], NO_LIMIT),
+            Err(ReadError::Unreadable { .. })
+        ));
     }
 }
