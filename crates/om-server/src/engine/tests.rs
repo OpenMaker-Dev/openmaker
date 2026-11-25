@@ -5540,3 +5540,83 @@ fn a_table_replaced_whole_takes_its_basis_with_it() {
     .is_some());
     assert!(file.read_store().bases().get(&t).is_none(), "stored");
 }
+
+/// #809 (github.com/OpenMaker-Dev/openmaker): deferred field work that
+/// cannot be done is the operation's outcome, not a side effect of the
+/// store. Run in a transaction and taken back, op73 and the deferred work
+/// at opening leave the file's hold as it was, read-only for nothing; run
+/// by the engine, their outcome says to hold the file read-only for the
+/// work, and the engine does.
+#[test]
+fn deferred_work_that_cannot_be_done_is_held_read_only_by_the_engine() {
+    use super::schema::{finish_deferred_work, update_table};
+    use super::transaction::taken_back;
+    let mut tree = fixture::tree(&[], true);
+    let table = uint_segment(fixture::TABLE);
+    // A work list that is not a list (`Store::deferred_work`).
+    tree.put(
+        &[&table, &[3], &[1], &[0xfd]],
+        OwnedNode::leaf(vec![0xfd], vec![1]),
+    );
+    let disk = fixture::TempFile::from_tree("engine-work-kept", &tree);
+    let op73 = || {
+        Operation::UpdateTable(UpdateTable {
+            table: table.clone(),
+            account: fixture::ACCOUNT.into(),
+        })
+    };
+    let environment = Seeded(AtomicU64::new(0));
+    // The file a local host serves until its first login: no work tried.
+    let file = local(&disk);
+    {
+        let mut store = file.write_store(&super::WRITER);
+        let Operation::UpdateTable(op) = op73() else {
+            unreachable!()
+        };
+        let refused = taken_back(&mut store, |tx| update_table(op, tx, &environment));
+        assert_eq!(
+            refused,
+            Err(crate::store::NotUpdated::Kept(crate::store::WorkKept(
+                "the deferred work list is not a list"
+            )))
+        );
+        assert_eq!(
+            store.read_only_cause(),
+            None,
+            "op73 sets nothing of the hold"
+        );
+        let kept = taken_back(&mut store, |tx| finish_deferred_work(tx, &environment));
+        assert_eq!(
+            kept,
+            Err(crate::store::WorkKept(
+                "the deferred work list is not a list"
+            ))
+        );
+        assert_eq!(
+            store.read_only_cause(),
+            None,
+            "nor does the work at opening"
+        );
+    }
+    let engine = engine();
+    engine.check_writes();
+    let outcome = engine.submit(&file, op73());
+    assert_eq!(
+        outcome.reply,
+        Reply::UpdateTable(Err("the deferred work list is not a list".into()))
+    );
+    assert_eq!(outcome.holds_read_only, Some(ReadOnlyCause::DeferredWork));
+    assert_eq!(
+        file.read_store().read_only_cause(),
+        Some(ReadOnlyCause::DeferredWork)
+    );
+    // The deferred work at opening, on a file of its own: the same.
+    let file = local(&disk);
+    let outcome = engine.submit(&file, Operation::FinishDeferredWork);
+    assert_eq!(outcome.reply, Reply::FinishDeferredWork(Ok(false)));
+    assert_eq!(outcome.holds_read_only, Some(ReadOnlyCause::DeferredWork));
+    assert_eq!(
+        file.read_store().read_only_cause(),
+        Some(ReadOnlyCause::DeferredWork)
+    );
+}
