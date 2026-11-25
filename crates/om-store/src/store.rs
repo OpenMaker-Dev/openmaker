@@ -100,6 +100,9 @@ use crate::state::{SlotFault, State, StateError};
 use crate::sys::{self, ErrorKind, Fs, Random};
 use crate::tree::{self, Root, Tree};
 
+mod member;
+pub use member::Recovered;
+
 /// How the store is set up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
@@ -604,6 +607,9 @@ pub struct Opened {
 
 /// What an open found before the replay.
 struct Opening {
+    /// A member of a cluster (section 7.1): it applies only what is
+    /// committed and writes no entry of its own at an open.
+    member: bool,
     checkpoint: pagefile::Opened,
     log: log::Opened,
     passed_over_state: Option<SlotFault>,
@@ -744,6 +750,9 @@ pub struct Store {
     /// The groups open in the newest applied state: the log keeps room for
     /// the entries that would end them ([`kept_room`]).
     groups: u64,
+    /// A member of a cluster ([`Store::open_member`]): entries reach its log
+    /// through consensus, and only what is committed is applied.
+    member: bool,
 }
 
 /// The bytes the log keeps at the end of its segment while `groups` groups
@@ -1061,6 +1070,17 @@ impl Store {
         random: &dyn Random,
         config: Config,
     ) -> Result<(Store, Opened), OpenError> {
+        Store::create_as(fs, random, config, false)
+    }
+
+    /// [`Store::create`], then the open of a single server or of a member
+    /// of a cluster.
+    fn create_as(
+        fs: Arc<dyn Fs>,
+        random: &dyn Random,
+        config: Config,
+        member: bool,
+    ) -> Result<(Store, Opened), OpenError> {
         check_config(&config)?;
         let disk = |e: sys::Error| OpenError::Disk(e.to_string());
         let lock = fs.lock().map_err(disk)?;
@@ -1090,7 +1110,7 @@ impl Store {
         creation_done(&*fs)?;
         drop(state);
         // The rest is an open of the store just made.
-        Store::open(fs, config)
+        Store::start_as(fs, config, How::Normal, member)
     }
 
     /// Opens the store in the folder (section 6.7), or says why it cannot
@@ -1314,8 +1334,17 @@ impl Store {
     }
 
     fn start(fs: Arc<dyn Fs>, config: Config, how: How) -> Result<(Store, Opened), OpenError> {
+        Store::start_as(fs, config, how, false)
+    }
+
+    fn start_as(
+        fs: Arc<dyn Fs>,
+        config: Config,
+        how: How,
+        member: bool,
+    ) -> Result<(Store, Opened), OpenError> {
         let mut recorded = Vec::new();
-        Store::start_recording(fs, config, how, &mut recorded)
+        Store::start_recording(fs, config, how, member, &mut recorded)
             .map_err(|e| after_incidents(recorded, e))
     }
 
@@ -1323,6 +1352,7 @@ impl Store {
         fs: Arc<dyn Fs>,
         config: Config,
         how: How,
+        member: bool,
         recorded: &mut Vec<Incident>,
     ) -> Result<(Store, Opened), OpenError> {
         let approval = match how {
@@ -1487,6 +1517,7 @@ impl Store {
             (_, None) => {}
         }
         let opened = Opening {
+            member,
             checkpoint,
             log: log_opened,
             passed_over_state,
@@ -1513,6 +1544,7 @@ impl Store {
         opening: Opening,
     ) -> Result<(Store, Opened), OpenError> {
         let Opening {
+            member,
             checkpoint,
             log: log_opened,
             passed_over_state,
@@ -1540,17 +1572,27 @@ impl Store {
             Err(e) => return Err(OpenError::Disk(e.to_string())),
         }
         // 4. The entries after the checkpoint, each once, in order, through
-        // the durable entry; nothing freed in the log meanwhile.
+        // the durable entry, or for a member of a cluster through the
+        // committed position its marker recorded (section 6.7); nothing
+        // freed in the log meanwhile.
         let durable = log.durable();
+        let through = if member {
+            log.committed().clamp(start.index, durable.index)
+        } else {
+            durable.index
+        };
         let mut replayed = 0u64;
         let mut replay_checkpoints = 0u64;
         let mut last = start;
-        if durable.index > start.index {
+        if through > start.index {
             for e in log.read(start.index + 1).map_err(OpenError::Log)? {
                 let e = e.map_err(|e| match e {
                     LogError::Damaged(d) => OpenError::LogDamaged(d),
                     e => OpenError::Log(e),
                 })?;
+                if e.index > through {
+                    break;
+                }
                 let entry = Entry {
                     index: e.index,
                     term: e.term,
@@ -1594,7 +1636,7 @@ impl Store {
                 replayed += 1;
             }
         }
-        if last.index != durable.index || last.hash.0 != durable.hash {
+        if last.index != through || (through == durable.index && last.hash.0 != durable.hash) {
             return Err(OpenError::Refused(
                 "the replay did not end at the durable entry",
             ));
@@ -1606,11 +1648,17 @@ impl Store {
         // Each start begins a new term (server-storage.md 6.9): above every
         // term `state` and the log recorded, made durable by this start's
         // first entries.
-        let term = values
-            .term
-            .max(durable.term)
-            .checked_add(1)
-            .ok_or(OpenError::Refused("the term is at its greatest value"))?;
+        // A member's term is its cluster's, as `state` recorded it (section
+        // 7.1).
+        let term = if member {
+            values.term.max(durable.term)
+        } else {
+            values
+                .term
+                .max(durable.term)
+                .checked_add(1)
+                .ok_or(OpenError::Refused("the term is at its greatest value"))?
+        };
         let mut store = Store {
             fs,
             config,
@@ -1626,7 +1674,34 @@ impl Store {
             stopped: None,
             journal,
             groups: 0,
+            member,
         };
+        if member {
+            // A member writes no entry of its own: its leader appends (section
+            // 7.1), and this start's `session` entry waits for section 7.3.
+            let incidents = store.journal.incidents().to_vec();
+            let journal_found = store.journal.found().clone();
+            return Ok((
+                store,
+                Opened {
+                    start_count: values.start_count,
+                    checkpoint,
+                    log: log_opened,
+                    replayed,
+                    replay_checkpoints,
+                    recovered: last,
+                    discarded: None,
+                    started: last,
+                    passed_over_state,
+                    last_batch_may_be_lost,
+                    gave_up,
+                    before_start,
+                    fallback_cannot_replay: false,
+                    incidents,
+                    journal: journal_found,
+                },
+            ));
+        }
         // 6. This start's own entry (section 7.3), the first write. It is
         // part of the recovery for space: it may take the reserve, and when
         // the pages waiting for a checkpoint are past their budget, or the
@@ -1750,6 +1825,17 @@ impl Store {
         }
     }
 
+    /// A single server's own appends and flushes: a member's entries come
+    /// from its leader and are published once committed ([`member`]).
+    fn not_member(&self) -> Result<(), WriteError> {
+        if self.member {
+            return Err(WriteError::Rule(
+                "a member of a cluster appends through its consensus core",
+            ));
+        }
+        Ok(())
+    }
+
     /// The store stops (module docs): every later call is refused.
     fn stop(&mut self, why: impl Into<String>) -> WriteError {
         let why = why.into();
@@ -1832,6 +1918,7 @@ impl Store {
     /// opens a session of this server in another start than the current one.
     pub fn append(&mut self, file: u64, payload: &Payload) -> Result<Appended, WriteError> {
         self.usable()?;
+        self.not_member()?;
         if let Payload::Session(event) = payload {
             match event {
                 SessionEvent::Started { server, .. } if *server == self.server => {
@@ -1997,6 +2084,7 @@ impl Store {
     /// entry. A failure stops the store.
     pub fn flush(&mut self) -> Result<Vec<Published>, WriteError> {
         self.usable()?;
+        self.not_member()?;
         let last = self.log.appended().index;
         let durable = match self.log.flush_batch(Some(last)) {
             Ok(durable) => durable,

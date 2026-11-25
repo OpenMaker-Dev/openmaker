@@ -7,6 +7,7 @@
 //! of records, catalogs or the protocol.
 
 pub mod apply;
+pub mod consensus;
 pub mod entry;
 pub mod incident;
 pub mod log;
