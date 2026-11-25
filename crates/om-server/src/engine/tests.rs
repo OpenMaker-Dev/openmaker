@@ -4369,6 +4369,23 @@ fn a_member_key_draft_that_writes_nothing_leaves_the_file_as_it_was() {
 /// (`Reading::serve_with_accounts`). Another reader that read them would
 /// get none through it, so its two answers differ and the check fails; a
 /// reader of them gets them through both views, the same.
+/// An operation that writes an account reads it as written through its
+/// transaction's derived state, the catalog and the accounts read again
+/// together (review of #785, round 2; `Transaction::settle`).
+#[test]
+fn an_account_written_reads_as_written_in_the_same_operation() {
+    let (_disk, file) = host("engine-account-as-written", &fixture::tree(&[], true));
+    let mut store = file.write_store(&Writer::for_tests());
+    let (renamed, former) = written(&mut store, |tx| {
+        let name = vec![vec![23], vec![1], vec![5], vec![3], vec![16]];
+        tx.put(name, text_node(&[], "Renamed clerk")).unwrap();
+        let derived = tx.derived();
+        let named = |name: &str| derived.account(name).unwrap().is_some();
+        (named("Renamed clerk"), named(fixture::CLERK))
+    });
+    assert_eq!((renamed, former), (true, false));
+}
+
 #[test]
 fn the_test_view_reads_the_accounts_only_for_a_reader_of_them() {
     let (_disk, file) = host("engine-accounts-asked", &fixture::tree(&[], true));

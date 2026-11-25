@@ -605,6 +605,19 @@ fn feeds_derived(path: &[Vec<u8>]) -> bool {
     }
 }
 
+/// What a write of an operation's transaction changed
+/// ([`Store::write_in`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Written {
+    /// It reaches what the derived state reads ([`feeds_derived`]), which
+    /// the caller then reads again ([`Store::schema_changed_in`]).
+    pub feeds: bool,
+    /// The length of the shortest prefix of the written path whose node
+    /// changed: a parent the put created or turned into a list, or the
+    /// path itself.
+    pub from: usize,
+}
+
 /// Write `line` about the file named `name` into `journal`'s log lines, or
 /// now without one.
 fn note(name: &str, journal: Option<&mut Journal>, line: String) {
@@ -2128,20 +2141,19 @@ impl Store {
     /// does not count as changed for it. Otherwise the tree then has
     /// changes the file on disk lacks, the verified-index marks the write
     /// can affect are forgotten ([`Store::forget_verified`]), and the
-    /// result says whether the write reaches what the derived state reads
-    /// ([`feeds_derived`]), which the caller then reads again
-    /// ([`Store::schema_changed_in`]); `None` for no change.
+    /// result ([`Written`]) says what changed; `None` for no change.
     pub(crate) fn write_in(
         &mut self,
         journal: &mut Journal,
         path: &[Vec<u8>],
         node: Option<OwnedNode>,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<Written>, String> {
         let Some(last) = path.last() else {
             return Err("a write at the root".into());
         };
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         let mut feeds = feeds_derived(path);
+        let mut from = path.len();
         match node {
             Some(node) => {
                 let placed = OwnedNode {
@@ -2152,18 +2164,20 @@ impl Store {
                     return Err(reason);
                 }
                 // The same node where it is, with every parent a list
-                // already (the root becomes one only for a put beneath it).
+                // already. The root's own list flag is not content: the
+                // writer writes its children only, and a file loaded from
+                // disk has it clear, as no slot names the root.
                 let ancestor = self.changed_ancestor(path);
-                if ancestor.is_none()
-                    && (self.root.push || path.len() > 1)
-                    && self.root.at(&segments) == Some(&placed)
-                {
+                if ancestor.is_none() && self.root.at(&segments) == Some(&placed) {
                     return Ok(None);
                 }
                 // A put below what the derived state leaves out (a field's
                 // deferred work) still changes what it reads when it
                 // creates a parent, or turns one into a list.
-                feeds |= ancestor.is_some_and(|depth| feeds_derived(&path[..depth]));
+                if let Some(depth) = ancestor {
+                    feeds |= feeds_derived(&path[..depth]);
+                    from = depth;
+                }
                 journal.replace(&mut self.root, path.to_vec(), placed);
             }
             None => {
@@ -2180,7 +2194,7 @@ impl Store {
             // verified-index marks and the accounts follow the count.
             self.generation += 1;
         }
-        Ok(Some(feeds))
+        Ok(Some(Written { feeds, from }))
     }
 
     /// The length of the shortest proper prefix of `path` whose node a put
@@ -2209,23 +2223,39 @@ impl Store {
             self.verified.1.clear();
             return;
         };
-        let affects = |(t, f, kind): &IndexId| -> bool {
-            if t != table {
-                return false;
-            }
-            match rest {
-                [] => true,
-                [list, ..] if list.as_slice() == [keys::RECORDS] => true,
-                [list, ..] if list.as_slice() == [keys::RECORD_IDS] => true,
-                [indexes] if indexes.as_slice() == [keys::INDEXES] => true,
-                [indexes, field] if indexes.as_slice() == [keys::INDEXES] => f == field,
-                [indexes, field, index, ..] if indexes.as_slice() == [keys::INDEXES] => {
-                    f == field && index.as_slice() == [*kind]
-                }
-                _ => false,
-            }
+        /// What a write can make wrong: a table's marks, a field's, one
+        /// index's.
+        enum Scope<'p> {
+            Table,
+            Field(&'p [u8]),
+            Index(&'p [u8], u8),
+        }
+        let is = |segment: &[u8], key: u8| segment == [key];
+        let scope = match rest {
+            [] => Scope::Table,
+            [list, ..] if is(list, keys::RECORDS) || is(list, keys::RECORD_IDS) => Scope::Table,
+            [indexes] if is(indexes, keys::INDEXES) => Scope::Table,
+            [indexes, field] if is(indexes, keys::INDEXES) => Scope::Field(field),
+            [indexes, field, index, ..] if is(indexes, keys::INDEXES) => match index.as_slice() {
+                [kind] => Scope::Index(field, *kind),
+                _ => return,
+            },
+            // A serial value, a library member, the field catalog (the
+            // generation forgets all for that) and the rest of a table.
+            _ => return,
         };
-        self.verified.1.retain(|id, _| !affects(id));
+        // Only a table has marks.
+        if self.verified.1.is_empty() || !be_uint(table).is_some_and(|t| t >= 0x8000) {
+            return;
+        }
+        self.verified.1.retain(|(t, f, kind), _| {
+            t != table
+                || match scope {
+                    Scope::Table => false,
+                    Scope::Field(field) => f.as_slice() != field,
+                    Scope::Index(field, index) => f.as_slice() != field || *kind != index,
+                }
+        });
     }
 
     /// The derived state read again after writes that reach it

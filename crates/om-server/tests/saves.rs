@@ -893,6 +893,36 @@ fn a_serial_set_to_the_one_held_answers_with_it_while_saves_fail() {
     client.disconnect().unwrap();
 }
 
+/// op13 that uploads a top-level catalog as the file holds it, as the
+/// first write to a freshly hosted file, changes nothing: with saves
+/// failing it succeeds, and the file is not rewritten (review of #785,
+/// round 2: the root of a tree loaded from disk is not flagged a list, and
+/// that flag is no content, `Store::write_in`).
+#[test]
+fn an_upload_of_a_catalog_as_it_is_changes_nothing_while_saves_fail() {
+    let mut root = with_photo();
+    fixture::add_themes(&mut root, &[1]);
+    let file = TempFile::from_tree("save-same-catalog", &root);
+    let bytes = std::fs::read(&file.0).unwrap();
+    let themes = HbamFile::open(&file.0)
+        .unwrap()
+        .subtree(&[&[6]])
+        .unwrap()
+        .unwrap()
+        .to_owned_node();
+    assert!(!themes.children.is_empty());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "same catalog");
+    let blocked = BlockedSaves::new(&file);
+    client.upload_to_host(&[&[6]], &themes).unwrap();
+    drop(blocked);
+    assert!(
+        std::fs::read(&file.0).unwrap() == bytes,
+        "the file is rewritten"
+    );
+    client.disconnect().unwrap();
+}
+
 /// docs/server-storage.md 5, "not stored": a request whose save fails
 /// before its rename is answered with its storage error, as each reply can
 /// carry it (op72 and op88 in their status, 800 "Unable to create file on

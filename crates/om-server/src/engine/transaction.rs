@@ -15,7 +15,7 @@ use super::view::{Child, Direction, Head, ReadError, Step, Version, View};
 use crate::derived::Derived;
 use crate::library::BinaryData;
 use crate::locks::{LockTable, LockUser};
-use crate::store::{IndexId, Journal, Store};
+use crate::store::{IndexId, Journal, Store, Written};
 
 /// What the engine holds of a file for an operation: what the operation
 /// needs, and no more (`FileEngine::submit`).
@@ -51,10 +51,10 @@ pub enum Hold<'h, 'a> {
 /// back, the tree not counted as changed); [`Self::derived`] is the state
 /// of the tree as written, its catalog and its accounts both;
 /// [`View::changed_since`] is true for a path at, above or below one the
-/// transaction changed, and for every path once a store helper changed
-/// the tree (it may be true where nothing changed, never false where
-/// something did); [`View::version`] stays the version the operation
-/// started on.
+/// transaction changed, a parent a put created or turned into a list
+/// included, and for every path once a store helper ran (it may be true
+/// where nothing changed, never false where something did);
+/// [`View::version`] stays the version the operation started on.
 ///
 /// The operations not moved yet use the `Store` methods it still exposes,
 /// and `view` for the state derived from the tree (a privilege set's
@@ -97,7 +97,8 @@ pub struct Transaction<'a> {
     /// again before the derived state is next used ([`Self::derived`]) or
     /// the operation ends ([`Self::settle`]).
     schema_pending: bool,
-    /// The paths the transaction's writes changed, for
+    /// The paths the transaction's writes changed, each the shortest
+    /// prefix of a written path whose node changed, for
     /// [`View::changed_since`].
     written: Vec<Vec<Vec<u8>>>,
     /// Whether a store helper changed the tree ([`Self::by_store`]), which
@@ -155,17 +156,23 @@ impl<'a> Transaction<'a> {
         self.check = Some(Box::new(super::checking::Check::new(self.store)));
     }
 
-    /// The operation is about to change the tree through one of the
-    /// store's own helpers (an operation not moved onto the transaction's
-    /// writes): what it changes is not recorded, so the check skips it
-    /// alone (`super::checking::Check::before_store`), and
+    /// Run `work`, one of the store's own helpers (an operation not moved
+    /// onto the transaction's writes), which changes the tree without
+    /// saying what: the check skips what it does while it runs alone
+    /// (`super::checking::Check::before_store`, `after_store`), and
     /// [`View::changed_since`] answers true from now on.
-    fn by_store(&mut self) {
+    fn by_store<T>(&mut self, work: impl FnOnce(&mut Store, &mut Journal) -> T) -> T {
         self.by_helpers = true;
         #[cfg(debug_assertions)]
-        if let Some(check) = &mut self.check {
+        if let Some(check) = &self.check {
             check.before_store(self.store);
         }
+        let done = work(self.store, &mut self.journal);
+        #[cfg(debug_assertions)]
+        if let Some(check) = &mut self.check {
+            check.after_store(self.store);
+        }
+        done
     }
 
     /// Put `node` (with its children) at `path`, replacing whatever is
@@ -177,19 +184,15 @@ impl<'a> Transaction<'a> {
     /// changes nothing.
     pub fn replace(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) -> Result<(), String> {
         #[cfg(debug_assertions)]
-        let recorded = self.check.as_ref().map(|check| {
-            check.fresh(self.store);
-            node.clone()
-        });
-        let Some(feeds) = self.store.write_in(&mut self.journal, &path, Some(node))? else {
+        let recorded = self.check.as_ref().map(|_| node.clone());
+        let Some(written) = self.store.write_in(&mut self.journal, &path, Some(node))? else {
             return Ok(());
         };
-        self.schema_pending |= feeds;
         #[cfg(debug_assertions)]
         if let (Some(check), Some(node)) = (&mut self.check, recorded) {
             check.wrote(&path, Some(&node));
         }
-        self.written.push(path);
+        self.wrote(path, written);
         Ok(())
     }
 
@@ -205,20 +208,24 @@ impl<'a> Transaction<'a> {
     /// Remove the node at `path` and everything under it
     /// (`om_store::tree::Edit::Delete`).
     pub fn remove(&mut self, path: Vec<Vec<u8>>) -> Result<(), String> {
-        #[cfg(debug_assertions)]
-        if let Some(check) = &self.check {
-            check.fresh(self.store);
-        }
-        let Some(feeds) = self.store.write_in(&mut self.journal, &path, None)? else {
+        let Some(written) = self.store.write_in(&mut self.journal, &path, None)? else {
             return Ok(());
         };
-        self.schema_pending |= feeds;
         #[cfg(debug_assertions)]
         if let Some(check) = &mut self.check {
             check.wrote(&path, None);
         }
-        self.written.push(path);
+        self.wrote(path, written);
         Ok(())
+    }
+
+    /// What a write at `path` changed: the derived state to read again, and
+    /// for [`View::changed_since`] the shortest prefix of `path` it changed
+    /// (a parent the put created or turned into a list included).
+    fn wrote(&mut self, mut path: Vec<Vec<u8>>, written: Written) {
+        self.schema_pending |= written.feeds;
+        path.truncate(written.from);
+        self.written.push(path);
     }
 
     /// The state derived from the tree as the transaction has it (the
@@ -303,10 +310,8 @@ impl<'a> Transaction<'a> {
     /// Write record `id` of `table` (`None` deletes it) within the commit
     /// (`Store::write_record_in`).
     pub fn write_record(&mut self, table: &[u8], id: u64, record: Option<OwnedNode>) {
-        self.by_store();
         self.committing = true;
-        self.store
-            .write_record_in(&mut self.journal, table, id, record);
+        self.by_store(|store, journal| store.write_record_in(journal, table, id, record));
         #[cfg(test)]
         if PANIC_WRITING_RECORDS.with(std::cell::Cell::get) {
             panic!("a test's panic after writing a record");
@@ -323,10 +328,8 @@ impl<'a> Transaction<'a> {
         data: BinaryData,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Vec<u8> {
-        self.by_store();
         self.committing = true;
-        self.store
-            .store_container_in(&mut self.journal, table, data, unique_id)
+        self.by_store(|store, journal| store.store_container_in(journal, table, data, unique_id))
     }
 
     /// Count the container references of a server script's record of
@@ -339,19 +342,17 @@ impl<'a> Transaction<'a> {
         new: Option<&OwnedNode>,
         counted: &[Vec<u8>],
     ) {
-        self.by_store();
         self.committing = true;
-        self.store
-            .count_containers_in(&mut self.journal, table, old, new, counted);
+        self.by_store(|store, journal| {
+            store.count_containers_in(journal, table, old, new, counted);
+        });
     }
 
     /// Release the container references of the records the commit deleted
     /// (`Store::release_deleted_record_containers`).
     pub fn release_deleted_record_containers(&mut self) {
-        self.by_store();
         self.committing = true;
-        self.store
-            .release_deleted_record_containers(&mut self.journal);
+        self.by_store(|store, journal| store.release_deleted_record_containers(journal));
     }
 
     /// Delete All Records or Truncate Table: drop the library of `table`
@@ -359,9 +360,8 @@ impl<'a> Transaction<'a> {
     /// (`Store::drop_emptied_library_in`), its thumbnails forgotten once
     /// the commit is stored. Whether it did.
     pub fn drop_emptied_library(&mut self, table: &[u8]) -> bool {
-        self.by_store();
         self.committing = true;
-        let dropped = self.store.drop_emptied_library_in(&mut self.journal, table);
+        let dropped = self.by_store(|store, journal| store.drop_emptied_library_in(journal, table));
         if dropped {
             self.emptied_libraries
                 .push(vec![table.to_vec(), vec![crate::library::LIBRARY]]);
@@ -396,14 +396,15 @@ impl<'a> Transaction<'a> {
 
     /// Indexes finds built on demand (`Store::store_indexes_in`).
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
-        if !indexes.is_empty() {
-            self.by_store();
-        }
         #[cfg(test)]
         if PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
             panic!("a test's panic while storing indexes");
         }
-        self.store.store_indexes_in(&mut self.journal, indexes);
+        if indexes.is_empty() {
+            self.store.store_indexes_in(&mut self.journal, indexes);
+        } else {
+            self.by_store(|store, journal| store.store_indexes_in(journal, indexes));
+        }
     }
 
     /// Count field `field` of `table`, which the commit adds, as computed
@@ -423,9 +424,9 @@ impl<'a> Transaction<'a> {
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Result<bool, &'static str> {
-        self.by_store();
-        self.store
-            .update_table(Some(&mut self.journal), table, environment, unique_id)
+        self.by_store(|store, journal| {
+            store.update_table(Some(journal), table, environment, unique_id)
+        })
     }
 
     /// The deferred field work the file records as pending, as op73 does
@@ -437,10 +438,8 @@ impl<'a> Transaction<'a> {
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
-        self.by_store();
-        let recovered = self
-            .store
-            .recover(Some(&mut self.journal), environment, unique_id);
+        let recovered =
+            self.by_store(|store, journal| store.recover(Some(journal), environment, unique_id));
         #[cfg(test)]
         if PANIC_RECOVERING.with(std::cell::Cell::get) {
             panic!("a test's panic after finishing deferred work");
@@ -462,7 +461,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = ours.clone().map(Head::into_owned);
-            check.read(self.store, "node", path, &owned, |view| {
+            check.read("node", path, &owned, |view| {
                 view.node(path).ok().flatten().map(Head::into_owned)
             });
         }
@@ -478,7 +477,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = ours.clone().map(|node| node.cloned());
-            check.read(self.store, "subtree", path, &owned, |view| {
+            check.read("subtree", path, &owned, |view| {
                 view.subtree(path, limit)
                     .map(|node| node.map(Cow::into_owned))
             });
@@ -502,7 +501,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = (owned_children(&out[given..]), more);
-            check.read(self.store, "listing", path, &owned, |view| {
+            check.read("listing", path, &owned, |view| {
                 let mut page = Vec::new();
                 let more = view
                     .children_page(path, from, direction, max, &mut page)
@@ -538,7 +537,7 @@ impl View for Transaction<'_> {
                     .collect();
                 (page, more)
             });
-            check.read(self.store, "subtrees", path, &owned, |view| {
+            check.read("subtrees", path, &owned, |view| {
                 let mut page = Vec::new();
                 view.subtrees_page(path, from, direction, max, limit, &mut page)
                     .map(|more| (page.into_iter().map(Cow::into_owned).collect(), more))
@@ -561,7 +560,7 @@ impl View for Transaction<'_> {
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
             let owned = (owned_steps(&out[given..]), resume.clone());
-            check.read(self.store, "walk", path, &owned, |view| {
+            check.read("walk", path, &owned, |view| {
                 let mut page = Vec::new();
                 let resume = view.walk_page(path, after, max, &mut page).ok().flatten();
                 (owned_steps(&page), resume)
@@ -573,8 +572,9 @@ impl View for Transaction<'_> {
     }
 
     /// True for a path at, above or below one the transaction's writes
-    /// changed, and for any path once a store helper changed the tree,
-    /// besides what changed between versions.
+    /// changed (a parent a put created or turned into a list included),
+    /// and for any path once a store helper ran, besides what changed
+    /// between versions.
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
         let wrote = self.by_helpers
             || self.written.iter().any(|written| {
@@ -592,7 +592,7 @@ impl View for Transaction<'_> {
         let ours = self.store.tree_view().count_children(path)?;
         #[cfg(debug_assertions)]
         if let Some(check) = &self.check {
-            check.read(self.store, "count", path, &ours, |view| {
+            check.read("count", path, &ours, |view| {
                 view.count_children(path).unwrap_or(usize::MAX)
             });
         }

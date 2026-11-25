@@ -15,12 +15,10 @@
 //!
 //! An operation not moved onto the transaction changes the tree through
 //! the store's own helpers, which say nothing of what they change. Only
-//! those changes go unchecked ([`Check::before_store`]): what the
-//! operation wrote before a helper must be in the tree when the helper
-//! starts, and the check then takes the tree as the helper left it before
-//! the next read or write it checks ([`Check::fresh`]).
-
-use std::cell::{Cell, RefCell};
+//! what a helper does while it runs goes unchecked: when it starts, the
+//! tree must be what the operation's writes made of it
+//! ([`Check::before_store`]), and when it returns, the check takes the
+//! tree as the helper left it ([`Check::after_store`]).
 
 use om_hbam::OwnedNode;
 use om_store::tree::{Edit, Node};
@@ -31,14 +29,11 @@ use crate::store::Store;
 /// What a check keeps of one transaction.
 pub(crate) struct Check {
     /// The tree the operation started on with the writes applied in order,
-    /// or the tree as a store helper left it ([`Self::fresh`]).
-    current: RefCell<OwnedNode>,
+    /// taken again as each store helper left it ([`Self::after_store`]).
+    current: OwnedNode,
     version: Version,
     /// The writes, in order.
     edits: Vec<Edit>,
-    /// A store helper changed the tree since `current` was last taken from
-    /// it ([`Self::before_store`]).
-    stale: Cell<bool>,
 }
 
 /// `node` as a node of the store engine's edits, without its children.
@@ -85,10 +80,9 @@ fn apply(root: &mut OwnedNode, edit: &Edit) {
 impl Check {
     pub(crate) fn new(store: &Store) -> Self {
         Check {
-            current: RefCell::new(store.tree().clone()),
+            current: store.tree().clone(),
             version: store.version(),
             edits: Vec::new(),
-            stale: Cell::new(false),
         }
     }
 
@@ -118,44 +112,34 @@ impl Check {
                 }
             }
         }
-        let current = self.current.get_mut();
         for edit in &self.edits[first..] {
-            apply(current, edit);
+            apply(&mut self.current, edit);
         }
     }
 
-    /// A store helper is about to change the tree: what the operation wrote
-    /// so far must be in it, and the check takes the tree as the helper
-    /// leaves it before the next read or write it checks.
-    pub(crate) fn before_store(&mut self, store: &Store) {
-        if self.stale.get() {
-            return;
-        }
+    /// A store helper is about to change the tree: the tree must be what
+    /// the operation's writes made of it, since the start or since the
+    /// last helper returned.
+    pub(crate) fn before_store(&self, store: &Store) {
         self.agrees(store, "before a store helper");
-        self.stale.set(true);
     }
 
-    /// The tree as a store helper left it, when one changed it since the
-    /// check last took the tree: called before a checked read or write.
-    pub(crate) fn fresh(&self, store: &Store) {
-        if self.stale.replace(false) {
-            *self.current.borrow_mut() = store.tree().clone();
-        }
+    /// A store helper returned: what it changed is taken as it is, and the
+    /// writes after it are checked from there.
+    pub(crate) fn after_store(&mut self, store: &Store) {
+        self.current = store.tree().clone();
     }
 
     /// `ours`, the file engine's answer to a read, against the answer the
     /// starting tree with the writes applied gives (`read`).
     pub(crate) fn read<T: PartialEq>(
         &self,
-        store: &Store,
         what: &str,
         path: &[&[u8]],
         ours: &T,
         read: impl FnOnce(&dyn View) -> T,
     ) {
-        self.fresh(store);
-        let current = self.current.borrow();
-        let theirs = read(&TreeView::new(&current, self.version));
+        let theirs = read(&TreeView::new(&self.current, self.version));
         // Paths only: an account's node holds its password's verifier.
         assert!(
             *ours == theirs,
@@ -165,7 +149,7 @@ impl Check {
 
     /// The tree the writes made is `store`'s tree.
     fn agrees(&self, store: &Store, when: &str) {
-        if let Some(path) = first_difference(&self.current.borrow(), store.tree()) {
+        if let Some(path) = first_difference(&self.current, store.tree()) {
             let written: Vec<&[Vec<u8>]> = self.edits.iter().map(edit_path).collect();
             panic!(
                 "an operation changed the tree beyond its writes {when}, first at {path:02x?}; \
@@ -179,7 +163,6 @@ impl Check {
     /// decodes to, and a written tree counts as changed since its last
     /// save.
     pub(crate) fn finish(self, store: &Store) {
-        self.fresh(store);
         self.agrees(store, "by its end");
         if !self.edits.is_empty() {
             assert!(
@@ -255,10 +238,9 @@ mod tests {
         writes: &[(Vec<Vec<u8>>, Option<OwnedNode>)],
     ) -> (OwnedNode, Check) {
         let mut check = Check {
-            current: RefCell::new(start.clone()),
+            current: start.clone(),
             version: 1,
             edits: Vec::new(),
-            stale: Cell::new(false),
         };
         let mut expected = start.clone();
         for (at, node) in writes {
@@ -302,7 +284,7 @@ mod tests {
             (path(&[&[2]]), Some(OwnedNode::list(Vec::new(), Vec::new()))),
         ];
         let (expected, check) = checked(&start, &writes);
-        assert_eq!(first_difference(&check.current.borrow(), &expected), None);
+        assert_eq!(first_difference(&check.current, &expected), None);
         let mut applied = start;
         for edit in &check.edits {
             apply(&mut applied, edit);
@@ -350,25 +332,65 @@ mod tests {
 
     /// What a transaction answers about its own writes: `changed_since`
     /// at the version it started on is true at, above and below a path it
-    /// changed, false elsewhere, and a write that changes nothing changes
-    /// nothing (review of #785, round 1).
+    /// changed, the parent a put created or turned from an empty-valued
+    /// leaf into a list included, so for that parent's other children too,
+    /// and false elsewhere; and a write that changes nothing changes
+    /// nothing (review of #785, rounds 1 and 2).
     #[test]
     fn a_transaction_answers_for_its_own_writes() {
-        let (a, b, c): (&[u8], &[u8], &[u8]) = (&[0x0a], &[0x0b], &[0x0c]);
+        let (a, b, c, d): (&[u8], &[u8], &[u8], &[u8]) = (&[0x0a], &[0x0b], &[0x0c], &[0x0d]);
         let mut start = OwnedNode::default();
         start.put(&[c], leaf(b"same"));
+        start.put(&[d], leaf(b""));
         let mut store = crate::store::tests::store_of(start);
         let answers = crate::engine::written(&mut store, |tx| {
             let since = tx.version();
             tx.put(path(&[c]), leaf(b"same")).unwrap();
             let unchanged = View::changed_since(tx, &[c], since).unwrap();
+            // [A] is created, [D] turned into a list.
             tx.put(path(&[a, b]), leaf(b"x")).unwrap();
-            [&[a][..], &[a, b], &[a, b, c], &[c]]
+            tx.put(path(&[d, b]), leaf(b"y")).unwrap();
+            [&[a][..], &[a, b], &[a, b, c], &[a, c], &[d], &[d, c], &[c]]
                 .map(|at| View::changed_since(tx, at, since).unwrap())
                 .into_iter()
                 .chain([unchanged])
                 .collect::<Vec<_>>()
         });
-        assert_eq!(answers, [true, true, true, false, false]);
+        assert_eq!(answers, [true, true, true, true, true, true, false, false]);
+    }
+
+    /// A change no write records, made after a store helper returned: the
+    /// check takes the tree as the helper left it when the helper returns,
+    /// so the change is caught at the next helper's start or the
+    /// operation's end, whatever the operation writes in between (review
+    /// of #785, round 2).
+    #[test]
+    fn a_change_after_a_store_helper_returned_is_caught() {
+        let table: &[u8] = &[0x80, 0x01];
+        for second_helper in [false, true] {
+            let mut store = crate::store::tests::store_of(OwnedNode::default());
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::engine::written(&mut store, |tx| {
+                    tx.drop_emptied_library(table);
+                    // Not through the transaction: unrecorded.
+                    assert!(tx.store.put_subtree(&path(&[&[0x0e]]), leaf(b"unrecorded")));
+                    if second_helper {
+                        tx.drop_emptied_library(table);
+                    }
+                    tx.put(path(&[&[0x0f]]), leaf(b"recorded")).unwrap();
+                })
+            }));
+            let message = caught.expect_err("the change is caught");
+            let message = message
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_default();
+            let when = if second_helper {
+                "before a store helper"
+            } else {
+                "by its end"
+            };
+            assert!(message.contains(when), "{message}");
+        }
     }
 }

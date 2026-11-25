@@ -124,6 +124,25 @@ fn needs(operation: &Operation) -> Needs {
     }
 }
 
+/// The operations not moved onto the transaction's writes at all: they
+/// change the tree through the store's own helpers alone, so a check of
+/// the transaction's writes has nothing to check in them, and would compare
+/// and copy the whole tree around each record they write
+/// (docs/server-storage.md 5, "Moving the other readers", item 5). An
+/// operation that moved, even in part, is checked around each helper it
+/// calls (`super::checking::Check::before_store`).
+#[cfg(debug_assertions)]
+fn on_the_store(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::CommitRecords(_)
+            | Operation::CommitScriptRecords(_)
+            | Operation::UpdateTable(_)
+            | Operation::FinishDeferredWork
+            | Operation::StoreIndexes(_)
+    )
+}
+
 fn save(operation: &Operation) -> Save {
     match operation {
         Operation::ReserveRecordIds(op) if op.durable => Save::Reservation,
@@ -418,6 +437,7 @@ impl FileEngine {
         if self
             .checking_writes
             .load(std::sync::atomic::Ordering::Relaxed)
+            && !on_the_store(&operation)
         {
             tx.checked();
         }

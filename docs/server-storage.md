@@ -1376,17 +1376,24 @@ a write that leaves the tree as it was (the same node put where it is, a
 missing node removed) is no change, with nothing to store or take back;
 `Transaction::derived` is the state of the tree as written, its catalog
 and its accounts both; `changed_since` is true for a path at, above or
-below one the transaction changed, and for every path once a store helper
-changed the tree (it may be true where nothing changed, never false where
-something did); and the transaction's version stays the one the
-operation started on.
+below one the transaction changed, a parent a put created or turned into
+a list included (so for that parent's other children too), and for every
+path once a store helper ran (it may be true where nothing changed, never
+false where something did); and the transaction's version stays the one
+the operation started on.
 
 In the file engine each write is applied to the store's tree at once,
 under the commit's journal (`Store::write_in`), so a failed operation or
-save puts every node and flag back as before
+save puts every node and flag of the tree back as before
 (`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`,
 the seeded test of [#751](https://github.com/OpenMaker-Dev/openmaker/pull/751),
-unchanged). A put the
+unchanged); as before too, a roll-back advances the store's generation,
+so the verified-index marks and the accounts are read again, and a save
+that failed on content the tree held before the change takes the field
+indexes among it out (`Store::drop_unwritable_indexes`). Whether a write
+changes nothing is decided on the tree's content: the root's own list
+flag is not content (the writer writes only its children, and a tree
+loaded from a file has it clear, as no slot names the root). A put the
 file cannot hold there (`om_hbam::writer::put_refusals`, checked on the
 node where it is: beneath a value, or a node the writer cannot write) is
 refused and changes nothing; an operation logs it as before, or, where its
@@ -1415,10 +1422,10 @@ effect, and which writes do it now:
 
 | Side effect | Before, after | Now, after |
 | --- | --- | --- |
-| The derived state read again (catalog, calculation catalogs, locale, file language), and with it the server script sessions' schema, which they keep by the derived state's version | every op13 upload, op86 write and op240 edit, and the account edits (not saved found sets, op71, op72, op87, op88, member keys) | a write at a path the derived state reads, or one that creates or turns such a parent; read at `Transaction::settle` |
+| The derived state read again (the catalog, the calculation catalogs, whether the locale record is there; the locale, date order and file language stay those the file was loaded with), and with it the server script sessions' schema, which they keep by the derived state's version | every op13 upload, op86 write and op240 edit, and the account edits (not saved found sets, op71, op72, op87, op88, member keys) | a write at a path the derived state reads, or one that creates or turns such a parent; read at `Transaction::settle` |
 | The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work, a roll-back (the generation); those of a table, a field or an index: a write at, above or below `[T, 05]`, `[T, 0d]` or `[T, 01]` (`Store::forget_verified`) |
 | The accounts decoded again (`Store::follow_accounts`) | after the operation, when the generation moved | at `Transaction::settle` with the schema, so `derived()` gives an account as written; after the operation when a later write moved the generation |
-| The tree counted as changed | every such write, one refused or one equal to what was there included | a write that changed the tree |
+| The tree counted as changed | every such write, one equal to what was there included, and an op86 batch of writes even when every one was refused (op13 returned before it on a refusal) | a write that changed the tree |
 | The derived state kept for a roll-back (`Journal::schema_from`) | at each such write | at `Transaction::settle`, before it changes |
 
 No reply changes, but for these cases, each OpenMaker's own and not
@@ -1426,9 +1433,15 @@ compared with FileMaker: a write equal to what is there (op13 uploading
 what the file holds, an op86 put of it) was a change before, saved, and
 answered with the storage error when the save failed, and is none now, so
 the file is not rewritten and the request is answered as one with nothing
-to store; op72 or Set Next Serial Value giving the value a field holds
-kept nothing to take back before either, but counted the tree as changed,
-so its save was tried and could raise a save alert; an op86 whose every
+to store; op72 giving the value a field holds kept nothing to take back
+before (it kept the serial only when it changed) but counted the tree as
+changed, so its save was tried, and a failed one raised an alert that
+the changes are kept, its reply unchanged, and now it changes nothing and
+a clean file is not saved; Set Next Serial Value giving the value held
+kept the serial always, so with saves failing the step failed with the
+storage error and an alert that the change was taken back, and now the
+step succeeds (with older unsaved changes the save is still tried, and a
+failed one alerts that they are kept); an op86 whose every
 put is refused counted the tree as changed and so rewrote a clean file,
 and changes nothing now; a saved found set no longer advances the
 generation (an account edit still does: the accounts catalog `[23]` is
@@ -1457,12 +1470,15 @@ the file engine's answer; at the end, that tree must be the file engine's
 tree node for node and kind for kind, the derived state must be what the
 tree decodes to, and a written tree must count as changed. A difference
 panics, naming paths only (an account's node holds its password's
-verifier). The server's, `om-author`'s and `om-gui`'s tests run with it.
-A store helper an operation not moved still calls changes the tree
-without saying what: what the operation wrote before it must be in the
-tree when the helper starts, and the check takes the tree as the helper
-left it before its next checked read or write (`Check::before_store`,
-`Check::fresh`), so only the helper's own changes go unchecked. It found
+verifier). The server's, `om-author`'s and `om-gui`'s tests run with it. An
+operation not moved at all (a commit's records, op73, the deferred work,
+a find's stored indexes) is not checked: it changes the tree through the
+store's helpers alone. In one that moved, a store helper it calls (op86's
+indexes) changes the tree without saying what; the check does not see
+the helper's own run, and nothing else: when the helper starts, the tree
+must be what the writes made of it, since the start or since the last
+helper returned (`Check::before_store`), and when it returns the check
+takes the tree as it left it (`Check::after_store`). It found
 one write that bypassed the derived state while the operations moved:
 op13's upload to `[T, 03, 01, fd]` created the missing `[T, 03, 01]`,
 which the calculation catalogs read, without reading the schema again.
