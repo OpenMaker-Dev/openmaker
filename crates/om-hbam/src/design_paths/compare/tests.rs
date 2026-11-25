@@ -553,8 +553,7 @@ fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
     // Identities are checked before anything is read: a font key of
     // another width than two bytes, a base directory's of other than four,
     // a key that is no serial key (finding 8 of #768's second review: a
-    // token as a key), each refused with its kind and no id; two members
-    // with one key in a tree built in memory, refused with their id.
+    // token as a key), each refused with its kind and no id.
     let font = |key: &[u8]| {
         let mut root = OwnedNode::default();
         root.put(

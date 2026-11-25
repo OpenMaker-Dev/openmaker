@@ -1211,9 +1211,9 @@ it has a design revision or not, and `difference` lists the parts that
 differ: `design`; `step_data`, a script's or a button's step data (and,
 inferred, a layout table view's), which is compared as bytes and not
 read, so a stored password's change and any other change of a step's
-parameters are both `step_data`; `unidentified`,
-a key no spec explains; `data` and `derived`. An empty list is the same
-(modification stamps may differ). With a base, `source_change` and
+parameters are both `step_data`; `unidentified`, a key no spec explains;
+`data` and `derived`. An empty list is the same (modification stamps may
+differ). With a base, `source_change` and
 `target_change` are each side's difference from it, and a side changed
 the object when it lists `design`, `step_data` or `unidentified`: a
 serial number taken or a checksum over the file's creation stamp is no
@@ -1230,8 +1230,7 @@ An object has one only when it holds no step data and no piece a rule
 does not name. So no script has one, and no layout with a button that
 has step data (nor, inferred, one whose table view holds step data,
 which no starter file does); in FileMaker Pro 26's starter files every
-font and custom
-menu also holds a key of their own no spec explains
+font and custom menu also holds a key of their own no spec explains
 ([#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)). Two
 copies made separately, such as two language versions of a starter
 solution, give each object its own UUID, which is Design: every object
