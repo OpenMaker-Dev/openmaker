@@ -57,10 +57,10 @@
 //! cursor ([`Upload::Unknown`]) is a failure for its operation to answer,
 //! as nothing of it is held: the empty last page would read as the upload
 //! done (op13, op14, op70 and op88 fail it, and op86 for a program's
-//! part). A repeat of the last part of an upload this connection completed
-//! in parts, and whose operation answered done, is told apart
-//! ([`Upload::Repeated`], [`Transfers::answered_done`]); the last part
-//! again of one whose operation failed is a cursor not held, and fails.
+//! part). The last part of a completed upload sent again is such a cursor
+//! too, whatever its operation answered: the connection keeps no memory of
+//! the uploads it completed, so a repeat fails rather than be answered done
+//! for work the answer could no longer vouch for.
 //!
 //! Receiving an upload costs time linear in its size: the scan of the parts
 //! received ([`UploadScan`]) is kept with the transfer.
@@ -96,12 +96,6 @@ pub(crate) const MAX_PRE_LOGIN_UPLOAD: usize = 64 << 10;
 /// connections' downloads too, so this is far more than one connection's
 /// own transfers would evict.
 const EVICTED_REMEMBERED: usize = 4096;
-
-/// How many uploads completed in parts and answered done are remembered,
-/// so that a repeat of one's last part (a client retrying after a timeout)
-/// is answered as the upload that was done, not as a cursor never issued
-/// (6 KiB a connection): a retry follows its upload at once.
-const COMPLETED_REMEMBERED: usize = 256;
 
 /// The server's budget for the download streams connections keep paged:
 /// the bytes not yet sent and those sent, of each stream larger than one
@@ -333,12 +327,9 @@ pub(crate) enum Upload {
     Complete(Vec<u8>, Charge),
     /// More parts follow; answer with this resume block and no slots.
     Partial(Resume),
-    /// A repeat of the last part of an upload this operation completed on
-    /// this connection and answered done ([`Transfers::answered_done`],
-    /// [`COMPLETED_REMEMBERED`]): nothing is held again.
-    Repeated,
     /// The cursor is not an upload this operation started on this
-    /// connection, or not one it remembers answering done.
+    /// connection and still holds: never issued, another operation's, or
+    /// one it completed (its last part sent again).
     Unknown,
 }
 
@@ -357,9 +348,6 @@ pub(crate) struct Transfers {
     clock: u64,
     /// The cursors evicted most recently, oldest first.
     evicted: VecDeque<u64>,
-    /// The uploads completed most recently in more than one part and
-    /// answered done, oldest first: cursor, owner and perform handle.
-    completed: VecDeque<(u64, Owner, u64)>,
 }
 
 /// The most slot bytes a reply may carry for this `maxreturn`.
@@ -383,7 +371,6 @@ impl Transfers {
             bytes: 0,
             clock: 0,
             evicted: VecDeque::new(),
-            completed: VecDeque::new(),
         }
     }
 
@@ -522,12 +509,6 @@ impl Transfers {
             return self.keep_upload(owner, new_handle(), new_handle(), (part, scan, charge));
         }
         let Some(held) = self.remove(resume.cursor) else {
-            if self
-                .completed
-                .contains(&(resume.cursor, owner, resume.perform))
-            {
-                return Ok(Upload::Repeated);
-            }
             return self.unknown(resume.cursor).map(|()| Upload::Unknown);
         };
         let (mut payload, mut scan, mut charge) = match held.transfer {
@@ -742,24 +723,6 @@ impl Transfers {
         }
     }
 
-    /// Remember that `owner`'s operation answered done for the upload whose
-    /// last part `resume` continued, so that the same part again is
-    /// answered done too ([`Upload::Repeated`]). The operation calls this,
-    /// and only where it answers done: the receiver cannot know what the
-    /// operation answered, and an upload whose operation failed must fail
-    /// again, never read as done. A request in one part has no cursor to
-    /// repeat and is not remembered.
-    pub fn answered_done(&mut self, owner: Owner, resume: &Resume) {
-        if !resume.has_more() {
-            return;
-        }
-        self.completed
-            .push_back((resume.cursor, owner, resume.perform));
-        if self.completed.len() > COMPLETED_REMEMBERED {
-            self.completed.pop_front();
-        }
-    }
-
     /// Put `held` under `cursor`.
     fn insert(&mut self, cursor: u64, held: Held) {
         self.bytes += held.transfer.bytes();
@@ -836,16 +799,10 @@ mod tests {
             transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
             Ok(Upload::Complete(p, _)) if p == [0x80, 0x20, 0x01]
         ));
-        // Its last part again, before its operation answered done (or when
-        // it failed): a cursor not held. Once it answered done: a repeat.
+        // Its last part again: a cursor no longer held.
         assert!(matches!(
             transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
             Ok(Upload::Unknown)
-        ));
-        transfers.answered_done(OWNER, &resume);
-        assert!(matches!(
-            transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
-            Ok(Upload::Repeated)
         ));
     }
 
@@ -951,19 +908,14 @@ mod tests {
             payload,
             [0x80, 0x00, 0x10, 0x20, 0x11, 0x80, 0x00, 0x01, 0x40, 0x00, 0xfb, 0x40]
         );
-        // Once its operation answered done, the last part again is told
-        // apart from a cursor never issued, and from one another operation
-        // or perform handle names.
-        transfers.answered_done(OWNER, &resume);
-        assert!(matches!(
-            transfers.upload(OWNER, &resume, vec![0x40], MAX_UPLOAD, &mut handles),
-            Ok(Upload::Repeated)
-        ));
+        // The last part again is a cursor no longer held, as one another
+        // operation or perform handle names, or one never issued, is.
         let other = Owner {
             opcode: OWNER.opcode + 1,
             ..OWNER
         };
         for (owner, resume) in [
+            (OWNER, resume.clone()),
             (other, resume.clone()),
             (
                 OWNER,
