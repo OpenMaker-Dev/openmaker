@@ -212,21 +212,23 @@ impl Folder {
     }
 
     /// Whether this process may read and write entry `name`, asked of the
-    /// entry without opening it and never through a link: on Unix
-    /// `faccessat` by the effective ids, as a save's writes are checked, so
-    /// nothing is copied up, no lease is broken and no time changes; on
-    /// Windows the entry's read-only attribute alone. `Ok(false)` when it
-    /// may not (refused, or a read-only file system); an error when that
-    /// could not be asked.
+    /// entry without opening it: on Unix `faccessat` by the effective ids,
+    /// as a save's writes are checked ([`access_flags`]), so nothing is
+    /// copied up, no lease is broken and no time changes; on Windows the
+    /// entry's read-only attribute alone. The caller has read the entry's
+    /// kind and identity just before without following a link
+    /// ([`Folder::entry`]): it is a regular file, so there is no link to
+    /// follow here. `Ok(false)` when it may not (refused, or a read-only
+    /// file system); an error when that could not be asked.
     pub fn may_write(&self, name: &OsStr) -> io::Result<bool> {
         #[cfg(unix)]
         {
-            use rustix::fs::{Access, AtFlags};
+            use rustix::fs::Access;
             answer(rustix::fs::accessat(
                 &self.fd,
                 name,
                 Access::READ_OK | Access::WRITE_OK,
-                AtFlags::EACCESS | AtFlags::SYMLINK_NOFOLLOW,
+                access_flags(same_ids()),
             ))
         }
         #[cfg(not(unix))]
@@ -422,13 +424,37 @@ pub fn folder_allows_new_entries(path: &Path) -> io::Result<bool> {
 /// ask with the real ones).
 #[cfg(unix)]
 fn may_create_in(dir: impl std::os::fd::AsFd, path: &Path) -> io::Result<bool> {
-    use rustix::fs::{Access, AtFlags};
+    use rustix::fs::Access;
     answer(rustix::fs::accessat(
         dir,
         path,
         Access::WRITE_OK | Access::EXEC_OK,
-        AtFlags::EACCESS,
+        access_flags(same_ids()),
     ))
+}
+
+/// The flags a permission is asked with (`faccessat`): none when the real
+/// and effective user and group ids are the same, the ordinary case, where
+/// the answer is the same and the plain `faccessat` call is made; a kernel
+/// before 5.8 has no `faccessat2`, which any flag needs, and some seccomp
+/// profiles refuse it with `EPERM`. `AT_EACCESS` only when they differ, where
+/// such a kernel or profile leaves the question unanswered or refused, and
+/// the file is held read-only.
+#[cfg(unix)]
+fn access_flags(same_ids: bool) -> rustix::fs::AtFlags {
+    if same_ids {
+        rustix::fs::AtFlags::empty()
+    } else {
+        rustix::fs::AtFlags::EACCESS
+    }
+}
+
+/// Whether this process's real and effective user and group ids are the
+/// same.
+#[cfg(unix)]
+fn same_ids() -> bool {
+    use rustix::process::{getegid, geteuid, getgid, getuid};
+    getuid() == geteuid() && getgid() == getegid()
 }
 
 /// What `faccessat` answered: allowed, refused (`EACCES`, `EPERM`, or a
@@ -502,5 +528,17 @@ mod tests {
             assert!(!super::answer(Err(refused)).unwrap());
         }
         assert!(super::answer(Err(Errno::NOSYS)).is_err());
+    }
+
+    /// The permission is asked with no flags when the real and effective
+    /// ids are the same, so that the plain `faccessat` answers on a kernel
+    /// before 5.8 or under a seccomp profile that refuses `faccessat2`
+    /// (the directing agent's read of #842's second round); with
+    /// `AT_EACCESS` only when they differ.
+    #[test]
+    fn the_effective_ids_are_asked_for_only_when_they_differ() {
+        use rustix::fs::AtFlags;
+        assert_eq!(super::access_flags(true), AtFlags::empty());
+        assert_eq!(super::access_flags(false), AtFlags::EACCESS);
     }
 }

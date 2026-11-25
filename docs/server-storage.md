@@ -1367,14 +1367,19 @@ time changes): whether the entry may be read and written
 (`ReadOnlyCause::NotWritable` when refused or on a read-only file system),
 and whether the folder allows the new copy
 (`ReadOnlyCause::FolderNotWritable`), each on Unix by the process's
-effective ids, as the save's writes are checked (`faccessat` with
-`AT_EACCESS`); a file named without a folder is in the current folder. The
+effective ids, as the save's writes are checked (`faccessat`, with
+`AT_EACCESS` only when the real and effective ids differ, so that the
+ordinary case needs no `faccessat2`); a file named without a folder is in
+the current folder. The
 entry must first be the regular file just read (its device and inode).
 When it is another file, or a question could not be asked (an `faccessat`
 that answers neither yes nor no, as `ENOSYS` from a kernel before 5.8 when
 the real and effective ids differ), the file is held read-only all the
 same, for a cause that says so (`ReadOnlyCause::Unchecked`), the detail in
-the log and the alert, with no second try. Any of these holds the file
+the log and the alert, with no second try. So with differing real and
+effective ids, a kernel without `faccessat2` leaves the check unmade
+(`Unchecked`), and a seccomp profile that refuses it with `EPERM` makes it
+answer "may not" (`NotWritable`): either holds the file read-only. Any of these holds the file
 read-only, with an error in the log, an alert (`Database "<name>" is
 served read-only: <why>.`), the startup event 18 `Opened database "<name>"
 read only.`, and the cause in the Admin Console's list of files, which
