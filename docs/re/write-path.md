@@ -490,19 +490,23 @@ The **commit list** is a bracketed slot list keyed `[T, 05, R]`:
 | leaf `R` = `03` | deleted record (`kDeletedRow`) | live:s2/a_del `80 28 8002 80 20 05 80 01 04 03 40 40 40` |
 
 One list may hold several records of one table (cap:1026, three new records)
-and, by the grammar, several tables.
+and, by the grammar, several tables. Value `02` (`kModifiedRow`) is the
+engine's internal state for a modified record; on the wire a modified record
+is the node form.
 
 What FileMaker Server does with an entry in the modified form for a record
 the file does not hold (one another user deleted, or an id never created) is
 unmeasured: FileMaker Pro marks its new records `01` and locks a record before
 it edits it, so it sends neither, and reports an edit of a record another user
 deleted to its user as a missing record (error 101; not captured against
-FileMaker Server). OpenMaker Server refuses such an entry, and with it the
-whole commit, whatever its id: only an entry marked new creates a record, and
-only under an issued, free id (OpenMaker's choice until measured,
-[#840](https://github.com/OpenMaker-Dev/openmaker/issues/840); it never
-brings back a deleted record, nor lets a client plant a record under an id
-another client's next new record gets).
+FileMaker Server). OpenMaker Server refuses such an entry, whatever is staged
+for it, and with it the whole commit, whatever its id: only an entry marked
+new creates a record, and only under an issued, free id (OpenMaker's choice
+until measured, [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840);
+it never brings back a deleted record, nor lets a client plant a record under
+an id another client's next new record gets). With nothing staged for it, it
+is refused as every entry other than a deletion is that names a record with
+nothing uploaded (below).
 
 An entry, other than a deletion, naming a record with nothing uploaded for
 it (op14, 3.3) asks FileMaker Server for nothing that was measured.
@@ -510,9 +514,7 @@ OpenMaker Server refuses it, and the whole commit, as the ordering above
 (0, 1.1) shows FileMaker Pro uploading every record it commits new or
 changed ([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839);
 OpenMaker's choice, which a FileMaker Pro commit of a record it did not
-upload would show wrong). Value `02` (`kModifiedRow`) is the
-engine's internal state for a modified record; on the wire a modified record
-is the node form.
+upload would show wrong).
 
 Reply: the empty page (23 bytes) as for op14. Errors are not reported in
 the reply: FileMaker Server answered the same 23 bytes when it could not apply
