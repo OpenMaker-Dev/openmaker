@@ -434,10 +434,18 @@ fn compare(view: &View, model: &Model, at: &str) -> Result<(), String> {
 }
 
 /// The model after `record`'s entries up to `index`, from `from` (the
-/// model at `from.applied`) or from the start.
+/// model at `from.applied`) when `record` still holds that entry, or from
+/// the start. An entry the record replaced (a start's entry written again
+/// after an accepted loss lowered the marker) has another hash.
 fn model_at(record: &[Built], index: u64, from: Option<&Model>) -> Model {
+    let holds = |m: &Model| match m.applied.index {
+        0 => true,
+        i => record
+            .get(i as usize - 1)
+            .is_some_and(|b| b.hash == m.applied.hash),
+    };
     let mut model = match from {
-        Some(m) if m.applied.index <= index => m.clone(),
+        Some(m) if m.applied.index <= index && holds(m) => m.clone(),
         _ => Model::new(),
     };
     let from = model.applied.index;
@@ -600,14 +608,15 @@ impl Run {
             .any(|e| matches!(e, sim::Event::Damaged { path, .. } if path.starts_with(prefix)))
     }
 
-    /// A read that failed is allowed where the device failed to read, or
-    /// damaged pages; never otherwise.
+    /// A read that failed is allowed where the device failed to read,
+    /// damaged pages, or the process crashed during the read (the next call
+    /// finds it stopped); never otherwise.
     fn read_failed(&mut self, why: String) {
         if self.lying {
             return;
         }
         assert!(
-            why.contains("unreadable:") || self.damaged(pagefile::FILE),
+            why.contains("unreadable:") || self.damaged(pagefile::FILE) || self.sim.halted(),
             "seed {}: a read failed, though the device damaged no page: {why}",
             self.seed
         );
@@ -1105,11 +1114,23 @@ impl Run {
             return;
         };
         let Some(store) = &self.store else { return };
+        let before = self.sim.events().len();
         let view = match store.restore_point(name) {
             Ok(view) => view,
-            Err(WriteError::Failed(why)) => {
-                // The restore point's meta stream did not read back.
-                self.read_failed(why);
+            Err(WriteError::Unreadable(why)) => {
+                // The restore point's meta stream did not read back. The
+                // page file's answer does not say why, so the device's own
+                // events say whether it failed a read of the pages.
+                let failed = self.sim.events().get(before..).is_some_and(|new| {
+                    new.iter().any(|e| {
+                        matches!(e, sim::Event::ReadFailed { path, .. } if path == pagefile::FILE)
+                    })
+                });
+                if failed {
+                    self.reached.damaged_reads += 1;
+                } else {
+                    self.read_failed(why);
+                }
                 return;
             }
             Err(e) => panic!("seed {}: restore point {name}: {e}", self.seed),

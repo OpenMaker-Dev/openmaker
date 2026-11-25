@@ -163,6 +163,10 @@ pub enum WriteError {
     Apply(apply::Error),
     /// The call breaks a rule; nothing changed.
     Rule(&'static str),
+    /// What a read needed could not be read back (a restore point's table
+    /// of roots, which the device failed to read or which does not check);
+    /// nothing changed, and the store goes on.
+    Unreadable(String),
     /// A failure after the entry's unit committed, or of a flush: the store
     /// has stopped (the reason). Its outcome is unknown to the caller:
     /// open the store again, and the durable log says.
@@ -182,6 +186,7 @@ impl fmt::Display for WriteError {
             WriteError::Log(e) => write!(f, "{e}"),
             WriteError::Apply(e) => write!(f, "{e}"),
             WriteError::Rule(why) => write!(f, "refused: {why}"),
+            WriteError::Unreadable(why) => write!(f, "{why}"),
             WriteError::Failed(why) => write!(
                 f,
                 "the store stopped: {why}; what was not flushed has an unknown outcome, and \
@@ -974,7 +979,7 @@ impl Store {
             .map(|(rp, _)| rp)
             .ok_or(WriteError::Rule("no restore point of that name is listed"))?;
         let pin = pin_version(&self.pages, PinOf::OnDisk(point.entry.index))
-            .map_err(WriteError::Failed)?;
+            .map_err(WriteError::Unreadable)?;
         Ok(View {
             pages: self.pages.clone(),
             version: Version {
