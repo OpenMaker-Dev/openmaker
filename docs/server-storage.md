@@ -1545,9 +1545,10 @@ first, each with the test view's runs of its tests:
    upkeep itself still reads and writes the store's tree.
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
-store engine: a `Source` method for the head NodeExists and GetKey read,
-and a measure of a subtree for UploadMultiple's work without holding it.
-A field's index is read through listings ("Views", op86).
+store engine: a measure of a subtree for UploadMultiple's work without
+holding it ([#810](https://github.com/OpenMaker-Dev/openmaker/issues/810)).
+A field's index is read through listings, and NodeExists and GetKey read
+a head (`Source::head`; "Views", op86).
 
 **The file engine behind it.** `FileEngine::submit` takes what each request
 took before the interface: the store's write lock for op70, op71, op72,

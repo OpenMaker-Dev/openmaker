@@ -783,8 +783,6 @@ fn key_records(index: &Index<'_>, key: &[u8], work: &Work) -> Result<RidList, Qu
     }
 }
 
-/// Every key of an index.
-
 /// A finder bound; an empty key is open.
 fn bound(key: &[u8], inclusive: bool) -> Bound<&[u8]> {
     match (key.is_empty(), inclusive) {

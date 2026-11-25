@@ -172,6 +172,10 @@ enum Run<'a> {
     One(Entry<'a>),
 }
 
+/// A range of keys of a listed index, and the entry a lookup found when the
+/// range is that one key ([`Index::records_in`]).
+type KeyRun<'a> = (Bound<Vec<u8>>, Bound<Vec<u8>>, Option<Entry<'a>>);
+
 /// A key a listing gave: one node and its key's bytes.
 fn listed(key: &[u8]) -> Size {
     Size {
@@ -511,8 +515,7 @@ impl<'f> Index<'f> {
                     });
                 }
                 ranges.sort_by(|a, b| low_order(&a.0, &b.0));
-                let mut merged: Vec<(Bound<Vec<u8>>, Bound<Vec<u8>>, Option<Entry<'_>>)> =
-                    Vec::with_capacity(ranges.len());
+                let mut merged: Vec<KeyRun<'_>> = Vec::with_capacity(ranges.len());
                 for (low, high, entry) in ranges {
                     match merged.last_mut() {
                         Some(last) if reaches(&last.1, &low) => {
@@ -1466,7 +1469,7 @@ mod tests {
                     let first = usize::from(skip);
                     let ranges: Vec<Range<usize>> = match old.find(&probes[0], w).unwrap() {
                         Some(at) => vec![first..at, at + 1..old.entries().len()],
-                        None => vec![first..old.entries().len()],
+                        None => std::iter::once(first..old.entries().len()).collect(),
                     };
                     format!("{:?}", old.records_at(ranges, w).unwrap())
                 },
