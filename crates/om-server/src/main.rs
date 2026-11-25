@@ -527,11 +527,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 /// The engine `args` choose (`--engine`, `--store-dir`, `--store-cache-mib`;
 /// docs/server-storage.md 11): the store engine's folder by default
 /// `Store` in the state folder, which is made if missing, as the TLS
-/// identity makes it. The folder's parent must exist; the folder is used
-/// by its parent resolved and its own name, and one that overlaps a
-/// database folder is refused (`om_server::check_store_folder`). Nothing
-/// of it is made here: the engine makes the folder itself, checks it again
-/// and refuses one other users can reach when it opens it.
+/// identity makes it, and is then the one thing a refused start leaves.
+/// Every check the engine makes of the folder runs here, before the server
+/// makes anything else (`om_server::check_store_dir`): its parent must
+/// exist, it is used by its parent resolved and its own name, and one that
+/// overlaps a database folder, that other users can reach or that holds
+/// another program's files is refused. Nothing of it is made here: the
+/// engine makes the folder itself and checks it again when it opens it.
 fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
     if !args.store_engine {
         return Ok(EngineSettings::File);
@@ -563,7 +565,9 @@ fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
         true => state.iter().map(|state| state.join("Databases")).collect(),
         false => args.database_folders.clone(),
     };
-    let dir = om_server::check_store_folder(&dir, &database_folders)?;
+    // Every check the engine makes of the folder, before the server makes
+    // anything else.
+    let dir = om_server::check_store_dir(&dir, &database_folders)?;
     let mib = args.store_cache_mib.unwrap_or(256);
     Ok(EngineSettings::Store {
         dir,

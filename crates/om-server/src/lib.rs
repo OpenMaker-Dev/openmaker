@@ -164,6 +164,17 @@ pub use connection::{
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use engine::Compared as StoreComparisons;
+
+/// Every check the store engine makes of its folder (`--store-dir`), made
+/// without writing or making anything, for a start to run before it makes
+/// anything else (docs/server-storage.md 11): the folder's path as the
+/// server uses it, or why it is refused.
+pub fn check_store_dir(
+    dir: &std::path::Path,
+    database_folders: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    engine::StoreFolder::check_dir(dir, database_folders).map_err(|e| e.to_string())
+}
 pub use eventlog::{
     Alert, Level, LogEntry, LogFileInfo, LogPage, LogReadError, MAX_ALERTS, MAX_LOG_LINE,
     MAX_LOG_PAGE, MAX_LOG_SCAN, MAX_LOG_SIZE,
