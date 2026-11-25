@@ -49,14 +49,21 @@
 //! become the parts of a group whose last entry adds the file
 //! (docs/server-storage.md 6.9, 6.10), and the entry indexes it now takes
 //! from its caller come from the log. What it accepts, [`export`] gives
-//! back: an export imported again has the same root hash. It refuses, with
+//! back ([`import`] says exactly what that promises): its export succeeds,
+//! and holds the same nodes, kinds and values. It refuses, with
 //! a typed error ([`ImportError`]), and with the tree it made dropped
 //! again:
 //!
 //! - a file that does not read as an `.fmp12`, the encrypted ones among
 //!   them: OpenMaker does not read encrypted files, and its readers find
 //!   one as a page that does not decode (docs/re/file-format.md 6), as the
-//!   file engine refuses to host it;
+//!   file engine refuses to host it. The streaming reader also refuses five
+//!   shapes the file engine's reader (`om_hbam::HbamFile`) reads and the
+//!   file engine hosts (`om_hbam::stream`'s module doc): a leaf chain that
+//!   ends before its stream closes the root list (a file cut short), one
+//!   that goes on after it closed the root list, a page that does not push
+//!   again the path left open before it, a value given to a key after its
+//!   children, and a page larger than 64 KiB;
 //! - a file holding content `om_hbam`'s writer cannot write
 //!   (`om_hbam::writer::unwritable`: a key segment or a path too long, a
 //!   list holding a value, an item no page can hold), or writes in another
@@ -67,6 +74,12 @@
 //!   such a file, read-only where it cannot write it, and exports its own
 //!   bytes (section 2, rule 2); the store keeps that image only once its
 //!   kept original images are built (section 6.10);
+//! - a node whose entry in an export's index could cost more than
+//!   `om_hbam::writer::MAX_INDEX_ENTRY`, 1,019 bytes (a path of long
+//!   segments, deep): within it the writer's index never passes the 16
+//!   levels it writes, and past it enough such pages in a row make the
+//!   export fail. The file engine hosts such a file and its saves fail
+//!   only when they meet the 16 levels;
 //! - an item past the store's bounds (section 6.11), which no file the
 //!   reader reads can hold: a slot's value has a 2-byte length and a path
 //!   at most 17 segments of at most 255 bytes, within the 64 KiB of each;
@@ -106,7 +119,7 @@ use std::io::{Read as IoRead, Seek};
 use std::ops::Bound;
 
 use om_hbam::stream::NodeStream;
-use om_hbam::writer::MAX_INLINE_VALUE;
+use om_hbam::writer::{index_entry_cost, MAX_INDEX_ENTRY, MAX_INLINE_VALUE};
 use om_hbam::OwnedNode;
 use om_store::page::{EntryPages, MemStore, PageStore, Root, TreeName};
 use om_store::tree::{self, key, Edit, Node, Tree};
@@ -672,15 +685,33 @@ impl std::error::Error for ImportError {}
 /// the entries the file may take must fit below the last index an entry can
 /// have ([`ImportError::Entries`], checked before anything is written).
 ///
-/// **What import accepts, export gives back:** for every file it accepts,
-/// [`export`] of the tree followed by an import of that export gives a tree
-/// with the same root hash. So it refuses ([`ImportError::Unwritable`])
-/// what the file writer cannot write, and what it writes in another shape:
-/// a list that carries an empty value, which it writes as a bare list
-/// ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)), and a
-/// value over [`MAX_INLINE_VALUE`] bytes held whole, which it writes in
-/// pieces; and a page 0 it does not write, or whose change number leaves
-/// no room for the pages an export numbers from it.
+/// **What import accepts, export gives back.** For every file it accepts:
+///
+/// - [`export`] of the tree succeeds, as far as what the file holds goes;
+/// - an import of that export holds the same nodes, kinds and values, and,
+///   imported at the same entry in the same batches, has the same root
+///   hash (a page's hash covers the entry that wrote it, so another first
+///   entry or other batches give another root hash over the same nodes);
+/// - but for page 0's change number: an export advances it by the pages it
+///   writes, so the export of a file whose change number is within that
+///   many of the bound below may itself be refused. Accepted means
+///   exportable once, not exportable and accepted again.
+///
+/// So it refuses ([`ImportError::Unwritable`]):
+///
+/// - what the file writer cannot write, and what it writes in another
+///   shape: a list that carries an empty value, which it writes as a bare
+///   list ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)),
+///   and a value over [`MAX_INLINE_VALUE`] bytes held whole, which it
+///   writes in pieces;
+/// - a node whose entry in an export's index could cost more than
+///   [`MAX_INDEX_ENTRY`] (1,019 bytes): within that bound the writer's
+///   index never passes the 16 levels it writes, whatever else the file
+///   holds (`om_hbam::writer::MAX_INDEX_ENTRY` has the derivation);
+/// - a page 0 the writer does not write, or whose change number leaves no
+///   room for the pages an export numbers from it: at most 2^32, one each,
+///   so a change number above `u64::MAX - u32::MAX` is refused whatever the
+///   file's size.
 pub fn import<R: IoRead + Seek, U: Units + ?Sized>(
     source: R,
     units: &mut U,
@@ -863,6 +894,13 @@ fn check(path: &[Vec<u8>], node: &Node) -> Result<(), ImportError> {
         return Err(ImportError::Unwritable {
             path: refused.path,
             reason: refused.reason,
+        });
+    }
+    if index_entry_cost(path, node.is_list()) > MAX_INDEX_ENTRY {
+        return Err(ImportError::Unwritable {
+            path: path.to_vec(),
+            reason: "a path whose entry in an export's index could cost more than 1,019 bytes, \
+                     past which the index might not fit in 16 levels",
         });
     }
     Ok(())

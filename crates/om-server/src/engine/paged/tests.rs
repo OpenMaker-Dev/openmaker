@@ -331,6 +331,9 @@ pub(super) fn seeded_reads(both: &Both<'_>, paths: &[Vec<Vec<u8>>], seed: u64, c
 pub(super) struct Compared {
     pub nodes: usize,
     pub calls: u64,
+    /// The largest cost of a node's entry in an export's index
+    /// (`om_hbam::writer::index_entry_cost`), and the path of that node.
+    pub index_cost: (usize, Vec<Vec<u8>>),
 }
 
 /// Every read of the file the file engine loaded (`store`) and of its
@@ -386,9 +389,22 @@ pub(super) fn compare_reads(
         }
     }
     seeded_reads(&both, &paths, seed, seeded);
+    let index_cost = steps
+        .iter()
+        .zip(&paths)
+        .skip(1)
+        .map(|(step, path)| {
+            (
+                om_hbam::writer::index_entry_cost(path, step.head.list),
+                path.clone(),
+            )
+        })
+        .max()
+        .unwrap_or_default();
     Compared {
         nodes: steps.len() - 1,
         calls: both.calls.get(),
+        index_cost,
     }
 }
 
@@ -581,10 +597,11 @@ fn two_engines_answer_every_read_of_the_fixture_files_alike() {
         let (_, again) = import_into_memory(&ours, SMALL);
         assert_eq!(again.root.hash, imported.root.hash, "{name}");
         println!(
-            "{name}: {} nodes, {} entries, {} calls compared",
+            "{name}: {} nodes, {} entries, {} calls compared, largest index entry {} bytes",
             imported.nodes,
             imported.entries.1 - imported.entries.0 + 1,
-            compared.calls
+            compared.calls,
+            compared.index_cost.0
         );
     }
     println!("{calls} calls compared in all");
@@ -1038,7 +1055,24 @@ fn a_page_zero_an_export_could_not_number_from_is_refused() {
     let (store, imported) = import_into_memory(&with(room), Batch::default());
     let view = PagedView::open(&store, imported.root).unwrap();
     let scratch = Scratch::new("change-number");
-    paged_export(&view, &imported.page_zero, &scratch, "room.fmp12");
+    let exported = paged_export(&view, &imported.page_zero, &scratch, "room.fmp12");
+    // The export numbered its pages on from there: imported again, it is
+    // refused, as the rule's boundary says (`import`, "What import
+    // accepts, export gives back").
+    let advanced = om_hbam::writer::change_number(&exported).unwrap();
+    assert!(advanced > room, "{advanced}");
+    let mut again = MemStore::new(Numbering::Sequential);
+    let refused = import(
+        Cursor::new(&exported),
+        &mut again,
+        &tree_name(),
+        1,
+        Batch::default(),
+    );
+    assert!(
+        matches!(&refused, Err(ImportError::Unwritable { path, .. }) if path.is_empty()),
+        "{refused:?}"
+    );
 }
 
 /// The entries an import may take are worked out before anything is
@@ -1371,12 +1405,125 @@ fn an_export_of_what_import_accepts_imports_to_the_same_root_hash() {
         let (store, imported) = import_into_memory(&bytes, batch);
         let view = PagedView::open(&store, imported.root).unwrap();
         let exported = paged_export(&view, &imported.page_zero, &scratch, "export.fmp12");
-        let (_, again) = import_into_memory(&exported, batch);
+        let (again_store, again) = import_into_memory(&exported, batch);
         assert_eq!(again.root.hash, imported.root.hash, "seed {seed}");
         assert_eq!(again.nodes, imported.nodes, "seed {seed}");
+        assert_eq!(
+            items(&again_store, again.root),
+            items(&store, imported.root),
+            "seed {seed}"
+        );
+        // At another first entry and in other batches the nodes are the
+        // same, kinds and values included, though the root hash need not be.
+        let mut other = MemStore::new(Numbering::Scattered(seed));
+        let elsewhere = import(
+            Cursor::new(&exported),
+            &mut other,
+            &tree_name(),
+            1_000 + seed,
+            Batch::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            items(&other, elsewhere.root),
+            items(&store, imported.root),
+            "seed {seed}"
+        );
         nodes += imported.nodes;
     }
     println!("{nodes} nodes in 40 trees");
+}
+
+/// Every node of the tree at `root`, with its path and kind.
+fn items(store: &MemStore, root: Root) -> Vec<(Vec<Vec<u8>>, Node)> {
+    Tree::open(store, root)
+        .unwrap()
+        .walk::<Vec<u8>>(&[])
+        .map(|item| {
+            let item = item.unwrap();
+            (item.key.path(), item.node)
+        })
+        .collect()
+}
+
+/// Sol's construction (review round 2): `branches` top-level lists, each a
+/// chain of 15 lists of 219-byte segments holding two 700-byte leaves at
+/// depth 16, laid out as the file writer lays it out: a page opening the
+/// chain and its first leaf, a page pushing the chain again for the second
+/// leaf and closing it. Every node passes the writer's own checks, but the
+/// first key of each second page costs 3,321 bytes in the index, so each
+/// index page holds one or two entries.
+fn deep_branches(branches: u8) -> Vec<u8> {
+    let push = |segment: &[u8]| {
+        let code = om_hbam::slot::minimal_code(true, segment.len(), None).unwrap();
+        om_hbam::slot::encode_chunk(code, segment, &[]).unwrap()
+    };
+    let mut pages = Vec::new();
+    for branch in 0..branches {
+        let segments: Vec<Vec<u8>> = (0..15)
+            .map(|depth| vec![if depth == 0 { 0x41 + branch } else { 0x61 }; 219])
+            .collect();
+        let mut first = Vec::new();
+        if branch == 0 {
+            first.push(0x80);
+        }
+        for segment in &segments {
+            first.extend(push(segment));
+            first.push(0x80);
+        }
+        first.extend(leaf(&[1], &long_value(700)));
+        let mut second = Vec::new();
+        for segment in &segments {
+            second.extend(push(segment));
+        }
+        second.extend(leaf(&[2], &long_value(700)));
+        second.extend([0x40; 15]);
+        if branch + 1 == branches {
+            second.push(0x40);
+        }
+        pages.push(first);
+        pages.push(second);
+    }
+    let bodies: Vec<&[u8]> = pages.iter().map(Vec::as_slice).collect();
+    file_of(&bodies)
+}
+
+/// A file the reader reads and whose every node the writer can write, but
+/// whose index the writer cannot build within 16 levels (Sol's construction
+/// in review round 2), is refused at import, at the first node whose index
+/// entry could cost more than `om_hbam::writer::MAX_INDEX_ENTRY`, so that
+/// nothing imported has an export that fails for its index.
+#[test]
+fn a_file_whose_export_index_could_pass_16_levels_is_refused() {
+    let bytes = deep_branches(18);
+    // The file engine's tree of it cannot be written: its index grows past
+    // 16 levels.
+    let file = HbamFile::from_bytes(bytes.clone()).unwrap();
+    let tree = file.key_tree().unwrap().root.to_owned_node();
+    assert!(om_hbam::writer::unwritable_in_tree(&tree, 1).is_empty());
+    let rebuilt = om_hbam::writer::rebuild(&tree, file.superblock().raw);
+    assert!(
+        matches!(&rebuilt, Err(om_hbam::Error::Write(why)) if why.contains("16 levels")),
+        "{:?}",
+        rebuilt.as_ref().err()
+    );
+    let mut store = MemStore::new(Numbering::Sequential);
+    let refused = import(
+        Cursor::new(&bytes),
+        &mut store,
+        &tree_name(),
+        1,
+        Batch::default(),
+    );
+    // Four 219-byte lists cost 891 bytes; the fifth passes 1,019.
+    let fifth: Vec<Vec<u8>> = std::iter::once(vec![0x41; 219])
+        .chain(std::iter::repeat_n(vec![0x61; 219], 4))
+        .collect();
+    assert!(
+        matches!(&refused, Err(ImportError::Unwritable { path, .. }) if *path == fifth),
+        "{refused:?}"
+    );
+    assert!(store.trees().is_empty());
 }
 
 /// The FileMaker templates (the 66 Mac templates `om-hbam`'s ignored tests
@@ -1412,6 +1559,7 @@ fn filemakers_templates_through_the_store_engine() {
     assert_eq!(found.len(), 66);
     let scratch = Scratch::new("templates");
     let (mut nodes, mut calls, mut refused) = (0, 0, Vec::new());
+    let mut largest = (0, String::new());
     for (n, path) in found.iter().enumerate() {
         let shown = path.display();
         let bytes = std::fs::read(path).unwrap();
@@ -1435,6 +1583,12 @@ fn filemakers_templates_through_the_store_engine() {
         let compared = compare_reads(&store, &view, &imported.page_zero, n as u64 + 1, 300);
         nodes += compared.nodes;
         calls += compared.calls;
+        if compared.index_cost.0 > largest.0 {
+            largest = (
+                compared.index_cost.0,
+                format!("{shown}, depth {}", compared.index_cost.1.len()),
+            );
+        }
         let theirs = file_engine_export(&store, &scratch, "file.fmp12");
         let ours = paged_export(&view, &imported.page_zero, &scratch, "paged.fmp12");
         assert!(theirs == ours, "{shown}: the exports differ");
@@ -1477,9 +1631,12 @@ fn filemakers_templates_through_the_store_engine() {
         );
     }
     println!(
-        "{} files, {} refused, {nodes} nodes, {calls} calls compared: {refused:?}",
+        "{} files, {} refused, {nodes} nodes, {calls} calls compared: {refused:?}; largest \
+         index entry {} bytes ({})",
         found.len(),
-        refused.len()
+        refused.len(),
+        largest.0,
+        largest.1
     );
 }
 
