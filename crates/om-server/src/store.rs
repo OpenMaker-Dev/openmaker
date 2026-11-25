@@ -2214,10 +2214,15 @@ impl Store {
 
     /// Forget the verified-index marks ([`Store::index_agrees`]) a write at
     /// `path` that is not a commit's own upkeep can make wrong: at, above or
-    /// below a table's records `[T, 05]`, its record list `[T, 0d]` or its
-    /// indexes `[T, 01]`, a mark of that table, of that field, or of that
-    /// index. A commit keeps its marks itself, and a change of the schema
-    /// forgets them all through the generation.
+    /// below a table's records `[T, 05]` or its record list `[T, 0d]`, or
+    /// at or above its indexes `[T, 01]` and a field's `[T, 01, F]`, a mark
+    /// of that table or field; at or below a field's postings, value
+    /// `[T, 01, F, 00]` or word `[T, 01, F, 01]`, a mark of that index. The
+    /// agreement check reads the postings and the records alone, so a
+    /// field's counts `[T, 01, F, 10]` and `[T, 01, F, 11]`, a serial value,
+    /// a library member and the rest of a table touch no mark. A commit
+    /// keeps its marks itself, and a change of the schema forgets them all
+    /// through the generation.
     fn forget_verified(&mut self, path: &[Vec<u8>]) {
         let Some((table, rest)) = path.split_first() else {
             self.verified.1.clear();
@@ -2237,7 +2242,9 @@ impl Store {
             [indexes] if is(indexes, keys::INDEXES) => Scope::Table,
             [indexes, field] if is(indexes, keys::INDEXES) => Scope::Field(field),
             [indexes, field, index, ..] if is(indexes, keys::INDEXES) => match index.as_slice() {
-                [kind] => Scope::Index(field, *kind),
+                [kind @ (keys::VALUE_INDEX | keys::WORD_INDEX)] => Scope::Index(field, *kind),
+                // The counts, `10` and `11`, and anything else under the
+                // field's index node.
                 _ => return,
             },
             // A serial value, a library member, the field catalog (the

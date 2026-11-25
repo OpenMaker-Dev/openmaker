@@ -1388,7 +1388,10 @@ save puts every node and flag of the tree back as before
 (`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`,
 the seeded test of [#751](https://github.com/OpenMaker-Dev/openmaker/pull/751),
 unchanged); as before too, a roll-back advances the store's generation,
-so the verified-index marks and the accounts are read again, and a save
+so the verified-index marks are checked again at their next use, while
+the accounts decoded before the change come back with the derived state
+it puts back, counted as current, so they are not decoded again; and a
+save
 that failed on content the tree held before the change takes the field
 indexes among it out (`Store::drop_unwritable_indexes`). Whether a write
 changes nothing is decided on the tree's content: the root's own list
@@ -1408,11 +1411,16 @@ turns one that is not a list yet into one counts by that parent's path
 too. Such a write advances the store's generation, which the
 verified-index marks and the accounts follow, and has the schema and the
 accounts read again before the derived state is next used, or when the
-operation ends (`Transaction::settle`). A write at, above or below a
-table's records `[T, 05]`, its record list `[T, 0d]` or its indexes `[T,
-01]` forgets the verified-index marks it can make wrong
-(`Store::forget_verified`): a commit keeps its own marks as it keeps the
-indexes, but an upload into an index or a record does not. Every write
+operation ends (`Transaction::settle`). A write forgets the
+verified-index marks it can make wrong (`Store::forget_verified`): at,
+above or below a table's records `[T, 05]` or its record list `[T, 0d]`,
+or at or above its indexes `[T, 01]` and a field's `[T, 01, F]`, those
+of the table or the field; at or below a field's postings, value `[T, 01,
+F, 00]` or word `[T, 01, F, 01]`, that index's. The agreement check reads
+the postings and the records alone, so a field's counts `[T, 01, F, 10]`
+and `[T, 01, F, 11]` touch no mark, nor does a serial value, a library
+member or the rest of a table. A commit keeps its own marks as it keeps
+the indexes, but an upload into an index or a record does not. Every write
 that changed the tree counts it as changed since its save.
 
 Before, each operation changed the tree through the store's own helpers,
@@ -1423,7 +1431,7 @@ effect, and which writes do it now:
 | Side effect | Before, after | Now, after |
 | --- | --- | --- |
 | The derived state read again (the catalog, the calculation catalogs, whether the locale record is there; the locale, date order and file language stay those the file was loaded with), and with it the server script sessions' schema, which they keep by the derived state's version | every op13 upload, op86 write and op240 edit, and the account edits (not saved found sets, op71, op72, op87, op88, member keys) | a write at a path the derived state reads, or one that creates or turns such a parent; read at `Transaction::settle` |
-| The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work, a roll-back (the generation); those of a table, a field or an index: a write at, above or below `[T, 05]`, `[T, 0d]` or `[T, 01]` (`Store::forget_verified`) |
+| The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work, a roll-back (the generation); a table's: a write at, above or below `[T, 05]` or `[T, 0d]`, or at `[T, 01]`; a field's: a write at `[T, 01, F]`; an index's: a write at or below `[T, 01, F, 00]` or `[T, 01, F, 01]`, not the counts `[T, 01, F, 10]`, `[T, 01, F, 11]` (`Store::forget_verified`) |
 | The accounts decoded again (`Store::follow_accounts`) | after the operation, when the generation moved | at `Transaction::settle` with the schema, so `derived()` gives an account as written; after the operation when a later write moved the generation |
 | The tree counted as changed | every such write, one equal to what was there included, and an op86 batch of writes even when every one was refused (op13 returned before it on a refusal) | a write that changed the tree |
 | The derived state kept for a roll-back (`Journal::schema_from`) | at each such write | at `Transaction::settle`, before it changes |
@@ -1464,11 +1472,17 @@ listing.
 The checking transaction (`engine::checking`, debug builds, switched on
 with the test view: `Server::checking_reads`, `LocalHost::checking_reads`,
 `FileEngine::check_writes`) keeps the tree the operation started on and
-applies the writes to it as they are recorded, as edits, in order. Every
-read through the transaction is answered again from that tree and must be
-the file engine's answer; at the end, that tree must be the file engine's
-tree node for node and kind for kind, the derived state must be what the
-tree decodes to, and a written tree must count as changed. A difference
+applies the writes to it as they are recorded, as edits, in order. What
+it compares: every structural read through the transaction (a node, a
+subtree, a page of children or subtrees, a walk, a count) is answered
+again from that tree and must be the file engine's answer; at the end,
+that tree must be the file engine's tree node for node and kind for kind,
+and the derived state must be what the tree decodes to; and, when a write
+was recorded, the tree must count as changed. It does not compare
+`changed_since`, which the transaction answers from its own record of
+what it wrote (its own tests cover it), nor whether a write that it did
+not record (one that changed nothing) left the tree counted as changed.
+A difference
 panics, naming paths only (an account's node holds its password's
 verifier). The server's, `om-author`'s and `om-gui`'s tests run with it. An
 operation not moved at all (a commit's records, op73, the deferred work,
@@ -1482,13 +1496,14 @@ takes the tree as it left it (`Check::after_store`). It found
 one write that bypassed the derived state while the operations moved:
 op13's upload to `[T, 03, 01, fd]` created the missing `[T, 03, 01]`,
 which the calculation catalogs read, without reading the schema again.
-What it cannot catch: a write and a reply that agree with each other but
-are wrong (it compares the file engine with itself, not with the base or
-with FileMaker); the order of notices and locks; a roll-back (the seeded
-test covers it); the generation and the verified-index marks; the
-derived state between writes, which it compares only at the end, and not
-at all when the catalog does not decode; what a store helper changed; and
-whatever the test suite does not run.
+What it cannot catch, besides what it does not compare: a write and a
+reply that agree with each other but are wrong (it compares the file
+engine with itself, not with the base or with FileMaker); the order of
+notices and locks; a roll-back (the seeded test covers it); the
+generation and the verified-index marks; the derived state between
+writes, which it compares only at the end, and not at all when the
+catalog does not decode; what a store helper changed; and whatever the
+test suite does not run.
 
 **Moving the other readers.** The readers below, but those marked moved,
 still hold the store (`Hosted::read_store`, or

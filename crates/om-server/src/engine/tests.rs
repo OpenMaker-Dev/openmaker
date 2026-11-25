@@ -4364,11 +4364,6 @@ fn a_member_key_draft_that_writes_nothing_leaves_the_file_as_it_was() {
     assert_eq!(std::fs::read(&disk.0).unwrap(), bytes, "the file as it was");
 }
 
-/// The review of #751 (P2): the test view reads the accounts, password
-/// verifiers and all, only for a reader of them
-/// (`Reading::serve_with_accounts`). Another reader that read them would
-/// get none through it, so its two answers differ and the check fails; a
-/// reader of them gets them through both views, the same.
 /// An operation that writes an account reads it as written through its
 /// transaction's derived state, the catalog and the accounts read again
 /// together (review of #785, round 2; `Transaction::settle`).
@@ -4386,6 +4381,11 @@ fn an_account_written_reads_as_written_in_the_same_operation() {
     assert_eq!((renamed, former), (true, false));
 }
 
+/// The review of #751 (P2): the test view reads the accounts, password
+/// verifiers and all, only for a reader of them
+/// (`Reading::serve_with_accounts`). Another reader that read them would
+/// get none through it, so its two answers differ and the check fails; a
+/// reader of them gets them through both views, the same.
 #[test]
 fn the_test_view_reads_the_accounts_only_for_a_reader_of_them() {
     let (_disk, file) = host("engine-accounts-asked", &fixture::tree(&[], true));
