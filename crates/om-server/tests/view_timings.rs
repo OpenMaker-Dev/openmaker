@@ -464,7 +464,8 @@ fn process_mb(pid: u32, name: &str) -> f64 {
 /// rather than write the whole file. It reports the time from the process's
 /// start to its listening line (the files hosted), its resident memory once
 /// hosted and idle, then the client's times of a find on Name through its
-/// stored index (median of 5), a find on Code whose index is built on
+/// stored index (median of 5), a find for duplicates on Name, which reads
+/// every key and entry of its index (median of 3), a find on Code whose index is built on
 /// demand (the first, then once more), a sort of every record by Name, and
 /// a download of the table's records `[T, 05]` in pages (op90), and the
 /// process's peak resident memory and its resident memory after them. After
@@ -639,6 +640,17 @@ fn engines() {
         })
         .collect();
     report("find on Name, its index stored", times);
+    // A find for duplicates on Name: every key of its stored value index
+    // listed and every entry's records read (a text range would read the
+    // word index, which the file does not store, and time its build).
+    let by_duplicates = finder_program(file_id, fixture::NAME, DataType::Text, "!");
+    let times = (0..3)
+        .map(|_| timed(&mut || assert_eq!(records(&session.query(&by_duplicates).unwrap()), 0)))
+        .collect();
+    report(
+        "find for duplicates on Name, every key and entry read",
+        times,
+    );
     // ExistsInIndex of keys no record holds, each just below the key of the
     // value most records hold, so that each lookup misses next to its entry
     // (the value's key is checked first: a hit, its records read once).
