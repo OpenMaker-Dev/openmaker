@@ -3277,11 +3277,13 @@ Not built yet, and what stands in for it:
   where the latest `members` entry will take their place for elections,
   votes and counting. Nothing on disk records that a store is a member:
   its caller opens it as one, and `Store::open` on a member's folder
-  would apply entries that are not committed.
+  would apply entries that are not committed
+  ([#850](https://github.com/OpenMaker-Dev/openmaker/issues/850)).
 - State transfer (section 7.5, "State"). A follower whose next entry the
   leader's log no longer holds stays behind, and the leader reports it
   (`Core::behind`). A leader retires its log for its own checkpoints
-  only, not for what its followers still need.
+  only, not for what its followers still need
+  ([#849](https://github.com/OpenMaker-Dev/openmaker/issues/849)).
 - The transport between servers and sessions in the log (sections 7.3,
   7.4).
 
@@ -4056,8 +4058,8 @@ whenever another member ends its log with entries of a later term than
 the leader's at their place (Raft's figure 8). One schedule in three
 churns leaders, with short timeouts and one entry per append. After
 every step it checks that a term has at most one leader, that no leader
-is elected whose log lacks an entry answered as committed (from the
-leader's decision on), that the committed position a member records and
+is elected whose log lacks an entry answered as committed (an entry
+counts as answered from the leader's decision), that the committed position a member records and
 every version it publishes are of entries answered as committed (check
 4), that servers at the same entry have the same root hashes (check 3),
 that a held view reads what it read, that every server starts (check
