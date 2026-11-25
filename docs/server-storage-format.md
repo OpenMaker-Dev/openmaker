@@ -655,14 +655,19 @@ that an open could read later carries an older cut count too. The
 operation is refused, with nothing written, when the log does not end at
 an unreadable place, when the entry the caller names (index and hash) is
 not the last one the open verified, and when `state` lists segments after
-the one the log ends in. No write of this log leaves that: every update
-lists a segment only with a marker in it or just before it (3.8, 3.9, this
-section), an open drops what follows the segment it ends in, and a lost
-copy of `state` goes back to a run and a marker that agree; an open that
-ends at an unreadable place has therefore passed the marker in the last
-listed segment. A disk too full for the segment refuses it as it refuses
-an append (`LogError::NoSpace`, 3.7). It needs no committed position: it
-removes nothing at or before the durable entry (server-storage.md 6.3).
+the one the log ends in. No write of this log leaves that. Every `state`
+update keeps the marker's entry in the last listed segment, or just before
+its first entry: a batch flush lists a segment only with the marker in it
+(3.8); a cut keeps the run to the segment that holds the place it cuts at;
+an open moves the marker to the entry it ends at and keeps the run to the
+segment that holds that end; retiring never drops the last segment (3.10);
+giving up lists one that begins right after the marker. A lost copy of
+`state` goes back to an older copy, made under the same rule. So a walk is
+in the last listed segment once it has passed the marker, and an open can
+end unreadable only there. A disk too full for the segment refuses it as it
+refuses an append (`LogError::NoSpace`, 3.7). It needs no committed
+position: it removes nothing at or before the durable entry
+(server-storage.md 6.3).
 
 | A crash | leaves |
 |---|---|
