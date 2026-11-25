@@ -1695,11 +1695,12 @@ fn a_commit_stores_every_record_it_names_or_none() {
 /// not run and fails (Notes is still there), where a continuation of
 /// results with one gets the empty last page FileMaker Server's code
 /// gives. The last part of an upload completed in two parts, sent again,
-/// is answered as its upload was: done for op13, op70 and op14 into the
-/// temporary area, with nothing done again (the record stored once, the
-/// staged records and their charge as after the first); op88's member and
-/// a program's results are not answered twice, and fail; and a part of
-/// op13 with a cursor never issued fails.
+/// is a cursor the connection no longer holds, and fails for op13, op70,
+/// op14 into the temporary area, op88 and a program, although the first
+/// sending was done: nothing is done again (the record stored once, the
+/// staged records and their charge as after the first), and the connection
+/// keeps no memory that could answer done for it (`transfer`). A part of
+/// op13 with a cursor never issued fails too.
 #[test]
 fn a_continuation_answers_as_its_request_does() {
     use om_protocol::container;
@@ -1773,12 +1774,8 @@ fn a_continuation_answers_as_its_request_does() {
         ..resume
     };
     let last = write::build_upload_to_host(2, id, &to_catalog(rest, resume));
-    let done = client.perform(&last).unwrap();
-    assert_eq!(
-        client.perform(&last).unwrap(),
-        done,
-        "op13's last part again"
-    );
+    client.perform(&last).unwrap();
+    assert!(client.perform(&last).is_err(), "op13's last part again");
     assert!(client
         .perform(&write::build_upload_to_host(
             3,
@@ -1817,14 +1814,11 @@ fn a_continuation_answers_as_its_request_does() {
         ..resume
     };
     let last = write::build_commit(5, id, &part(list_rest, resume));
-    let done = client.perform(&last).unwrap();
+    client.perform(&last).unwrap();
     assert_eq!(name_of_record_1(&mut client).as_deref(), Some("Twice"));
     let held = handle.upload_memory_in_use();
-    assert_eq!(
-        client.perform(&last).unwrap(),
-        done,
-        "op70's last part again"
-    );
+    assert!(client.perform(&last).is_err(), "op70's last part again");
+    assert_eq!(name_of_record_1(&mut client).as_deref(), Some("Twice"));
     assert_eq!(handle.upload_memory_in_use(), held);
 
     // op14 of 60 records into the temporary area in two parts, then its
@@ -1855,13 +1849,9 @@ fn a_continuation_answers_as_its_request_does() {
         ..resume
     };
     let last = write::build_upload(7, id, &to_temp(staged_rest, resume));
-    let done = client.perform(&last).unwrap();
+    client.perform(&last).unwrap();
     let held = handle.upload_memory_in_use();
-    assert_eq!(
-        client.perform(&last).unwrap(),
-        done,
-        "op14's last part again"
-    );
+    assert!(client.perform(&last).is_err(), "op14's last part again");
     assert_eq!(handle.upload_memory_in_use(), held);
 
     // op88 in two parts, then its last part again.
@@ -1908,13 +1898,14 @@ fn a_continuation_answers_as_its_request_does() {
     assert!(query(&mut client, program_rest, resume).is_err());
 }
 
-/// The last part of an upload again is answered done only when its
-/// operation answered done. An op70 in two parts that is refused whole
-/// (another connection holds record 1) and an op13 in two parts the engine
-/// refuses (the whole file as its destination) fail, and their last parts
-/// sent again fail too: record 1 keeps its name. Found by experiment: the
-/// receiver remembered every upload it completed, whatever its operation
-/// answered, so the repeat of a refused commit's last part read as done.
+/// The last part again of an upload whose operation failed fails too. An
+/// op70 in two parts that is refused whole (another connection holds
+/// record 1) and an op13 in two parts the engine refuses (the whole file
+/// as its destination) fail, and their last parts sent again fail: record
+/// 1 keeps its name. Found by experiment, when the connection remembered
+/// the uploads it completed so as to answer a repeat done: it remembered
+/// them whatever their operation answered, and the repeat of a refused
+/// commit's last part read as done. That memory is gone.
 #[test]
 fn a_last_part_again_fails_when_its_operation_failed() {
     let (writable, catalog) = tasks_for_writes("recalc-failed-repeats", false);
