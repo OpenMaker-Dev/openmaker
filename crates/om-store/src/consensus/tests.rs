@@ -231,7 +231,7 @@ const STORMS: [Storm; 4] = [
         delay: 5,
     },
     Storm {
-        weight: 6,
+        weight: 5,
         drop: 6,
         repeat: 10,
         delay: 8,
@@ -291,7 +291,7 @@ impl World {
         // appends, and new leaders often cut off (Raft's figure 8).
         let churn = rng.one_in(3);
         let (batch, timing) = if churn {
-            ([1, 2][rng.below(2) as usize], (4, 1))
+            (1, (4, 1))
         } else {
             (
                 [1, 2, 3, 8][rng.below(4) as usize],
@@ -390,9 +390,10 @@ impl World {
     }
 
     fn one_step(&mut self) -> Outcome {
-        if self.step % 250 == 1 {
+        if self.step % 500 == 1 {
             // Calm phases let leaders commit; stormy ones break them.
-            self.storm = STORMS[self.rng.below(4) as usize];
+            // Calm two phases in five.
+            self.storm = STORMS[self.rng.below(5).saturating_sub(1) as usize];
         }
         let busy: Vec<usize> = self
             .up()
@@ -400,12 +401,14 @@ impl World {
             .filter(|i| !self.nodes[*i].member.as_ref().unwrap().idle())
             .collect();
         let due = self.flight.iter().any(|f| f.0 <= self.now);
-        let mut events: Vec<(u8, u64)> = vec![(b't', 14), (b'p', 14), (b'c', 1), (b'v', 2)];
+        // Work is done many times faster than the clock ticks: a message
+        // and the actions it leads to take a fraction of a tick.
+        let mut events: Vec<(u8, u64)> = vec![(b't', 50), (b'p', 100), (b'c', 5), (b'v', 10)];
         if !busy.is_empty() {
-            events.push((b'a', 40));
+            events.push((b'a', 400));
         }
         if due {
-            events.push((b'd', 30));
+            events.push((b'd', 300));
         }
         if self.faults && self.storm.weight > 0 {
             events.push((b'f', self.storm.weight));
@@ -450,17 +453,19 @@ impl World {
                 if cut {
                     self.cov.cuts += 1;
                 }
-                let mut answered = false;
+                // A power loss right after an answer: the window in which
+                // the answer must already be durable. Votes are fewer than
+                // acknowledgements, and drawn more often.
+                let mut answered = 0;
                 let mut appended = None;
                 if let Some(m) = done.sent {
-                    answered = matches!(m.body, Body::VoteReply { granted: true })
-                        || matches!(
-                            m.body,
-                            Body::AppendReply {
-                                matched: Some(_),
-                                ..
-                            }
-                        );
+                    answered = match m.body {
+                        Body::VoteReply { granted: true } => 6,
+                        Body::AppendReply {
+                            matched: Some(_), ..
+                        } => 60,
+                        _ => 0,
+                    };
                     if let Body::Append { entries, .. } = &m.body {
                         // A new leader's first entry is `empty`.
                         let empty = crate::entry::Kind::Empty.code();
@@ -482,20 +487,27 @@ impl World {
                 // A leader cut off right after it sent its first entry, or
                 // right after it answered a commit, before what follows
                 // reaches the others.
+                let diverged = done.committed.is_some() && self.diverged(i);
                 let isolate = match (appended, done.committed, self.churn) {
-                    (Some(true), _, true) | (_, Some(_), true) => 2,
-                    (Some(true), _, false) | (_, Some(_), false) => 3,
-                    (Some(false), _, _) => 15,
+                    // Another member holds entries of a later term than the
+                    // leader's at their place: cut the leader off and give
+                    // it its chance (Raft's figure 8).
+                    _ if diverged => 2,
+                    (Some(true), _, true) => 2,
+                    (_, Some(_), true) => 2,
+                    (Some(true), _, false) => 6,
+                    (_, Some(_), false) => 40,
+                    (Some(false), _, _) => 80,
                     _ => 0,
                 };
-                if answered && storm && self.rng.one_in(12) {
+                if storm && self.rng.one_in(answered) {
                     self.nodes[i].sim.crash(Fates::Drawn);
                     self.nodes[i].member = None;
                     self.nodes[i].down_until = self.now + 1 + self.rng.below(6);
                     self.cov.power_losses += 1;
                     self.cov.faults += 1;
                     self.after_answer += 1;
-                } else if storm && self.rng.one_in(isolate) {
+                } else if (storm || diverged && self.faults) && self.rng.one_in(isolate) {
                     // The leader alone, right after it sent entries, in place
                     // of any split before: what it sent may reach some and
                     // not others, and the last leader cut off may be back.
@@ -544,7 +556,9 @@ impl World {
             copies = 2;
         }
         for _ in 0..copies {
-            let delay = self.rng.below(storm.delay + 1);
+            // Never longer than an election timeout, which would leave no
+            // election able to finish.
+            let delay = self.rng.below(storm.delay.min(self.timing.0) + 1);
             self.seq += 1;
             self.flight.push((self.now + delay, self.seq, m.clone()));
         }
@@ -656,8 +670,10 @@ impl World {
     /// A client's entry at the serving leader, if one serves and is idle.
     fn propose(&mut self) -> Outcome {
         let Some(i) = self.up().into_iter().find(|i| {
+            // A client waits for its answers: at most four entries the
+            // leader has not committed.
             let m = self.nodes[*i].member.as_ref().unwrap();
-            m.core.serving() && m.idle()
+            m.core.serving() && m.idle() && m.core.last().index < m.core.committed() + 4
         }) else {
             return Ok(());
         };
@@ -833,6 +849,22 @@ impl World {
         Ok(())
     }
 
+    /// Whether a member other than leader `i` ends its log with an entry
+    /// of a later term than the leader's entry at that place.
+    fn diverged(&self, i: usize) -> bool {
+        let Some(lead) = self.nodes[i].member.as_ref() else {
+            return false;
+        };
+        self.nodes.iter().enumerate().any(|(j, n)| {
+            let Some(m) = n.member.as_ref().filter(|_| j != i) else {
+                return false;
+            };
+            let last = m.core.last();
+            last.index > lead.core.base().index
+                && lead.core.term_at(last.index).is_none_or(|t| t < last.term)
+        })
+    }
+
     /// The member that leads, if one is up and leads.
     fn leading(&self) -> Option<usize> {
         self.up()
@@ -892,8 +924,8 @@ impl World {
         Ok(())
     }
 
-    /// The oracle learns that leader `i` recorded `committed`: the entries
-    /// up to it are answered as committed.
+    /// The oracle learns that leader `i` decided, or recorded, that
+    /// `committed` is committed: the entries up to it are answered so.
     fn answered(&mut self, i: usize, committed: u64) -> Outcome {
         let max = self.oracle.max();
         if committed <= max {
@@ -942,7 +974,13 @@ impl World {
         let core = &member.core;
         let (role, term, id) = (core.role(), core.term(), core.me());
         let durable = core.durable().index;
+        let decided = core.committed();
         self.cov.highest_term = self.cov.highest_term.max(term);
+        // A leader's decision commits: a majority holds the entries, whether
+        // or not its record of the decision lands before a fault.
+        if role == Role::Leader && decided > self.oracle.max() {
+            self.answered(i, decided)?;
+        }
         // At most one leader per term; a leader holds every entry answered
         // as committed.
         if role == Role::Leader && !self.nodes[i].was_leader {
@@ -1164,7 +1202,7 @@ fn setup(seed: u64, steps: u64, plant: Option<Plant>) -> Setup {
     }
 }
 
-const STEPS: u64 = 3_000;
+const STEPS: u64 = 5_000;
 const SEEDS: u64 = 60;
 
 fn report(name: &str, cov: &Coverage, secs: f64) {
