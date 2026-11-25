@@ -2209,23 +2209,37 @@ call the simulated disk can stop.
 ### 6.1 Creating
 
 1. the store folder's lock is taken; a folder with `state` holds a store
-   already, and is refused;
-2. a `pages` left by a creation that did not reach `state` is removed,
+   already, and is refused. A folder without `state` that holds the log's
+   folder `log/` (which only an open makes, once `state` exists), or a
+   `pages` without the creation's marker, holds a store whose `state` is
+   gone: it is refused, and reported as `OpenError::NoState`, never
+   created over;
+2. the creation's marker, an empty file named `creating`, is made, and
+   the store folder flushed, so that its name is durable before anything
+   else is made (a creation begun again finds it there);
+3. a `pages` left by a creation that did not reach `state` is removed,
    and the page file is created (4.6: checkpoint 1 at entry 0, written to
    `pages.new`, flushed, renamed, the folder flushed);
-3. `state` is created (1.3: both copies in `state.new`, flushed, renamed,
+4. `state` is created (1.3: both copies in `state.new`, flushed, renamed,
    the folder flushed);
-4. the store is opened (6.2), which writes the first start's entry.
+5. the marker is removed and the store folder flushed;
+6. the store is opened (6.2), which writes the first start's entry.
 
 | A crash | leaves |
 |---|---|
-| before step 3 is done | no `state`: no store. A creation begun again removes the `pages` it finds |
-| after step 3 | a store, opened as any (6.2); the log is empty |
+| before step 2 is done | at most an empty `creating` and no other file: no store |
+| after step 2, before step 4 is done | no `state`, and the marker: what a creation cut short left. An open reports no store (`OpenError::Missing`); a creation begun again removes the `pages` it finds |
+| after step 4 | a store, opened as any (6.2); the log is empty. An open removes a marker step 5 did not |
+
+A folder without `state` is so told apart: the marker means a creation
+cut short, created over; `log/`, or a `pages` without the marker, means a
+store whose `state` is gone, reported for a restore (server-storage.md
+6.12, "`state` has no valid copy"); nothing at all means no store.
 
 ### 6.2 Opening
 
 1. the lock, and `state` opened (1.3), which raises the start count in
-   both slots;
+   both slots; a creation's marker left by step 5 of 6.1 is removed;
 2. the page file opened (4.6): the newest checkpoint that reads back, or
    the one before it; its entry is the **start**;
 3. the log opened from the start (3.6), checked against the marker;
@@ -2243,7 +2257,15 @@ call the simulated disk can stop.
    pinned and is the published one;
 6. this start's own entry is appended and flushed (6.3): a `session`
    entry that records the start count (server-storage.md 7.3), the first
-   write of every start.
+   write of every start. It is part of the recovery for space: it is
+   reserved with the reserve allowed, and when it is refused because the
+   pages waiting for a checkpoint are past their budget, or because the
+   disk has no room for it (pages past the reserve, or the log's next
+   segment), the recovered version, which is durable, is checkpointed
+   first (6.6: the log retired and dying pages freed as far as the
+   checkpoints and restore points on disk allow), and the entry is
+   appended again, once. A disk that still has no room fails the open
+   with `OpenError::Start`, whose remedy is to free space.
 
 Steps 1 to 3 write what their own opens write. Step 4 writes nothing to
 disk but what a forced checkpoint writes. A crash at any step leaves what
@@ -2254,26 +2276,52 @@ can leave that entry durable; the failed open reports it
 (`OpenError::Start`), and the next open applies it as any entry.
 
 What the open cannot do is reported, typed, with what the administrator
-can do (`OpenError::remedy`): no store; no valid copy of `state`; no
-checkpoint that reads back; a log that does not hold, whole, every entry
-through its marker; a log that ends at a place it cannot read; a place at
-or before the marker it cannot read; an entry the log holds that cannot
-be applied (a page that does not check); no space to apply the log's
-entries. Two calls go past two of them, and nothing else does:
-`Store::accept_damage` (`Log::accept_damage`, 3.6 and server-storage.md
-6.12: the marker lowered to the last entry the log holds whole from the
-start, the cut count raised, the segments after dropped, in one `state`
-update written to both slots) and `Store::give_up_unreadable_end`
-(`Log::give_up_unreadable_end`, 3.9). Each is done from the moment its
-`state` update's first slot is flushed, whether or not the open goes on
-to succeed. When the open passed over a copy of `state` and the log kept
-no whole batch after the marker, the open succeeds and says that the last
-batch confirmed may be lost (`Opened::last_batch_may_be_lost`).
+can do (`OpenError::remedy`): no store; a store whose `state` is gone
+(6.1); no valid copy of `state`; no checkpoint that reads back; a log
+that does not hold, whole, every entry through its marker; a log that
+ends at a place it cannot read; a place at or before the marker it cannot
+read; an entry the log holds that cannot be applied (a page that does not
+check); no space to apply the log's entries, or for this start's own
+entry. Two calls go past two of them, and nothing else does:
+
+- `Store::accept_damage` (`Log::accept_damage`, server-storage.md 6.12)
+  decides from the start, the checkpoint the store opens on. Every
+  listed segment the folder holds is opened, and one that is missing or
+  whose header is not valid is passed over. The segment that holds the
+  entry after the start, with the listed segments that follow it without
+  a gap, holds the chain that is walked from the start, each entry whole
+  and chained, no further than the later of the marker and the start.
+  What is kept is that chain, through the last entry reached (`kept`),
+  and the segments before it that follow one another without a gap up to
+  it (they held only entries at or before the start: a checkpoint older
+  than the start can no longer be replayed once one of them is gone).
+  One `state` update, written to both slots, lists them, lowers the
+  marker to `kept`, and raises the cut count when anything after `kept`
+  is given up. A lost older segment so costs nothing the newest
+  checkpoint's chain still holds. It is refused, with nothing written,
+  when the log holds every entry through the marker and every listed
+  segment stays listed.
+- `Store::give_up_unreadable_end` (`Log::give_up_unreadable_end`, 3.9).
+
+Each is done from the moment its `state` update's first slot is flushed,
+whether or not the open goes on to succeed. An open that fails after the
+decision says what was given up (`OpenError::AfterGivingUp`): with
+`Recorded::Done` it stands, and the next open starts from it without
+reporting it again; with `Recorded::Unknown` the `state` update failed
+part way, and the next open shows which (it ends the log where the
+decision does, or reports the damage again). When the open passed over a
+copy of `state` and the log kept no whole batch after the marker, the
+open succeeds and says that the last batch confirmed may be lost
+(`Opened::last_batch_may_be_lost`).
 
 ### 6.3 Writing one entry
 
 `Store::append(file, payload)` gives the entry the next index and the
-store's term, and:
+store's term. What a payload says of this server's own starts is the
+store's too: a `session` entry that says this server started (the store
+writes one at each open, 6.2), or that opens a session of this server in
+another start than the current one, is refused from the caller with
+nothing changed. Then it:
 
 1. asks the log whether it would take an entry of that size and term
    (`Log::ready_for`, every refusal of an append, the next segment made
@@ -2323,7 +2371,12 @@ After the store is opened again, a view taken before is kept only by the
 checkpoints on disk (pins are in memory): once later checkpoints retire
 those, its pages can be reused, and a read of one fails its hash check
 instead of returning another page. A view of a restore point pins the
-point's version from its meta stream.
+point's version from its meta stream; one whose meta stream the device
+fails to read, or that does not check, is answered as such
+(`WriteError::Unreadable`, with the page file's reason), and the store
+goes on. A view, and the store, hand out nothing of the page file, the
+log or `state`: no read of the working state and no write that would
+pass the store's rules (a checkpoint of an entry not yet published, say).
 
 ### 6.6 A checkpoint
 
@@ -2333,8 +2386,10 @@ only. Then:
 
 1. the page file's checkpoint of that entry (4.6), kept as a restore
    point when named;
-2. the log retired up to the entry after the oldest checkpoint on disk or
-   restore point listed (3.10), never past it;
+2. the log retired up to the entry after the oldest checkpoint or
+   restore point a superblock on disk names (3.10), never past it. A
+   restore point dropped since counts until no superblock on disk lists
+   it: an open that falls back to the older checkpoint lists it again;
 3. a reclaim of dying pages, bounded.
 
 A crash leaves what 4.6 and 3.10 say; the next open starts from the
@@ -2350,9 +2405,19 @@ published.
 
 - The store does not keep a mark that a start passed over a copy of
   `state` (a design change under review, not in section 1 or
-  server-storage.md yet): an open reports the possible loss once, and a
-  crash right after it, before anything else is written, leaves two
-  whole copies of `state`, so the next open sees nothing to report.
+  server-storage.md yet): an open reports the possible loss once, and
+  only when it succeeds. `state`'s own open rewrites both slots (1.3), so
+  an open that fails after it (the page file's open, the log's, the
+  replay, this start's entry) or a crash before it returns leaves two
+  whole copies of `state`, and the next open sees nothing to report; so
+  does a crash right after an open that reported it. The mark is
+  [issue #748](https://github.com/OpenMaker-Dev/openmaker/issues/748).
+- On a disk with no room, an open that cannot make room for this start's
+  entry by checkpointing (the log retired and dying pages freed as far as
+  the checkpoints and restore points on disk allow) fails, and says to
+  free space: the log keeps no room of its own for the next start's
+  entry, so a disk that filled can need space freed before the store
+  opens again.
 - Recovery reserves a fixed few pages for each entry and extends them,
   rather than the count each entry took the first time (`Reservation::taken`):
   entries do not carry it. An entry the replay extends may take the

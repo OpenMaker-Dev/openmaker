@@ -633,7 +633,10 @@ settled (server-storage-format.md 4.5).
    checkpoint pass their budget during step 4, the last entry applied,
    which is durable, is checkpointed and step 4 goes on.
 6. Write this start's own `session` entry (section 7.3), the first write
-   of every start, and publish it.
+   of every start, and publish it. It is part of the recovery for space:
+   when the pages waiting for a checkpoint or the disk refuse it, the
+   recovered version, which is durable, is checkpointed first, which
+   frees what the checkpoints and restore points on disk no longer need.
 
 If the log does not hold every entry through the marker, or neither
 checkpoint can be used, the server cannot produce what it confirmed. A
@@ -777,14 +780,14 @@ store take unbounded memory or disk:
 | Fault | Found by | Response |
 |---|---|---|
 | The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged |
-| The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
+| The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss, which is decided from the checkpoint the store opens on: the chain from it through every segment that still reads is kept, and only what cannot be verified is given up |
 | The log cannot be read at a place after the marker | the device's error | the log ends there for that start, cuts nothing and takes no appends (section 6.3). A cluster member is cut there by its leader (section 7.1). A single server stops the store and reports; the administrator opens it again, restores (section 11), or explicitly accepts the loss of what may follow |
-| `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
+| `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11). A folder that holds a store's log or page file and no `state` at all is the same fault, and is never created over; only what a creation cut short left is (server-storage-format.md 6.1) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
 | The newest checkpoint's superblock or roots cannot be read | hashes | use the checkpoint before it, which is kept whole (section 6.7) |
 | A flush fails | the system's error | stop the server at once and recover on restart. Never retry the flush: the system may already have dropped the data (PostgreSQL's 2018 finding). An entry the failed flush covered may be found whole on restart; its outcome was unknown to its client (section 2) |
-| The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads |
+| The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads. A start whose own entry finds no room after a checkpoint does not open, and says to free space |
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
 
 **What is not found.** The store finds writes a crash interrupted, damage
