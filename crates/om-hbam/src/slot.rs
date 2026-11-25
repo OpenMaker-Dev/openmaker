@@ -194,14 +194,26 @@ pub fn minimal_code(push: bool, key_len: usize, value: Option<usize>) -> Option<
 /// Encode a push or leaf chunk with an explicit code. Returns `None` when the
 /// code's size classes cannot carry this key and value.
 pub fn encode_chunk(code: u8, key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
+    // Checked before anything is reserved for the key and value.
+    let lengths = chunk_lengths(code, key, value)?;
     let mut out = Vec::with_capacity(4 + key.len() + value.len());
-    encode_chunk_into(&mut out, code, key, value)?;
+    write_chunk(&mut out, code, lengths, key, value);
     Some(out)
 }
 
 /// [`encode_chunk`] appended to `out`, which is left as it was when the
 /// code's size classes cannot carry this key and value.
 pub fn encode_chunk_into(out: &mut Vec<u8>, code: u8, key: &[u8], value: &[u8]) -> Option<()> {
+    let lengths = chunk_lengths(code, key, value)?;
+    write_chunk(out, code, lengths, key, value);
+    Some(())
+}
+
+/// The length fields a chunk with `code` writes before its key and before
+/// its value: the key's length byte where the code has one, and the
+/// value's length in none, one or two bytes. `None` when the code is no
+/// push or leaf code, or its size classes cannot carry this key and value.
+fn chunk_lengths(code: u8, key: &[u8], value: &[u8]) -> Option<(Option<u8>, [u8; 2], usize)> {
     if !matches!(kind_of(code, 0).ok()?, ChunkKind::Push | ChunkKind::Leaf) {
         return None;
     }
@@ -210,19 +222,28 @@ pub fn encode_chunk_into(out: &mut Vec<u8>, code: u8, key: &[u8], value: &[u8]) 
         (3, n) if n <= 255 => Some(n as u8),
         _ => return None,
     };
-    // The value's length as the code writes it: none, one byte or two.
     let (length, length_bytes) = match (code & 7, value.len()) {
         (0, 0) | (1, 1) | (2, 2) | (3, 4) | (4, 6) | (5, 8) => ([0, 0], 0),
         (6, n) if n <= 255 => ([n as u8, 0], 1),
         (7, n) if n <= 65535 => ((n as u16).to_be_bytes(), 2),
         _ => return None,
     };
+    Some((key_length, length, length_bytes))
+}
+
+/// A chunk whose lengths [`chunk_lengths`] gave, appended to `out`.
+fn write_chunk(
+    out: &mut Vec<u8>,
+    code: u8,
+    (key_length, length, length_bytes): (Option<u8>, [u8; 2], usize),
+    key: &[u8],
+    value: &[u8],
+) {
     out.push(code);
     out.extend(key_length);
     out.extend_from_slice(key);
     out.extend_from_slice(&length[..length_bytes]);
     out.extend_from_slice(value);
-    Some(())
 }
 
 /// One segment of a hierarchical key, borrowed from the slot buffer.

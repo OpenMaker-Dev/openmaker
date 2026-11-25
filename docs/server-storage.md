@@ -10,8 +10,10 @@ it except the contract in section 2.
 **Status: design.** Only the file engine exists
 (`crates/om-server/src/store.rs`). Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
-its lock table goes through them (section 5). Still to come: views and
-`export`, `import` and `capabilities` (section 5), the file engine's
+its lock table goes through them (section 5). Views are built, and
+downloads and finds read through them; the other readers still hold the
+file engine's store (section 5, "Moving the other readers"). Still to
+come: `export`, `import` and `capabilities` (section 5), the file engine's
 reporting of failed saves (section 5, last part), the store engine and
 everything in sections 6 to 12, which are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
@@ -237,7 +239,9 @@ the view (`engine::FileView`, over `engine::TreeView`) holds the store's
 read lock, as `Hosted::read_store` did, so a reading costs what that lock
 costs and lends the store's own tree. Its version counts the times the
 store was taken for writing, and it answers `changed_since` for the whole
-file. On the store engine a view will never wait for a writer. Downloads
+file. Versions compare only within one load of a file: a file closed and
+opened again is a new store, counting from 0 again, and its derived state
+says which load it belongs to (`Derived::instance`). On the store engine a view will never wait for a writer. Downloads
 (op90) are plain reads of a view in both engines. That they take no
 lock, where FileMaker Server takes a read lock that waits (schema-path.md
 4.5), is how OpenMaker Server works today and is not part of this design.
@@ -249,8 +253,10 @@ The readers that read through views:
   (`engine::wire`, `om_hbam::tree::WireWriter`, which gives the bytes
   `Node::to_wire` gives), never held as a tree. A node a filter applies to
   (an account's view limits, `views::ViewFilter`; a restricted account's
-  own account member) is copied whole, filtered and written, as every
-  download was before. A key that holds a value is answered with it;
+  own account member) is copied whole and filtered under the lock and
+  written after it, as every download was before, its view limits taken
+  once it is copied, as before, so that a limit's formula reads the clock
+  at the same point. A key that holds a value is answered with it;
 - op92 (`connection::selected`): the parent's own node, and each key of
   the list looked up and copied whole. A key no larger than one before it
   in the list is passed over, so that a list out of order or repeating a
@@ -262,8 +268,8 @@ The readers that read through views:
   reads the catalog's index nodes (`derived::generate_member_key`).
   `Source` gained `record_ids`, a table's record list read entry by entry
   (`[T, 0d]`); its default, which the other sources (`HbamFile`, the
-  store's own for server scripts) keep, decodes `Source::node`'s node. What `om-query` still asks of `Source::node`
-  whole: a field's index (`Indexes::load`: `Index` finds keys by position,
+  store's own for server scripts) keep, decodes `Source::node`'s node.
+  What `om-query` still asks of `Source::node` whole: a field's index (`Indexes::load`: `Index` finds keys by position,
   checks their order once and reads entries by position, so it needs the
   entries at hand), a record's cell (`Indexes::stored_text`), the node
   NodeExists and GetKey name, of which only its own value is read
@@ -293,23 +299,31 @@ it, and op92 looks up each key it was asked for, where it walked every
 child of the parent. A find's check before it runs of whether the file
 is hosted read-only (for a program that changes the file), and its
 question afterwards of whether it left work waiting, each take a reading
-of their own, as each took the store before.
+of their own, as each took the store before. Both read the file's state,
+not its view, so they are read once and not through `Reading::serve`
+(below), whose two runs other readers could change it between.
 
 A second view, for tests only (`engine::copies`, debug builds), shows
 that readers do not lean on the file engine's: it serves the same tree but
 hands out every node as an owned copy, gives children and walks three at
 a time, and fails every read that reaches a path it was told to fail (the
-node at the path and everything below it, as a damaged page fails the
-reads that reach it). A server switched to it (`Server::checking_reads`)
+node at the path and everything below it, and a listing or walk of such
+a node whether it is there or not, as a damaged page fails the reads
+that reach it). A server switched to it (`Server::checking_reads`)
 answers each download and find through the file engine's view and then
 through this one, from the same version, and panics when the replies
-differ; it computes its derived state through this view and checks it
-against the file engine's. The servers of `om-server`'s end-to-end tests
+differ; it computes its derived state through this view, once for each
+load of a file and its catalog again at each schema change, and checks it
+against the file engine's, failing the check when it cannot compute it.
+The servers of `om-server`'s end-to-end tests
 (`tests/fixtures/server.rs`) and of `om-provider`'s tests of a hosted
 file, its finds, its privileges and related files are switched to it. A
 read it was told to fail (`ServerHandle::failing_reads`) is answered
 through it alone, so that a test sees what the client gets
-(`tests/indexes.rs`, `a_failed_read_reaches_the_client_as_an_error`).
+(`tests/indexes.rs`, `a_failed_read_reaches_the_client_as_an_error`);
+there a derived state it cannot compute is the file engine's, since
+derived state is computed when a file is loaded and when its schema
+changes, not by the read that fails.
 
 **Write operations.** Every change the server makes is a value of one
 type, a write operation (`engine::Operation`):

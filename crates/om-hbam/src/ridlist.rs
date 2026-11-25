@@ -19,6 +19,14 @@ use crate::tree::{Node, OwnedNode};
 /// Record ids per block of the in-memory set.
 const BLOCK: u64 = 64;
 
+/// A RID list entry keyed `key` that does not decode, for `reason`.
+fn bad_entry(key: &[u8], reason: &'static str) -> Error {
+    Error::BadValue {
+        path: format!("{key:02x?}"),
+        reason,
+    }
+}
+
 /// A set of record ids.
 ///
 /// Held as a bitmap of 64-id blocks (block `id / 64`, bit `id % 64`; no
@@ -69,32 +77,52 @@ impl RidList {
 
     /// [`RidList::add_entry`], inlined into the loops that decode a whole
     /// node: a call per entry there costs a find that reads many index
-    /// entries several percent.
+    /// entries several percent. A bitmap run is added by a call of its
+    /// own ([`RidList::add_run`]), so that the loop stays small.
     #[inline(always)]
     fn add(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
-        let bad = |reason| Error::BadValue {
-            path: format!("{key:02x?}"),
-            reason,
-        };
-        let id = serial::decode(key).ok_or_else(|| bad("RID key is not a serial key"))?;
+        let id =
+            serial::decode(key).ok_or_else(|| bad_entry(key, "RID key is not a serial key"))?;
         if value.is_empty() {
             self.insert(id);
             return Ok(());
         }
+        self.add_run(key, id, value)
+    }
+
+    /// Add the bitmap run `value` keyed `key`, which decodes to `id`.
+    #[inline(never)]
+    fn add_run(&mut self, key: &[u8], id: u64, value: &[u8]) -> Result<()> {
         if id % 32 != 0 || value.len() % 4 != 0 {
-            return Err(bad("RID bitmap run is misaligned"));
+            return Err(bad_entry(key, "RID bitmap run is misaligned"));
+        }
+        // Each nonzero word's records `start..=start + 31` must be ids:
+        // checked before any word is added, so that a run refused leaves
+        // the set as it was. A word's start grows with its place, so only
+        // the last nonzero word can fail, and only when the run's last word
+        // would; then that one is looked for and checked.
+        let start = |j: usize| {
+            (j as u64)
+                .checked_mul(32)
+                .and_then(|offset| id.checked_add(offset))
+                .filter(|start| start.checked_add(31).is_some())
+        };
+        let passes = || bad_entry(key, "RID bitmap run passes the largest record id");
+        if start(value.len() / 4 - 1).is_none()
+            && value
+                .chunks_exact(4)
+                .rposition(|word| word != [0; 4])
+                .is_some_and(|j| start(j).is_none())
+        {
+            return Err(passes());
         }
         for (j, word) in value.chunks_exact(4).enumerate() {
             let word = u32::from_be_bytes(word.try_into().expect("four bytes"));
             if word == 0 {
                 continue;
             }
-            // The word's records `start..=start + 31` must be ids.
-            let start = (j as u64)
-                .checked_mul(32)
-                .and_then(|offset| id.checked_add(offset))
-                .filter(|start| start.checked_add(31).is_some())
-                .ok_or_else(|| bad("RID bitmap run passes the largest record id"))?;
+            // Checked above for every nonzero word.
+            let start = start(j).ok_or_else(passes)?;
             // `start` is a multiple of 32: the word is one half of a block.
             *self.0.entry(start / BLOCK).or_default() |= u64::from(word) << (start % BLOCK);
         }
@@ -316,6 +344,25 @@ impl FromIterator<u64> for RidList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bitmap run whose second nonzero word passes the largest record id
+    /// is refused and leaves the set as it was: its first word, which fits,
+    /// is not added first.
+    #[test]
+    fn a_refused_run_adds_nothing() {
+        let mut list: RidList = [5].into_iter().collect();
+        let base = u64::MAX - 31;
+        let key = serial::encode(base);
+        let refused = list.add_entry(&key, &[0, 0, 0, 1, 0, 0, 0, 1]);
+        assert!(
+            matches!(refused, Err(Error::BadValue { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(list, [5].into_iter().collect());
+        // The same run with its second word empty is one record.
+        list.add_entry(&key, &[0, 0, 0, 1, 0, 0, 0, 0]).unwrap();
+        assert_eq!(list.iter().collect::<Vec<_>>(), [5, base]);
+    }
 
     fn decode(entries: &[(&[u8], &[u8])]) -> RidList {
         RidList::from_entries(entries.iter().copied()).unwrap()

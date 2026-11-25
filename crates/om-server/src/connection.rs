@@ -2186,22 +2186,30 @@ enum Downloaded {
     Value(Vec<u8>),
     /// A list: its subtree in the wire form (`om_hbam::Node::to_wire`).
     List(Vec<u8>),
+    /// A list a privilege filter applied to, as the session may read it:
+    /// written in the wire form once the view is let go.
+    Filtered(OwnedNode),
 }
 
 /// What a download of `path` in `file` gets from `read`: the node as the
 /// session may read it (`filter_security_metadata`, `views::ViewFilter`).
 /// A node no filter applies to is written in the wire form as the view
-/// walks it, never held as a tree; one a filter applies to is copied
-/// whole, filtered, and then written, as every download was before views.
+/// walks it, never held as a tree; one a filter applies to is copied whole
+/// and filtered, as every download was before views, and written once the
+/// view is let go ([`Downloaded::Filtered`]).
 fn downloaded(
     file: &OpenFile,
     read: FileRead<'_>,
     path: &[Vec<u8>],
 ) -> Result<Downloaded, ViewError> {
     let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-    let view = view_filter(file, read)?;
+    let limited = file
+        .account
+        .as_deref()
+        .and_then(|account| account.access.as_ref())
+        .is_some_and(SetAccess::limits_viewing);
     let secured = own_account_member(file, path) && !full_access(file);
-    if view.is_none() && !secured {
+    if !limited && !secured {
         let Some(head) = read.view.node(&segments)? else {
             return Ok(Downloaded::Missing);
         };
@@ -2218,7 +2226,9 @@ fn downloaded(
     };
     let mut node = node.into_owned();
     filter_security_metadata(file, path, &mut node);
-    let node = match view {
+    // The view limits are taken once the node is copied, as before views,
+    // so that a limit's formula reads the clock at the same point.
+    let node = match view_filter(file, read)? {
         Some(view) => {
             let node = view.filter(read, &segments, node)?;
             note_withheld(file, &view);
@@ -2232,7 +2242,7 @@ fn downloaded(
         Some(node) if !node.push && node.children.is_empty() => {
             Downloaded::Value(node.value.unwrap_or_default())
         }
-        Some(node) => Downloaded::List(node.to_wire().unwrap_or_default()),
+        Some(node) => Downloaded::Filtered(node),
     })
 }
 
@@ -2440,23 +2450,40 @@ fn download_reply(
                             DownloadReply::terminal(value)
                         }
                     }
+                    Ok(Downloaded::Filtered(node)) => {
+                        let stream = node.to_wire().unwrap_or_default();
+                        download_stream(shared, session, owner, request, stream, limit)
+                    }
                     Ok(Downloaded::List(stream)) => {
-                        let stream = shared
-                            .download_overrides
-                            .read()
-                            .expect("download overrides lock")
-                            .iter()
-                            .find(|reply| reply.path == request.key_path)
-                            .map_or(stream, |reply| reply.slots.clone());
-                        let (page, resume) = session
-                            .transfers
-                            .start(owner, stream, limit, || shared.handle());
-                        DownloadReply::node(page, resume)
+                        download_stream(shared, session, owner, request, stream, limit)
                     }
                 }
             }
         }
     })
+}
+
+/// The first page of a download of a list, `stream` its wire form unless a
+/// test replaces it (`Server::overriding_download_slots`).
+fn download_stream(
+    shared: &Shared,
+    session: &mut Session,
+    owner: Owner,
+    request: &ReceivedDownload,
+    stream: Vec<u8>,
+    limit: usize,
+) -> DownloadReply {
+    let stream = shared
+        .download_overrides
+        .read()
+        .expect("download overrides lock")
+        .iter()
+        .find(|reply| reply.path == request.key_path)
+        .map_or(stream, |reply| reply.slots.clone());
+    let (page, resume) = session
+        .transfers
+        .start(owner, stream, limit, || shared.handle());
+    DownloadReply::node(page, resume)
 }
 
 /// op92 Download List: the parent node restricted to the requested children
@@ -2595,11 +2622,7 @@ fn query(
         (Some(file), Some(program))
             if file.account.is_some()
                 && !(query_changes_file(&program)
-                    && (shared
-                        .engine
-                        .read(&file.hosted)
-                        .serve(|read| read.read_only)
-                        || !full_access(file))) =>
+                    && (file_read_only(shared, file) || !full_access(file))) =>
         {
             let context = QueryContext {
                 file_id: file.hosted.id,
@@ -2644,10 +2667,14 @@ fn query(
             // (schema-path.md 3.4), and indexes the query built on demand are
             // stored (query-program.md 7.1): those of other queries too, as
             // the engine completes the draft (`engine`, "Drafts").
-            let pending = shared
-                .engine
-                .read(&file.hosted)
-                .serve(|read| read.waiting.has_member_keys() || read.waiting.has_indexes());
+            let pending = {
+                // What waits is the file's state, not its view's: read once,
+                // not through `Reading::serve`, which reads twice in a test
+                // while other readers may add to it.
+                let reading = shared.engine.read(&file.hosted);
+                let waiting = reading.read().waiting;
+                waiting.has_member_keys() || waiting.has_indexes()
+            };
             if pending || !outcome.writes.is_empty() {
                 for write in &outcome.writes {
                     let (done, path) = match write {
@@ -2683,6 +2710,13 @@ fn query(
         .transfers
         .start(owner, slots, limit, || shared.handle());
     Ok(reply(page, resume).to_result_within(max_return as usize))
+}
+
+/// Whether `file` is hosted read-only, read under a reading of it as it was
+/// under the store before: the file's state, not its view's, so read once
+/// and not through `Reading::serve`.
+fn file_read_only(shared: &Shared, file: &OpenFile) -> bool {
+    shared.engine.read(&file.hosted).read().read_only
 }
 
 /// Reject schema writes before execution: member-key reservation changes the

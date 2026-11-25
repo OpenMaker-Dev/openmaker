@@ -6,9 +6,9 @@
 //! ```
 //!
 //! A Tasks file of `fixtures/tasks.rs` with 200,000 records (`OM_VIEW_RECORDS`
-//! for another count), written under the build's temporary folder and removed
-//! afterwards. Each is the median of `OM_VIEW_RUNS` runs (9), timed by the
-//! client:
+//! for another count, 2,000 to 2,000,000), written under the build's
+//! temporary folder and removed afterwards. Each is the median of
+//! `OM_VIEW_RUNS` runs (9; 1 to 101), timed by the client:
 //!
 //! - two finds on Count, whose value index the file holds (op86), on a
 //!   server that loaded the file with it: one value (200 records) and a
@@ -37,11 +37,20 @@ use om_hbam::{serial, DataType, OwnedNode, RidList};
 use om_query::find;
 use om_scripts::text_node;
 
-fn env_number(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+/// The number the environment variable `name` gives, `default` without
+/// one; a value that does not parse or lies outside `range` is refused.
+fn env_number(name: &str, default: u64, range: std::ops::RangeInclusive<u64>) -> u64 {
+    let Ok(text) = std::env::var(name) else {
+        return default;
+    };
+    match text.parse() {
+        Ok(n) if range.contains(&n) => n,
+        _ => panic!(
+            "{name}={text}: a whole number from {} to {}",
+            range.start(),
+            range.end()
+        ),
+    }
 }
 
 /// The Tasks tree with `count` records: Name `Task <n> ...`, Count `n % 1000`
@@ -138,8 +147,13 @@ fn finder_program(file_id: u32, field: u64, data_type: DataType, criterion: &str
 #[test]
 #[ignore = "a timing for release builds; writes a large file under the build's temporary folder"]
 fn downloads_and_finds_on_a_large_file() {
-    let count = env_number("OM_VIEW_RECORDS", 200_000) as u64;
-    let runs = env_number("OM_VIEW_RUNS", 9);
+    // At least 2,000 records, so that the thousand in a row fit in the
+    // table's second half; at most two million (about 1.5 GB as a tree).
+    let count = env_number("OM_VIEW_RECORDS", 200_000, 2_000..=2_000_000);
+    let runs = env_number("OM_VIEW_RUNS", 9, 1..=101) as usize;
+    // What the finds on Count give, Count being the record id modulo 1000.
+    let equal = (1..=count).filter(|id| id % 1000 == 500).count();
+    let below = (1..=count).filter(|id| id % 1000 < 500).count();
     let folder = Folder::new();
     let file = fixture::TempFile(folder.0.join(fixture::FILE));
     let started = Instant::now();
@@ -159,7 +173,7 @@ fn downloads_and_finds_on_a_large_file() {
     let count_find = finder_program(file_id, fixture::COUNT, DataType::Number, "==500");
     let reply = session.query(&count_find).unwrap();
     let found = find::found(&reply.slots).unwrap().len();
-    assert_eq!(found as u64, count / 1000);
+    assert_eq!(found, equal);
     session.disconnect().unwrap();
     handle.shutdown(Duration::from_secs(5));
     let (port, handle) = server::start_configured_with_handle(&file, |server| server);
@@ -188,7 +202,7 @@ fn downloads_and_finds_on_a_large_file() {
         let range_find = finder_program(file_id, fixture::COUNT, DataType::Number, "<500");
         time("find on the indexed Count, <500", &mut || {
             let reply = session.query(&range_find).unwrap();
-            assert_eq!(find::found(&reply.slots).unwrap().len() as u64, count / 2);
+            assert_eq!(find::found(&reply.slots).unwrap().len(), below);
         });
     }
     if !part("downloads") {

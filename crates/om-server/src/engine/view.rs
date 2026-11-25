@@ -45,7 +45,9 @@ use std::ops::Bound;
 use om_hbam::OwnedNode;
 
 /// A version of a file's tree: the views of one version read the same, and
-/// a later version has a larger number.
+/// a later version has a larger number. Versions compare only within one
+/// load of a file (the file engine's store counts from 0 again when a file
+/// is opened again).
 pub type Version = u64;
 
 /// The limit of [`View::subtree`] for a reader that holds the subtree

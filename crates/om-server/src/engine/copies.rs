@@ -116,6 +116,9 @@ impl View for Copies<'_> {
         max: usize,
         out: &mut Vec<Child<'a>>,
     ) -> Result<bool, ReadError> {
+        // Listing a node's children reads where the node is, whether it is
+        // there or not.
+        self.check(path)?;
         let mut page = Vec::new();
         let more = self
             .inner
@@ -143,6 +146,7 @@ impl View for Copies<'_> {
         limit: usize,
         out: &mut Vec<Cow<'a, OwnedNode>>,
     ) -> Result<bool, ReadError> {
+        self.check(path)?;
         let mut page = Vec::new();
         let more =
             self.inner
@@ -163,6 +167,8 @@ impl View for Copies<'_> {
         max: usize,
         out: &mut Vec<Step<'a>>,
     ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+        // A walk reads where its node is, whether it is there or not.
+        self.check(path)?;
         let mut page = Vec::new();
         let resume = self
             .inner
@@ -328,17 +334,22 @@ impl Switch {
     }
 
     /// The derived state of the file `reading` reads, computed through
-    /// `copies`: once, and the catalog again each time the file engine's
-    /// changes, as the file engine reads it again after a schema change.
-    /// With `check`, it must equal the file engine's. When it cannot be
-    /// computed (a failing path below what it reads), the file engine's.
+    /// `copies`: once for each load of the file, and the catalog again each
+    /// time the file engine's changes, as the file engine reads it again
+    /// after a schema change. With `check` it must equal the file engine's,
+    /// and failing to compute it fails the check. Without (a test told the
+    /// view to fail paths), a failure gives the file engine's state: derived
+    /// state is computed when a file is loaded and when its schema changes,
+    /// not by the read that fails, so a damaged part of the catalog fails
+    /// the reads that reach it but leaves the state readers were given.
     fn derived_of(&self, reading: &Reading<'_>, copies: &Copies<'_>, check: bool) -> Arc<Derived> {
         let current = reading.derived();
         let id = reading.file().id;
         let mut cache = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
         let computed = match cache.get(&id) {
             Some((of, mine)) if Arc::ptr_eq(of, current) => Ok(mine.clone()),
-            Some((of, mine)) => {
+            // The same load of the file, its schema changed.
+            Some((of, mine)) if of.instance() == current.instance() => {
                 // The file engine computed its state again: the tree changed
                 // since the version the last one was computed from.
                 assert!(
@@ -348,7 +359,9 @@ impl Switch {
                 derived::read_catalog(copies)
                     .map(|catalog| Arc::new(mine.with_catalog(copies.version(), catalog)))
             }
-            None => derived::read_catalog(copies).and_then(|catalog| {
+            // The first read of this load of the file (a file closed and
+            // opened again is a new store, whose versions start over).
+            _ => derived::read_catalog(copies).and_then(|catalog| {
                 let mut mine = Derived::new(copies, catalog, current.name())?;
                 if current.desktop() {
                     mine.serve_desktop();
@@ -368,6 +381,10 @@ impl Switch {
                 cache.insert(id, (current.clone(), mine.clone()));
                 mine
             }
+            Err(error) if check => panic!(
+                "{:?}: the test view could not compute derived state: {error}",
+                reading.file().name
+            ),
             Err(error) => {
                 warn!(
                     "{:?}: the test view could not compute derived state ({error}); \
@@ -430,6 +447,26 @@ mod tests {
                 .count(),
             5
         );
+        // Listing the children of it, or of a node below it, fails, also
+        // when there are none to give: the node itself, a missing one, a
+        // bound past its last child.
+        let failing_list = vec![vec![vec![1], vec![4]], vec![vec![9]]];
+        let listing = Copies::new(&tree, &failing_list);
+        let listing: &dyn View = &listing;
+        for (path, from) in [
+            (&[&[1][..], &[4][..]][..], Bound::Unbounded),
+            (&[&[1][..], &[4][..], &[0][..]][..], Bound::Unbounded),
+            (&[&[9][..]][..], Bound::Unbounded),
+            (&[&[1][..], &[4][..]][..], Bound::Excluded(&[7][..])),
+        ] {
+            let listed: Vec<_> = listing.children(path, from, Direction::Forward).collect();
+            assert!(matches!(listed[..], [Err(_)]), "{path:02x?}");
+            let whole: Vec<_> = listing
+                .subtrees(path, from, Direction::Forward, NO_LIMIT)
+                .collect();
+            assert!(matches!(whole[..], [Err(_)]), "{path:02x?}");
+        }
+        assert!(wire(listing, &[&[9]]).is_err());
         // A read at or below it, a subtree or walk holding it, fail.
         assert!(view.node(&[&[1], &[5], &[0]]).is_err());
         assert!(view.node(&[&[1], &[4], &[0]]).is_ok());

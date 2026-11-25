@@ -64,6 +64,8 @@ pub(crate) fn counts_key(index: u8) -> u8 {
 /// What readers need of a file besides its tree (the module doc).
 #[derive(Clone, Debug)]
 pub struct Derived {
+    /// The load of the file it was computed for ([`Derived::instance`]).
+    instance: u64,
     /// The version of the view it was computed from.
     version: Version,
     catalog: Catalog,
@@ -96,7 +98,10 @@ impl Derived {
                 detect_date_order(view, &catalog, name)?
             }
         };
+        // Each state computed here starts a load of its own.
+        static LOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Ok(Derived {
+            instance: LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             version: view.version(),
             catalog,
             locale,
@@ -125,6 +130,15 @@ impl Derived {
     /// The version of the view this state was computed from.
     pub fn version(&self) -> Version {
         self.version
+    }
+
+    /// Which load of the file this state belongs to, a number no other
+    /// state computed by [`Derived::new`] has; [`Derived::with_catalog`]
+    /// keeps it. Versions compare only within one load: a file closed and
+    /// opened again is a new store whose versions start over.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub fn instance(&self) -> u64 {
+        self.instance
     }
 
     /// The file's schema.
