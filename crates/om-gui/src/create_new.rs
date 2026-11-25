@@ -1,7 +1,8 @@
 //! File > Create New...: FileMaker Pro 26's two steps before a new file
 //! opens (#593's walkthrough of Pro). First the **Create an App** sheet,
 //! with Blank selected; then the **save panel**, which names the file and
-//! chooses its folder. The file is made by the `create_file` operation
+//! chooses its folder: the system's own (`file_panel`), or where there is
+//! none, this dialog's chooser. The file is made by the `create_file` operation
 //! (`om_data::new_file::create`), which never replaces a file; the window
 //! then opens it as its Admin account with no password asked, and Manage
 //! Database opens on its Fields tab, as in Pro (app.rs).
@@ -22,6 +23,9 @@ use crate::widgets::dialog_button;
 /// What the dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CreateAction {
+    /// The sheet's Create: the save panel comes next, the system's where
+    /// there is one (app.rs), else [`CreateNewDialog::choose_location`].
+    ChooseLocation,
     Create(PathBuf),
     Cancel,
 }
@@ -49,24 +53,51 @@ impl CreateNewDialog {
         }
     }
 
-    /// The save panel: "Untitled.fmp12" in the user's Documents folder (or
-    /// home), as Pro's names it.
-    fn save_panel() -> SaveChooser {
+    /// The dialog at its save panel, past the sheet: where the system's
+    /// panel could not be shown after all.
+    pub fn saving() -> Self {
+        let mut dialog = Self::new();
+        dialog.choose_location();
+        dialog
+    }
+
+    /// Go on from the sheet to the dialog's own save panel.
+    pub fn choose_location(&mut self) {
+        self.step = Step::Save(SaveChooser::new(
+            Self::folder(),
+            Self::name(),
+            om_data::new_file::EXTENSION,
+        ));
+    }
+
+    /// The system's save panel in the dialog's: FileMaker files, proposing
+    /// the same name and folder.
+    pub fn panel_request() -> crate::file_panel::Request {
+        crate::file_panel::Request::save("Create New", Self::folder(), Self::name())
+            .of_kind(om_data::new_file::EXTENSION)
+    }
+
+    /// The save panel's folder: the user's Documents folder (or home), as
+    /// Pro's.
+    fn folder() -> PathBuf {
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         let documents = home.join("Documents");
-        let folder = if documents.is_dir() { documents } else { home };
-        SaveChooser::new(
-            folder,
-            format!("Untitled.{}", om_data::new_file::EXTENSION),
-            om_data::new_file::EXTENSION,
-        )
+        if documents.is_dir() {
+            documents
+        } else {
+            home
+        }
+    }
+
+    /// "Untitled.fmp12", as Pro's save panel names a new file.
+    fn name() -> String {
+        format!("Untitled.{}", om_data::new_file::EXTENSION)
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<CreateAction> {
         let mut action = None;
-        let mut next = None;
         egui::Modal::new(egui::Id::unique("create_new_file")).show(ctx, |ui| {
             ui.set_width(520.0);
             match &mut self.step {
@@ -97,7 +128,7 @@ impl CreateNewDialog {
                         if dialog_button(ui, "Create", true, true).clicked()
                             || ui.input(|i| i.key_pressed(egui::Key::Enter))
                         {
-                            next = Some(Self::save_panel());
+                            action = Some(CreateAction::ChooseLocation);
                         }
                     });
                 }
@@ -123,9 +154,6 @@ impl CreateNewDialog {
                 }
             }
         });
-        if let Some(chooser) = next {
-            self.step = Step::Save(chooser);
-        }
         action
     }
 }

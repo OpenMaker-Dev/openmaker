@@ -37,6 +37,12 @@ pub(crate) struct OpenFileDialog {
 }
 
 impl OpenFileDialog {
+    /// The system's open panel in the chooser's place: FileMaker files, in
+    /// the folder the platform chooses (macOS shows the one last used).
+    pub fn panel_request() -> crate::file_panel::Request {
+        crate::file_panel::Request::open("Open File", "").of_kind("fmp12")
+    }
+
     /// The chooser, showing the user's Documents folder (or home).
     pub fn new() -> Self {
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })

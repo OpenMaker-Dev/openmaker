@@ -58,6 +58,27 @@ itself stays. File > Favorites > Show Favorites and File > Recent > Show
 Recent show the lists, and both submenus list their files. Home opens on
 the list it showed last.
 
+Home's Open and File > Open... show the system's open panel, which lists
+only FileMaker files (`.fmp12`); Home's Create and File > Create New...
+show the system's save panel after the Create an App sheet
+([new-files.md](new-files.md)). The panels are `file_panel`'s: on macOS
+`NSOpenPanel` and `NSSavePanel`, beside the window; on Linux the desktop's
+own file chooser (GTK's, GNOME's or KDE's), asked through the
+xdg-desktop-portal FileChooser interface on the session bus, parented to
+the window on X11 and unparented on Wayland. Windows shows none yet
+([#826](https://github.com/OpenMaker-Dev/openmaker/issues/826)).
+Where no panel can be shown (Windows, no portal on the session bus or one
+without a file chooser, or no native window, as in the GUI tests)
+OpenMaker's own chooser asks instead: a folder's subfolders and FileMaker
+files, and a path that can be typed. What follows a choice is the same
+either way. While a panel is up, Open, Create and the other commands that
+start from no file do nothing, and Home takes no keys. The open panel
+starts where the platform chooses (macOS shows the folder last used);
+OpenMaker's own chooser and the save panel start in Documents. GTK's chooser also offers "Open files
+read-only", which OpenMaker does not read: the file opens as it would
+from OpenMaker's chooser. Which files FileMaker Pro's open panel lists,
+and where it starts, are unmeasured.
+
 A file on this computer opens at once. A hosted file fills in the Hosts
 dialog's host, port and file, and the user signs in. Home keeps paths, host
 names, ports, file names and the list shown in the OS account's
@@ -700,10 +721,10 @@ authoring part tabs or object kind captions.
   #1338). A window without a player shows the filename and a note.
 - The Insert menu offers PDF and Audio/Video for a selected, writable
   interactive container outside portal rows whose field object allows
-  entry in Browse mode. On macOS the Insert commands ask for the file in
-  the system's open panel, which shows every file (whether FileMaker Pro's
-  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
-  a typed path. Either way, a file of a different type (a picture Insert
+  entry in Browse mode. The Insert commands ask for the file in the
+  system's file panel (see Opening files), which shows every file (whether
+  FileMaker Pro's panel filters by type is unmeasured); where there is
+  none, an in-app dialog takes a typed path. Either way, a file of a different type (a picture Insert
   Picture cannot show, a PDF without its header, a file the player would
   not play) is refused with 734 or 700 before an edit is prepared or data
   uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
