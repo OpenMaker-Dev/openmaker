@@ -849,31 +849,30 @@ impl Store {
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Result<bool, WorkKept> {
-        let pending: Vec<(Vec<u8>, om_hbam::catalog::Table)> = self
-            .derived
-            .catalog()
-            .tables
-            .iter()
-            .map(|t| (uint_segment(t.id), t.clone()))
-            .filter(|(t, _)| self.node(&Self::deferred_path(t)).is_some())
-            .collect();
         if self.is_read_only() {
             return Ok(false);
         }
         // A failed recovery must leave the file and the pending work intact:
-        // every table's work is planned before any is done, as op73 plans
-        // its own ([`Store::planned_work`]).
-        for (table, definition) in &pending {
-            if let Err(reason) = self.planned_work(table, definition) {
+        // every pending table's work is planned before any is done, as op73
+        // plans its own ([`Store::planned_work`]).
+        let derived = Arc::clone(&self.derived);
+        let mut pending = Vec::new();
+        for definition in &derived.catalog().tables {
+            let table = uint_segment(definition.id);
+            if self.node(&Self::deferred_path(&table)).is_none() {
+                continue;
+            }
+            if let Err(reason) = self.planned_work(&table, definition) {
                 warn!(
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
                 return Err(WorkKept(reason));
             }
+            pending.push(table);
         }
         let mut changed = false;
-        for (table, _) in pending {
+        for table in pending {
             note(
                 &self.name,
                 journal.as_deref_mut(),
