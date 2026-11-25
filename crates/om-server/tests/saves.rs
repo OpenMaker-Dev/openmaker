@@ -535,8 +535,9 @@ fn a_stored_malformed_modification_count_is_reported_as_none() {
 /// hold is refused before it reaches the file's contents: a key segment
 /// over 219 bytes, a path deeper than 16 segments (hbam-writer.md 2.2, 2.3),
 /// or a child beneath a committed value, which would make a list of the
-/// value (2.2). The committed value stays byte for byte, in memory and on
-/// disk, and later commits are saved (issue #303).
+/// value (2.2). Each fails as an upload whose save failed does, rather than
+/// answer done (#737's rule). The committed value stays byte for byte, in
+/// memory and on disk, and later commits are saved (issue #303).
 #[test]
 fn an_upload_the_file_cannot_hold_leaves_the_file_saveable() {
     use om_protocol::write::Upload;
@@ -588,9 +589,8 @@ fn an_upload_the_file_cannot_hold_leaves_the_file_saveable() {
             flags: write::UPLOAD_NODE,
             dest,
         };
-        client
-            .perform(&write::build_upload_to_host(7, file_id, &upload))
-            .unwrap();
+        let answer = client.perform(&write::build_upload_to_host(7, file_id, &upload));
+        assert!(answer.is_err(), "{answer:02x?}");
     };
     upload(vec![vec![0x40]], OwnedNode::leaf(vec![7; 230], vec![1]));
     upload(vec![vec![0x40]; 16], OwnedNode::leaf(vec![7], vec![1]));
