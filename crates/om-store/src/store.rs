@@ -68,7 +68,7 @@ use std::sync::Arc;
 
 use crate::apply::{self, Applied, Position, StoreTree, TreeId};
 use crate::entry::{entry_hash, Entry, Payload, PayloadError, ServerId, SessionEvent};
-use crate::log::{self, CutDone, DamageAccepted, Log, LogError, UnreadableEnd};
+use crate::log::{self, CutDone, DamageAccepted, Log, LogError, Recorded, UnreadableEnd};
 use crate::page::{Hash, StoreError, TreeName};
 use crate::pagefile::{
     self, CheckpointError, Checkpointed, EntryId, PageFile, Pin, Purpose, Reclaimed, RestorePoint,
@@ -229,8 +229,13 @@ impl std::error::Error for CheckpointFailed {}
 /// do is worked around.
 #[derive(Debug)]
 pub enum OpenError {
-    /// The folder holds no store: no `state` (create one).
+    /// The folder holds no store: no `state`, and nothing of a store but
+    /// what a creation cut short left (create one).
     Missing,
+    /// The folder holds a store whose `state` is gone: `found` is what of
+    /// it is left. The server does not know what it confirmed, and nothing
+    /// is created over it (section 6.12, "`state` has no valid copy").
+    NoState { found: &'static str },
     /// The folder holds a store already (creation).
     Exists,
     /// `state` has no valid copy, or cannot be read, or is of a newer
@@ -265,6 +270,31 @@ pub enum OpenError {
     Start(Box<StartFailed>),
     /// The call breaks a rule.
     Refused(&'static str),
+    /// An explicit call gave something up, and the open then failed
+    /// ([`GaveUpThenFailed`]).
+    AfterGivingUp(Box<GaveUpThenFailed>),
+}
+
+/// What an explicit call gave up before the open failed, and why it failed
+/// (`error`). With [`Recorded::Done`] what was given up stays given up, and
+/// the next open starts from it without reporting it again; with
+/// [`Recorded::Unknown`] the update of `state` that records it failed part
+/// way, and the next open shows whether it holds.
+#[derive(Debug)]
+pub struct GaveUpThenFailed {
+    pub gave_up: GaveUp,
+    pub recorded: Recorded,
+    pub error: OpenError,
+}
+
+impl OpenError {
+    fn after(gave_up: GaveUp, recorded: Recorded, error: OpenError) -> OpenError {
+        OpenError::AfterGivingUp(Box::new(GaveUpThenFailed {
+            gave_up,
+            recorded,
+            error,
+        }))
+    }
 }
 
 impl OpenError {
@@ -272,6 +302,9 @@ impl OpenError {
     pub fn remedy(&self) -> &'static str {
         match self {
             OpenError::Missing => "create the store",
+            OpenError::NoState { .. } => {
+                "restore the store from a backup: the server does not know what it confirmed"
+            }
             OpenError::Exists => "open the store",
             OpenError::State(StateError::Disk(_)) | OpenError::Disk(_) => "open the store again",
             OpenError::State(_) => {
@@ -300,6 +333,7 @@ impl OpenError {
             OpenError::NoSpace(_) => "free space on the disk, then open the store again",
             OpenError::Start(_) => "open the store again",
             OpenError::Refused(_) => "a defect of the caller",
+            OpenError::AfterGivingUp(failed) => failed.error.remedy(),
         }
     }
 }
@@ -308,6 +342,10 @@ impl fmt::Display for OpenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OpenError::Missing => f.write_str("the folder holds no store"),
+            OpenError::NoState { found } => write!(
+                f,
+                "the folder holds a store ({found}) whose `state` is gone"
+            ),
             OpenError::Exists => f.write_str("the folder holds a store already"),
             OpenError::State(e) => write!(f, "{e}"),
             OpenError::Pages(e) => write!(f, "{e}"),
@@ -333,6 +371,19 @@ impl fmt::Display for OpenError {
                 )
             }
             OpenError::Refused(why) => write!(f, "refused: {why}"),
+            OpenError::AfterGivingUp(failed) => {
+                let GaveUpThenFailed {
+                    gave_up,
+                    recorded,
+                    error,
+                } = &**failed;
+                let held = match recorded {
+                    Recorded::Done => "which stands",
+                    Recorded::Unknown => "which may or may not stand",
+                };
+                // The inner error names the remedy.
+                return write!(f, "after giving up {gave_up:?}, {held}: {error}");
+            }
         }?;
         write!(f, " ({})", self.remedy())
     }
@@ -354,9 +405,15 @@ pub struct StartFailed {
 pub enum GaveUp {
     /// The loss after damage through the marker ([`Store::accept_damage`]).
     Damage(DamageAccepted),
-    /// Whatever may follow an unreadable end
-    /// ([`Store::give_up_unreadable_end`]).
-    UnreadableEnd(CutDone),
+    /// Whatever may follow the unreadable end `end`, after `last`, the last
+    /// entry the open verified ([`Store::give_up_unreadable_end`]). `done`
+    /// is what the log did: `None` only when the update of `state` that
+    /// records it failed part way ([`Recorded::Unknown`]).
+    UnreadableEnd {
+        last: log::Position,
+        end: UnreadableEnd,
+        done: Option<CutDone>,
+    },
 }
 
 /// What an open found and did.
@@ -371,8 +428,9 @@ pub struct Opened {
     pub log: log::Opened,
     /// Entries applied again after the checkpoint.
     pub replayed: u64,
-    /// Checkpoints the replay took, its pages waiting for one past their
-    /// budget (format section 4.8).
+    /// Checkpoints the open took, the pages waiting for one past their
+    /// budget (format section 4.8): of the last entry replayed, during the
+    /// replay, or of the recovered entry, before this start's own entry.
     pub replay_checkpoints: u64,
     /// The entry published after the replay: the durable one.
     pub recovered: Position,
@@ -389,6 +447,14 @@ pub struct Opened {
     pub gave_up: Option<GaveUp>,
 }
 
+/// What an open found before the replay.
+struct Opening {
+    checkpoint: pagefile::Opened,
+    log: log::Opened,
+    passed_over_state: Option<SlotFault>,
+    gave_up: Option<GaveUp>,
+}
+
 /// How an open treats the log.
 #[derive(Clone, Copy, Debug)]
 enum How {
@@ -399,7 +465,14 @@ enum How {
 
 /// A view of a published version (section 6.6): its entry, and the roots of
 /// its trees, kept by a pin for as long as the view lives. It holds the
-/// page file, not the store.
+/// page file, not the store, and hands out nothing of it but checked reads
+/// of its own version: no reads of the working state, no checkpoint.
+///
+/// ```compile_fail
+/// fn pages(view: &om_store::store::View) {
+///     let _ = view.pages();
+/// }
+/// ```
 #[derive(Clone)]
 pub struct View {
     pages: Arc<PageFile>,
@@ -432,12 +505,6 @@ impl View {
             .map(|(_, r)| *r)
     }
 
-    /// The page file the view reads from. Its pages are checked as they are
-    /// read: a page that does not check is an error, never returned.
-    pub fn pages(&self) -> &PageFile {
-        &self.pages
-    }
-
     /// The store's own tree as the view holds it (`None` before entry 1).
     pub fn store_tree(&self) -> Result<Option<StoreTree<'_, PageFile>>, apply::Error> {
         match self.root(TreeId::Store) {
@@ -455,7 +522,21 @@ impl View {
     }
 }
 
-/// The store on one server (module docs).
+/// The store on one server (module docs). It hands out nothing of its page
+/// file, log or `state` that would let a caller past its rules, only counts
+/// and views.
+///
+/// ```compile_fail
+/// fn pages(store: &om_store::store::Store) {
+///     let _ = store.pages();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn log(store: &om_store::store::Store) {
+///     let _ = store.log();
+/// }
+/// ```
 pub struct Store {
     fs: Arc<dyn Fs>,
     config: Config,
@@ -571,13 +652,55 @@ fn apply_entry(
     }
 }
 
+/// The file a creation makes first and removes once `state` exists (format
+/// section 6.1): a folder without `state` that holds it holds only what a
+/// creation cut short left, and is created over.
+pub const CREATING: &str = "creating";
+
+/// Whether the file `path` exists.
+fn exists(fs: &dyn Fs, path: &str) -> Result<bool, OpenError> {
+    match fs.open(path, sys::FileOptions::PLAIN) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(OpenError::Disk(e.to_string())),
+    }
+}
+
+/// What of a store a folder without `state` holds, apart from what a
+/// creation cut short left: the log's folder (made only by an open, once
+/// `state` exists), or a page file without the creation's marker.
+fn store_left(fs: &dyn Fs) -> Result<Option<&'static str>, OpenError> {
+    match fs.list(log::FOLDER) {
+        Ok(_) => return Ok(Some("the log's folder")),
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(OpenError::Disk(e.to_string())),
+    }
+    if exists(fs, pagefile::FILE)? && !exists(fs, CREATING)? {
+        return Ok(Some("a page file, and no creation under way"));
+    }
+    Ok(None)
+}
+
+/// Removes the creation's marker, once `state` exists.
+fn creation_done(fs: &dyn Fs) -> Result<(), OpenError> {
+    let disk = |e: sys::Error| OpenError::Disk(e.to_string());
+    match fs.remove(CREATING) {
+        Ok(()) => fs.flush_folder("").map_err(disk),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(disk(e)),
+    }
+}
+
 impl Store {
     /// Makes a new store in a folder that holds none, and opens it: `state`
     /// with a new server id drawn from `random`, the page file's first
-    /// checkpoint, an empty log, and this start's `session` entry. A page
-    /// file left by a creation that did not reach `state` is replaced
-    /// (without `state` nothing was ever confirmed); a folder with `state`
-    /// holds a store already ([`OpenError::Exists`]).
+    /// checkpoint, an empty log, and this start's `session` entry. The
+    /// creation's marker ([`CREATING`]) is made first and removed once
+    /// `state` exists, so that a creation cut short is told from a store
+    /// whose `state` is gone: what a creation cut short left is created
+    /// over; a folder with `state` holds a store already
+    /// ([`OpenError::Exists`]), and one that holds a store without `state`
+    /// is refused ([`OpenError::NoState`]).
     pub fn create(
         fs: Arc<dyn Fs>,
         random: &dyn Random,
@@ -585,20 +708,27 @@ impl Store {
     ) -> Result<(Store, Opened), OpenError> {
         let disk = |e: sys::Error| OpenError::Disk(e.to_string());
         let lock = fs.lock().map_err(disk)?;
-        match fs.open(crate::state::FILE, sys::FileOptions::PLAIN) {
-            Ok(_) => return Err(OpenError::Exists),
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => return Err(disk(e)),
+        if exists(&*fs, crate::state::FILE)? {
+            return Err(OpenError::Exists);
         }
-        // The page file first: `state` last, so that a creation cut short
-        // leaves no `state`, and is begun again.
+        if let Some(found) = store_left(&*fs)? {
+            return Err(OpenError::NoState { found });
+        }
+        // The marker first, its name durable before anything else is made.
+        if !exists(&*fs, CREATING)? {
+            drop(fs.create(CREATING, sys::FileOptions::PLAIN).map_err(disk)?);
+        }
+        fs.flush_folder("").map_err(disk)?;
+        // The page file, then `state`, then the marker removed.
         match fs.remove(pagefile::FILE) {
             Ok(()) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(disk(e)),
         }
         drop(PageFile::create(&*fs, &lock, config.pages).map_err(OpenError::Pages)?);
-        drop(State::create(&*fs, random, lock).map_err(OpenError::State)?);
+        let state = State::create(&*fs, random, lock).map_err(OpenError::State)?;
+        creation_done(&*fs)?;
+        drop(state);
         // The rest is an open of the store just made.
         Store::open(fs, config)
     }
@@ -612,8 +742,10 @@ impl Store {
     /// Opens a store whose log does not hold, whole, every entry through
     /// its marker, accepting the loss of what it no longer holds: the
     /// administrator's command of section 6.12 on a single server
-    /// ([`Log::accept_damage`]). What was given up is in
-    /// [`Opened::gave_up`]. Refused when there is no such loss.
+    /// ([`Log::accept_damage`]), decided from the checkpoint the store
+    /// opens on. What was given up is in [`Opened::gave_up`], or, when the
+    /// open fails after deciding, in [`OpenError::AfterGivingUp`]. Refused
+    /// when there is no such loss.
     pub fn accept_damage(fs: Arc<dyn Fs>, config: Config) -> Result<(Store, Opened), OpenError> {
         Store::start(fs, config, How::AcceptDamage)
     }
@@ -623,7 +755,8 @@ impl Store {
     /// section 6.12 on a single server ([`Log::give_up_unreadable_end`]).
     /// `last` is the last entry the open verified, as
     /// [`OpenError::UnreadableEnd`] reported it; the call is refused when
-    /// the log does not end so at that entry.
+    /// the log does not end so at that entry. What was given up is reported
+    /// as by [`Store::accept_damage`].
     pub fn give_up_unreadable_end(
         fs: Arc<dyn Fs>,
         config: Config,
@@ -637,46 +770,82 @@ impl Store {
         let lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
         let state = match State::open(&*fs, lock) {
             Ok(state) => state,
-            Err(StateError::Missing) => return Err(OpenError::Missing),
+            Err(StateError::Missing) => {
+                // Without `state`: nothing, a creation cut short, or a store
+                // whose `state` is gone. Looked at under the lock.
+                let _lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
+                return Err(match store_left(&*fs)? {
+                    Some(found) => OpenError::NoState { found },
+                    None => OpenError::Missing,
+                });
+            }
             Err(e) => return Err(OpenError::State(e)),
         };
+        // A creation whose last step was cut short.
+        creation_done(&*fs)?;
         let passed_over_state = state.opened().and_then(|o| o.other.err());
-        let values = *state.values();
         // 2. The page file's checkpoint.
         let (pages, checkpoint) =
             PageFile::open(&*fs, state.folder_lock(), config.pages).map_err(OpenError::Pages)?;
-        let start = checkpoint.entry;
         let start = log::Position {
-            index: start.index,
-            term: start.term,
-            hash: start.hash.0,
+            index: checkpoint.entry.index,
+            term: checkpoint.entry.term,
+            hash: checkpoint.entry.hash.0,
         };
-        // 3. The log from that checkpoint, checked against the marker.
-        let failed = |failed: Box<log::OpenFailed>| match failed.error {
+        // 3. The log from that checkpoint, checked against the marker, and
+        // what an explicit call gives up. From the moment `state` records
+        // a decision, every error says what it was.
+        let failed = |e: LogError| match e {
             LogError::Damaged(d) => OpenError::LogDamaged(d),
             e => OpenError::Log(e),
         };
-        let (mut log, log_opened, gave_up) = match how {
-            How::AcceptDamage => {
-                let (log, opened, accepted) =
-                    Log::accept_damage(fs.clone(), state, config.log, start).map_err(failed)?;
-                (log, opened, Some(GaveUp::Damage(accepted)))
-            }
+        let (mut log, mut log_opened, mut gave_up) = match how {
+            How::AcceptDamage => match Log::accept_damage(fs.clone(), state, config.log, start) {
+                Ok((log, opened, accepted)) => (log, opened, Some(GaveUp::Damage(accepted))),
+                Err(f) => {
+                    let error = failed(f.failed.error);
+                    return Err(match f.decided {
+                        Some((accepted, recorded)) => {
+                            OpenError::after(GaveUp::Damage(accepted), recorded, error)
+                        }
+                        None => error,
+                    });
+                }
+            },
             How::Normal | How::GiveUp(_) => {
                 let (log, opened) =
-                    Log::open(fs.clone(), state, config.log, start).map_err(failed)?;
+                    Log::open(fs.clone(), state, config.log, start).map_err(|f| failed(f.error))?;
                 (log, opened, None)
             }
         };
-        let mut log_opened = log_opened;
-        let mut gave_up = gave_up;
         match (how, log_opened.unreadable_end) {
-            (How::GiveUp(named), Some(_)) => {
-                let done = log
-                    .give_up_unreadable_end(named.index, named.hash)
-                    .map_err(OpenError::Log)?;
-                log_opened.unreadable_end = None;
-                gave_up = Some(GaveUp::UnreadableEnd(done));
+            (How::GiveUp(named), Some(end)) => {
+                match log.give_up_unreadable_end(named.index, named.hash) {
+                    Ok(done) => {
+                        log_opened.unreadable_end = None;
+                        gave_up = Some(GaveUp::UnreadableEnd {
+                            last: named,
+                            end,
+                            done: Some(done),
+                        });
+                    }
+                    // Its one `state` update failed part way.
+                    Err(e @ LogError::State(_))
+                        if !matches!(e, LogError::State(StateError::Refused(_))) =>
+                    {
+                        let gave_up = GaveUp::UnreadableEnd {
+                            last: named,
+                            end,
+                            done: None,
+                        };
+                        return Err(OpenError::after(
+                            gave_up,
+                            Recorded::Unknown,
+                            OpenError::Log(e),
+                        ));
+                    }
+                    Err(e) => return Err(OpenError::Log(e)),
+                }
             }
             (How::GiveUp(_), None) => {
                 return Err(OpenError::Refused(
@@ -691,17 +860,52 @@ impl Store {
             }
             (_, None) => {}
         }
+        let opened = Opening {
+            checkpoint,
+            log: log_opened,
+            passed_over_state,
+            gave_up: gave_up.clone(),
+        };
+        match Store::recover(fs, config, Arc::new(pages), log, opened) {
+            Err(error) => Err(match gave_up {
+                Some(gave_up) => OpenError::after(gave_up, Recorded::Done, error),
+                None => error,
+            }),
+            done => done,
+        }
+    }
+
+    /// The rest of an open, once the log is open: the replay, the pin of
+    /// the recovered version, and this start's own entry.
+    fn recover(
+        fs: Arc<dyn Fs>,
+        config: Config,
+        pages: Arc<PageFile>,
+        log: Log,
+        opening: Opening,
+    ) -> Result<(Store, Opened), OpenError> {
+        let Opening {
+            checkpoint,
+            log: log_opened,
+            passed_over_state,
+            gave_up,
+        } = opening;
+        let values = *log.state().values();
+        let start = position_of(log::Position {
+            index: checkpoint.entry.index,
+            term: checkpoint.entry.term,
+            hash: checkpoint.entry.hash.0,
+        });
         // A copy of `state` passed over, and no whole batch after the
         // marker to make up for the advance it can have held
         // (server-storage.md 6.12 as revised for lost acknowledgements).
         let last_batch_may_be_lost = passed_over_state.is_some() && log_opened.kept == 0;
-        let pages = Arc::new(pages);
         // 4. The entries after the checkpoint, each once, in order, through
         // the durable entry; nothing freed in the log meanwhile.
         let durable = log.durable();
         let mut replayed = 0u64;
         let mut replay_checkpoints = 0u64;
-        let mut last = position_of(start);
+        let mut last = start;
         if durable.index > start.index {
             for e in log.read(start.index + 1).map_err(OpenError::Log)? {
                 let e = e.map_err(|e| match e {
@@ -756,6 +960,7 @@ impl Store {
                 "the replay did not end at the durable entry",
             ));
         }
+        // 5. The recovered version, pinned and published.
         let pin = pin_version(&pages, PinOf::Newest(last.index)).map_err(OpenError::Disk)?;
         let term = values.term.max(durable.term).max(1);
         let mut store = Store {
@@ -772,26 +977,33 @@ impl Store {
             pending: Vec::new(),
             stopped: None,
         };
-        // 5. This start's own entry (section 7.3), the first write.
-        let start_count = store.log.state().values().start_count;
+        // 6. This start's own entry (section 7.3), the first write. It is
+        // part of the recovery for space: it may take the reserve, and when
+        // the pages waiting for a checkpoint are past their budget the
+        // recovered version, which is durable, is checkpointed first.
+        let start_count = values.start_count;
         let payload = Payload::Session(SessionEvent::Started {
             server: store.server,
             count: start_count,
         });
-        let started = match store.append(0, &payload) {
-            Ok(appended) => appended.position,
-            Err(error) => {
-                return Err(OpenError::Start(Box::new(StartFailed {
-                    written: None,
-                    error,
-                })))
+        let failed = |written, error| OpenError::Start(Box::new(StartFailed { written, error }));
+        let mut checkpointed = false;
+        let started = loop {
+            match store.append_as(0, &payload, Purpose::Recovery) {
+                Ok(appended) => break appended.position,
+                Err(WriteError::CheckpointNeeded(_)) if !checkpointed => {
+                    checkpointed = true;
+                    if let Err(e) = store.checkpoint(None) {
+                        let why = format!("the checkpoint before this start's entry: {e}");
+                        return Err(failed(None, WriteError::Failed(why)));
+                    }
+                    replay_checkpoints += 1;
+                }
+                Err(error) => return Err(failed(None, error)),
             }
         };
         if let Err(error) = store.flush() {
-            return Err(OpenError::Start(Box::new(StartFailed {
-                written: Some((started, payload)),
-                error,
-            })));
+            return Err(failed(Some((started, payload)), error));
         }
         Ok((
             store,
@@ -860,9 +1072,15 @@ impl Store {
         self.term
     }
 
-    /// The page file, for reading its counts.
-    pub fn pages(&self) -> &PageFile {
-        &self.pages
+    /// The page file's space: its size, and its free, held and dying
+    /// pages.
+    pub fn space(&self) -> pagefile::Space {
+        self.pages.space()
+    }
+
+    /// The checkpoints on disk, newest first.
+    pub fn checkpoints(&self) -> Vec<pagefile::KeptCheckpoint> {
+        self.pages.kept_checkpoints()
     }
 
     /// The log's segments in use, as `state` lists them.
@@ -873,7 +1091,47 @@ impl Store {
     /// Appends an entry with this payload, of file `file` (0 for none):
     /// checks it, applies it to the working state and adds it to the log's
     /// open batch (module docs). It is published by the next flush.
+    ///
+    /// The store gives the entry its index and term; what a payload says
+    /// about this server's own starts is the store's too, and refused
+    /// ([`WriteError::Rule`]) from its caller: a `session` entry that says
+    /// this server started (the store writes one at each open), and one that
+    /// opens a session of this server in another start than the current one.
     pub fn append(&mut self, file: u64, payload: &Payload) -> Result<Appended, WriteError> {
+        self.usable()?;
+        if let Payload::Session(event) = payload {
+            match event {
+                SessionEvent::Started { server, .. } if *server == self.server => {
+                    return Err(WriteError::Rule(
+                        "this server's start entry is the store's to write, at each open",
+                    ))
+                }
+                SessionEvent::Opened(s)
+                    if s.server == self.server && s.start != self.start_count() =>
+                {
+                    return Err(WriteError::Rule(
+                        "a session of this server is opened only in its current start",
+                    ))
+                }
+                _ => {}
+            }
+        }
+        self.append_as(file, payload, Purpose::Entry)
+    }
+
+    /// This start's count, from `state`.
+    fn start_count(&self) -> u64 {
+        self.log.state().values().start_count
+    }
+
+    /// [`Store::append`] without its rules on the payload, reserving for
+    /// `purpose`.
+    fn append_as(
+        &mut self,
+        file: u64,
+        payload: &Payload,
+        purpose: Purpose,
+    ) -> Result<Appended, WriteError> {
         self.usable()?;
         let bytes = payload.encode().map_err(WriteError::Payload)?;
         let kind = payload.kind().code();
@@ -895,7 +1153,7 @@ impl Store {
             payload: &bytes,
             hash,
         };
-        let (applied, extended) = match apply_entry(&self.pages, &entry, Purpose::Entry) {
+        let (applied, extended) = match apply_entry(&self.pages, &entry, purpose) {
             Ok(done) => done,
             Err(NotApplied::Space(e @ SpaceError::Full { .. })) => return Err(WriteError::Full(e)),
             Err(NotApplied::Space(e @ SpaceError::CheckpointNeeded { .. })) => {
@@ -1056,15 +1314,21 @@ impl Store {
     }
 
     /// The oldest entry the log must keep: the one after the oldest
-    /// checkpoint on disk or restore point listed (section 6.7, "What is
-    /// kept").
+    /// checkpoint or restore point a superblock on disk names (section 6.7,
+    /// "What is kept"). A dropped restore point counts until no superblock
+    /// on disk lists it: an open that falls back to the older checkpoint
+    /// lists it again.
     fn oldest_needed(&self) -> u64 {
         let checkpoints = self
             .pages
             .kept_checkpoints()
             .into_iter()
             .map(|c| c.entry.index);
-        let points = self.restore_points().into_iter().map(|rp| rp.entry.index);
+        let points = self
+            .pages
+            .restore_points()
+            .into_iter()
+            .map(|(rp, _)| rp.entry.index);
         checkpoints
             .chain(points)
             .min()

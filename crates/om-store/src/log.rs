@@ -217,17 +217,46 @@ pub enum CutWhy {
 /// ([`Log::accept_damage`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DamageAccepted {
-    /// The last entry the log still held whole and chained from the start:
-    /// the log ends there now, and the marker records it.
+    /// The last entry kept: chained from the start through every segment
+    /// that still reads, up to the marker. When it is the marker's own
+    /// entry, no confirmed entry was given up.
     pub kept: Position,
     /// The marker before: the entries after `kept` through it had been
-    /// confirmed, and are given up with whatever followed them.
+    /// confirmed, and are given up.
     pub marker: u64,
-    /// The cut count `state` recorded, raised by one.
-    pub cut_count: u64,
-    /// Listed segments `state` no longer lists; the open removes their
-    /// files.
-    pub dropped: u64,
+    /// The cut count `state` recorded, raised by one, when anything after
+    /// `kept` was given up (the marker lowered, or listed segments after
+    /// the kept ones dropped): what was written after `kept` before the
+    /// call, confirmed or not, is never part of the log again. `None` when
+    /// only segments before the start were dropped: what follows the marker
+    /// is judged by the open as any.
+    pub cut_count: Option<u64>,
+    /// The segments `state` listed before the call, and lists now. Those
+    /// of the first that the second does not list are given up, and the
+    /// open removes their files: those before the ones kept held only
+    /// entries at or before the start (a checkpoint older than the start's
+    /// can no longer be replayed); those after, entries after `kept`.
+    pub listed_before: Segments,
+    pub listed: Segments,
+}
+
+/// Whether `state` holds a decision a call made before it failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recorded {
+    /// `state` holds it: it stands, whatever failed after it.
+    Done,
+    /// The update of `state` that records it failed part way: it may stand
+    /// or not. The next open shows which: it ends the log where the
+    /// decision does, or finds what the call was given again.
+    Unknown,
+}
+
+/// [`Log::accept_damage`] failed: why, the `state` (as [`OpenFailed`]),
+/// and what the call gave up, when it got as far as recording it.
+#[derive(Debug)]
+pub struct AcceptFailed {
+    pub failed: Box<OpenFailed>,
+    pub decided: Option<(DamageAccepted, Recorded)>,
 }
 
 /// A place after the durable entry the device failed to read, where an
@@ -1059,50 +1088,77 @@ impl Log {
     /// open it: the storage half of the administrator's "accept the loss"
     /// on a single server, for a log that does not hold, whole, every entry
     /// through its marker ([`LogError::Damaged`]; server-storage.md 6.12).
+    /// `start` is the entry of the checkpoint the store opens on.
     ///
-    /// The listed segments are opened in order up to the first that is
-    /// missing or has no valid header; the entries from `start` are walked
-    /// through those, each whole and chained, up to the first that is not
-    /// or that names another hash than the start or the marker names. The
-    /// last such entry, `kept` (`start` itself when none follows it), is
-    /// where the log ends now: one `state` update, written to both slots,
-    /// lowers the marker to it (its committed position with it, when that
-    /// was past), raises the cut count, and lists only the segments up to
-    /// the one that holds it (none when it is `start`: the run then begins
-    /// at the next unused number). Then the log is opened as
-    /// [`Log::open`] opens it, which removes the files no longer listed;
-    /// what lay after `kept` carries the older cut count and is never part
-    /// of the log again. Entries before `start` that a dropped segment held
-    /// are gone from the log with it: a checkpoint older than the one at
-    /// `start` can no longer be replayed.
+    /// Every listed segment the folder holds is opened and its header
+    /// checked; one that is missing or whose header is not valid is passed
+    /// over. The decision is made from `start`: the segment that holds the
+    /// entry after it, with the listed segments that follow it without a
+    /// gap, holds the chain that is walked, from `start`, each entry whole
+    /// and chained, up to the first that is not or that names another hash
+    /// than the start or the marker names, and no further than the later
+    /// of the two. The last entry so reached, `kept` (`start` itself when
+    /// none follows), is where the confirmed log ends now. What is kept is
+    /// the segments from the first of those before the chain that follow
+    /// one another without a gap (they held only entries at or before
+    /// `start`) through the one that holds `kept`, or through the last of
+    /// the chain when `kept` is the marker's entry; nothing is kept when
+    /// `kept` is `start` and no segment holds it. One `state` update,
+    /// written to both slots, lists them, lowers the marker to `kept` (its
+    /// committed position with it, when that was past), and raises the cut
+    /// count when anything after `kept` is given up. Then the log is opened
+    /// as [`Log::open`] opens it, which removes the files no longer listed.
     ///
     /// Refused, with nothing written, when the log holds every entry
     /// through the later of the marker and `start` and every listed
-    /// segment opens: there is no loss to accept. A read the device fails
-    /// is reported as [`LogError::Unreadable`], with nothing written. It
-    /// needs no committed position: it is the administrator's decision,
-    /// which no committed position could make on a single server.
+    /// segment stays listed: there is no loss to accept. A read the device
+    /// fails is reported as [`LogError::Unreadable`], with nothing written.
+    /// A failure after the decision says what it was and whether `state`
+    /// holds it ([`AcceptFailed::decided`]). It needs no committed
+    /// position: it is the administrator's decision, which no committed
+    /// position could make on a single server.
     pub fn accept_damage(
         fs: Arc<dyn Fs>,
         mut state: State,
         config: Config,
         start: Position,
-    ) -> Result<(Log, Opened, DamageAccepted), Box<OpenFailed>> {
-        match Self::give_up_damaged(&*fs, &mut state, config, start) {
-            Ok(accepted) => {
-                Log::open(fs, state, config, start).map(|(log, opened)| (log, opened, accepted))
-            }
-            Err(error) => Err(Box::new(OpenFailed { error, state })),
+    ) -> Result<(Log, Opened, DamageAccepted), Box<AcceptFailed>> {
+        let fail = |error, state, decided| {
+            Box::new(AcceptFailed {
+                failed: Box::new(OpenFailed { error, state }),
+                decided,
+            })
+        };
+        let (accepted, values) = match Self::decide_damaged(&*fs, &state, config, start) {
+            Ok(decided) => decided,
+            Err(error) => return Err(fail(error, state, None)),
+        };
+        if let Err(e) = state.update(|v| *v = values) {
+            // A refusal writes nothing; any other failure may have written
+            // the first slot.
+            let decided = match e {
+                StateError::Refused(_) => None,
+                _ => Some((accepted, Recorded::Unknown)),
+            };
+            return Err(fail(LogError::State(e), state, decided));
+        }
+        match Log::open(fs, state, config, start) {
+            Ok((log, opened)) => Ok((log, opened, accepted)),
+            Err(failed) => Err(Box::new(AcceptFailed {
+                failed,
+                decided: Some((accepted, Recorded::Done)),
+            })),
         }
     }
 
-    /// The record of [`Log::accept_damage`].
-    fn give_up_damaged(
+    /// The decision of [`Log::accept_damage`], and the values `state` is to
+    /// hold for it. Nothing is written.
+    fn decide_damaged(
         fs: &dyn Fs,
-        state: &mut State,
+        state: &State,
         config: Config,
         start: Position,
-    ) -> Result<DamageAccepted, LogError> {
+    ) -> Result<(DamageAccepted, Values), LogError> {
         config.check()?;
         if !state.holds_lock_of(fs) {
             return Err(LogError::Refused(
@@ -1116,13 +1172,31 @@ impl Log {
                 "the start or the marker is past the last index",
             ));
         }
+        let run_end = run
+            .first
+            .checked_add(run.count)
+            .ok_or(LogError::Refused("the segment numbers are spent"))?;
         let firm = marker.index.max(start.index);
-        // The listed segments that open, up to the first that does not.
-        let mut segs: Vec<Seg> = Vec::new();
-        for number in run.first..run.first.saturating_add(run.count) {
+        // The listed segments the folder holds, in order: only names the
+        // folder lists are tried, so the work is bounded by the folder and
+        // not by the length `state` gives the run.
+        let names = match fs.list(FOLDER) {
+            Ok(names) => names,
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(LogError::Disk(e)),
+        };
+        let mut numbers: Vec<u64> = names
+            .iter()
+            .filter_map(|name| segment_number(name))
+            .filter(|n| (run.first..run_end).contains(n))
+            .collect();
+        numbers.sort_unstable();
+        numbers.dedup();
+        let mut usable: Vec<Seg> = Vec::new();
+        for number in numbers {
             let file = match fs.open(&segment_path(number), FileOptions::SYNC) {
                 Ok(file) => file,
-                Err(e) if e.kind() == ErrorKind::NotFound => break,
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
                 Err(e) => return Err(LogError::Disk(e)),
             };
             let mut bytes = [0u8; SEGMENT_HEADER as usize];
@@ -1145,47 +1219,56 @@ impl Log {
                         version,
                     })
                 }
-                Err(_) => break,
+                Err(_) => continue,
             };
             if header.store != store
                 || header.number != number
                 || file.size().map_err(LogError::Disk)? < header.size
-                || segs
-                    .last()
-                    .is_some_and(|prev| header.first < prev.header.first)
             {
-                break;
+                continue;
             }
-            segs.push(Seg {
+            usable.push(Seg {
                 number,
                 header,
                 file,
             });
         }
-        // The last entry held whole and chained from `start`, up to `firm`,
-        // and how many of the segments stay listed.
+        // Two segments follow one another when their numbers do and the
+        // second begins no earlier than the first.
+        let follows =
+            |a: &Seg, b: &Seg| b.number == a.number + 1 && b.header.first >= a.header.first;
         let fits = |p: &Position| {
             !(p.index == start.index && p.hash != start.hash)
                 && !(p.index == marker.index && p.hash != marker.hash)
         };
-        let mut kept = (start, 0usize);
         // An empty log that needs to hold nothing has nothing to give up.
-        let mut reached = segs.is_empty() && run.count == 0 && marker.index <= start.index;
+        let mut reached = usable.is_empty() && run.count == 0 && marker.index <= start.index;
+        let mut kept = start;
+        let mut keep: Option<(u64, u64)> = None;
         let after = start.index + 1;
-        if let Some(from) = segment_for(&segs, after).filter(|_| segs[0].header.first <= after) {
-            let header = segs[from].header;
+        if let Some(from) = usable.iter().rposition(|s| s.header.first <= after) {
+            let mut to = from;
+            while to + 1 < usable.len() && follows(&usable[to], &usable[to + 1]) {
+                to += 1;
+            }
+            let mut front = from;
+            while front > 0 && follows(&usable[front - 1], &usable[front]) {
+                front -= 1;
+            }
+            let chain = &usable[from..=to];
+            let header = chain[0].header;
             let before = Position {
                 index: header.first - 1,
                 term: header.prev_term,
                 hash: header.prev_hash,
             };
             if fits(&before) {
-                let mut seen = (before, from);
+                let mut seen = (before, 0usize);
                 if before.index < firm {
-                    let mut scanner = Scanner::new(&segs, from, Keep::Nothing);
+                    let mut scanner = Scanner::new(chain, 0, Keep::Nothing);
                     loop {
                         match scanner.next_event() {
-                            Err(fault) => return Err(unreadable(&segs, fault)),
+                            Err(fault) => return Err(unreadable(chain, fault)),
                             Ok(Event::Entry(found)) => {
                                 let at = position(&found);
                                 if !fits(&at) {
@@ -1202,62 +1285,66 @@ impl Log {
                     }
                 }
                 if seen.0.index >= start.index {
-                    kept = (seen.0, seen.1 + 1);
+                    kept = seen.0;
+                    reached = seen.0.index >= firm;
+                    let last = if reached { to } else { from + seen.1 };
+                    keep = Some((usable[front].number, usable[last].number));
                 }
-                reached = seen.0.index >= firm;
             }
         }
-        let (last, keep) = kept;
-        let whole = reached;
-        if whole && segs.len() as u64 == run.count {
+        let listed = match keep {
+            Some((first, last)) => Segments {
+                first,
+                count: last - first + 1,
+            },
+            None => Segments {
+                first: run_end,
+                count: 0,
+            },
+        };
+        if reached && listed == run {
             return Err(LogError::Refused(
                 "the log holds every entry through its marker: there is no loss to accept",
             ));
         }
-        // Reaching `firm`, every segment that opened stays listed: only
-        // those after the first that did not are dropped.
-        let keep = if whole { segs.len() } else { keep };
-        let listed = if keep == 0 {
-            Segments {
-                first: run
-                    .first
-                    .checked_add(run.count)
-                    .ok_or(LogError::Refused("the segment numbers are spent"))?,
-                count: 0,
-            }
+        // Anything after `kept` given up: the marker lowered, or listed
+        // segments after the kept ones dropped.
+        let after_kept = !reached || listed.first + listed.count < run_end;
+        let cut_count = if after_kept {
+            Some(
+                values
+                    .cut_count
+                    .checked_add(1)
+                    .ok_or(LogError::Refused("the cut count is at its limit"))?,
+            )
         } else {
-            Segments {
-                first: run.first,
-                count: keep as u64,
-            }
+            None
         };
-        let cut_count = values
-            .cut_count
-            .checked_add(1)
-            .ok_or(LogError::Refused("the cut count is at its limit"))?;
-        let lowered = if whole {
+        let lowered = if reached {
             marker
         } else {
             Marker {
-                index: last.index,
-                hash: last.hash,
-                committed: marker.committed.min(last.index),
+                index: kept.index,
+                hash: kept.hash,
+                committed: marker.committed.min(kept.index),
             }
         };
-        drop(segs);
-        state
-            .update(|v| {
-                v.marker = lowered;
-                v.segments = listed;
-                v.cut_count = cut_count;
-            })
-            .map_err(LogError::State)?;
-        Ok(DamageAccepted {
-            kept: last,
-            marker: marker.index,
-            cut_count,
-            dropped: run.count - keep as u64,
-        })
+        let new = Values {
+            marker: lowered,
+            segments: listed,
+            cut_count: cut_count.unwrap_or(values.cut_count),
+            ..values
+        };
+        Ok((
+            DamageAccepted {
+                kept,
+                marker: marker.index,
+                cut_count,
+                listed_before: run,
+                listed,
+            },
+            new,
+        ))
     }
 
     /// What `state` holds.

@@ -62,16 +62,23 @@ fn seeds(default: u64) -> Vec<u64> {
 
 /// The simulated disk, with one place that fails every read until the next
 /// open of the store succeeds: a sector gone bad, which the simulator's
-/// read faults (one read each) do not make.
+/// read faults (one read each) do not make. Directed tests can also have
+/// the folder's lock lost after so many more checks of it, and every write
+/// fail under a path.
+#[derive(Clone)]
 struct Flaky {
     inner: sim::SimFs,
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
+    lock_checks_left: Arc<std::sync::Mutex<Option<u64>>>,
+    /// Writes under a path fail once so many more of them succeeded.
+    fail_writes: Arc<std::sync::Mutex<Option<(String, u64)>>>,
 }
 
 struct FlakyFile {
     inner: Box<dyn sys::File>,
     path: String,
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
+    fail_writes: Arc<std::sync::Mutex<Option<(String, u64)>>>,
 }
 
 impl sys::Fs for Flaky {
@@ -82,6 +89,12 @@ impl sys::Fs for Flaky {
         self.inner.lock()
     }
     fn owns(&self, lock: &sys::FolderLock) -> bool {
+        let mut left = self.lock_checks_left.lock().unwrap();
+        match left.as_mut() {
+            Some(0) => return false,
+            Some(n) => *n -= 1,
+            None => {}
+        }
         self.inner.owns(lock)
     }
     fn create(&self, path: &str, options: sys::FileOptions) -> sys::Result<Box<dyn sys::File>> {
@@ -110,11 +123,21 @@ impl sys::Fs for Flaky {
 }
 
 impl Flaky {
+    fn new(sim: &Sim) -> Flaky {
+        Flaky {
+            inner: sim.fs(),
+            bad: Arc::new(std::sync::Mutex::new(None)),
+            lock_checks_left: Arc::new(std::sync::Mutex::new(None)),
+            fail_writes: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
     fn wrap(&self, path: &str, inner: Box<dyn sys::File>) -> Box<dyn sys::File> {
         Box::new(FlakyFile {
             inner,
             path: path.to_owned(),
             bad: self.bad.clone(),
+            fail_writes: self.fail_writes.clone(),
         })
     }
 }
@@ -134,6 +157,21 @@ impl sys::File for FlakyFile {
         self.inner.read_at(offset, buf)
     }
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
+        let fail = match self.fail_writes.lock().unwrap().as_mut() {
+            Some((prefix, left)) if self.path.starts_with(prefix.as_str()) => {
+                let fail = *left == 0;
+                *left = left.saturating_sub(1);
+                fail
+            }
+            _ => false,
+        };
+        if fail {
+            return Err(sys::Error::new(
+                ErrorKind::Write,
+                sys::Op::Write,
+                &self.path,
+            ));
+        }
         self.inner.write_at(offset, data)
     }
     fn flush(&self) -> sys::Result<()> {
@@ -517,12 +555,14 @@ struct Run {
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
     /// The latest entry any view showed.
     viewed: u64,
-    /// An "accept the loss" call was made since the last open succeeded:
-    /// one that failed after `state` recorded it has taken effect all the
-    /// same (the loss is accepted from the moment `state` records it).
-    accepting: bool,
+    /// The lowest entry an open may end at for a loss an explicit call
+    /// reported in an error, which stands, or may (`AfterGivingUp`): the
+    /// loss is accepted from the moment `state` records it.
+    excused: Option<u64>,
     views: Vec<(View, Model)>,
-    points: BTreeMap<String, Model>,
+    /// Restore points kept, with the model at their entry and the number of
+    /// the checkpoint that wrote them.
+    points: BTreeMap<String, (Model, u64)>,
     names: u64,
     reached: Reached,
     seed: u64,
@@ -531,6 +571,10 @@ struct Run {
     /// store's guarantees do not hold, and the run checks only that every
     /// call returns, typed, without a panic.
     lying: bool,
+    /// The fault rates of the run, put back after an open without faults.
+    rates: Rates,
+    /// The store cannot be opened again, for a reason the device explains.
+    unopenable: bool,
 }
 
 /// A failing run prints what it did, to read with the seed.
@@ -559,11 +603,9 @@ impl Run {
     fn new(seed: u64, rates: Rates) -> Run {
         let lying = rates.misplace != 0 || rates.lose_write != 0;
         let sim = Sim::new(seed);
-        let bad = Arc::new(std::sync::Mutex::new(None));
-        let fs: Arc<dyn Fs> = Arc::new(Flaky {
-            inner: sim.fs(),
-            bad: bad.clone(),
-        });
+        let flaky = Flaky::new(&sim);
+        let bad = flaky.bad.clone();
+        let fs: Arc<dyn Fs> = Arc::new(flaky);
         let (store, opened) = Store::create(fs.clone(), &sim.random(), CONFIG).unwrap();
         if seed % 4 == 3 {
             // A small disk, which fills.
@@ -587,7 +629,7 @@ impl Run {
             before_last_flush: 0,
             bad,
             viewed: 0,
-            accepting: false,
+            excused: None,
             views: Vec::new(),
             points: BTreeMap::new(),
             names: 0,
@@ -595,6 +637,8 @@ impl Run {
             seed,
             trace: Vec::new(),
             lying,
+            rates,
+            unopenable: false,
         };
         run.opened(store, &opened);
         run
@@ -665,11 +709,49 @@ impl Run {
             self.reached.last_batch_may_be_lost += 1;
         }
         let durable = opened.recovered;
-        let accepted =
-            opened.gave_up.is_some() || std::mem::take(&mut self.accepting) || self.lying;
-        // Check 2: nothing answered as stored is lost, but by a loss the
-        // store reports or the administrator accepted.
-        if durable.index < self.acked && !accepted {
+        // A loss an explicit call reports in this open: the store opens
+        // exactly where it says (or, when nothing after the marker was
+        // given up, at or after it, by whole batches after the marker).
+        if let Some(gave_up) = &opened.gave_up {
+            self.gave_up(gave_up);
+        }
+        let reported = match &opened.gave_up {
+            Some(GaveUp::Damage(d)) if !self.lying => {
+                if d.cut_count.is_some() {
+                    assert_eq!(
+                        durable.index, d.kept.index,
+                        "seed {seed}: the loss reported"
+                    );
+                    assert_eq!(
+                        durable.hash.0, d.kept.hash,
+                        "seed {seed}: the loss reported"
+                    );
+                } else {
+                    assert_eq!(d.kept.index, d.marker, "seed {seed}: the loss reported");
+                    assert!(
+                        durable.index >= d.kept.index,
+                        "seed {seed}: the loss reported"
+                    );
+                }
+                Some(d.kept.index)
+            }
+            Some(GaveUp::UnreadableEnd { last, done, .. }) if !self.lying => {
+                assert!(
+                    done.is_some(),
+                    "seed {seed}: a give-up that succeeded says what it did"
+                );
+                assert_eq!(durable.index, last.index, "seed {seed}: the end given up");
+                assert_eq!(durable.hash.0, last.hash, "seed {seed}: the end given up");
+                Some(last.index)
+            }
+            _ => None,
+        };
+        let floor = reported.into_iter().chain(self.excused.take()).min();
+        let excused = |at: u64| self.lying || floor.is_some_and(|floor| at >= floor);
+        // Check 2: nothing answered as stored is lost, but down to what an
+        // explicit call reported giving up, or the last batch reported as
+        // possibly lost.
+        if durable.index < self.acked && !excused(durable.index) {
             assert!(
                 opened.last_batch_may_be_lost && durable.index >= self.before_last_flush,
                 "seed {seed}: entry {} was answered as stored, and the store opened at {}",
@@ -678,12 +760,11 @@ impl Run {
             );
         }
         // Check 4: no view showed an entry that is not durable.
-        if !accepted && !opened.last_batch_may_be_lost {
+        if durable.index < self.viewed && !excused(durable.index) {
             assert!(
-                durable.index >= self.viewed,
+                opened.last_batch_may_be_lost,
                 "seed {seed}: a view showed entry {}, and the store opened at {}",
-                self.viewed,
-                durable.index
+                self.viewed, durable.index
             );
         }
         if self.lying {
@@ -731,15 +812,42 @@ impl Run {
         self.acked = opened.started.index;
         self.before_last_flush = durable.index;
         self.viewed = self.viewed.min(self.acked);
-        // Restore points that did not survive (an older checkpoint taken).
+        // Restore points: every one a checkpoint at or before the one the
+        // open used wrote is listed; those of a checkpoint it passed over
+        // are gone with it.
         let listed: Vec<String> = store
             .restore_points()
             .into_iter()
             .map(|rp| rp.name)
             .collect();
-        self.points.retain(|name, _| listed.contains(name));
+        let used = opened.checkpoint.checkpoint;
+        self.points.retain(|name, (_, number)| {
+            if listed.contains(name) {
+                return true;
+            }
+            assert!(
+                *number > used,
+                "seed {seed}: restore point {name} of checkpoint {number} is gone, though the open \
+                 used checkpoint {used}"
+            );
+            false
+        });
         self.store = Some(store);
         self.check_published("after the open");
+    }
+
+    /// An explicit call's decision, counted; the entry it kept.
+    fn gave_up(&mut self, gave_up: &GaveUp) -> u64 {
+        match gave_up {
+            GaveUp::Damage(d) => {
+                self.reached.damage_accepted += 1;
+                d.kept.index
+            }
+            GaveUp::UnreadableEnd { last, .. } => {
+                self.reached.unreadable_given_up += 1;
+                last.index
+            }
+        }
     }
 
     /// The published version against the model.
@@ -757,7 +865,13 @@ impl Run {
     /// Opens the store again, until it opens or says why it cannot.
     fn open(&mut self) -> bool {
         let seed = self.seed;
-        for _ in 0..40 {
+        for attempt in 0..60 {
+            if attempt == 40 {
+                // A disk that keeps failing the open: without faults the
+                // store opens, or fails for a reason the device explains.
+                self.note("faults off".into());
+                self.sim.set_rates(Rates::default());
+            }
             self.sim.restart();
             let opened = Store::open(self.fs.clone(), CONFIG);
             if let Err(e) = &opened {
@@ -770,12 +884,7 @@ impl Run {
                         "seed {seed}: {damage:?}, though the device damaged no segment"
                     );
                     self.sim.restart();
-                    self.accepting = true;
-                    let accepted = Store::accept_damage(self.fs.clone(), CONFIG);
-                    if accepted.is_ok() {
-                        self.reached.damage_accepted += 1;
-                    }
-                    accepted
+                    Store::accept_damage(self.fs.clone(), CONFIG)
                 }
                 Err(OpenError::UnreadableEnd { end, last }) => {
                     self.reached.unreadable_ends += 1;
@@ -787,11 +896,7 @@ impl Run {
                     *self.bad.lock().unwrap() =
                         Some((format!("{}/{:016x}", log::FOLDER, end.segment), end.offset));
                     self.sim.restart();
-                    self.accepting = true;
                     let given = Store::give_up_unreadable_end(self.fs.clone(), CONFIG, last);
-                    if given.is_ok() {
-                        self.reached.unreadable_given_up += 1;
-                    }
                     if matches!(given, Err(OpenError::Refused(_))) {
                         // The place reads now: nothing to give up.
                         continue;
@@ -800,8 +905,27 @@ impl Run {
                 }
                 other => other,
             };
+            // A decision an explicit call recorded, or may have, before
+            // the open failed: it excuses a loss down to what it kept.
+            let opened = match opened {
+                Err(OpenError::AfterGivingUp(failed)) => {
+                    let GaveUpThenFailed {
+                        gave_up,
+                        recorded,
+                        error,
+                    } = *failed;
+                    self.note(format!("gave up {gave_up:?} ({recorded:?}), then: {error}"));
+                    let kept = self.gave_up(&gave_up);
+                    self.excused = Some(self.excused.map_or(kept, |e| e.min(kept)));
+                    Err(error)
+                }
+                other => other,
+            };
             match opened {
                 Ok((store, opened)) => {
+                    if attempt >= 40 {
+                        self.sim.set_rates(self.rates);
+                    }
                     self.opened(store, &opened);
                     return true;
                 }
@@ -852,6 +976,7 @@ impl Run {
                         "seed {seed}: {e}"
                     );
                     self.reached.ended_unopenable += 1;
+                    self.unopenable = true;
                     return false;
                 }
                 Err(e @ (OpenError::Pages(_) | OpenError::Replay { .. })) => {
@@ -860,18 +985,18 @@ impl Run {
                         "seed {seed}: {e}"
                     );
                     self.reached.ended_unopenable += 1;
+                    self.unopenable = true;
                     return false;
                 }
                 Err(_) if self.lying => {
                     self.reached.ended_unopenable += 1;
+                    self.unopenable = true;
                     return false;
                 }
                 Err(e) => panic!("seed {seed}: {e}"),
             }
         }
-        // A disk that keeps failing the open: say so, and stop the run.
-        self.reached.ended_unopenable += 1;
-        false
+        panic!("seed {seed}: the store does not open on a disk without faults")
     }
 
     /// A step of the schedule; false when the store cannot be opened again.
@@ -963,7 +1088,7 @@ impl Run {
         let Some(store) = self.store.as_mut() else {
             return;
         };
-        let before = store.published().index;
+        let before = self.published.applied.index;
         let flushed = store.flush();
         self.note(format!(
             "flush after {before}: {:?}",
@@ -977,21 +1102,38 @@ impl Run {
                 if published.len() > 1 {
                     self.reached.several_in_a_flush += 1;
                 }
-                let record = if self.lying {
-                    &[][..]
-                } else {
-                    &self.record[before as usize..]
-                };
-                for (p, built) in published.iter().zip(record) {
-                    assert_eq!(p.applied.position.index, built.index, "seed {seed}");
-                    assert_eq!(p.applied.position.hash, built.hash, "seed {seed}");
-                    let payload = Payload::decode(built.kind, &built.payload).unwrap();
-                    assert_eq!(p.applied.payload, payload, "seed {seed}: notices and reply");
+                if !self.lying {
+                    // Every entry waiting is answered, in order, with its
+                    // notices and reply, and the last is the published one.
+                    let waiting =
+                        &self.record[before as usize..self.appended.applied.index as usize];
+                    assert_eq!(
+                        published.len(),
+                        waiting.len(),
+                        "seed {seed}: the flush answered {} of the {} entries waiting",
+                        published.len(),
+                        waiting.len()
+                    );
+                    for (p, built) in published.iter().zip(waiting) {
+                        assert_eq!(p.applied.position.index, built.index, "seed {seed}");
+                        assert_eq!(p.applied.position.hash, built.hash, "seed {seed}");
+                        let payload = Payload::decode(built.kind, &built.payload).unwrap();
+                        assert_eq!(p.applied.payload, payload, "seed {seed}: notices and reply");
+                    }
+                    let last = published
+                        .last()
+                        .map_or(before, |p| p.applied.position.index);
+                    assert_eq!(
+                        store.published().index,
+                        last,
+                        "seed {seed}: the published entry"
+                    );
                 }
-                if !published.is_empty() {
+                // What is answered as stored is what the flush returned.
+                if let Some(last) = published.last() {
                     self.before_last_flush = self.acked;
+                    self.acked = last.applied.position.index;
                 }
-                self.acked = store.published().index;
                 self.published = self.appended.clone();
             }
             Err(WriteError::Failed(_) | WriteError::Stopped(_)) => {
@@ -1081,7 +1223,8 @@ impl Run {
                 assert!(store.log_segments().first >= segments.first, "seed {seed}");
                 if let Some(name) = keep {
                     self.reached.kept += 1;
-                    self.points.insert(name, self.published.clone());
+                    let number = done.written.number;
+                    self.points.insert(name, (self.published.clone(), number));
                 }
             }
             Err(CheckpointFailed::Refused(_)) => {}
@@ -1110,7 +1253,7 @@ impl Run {
         if self.lying {
             return;
         }
-        let Some((name, model)) = self.points.iter().next() else {
+        let Some((name, (model, _))) = self.points.iter().next() else {
             return;
         };
         let Some(store) = &self.store else { return };
@@ -1145,10 +1288,18 @@ impl Run {
     /// The end of a run: no faults, a stop, and the whole state again.
     fn finish(mut self, reached: &mut Reached) {
         self.sim.set_rates(Rates::default());
+        self.rates = Rates::default();
         if self.store.is_some() {
             self.stop(false);
         }
-        if self.open() {
+        // Without faults the store opens, unless the device made it
+        // unopenable earlier for a reason it explains.
+        if !self.unopenable {
+            assert!(
+                self.open(),
+                "seed {}: the last open, without faults",
+                self.seed
+            );
             self.check_published("at the end");
         }
         for (fault, n) in self.sim.fired() {
@@ -1543,6 +1694,29 @@ fn a_failure_after_the_unit_committed_stops_the_store() {
         );
         assert_eq!(read(&view, file, b"d"), None);
     }
+
+    // The folder's lock lost between the log's check before the unit and
+    // its append (an entry that needs the next segment checks it in both):
+    // the append is refused after the unit committed, and the store stops.
+    let sim = Sim::new(31);
+    let flaky = Flaky::new(&sim);
+    let fs: Arc<dyn Fs> = Arc::new(flaky.clone());
+    let (mut store, _) = Store::create(fs.clone(), &sim.random(), CONFIG).unwrap();
+    let file = add_file(&mut store, "f");
+    let big = vec![5u8; 40 << 10];
+    store.append(file, &put(b"x", &big)).unwrap();
+    store.flush().unwrap();
+    let durable = store.published();
+    *flaky.lock_checks_left.lock().unwrap() = Some(1);
+    let failed = store.append(file, &put(b"y", &big));
+    assert!(matches!(failed, Err(WriteError::Failed(_))), "{failed:?}");
+    assert!(store.stopped().is_some());
+    *flaky.lock_checks_left.lock().unwrap() = None;
+    drop(store);
+    sim.restart();
+    let (store, opened) = Store::open(fs, CONFIG).unwrap();
+    assert_eq!(opened.recovered, durable);
+    assert_eq!(read(&store.view().unwrap(), file, b"y"), None);
 }
 
 /// A full disk refuses the entry with nothing appended, and the store
@@ -1607,8 +1781,8 @@ fn the_entries_after_the_older_checkpoint_are_applied_when_the_newest_cannot_be_
     }
     store.flush().unwrap();
     let durable = store.published();
-    let older = store.pages().kept_checkpoints()[1].entry.index;
-    let newest = store.pages().checkpoint_entry().0;
+    let older = store.checkpoints()[1].entry.index;
+    let newest = store.checkpoints()[0].number;
     drop(store);
     sim.restart();
     // Both copies of the newest checkpoint's superblock damaged, by the
@@ -1699,7 +1873,7 @@ fn a_steady_workload_uses_bounded_space() {
             store.flush().unwrap();
         }
         store.checkpoint(None).unwrap();
-        ends.push(store.pages().space().end);
+        ends.push(store.space().end);
         segments.push(store.log_segments().count);
     }
     let late = *ends[6..].iter().max().unwrap();
@@ -1798,4 +1972,398 @@ fn accepting_the_loss_after_damage_opens_the_store_at_what_the_log_still_holds()
     let (_, again) = reopened(&sim).unwrap();
     assert!(again.gave_up.is_none());
     assert!(again.recovered.index > positions[7].index);
+}
+
+/// A lost older segment gives up nothing the chain from the checkpoint the
+/// store opens on still holds: accepting the loss keeps that chain whole
+/// and drops only the segments before it, which the older checkpoint alone
+/// needed.
+#[test]
+fn accepting_a_lost_older_segment_keeps_the_chain_from_the_checkpoint() {
+    let sim = Sim::new(44);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    let first = store.log_segments().first;
+    let mut written = 0u8;
+    let mut write = |store: &mut Store, count: u8| {
+        for _ in 0..count {
+            store
+                .append(file, &put(&[written], &[written; 6000]))
+                .unwrap();
+            store.flush().unwrap();
+            written += 1;
+        }
+    };
+    // The older checkpoint in the first segment; the newest after the
+    // second segment began.
+    write(&mut store, 3);
+    store.checkpoint(None).unwrap();
+    while store.log_segments().count < 2 {
+        write(&mut store, 1);
+    }
+    let second_begins = store.published().index;
+    write(&mut store, 2);
+    store.checkpoint(None).unwrap();
+    write(&mut store, 3);
+    let durable = store.published();
+    let newest = store.checkpoints()[0].entry.index;
+    assert!(newest > second_begins);
+    assert_eq!(
+        store.log_segments().first,
+        first,
+        "the older checkpoint keeps it"
+    );
+    drop(store);
+    sim.restart();
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    fs.remove(&format!("{}/{first:016x}", log::FOLDER)).unwrap();
+    fs.flush_folder(log::FOLDER).unwrap();
+    let damaged = Store::open(fs.clone(), CONFIG);
+    assert!(
+        matches!(&damaged, Err(OpenError::LogDamaged(d)) if d.kind == log::DamageKind::Missing),
+        "{damaged:?}"
+    );
+    sim.restart();
+    let (store, opened) = Store::accept_damage(fs.clone(), CONFIG).unwrap();
+    assert_eq!(opened.checkpoint.entry.index, newest);
+    let Some(GaveUp::Damage(accepted)) = opened.gave_up else {
+        panic!("{opened:?}")
+    };
+    // Nothing confirmed was given up: only the segment before the chain.
+    assert_eq!(accepted.kept.index, durable.index);
+    assert_eq!(accepted.marker, durable.index);
+    assert_eq!(accepted.cut_count, None);
+    assert_eq!(accepted.listed_before.first, first);
+    assert_eq!(accepted.listed.first, first + 1);
+    assert_eq!(
+        accepted.listed.first + accepted.listed.count,
+        accepted.listed_before.first + accepted.listed_before.count
+    );
+    assert_eq!(opened.recovered, durable);
+    let view = store.view().unwrap();
+    for i in 0..written {
+        assert_eq!(read(&view, file, &[i]), Some(vec![i; 6000]), "entry {i}");
+    }
+    drop(store);
+    let (_, again) = reopened(&sim).unwrap();
+    assert!(again.gave_up.is_none());
+    assert_eq!(
+        again.recovered.index,
+        durable.index + 1,
+        "the accept's start"
+    );
+}
+
+/// A store whose `state` is gone is reported as one, to restore, and
+/// nothing is created over it.
+#[test]
+fn a_store_without_state_is_reported_and_not_created_over() {
+    let sim = Sim::new(45);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    store.append(file, &put(b"a", b"1")).unwrap();
+    store.flush().unwrap();
+    drop(store);
+    sim.restart();
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    fs.remove(crate::state::FILE).unwrap();
+    fs.flush_folder("").unwrap();
+    let before = sim.image();
+    let opened = Store::open(fs.clone(), CONFIG);
+    let Err(e @ OpenError::NoState { .. }) = opened else {
+        panic!("{opened:?}")
+    };
+    assert!(e.remedy().contains("restore"), "{e}");
+    sim.restart();
+    let created = Store::create(fs.clone(), &sim.random(), CONFIG);
+    assert!(
+        matches!(created, Err(OpenError::NoState { .. })),
+        "{created:?}"
+    );
+    assert!(sim.image() == before, "nothing was changed");
+}
+
+/// A creation cut short at any step leaves a folder that opens as the
+/// store, or as none (with the creation's marker), never as a store
+/// without `state`; a creation begun again then succeeds.
+#[test]
+fn a_creation_cut_short_at_any_step_is_created_over() {
+    let steps = {
+        let sim = Sim::new(46);
+        let begin = sim.steps();
+        made(&sim);
+        sim.steps() - begin
+    };
+    let mut cut = 0;
+    for step in 1..=steps {
+        for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+            let sim = Sim::new(46);
+            sim.set_crash_fates(fates);
+            sim.place(sim.steps() + step, Fault::Crash);
+            let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+            if Store::create(fs.clone(), &sim.random(), CONFIG).is_ok() {
+                continue;
+            }
+            cut += 1;
+            let what = format!("a crash at step {step} of the creation, {fates:?}");
+            sim.restart();
+            match Store::open(fs.clone(), CONFIG) {
+                Ok(_) => {}
+                Err(OpenError::Missing) => {
+                    sim.restart();
+                    Store::create(fs, &sim.random(), CONFIG)
+                        .unwrap_or_else(|e| panic!("{what}: {e}"));
+                }
+                Err(e) => panic!("{what}: {e}"),
+            }
+        }
+    }
+    assert!(cut > 0);
+}
+
+/// The store starts with the smallest budget of pages waiting for a
+/// checkpoint, and on a disk too full for an ordinary entry: this start's
+/// entry is part of the recovery.
+#[test]
+fn the_store_starts_with_the_smallest_budget_and_on_a_full_disk() {
+    let config = Config {
+        pages: pagefile::Config {
+            dirty_budget: 1,
+            ..CONFIG.pages
+        },
+        ..CONFIG
+    };
+    let sim = Sim::new(47);
+    let (store, _) = Store::create(Arc::new(sim.fs()), &sim.random(), config).unwrap();
+    drop(store);
+    let mut checkpoints = 0;
+    for round in 0..4 {
+        sim.restart();
+        let (store, opened) =
+            Store::open(Arc::new(sim.fs()), config).unwrap_or_else(|e| panic!("open {round}: {e}"));
+        checkpoints += opened.replay_checkpoints;
+        drop(store);
+    }
+    assert!(checkpoints > 0, "the budget was never reached");
+
+    let sim = Sim::new(48);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    store.checkpoint(None).unwrap();
+    let used: u64 = sim
+        .image()
+        .iter()
+        .map(|(_, b)| b.as_ref().map_or(0, |b| b.len() as u64))
+        .sum();
+    sim.set_capacity(used + (64 << 10));
+    let big = vec![7u8; 6000];
+    let mut full = false;
+    for i in 0..400u32 {
+        match store.append(file, &put(&i.to_be_bytes(), &big)) {
+            Ok(_) => {
+                store.flush().unwrap();
+            }
+            Err(WriteError::Full(_)) => {
+                full = true;
+                break;
+            }
+            Err(WriteError::CheckpointNeeded(_)) => {
+                store.checkpoint(None).unwrap();
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(full, "the disk filled");
+    drop(store);
+    for round in 0..6 {
+        let (store, _) = reopened(&sim).unwrap_or_else(|e| panic!("open {round}: {e}"));
+        drop(store);
+    }
+}
+
+/// A restore point dropped but still listed by the older checkpoint on
+/// disk keeps the log it needs until no superblock lists it: an open that
+/// falls back to that checkpoint lists the point again.
+#[test]
+fn the_log_keeps_what_a_restore_point_on_disk_needs() {
+    let sim = Sim::new(49);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    let mut written = 0u32;
+    let mut write = |store: &mut Store, count: u32| {
+        for _ in 0..count {
+            store
+                .append(file, &put(&written.to_be_bytes(), &[1; 6000]))
+                .unwrap();
+            store.flush().unwrap();
+            written += 1;
+        }
+    };
+    write(&mut store, 2);
+    let point = store.checkpoint(Some("p")).unwrap().entry.index;
+    write(&mut store, 12);
+    store.checkpoint(None).unwrap();
+    write(&mut store, 12);
+    store.checkpoint(None).unwrap();
+    store.drop_restore_point("p").unwrap();
+    write(&mut store, 12);
+    store.checkpoint(None).unwrap();
+    assert!(
+        store
+            .pages
+            .restore_points()
+            .iter()
+            .any(|(rp, dropped)| rp.name == "p" && *dropped),
+        "the older checkpoint still lists it"
+    );
+    assert!(
+        store.log.read(point + 1).is_ok(),
+        "the log was retired past the point's entry"
+    );
+    let newest = store.checkpoints()[0].number;
+    drop(store);
+    sim.restart();
+    let pages = sim
+        .image()
+        .into_iter()
+        .find(|(p, _)| p == pagefile::FILE)
+        .and_then(|(_, b)| b)
+        .unwrap();
+    for slot in 0..pagefile::SLOTS {
+        let at = slot * pagefile::SLOT;
+        let number = u64::from_le_bytes(pages[at + 16..at + 24].try_into().unwrap());
+        if number == newest {
+            sim.damage(pagefile::FILE, (at + 100) as u64, 2).unwrap();
+        }
+    }
+    let (store, opened) = reopened(&sim).unwrap();
+    assert!(opened.checkpoint.checkpoint < newest);
+    assert!(store.restore_points().iter().any(|rp| rp.name == "p"));
+    assert!(store.log.read(point + 1).is_ok());
+}
+
+/// A loss accepted before the open fails is in the error, and stands: the
+/// next open starts from it. When the update of `state` that records it
+/// fails, the error says the decision may or may not stand, and the next
+/// open shows which.
+#[test]
+fn a_loss_accepted_before_the_open_fails_is_reported() {
+    let sim = Sim::new(50);
+    let flaky = Flaky::new(&sim);
+    let fs: Arc<dyn Fs> = Arc::new(flaky.clone());
+    let (mut store, _) = Store::create(fs.clone(), &sim.random(), CONFIG).unwrap();
+    let file = add_file(&mut store, "f");
+    store.checkpoint(None).unwrap();
+    let mut positions = Vec::new();
+    for i in 0..12u8 {
+        store.append(file, &put(&[i], &[i; 100])).unwrap();
+        store.flush().unwrap();
+        positions.push(store.published());
+    }
+    drop(store);
+    let (path, bytes) = sim
+        .image()
+        .into_iter()
+        .filter(|(p, _)| p.starts_with("log/"))
+        .max()
+        .map(|(p, b)| (p, b.unwrap()))
+        .unwrap();
+    let at = bytes.windows(100).position(|w| w == [8u8; 100]).unwrap();
+    sim.damage(&path, at as u64 + 10, 4).unwrap();
+    let fail_writes = |prefix: &str, after: u64| {
+        *flaky.fail_writes.lock().unwrap() = Some((prefix.to_owned(), after));
+    };
+    // The update of `state` that records the decision fails, after the
+    // writes of `state`'s own open (counted on an open of it alone).
+    fail_writes(crate::state::FILE, 1000);
+    sim.restart();
+    drop(State::open(&*fs, fs.lock().unwrap()).unwrap());
+    let opening = 1000 - flaky.fail_writes.lock().unwrap().as_ref().unwrap().1;
+    fail_writes(crate::state::FILE, opening);
+    sim.restart();
+    let failed = Store::accept_damage(fs.clone(), CONFIG);
+    let Err(OpenError::AfterGivingUp(after)) = &failed else {
+        panic!("{failed:?}")
+    };
+    let GaveUp::Damage(decided) = &after.gave_up else {
+        panic!("{failed:?}")
+    };
+    assert_eq!(after.recorded, Recorded::Unknown);
+    assert_eq!(decided.kept.index, positions[7].index);
+    *flaky.fail_writes.lock().unwrap() = None;
+    // It did not stand: the next open finds the damage again.
+    sim.restart();
+    let again = Store::open(fs.clone(), CONFIG);
+    assert!(matches!(again, Err(OpenError::LogDamaged(_))), "{again:?}");
+    // `state` records it, and this start's entry then fails: it stands.
+    fail_writes("log/", 0);
+    sim.restart();
+    let failed = Store::accept_damage(fs.clone(), CONFIG);
+    let Err(OpenError::AfterGivingUp(after)) = &failed else {
+        panic!("{failed:?}")
+    };
+    let GaveUp::Damage(decided) = &after.gave_up else {
+        panic!("{failed:?}")
+    };
+    assert_eq!(after.recorded, Recorded::Done);
+    assert!(
+        matches!(after.error, OpenError::Start(_)),
+        "{}",
+        after.error
+    );
+    assert_eq!(decided.kept.index, positions[7].index);
+    *flaky.fail_writes.lock().unwrap() = None;
+    sim.restart();
+    let (store, opened) = Store::open(fs.clone(), CONFIG).unwrap();
+    assert!(opened.gave_up.is_none());
+    assert_eq!(opened.recovered.index, positions[7].index);
+    let view = store.view().unwrap();
+    assert_eq!(read(&view, file, &[7]), Some(vec![7; 100]));
+    assert_eq!(read(&view, file, &[8]), None);
+}
+
+/// This server's start entry is the store's to write: a caller's is
+/// refused, as is a session of this server opened in another start, and
+/// the next start closes the sessions of this one.
+#[test]
+fn a_caller_cannot_write_this_servers_start() {
+    let sim = Sim::new(51);
+    let (mut store, opened) = made(&sim);
+    let server = store.server();
+    let start = opened.start_count;
+    let started = store.append(
+        0,
+        &Payload::Session(SessionEvent::Started {
+            server,
+            count: start + 5,
+        }),
+    );
+    assert!(matches!(started, Err(WriteError::Rule(_))), "{started:?}");
+    let elsewhere = Session {
+        server,
+        start: start + 1,
+        connection: 1,
+    };
+    let opened_elsewhere = store.append(0, &Payload::Session(SessionEvent::Opened(elsewhere)));
+    assert!(
+        matches!(opened_elsewhere, Err(WriteError::Rule(_))),
+        "{opened_elsewhere:?}"
+    );
+    assert_eq!(store.unpublished(), 0, "nothing was appended");
+    let session = Session {
+        server,
+        start,
+        connection: 1,
+    };
+    store
+        .append(0, &Payload::Session(SessionEvent::Opened(session)))
+        .unwrap();
+    store.flush().unwrap();
+    drop(store);
+    let (store, again) = reopened(&sim).unwrap();
+    assert_eq!(again.start_count, start + 1);
+    let view = store.view().unwrap();
+    let tree = view.store_tree().unwrap().unwrap();
+    assert!(!tree.is_open(&session).unwrap(), "the next start closed it");
+    assert_eq!(tree.server(&server).unwrap().unwrap().start, start + 1);
 }
