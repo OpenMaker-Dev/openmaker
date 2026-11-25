@@ -55,7 +55,5 @@ way). The transaction adds nothing a user would see to a commit.
 
 The commit's records are not on the transaction yet, so this measures the
 transaction's cost to the operations around them, not a commit's writes
-through it. Not measured: op88 counts the library's member list through
-a listing where it read the list's length before, so its time now grows
-with the library's members; and the debug builds' checking transaction,
-which tests only use.
+through it. Not measured: the debug builds' checking transaction, which
+tests only use.

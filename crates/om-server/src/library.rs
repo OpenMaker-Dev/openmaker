@@ -245,16 +245,7 @@ impl Reads for At<'_> {
     }
 
     fn count(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
-        let path = self.join(path);
-        let mut count = 0;
-        for child in self
-            .view
-            .children(&path, Bound::Unbounded, Direction::Forward)
-        {
-            child?;
-            count += 1;
-        }
-        Ok(count)
+        self.view.count_children(&self.join(path))
     }
 }
 

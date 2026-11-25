@@ -536,6 +536,17 @@ impl View for Transaction<'_> {
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
         self.store.tree_view().changed_since(path, since)
     }
+
+    fn count_children(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
+        let ours = self.store.tree_view().count_children(path)?;
+        #[cfg(debug_assertions)]
+        if let Some(check) = &self.check {
+            check.read("count", path, &ours, |view| {
+                view.count_children(path).unwrap_or(usize::MAX)
+            });
+        }
+        Ok(ours)
+    }
 }
 
 #[cfg(debug_assertions)]

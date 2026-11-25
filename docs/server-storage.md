@@ -1408,9 +1408,11 @@ it. No reply changes. The library's rules (`library::Reads`,
 interface and say their changes as puts and removals: op87 and op88
 write them through the transaction, a commit applies them to the library
 in memory, and both refuse through the same check read through a view
-(`library::refusal`). op88's member count is a count of the member list
-`[L, 01, 07]` through a listing, which on the file engine walks the list
-in pages where it read its length before.
+(`library::refusal`). The header's member count is the number of entries
+in the member list `[L, 01, 07]`, which a view counts
+(`View::count_children`): the file engine's tree, its readings and its
+transaction from the node's length, as before, and other views by
+listing.
 
 The checking transaction (`engine::checking`, debug builds, switched on
 with the test view: `Server::checking_reads`, `LocalHost::checking_reads`,
