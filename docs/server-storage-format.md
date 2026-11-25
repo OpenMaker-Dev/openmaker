@@ -2412,7 +2412,10 @@ entry. Two calls go past two of them, and nothing else does:
   the plan says, with the run it says, and no segment file would be
   removed: otherwise it fails having done none of that
   (`LogError::NotAsPlanned`, naming what it would have removed; the
-  decision stands, and a new plan sets those files aside). The report
+  decision stands, and a new plan that still finds a loss sets those files
+  aside, while one that finds none refuses and the next ordinary open
+  removes them, as any open removes segment files the run does not list).
+  The report
   (`DamageAccepted`) carries the plan and says it all: `kept`, the marker
   before, the cut count, the run before and after, every segment file
   given up with the entries it held as far as the headers say (its first
