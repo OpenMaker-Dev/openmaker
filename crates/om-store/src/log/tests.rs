@@ -588,6 +588,9 @@ struct Reached {
     unreadable_ends: u64,
     given_up: u64,
     given_up_for_good: u64,
+    /// Opens that found `state`'s mark and no whole batch after the marker,
+    /// and opened again settling it.
+    loss_recorded: u64,
     cut_past_unreadable: u64,
     lost_slots: u64,
     tails_in_cache: u64,
@@ -1027,7 +1030,17 @@ impl<'a> Run<'a> {
             // What this attempt writes, not an earlier one's.
             let before = self.machine.changes();
             self.machine.begin_reads();
-            let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
+            // When `state` marks a copy passed over and no whole batch
+            // follows the marker, the store records the possible loss and
+            // opens again, settling: another operation.
+            let opened = match Log::open(fs.clone(), state, CONFIG, self.model.start) {
+                Err(failed) if matches!(failed.error, LogError::LossNotRecorded(_)) => {
+                    self.reached.loss_recorded += 1;
+                    self.machine.begin_reads();
+                    Log::open_settling(fs.clone(), failed.state, CONFIG, self.model.start)
+                }
+                other => other,
+            };
             if let Some(reads) = self.given_up_place {
                 assert_eq!(
                     self.machine.bad_reads(),
@@ -1997,6 +2010,10 @@ fn the_log_survives_drawn_crashes_and_faults() {
             ("cuts refused as unconfirmed", reached.unconfirmed),
             ("opens tried again with their state", reached.retried_opens),
             ("lost state slots", reached.lost_slots),
+            (
+                "opens that found the mark of a lost slot and no whole batch",
+                reached.loss_recorded,
+            ),
             ("tails held in the cache only", reached.tails_in_cache),
             (
                 "opens that ended where a read failed",
@@ -2164,6 +2181,24 @@ fn a_seed_replays_exactly() {
 
 /// A store on `sim`: `state` opened, or made where there is none, and the
 /// log opened from `start`.
+/// [`Log::open`], and when `state` marks a copy passed over and no whole
+/// batch follows the marker, the open the store makes once it has recorded
+/// that the last batch may be lost ([`Log::open_settling`]): these tests
+/// are of the log, and the record is the store's.
+fn open_settled(
+    fs: Arc<dyn Fs>,
+    state: State,
+    config: Config,
+    start: Position,
+) -> Result<(Log, Opened), Box<OpenFailed>> {
+    match Log::open(fs.clone(), state, config, start) {
+        Err(failed) if matches!(failed.error, LogError::LossNotRecorded(_)) => {
+            Log::open_settling(fs, failed.state, config, start)
+        }
+        other => other,
+    }
+}
+
 fn open_store(sim: &Sim, start: Position) -> Result<(Log, Opened), LogError> {
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let state = match State::open(&*fs, fs.lock().map_err(LogError::Disk)?) {
@@ -2174,7 +2209,7 @@ fn open_store(sim: &Sim, start: Position) -> Result<(Log, Opened), LogError> {
         }
         Err(e) => return Err(LogError::State(e)),
     };
-    Log::open(fs, state, CONFIG, start).map_err(|failed| failed.error)
+    open_settled(fs, state, CONFIG, start).map_err(|failed| failed.error)
 }
 
 /// Append `batches` batches of `per` entries with payloads of `len` bytes,
@@ -2366,7 +2401,7 @@ fn damage_through_the_marker_is_reported_where_it_is_and_nothing_is_cut() {
         let fs: Arc<dyn Fs> = Arc::new(sim.fs());
         let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
         let marker = state.values().marker;
-        match Log::open(fs, state, CONFIG, Position::START).map_err(|failed| *failed) {
+        match open_settled(fs, state, CONFIG, Position::START).map_err(|failed| *failed) {
             Err(OpenFailed {
                 error: LogError::Damaged(damage),
                 state,
@@ -2504,7 +2539,7 @@ fn a_full_disk_refuses_the_append_before_anything_is_written() {
         state
             .update(|v| v.segments = Segments { first, count: 0 })
             .unwrap();
-        let (mut log, _) = Log::open(fs, state, CONFIG, Position::START).unwrap();
+        let (mut log, _) = open_settled(fs, state, CONFIG, Position::START).unwrap();
         let mut flushed = Position::START;
         let refused = loop {
             let before = (log.appended(), log.batch_len());
@@ -2703,7 +2738,7 @@ fn a_cut_never_reaches_committed_or_checkpointed_entries() {
     let mut state = log.into_state();
     state.update(|v| v.marker.committed = u64::MAX).unwrap();
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
-    let (mut log, opened) = Log::open(fs, state, CONFIG, at4.position()).unwrap();
+    let (mut log, opened) = open_settled(fs, state, CONFIG, at4.position()).unwrap();
     assert_eq!(opened.recorded_committed, u64::MAX);
     log.set_committed(6).unwrap();
     log.flush_batch(Some(6)).unwrap();
@@ -2931,7 +2966,7 @@ fn an_entry_declaring_a_huge_payload_is_refused_before_anything_is_read_for_it()
     let fs: Arc<dyn Fs> = watched.clone();
     let open = |config: Config| {
         let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-        Log::open(fs.clone(), state, config, Position::START).unwrap()
+        open_settled(fs.clone(), state, config, Position::START).unwrap()
     };
     // Written under a larger configuration: a segment of 4096 bytes and an
     // entry of 1500.
@@ -2940,7 +2975,7 @@ fn an_entry_declaring_a_huge_payload_is_refused_before_anything_is_read_for_it()
         max_payload: 2000,
     };
     let state = State::create(&*fs, &OsRandom::new(), fs.lock().unwrap()).unwrap();
-    let (mut log, _) = Log::open(fs.clone(), state, larger, Position::START).unwrap();
+    let (mut log, _) = open_settled(fs.clone(), state, larger, Position::START).unwrap();
     let one = log.append(1, 0, 0, &[1; 1500]).unwrap();
     log.flush_batch(None).unwrap();
     let store = log.state().values().server_id.0;
@@ -3043,7 +3078,7 @@ fn indexes_at_the_top_of_the_range() {
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let mut state = State::open(&*fs, fs.lock().unwrap()).unwrap();
     state.update(|v| v.marker.index = MAX_INDEX + 1).unwrap();
-    let opened = Log::open(fs, state, CONFIG, start).map_err(|failed| failed.error);
+    let opened = open_settled(fs, state, CONFIG, start).map_err(|failed| failed.error);
     assert!(matches!(opened, Err(LogError::Refused(_))));
 }
 
@@ -3061,7 +3096,7 @@ fn an_open_tried_again_after_its_folder_flush_failed_makes_log_durable() {
         let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
         // The open lists `log/`, makes it, then flushes the store folder.
         sim.place(sim.steps() + 1, Fault::FailFlush);
-        let failed = *Log::open(fs.clone(), state, CONFIG, Position::START).unwrap_err();
+        let failed = *open_settled(fs.clone(), state, CONFIG, Position::START).unwrap_err();
         assert!(
             matches!(failed.error, LogError::Disk(_)),
             "{}",
@@ -3077,7 +3112,7 @@ fn an_open_tried_again_after_its_folder_flush_failed_makes_log_durable() {
             continue;
         }
         tried += 1;
-        let (mut log, _) = Log::open(fs.clone(), failed.state, CONFIG, Position::START)
+        let (mut log, _) = open_settled(fs.clone(), failed.state, CONFIG, Position::START)
             .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         let one = log.append(1, 0, 0, b"one").unwrap();
         log.flush_batch(None).unwrap();
@@ -3119,7 +3154,7 @@ fn an_unreadable_place_after_the_firm_position_ends_the_log_for_that_open() {
             }
             Err(e) => panic!("{e}"),
         };
-        Log::open(fs.clone(), state, big, Position::START)
+        open_settled(fs.clone(), state, big, Position::START)
     };
     let (mut log, _) = open().unwrap();
     let one = log.append(1, 0, 0, b"one").unwrap();
@@ -3221,7 +3256,7 @@ fn a_confirmed_batch_behind_a_lost_marker_and_a_failed_read_comes_back() {
         max_payload: 300 << 10,
     };
     let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
-    let (mut log, _) = Log::open(fs.clone(), state, big, Position::START).unwrap();
+    let (mut log, _) = open_settled(fs.clone(), state, big, Position::START).unwrap();
     let one = log.append(1, 0, 0, b"one").unwrap();
     log.flush_batch(None).unwrap();
     let two = log.append(1, 0, 0, &vec![2; 256 << 10]).unwrap();
@@ -3243,7 +3278,7 @@ fn a_confirmed_batch_behind_a_lost_marker_and_a_failed_read_comes_back() {
         .push((format::segment_path(1), bad));
     let open = || {
         let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-        Log::open(fs.clone(), state, big, Position::START).unwrap()
+        open_settled(fs.clone(), state, big, Position::START).unwrap()
     };
     let (mut log, opened) = open();
     assert_eq!(opened.durable, one);
@@ -3313,12 +3348,13 @@ fn a_tail_held_only_in_the_cache_is_written_again_before_the_marker_covers_it() 
                     let what = format!("seed {seed}, step {step}, {fault:?}, fresh {fresh}");
                     let state = State::open(&*fs, fs.lock().unwrap());
                     let opened = match state {
-                        Ok(state) => match Log::open(fs.clone(), state, CONFIG, Position::START) {
+                        Ok(state) => match open_settled(fs.clone(), state, CONFIG, Position::START)
+                        {
                             Ok((_, opened)) => Some(opened),
                             Err(failed) if !fresh => {
                                 // Tried again with the state handed back.
                                 let OpenFailed { state, .. } = *failed;
-                                Log::open(fs.clone(), state, CONFIG, Position::START)
+                                open_settled(fs.clone(), state, CONFIG, Position::START)
                                     .ok()
                                     .map(|(_, opened)| opened)
                             }
@@ -3377,7 +3413,7 @@ fn a_batch_header_that_does_not_chain_is_passed_over_unread() {
         max_payload: 300 << 10,
     };
     let state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
-    let (mut log, _) = Log::open(fs.clone(), state, big, Position::START).unwrap();
+    let (mut log, _) = open_settled(fs.clone(), state, big, Position::START).unwrap();
     let one = log.append(1, 0, 0, b"one").unwrap();
     log.flush_batch(None).unwrap();
     drop(log);
@@ -3404,7 +3440,7 @@ fn a_batch_header_that_does_not_chain_is_passed_over_unread() {
     drop(file);
     watched.largest_read.store(0, Ordering::Relaxed);
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let (_, opened) = Log::open(fs.clone(), state, big, Position::START).unwrap();
+    let (_, opened) = open_settled(fs.clone(), state, big, Position::START).unwrap();
     assert_eq!(opened.durable, one);
     assert_eq!(opened.cut, None);
     assert!(watched.largest_read.load(Ordering::Relaxed) <= 64 * 1024);
@@ -3439,7 +3475,7 @@ fn open_watched_from(
         Err(StateError::Missing) => State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap(),
         Err(e) => panic!("{e}"),
     };
-    Log::open(fs, state, config, start)
+    open_settled(fs, state, config, start)
 }
 
 /// A log of 1024-byte segments written in `batches` (each a list of
@@ -3966,7 +4002,7 @@ impl Laid {
             segment_size: 1024,
             max_payload: 64,
         };
-        let (mut log, _) = Log::open(fs.clone(), state, config, Position::START).unwrap();
+        let (mut log, _) = open_settled(fs.clone(), state, config, Position::START).unwrap();
         let mut entries = Vec::new();
         for batch in 0..5u8 {
             for i in 0..3u8 {
@@ -4175,7 +4211,7 @@ fn damaged_case(
         .map(|(p, b)| (p, b.unwrap()))
         .collect();
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    match Log::open(fs.clone(), state, config, start_at) {
+    match open_settled(fs.clone(), state, config, start_at) {
         Ok((log, opened)) => {
             assert!(missing.is_none(), "{case}: opened with a segment lost");
             // It opens with everything, and reports damage it walked past.
@@ -4219,7 +4255,7 @@ fn damaged_case(
             drop(state);
             sim.restart();
             let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-            let planned = Log::plan_damage(&*fs, &state, config, start_at);
+            let planned = Log::plan_damage(&*fs, &state, config, start_at, &[]);
             match planned {
                 Err(refused) => {
                     // A refusal is allowed for damage that begins before the
@@ -4260,9 +4296,16 @@ fn damaged_case(
                         .map_or("refused: bytes after the last entry", |(_, k)| k)
                 }
                 Ok(plan) => {
-                    let (log, opened, accepted) =
-                        Log::accept_damage(fs.clone(), state, config, start_at, &plan)
-                            .unwrap_or_else(|e| panic!("{case}: {}", e.failed.error));
+                    let (log, opened, accepted) = Log::accept_damage(
+                        fs.clone(),
+                        state,
+                        config,
+                        start_at,
+                        &plan,
+                        &[],
+                        &mut |_| Ok(()),
+                    )
+                    .unwrap_or_else(|e| panic!("{case}: {}", e.failed.error));
                     // The effect is the plan: what it keeps, the run, where
                     // the open ends; and that open removed nothing.
                     assert_eq!(accepted.plan, plan, "{case}: the plan carried out");
@@ -4294,7 +4337,7 @@ fn damaged_case(
                     // The next open agrees, and reads back what was kept.
                     sim.restart();
                     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-                    let (log, opened) = Log::open(fs.clone(), state, config, start_at)
+                    let (log, opened) = open_settled(fs.clone(), state, config, start_at)
                         .unwrap_or_else(|e| panic!("{case}: {}", e.error));
                     assert_eq!(opened.durable.index, kept, "{case}: opened after");
                     assert!(
@@ -4394,7 +4437,7 @@ fn long_accepting_a_loss_gives_up_no_entry_it_could_check_whatever_byte_is_damag
 fn open_laid(sim: &Sim, laid: &Laid, start: u64) -> Result<(Log, Opened), Box<OpenFailed>> {
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    Log::open(fs, state, laid.config, laid.entries[start as usize - 1].0)
+    open_settled(fs, state, laid.config, laid.entries[start as usize - 1].0)
 }
 
 /// A read that reaches the entry the log was opened from checks it against
@@ -4452,9 +4495,9 @@ fn a_failed_read_before_the_start_is_reported_and_any_other_error_fails() {
             (fs, state)
         };
         let (fs, state) = watched_on(&laid.disk(seg, |_| {}));
-        let opened = Log::open(fs, state, laid.config, at).map(|(_, opened)| opened);
+        let opened = open_settled(fs, state, laid.config, at).map(|(_, opened)| opened);
         let (fs, state) = watched_on(&laid.disk(2, |b| b.truncate(end)));
-        let plan = Log::plan_damage(&*fs, &state, laid.config, at);
+        let plan = Log::plan_damage(&*fs, &state, laid.config, at, &[]);
         if kind == ErrorKind::Read {
             let opened = opened.unwrap_or_else(|e| panic!("{}", e.error));
             let plan = plan.unwrap();
@@ -4489,7 +4532,7 @@ fn an_acceptance_refuses_a_plan_the_log_no_longer_matches() {
     let sim = laid.disk(0, |b| b[40] ^= 1);
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at, &[]).unwrap();
     assert!(
         matches!(plan.files[0].fate, Fate::SetAside { .. }),
         "{plan:?}"
@@ -4504,7 +4547,9 @@ fn an_acceptance_refuses_a_plan_the_log_no_longer_matches() {
     fs.remove(&laid.segments[2].0).unwrap();
     fs.flush_folder(FOLDER).unwrap();
     let before = log_files(&sim);
-    let refused = Log::accept_damage(fs.clone(), state, laid.config, at, &plan);
+    let refused = Log::accept_damage(fs.clone(), state, laid.config, at, &plan, &[], &mut |_| {
+        Ok(())
+    });
     let Err(refused) = refused else {
         panic!("accepted a stale plan")
     };
@@ -4518,17 +4563,10 @@ fn an_acceptance_refuses_a_plan_the_log_no_longer_matches() {
     drop(fs.create(&taken, FileOptions::PLAIN).unwrap());
     fs.flush_folder(FOLDER).unwrap();
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
     let before = log_files(&sim);
-    let refused = Log::accept_damage(fs.clone(), state, laid.config, at, &plan);
-    let Err(refused) = refused else {
-        panic!("accepted with the names spent")
-    };
-    assert!(
-        matches!(refused.failed.error, LogError::Refused(_)),
-        "{}",
-        refused.failed.error
-    );
+    // The plan chooses the names, so the plan is refused.
+    let refused = Log::plan_damage(&*fs, &state, laid.config, at, &[]);
+    assert!(matches!(refused, Err(LogError::Refused(_))), "{refused:?}");
     assert!(log_files(&sim) == before, "the refusal changed the log");
 }
 
@@ -4587,14 +4625,17 @@ fn the_plan_sets_aside_what_the_open_after_it_would_drop() {
         })
         .unwrap();
     let at = laid.entries[start as usize - 1].0;
-    assert!(Log::open(fs.clone(), state, laid.config, at).is_err());
+    assert!(open_settled(fs.clone(), state, laid.config, at).is_err());
     sim.restart();
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at, &[]).unwrap();
     let fate = plan.files.iter().find(|f| f.number == number).unwrap();
     assert!(matches!(fate.fate, Fate::SetAside { .. }), "{plan:?}");
     assert_eq!(plan.listed.first + plan.listed.count, number, "{plan:?}");
-    let (log, opened, accepted) = Log::accept_damage(fs.clone(), state, laid.config, at, &plan)
+    let (log, opened, accepted) =
+        Log::accept_damage(fs.clone(), state, laid.config, at, &plan, &[], &mut |_| {
+            Ok(())
+        })
         .unwrap_or_else(|e| panic!("{}", e.failed.error));
     assert_eq!(accepted.plan, plan);
     assert_eq!(opened.durable, last);
@@ -4633,7 +4674,7 @@ fn a_damaged_mark_before_a_lost_segment_is_not_taken_for_the_end() {
         let sim = laid.disk_without(0, harm, Some(1));
         let fs: Arc<dyn Fs> = Arc::new(sim.fs());
         let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-        Log::plan_damage(&*fs, &state, laid.config, at)
+        Log::plan_damage(&*fs, &state, laid.config, at, &[])
     };
     let refused = plan(&|b| b[mark] ^= 0x5a);
     assert!(
@@ -4692,14 +4733,17 @@ fn the_plan_reads_a_short_kept_file_as_the_open_will() {
     drop(file);
     fs.flush_folder(FOLDER).unwrap();
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at, &[]).unwrap();
     assert_eq!(plan.kept, last);
     assert_eq!(plan.opens_at.index, last.index + 1, "{plan:?}");
     assert!(
         matches!(plan.files[2].fate, Fate::Lengthened { .. }),
         "{plan:?}"
     );
-    let (log, opened, _) = Log::accept_damage(fs.clone(), state, laid.config, at, &plan)
+    let (log, opened, _) =
+        Log::accept_damage(fs.clone(), state, laid.config, at, &plan, &[], &mut |_| {
+            Ok(())
+        })
         .unwrap_or_else(|e| panic!("{}", e.failed.error));
     assert_eq!(opened.durable, plan.opens_at);
     assert_eq!(read_back(&log, last.index + 1), [(last.index + 1, payload)]);
@@ -4734,8 +4778,9 @@ fn the_open_after_an_acceptance_removes_nothing() {
         files: Vec::new(),
         tail_copied: None,
         before_start: None,
+        prefix: None,
     };
-    let Err(failed) = Log::open_as(fs.clone(), state, laid.config, at, Some(&plan)) else {
+    let Err(failed) = Log::open_as(fs.clone(), state, laid.config, at, Some(&plan), true) else {
         panic!("the open after an acceptance would remove a file and went on")
     };
     assert!(
@@ -4746,7 +4791,7 @@ fn the_open_after_an_acceptance_removes_nothing() {
     assert_eq!(*failed.state.values(), before);
     let there = |sim: &Sim| sim.image().iter().any(|(p, b)| *p == stray && b.is_some());
     assert!(there(&sim));
-    let (_, opened) = Log::open(fs.clone(), failed.state, laid.config, at).unwrap();
+    let (_, opened) = open_settled(fs.clone(), failed.state, laid.config, at).unwrap();
     assert_eq!(opened.removed, [40]);
     assert!(!there(&sim));
 }
@@ -4763,7 +4808,7 @@ fn a_plan_that_keeps_nothing_says_why_of_each_file() {
     let sim = laid.disk_without(0, |_| {}, Some(0));
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let plan = Log::plan_damage(&*fs, &state, laid.config, laid.entries[3].0).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, laid.entries[3].0, &[]).unwrap();
     assert_eq!(plan.listed.count, 0, "{plan:?}");
     assert_eq!(plan.files[0].fate, Fate::Missing);
     for file in &plan.files[1..] {
@@ -4777,7 +4822,7 @@ fn a_plan_that_keeps_nothing_says_why_of_each_file() {
     let sim = laid.disk_without(0, |_| {}, Some(1));
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
-    let plan = Log::plan_damage(&*fs, &state, laid.config, laid.entries[7].0).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, laid.entries[7].0, &[]).unwrap();
     assert_eq!(plan.listed.count, 0, "{plan:?}");
     let reasons: Vec<Option<&str>> = plan
         .files

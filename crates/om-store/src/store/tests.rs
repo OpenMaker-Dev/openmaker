@@ -11,9 +11,14 @@
 //!
 //! - every published version equals the model at its entry (check 1), and
 //!   a held view still reads what it read;
-//! - no entry answered as stored is lost (check 2), within the faults
-//!   section 6.12 says the store finds: a loss the store reports
-//!   ([`Opened::last_batch_may_be_lost`]) or one the administrator accepted;
+//! - no entry answered as stored is lost (check 2), and no restore point
+//!   whose keep returned, unless an incident recorded since names it
+//!   (incidents an open reports, or the run acknowledged): what the store
+//!   gave up by itself (the page file's damage, the last batch after a
+//!   passed-over copy of `state`) or the administrator did (a read that
+//!   keeps failing, an accepted loss, an unreadable end); every incident an
+//!   open reported is reported by every later open until acknowledged, and
+//!   every file the store set aside is named by one;
 //! - no view ever showed an entry that was not durable (check 4): after
 //!   every open, the durable entry is at or after every view taken;
 //! - a restore point reads as the model at its entry (check 9);
@@ -578,6 +583,21 @@ fn chain_stops(bytes: &[u8], start: u64, start_hash: &[u8; 32]) -> Option<u64> {
     None
 }
 
+/// Whether `incident` names restore point `name`, kept at checkpoint
+/// `number`, as given up: the checkpoints an approval gives up with the
+/// points that go with each (or unknown ones, after the landing), and the
+/// slots it writes over unread (any point kept after the landing).
+fn names_point(incident: &Incident, name: &str, number: u64) -> bool {
+    let What::Checkpoints { approval, .. } = &incident.what else {
+        return false;
+    };
+    let after_landing = number > approval.onto.number;
+    approval.checkpoints.iter().any(|given| match &given.lost {
+        pagefile::Lost::Points(points) => points.iter().any(|(n, at)| n == name && *at == number),
+        pagefile::Lost::Unknown => after_landing && number <= given.checkpoint.number,
+    }) || (!approval.slots.is_empty() && after_landing)
+}
+
 /// Counts over many runs, to show the schedules reach what they test.
 #[derive(Debug, Default)]
 struct Reached {
@@ -615,6 +635,11 @@ struct Reached {
     chain_reported: u64,
     chain_damaged: u64,
     chain_excused: u64,
+    /// Incidents seen, by path; acknowledgements; places of the journal
+    /// that did not check.
+    incidents: BTreeMap<&'static str, u64>,
+    acknowledged: u64,
+    journal_damaged: u64,
     kinds: BTreeMap<u16, u64>,
     fired: BTreeMap<Fault, u64>,
 }
@@ -643,14 +668,19 @@ struct Run {
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
     /// The latest entry any view showed.
     viewed: u64,
-    /// The lowest entry an open may end at for a loss an explicit call
-    /// reported in an error, which stands, or may (`AfterGivingUp`): the
-    /// loss is accepted from the moment `state` records it.
-    excused: Option<u64>,
+    /// Incidents reported (by an open, or by an error as recorded) and not
+    /// acknowledged, by number: every later open reports each.
+    incidents: BTreeMap<u64, Incident>,
+    /// Incidents first seen since the last open that succeeded: what can
+    /// name a loss of what was answered since.
+    new_incidents: Vec<Incident>,
+    /// Incidents the run acknowledged.
+    acknowledged: Vec<Incident>,
     views: Vec<(View, Model)>,
     /// Restore points kept, with the model at their entry, the number of
-    /// the checkpoint that wrote them and the device's step then.
-    points: BTreeMap<String, (Model, u64, u64)>,
+    /// the checkpoint that wrote them, the device's step then and the
+    /// number the next incident would take.
+    points: BTreeMap<String, (Model, u64, u64, u64)>,
     names: u64,
     reached: Reached,
     seed: u64,
@@ -722,7 +752,9 @@ impl Run {
             before_last_flush: 0,
             bad,
             viewed: 0,
-            excused: None,
+            incidents: BTreeMap::new(),
+            new_incidents: Vec::new(),
+            acknowledged: Vec::new(),
             views: Vec::new(),
             points: BTreeMap::new(),
             names: 0,
@@ -845,27 +877,43 @@ impl Run {
             }
             _ => None,
         };
-        let floor = reported.into_iter().chain(self.excused.take()).min();
-        let excused = |at: u64| self.lying || floor.is_some_and(|floor| at >= floor);
-        // Check 2: nothing answered as stored is lost, but down to what an
-        // explicit call reported giving up, or the last batch reported as
-        // possibly lost.
-        if durable.index < self.acked && !excused(durable.index) {
-            assert!(
-                opened.last_batch_may_be_lost && durable.index >= self.before_last_flush,
-                "seed {seed}: entry {} was answered as stored, and the store opened at {}",
-                self.acked,
-                durable.index
+        let _ = reported;
+        // The journal: every incident reported before and not acknowledged
+        // is reported again (a place of the journal the device damaged
+        // excepted), and those first seen now are counted.
+        self.check_incidents(opened);
+        // What the incidents recorded since the last open name as given up:
+        // the entries after the lowest of them.
+        let floor = self
+            .new_incidents
+            .iter()
+            .filter_map(|i| match &i.what {
+                What::LogDamage(plan) => Some(plan.kept.index),
+                What::UnreadableEnd { last, .. } => Some(last.index),
+                What::LastBatch { marker, .. } => Some(marker.index),
+                _ => None,
+            })
+            .min();
+        let named = |at: u64| self.lying || floor.is_some_and(|floor| at >= floor);
+        // Check 2: nothing answered as stored is lost, but what an incident
+        // recorded since names.
+        if durable.index < self.acked && !named(durable.index) {
+            panic!(
+                "seed {seed}: entry {} was answered as stored, and the store opened at {}, \
+                 with no incident naming it (since the last open: {:?})",
+                self.acked, durable.index, self.new_incidents
             );
         }
-        // Check 4: no view showed an entry that is not durable.
-        if durable.index < self.viewed && !excused(durable.index) {
-            assert!(
-                opened.last_batch_may_be_lost,
-                "seed {seed}: a view showed entry {}, and the store opened at {}",
+        // Check 4: no view showed an entry that is not durable, but what an
+        // incident names.
+        if durable.index < self.viewed && !named(durable.index) {
+            panic!(
+                "seed {seed}: a view showed entry {}, and the store opened at {}, with no \
+                 incident naming it",
                 self.viewed, durable.index
             );
         }
+        self.new_incidents.clear();
         if self.lying {
             // A device that drops writes: what the store holds is not what
             // was written, and the model follows it as far as it can.
@@ -994,40 +1042,148 @@ impl Run {
             .collect();
         let used = opened.checkpoint.checkpoint;
         let events = self.sim.events();
-        // An open that failed may have passed over, and cleared, the
-        // checkpoint that wrote a point, for a read of the pages the device
-        // failed (its number can then be used again).
-        let pages_failed_since = |at: u64| {
-            events.iter().any(|e| match e {
-                sim::Event::ReadFailed { step, path } | sim::Event::Damaged { step, path, .. } => {
-                    *step >= at && path == pagefile::FILE
-                }
-                sim::Event::Crash {
-                    step,
-                    op: Some(sys::Op::Read),
-                    path,
-                    ..
-                } => *step >= at && path == pagefile::FILE,
-                _ => false,
+        // Both superblock copies of a checkpoint damaged: the page file
+        // takes the one before as the newest and reports nothing (its
+        // limit, format 4.7), so no incident names what only it listed.
+        let slots_damaged_since = |at: u64| {
+            events.iter().any(|e| {
+                matches!(e, sim::Event::Damaged { step, path, offset, .. }
+                    if *step >= at && path == pagefile::FILE
+                        // Page 0 is the four superblock slots.
+                        && *offset < crate::page::PAGE_SIZE as u64)
             })
         };
+        let incidents: Vec<Incident> = opened
+            .incidents
+            .iter()
+            .chain(self.acknowledged.iter())
+            .cloned()
+            .collect();
         let mut gone = Vec::new();
-        self.points.retain(|name, (_, number, at)| {
+        self.points.retain(|name, (_, number, at, since)| {
             if listed.contains(name) {
                 return true;
             }
-            if *number <= used && !pages_failed_since(*at) {
+            let named = incidents
+                .iter()
+                .filter(|i| i.number >= *since)
+                .any(|i| names_point(i, name, *number));
+            if named {
+                self.reached
+                    .incidents
+                    .entry("restore points named")
+                    .and_modify(|n| *n += 1)
+                    .or_insert(1);
+            } else if !slots_damaged_since(*at) {
                 gone.push(format!("{name} of checkpoint {number}"));
             }
             false
         });
         assert!(
-            gone.is_empty(),
+            self.lying || gone.is_empty(),
             "seed {seed}: restore points {gone:?} are gone, though the open used checkpoint {used} \
-             and the device failed no read of the pages"
+             and no incident names them"
         );
+        // Every file the store set aside is named by an incident's plan.
+        if !self.lying {
+            let prefixes: Vec<String> = opened
+                .incidents
+                .iter()
+                .chain(self.acknowledged.iter())
+                .filter_map(|i| match &i.what {
+                    What::LogDamage(plan) => plan.prefix.clone(),
+                    _ => None,
+                })
+                .collect();
+            for name in self.fs.list(log::FOLDER).unwrap_or_default() {
+                if name.starts_with(log::GIVEN_UP_PREFIX) {
+                    assert!(
+                        prefixes.iter().any(|p| name.starts_with(p.as_str())),
+                        "seed {seed}: {name} was set aside, and no incident names it"
+                    );
+                }
+            }
+        }
         self.store = Some(store);
         self.check_published("after the open");
+    }
+
+    /// Incidents an open reported or an error said were recorded: first
+    /// seen ones counted by their path, and kept until acknowledged.
+    fn seen(&mut self, incidents: &[Incident]) {
+        for incident in incidents {
+            if self.incidents.contains_key(&incident.number)
+                || self
+                    .acknowledged
+                    .iter()
+                    .any(|a| a.number == incident.number)
+            {
+                continue;
+            }
+            let path = match &incident.what {
+                What::Checkpoints {
+                    by_administrator: false,
+                    ..
+                } => "page file damage given up by the store",
+                What::Checkpoints { .. } => "page file reads given up by the administrator",
+                What::LogDamage(_) => "log damage accepted",
+                What::UnreadableEnd { .. } => "unreadable ends given up",
+                What::LastBatch { .. } => "last batches possibly lost",
+                What::JournalLost => "journals lost",
+            };
+            *self.reached.incidents.entry(path).or_default() += 1;
+            self.incidents.insert(incident.number, incident.clone());
+            self.new_incidents.push(incident.clone());
+        }
+    }
+
+    /// Every incident reported before and not acknowledged is reported by
+    /// this open, as it was; a place of the journal the device damaged can
+    /// hide one, and the open says so.
+    fn check_incidents(&mut self, opened: &Opened) {
+        let seed = self.seed;
+        if !opened.journal.damaged.is_empty() || opened.journal.ends_damaged {
+            self.reached.journal_damaged += 1;
+        }
+        if !self.lying {
+            let journal_damaged = self.damaged(incident::FILE);
+            for (number, incident) in &self.incidents {
+                let again = opened.incidents.iter().find(|i| i.number == *number);
+                assert!(
+                    again == Some(incident) || (again.is_none() && journal_damaged),
+                    "seed {seed}: incident {number} was reported, not acknowledged, and this open \
+                     reports {again:?}: {incident:?}"
+                );
+            }
+        }
+        self.seen(&opened.incidents);
+    }
+
+    /// The administrator acknowledges every incident the store reports.
+    fn acknowledge(&mut self) {
+        let Some(store) = self.store.as_mut() else {
+            return;
+        };
+        let Some(last) = store.incidents().last().map(|i| i.number) else {
+            return;
+        };
+        let done = store.acknowledge(last);
+        self.note(format!("acknowledge through {last}: {done:?}"));
+        match done {
+            Ok(_) => {
+                self.reached.acknowledged += 1;
+                let acked: Vec<u64> = self.incidents.range(..=last).map(|(n, _)| *n).collect();
+                for number in acked {
+                    let incident = self.incidents.remove(&number).expect("listed");
+                    self.acknowledged.push(incident);
+                }
+            }
+            Err(_) => {
+                self.reached.stopped_after_failure += 1;
+                let power_loss = self.plan.below(2) == 0;
+                self.stop(power_loss);
+            }
+        }
     }
 
     /// An explicit call's decision, counted; the entry it kept.
@@ -1097,11 +1253,34 @@ impl Run {
                 }
                 other => other,
             };
+            // The page file's open failed for a read the device fails: the
+            // administrator opens it again, or gives up what it cannot read
+            // with the approval the error carries.
+            let opened = match opened {
+                Err(OpenError::Pages(e @ pagefile::OpenError::Unreadable { .. }))
+                    if e.give_up().is_some() && self.plan.below(3) == 0 =>
+                {
+                    let approval = e.give_up().cloned().expect("checked");
+                    self.sim.restart();
+                    Store::give_up_pages(self.fs.clone(), CONFIG, &approval)
+                }
+                other => other,
+            };
             if let Err(e) = &opened {
                 self.note(format!("then: {e}"));
             }
-            // A decision an explicit call recorded, or may have, before
-            // the open failed: it excuses a loss down to what it kept.
+            // What the open recorded before it failed: durable, and reported
+            // by the next open.
+            let opened = match opened {
+                Err(OpenError::AfterIncidents(failed)) => {
+                    let IncidentsThenFailed { recorded, error } = *failed;
+                    self.seen(&recorded);
+                    Err(error)
+                }
+                other => other,
+            };
+            // A decision an explicit call recorded, or may have, before the
+            // open failed: its incident names what it gave up.
             let opened = match opened {
                 Err(OpenError::AfterGivingUp(failed)) => {
                     let GaveUpThenFailed {
@@ -1110,8 +1289,7 @@ impl Run {
                         error,
                     } = *failed;
                     self.note(format!("gave up {gave_up:?} ({recorded:?}), then: {error}"));
-                    let kept = self.gave_up(&gave_up);
-                    self.excused = Some(self.excused.map_or(kept, |e| e.min(kept)));
+                    self.gave_up(&gave_up);
                     Err(error)
                 }
                 other => other,
@@ -1185,6 +1363,23 @@ impl Run {
                     // A read the device failed passed the checkpoint over.
                     continue;
                 }
+                // A read the device fails: open again later.
+                Err(OpenError::Pages(pagefile::OpenError::Unreadable { .. })) => continue,
+                // The journal full of incidents not acknowledged: the
+                // administrator acknowledges them.
+                Err(OpenError::Journal(incident::JournalError::Full)) => {
+                    let through = self.incidents.keys().next_back().copied().unwrap_or(0);
+                    if let Ok(n) = Store::acknowledge_incidents(&self.fs, through) {
+                        self.reached.acknowledged += n as u64;
+                        let acked: Vec<u64> = self.incidents.keys().copied().collect();
+                        for number in acked {
+                            let incident = self.incidents.remove(&number).expect("listed");
+                            self.acknowledged.push(incident);
+                        }
+                    }
+                    continue;
+                }
+                Err(OpenError::Journal(_) | OpenError::Refused(_)) => continue,
                 Err(e @ OpenError::State(StateError::NoValidCopy { .. })) => {
                     assert!(
                         self.lying || self.damaged(crate::state::FILE),
@@ -1233,11 +1428,12 @@ impl Run {
             75..=80 => self.checkpoint(),
             81..=82 => self.drop_point(),
             83..=85 => self.read_point(),
-            86..=89 => {
+            86..=88 => {
                 if let Some(Ok(r)) = self.store.as_mut().map(|s| s.reclaim(64)) {
                     self.reached.freed += r.freed;
                 }
             }
+            89 => self.acknowledge(),
             90..=94 => self.stop(false),
             _ => self.stop(true),
         }
@@ -1454,8 +1650,14 @@ impl Run {
                     self.reached.kept += 1;
                     let number = done.written.number;
                     let step = self.sim.steps();
+                    let since = store
+                        .incidents()
+                        .last()
+                        .map_or(0, |i| i.number)
+                        .max(self.acknowledged.last().map_or(0, |i| i.number))
+                        + 1;
                     self.points
-                        .insert(name, (self.published.clone(), number, step));
+                        .insert(name, (self.published.clone(), number, step, since));
                 }
             }
             Err(CheckpointFailed::Refused(_)) => {}
@@ -1489,7 +1691,7 @@ impl Run {
         if self.lying {
             return;
         }
-        let Some((name, (model, _, _))) = self.points.iter().next() else {
+        let Some((name, (model, _, _, _))) = self.points.iter().next() else {
             return;
         };
         let Some(store) = &self.store else { return };
@@ -1571,8 +1773,13 @@ fn add(into: &mut Reached, from: Reached) {
         fallback_reported,
         chain_reported,
         chain_damaged,
-        chain_excused
+        chain_excused,
+        acknowledged,
+        journal_damaged
     );
+    for (k, n) in from.incidents {
+        *into.incidents.entry(k).or_default() += n;
+    }
     for (k, n) in from.kinds {
         *into.kinds.entry(k).or_default() += n;
     }
@@ -1653,8 +1860,22 @@ fn the_store_survives_drawn_faults_against_the_model() {
                 "older checkpoints reported unable to replay",
                 reached.fallback_reported,
             ),
+            ("acknowledgements", reached.acknowledged),
         ] {
             assert!(n > 0, "no {what}: {reached:?}");
+        }
+        // Every give-up path recorded first, and reported.
+        for path in [
+            "page file damage given up by the store",
+            "page file reads given up by the administrator",
+            "log damage accepted",
+            "unreadable ends given up",
+            "last batches possibly lost",
+        ] {
+            assert!(
+                reached.incidents.get(path).copied().unwrap_or(0) > 0,
+                "no {path}: {reached:?}"
+            );
         }
         for kind in Kind::ALL {
             assert!(
@@ -1842,6 +2063,14 @@ fn long_the_store_survives_drawn_faults_against_the_model() {
 
 /// Plans accepting the loss and accepts that plan, as an administrator
 /// would.
+/// An open's error without what it says the open recorded.
+fn peel(e: &OpenError) -> &OpenError {
+    match e {
+        OpenError::AfterIncidents(failed) => &failed.error,
+        e => e,
+    }
+}
+
 fn plan_and_accept(fs: Arc<dyn Fs>, config: Config) -> Result<(Store, Opened), OpenError> {
     let plan = Store::plan_damage(fs.clone(), config)?;
     Store::accept_damage(fs, config, &plan)
@@ -2534,7 +2763,14 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     fail_writes(crate::state::FILE, opening);
     sim.restart();
     let failed = Store::accept_damage(fs.clone(), CONFIG, &plan);
-    let Err(OpenError::AfterGivingUp(after)) = &failed else {
+    // The plan was recorded before anything was changed, and the error says
+    // so.
+    let recorded = failed.as_ref().err().map_or(&[][..], OpenError::recorded);
+    assert!(
+        matches!(&recorded, [Incident { what: What::LogDamage(p), .. }] if **p == plan),
+        "{failed:?}"
+    );
+    let Some(OpenError::AfterGivingUp(after)) = failed.as_ref().err().map(peel) else {
         panic!("{failed:?}")
     };
     let GaveUp::Damage(decided) = &after.gave_up else {
@@ -2553,7 +2789,7 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     fail_writes("log/0", 0);
     sim.restart();
     let failed = plan_and_accept(fs.clone(), CONFIG);
-    let Err(OpenError::AfterGivingUp(after)) = &failed else {
+    let Some(OpenError::AfterGivingUp(after)) = failed.as_ref().err().map(peel) else {
         panic!("{failed:?}")
     };
     let GaveUp::Damage(decided) = &after.gave_up else {
@@ -2571,6 +2807,17 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     let (store, opened) = Store::open(fs.clone(), CONFIG).unwrap();
     assert!(opened.gave_up.is_none());
     assert_eq!(opened.recovered.index, positions[7].index);
+    // Both attempts were recorded before they acted, and are reported until
+    // acknowledged.
+    let plans: Vec<u64> = opened
+        .incidents
+        .iter()
+        .filter_map(|i| match &i.what {
+            What::LogDamage(p) => Some(p.kept.index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(plans, [positions[7].index; 2]);
     let view = store.view().unwrap();
     assert_eq!(read(&view, file, &[7]), Some(vec![7; 100]));
     assert_eq!(read(&view, file, &[8]), None);
@@ -3152,7 +3399,7 @@ fn an_unreadable_end_after_a_recorded_acceptance_says_what_was_given_up() {
     *s.flaky.bad.lock().unwrap() = Some((s.segments[3].clone(), end));
     s.sim.restart();
     let failed = plan_and_accept(s.fs(), SHAPE_CONFIG);
-    let Err(OpenError::AfterGivingUp(after)) = &failed else {
+    let Some(OpenError::AfterGivingUp(after)) = failed.as_ref().err().map(peel) else {
         panic!("{failed:?}")
     };
     let GaveUp::Damage(accepted) = &after.gave_up else {

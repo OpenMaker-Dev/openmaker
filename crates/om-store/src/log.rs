@@ -313,6 +313,42 @@ pub struct DamagePlan {
     /// open walks to reach it (as an open reports it): the decision does not
     /// depend on those entries.
     pub before_start: Option<ChainFault>,
+    /// The start of the names, in `log/`, of what is set aside:
+    /// `given-up-<k>.`, then a segment's number (and `.tail` for the copy of
+    /// `tail_copied`). `None` when nothing is moved or copied. Chosen by the
+    /// plan, so that a record of it says where each file goes before any
+    /// goes.
+    pub prefix: Option<String>,
+}
+
+/// Why a plan sets a file aside ([`Fate::SetAside`]): every reason it
+/// gives is one of these, so that a record of a plan names it by its place
+/// here.
+pub const SET_ASIDE_REASONS: [&str; 8] = [
+    "its header does not check",
+    "it holds only entries up to the checkpoint's: only an older checkpoint needs them",
+    "the segment that would hold the entry after the checkpoint's is missing or its header \
+     does not check: no entry after the checkpoint's can be checked",
+    "the segment that would hold the entry after the checkpoint's does not continue from the \
+     checkpoint's entry or the marker's",
+    "the walk reached the clean end of a segment before the checkpoint's entry, and the segment \
+     after it, which held the entry after the checkpoint's, is missing",
+    "it follows a segment that is missing or whose header does not check: its entries cannot \
+     be checked from the last entry kept",
+    "it holds entries after the last entry kept, or past where the open would end the log",
+    "not listed: the open would remove it",
+];
+
+/// A segment file an earlier acceptance set aside, as its record says (the
+/// store's incident journal): the plan names it, when a listed segment is
+/// missing under its own name and the file it was renamed to is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Earlier {
+    pub number: u64,
+    pub first: Option<u64>,
+    pub last: Option<u64>,
+    /// The path it was renamed to, in `log/`.
+    pub moved_to: String,
 }
 
 /// A segment file's fate in a [`DamagePlan`].
@@ -332,14 +368,19 @@ pub enum Fate {
     Kept,
     /// Kept, and lengthened with zeros to its header's size.
     Lengthened { size: u64 },
-    /// Given up: renamed aside, and why: it holds only entries up to the
-    /// checkpoint's; nothing after the checkpoint's entry could be kept (and
-    /// why not); it follows a missing segment or one whose header does not
-    /// check; it holds entries after the last kept; its own header does not
-    /// check; the run does not list it.
+    /// Given up: renamed aside to `<prefix><number>` ([`DamagePlan::prefix`]),
+    /// and why, one of [`SET_ASIDE_REASONS`]: it holds only entries up to
+    /// the checkpoint's; nothing after the checkpoint's entry could be kept
+    /// (and why not); it follows a missing segment or one whose header does
+    /// not check; it holds entries after the last kept; its own header does
+    /// not check; the run does not list it.
     SetAside { reason: &'static str },
     /// Listed and not there: given up.
     Missing,
+    /// Listed and not there under its own name: an earlier acceptance set it
+    /// aside, renamed to `to` (its record says so, with its entries); given
+    /// up.
+    MovedEarlier { to: String },
 }
 
 /// The marker and the cut count a plan gives `state`.
@@ -508,6 +549,17 @@ pub struct Damage {
     pub index: u64,
 }
 
+/// What an open with `state`'s mark set would do when the log holds no
+/// whole batch after the marker ([`LogError::LossNotRecorded`]): the marker
+/// it read, the cut it would make (with the listed segments it would drop)
+/// and the unreadable place it would end at, if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Loss {
+    pub marker: Marker,
+    pub cut: Option<Cut>,
+    pub unreadable_end: Option<UnreadableEnd>,
+}
+
 /// Why the log refused a call or failed.
 #[derive(Debug)]
 pub enum LogError {
@@ -556,6 +608,15 @@ pub enum LogError {
     /// An acceptance was given a plan that a fresh plan no longer matches:
     /// refused, with nothing changed. Plan again.
     PlanChanged,
+    /// `state` marks a copy passed over and the log holds no whole batch
+    /// after the marker: the last batch this server confirmed may be lost.
+    /// The open wrote nothing. Record that durably, then open again with
+    /// [`Log::open_settling`], which does what this open would have done
+    /// (`Loss` says what) and settles the mark.
+    LossNotRecorded(Box<Loss>),
+    /// An acceptance's plan could not be recorded before it acted, why:
+    /// nothing was changed.
+    NotRecorded(String),
     /// The open an acceptance runs after recording its decision would not
     /// do what the plan said: it would end the log at entry `durable`, list
     /// `listed`, and remove the segment files `removing`. It did none of
@@ -625,6 +686,18 @@ impl fmt::Display for LogError {
                 "the log's framing before the checkpoint's entry is broken in segment \
                  {segment} at offset {offset}: where the entry after it begins cannot be \
                  established, and nothing was given up"
+            ),
+            LogError::LossNotRecorded(loss) => write!(
+                f,
+                "a copy of the state file was passed over and the log holds no whole batch \
+                 after the marker at entry {}: the last batch this server confirmed may be \
+                 lost; nothing was written until that is recorded",
+                loss.marker.index
+            ),
+            LogError::NotRecorded(why) => write!(
+                f,
+                "what accepting the loss gives up could not be recorded first, so nothing was \
+                 changed: {why}"
             ),
             LogError::NotAsPlanned {
                 durable,
@@ -1032,27 +1105,14 @@ fn walk_log(
 /// places.
 fn park(
     fs: &dyn Fs,
+    prefix: &str,
     moves: &[u64],
     tail: Option<u64>,
-) -> Result<(String, Vec<(u64, u64)>), LogError> {
+) -> Result<Vec<(u64, u64)>, LogError> {
     let disk = |e: sys::Error| match e.kind() {
         ErrorKind::NoSpace => LogError::NoSpace(e),
         _ => LogError::Disk(e),
     };
-    let taken = fs
-        .list(FOLDER)
-        .map_err(disk)?
-        .iter()
-        .filter_map(|name| {
-            let rest = name.strip_prefix(GIVEN_UP_PREFIX)?;
-            rest.split('.').next()?.parse::<u64>().ok()
-        })
-        .max()
-        .unwrap_or(0);
-    let next = taken
-        .checked_add(1)
-        .ok_or(LogError::Refused("the numbers of given-up names are spent"))?;
-    let prefix = format!("{GIVEN_UP_PREFIX}{next}.");
     let named = |number: u64| format!("{FOLDER}/{prefix}{number:016x}");
     // A rename replaces a file of its new name: none may be there.
     let free = |path: &str| match fs.open(path, FileOptions::PLAIN) {
@@ -1102,7 +1162,7 @@ fn park(
         copy.flush().map_err(disk)?;
     }
     fs.flush_folder(FOLDER).map_err(disk)?;
-    Ok((prefix, unreadable))
+    Ok(unreadable)
 }
 
 /// A segment file shorter than its header says, read as it will read once
@@ -1322,7 +1382,19 @@ impl Log {
         config: Config,
         start: Position,
     ) -> Result<(Log, Opened), Box<OpenFailed>> {
-        Self::open_as(fs, state, config, start, None)
+        Self::open_as(fs, state, config, start, None, false)
+    }
+
+    /// [`Log::open`] for a caller that has recorded, durably, that the last
+    /// batch this server confirmed may be lost ([`LogError::LossNotRecorded`]):
+    /// the open goes on, and settles `state`'s mark in its update.
+    pub fn open_settling(
+        fs: Arc<dyn Fs>,
+        state: State,
+        config: Config,
+        start: Position,
+    ) -> Result<(Log, Opened), Box<OpenFailed>> {
+        Self::open_as(fs, state, config, start, None, true)
     }
 
     /// [`Log::open`], or with `plan` the open an acceptance runs after
@@ -1336,8 +1408,9 @@ impl Log {
         config: Config,
         start: Position,
         plan: Option<&DamagePlan>,
+        settle: bool,
     ) -> Result<(Log, Opened), Box<OpenFailed>> {
-        match Self::recover(&*fs, &mut state, config, start, plan) {
+        match Self::recover(&*fs, &mut state, config, start, plan, settle) {
             Ok(recovered) => {
                 let opened = recovered.opened.clone();
                 let log = Log {
@@ -1375,6 +1448,7 @@ impl Log {
         config: Config,
         start: Position,
         plan: Option<&DamagePlan>,
+        settle: bool,
     ) -> Result<Recovered, LogError> {
         config.check()?;
         if !state.holds_lock_of(fs) {
@@ -1466,15 +1540,6 @@ impl Log {
             walked_before_start,
         } = walk_log(&segs, start, marker, cut_count, run.first, true)?;
 
-        // The log holds what it must, and what it keeps after the firm
-        // position was written again as the walk went. Make its folder's
-        // name durable, then record it. The store folder is flushed on every
-        // open, whether this open made `log/` or found it: an earlier open
-        // may have made it and failed to flush (format section 3.6).
-        if no_folder {
-            fs.create_folder(FOLDER).map_err(LogError::Disk)?;
-        }
-        fs.flush_folder("").map_err(LogError::Disk)?;
         let mut cut = None;
         if let (Some((seg, offset)), None) = (end, &unreadable_end) {
             let dropped = (segs.len() - seg - 1) as u64;
@@ -1514,10 +1579,36 @@ impl Log {
                 });
             }
         }
+        // `state` marks a copy passed over (format section 1.3): the marker
+        // may be one advance behind. A whole batch kept after the firm
+        // position makes up for it, and the update below settles the mark;
+        // otherwise the last batch confirmed may be lost, and nothing is
+        // written until the caller has recorded that (`settle`).
+        let settles =
+            values.mark.is_some() && (last.index > marker.index.max(start.index) || settle);
+        if values.mark.is_some() && !settles {
+            return Err(LogError::LossNotRecorded(Box::new(Loss {
+                marker,
+                cut,
+                unreadable_end,
+            })));
+        }
+        // The log holds what it must, and what it keeps after the firm
+        // position was written again as the walk went. Make its folder's
+        // name durable, then record it. The store folder is flushed on every
+        // open, whether this open made `log/` or found it: an earlier open
+        // may have made it and failed to flush (format section 3.6).
+        if no_folder {
+            fs.create_folder(FOLDER).map_err(LogError::Disk)?;
+        }
+        fs.flush_folder("").map_err(LogError::Disk)?;
         state
             .update(|v| {
                 v.marker = new_marker;
                 v.segments = listed;
+                if settles {
+                    v.mark = None;
+                }
             })
             .map_err(LogError::State)?;
 
@@ -1618,20 +1709,29 @@ impl Log {
         state: &State,
         config: Config,
         start: Position,
+        earlier: &[Earlier],
     ) -> Result<DamagePlan, LogError> {
-        Self::decide_damaged(fs, state, config, start).map(|decided| decided.plan)
+        Self::decide_damaged(fs, state, config, start, earlier).map(|decided| decided.plan)
     }
 
-    /// Carry out `plan` ([`Log::plan_damage`]), when a fresh plan is the
-    /// same; refused with nothing changed ([`LogError::PlanChanged`]) when
-    /// it is not. Then the log is opened as [`Log::open`] opens it, and what
-    /// that open keeps is checked against the plan.
+    /// Carry out `plan` ([`Log::plan_damage`], made with the same
+    /// `earlier`), when a fresh plan is the same; refused with nothing
+    /// changed ([`LogError::PlanChanged`]) when it is not. Before anything
+    /// is changed, `record` is given the plan, to make a durable record of
+    /// it (where each file goes and the entries it holds, and the possible
+    /// loss of the last batch when `state` carries a mark): when it fails,
+    /// nothing is changed ([`LogError::NotRecorded`]). Then the log is
+    /// opened as [`Log::open`] opens it, with the mark (if any) settled,
+    /// and what that open keeps is checked against the plan before it
+    /// writes anything.
     pub fn accept_damage(
         fs: Arc<dyn Fs>,
         mut state: State,
         config: Config,
         start: Position,
         plan: &DamagePlan,
+        earlier: &[Earlier],
+        record: &mut dyn FnMut(&DamagePlan) -> Result<(), String>,
     ) -> Result<(Log, Opened, DamageAccepted), Box<AcceptFailed>> {
         let fail = |error, state, decided| {
             Box::new(AcceptFailed {
@@ -1639,12 +1739,16 @@ impl Log {
                 decided,
             })
         };
-        let decided = match Self::decide_damaged(&*fs, &state, config, start) {
+        let decided = match Self::decide_damaged(&*fs, &state, config, start, earlier) {
             Ok(decided) => decided,
             Err(error) => return Err(fail(error, state, None)),
         };
         if decided.plan != *plan {
             return Err(fail(LogError::PlanChanged, state, None));
+        }
+        // Recorded and durable before anything is changed.
+        if let Err(why) = record(plan) {
+            return Err(fail(LogError::NotRecorded(why), state, None));
         }
         let AcceptPlan {
             mut accepted,
@@ -1656,18 +1760,9 @@ impl Log {
         // What is given up is moved aside first, under names no open
         // removes, and the kept segment whose tail is given up copied: all
         // durable before `state` changes.
-        if !moves.is_empty() || accepted.tail_copied.is_some() {
-            match park(&*fs, &moves, accepted.tail_copied) {
-                Ok((prefix, unreadable)) => {
-                    for given in &mut accepted.given_up {
-                        if moves.contains(&given.number) {
-                            given.moved_to =
-                                Some(format!("{FOLDER}/{prefix}{:016x}", given.number));
-                        }
-                    }
-                    accepted.prefix = Some(format!("{FOLDER}/{prefix}"));
-                    accepted.tail_unreadable = unreadable;
-                }
+        if let Some(prefix) = &plan.prefix {
+            match park(&*fs, prefix, &moves, accepted.tail_copied) {
+                Ok(unreadable) => accepted.tail_unreadable = unreadable,
                 Err(error) => return Err(fail(error, state, None)),
             }
         }
@@ -1696,7 +1791,7 @@ impl Log {
         }
         // The open ends the log where the plan said, with the run it said,
         // and removes nothing, or fails having written nothing.
-        match Log::open_as(fs, state, config, start, Some(plan)) {
+        match Log::open_as(fs, state, config, start, Some(plan), true) {
             Ok((log, opened)) => Ok((log, opened, accepted)),
             Err(failed) => Err(Box::new(AcceptFailed {
                 failed,
@@ -1712,6 +1807,7 @@ impl Log {
         state: &State,
         config: Config,
         start: Position,
+        earlier: &[Earlier],
     ) -> Result<AcceptPlan, LogError> {
         config.check()?;
         if !state.holds_lock_of(fs) {
@@ -1828,13 +1924,10 @@ impl Log {
         // `older_below` hold only entries up to the start, and why nothing
         // in the others is kept.
         let mut older_below: Option<u64> = None;
-        let mut nothing_kept = "the segment that would hold the entry after the checkpoint's \
-                                is missing or its header does not check: no entry after the \
-                                checkpoint's can be checked";
+        let mut nothing_kept = SET_ASIDE_REASONS[2];
         if let Some(from) = usable.iter().rposition(|s| s.header.first <= after) {
             older_below = Some(usable[from].number);
-            nothing_kept = "the segment that would hold the entry after the checkpoint's does \
-                            not continue from the checkpoint's entry or the marker's";
+            nothing_kept = SET_ASIDE_REASONS[3];
             let mut to = from;
             while to + 1 < usable.len() && follows(&usable[to], &usable[to + 1]) {
                 to += 1;
@@ -1851,9 +1944,7 @@ impl Log {
                 hash: header.prev_hash,
             };
             if fits(&before) {
-                nothing_kept = "the walk reached the clean end of a segment before the \
-                                checkpoint's entry, and the segment after it, which held the \
-                                entry after the checkpoint's, is missing";
+                nothing_kept = SET_ASIDE_REASONS[4];
                 let mut seen = (before, 0usize);
                 if before.index < firm {
                     let mut scanner = Scanner::new(chain, 0, Keep::Nothing).anchored_at(
@@ -2005,18 +2096,49 @@ impl Log {
                 .flatten();
             (first, last)
         };
+        // Where what is set aside goes: `given-up-<k>.`, `k` one past the
+        // largest a name in `log/` uses (refused when none is left).
+        let taken = names
+            .iter()
+            .filter_map(|name| {
+                let rest = name.strip_prefix(GIVEN_UP_PREFIX)?;
+                rest.split('.').next()?.parse::<u64>().ok()
+            })
+            .max()
+            .unwrap_or(0);
+        let prefix = taken
+            .checked_add(1)
+            .map(|k| format!("{GIVEN_UP_PREFIX}{k}."))
+            .ok_or(LogError::Refused("the numbers of given-up names are spent"));
+        // A listed segment missing under its own name that an earlier
+        // acceptance, by its record, renamed to a file that is there.
+        let moved_earlier = |number: u64| {
+            earlier
+                .iter()
+                .rev()
+                .find(|e| e.number == number && fs.open(&e.moved_to, FileOptions::PLAIN).is_ok())
+        };
         for number in run.first..run_end {
-            let (first, last) = entries_of(number);
+            let (mut first, mut last) = entries_of(number);
             let fate = if kept_numbers.contains(&number) {
                 match lengthen.iter().find(|(n, _)| *n == number) {
                     Some(&(_, size)) => Fate::Lengthened { size },
                     None => Fate::Kept,
                 }
             } else if !present.contains(&number) {
-                Fate::Missing
+                match moved_earlier(number) {
+                    Some(e) => {
+                        first = first.or(e.first);
+                        last = last.or(e.last);
+                        Fate::MovedEarlier {
+                            to: e.moved_to.clone(),
+                        }
+                    }
+                    None => Fate::Missing,
+                }
             } else if !first_of.contains_key(&number) {
                 Fate::SetAside {
-                    reason: "its header does not check",
+                    reason: SET_ASIDE_REASONS[0],
                 }
             } else if (keep.is_some() && number < listed.first)
                 || (keep.is_none() && older_below.is_some_and(|b| number < b))
@@ -2024,8 +2146,7 @@ impl Log {
             {
                 // Its entries come before the start's successor's segment.
                 Fate::SetAside {
-                    reason: "it holds only entries up to the checkpoint's: only an older \
-                             checkpoint needs them",
+                    reason: SET_ASIDE_REASONS[1],
                 }
             } else if keep.is_none() {
                 Fate::SetAside {
@@ -2033,13 +2154,11 @@ impl Log {
                 }
             } else if (listed_end..number).any(|n| !first_of.contains_key(&n)) {
                 Fate::SetAside {
-                    reason: "it follows a segment that is missing or whose header does not \
-                             check: its entries cannot be checked from the last entry kept",
+                    reason: SET_ASIDE_REASONS[5],
                 }
             } else {
                 Fate::SetAside {
-                    reason: "it holds entries after the last entry kept, or past where the open \
-                             would end the log",
+                    reason: SET_ASIDE_REASONS[6],
                 }
             };
             if !matches!(fate, Fate::Kept | Fate::Lengthened { .. }) {
@@ -2047,7 +2166,10 @@ impl Log {
                     number,
                     first,
                     last,
-                    moved_to: None,
+                    moved_to: match &fate {
+                        Fate::MovedEarlier { to } => Some(to.clone()),
+                        _ => None,
+                    },
                 });
             }
             if matches!(fate, Fate::SetAside { .. }) {
@@ -2075,11 +2197,23 @@ impl Log {
                 first: None,
                 last: None,
                 fate: Fate::SetAside {
-                    reason: "not listed: the open would remove it",
+                    reason: SET_ASIDE_REASONS[7],
                 },
             });
         }
         let tail_copied = (raise && listed.count > 0).then_some(listed_end - 1);
+        let prefix = if moves.is_empty() && tail_copied.is_none() {
+            None
+        } else {
+            Some(prefix?)
+        };
+        if let Some(prefix) = &prefix {
+            for given in &mut given_up {
+                if moves.contains(&given.number) {
+                    given.moved_to = Some(format!("{FOLDER}/{prefix}{:016x}", given.number));
+                }
+            }
+        }
         let lowered = if reached {
             marker
         } else {
@@ -2106,6 +2240,7 @@ impl Log {
             files,
             tail_copied,
             before_start,
+            prefix: prefix.clone(),
         };
         Ok(AcceptPlan {
             accepted: DamageAccepted {
@@ -2119,7 +2254,7 @@ impl Log {
                 tail_copied,
                 tail_unreadable: Vec::new(),
                 lengthened: lengthen.iter().map(|(n, _)| *n).collect(),
-                prefix: None,
+                prefix: prefix.map(|p| format!("{FOLDER}/{p}")),
             },
             plan,
             values: new,

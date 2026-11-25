@@ -192,6 +192,7 @@ impl File for RecordedFile {
             offset as usize % SLOT == 0
                 && (data.len() == COPY
                     || data.len() == HEADER + BODY_V1 + HASH
+                    || data.len() == HEADER + BODY_V2 + HASH
                     || data.len() % SLOT == 0),
             "state writes copies at the start of slots"
         );
@@ -861,6 +862,7 @@ impl<'a> Run<'a> {
             number: opened.number,
             values: Values {
                 start_count: values.start_count - 1,
+                mark: opened.mark_read,
                 ..values
             },
         };
@@ -1312,8 +1314,8 @@ fn open_refuses_what_it_cannot_trust() {
 
     // A copy of a newer format, whole: refused rather than passed over.
     let mut copy = encode(99, state_values());
-    copy[8] = 3;
-    let end = HEADER + BODY_V2;
+    copy[8] = 4;
+    let end = HEADER + BODY_V3;
     let hash = digest::digest(&digest::SHA256, &copy[..end]);
     copy[end..end + HASH].copy_from_slice(hash.as_ref());
     let file = fs.open(FILE, FileOptions::PLAIN).unwrap();
@@ -1321,7 +1323,7 @@ fn open_refuses_what_it_cannot_trust() {
     drop(file);
     assert!(matches!(
         open(&sim),
-        Err(StateError::NewerFormat { version: 3 })
+        Err(StateError::NewerFormat { version: 4 })
     ));
 }
 
@@ -1664,6 +1666,7 @@ fn state_values() -> &'static Values {
         },
         cut_count: 0,
         repair: None,
+        mark: None,
     };
     &VALUES
 }

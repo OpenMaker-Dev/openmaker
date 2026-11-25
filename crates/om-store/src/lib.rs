@@ -8,6 +8,7 @@
 
 pub mod apply;
 pub mod entry;
+pub mod incident;
 pub mod log;
 pub mod model;
 pub mod os;

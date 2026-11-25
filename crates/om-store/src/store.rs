@@ -69,6 +69,7 @@ use std::sync::Arc;
 
 use crate::apply::{self, Applied, Position, StoreTree, TreeId};
 use crate::entry::{entry_hash, Entry, Payload, PayloadError, ServerId, SessionEvent};
+use crate::incident::{self, Incident, Journal, JournalError, What};
 use crate::log::{self, CutDone, DamageAccepted, Log, LogError, Recorded, UnreadableEnd};
 use crate::page::{Hash, StoreError, TreeName};
 use crate::pagefile::{
@@ -290,6 +291,20 @@ pub enum OpenError {
     /// An explicit call gave something up, and the open then failed
     /// ([`GaveUpThenFailed`]).
     AfterGivingUp(Box<GaveUpThenFailed>),
+    /// The incident journal could not be read (a newer format) or written
+    /// (the disk, or full of incidents not acknowledged): nothing that
+    /// needed a record was given up.
+    Journal(JournalError),
+    /// The open recorded incidents ([`Incident`]) and then failed: they are
+    /// durable, and the next open reports them too.
+    AfterIncidents(Box<IncidentsThenFailed>),
+}
+
+/// The incidents an open recorded before it failed, and why it failed.
+#[derive(Debug)]
+pub struct IncidentsThenFailed {
+    pub recorded: Vec<Incident>,
+    pub error: OpenError,
 }
 
 /// What an explicit call gave up before the open failed, and why it failed
@@ -312,6 +327,14 @@ impl OpenError {
             error,
         }))
     }
+
+    /// The incidents this error says the failed open recorded.
+    pub fn recorded(&self) -> &[Incident] {
+        match self {
+            OpenError::AfterIncidents(failed) => &failed.recorded,
+            _ => &[],
+        }
+    }
 }
 
 impl OpenError {
@@ -332,6 +355,16 @@ impl OpenError {
                  not read back); if none can be read then either, restore it from a backup"
             }
             OpenError::Pages(pagefile::OpenError::Disk(_)) => "open the store again",
+            OpenError::Pages(pagefile::OpenError::Unreadable {
+                give_up: Some(_), ..
+            }) => {
+                "open the store again later; if the read keeps failing, give up what cannot be \
+                 read with the approval this error carries (Store::give_up_pages)"
+            }
+            OpenError::Pages(pagefile::OpenError::Unreadable { .. }) => {
+                "open the store again later; if the read keeps failing, restore the store from a \
+                 backup: nothing older can be opened"
+            }
             OpenError::Pages(_) => "restore the store from a backup",
             OpenError::LogDamaged(_) => {
                 "restore the store from a backup, or see what accepting the loss would keep and \
@@ -369,6 +402,15 @@ impl OpenError {
             OpenError::Refused(_) => "a defect of the caller",
             OpenError::Config(_) => "correct the store's configuration",
             OpenError::AfterGivingUp(failed) => failed.error.remedy(),
+            OpenError::Journal(JournalError::Full) => {
+                "acknowledge the incidents (Store::acknowledge_incidents), then open the store \
+                 again"
+            }
+            OpenError::Journal(JournalError::NewerFormat { .. }) => {
+                "open the store with a server that reads its incident journal"
+            }
+            OpenError::Journal(_) => "open the store again",
+            OpenError::AfterIncidents(failed) => failed.error.remedy(),
         }
     }
 }
@@ -419,6 +461,15 @@ impl fmt::Display for OpenError {
                 };
                 // The inner error names the remedy.
                 return write!(f, "after giving up {gave_up:?}, {held}: {error}");
+            }
+            OpenError::Journal(e) => write!(f, "{e}"),
+            OpenError::AfterIncidents(failed) => {
+                f.write_str("after recording")?;
+                for incident in &failed.recorded {
+                    write!(f, " {incident};")?;
+                }
+                // The inner error names the remedy.
+                return write!(f, " {}", failed.error);
             }
         }?;
         write!(f, " ({})", self.remedy())
@@ -486,9 +537,11 @@ pub struct Opened {
     /// The copy of `state` this open passed over, damaged or unreadable,
     /// when it did.
     pub passed_over_state: Option<SlotFault>,
-    /// A copy of `state` was passed over and the log held no whole batch
-    /// after the marker: the marker can have been one advance behind, and
-    /// the last batch this server confirmed may be lost (section 6.12).
+    /// `state` marked a copy passed over (by this open or an earlier one)
+    /// and the log held no whole batch after the marker: the marker can
+    /// have been one advance behind, and the last batch this server
+    /// confirmed may be lost (section 6.12). This open recorded it as an
+    /// incident ([`incident::What::LastBatch`]) before it settled the mark.
     pub last_batch_may_be_lost: bool,
     /// What an explicit call gave up to open the store.
     pub gave_up: Option<GaveUp>,
@@ -502,6 +555,14 @@ pub struct Opened {
     /// open that falls back to it, the newest not readable, could not replay
     /// past it, which design 6.7 counts on.
     pub fallback_cannot_replay: bool,
+    /// Every incident of the journal no administrator has acknowledged,
+    /// those this open recorded among them, in order: what the store gave
+    /// up, each recorded before it was given up
+    /// ([`Store::acknowledge`]).
+    pub incidents: Vec<Incident>,
+    /// What the read of the journal found besides its records (a missing
+    /// journal, places that do not check), until an acknowledgement.
+    pub journal: incident::Found,
 }
 
 /// What an open found before the replay.
@@ -510,15 +571,31 @@ struct Opening {
     log: log::Opened,
     passed_over_state: Option<SlotFault>,
     gave_up: Option<GaveUp>,
+    journal: Journal,
+    last_batch_may_be_lost: bool,
 }
 
-/// How an open treats the log.
+/// What an open's first steps leave.
+struct FirstSteps {
+    state: State,
+    journal: Journal,
+    pages: PageFile,
+    checkpoint: pagefile::Opened,
+    passed_over_state: Option<SlotFault>,
+}
+
+/// How an open treats the page file and the log.
 #[derive(Clone, Copy, Debug)]
 enum How<'a> {
     Normal,
     AcceptDamage(&'a log::DamagePlan),
     GiveUp(log::Position),
+    GiveUpPages(&'a pagefile::GiveUp),
 }
+
+/// The most approvals an open records and gives the page file in turn,
+/// each one the answer of the call before (the damage changed meanwhile).
+const PAGE_ROUNDS: usize = 8;
 
 /// A view of a published version (section 6.6): its entry, and the roots of
 /// its trees, kept by a pin for as long as the view lives. It holds the
@@ -606,6 +683,7 @@ pub struct Store {
     published: Version,
     pending: Vec<Unpublished>,
     stopped: Option<String>,
+    journal: Journal,
 }
 
 impl fmt::Debug for Store {
@@ -744,6 +822,32 @@ fn store_left(fs: &dyn Fs) -> Result<Option<&'static str>, OpenError> {
     Ok(None)
 }
 
+/// The entry of the checkpoint the page file opened.
+fn start_of(checkpoint: &pagefile::Opened) -> log::Position {
+    log::Position {
+        index: checkpoint.entry.index,
+        term: checkpoint.entry.term,
+        hash: checkpoint.entry.hash.0,
+    }
+}
+
+/// The open's error for the log's.
+fn log_error(e: LogError) -> OpenError {
+    match e {
+        LogError::Damaged(d) => OpenError::LogDamaged(d),
+        e => OpenError::Log(e),
+    }
+}
+
+/// `error`, saying what the open recorded before it, if anything.
+fn after_incidents(recorded: Vec<Incident>, error: OpenError) -> OpenError {
+    if recorded.is_empty() {
+        error
+    } else {
+        OpenError::AfterIncidents(Box::new(IncidentsThenFailed { recorded, error }))
+    }
+}
+
 /// Removes the creation's marker, once `state` exists.
 fn creation_done(fs: &dyn Fs) -> Result<(), OpenError> {
     let disk = |e: sys::Error| OpenError::Disk(e.to_string());
@@ -813,6 +917,14 @@ impl Store {
             Err(e) => return Err(disk(e)),
         }
         drop(PageFile::create(&*fs, &lock, config.pages).map_err(OpenError::Pages)?);
+        // The incident journal, empty, its name durable before `state`
+        // exists: from then on a store whose journal is missing lost it.
+        match fs.create(incident::FILE, sys::FileOptions::PLAIN) {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(disk(e)),
+        }
+        fs.flush_folder("").map_err(disk)?;
         let state = State::create(&*fs, random, lock).map_err(OpenError::State)?;
         creation_done(&*fs)?;
         drop(state);
@@ -862,32 +974,89 @@ impl Store {
         Store::start(fs, config, How::GiveUp(last))
     }
 
+    /// Opens a store whose page file does not open because the device fails
+    /// a read its open needs, giving up what it cannot read: the
+    /// administrator's explicit call (sections 6.7 and 6.12), given the
+    /// approval [`OpenError::Pages`] carried
+    /// ([`pagefile::OpenError::give_up`]). The approval is recorded in the
+    /// incident journal, and flushed, before
+    /// [`PageFile::open_giving_up`] is called with it, which does exactly
+    /// that or nothing. When nothing stops the page file's open any more it
+    /// opens plainly; when the call answers damage instead, the store gives
+    /// that up by itself, recording it first; when it answers another read
+    /// failure, that error is returned, to approve in turn.
+    pub fn give_up_pages(
+        fs: Arc<dyn Fs>,
+        config: Config,
+        approval: &pagefile::GiveUp,
+    ) -> Result<(Store, Opened), OpenError> {
+        Store::start(fs, config, How::GiveUpPages(approval))
+    }
+
     /// What accepting the loss would do ([`Log::plan_damage`]), from the
     /// checkpoint the store would open on: nothing is written to the log.
     /// The open's own first steps run as in any open (they raise `state`'s
-    /// start count and settle the page file's slots). Accept it with
-    /// [`Store::accept_damage`], which refuses when the log no longer
+    /// start count, settle the page file's slots, and give up what the
+    /// store gives up by itself, recording it first). A listed segment that
+    /// an earlier acceptance set aside, by its record in the journal, is
+    /// named with where it went ([`log::Fate::MovedEarlier`]). Accept it
+    /// with [`Store::accept_damage`], which refuses when the log no longer
     /// matches it.
     pub fn plan_damage(fs: Arc<dyn Fs>, config: Config) -> Result<log::DamagePlan, OpenError> {
-        let (state, _, checkpoint, _) = Store::first_steps(&fs, config)?;
-        let start = log::Position {
-            index: checkpoint.entry.index,
-            term: checkpoint.entry.term,
-            hash: checkpoint.entry.hash.0,
-        };
-        Log::plan_damage(&*fs, &state, config.log, start).map_err(|e| match e {
-            LogError::Damaged(d) => OpenError::LogDamaged(d),
-            e => OpenError::Log(e),
-        })
+        let mut recorded = Vec::new();
+        let planned = (|| {
+            let first = Store::first_steps(&fs, config, None, &mut recorded)?;
+            let start = start_of(&first.checkpoint);
+            Log::plan_damage(
+                &*fs,
+                &first.state,
+                config.log,
+                start,
+                &first.journal.earlier_moves(),
+            )
+            .map_err(log_error)
+        })();
+        planned.map_err(|e| after_incidents(recorded, e))
+    }
+
+    /// The incidents of the store in the folder no administrator has
+    /// acknowledged, and what the read of the journal found, read with the
+    /// store folder's lock (so not while the store is open: then see
+    /// [`Store::incidents`]). It needs nothing but the journal: a store whose
+    /// log or page file cannot be read says what it gave up.
+    pub fn read_incidents(fs: &Arc<dyn Fs>) -> Result<(Vec<Incident>, incident::Found), OpenError> {
+        let _lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
+        let journal = Journal::open(&**fs, 0).map_err(OpenError::Journal)?;
+        Ok((journal.incidents().to_vec(), journal.found().clone()))
+    }
+
+    /// Acknowledge, for the store in the folder, every incident numbered up
+    /// to `through` and every place of the journal that does not check
+    /// ([`Journal::acknowledge`]), with the store folder's lock (so not
+    /// while the store is open: then see [`Store::acknowledge`]). Returns
+    /// how many incidents were acknowledged.
+    pub fn acknowledge_incidents(fs: &Arc<dyn Fs>, through: u64) -> Result<usize, OpenError> {
+        let _lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
+        let mut journal = Journal::open(&**fs, 0).map_err(OpenError::Journal)?;
+        journal
+            .acknowledge(&**fs, through)
+            .map_err(OpenError::Journal)
     }
 
     /// An open's first steps: the configuration checked, the lock and
-    /// `state`, a creation's marker settled, the page file's checkpoint.
-    #[allow(clippy::type_complexity)]
+    /// `state`, a creation's marker settled, the incident journal read (a
+    /// missing one recorded as such), and the page file's checkpoint. When
+    /// the page file answers damage with an approval, or the administrator
+    /// gave one (`approval`), it is recorded and flushed before
+    /// [`PageFile::open_giving_up`] is called with it; what the call
+    /// answers is handled the same way, up to [`PAGE_ROUNDS`] times.
+    /// Everything recorded is pushed to `recorded`.
     fn first_steps(
         fs: &Arc<dyn Fs>,
         config: Config,
-    ) -> Result<(State, PageFile, pagefile::Opened, Option<SlotFault>), OpenError> {
+        approval: Option<&pagefile::GiveUp>,
+        recorded: &mut Vec<Incident>,
+    ) -> Result<FirstSteps, OpenError> {
         check_config(&config)?;
         // 1. The lock and `state`.
         let disk = |e: sys::Error| OpenError::Disk(e.to_string());
@@ -917,29 +1086,140 @@ impl Store {
         // A creation whose last step was cut short.
         creation_done(&**fs)?;
         let passed_over_state = state.opened().and_then(|o| o.other.err());
-        // 2. The page file's checkpoint.
-        let (pages, checkpoint) =
-            PageFile::open(&**fs, state.folder_lock(), config.pages).map_err(OpenError::Pages)?;
-        Ok((state, pages, checkpoint, passed_over_state))
+        // The incident journal: the store's own, read before anything that
+        // can be given up is opened.
+        let mut journal =
+            Journal::open(&**fs, state.values().start_count).map_err(OpenError::Journal)?;
+        if journal.found().missing {
+            recorded.push(
+                journal
+                    .record(&**fs, What::JournalLost)
+                    .map_err(OpenError::Journal)?,
+            );
+        }
+        // 2. The page file's checkpoint: given up only as recorded.
+        let mut giving: Option<(pagefile::GiveUp, bool, bool, String)> = approval.map(|a| {
+            (
+                a.clone(),
+                false,
+                true,
+                "the administrator gave up what the device fails to read".to_owned(),
+            )
+        });
+        let mut rounds = 0;
+        let (pages, checkpoint) = loop {
+            rounds += 1;
+            if rounds > PAGE_ROUNDS {
+                return Err(OpenError::Refused(
+                    "the page file's damage changed at every attempt to give it up",
+                ));
+            }
+            let opened = match &giving {
+                None => PageFile::open(&**fs, state.folder_lock(), config.pages),
+                Some((approval, damaged, by_administrator, why)) => {
+                    let incident = journal
+                        .record(
+                            &**fs,
+                            What::Checkpoints {
+                                approval: approval.clone(),
+                                damaged: *damaged,
+                                by_administrator: *by_administrator,
+                                why: why.clone(),
+                            },
+                        )
+                        .map_err(OpenError::Journal)?;
+                    recorded.push(incident);
+                    PageFile::open_giving_up(&**fs, state.folder_lock(), config.pages, approval)
+                }
+            };
+            match opened {
+                Ok(opened) => break opened,
+                // Nothing stops the plain open any more.
+                Err(pagefile::OpenError::Refused(_)) if giving.is_some() => giving = None,
+                // Damage the store gives up by itself, recorded first.
+                Err(e @ pagefile::OpenError::Damaged { .. }) if e.give_up().is_some() => {
+                    let approval = e.give_up().cloned().expect("checked");
+                    giving = Some((approval, true, false, e.to_string()));
+                }
+                Err(e) => return Err(OpenError::Pages(e)),
+            }
+        };
+        Ok(FirstSteps {
+            state,
+            journal,
+            pages,
+            checkpoint,
+            passed_over_state,
+        })
     }
 
     fn start(fs: Arc<dyn Fs>, config: Config, how: How) -> Result<(Store, Opened), OpenError> {
-        let (state, pages, checkpoint, passed_over_state) = Store::first_steps(&fs, config)?;
-        let start = log::Position {
-            index: checkpoint.entry.index,
-            term: checkpoint.entry.term,
-            hash: checkpoint.entry.hash.0,
+        let mut recorded = Vec::new();
+        Store::start_recording(fs, config, how, &mut recorded)
+            .map_err(|e| after_incidents(recorded, e))
+    }
+
+    fn start_recording(
+        fs: Arc<dyn Fs>,
+        config: Config,
+        how: How,
+        recorded: &mut Vec<Incident>,
+    ) -> Result<(Store, Opened), OpenError> {
+        let approval = match how {
+            How::GiveUpPages(approval) => Some(approval),
+            _ => None,
         };
+        let FirstSteps {
+            state,
+            mut journal,
+            pages,
+            checkpoint,
+            passed_over_state,
+        } = Store::first_steps(&fs, config, approval, recorded)?;
+        let start = start_of(&checkpoint);
         // 3. The log from that checkpoint, checked against the marker, and
-        // what an explicit call gives up. From the moment `state` records
-        // a decision, every error says what it was.
-        let failed = |e: LogError| match e {
-            LogError::Damaged(d) => OpenError::LogDamaged(d),
-            e => OpenError::Log(e),
-        };
+        // what an explicit call gives up, each recorded before it is. From
+        // the moment `state` records a decision, every error says what it
+        // was.
+        let failed = log_error;
+        let mut last_batch_may_be_lost = false;
         let (mut log, mut log_opened, mut gave_up) = match how {
             How::AcceptDamage(plan) => {
-                match Log::accept_damage(fs.clone(), state, config.log, start, plan) {
+                let earlier = journal.earlier_moves();
+                let values = *state.values();
+                let mut record = |plan: &log::DamagePlan| -> Result<(), String> {
+                    // A mark the acceptance does not make up for: the last
+                    // batch may be lost too (section 6.12).
+                    let made_up = plan.opens_at.index > plan.marker.max(plan.start.index);
+                    if values.mark.is_some() && !made_up {
+                        let incident = journal
+                            .record(
+                                &*fs,
+                                What::LastBatch {
+                                    marker: values.marker,
+                                    cut: None,
+                                    unreadable_end: None,
+                                },
+                            )
+                            .map_err(|e| e.to_string())?;
+                        recorded.push(incident);
+                        last_batch_may_be_lost = true;
+                    }
+                    let incident = journal
+                        .record(&*fs, What::LogDamage(Box::new(plan.clone())))
+                        .map_err(|e| e.to_string())?;
+                    recorded.push(incident);
+                    Ok(())
+                };
+                match Log::accept_damage(
+                    fs.clone(),
+                    state,
+                    config.log,
+                    start,
+                    plan,
+                    &earlier,
+                    &mut record,
+                ) {
                     Ok((log, opened, accepted)) => {
                         (log, opened, Some(GaveUp::Damage(Box::new(accepted))))
                     }
@@ -956,14 +1236,47 @@ impl Store {
                     }
                 }
             }
-            How::Normal | How::GiveUp(_) => {
-                let (log, opened) =
-                    Log::open(fs.clone(), state, config.log, start).map_err(|f| failed(f.error))?;
+            How::Normal | How::GiveUp(_) | How::GiveUpPages(_) => {
+                let (log, opened) = match Log::open(fs.clone(), state, config.log, start) {
+                    Ok(opened) => opened,
+                    Err(f) => match f.error {
+                        // `state`'s mark, no whole batch after the marker:
+                        // the possible loss recorded, then the open goes on
+                        // and settles the mark.
+                        LogError::LossNotRecorded(loss) => {
+                            let incident = journal
+                                .record(
+                                    &*fs,
+                                    What::LastBatch {
+                                        marker: loss.marker,
+                                        cut: loss.cut,
+                                        unreadable_end: loss.unreadable_end,
+                                    },
+                                )
+                                .map_err(OpenError::Journal)?;
+                            recorded.push(incident);
+                            last_batch_may_be_lost = true;
+                            Log::open_settling(fs.clone(), f.state, config.log, start)
+                                .map_err(|f| failed(f.error))?
+                        }
+                        e => return Err(failed(e)),
+                    },
+                };
                 (log, opened, None)
             }
         };
         match (how, log_opened.unreadable_end) {
             (How::GiveUp(named), Some(end)) => {
+                let durable = log.durable();
+                if named.index != durable.index || named.hash != durable.hash {
+                    return Err(OpenError::Refused(
+                        "the log does not end at that entry before a place it cannot read",
+                    ));
+                }
+                let incident = journal
+                    .record(&*fs, What::UnreadableEnd { last: named, end })
+                    .map_err(OpenError::Journal)?;
+                recorded.push(incident);
                 match log.give_up_unreadable_end(named.index, named.hash) {
                     Ok(done) => {
                         log_opened.unreadable_end = None;
@@ -1014,6 +1327,8 @@ impl Store {
             log: log_opened,
             passed_over_state,
             gave_up: gave_up.clone(),
+            journal,
+            last_batch_may_be_lost,
         };
         match Store::recover(fs, config, Arc::new(pages), log, opened) {
             Err(error) => Err(match gave_up {
@@ -1038,6 +1353,8 @@ impl Store {
             log: log_opened,
             passed_over_state,
             gave_up,
+            journal,
+            last_batch_may_be_lost,
         } = opening;
         let values = *log.state().values();
         let start = position_of(log::Position {
@@ -1045,10 +1362,6 @@ impl Store {
             term: checkpoint.entry.term,
             hash: checkpoint.entry.hash.0,
         });
-        // A copy of `state` passed over, and no whole batch after the
-        // marker to make up for the advance it can have held
-        // (server-storage.md 6.12 as revised for lost acknowledgements).
-        let last_batch_may_be_lost = passed_over_state.is_some() && log_opened.kept == 0;
         // 4. The entries after the checkpoint, each once, in order, through
         // the durable entry; nothing freed in the log meanwhile.
         let durable = log.durable();
@@ -1127,6 +1440,7 @@ impl Store {
             },
             pending: Vec::new(),
             stopped: None,
+            journal,
         };
         // 6. This start's own entry (section 7.3), the first write. It is
         // part of the recovery for space: it may take the reserve, and when
@@ -1169,6 +1483,8 @@ impl Store {
         }
         // What an open falling back from the newest checkpoint would meet:
         // the checkpoints on disk now, after any this open took.
+        let incidents = store.journal.incidents().to_vec();
+        let journal_found = store.journal.found().clone();
         let fallback_cannot_replay = before_start.is_some_and(|stop| {
             store
                 .pages
@@ -1191,8 +1507,30 @@ impl Store {
                 gave_up,
                 before_start,
                 fallback_cannot_replay,
+                incidents,
+                journal: journal_found,
             },
         ))
+    }
+
+    /// The incidents no administrator has acknowledged, in order: what the
+    /// store gave up, each recorded before it did.
+    pub fn incidents(&self) -> &[Incident] {
+        self.journal.incidents()
+    }
+
+    /// Acknowledge every incident numbered up to `through`, and every place
+    /// of the journal that does not check (its incident cannot be known):
+    /// no open reports them again ([`Journal::acknowledge`]). Returns how
+    /// many incidents were acknowledged. A failed write or flush stops the
+    /// store.
+    pub fn acknowledge(&mut self, through: u64) -> Result<usize, WriteError> {
+        self.usable()?;
+        match self.journal.acknowledge(&*self.fs, through) {
+            Ok(n) => Ok(n),
+            Err(JournalError::Refused(why)) => Err(WriteError::Rule(why)),
+            Err(e) => Err(self.stop(format!("acknowledging incidents: {e}"))),
+        }
     }
 
     fn usable(&self) -> Result<(), WriteError> {

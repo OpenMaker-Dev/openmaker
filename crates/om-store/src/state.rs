@@ -25,6 +25,17 @@
 //! the copy read is the last one confirmed or a later one that was being
 //! written.
 //!
+//! **A copy passed over** (damaged, or not readable) may have held a newer
+//! marker, which the open cannot tell (section 6.1). After flushing the copy
+//! it read, unchanged, the open writes the next copy, which carries a
+//! [`Mark`], into the slot it passed over and flushes it, then the same
+//! into the first slot: one durable copy exists at every point, and every
+//! later open finds the mark, however whole the two copies then are, until
+//! the update that settles it, which clears it in both slots. Only an open
+//! sets a mark; the log settles it (the marker moved over the whole batch
+//! that followed it) or the store does, once it has recorded that the last
+//! batch confirmed may be lost.
+//!
 //! The file is made once, by [`State::create`], under another name and
 //! renamed into place, so that `state` exists only complete.
 //!
@@ -58,15 +69,16 @@ pub const FILE: &str = "state";
 pub const NEW_FILE: &str = "state.new";
 
 /// The format version this code writes, and the newest it reads. Version
-/// 1, without the cut count, is read as a cut count of 0.
-pub const VERSION: u16 = 2;
+/// 1, without the cut count, is read as a cut count of 0; versions 1 and 2,
+/// without the mark, as no mark.
+pub const VERSION: u16 = 3;
 
 /// The size of each copy's slot. A copy never exceeds it.
 pub const SLOT: usize = 4096;
 
 /// The bytes of a copy this code writes that its hash covers, with the
 /// hash: the rest of the slot is padding.
-pub const COPY: usize = HEADER + BODY_V2 + HASH;
+pub const COPY: usize = HEADER + BODY_V3 + HASH;
 
 const MAGIC: [u8; 8] = *b"OMSTATE\0";
 const HEADER: usize = 24;
@@ -75,6 +87,8 @@ const HASH: usize = 32;
 const BODY_V1: usize = 122;
 /// The body of a version 2 copy: version 1's, then the cut count.
 const BODY_V2: usize = BODY_V1 + 8;
+/// The body of a version 3 copy: version 2's, then the mark.
+const BODY_V3: usize = BODY_V2 + 9;
 
 /// A server's id: 16 random bytes drawn when its store is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -109,6 +123,14 @@ pub struct Repair {
     pub required_end: u64,
 }
 
+/// The mark an open leaves when it passed over a copy (module docs): the
+/// marker's index in the copy it read, which may be one advance behind what
+/// the server confirmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub marker: u64,
+}
+
 /// What a copy of `state` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Values {
@@ -129,6 +151,9 @@ pub struct Values {
     pub cut_count: u64,
     /// Present while the server is in repair.
     pub repair: Option<Repair>,
+    /// Present from an open that passed over a copy until the update that
+    /// settles it (module docs).
+    pub mark: Option<Mark>,
 }
 
 impl Values {
@@ -193,16 +218,21 @@ impl SlotFault {
     }
 }
 
-/// What an open read, for the server's log. Nothing depends on it: what a
-/// confirmed update recorded is in both slots.
+/// What an open read, for the server's log. What a confirmed update recorded
+/// is in both slots; whether the other slot was passed over is in the mark
+/// the open wrote ([`Values::mark`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Opened {
     /// The number of the copy it read.
     pub number: u64,
     /// The slot that copy was in.
     pub slot: usize,
-    /// The other slot: its copy's number, or why it gave none.
+    /// The other slot: its copy's number, or why it gave none (passed
+    /// over).
     pub other: Result<u64, SlotFault>,
+    /// The mark the copy read carried: an earlier open passed over a copy,
+    /// and nothing has settled it yet.
+    pub mark_read: Option<Mark>,
 }
 
 /// Why `state` could not be opened, created or updated.
@@ -359,6 +389,7 @@ impl State {
             },
             cut_count: 0,
             repair: None,
+            mark: None,
         };
         let mut bytes = encode(1, &values);
         bytes.resize(SLOT, 0);
@@ -385,10 +416,13 @@ impl State {
     /// Open `state` (module docs): flush the store folder, read the slots
     /// one at a time, take the valid copy with the highest number (the
     /// first slot between equal numbers), write it back into its slot and
-    /// flush, then write it with the start count raised by one into both
-    /// slots, flushing each, before returning. The state keeps `lock`, the
-    /// store folder's, while it lives; on an error the lock is released
-    /// with it.
+    /// flush, then write it with the start count raised by one into the
+    /// other slot and then its own, flushing each, before returning. When
+    /// the other slot gave no valid copy (it was passed over), what it
+    /// writes carries a [`Mark`] (the copy read's own, when it carried one):
+    /// so the mark is in the slot passed over before the copy read is
+    /// written over. The state keeps `lock`, the store folder's, while it
+    /// lives; on an error the lock is released with it.
     pub fn open(fs: &dyn Fs, lock: FolderLock) -> Result<Self, StateError> {
         check_lock(fs, &lock)?;
         let file = match fs.open(FILE, FileOptions::PLAIN) {
@@ -432,6 +466,15 @@ impl State {
         };
         let (read_number, values) = (*read_number, *values);
         let other = number(1 - chosen);
+        // A copy passed over may have held a newer marker: mark it, keeping
+        // the mark of an earlier open that has not been settled.
+        let mark = match (values.mark, other) {
+            (Some(mark), _) => Some(mark),
+            (None, Err(_)) => Some(Mark {
+                marker: values.marker.index,
+            }),
+            (None, Ok(_)) => None,
+        };
         let start_count = values
             .start_count
             .checked_add(1)
@@ -452,12 +495,16 @@ impl State {
                 number: read_number,
                 slot: chosen,
                 other,
+                mark_read: values.mark,
             }),
             failed: false,
         };
+        // The other slot first: when it was passed over, the mark is there
+        // before the copy read is written over.
         state.write(
             Values {
                 start_count,
+                mark,
                 ..values
             },
             true,
@@ -498,7 +545,9 @@ impl State {
     /// change that changes nothing writes nothing.
     /// Refused, with nothing written, when the result changes the server id
     /// or the start count, lowers the term or the cut count, changes a vote
-    /// already cast in the term, or changes the required end of a repair. After an error
+    /// already cast in the term, changes the required end of a repair, or
+    /// sets or changes a mark (only an open sets one; an update clears it,
+    /// in both slots, to settle it). After an error
     /// other than a refusal, every later update fails with
     /// [`StateError::Failed`].
     pub fn update(&mut self, change: impl FnOnce(&mut Values)) -> Result<(), StateError> {
@@ -599,6 +648,9 @@ fn check(before: &Values, after: &Values) -> Result<(), StateError> {
     if after.term == before.term && before.vote.is_some() && after.vote != before.vote {
         return Err(StateError::Refused("a vote cast in a term stays"));
     }
+    if after.mark.is_some() && after.mark != before.mark {
+        return Err(StateError::Refused("a mark is set only by an open"));
+    }
     if let (Some(was), Some(now)) = (before.repair, after.repair) {
         if was != now {
             return Err(StateError::Refused(
@@ -634,7 +686,7 @@ fn encode(number: u64, values: &Values) -> Vec<u8> {
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&(BODY_V2 as u32).to_le_bytes());
+    out.extend_from_slice(&(BODY_V3 as u32).to_le_bytes());
     out.extend_from_slice(&number.to_le_bytes());
     out.extend_from_slice(&values.server_id.0);
     out.extend_from_slice(&values.start_count.to_le_bytes());
@@ -649,7 +701,9 @@ fn encode(number: u64, values: &Values) -> Vec<u8> {
     out.push(u8::from(values.repair.is_some()));
     out.extend_from_slice(&values.repair.map_or(0, |r| r.required_end).to_le_bytes());
     out.extend_from_slice(&values.cut_count.to_le_bytes());
-    debug_assert_eq!(out.len(), HEADER + BODY_V2);
+    out.push(u8::from(values.mark.is_some()));
+    out.extend_from_slice(&values.mark.map_or(0, |m| m.marker).to_le_bytes());
+    debug_assert_eq!(out.len(), HEADER + BODY_V3);
     let hash = digest::digest(&digest::SHA256, &out);
     out.extend_from_slice(hash.as_ref());
     out
@@ -689,6 +743,7 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
     let body_len = match version {
         1 => BODY_V1,
         2 => BODY_V2,
+        3 => BODY_V3,
         _ => return Err(Invalid::Malformed),
     };
     if slot[10..12] != [0, 0] || length != body_len {
@@ -710,6 +765,16 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
         }),
         _ => return Err(Invalid::Malformed),
     };
+    let mark = match version {
+        1 | 2 => None,
+        _ => match body[130] {
+            0 if u64_at(131) == 0 => None,
+            1 => Some(Mark {
+                marker: u64_at(131),
+            }),
+            _ => return Err(Invalid::Malformed),
+        },
+    };
     let values = Values {
         server_id: id_at(0),
         start_count: u64_at(16),
@@ -726,6 +791,7 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
         },
         cut_count: if version >= 2 { u64_at(122) } else { 0 },
         repair,
+        mark,
     };
     if values
         .segments
