@@ -15,5 +15,6 @@ pub mod page;
 pub mod pagefile;
 pub mod sim;
 pub mod state;
+pub mod store;
 pub mod sys;
 pub mod tree;
