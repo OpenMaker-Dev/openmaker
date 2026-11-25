@@ -634,7 +634,9 @@ impl Overlay<'_> {
     }
 }
 
-#[cfg(test)]
+// Its tests read through the test view (`engine::copies`), which is in
+// debug builds only.
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
     use crate::engine::copies::Copies;

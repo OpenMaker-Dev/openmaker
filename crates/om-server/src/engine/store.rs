@@ -159,8 +159,9 @@ impl std::fmt::Display for StoreError {
             StoreError::Import(e) => write!(f, "the import refused the file: {e}"),
             StoreError::SourceChanged => write!(
                 f,
-                "the file changed while it was imported: not hosted, and imported again at \
-                 the next start"
+                "the file changed while the server read it (its bytes, or its length, times or \
+                 inode, which a chmod, a new link or a rename moves too): not hosted at this \
+                 start; start the server again once nothing changes the file"
             ),
             StoreError::NotPrivate(why) | StoreError::Misplaced(why) => f.write_str(why),
         }
@@ -250,13 +251,37 @@ impl StoreFolder {
     /// checked on that handle: owned by the server's user, no access for
     /// its group or others. Then the store opens its files by path, and
     /// afterwards the path is looked at again (`lstat`): the same device and
-    /// inode, owner and mode. That rules out a folder replaced, or its mode
-    /// or owner changed, and left so; it does not rule out a swap and a swap
-    /// back between the two looks by someone who can rename entries in the
-    /// folder's parent, as the store's own opens are by path
+    /// inode, owner and mode. That detects a folder replaced, or its mode
+    /// or owner changed, and left so, and refuses the start; it does not
+    /// prevent what the store wrote before the second look (the marker, the
+    /// lock, the page file) in whatever the path then led to, a link to a
+    /// folder outside the store folder included, and it does not see a swap
+    /// and a swap back between the two looks by someone who can rename
+    /// entries in the folder's parent, as the store's own opens are by path
     /// ([#814](https://github.com/OpenMaker-Dev/openmaker/issues/814)): the
     /// parent must be a folder only the server's user, or root, can change.
     /// Other systems take the folder as it is.
+    /// Every check [`Self::open_dir`] makes of the store folder named `dir`,
+    /// made without writing or making anything: its placement
+    /// ([`crate::config::check_store_folder`]) and, when the folder exists,
+    /// its owner and mode (Unix) and that it is this server's or empty
+    /// ([`MARKER`]). A start runs it before it makes anything else (its TLS
+    /// identity, a default database folder), so that a refused start
+    /// leaves nothing behind. Returns the folder's path as it is used.
+    pub fn check_dir(
+        dir: &std::path::Path,
+        database_folders: &[std::path::PathBuf],
+    ) -> Result<std::path::PathBuf, StoreError> {
+        let dir = crate::config::check_store_folder(dir, database_folders)
+            .map_err(StoreError::Misplaced)?;
+        if std::fs::symlink_metadata(&dir).is_ok() {
+            #[cfg(unix)]
+            private_folder(&dir)?;
+            claimed(&om_store::os::OsFs::new(dir.clone()))?;
+        }
+        Ok(dir)
+    }
+
     pub fn open_dir(
         dir: &std::path::Path,
         database_folders: &[std::path::PathBuf],
@@ -474,7 +499,10 @@ impl StoreFolder {
             .ok_or_else(|| StoreError::Foreign("no mark".into()))?;
         let recorded = Recorded::read(&self.pages, meta_root, name)?;
         let changed = || {
-            warn!("the store: {name:?} changed while it was read; not hosted at this start");
+            warn!(
+                "the store: {name:?} changed while it was read (its bytes, or its stamp: a chmod \
+                 or a new link moves it too); not hosted at this start"
+            );
             StoreError::SourceChanged
         };
         // The first whole reading, between two looks at the stamp.
@@ -740,7 +768,12 @@ fn digest<R: IoRead + Seek>(source: &mut R, len: Option<u64>) -> io::Result<Opti
 
 /// What tells a source's contents changed without reading them: its
 /// length, modification and change times and inode. The change time moves
-/// with every write and cannot be set back by the writer.
+/// with a write through the file and cannot be set back by the writer, and
+/// moves too with a change of the file's metadata alone (a chmod, a new
+/// link, a rename), which refuses a file whose bytes did not change. It is
+/// not a complete witness: a write through a shared memory mapping of the
+/// file can change a byte with neither time moving (docs/server-storage.md
+/// 11, the limit of [`StoreFolder::hold`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stamp {
     len: u64,
@@ -852,6 +885,17 @@ fn private_folder(dir: &std::path::Path) -> Result<rustix::fs::Stat, StoreError>
 /// with what it holds. A marker of another content (another format of this
 /// server's) is refused too.
 fn claim(fs: &dyn Fs) -> Result<(), StoreError> {
+    match claimed(fs)? {
+        true => Ok(()),
+        false => write_marker(fs, &[FORMAT_MARK, b"\n"].concat()),
+    }
+}
+
+/// Whether the store folder `fs` gives is this server's ([`claim`]),
+/// reading only: `true` when it holds the marker, `false` when it is to be
+/// given one (empty, or a marker a stop cut short alone in it), and a
+/// refusal for any other folder.
+fn claimed(fs: &dyn Fs) -> Result<bool, StoreError> {
     let marker = [FORMAT_MARK, b"\n"].concat();
     let names = fs.list("")?;
     let found = match names.iter().any(|name| name == MARKER) {
@@ -865,9 +909,9 @@ fn claim(fs: &dyn Fs) -> Result<(), StoreError> {
         false => None,
     };
     match found {
-        Some(bytes) if bytes == marker => Ok(()),
-        Some(bytes) if names.len() == 1 && marker.starts_with(&bytes) => write_marker(fs, &marker),
-        None if names.is_empty() => write_marker(fs, &marker),
+        Some(bytes) if bytes == marker => Ok(true),
+        Some(bytes) if names.len() == 1 && marker.starts_with(&bytes) => Ok(false),
+        None if names.is_empty() => Ok(false),
         Some(bytes) => Err(StoreError::Foreign(format!(
             "a {MARKER} of another format ({:?})",
             String::from_utf8_lossy(bytes.split(|b| *b == b'\n').next().unwrap_or_default())
@@ -1335,6 +1379,24 @@ fn unavailable(operation: Operation) -> Outcome {
 /// FileMaker's error 3, "Command is unavailable".
 const UNAVAILABLE_CODE: u16 = 3;
 
+/// Why the store engine computes no state for a file ([`derived_of`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Underived {
+    /// What it reads of the file does not read, or is past the limit it
+    /// reads whole.
+    Read(ReadError),
+    /// The file's decoded accounts would keep `kept` bytes together, more
+    /// than `limit` ([`crate::hosting::kept_by_accounts`]): refused before
+    /// any account is decoded.
+    AccountsTooLarge { kept: usize, limit: usize },
+}
+
+impl From<ReadError> for Underived {
+    fn from(error: ReadError) -> Self {
+        Underived::Read(error)
+    }
+}
+
 /// The state of `file` the store engine computes from `view` when it is
 /// hosted, page 0 as imported ([`derived_within`], its accounts within
 /// [`HOSTING_LIMIT`]).
@@ -1342,19 +1404,21 @@ pub(crate) fn derived_of(
     view: &dyn View,
     name: &str,
     page_zero: &[u8],
-) -> Result<Derived, ReadError> {
+) -> Result<Derived, Underived> {
     derived_within(view, name, page_zero, HOSTING_LIMIT)
 }
 
-/// [`derived_of`], refused as too large when what its decoded accounts
-/// keep together passes `kept_limit` ([`crate::hosting::kept_by_accounts`]),
-/// however small each account's and each set's tree is.
+/// [`derived_of`], refused when what its decoded accounts would keep
+/// together passes `kept_limit` ([`crate::hosting::kept_by_accounts`]),
+/// however small each account's and each set's tree is: counted from the
+/// tree first, so that a file past the limit is refused having decoded no
+/// account.
 pub(crate) fn derived_within(
     view: &dyn View,
     name: &str,
     page_zero: &[u8],
     kept_limit: usize,
-) -> Result<Derived, ReadError> {
+) -> Result<Derived, Underived> {
     let catalog = crate::derived::read_catalog(view).map_err(|e| match e {
         // A catalog past what the reader reads whole (`Capped`).
         om_hbam::Error::TooLarge { limit } => ReadError::TooLarge {
@@ -1366,18 +1430,19 @@ pub(crate) fn derived_within(
             why: format!("the schema does not read: {e}"),
         },
     })?;
+    let kept = crate::hosting::kept_by_accounts(view)?;
+    if kept > kept_limit {
+        return Err(Underived::AccountsTooLarge {
+            kept,
+            limit: kept_limit,
+        });
+    }
     let mut derived = Derived::new(view, catalog, name)?;
     // Accounts that cannot be read whole (past the limit, or unreadable)
     // would leave the file listed and every login failing: refused, as a
     // catalog past the limit is, and the file is not hosted.
     if let Err(error) = derived.accounts() {
-        return Err(error.clone());
-    }
-    if crate::hosting::kept_by_accounts(view)? > kept_limit {
-        return Err(ReadError::TooLarge {
-            path: vec![vec![23], vec![1], vec![5]],
-            limit: kept_limit,
-        });
+        return Err(Underived::Read(error.clone()));
     }
     derived.set_page_zero(page_zero);
     Ok(derived)
@@ -2015,7 +2080,10 @@ mod tests {
         assert!(derived_of(&Capped::new(&view, HOSTING_LIMIT), NAME, &held.page_zero).is_ok());
         let refused = derived_of(&Capped::new(&view, 256), NAME, &held.page_zero);
         assert!(
-            matches!(refused, Err(ReadError::TooLarge { limit: 256, .. })),
+            matches!(
+                refused,
+                Err(Underived::Read(ReadError::TooLarge { limit: 256, .. }))
+            ),
             "{:?}",
             refused.err()
         );
@@ -2048,25 +2116,34 @@ mod tests {
         assert_eq!(derive("store-accounts-small", false), Ok(()));
         let refused = derive("store-accounts-large", true);
         assert!(
-            matches!(refused, Err(ReadError::TooLarge { .. })),
+            matches!(refused, Err(Underived::Read(ReadError::TooLarge { .. }))),
             "{refused:?}"
         );
     }
 
-    /// What the decoded accounts keep together is held under a limit
-    /// (`hosting::kept_by_accounts`, [`derived_within`]): each account keeps
-    /// its own copy of its privilege set's rules, so 300 small accounts on
-    /// one set keep that set 300 times, and the file is refused as too large
-    /// although every tree is far under the limit; the file's own two
-    /// accounts derive within it.
+    /// What the decoded accounts would keep together is held under a limit
+    /// before any is decoded (`hosting::kept_by_accounts`,
+    /// [`derived_within`]): each account keeps its own copy of its custom
+    /// privilege set's rules, so 100 copies of Temp's account on custom set
+    /// 4, made large (a 32 KiB member), would keep that set 100 times; the
+    /// file is refused as its accounts too large, with no account decoded,
+    /// although every tree is far under the limit. The file's own accounts
+    /// derive within it, and 200 copies of Clerk's account on the built-in
+    /// [Data Entry Only], which keeps no rules, count only their records.
     #[test]
-    fn many_small_accounts_on_one_set_are_refused_past_the_limit() {
-        let kept = |copies: u8| {
+    fn accounts_that_would_keep_too_much_are_refused_before_any_is_decoded() {
+        const LIMIT: usize = 1 << 20;
+        let derive = |copies: u8, of: u8| {
             let mut tree = fixture::tree(&[], true);
-            let clerk = tree.at(&[&[23], &[1], &[5], &[3]]).unwrap().clone();
+            fixture::add_custom_clerk(&mut tree);
+            tree.put(
+                &[&[23], &[2], &[5], &[4], &[0x7e]],
+                om_hbam::OwnedNode::leaf(Vec::new(), vec![0x5a; 32 << 10]),
+            );
+            let account = tree.at(&[&[23], &[1], &[5], &[of]]).unwrap().clone();
             for n in 0..copies {
                 let key = vec![0x80, n];
-                let mut copy = clerk.clone();
+                let mut copy = account.clone();
                 copy.segment = key.clone();
                 tree.put(&[&[23], &[1], &[5], &key], copy);
             }
@@ -2077,26 +2154,34 @@ mod tests {
             let held = folder.hold(NAME, Cursor::new(&source)).unwrap();
             let view = view_of(&folder, held.root).unwrap();
             let kept = crate::hosting::kept_by_accounts(&view).unwrap();
-            let derive = |limit| {
-                derived_within(
-                    &Capped::new(&view, HOSTING_LIMIT),
-                    NAME,
-                    &held.page_zero,
-                    limit,
-                )
-                .map(|_| ())
-            };
-            (kept, derive(64 << 10))
+            crate::hosting::DECODED_ACCOUNTS.with(|decoded| decoded.set(0));
+            let derived = derived_within(
+                &Capped::new(&view, HOSTING_LIMIT),
+                NAME,
+                &held.page_zero,
+                LIMIT,
+            )
+            .map(|_| ());
+            let decoded = crate::hosting::DECODED_ACCOUNTS.with(std::cell::Cell::get);
+            (kept, derived, decoded)
         };
-        let (few, derived) = kept(0);
-        assert!(few < 64 << 10, "{few}");
+        let (few, derived, decoded) = derive(0, 7);
+        assert!(few < LIMIT, "{few}");
         assert_eq!(derived, Ok(()));
-        let (many, refused) = kept(255);
-        assert!(many > 64 << 10, "{many}");
-        assert!(
-            matches!(refused, Err(ReadError::TooLarge { limit, .. }) if limit == 64 << 10),
-            "{refused:?}"
+        assert!(decoded > 0);
+        let (many, refused, decoded) = derive(100, 7);
+        assert!(many > LIMIT, "{many}");
+        assert_eq!(
+            refused,
+            Err(Underived::AccountsTooLarge {
+                kept: many,
+                limit: LIMIT
+            })
         );
+        assert_eq!(decoded, 0, "no account decoded before the refusal");
+        let (built_in, derived, _) = derive(200, 3);
+        assert!(built_in < 200 << 10, "{built_in}");
+        assert_eq!(derived, Ok(()));
     }
 
     /// A measurement, not a test: the roots tables the pins of `n` files

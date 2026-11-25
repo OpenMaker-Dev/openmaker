@@ -1163,7 +1163,7 @@ fn status(ui: &mut Ui, view: &HomeView<'_>, right_center: egui::Pos2) {
     } else if let Some(error) = view.history_error {
         status_ui
             .label(
-                egui::RichText::new("Recent and Favorites can't be saved")
+                egui::RichText::new("Recent, Favorites and Hosts can't be saved")
                     .font(theme::small())
                     .color(theme::YELLOW),
             )

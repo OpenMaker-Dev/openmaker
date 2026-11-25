@@ -594,3 +594,90 @@ fn a_file_opened_again_is_imported_again_once_it_changed() {
     assert_ne!(after, first);
     assert_eq!(server::cell(&after, 1, NAME), Some("Replaced"));
 }
+
+/// docs/server-storage.md 11: every check of the store folder runs before
+/// the server makes anything else, so a refused start leaves the folders
+/// it was given as they were: no state folder, TLS identity or database
+/// folder is made for a store folder its group can reach or one holding
+/// another program's files. With the default store folder, whose parent is
+/// the state folder, the state folder alone is made.
+#[cfg(unix)]
+#[test]
+fn a_refused_start_makes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!(
+        "om-store-refused-start-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    // Every path below `base`, with its kind.
+    fn listing(dir: &std::path::Path, into: &mut Vec<String>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let dir = path.is_dir() && !path.is_symlink();
+            into.push(format!("{}{}", path.display(), if dir { "/" } else { "" }));
+            if dir {
+                listing(&path, into);
+            }
+        }
+    }
+    let list = || {
+        let mut all = Vec::new();
+        listing(&base, &mut all);
+        all
+    };
+    let start = |args: &[&std::ffi::OsStr]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_om-server"))
+            .args(["--engine", "store", "--bind", "127.0.0.1:0"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let open = base.join("S");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let foreign = base.join("F");
+    std::fs::create_dir(&foreign).unwrap();
+    std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(foreign.join("notes.txt"), b"another program's").unwrap();
+    let state = base.join("state");
+    std::fs::create_dir(&state).unwrap();
+    for (store, state) in [(&open, base.join("st")), (&foreign, state.clone())] {
+        let before = list();
+        let refused = start(&[
+            "--state-dir".as_ref(),
+            state.as_os_str(),
+            "--store-dir".as_ref(),
+            store.as_os_str(),
+        ]);
+        assert!(!refused.status.success(), "{store:?}: {refused:?}");
+        assert_eq!(
+            list(),
+            before,
+            "{store:?}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    // The default store folder in a new state folder that is also the
+    // database folder: refused, and the state folder alone is made.
+    let new_state = base.join("ns");
+    let before = list();
+    let refused = start(&[
+        "--state-dir".as_ref(),
+        new_state.as_os_str(),
+        "--database-folder".as_ref(),
+        new_state.as_os_str(),
+    ]);
+    assert!(!refused.status.success(), "{refused:?}");
+    let mut expected = before;
+    expected.push(format!("{}/", new_state.display()));
+    expected.sort();
+    assert_eq!(list(), expected);
+    let _ = std::fs::remove_dir_all(&base);
+}

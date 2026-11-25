@@ -69,12 +69,18 @@ needs no open file.
 - **File > Create New...** follows FileMaker Pro 26's sequence
   (`crates/om-gui/src/create_new.rs`): the **Create an App** sheet with
   Blank, the only choice OpenMaker offers, and its description; Create
-  shows the **save panel** (Save As "Untitled.fmp12", Where the user's
-  Documents folder); Save makes the file, which opens in the window as
-  Admin with no password, without the sign-in dialog; **Manage Database**
-  then opens on its Fields tab, as in Pro, and closing it leaves the window
-  in Browse on the file's record. A refusal stays in the save panel. The
-  file open in the window closes first, as File > Open does in OpenMaker.
+  shows the **save panel**, proposing "Untitled.fmp12" in the user's
+  Documents folder: the system's own, limited to FileMaker files
+  (`NSSavePanel` on macOS, the desktop's chooser through xdg-desktop-portal
+  on Linux; [desktop-client.md](desktop-client.md#opening-files)), or
+  where there is none, OpenMaker's (Save As and Where). Save makes the
+  file, which opens in the window as Admin with no password, without the
+  sign-in dialog; **Manage Database** then opens on its Fields tab, as in
+  Pro, and closing it leaves the window in Browse on the file's record. A
+  refusal, such as a name already taken (the system's panel asks whether
+  to replace it, and OpenMaker still replaces nothing), shows in an alert
+  after the system's panel and stays in OpenMaker's own. The file open in
+  the window closes first, as File > Open does in OpenMaker.
 - **`om-author create-file --path PATH`** and the MCP tool
   `openmaker_create_file` run the same operation without a connection
   ([authoring.md](authoring.md)).

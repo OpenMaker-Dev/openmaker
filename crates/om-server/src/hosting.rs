@@ -313,6 +313,7 @@ impl ReadFault {
     }
 
     /// The tree kept when the read failed, if one did.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn tree_at_failure(&self) -> Option<om_hbam::OwnedNode> {
         self.at_failure.lock().unwrap().clone()
     }
@@ -644,7 +645,11 @@ impl Hosted {
         if n == at {
             let store = self.read_store();
             *fault.at_failure.lock().unwrap() = store.node(&[]).cloned();
-            *fault.waiting_at_failure.lock().unwrap() = Some(store.waiting_for_tests());
+            // What reads left waiting is kept in debug builds only.
+            #[cfg(debug_assertions)]
+            {
+                *fault.waiting_at_failure.lock().unwrap() = Some(store.waiting_for_tests());
+            }
             fault.failed.store(true, Relaxed);
         }
         Err(ReadError::Unreadable {
@@ -1724,13 +1729,24 @@ fn owned_member<'a>(record: &'a OwnedNode, key: &[u8]) -> Option<&'a [u8]> {
     })
 }
 
-/// What decoding the accounts of the file `view` reads keeps
-/// ([`read_accounts`]), counted as `om_hbam::tree::memory` counts an owned
-/// tree: each account's record, and with it the privilege set it names,
-/// whose rules each account decodes and keeps for itself. Many small
-/// accounts on one large set keep that set once for each. The store engine
-/// holds it under its limit (`engine::store::derived_of`); the file engine
-/// has none.
+#[cfg(test)]
+thread_local! {
+    /// How many accounts [`read_accounts`] decoded on this thread, for the
+    /// test that a file past the accounts limit is refused before any is.
+    pub(crate) static DECODED_ACCOUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What decoding the accounts of the file `view` reads would keep
+/// ([`read_accounts`]), counted from the tree before any account is
+/// decoded, as `om_hbam::tree::memory` counts an owned tree: each
+/// account's record, and with it the tree of the custom privilege set it
+/// names, whose rules each account decodes and keeps for itself
+/// (`SetAccess::Custom`; FileMaker's built-in sets `01` to `03` keep no
+/// rules and are not counted). Many small accounts on one large custom set
+/// keep that set once for each. The store engine refuses a file past its
+/// limit before decoding them (`engine::store::derived_within`); the file
+/// engine has no limit
+/// ([#844](https://github.com/OpenMaker-Dev/openmaker/issues/844)).
 pub(crate) fn kept_by_accounts(view: &dyn View) -> Result<usize, ReadError> {
     let sets = view.subtree(&PRIVILEGE_SETS_PATH, NO_LIMIT)?;
     let mut set_sizes: std::collections::HashMap<Vec<u8>, usize> = Default::default();
@@ -1757,6 +1773,8 @@ pub(crate) fn kept_by_accounts(view: &dyn View) -> Result<usize, ReadError> {
             .and_then(|r| r.split_first())
             .filter(|(length, key)| usize::from(**length) == key.len())
             .map(|(_, key)| key.to_vec());
+        // The built-in sets decode to no rules (`set_access`).
+        let named = named.filter(|key| !matches!(key.as_slice(), [1] | [2] | [3]));
         if let (Some(key), Some(sets)) = (named, sets.as_deref()) {
             let size = *set_sizes
                 .entry(key)
@@ -1800,6 +1818,8 @@ pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadErr
         let account = crate::engine::Wiped(account);
         let account = &account.0;
         let account = crate::store::view(account);
+        #[cfg(test)]
+        DECODED_ACCOUNTS.with(|decoded| decoded.set(decoded.get() + 1));
         let decoded = (|| {
             let name = account.child(ACCOUNT_NAME)?.text()?.ok()?;
             let password = match account.child(ACCOUNT_PASSWORD).and_then(|n| n.assembled()) {
@@ -1883,6 +1903,15 @@ pub enum HostingError {
         path: Vec<Vec<u8>>,
         limit: usize,
     },
+    /// The file's decoded accounts would keep more together than the store
+    /// engine allows (`hosting::kept_by_accounts`), each account its own
+    /// copy of its custom privilege set's rules: refused before any is
+    /// decoded.
+    AccountsTooLarge {
+        name: String,
+        kept: usize,
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for HostingError {
@@ -1908,6 +1937,14 @@ impl std::fmt::Display for HostingError {
                 f,
                 "{name}: {path:02x?} is larger than the {} MiB the store engine reads whole \
                  while hosting a file: not hosted (the file engine hosts it)",
+                limit >> 20
+            ),
+            HostingError::AccountsTooLarge { name, kept, limit } => write!(
+                f,
+                "{name}: its accounts would keep {} MiB once decoded (each account its own copy \
+                 of its custom privilege set's rules), more than the {} MiB the store engine \
+                 allows: not hosted, and no account was decoded",
+                kept.div_ceil(1 << 20),
                 limit >> 20
             ),
         }
@@ -2455,8 +2492,18 @@ fn load_stored(
         .map_err(unreadable)?
         .ok_or_else(|| HostingError::NoInternalCreation { name: name() })?;
     let derived_started = Instant::now();
-    let derived = crate::engine::store::derived_of(&view, &hosted.name, &held.page_zero)
-        .map_err(unreadable)?;
+    let derived = crate::engine::store::derived_of(&view, &hosted.name, &held.page_zero).map_err(
+        |error| match error {
+            crate::engine::store::Underived::Read(error) => unreadable(error),
+            crate::engine::store::Underived::AccountsTooLarge { kept, limit } => {
+                HostingError::AccountsTooLarge {
+                    name: name(),
+                    kept,
+                    limit,
+                }
+            }
+        },
+    )?;
     let derived_in = derived_started.elapsed();
     for table in &derived.catalog().tables {
         let t = uint_segment(table.id);

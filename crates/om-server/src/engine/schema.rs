@@ -248,7 +248,7 @@ pub(super) fn update_table(
     op: UpdateTable,
     tx: &mut Transaction<'_>,
     environment: &dyn Environment,
-) -> Result<bool, &'static str> {
+) -> Result<bool, crate::store::NotUpdated> {
     let UpdateTable { table, account } = op;
     // Calculations that read `Get ( AccountName )` see the account that
     // saved the change.
@@ -257,13 +257,13 @@ pub(super) fn update_table(
 }
 
 /// The deferred field work the file records as pending, finished as op73
-/// would have done it (`Store::recover`): whether it changed the file.
-/// Its calculations see no account, as no one saved the change in this
-/// session; the rest is [`update_table`]'s.
+/// would have done it (`Store::recover`): whether it changed the file, or
+/// the work that cannot be done. Its calculations see no account, as no
+/// one saved the change in this session; the rest is [`update_table`]'s.
 pub(super) fn finish_deferred_work(
     tx: &mut Transaction<'_>,
     environment: &dyn Environment,
-) -> bool {
+) -> Result<bool, crate::store::WorkKept> {
     let (mut record_environment, mut unique_id) = recalculation("", environment);
     tx.recover(&mut record_environment, &mut unique_id)
 }
