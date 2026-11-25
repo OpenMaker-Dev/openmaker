@@ -179,8 +179,12 @@ pub struct Exported {
     pub id: Option<FileId>,
 }
 
-/// Why an export failed. Nothing is left under the final name, nor under
-/// the temporary one.
+/// Why an export failed. What is left under the final name is what
+/// `crate::staged` leaves: nothing where the export was made unnamed and
+/// failed before its link; what was written, where it was made under its
+/// name (no unnamed files, or a link refused and the copy into the name
+/// stopped or failed), as copies always left it
+/// ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 #[derive(Debug)]
 pub enum ExportError {
     /// A read of the view failed.
@@ -430,7 +434,10 @@ pub fn write_checked(
 /// Write `view` with `page_zero` from `change_number` to `target`, checked
 /// ([`write_checked`]): the export of an engine whose versions no file on
 /// disk holds (the store engine's, `super::paged`). A folder's file is
-/// published once it checks; nothing is under its name when it fails.
+/// published once it checks. When it fails, what is under its name is
+/// what [`ExportError`] says: nothing where it was made unnamed, what was
+/// written where it was made under its name
+/// ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 #[cfg_attr(
     not(test),
     allow(

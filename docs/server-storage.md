@@ -894,10 +894,24 @@ hosted on it, and nothing of its write side is built.
   fit below the last index an entry can have. When the store's write
   path takes it, its batches become the parts of a group whose last entry
   adds the file (sections 6.9, 6.10). What it accepts, an export gives
-  back: an export imported again has the same root hash. So it refuses,
-  typed (`paged::ImportError`) and with the tree it made dropped again:
+  back: the export succeeds, and holds the same nodes, kinds and values;
+  imported at the same entry in the same batches, it has the same root
+  hash (a page's hash covers the entry that wrote it, so other entries or
+  batches give another root hash over the same nodes). The one exception
+  is page 0's change number, which an export advances by the pages it
+  writes: the export of a file within that many of the bound below may
+  itself be refused. So it refuses, typed (`paged::ImportError`) and with
+  the tree it made dropped again:
   - a file that does not read, an encrypted one among them, whose pages
-    do not decode;
+    do not decode, and five shapes `om_hbam`'s streaming reader refuses
+    and the file engine's reader (`HbamFile`) reads: a leaf chain that
+    ends before its stream closes the root list (a file cut short), one
+    that goes on after it closed the root list, a page that does not push
+    again the path left open before it, a value given to a key after its
+    children, and a page larger than 64 KiB (`om_hbam::stream`). The file
+    engine hosts such a file from the tree its reader reads, exports the
+    file's own bytes while nothing changed, and a save writes the tree in
+    the writer's form. None of FileMaker's 66 templates is refused;
   - a file holding what the file writer cannot write, or writes in
     another shape: a list that carries an empty value
     ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)),
@@ -906,10 +920,14 @@ hosted on it, and nothing of its write side is built.
     in pieces. The file engine hosts such a file, read-only where its
     writer cannot write it, and the store is to keep it as its original
     image (section 6.10, not built);
+  - a node whose entry in an export's index could cost more than 1,019
+    bytes (section 6.11): past it the file writer's index can grow past
+    the 16 levels it writes, and an export would fail. The file engine
+    hosts such a file, and its saves fail only where the index does;
   - a page 0 the writer does not write: not one 4,096-byte page, or a
-    change number with no room left for the pages an export numbers from
-    it. The file engine hosts such a file, and each of its saves fails
-    before it writes anything;
+    change number above `u64::MAX - u32::MAX`, which leaves no room for
+    the 2^32 pages an export may number from it. The file engine hosts
+    such a file, and each of its saves fails before it writes anything;
   - an item past the bounds of section 6.11, which no file the reader
     reads holds.
 - **Page 0** comes back with the import (`Imported::page_zero`), as read.
@@ -2117,6 +2135,21 @@ store take unbounded memory or disk:
 - an item's encoded path and its value are each at most 64 KiB, the
   largest value the format's length fields allow; import refuses a file
   beyond that;
+- a file's paths are held to the smaller of the store's bound above and
+  what the file writer writes (`om_hbam::writer`): segments of at most 219
+  bytes, 16 deep, and an entry of at most 1,019 bytes in the writer's
+  index (`MAX_INDEX_ENTRY`, a slot for each segment and 4 bytes, and 3
+  more for a list). Within that last bound every index page but the last
+  of its level holds four entries or more, since the writer closes a page
+  only when the next entry does not fit and four entries of 1,019 bytes
+  fill its 4,076 bytes, so 16 levels index 4^16 = 2^32 pages, every page
+  a file can number (the derivation is at `MAX_INDEX_ENTRY`). It is not
+  tight: a file with entries past it fails only when enough of them make
+  pages of one entry in a row. FileMaker's 66 templates reach 155 bytes,
+  the tests' fixtures 34. Import refuses a file past it, so that what the
+  store holds can always be exported; the store's write path will have to
+  keep every change within it too
+  ([#764](https://github.com/OpenMaker-Dev/openmaker/issues/764));
 - an entry is at most as large as the request limits the server already
   enforces allow (`ConnectionLimits::upload_memory`); larger work is a
   group, whose parts have a fixed largest size;
