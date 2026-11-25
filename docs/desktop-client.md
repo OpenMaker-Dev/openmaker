@@ -42,7 +42,10 @@ own chrome uses are in [design.md](design.md). Related notes:
   whose `CFBundleName` the menu bar shows; without it the menu bar would
   show the executable's name. The Dock and Command-Tab still show `om-gui`:
   LaunchServices names an unbundled process after its file
-  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Mode
+  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Their
+  icon, and each window's title bar and taskbar icon elsewhere, is
+  OpenMaker's logo ([assets/README.md](assets/README.md)), which eframe
+  sets while the app runs. Mode
   and other shortcuts use the platform's command key: ⌘ on macOS, Ctrl on
   Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the

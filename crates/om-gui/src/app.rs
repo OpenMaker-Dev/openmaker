@@ -1478,6 +1478,7 @@ impl OpenMakerApp {
             let mut builder = egui::ViewportBuilder::default()
                 .with_title(title.clone())
                 .with_inner_size([960.0, 680.0]);
+            builder.icon = crate::app_icon();
             if dialog {
                 // A dialog stays in front of the other windows, and cannot
                 // be minimized.
