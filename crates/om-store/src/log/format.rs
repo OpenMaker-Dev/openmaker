@@ -47,12 +47,18 @@ pub const MAX_SEGMENT: u64 = 1 << 30;
 /// readable up to this bound.
 pub const MAX_PAYLOAD: u32 = 64 << 20;
 
-/// The largest index an entry may have: one less than the largest number,
-/// so that the index after every entry can be represented.
-pub const MAX_INDEX: u64 = u64::MAX - 1;
+/// The largest index an entry may have, 2^54 - 1: below the value a batch
+/// header's mark has as an index (its 8 bytes read as a little-endian
+/// number, about 2.03 * 10^16), so that an entry, whose first 8 bytes are
+/// its index, never begins with the mark and is never taken for a header
+/// (section 3.4); and far below the largest number, so that the index after
+/// every entry can be represented.
+pub const MAX_INDEX: u64 = (1 << 54) - 1;
 
 const SEGMENT_MAGIC: [u8; 8] = *b"OMLOGSG\0";
 const BATCH_MAGIC: [u8; 8] = *b"OMBATCH\0";
+
+const _: () = assert!(u64::from_le_bytes(BATCH_MAGIC) > MAX_INDEX);
 
 /// The hash of the entry before the first: what the chain starts from.
 pub const ZERO_HASH: [u8; 32] = [0; 32];
@@ -311,6 +317,10 @@ pub fn encode_entry(
     file: u64,
     payload: &[u8],
 ) -> (Vec<u8>, [u8; 32]) {
+    debug_assert!(
+        index <= MAX_INDEX,
+        "the append refuses an index past the bound"
+    );
     let len = u32::try_from(payload.len()).expect("bounded by the log's configuration");
     let mut out = Vec::with_capacity(ENTRY_OVERHEAD as usize + payload.len());
     out.extend_from_slice(&index.to_le_bytes());

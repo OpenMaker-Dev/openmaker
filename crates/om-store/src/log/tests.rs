@@ -2485,6 +2485,39 @@ fn a_full_disk_refuses_the_append_before_anything_is_written() {
     assert!(retired > 0);
     log.append(1, 0, 0, &[9; 300]).unwrap();
     assert_eq!(log.flush_batch(None).unwrap().index, last.index + 1);
+
+    // The sixth review's second finding: a segment number whose run `state`
+    // could not list is refused the same way, before anything is written,
+    // and the log goes on. First a run that starts at the largest number,
+    // then one whose next segment would be it.
+    for first in [u64::MAX, u64::MAX - 1] {
+        let sim = Sim::new(6);
+        let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+        let mut state = State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap();
+        state
+            .update(|v| v.segments = Segments { first, count: 0 })
+            .unwrap();
+        let (mut log, _) = Log::open(fs, state, CONFIG, Position::START).unwrap();
+        let mut flushed = Position::START;
+        let refused = loop {
+            let before = (log.appended(), log.batch_len());
+            match log.append(1, 0, 0, &[7; 300]) {
+                Ok(_) if before.1 == 1 => flushed = log.flush_batch(None).unwrap(),
+                Ok(_) => {}
+                Err(LogError::Refused(_)) => break before,
+                Err(e) => panic!("{e}"),
+            }
+        };
+        assert!(!log.is_poisoned());
+        assert_eq!((log.appended(), log.batch_len()), refused);
+        assert!(matches!(log.prepare(), Err(LogError::Refused(_))));
+        assert_eq!(log.flush_batch(None).unwrap(), refused.0);
+        assert_eq!(flushed == Position::START, first == u64::MAX);
+        drop(log);
+        sim.restart();
+        let (_, opened) = open_store(&sim, Position::START).unwrap();
+        assert_eq!(opened.durable, refused.0);
+    }
 }
 
 #[test]
@@ -2515,6 +2548,54 @@ fn a_failed_write_or_flush_stops_the_log() {
         assert!(opened.durable.index >= 4, "{fault:?}: {opened:?}");
         assert_eq!(log.read(1).unwrap().count() as u64, opened.durable.index);
     }
+
+    // The sixth review's second finding: a `state` update refused after the
+    // batch was written (here the copy number at its limit, which nothing
+    // checks before) stops the log as a failed write does.
+    let sim = Sim::new(7);
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    fill(&mut log, 1, 1, 10);
+    drop(log);
+    sim.restart();
+    set_copy_numbers(&sim, u64::MAX - 2);
+    let (mut log, _) = open_store(&sim, Position::START).unwrap();
+    assert_eq!(log.state().copy().0, u64::MAX);
+    log.append(1, 0, 0, b"x").unwrap();
+    assert!(matches!(
+        log.flush_batch(None),
+        Err(LogError::State(StateError::Refused(_)))
+    ));
+    assert!(log.is_poisoned());
+    assert!(matches!(log.append(1, 0, 0, b""), Err(LogError::Poisoned)));
+    assert!(matches!(log.flush_batch(None), Err(LogError::Poisoned)));
+}
+
+/// Give the newest copy of `state` on `sim` the copy number `newest`, and
+/// the other `newest - 1`, by the format's description
+/// (`docs/server-storage-format.md` 1.1): the number at bytes 16 to 24 of a
+/// copy, the body's length at 12 to 16, and SHA-256 over the 24 bytes
+/// before the body and the body, after it.
+fn set_copy_numbers(sim: &Sim, newest: u64) {
+    let fs = sim.fs();
+    let file = fs.open(crate::state::FILE, FileOptions::PLAIN).unwrap();
+    let slot = crate::state::SLOT;
+    let mut copies: Vec<(u64, Vec<u8>)> = (0..2)
+        .map(|i| {
+            let mut bytes = vec![0u8; slot];
+            file.read_at((i * slot) as u64, &mut bytes).unwrap();
+            (u64::from_le_bytes(bytes[16..24].try_into().unwrap()), bytes)
+        })
+        .collect();
+    let newer = usize::from(copies[1].0 > copies[0].0);
+    for (i, (_, bytes)) in copies.iter_mut().enumerate() {
+        let number = if i == newer { newest } else { newest - 1 };
+        bytes[16..24].copy_from_slice(&number.to_le_bytes());
+        let end = 24 + u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let hash = digest::digest(&digest::SHA256, &bytes[..end]);
+        bytes[end..end + 32].copy_from_slice(hash.as_ref());
+        file.write_at((i * slot) as u64, bytes).unwrap();
+    }
+    file.flush().unwrap();
 }
 
 #[test]
@@ -2940,6 +3021,23 @@ fn indexes_at_the_top_of_the_range() {
         ..start
     };
     assert!(matches!(open_store(&sim, past), Err(LogError::Refused(_))));
+    // The batch mark, read as an index, is past the bound, so no entry can
+    // begin with it: the fifth review's case, a log opened from two before
+    // it, cannot be built. Nor can a log whose marker is past the bound be
+    // opened.
+    let mark = u64::from_le_bytes(*b"OMBATCH\0");
+    assert!(mark > MAX_INDEX);
+    for index in [mark - 2, MAX_INDEX + 1] {
+        sim.restart();
+        let from = Position { index, ..start };
+        assert!(matches!(open_store(&sim, from), Err(LogError::Refused(_))));
+    }
+    sim.restart();
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let mut state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    state.update(|v| v.marker.index = MAX_INDEX + 1).unwrap();
+    let opened = Log::open(fs, state, CONFIG, start).map_err(|failed| failed.error);
+    assert!(matches!(opened, Err(LogError::Refused(_))));
 }
 
 /// The second review's first finding: an open whose flush of the store

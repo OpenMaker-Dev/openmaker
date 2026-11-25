@@ -364,7 +364,9 @@ impl<'a> Scanner<'a> {
                 (buf, Vec::new())
             }
             Keep::BytesAfter(index) if head.index > index => {
-                (Vec::new(), std::mem::take(&mut place.buf))
+                let mut buf = std::mem::take(&mut place.buf);
+                buf.truncate(size as usize);
+                (Vec::new(), buf)
             }
             _ => {
                 self.recycle(place);

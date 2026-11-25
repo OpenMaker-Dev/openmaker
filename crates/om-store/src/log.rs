@@ -43,8 +43,11 @@
 //! The caller drives everything; nothing here runs on its own. After a
 //! write, flush or `state` update fails, the log refuses every later call
 //! ([`LogError::Poisoned`]): what reached the device is unknown, and the
-//! store stops and opens again (section 6.12). A full disk refuses an
-//! append that would need a new segment before anything is written.
+//! store stops and opens again (section 6.12). So does a `state` update
+//! that `state` refuses after the call wrote to a segment; one refused
+//! before anything was written stops nothing. A full disk refuses an
+//! append that would need a new segment before anything is written, and so
+//! does a segment number `state` could not list.
 //!
 //! The log owns the store's [`State`], and with it the store folder's lock,
 //! for as long as it lives: one log per store, by construction. It reaches
@@ -314,7 +317,9 @@ pub enum LogError {
     NewerFormat { segment: u64, version: u16 },
     /// The disk failed. After a failed write or flush the log is poisoned.
     Disk(sys::Error),
-    /// `state` failed or refused; the log is poisoned.
+    /// `state` failed or refused. A failure stops the log, and so does a
+    /// refusal after the call wrote to a segment (a batch flush, giving up);
+    /// a refusal of a call that wrote nothing first does not.
     State(StateError),
     /// The disk is too full for the next segment: the append was refused
     /// and nothing was written.
@@ -721,6 +726,9 @@ impl Log {
         let cut_count = values.cut_count;
         if start.index > MAX_INDEX {
             return Err(LogError::Refused("the start is past the last index"));
+        }
+        if marker.index > MAX_INDEX {
+            return Err(LogError::Refused("the marker is past the last index"));
         }
         let after_start = start.index + 1;
 
@@ -1142,9 +1150,20 @@ impl Log {
     /// Update `state`. A refusal writes nothing; any other failure stops the
     /// log.
     fn update(&mut self, change: impl FnOnce(&mut Values)) -> Result<(), LogError> {
+        self.update_with(false, change)
+    }
+
+    /// Update `state`; when the call already `wrote` to a segment, a refusal
+    /// stops the log too: what reached the segment is then not recorded, and
+    /// what the log holds in memory no longer matches it.
+    fn update_with(
+        &mut self,
+        wrote: bool,
+        change: impl FnOnce(&mut Values),
+    ) -> Result<(), LogError> {
         match self.state.update(change) {
             Ok(()) => Ok(()),
-            Err(e @ StateError::Refused(_)) => Err(LogError::State(e)),
+            Err(e @ StateError::Refused(_)) if !wrote => Err(LogError::State(e)),
             Err(e) => {
                 self.poisoned = true;
                 Err(LogError::State(e))
@@ -1159,17 +1178,22 @@ impl Log {
     /// for it fails with [`LogError::NoSpace`], and an allocation that fails
     /// part way with [`LogError::Disk`]; neither stops the log, since
     /// nothing listed was touched, and a later call finishes the file. A
-    /// failed flush stops the log.
+    /// failed flush stops the log. A segment number whose run `state` could
+    /// not list (its end past the largest number) is refused before anything
+    /// is made.
     pub fn prepare(&mut self) -> Result<(), LogError> {
         self.usable()?;
         self.check_lock()?;
         if self.spare.is_some() {
             return Ok(());
         }
+        // The run that lists it must end within the numbers, as `state`
+        // requires: refused here, before anything is written for it.
         let run = self.segments();
         let number = run
             .first
             .checked_add(run.count)
+            .filter(|n| n.checked_add(1).is_some())
             .ok_or(LogError::Refused("the segment numbers are spent"))?;
         let path = segment_path(number);
         let file = match self.fs.open(&path, FileOptions::PLAIN) {
@@ -1282,8 +1306,9 @@ impl Log {
     /// durable before `state` is updated: the marker alone when the batch
     /// stayed in one segment (one write and one flush of `state`), the
     /// marker and the new segment together otherwise (both slots). Any
-    /// failure stops the log; an entry the failed call wrote may be found
-    /// whole at the next open, and its outcome was not reported.
+    /// failure stops the log, a refusal of the `state` update after the
+    /// batch was written included; an entry the failed call wrote may be
+    /// found whole at the next open, and its outcome was not reported.
     pub fn flush_batch(&mut self, committed: Option<u64>) -> Result<Position, LogError> {
         self.usable()?;
         self.check_lock()?;
@@ -1297,7 +1322,7 @@ impl Log {
         let new_committed = committed.map_or(recorded, |c| c.max(recorded));
         if self.batch.is_empty() {
             if new_committed != recorded {
-                self.set_marker(self.durable, new_committed, None)?;
+                self.set_marker(self.durable, new_committed, None, false)?;
             }
             self.committed_confirmed |= committed.is_some();
             return Ok(self.durable);
@@ -1347,7 +1372,7 @@ impl Log {
             });
         }
         let last = self.appended;
-        self.set_marker(last, new_committed, new_seg)?;
+        self.set_marker(last, new_committed, new_seg, true)?;
         self.committed_confirmed |= committed.is_some();
         self.write = write;
         self.durable = last;
@@ -1379,19 +1404,20 @@ impl Log {
             ));
         }
         if committed > self.committed() {
-            self.set_marker(self.durable, committed, None)?;
+            self.set_marker(self.durable, committed, None, false)?;
         }
         self.committed_confirmed = true;
         Ok(())
     }
 
     /// Record the marker at `at` with `committed`, and list `new_seg` with
-    /// it when given.
+    /// it when given; `wrote` when the call wrote a batch first.
     fn set_marker(
         &mut self,
         at: Position,
         committed: u64,
         new_seg: Option<Seg>,
+        wrote: bool,
     ) -> Result<(), LogError> {
         let marker = Marker {
             index: at.index,
@@ -1402,7 +1428,7 @@ impl Log {
         if new_seg.is_some() {
             run.count += 1;
         }
-        self.update(|v| {
+        self.update_with(wrote, |v| {
             v.marker = marker;
             v.segments = run;
         })?;
@@ -1584,7 +1610,8 @@ impl Log {
     /// segment from the last verified entry and reads nothing further of
     /// the segment the log ended in (format section 3.5, rule 1), until a
     /// later cut of durable entries drops the fresh segment and the log
-    /// grows in that segment again, over the place too. Appends are taken
+    /// grows in that segment again: over the place, or into the next
+    /// segment when too little room is left before it. Appends are taken
     /// again.
     ///
     /// It needs no committed position: it removes nothing at or before the
@@ -1652,7 +1679,7 @@ impl Log {
             first: run.first,
             count: run.count + 1,
         };
-        self.update(|v| {
+        self.update_with(true, |v| {
             v.segments = listed;
             v.cut_count = cut_count;
         })?;
