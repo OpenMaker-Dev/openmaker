@@ -1343,12 +1343,16 @@ program) fails with the system exception: nothing of it is held, and the
 empty last page would read as the upload done, a program run. That is
 OpenMaker's choice against FileMaker's code, unverified, and only where
 nothing was stored: the last part of an upload this connection completed
-in parts (one of its last 256), sent again by a client that retries
-after a timeout, is answered as the upload was, done for op13, op14 and
-op70, whose work was done then and is not done again; op88's member and
-a program's results are not answered twice, and fail. A cursor evicted
-or refused (an upload past a limit, a continuation refused) fails with
-IMP_LIMIT.
+in parts and answered done (one of the last 256 it answered so), sent
+again by a client that retries after a timeout, is answered done again
+for op13, op14 and op70, whose work was done then and is not done again.
+The operation records that where it answers done
+(`Transfers::answered_done`), so the last part again of an upload whose
+operation failed (a commit refused whole, an upload the engine refused)
+fails as a cursor not held does, and never reads as done. op88's member
+and a program's results are not answered twice, and fail. A cursor
+evicted or refused (an upload past a limit, a continuation refused)
+fails with IMP_LIMIT.
 `tests/recalc.rs` sends each request first to a writable copy, where it
 makes its change, read back, then to a file hosted read-only, and each that
 reaches the engine also to a file made read-only between its admission and

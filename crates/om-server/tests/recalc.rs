@@ -1908,6 +1908,84 @@ fn a_continuation_answers_as_its_request_does() {
     assert!(query(&mut client, program_rest, resume).is_err());
 }
 
+/// The last part of an upload again is answered done only when its
+/// operation answered done. An op70 in two parts that is refused whole
+/// (another connection holds record 1) and an op13 in two parts the engine
+/// refuses (the whole file as its destination) fail, and their last parts
+/// sent again fail too: record 1 keeps its name. Found by experiment: the
+/// receiver remembered every upload it completed, whatever its operation
+/// answered, so the repeat of a refused commit's last part read as done.
+#[test]
+fn a_last_part_again_fails_when_its_operation_failed() {
+    let (writable, catalog) = tasks_for_writes("recalc-failed-repeats", false);
+    let (port, handle) = server::start_with_handle(&writable, om_server::ScriptLimits::DEFAULT);
+    let (mut holder, _) = server::logged_in(port, "holder");
+    let (mut client, id) = server::logged_in(port, "repeater");
+    let name = name_of_record_1(&mut client);
+
+    lock_record(&mut holder, 1, 0x31);
+    let t = uint_segment(TABLE);
+    client
+        .upload_records(&t, vec![staged_record(1, "FromB", Vec::new())])
+        .unwrap();
+    let staged = handle.upload_memory_in_use();
+    let entries: Vec<Entry> = (1..=40).map(Entry::Edit).collect();
+    let list = commit_list_of(&t, &entries);
+    let (list_first, list_rest) = list.split_at(list.len() / 2);
+    let part = |list: &[u8], resume: Resume| write::Commit {
+        list: list.to_vec(),
+        resume,
+        flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+        txn: 0x31,
+    };
+    let reply = client
+        .perform(&write::build_commit(
+            4,
+            id,
+            &part(list_first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_commit(5, id, &part(list_rest, resume));
+    assert!(client.perform(&last).is_err(), "the commit is refused");
+    for _ in 0..2 {
+        assert!(client.perform(&last).is_err(), "its last part again");
+    }
+    assert_eq!(name_of_record_1(&mut client), name);
+    assert_eq!(handle.upload_memory_in_use(), staged, "staging");
+
+    let whole = catalog.to_wire().unwrap();
+    let (first, rest) = whole.split_at(whole.len() / 2);
+    let to_file = |payload: &[u8], resume: Resume| Upload {
+        payload: payload.to_vec(),
+        resume,
+        terminal: Vec::new(),
+        flags: write::UPLOAD_NODE,
+        dest: Vec::new(),
+    };
+    let reply = client
+        .perform(&write::build_upload_to_host(
+            6,
+            id,
+            &to_file(first, Resume::start()),
+        ))
+        .unwrap();
+    let resume = write::parse_upload_reply(&reply).unwrap();
+    assert!(resume.has_more(), "the first part was held");
+    let resume = Resume {
+        depth: -1,
+        ..resume
+    };
+    let last = write::build_upload_to_host(7, id, &to_file(rest, resume));
+    assert!(client.perform(&last).is_err(), "the upload is refused");
+    assert!(client.perform(&last).is_err(), "its last part again");
+}
+
 /// op73 names one table (`[T]`, schema-path.md 3.6): for any other path it
 /// fails, and the table's work stays listed; for the table it is done.
 #[test]

@@ -3440,8 +3440,12 @@ enum Payload {
     /// More parts follow: answer with this resume block (spec 5.6.6c).
     Continues(Resume),
     /// A repeat of the last part of an upload this connection completed in
-    /// parts (a client retrying after a timeout): the operation ran on it,
-    /// and nothing is done again ([`Upload::Repeated`]).
+    /// parts and whose operation answered done (a client retrying after a
+    /// timeout): nothing is done again ([`Upload::Repeated`]). The
+    /// operation says so where it answers done
+    /// ([`crate::transfer::Transfers::answered_done`]); the last part again
+    /// of an upload whose operation failed is a cursor not held, and fails
+    /// again.
     Repeated,
 }
 
@@ -3567,6 +3571,9 @@ fn upload(
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
         upload_to_file(shared, peer, &hosted, &request, &payload, reading.bytes())?;
+        session
+            .transfers
+            .answered_done(Owner::of(header), &request.resume);
         return Ok(done);
     }
     let client = session.client;
@@ -3588,6 +3595,9 @@ fn upload(
             return Err(Refused.into());
         }
     }
+    session
+        .transfers
+        .answered_done(Owner::of(header), &request.resume);
     Ok(done)
 }
 
@@ -3924,6 +3934,9 @@ fn commit(
     let reply = match committed.result {
         Ok(()) => {
             outcome.notices.deliver(&hosted, &shared.mailboxes);
+            session
+                .transfers
+                .answered_done(Owner::of(header), &request.resume);
             Ok(done)
         }
         // Refused under the write lock, record by record, by the account's
