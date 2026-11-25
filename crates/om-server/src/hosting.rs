@@ -309,6 +309,7 @@ impl ReadFault {
     }
 
     /// The tree kept when the read failed, if one did.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn tree_at_failure(&self) -> Option<om_hbam::OwnedNode> {
         self.at_failure.lock().unwrap().clone()
     }
@@ -595,7 +596,11 @@ impl Hosted {
         if n == at {
             let store = self.read_store();
             *fault.at_failure.lock().unwrap() = store.node(&[]).cloned();
-            *fault.waiting_at_failure.lock().unwrap() = Some(store.waiting_for_tests());
+            // What reads left waiting is kept in debug builds only.
+            #[cfg(debug_assertions)]
+            {
+                *fault.waiting_at_failure.lock().unwrap() = Some(store.waiting_for_tests());
+            }
             fault.failed.store(true, Relaxed);
         }
         Err(ReadError::Unreadable {
