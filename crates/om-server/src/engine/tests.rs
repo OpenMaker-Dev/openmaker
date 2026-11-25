@@ -4225,17 +4225,22 @@ fn a_deletion_taken_back_puts_the_record_back_as_it_was() {
     exported_from_disk_as_memory(&engine, &file, &disk);
 }
 
-/// A source whose draws panic: the unique id of container data a
-/// recalculation stores, among them.
-struct PanickingDraws;
+/// A source whose draws panic from the third on: in deferred work that
+/// stores container data, the operation draws its records' environment (a
+/// UUID and a seed), then a new library's unique id, once the library and
+/// its header are made (`library::store_as`). It counts its draws.
+struct PanickingDraws(Arc<AtomicU64>);
 
 impl Environment for PanickingDraws {
     fn now(&self) -> jiff::Zoned {
         "2026-11-24T12:00:00[UTC]".parse().unwrap()
     }
 
-    fn fill_random(&self, _: &mut [u8]) {
-        panic!("a test's panic in a draw");
+    fn fill_random(&self, bytes: &mut [u8]) {
+        if self.0.fetch_add(1, Ordering::Relaxed) >= 2 {
+            panic!("a test's panic in a draw");
+        }
+        bytes.fill(7);
     }
 
     fn stopwatch(&self) -> om_data::rules::Stopwatch {
@@ -4283,9 +4288,15 @@ fn a_panic_in_deferred_container_work_leaves_nothing_and_counts_as_changed() {
     let file = local(&disk);
     let before = node_at(&file, &[]);
     assert!(!file.read_store().has_unsaved_changes());
-    let engine = FileEngine::new(Box::new(PanickingDraws));
+    let draws = Arc::new(AtomicU64::new(0));
+    let engine = FileEngine::new(Box::new(PanickingDraws(Arc::clone(&draws))));
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.recover(&engine)));
     assert!(ran.is_err());
+    assert_eq!(
+        draws.load(Ordering::Relaxed),
+        3,
+        "the panic is the library's draw"
+    );
     assert_eq!(node_at(&file, &[]), before, "nothing of the work is left");
     assert!(
         file.read_store().has_unsaved_changes(),
