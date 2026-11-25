@@ -53,8 +53,15 @@ pub const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
 /// (Sentry's own shutdown timeout).
 const FLUSH: Duration = Duration::from_secs(2);
 
+/// The longest one request to Sentry takes, its name lookup and connection
+/// included (OpenMaker's choice). Sentry's transport sends one report at a
+/// time and its shutdown waits for the one being sent, so this bounds how
+/// long an unanswering endpoint can hold up the program's end: about
+/// twice this and [`FLUSH`].
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The Sentry client while reports are on. Dropping it sends what is
-/// queued, waiting up to two seconds.
+/// queued, waiting up to two seconds and the report being sent.
 pub struct Reporting {
     _client: sentry::ClientInitGuard,
 }
@@ -100,6 +107,7 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
     )));
     options.environment = Some(environment);
     options.send_default_pii = false;
+    options.transport = Some(Arc::new(Transport));
     // The stack of the thread that logged an error, as for a panic.
     options.attach_stacktrace = true;
     options.in_app_include = vec!["om_"];
@@ -144,6 +152,29 @@ fn init_from(dsn: Option<&OsStr>, app: &'static str) -> Option<Reporting> {
     Some(Reporting {
         _client: sentry::init(options),
     })
+}
+
+/// Sentry's ureq transport, with an agent whose requests end at
+/// [`REQUEST_TIMEOUT`]: ureq sets no deadline of its own. Its TLS is
+/// rustls's with ring and the webpki roots, as the default agent's, and it
+/// takes a proxy from `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`.
+struct Transport;
+
+impl sentry::TransportFactory for Transport {
+    fn create_transport_with_options(
+        &self,
+        options: sentry::TransportOptions,
+    ) -> Arc<dyn sentry::Transport> {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(REQUEST_TIMEOUT))
+            .build()
+            .new_agent();
+        Arc::new(
+            sentry::transports::UreqHttpTransportOptions::from(options)
+                .with_agent(agent)
+                .build(),
+        )
+    }
 }
 
 /// `console`, the program's logger, with Sentry's log integration around
@@ -277,69 +308,120 @@ fn panic_event(info: &PanicHookInfo<'_>) -> Event<'static> {
 /// - From the first `{` on, the text is replaced by `{…}`: a structure's
 ///   `Debug` output, such as an engine operation with the records it
 ///   commits or an engine's answer.
-/// - A quoted string (`Debug` output of a text: field values, account,
-///   script, schedule and machine names, a panic's message) becomes `"…"`,
-///   but for a hosted file's name, which ends in `.fmp12`.
-/// - An IP address, with or without a port, becomes `<address>`.
+/// - A quoted string (`Debug` output of a text: field values, file,
+///   account, script, schedule and machine names, a caught panic's
+///   message) becomes `"…"`.
+/// - An IP address, with or without a port, also inside a URL, becomes
+///   `<address>`.
+/// - A bracketed list (`Debug` output of bytes or of a list: key paths,
+///   index keys, which are made from field values, lists of values)
+///   becomes `[…]`.
 pub fn scrub(text: &str) -> String {
     let (text, cut) = match text.find('{') {
         Some(at) => (&text[..at], true),
         None => (text, false),
     };
-    let mut quoted = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open) = rest.find('"') {
-        quoted.push_str(&rest[..=open]);
-        rest = &rest[open + 1..];
-        let mut escaped = false;
-        let close = rest.char_indices().find_map(|(at, c)| match c {
-            _ if escaped => {
-                escaped = false;
-                None
-            }
-            '\\' => {
-                escaped = true;
-                None
-            }
-            '"' => Some(at),
-            _ => None,
-        });
-        let Some(close) = close else {
-            // An unclosed quote: the rest may be a value cut short.
-            quoted.push_str("…\"");
-            rest = "";
-            break;
-        };
-        let inside = &rest[..close];
-        if inside.to_ascii_lowercase().ends_with(".fmp12") {
-            quoted.push_str(inside);
-        } else {
-            quoted.push('…');
-        }
-        quoted.push('"');
-        rest = &rest[close + 1..];
-    }
-    quoted.push_str(rest);
-    let mut scrubbed = String::with_capacity(quoted.len());
-    for piece in quoted.split_inclusive(char::is_whitespace) {
-        let word = piece.trim_end_matches(char::is_whitespace);
-        let start = word.len() - word.trim_start_matches(['(', '<']).len();
-        let end = word.trim_end_matches([':', ',', ';', ')', '.', '>']).len();
-        let address = word
-            .get(start..end.max(start))
-            .is_some_and(|w| w.parse::<SocketAddr>().is_ok() || w.parse::<IpAddr>().is_ok());
-        if address {
-            scrubbed.push_str(&word[..start]);
-            scrubbed.push_str("<address>");
-            scrubbed.push_str(&piece[end..]);
-        } else {
-            scrubbed.push_str(piece);
-        }
-    }
+    let mut scrubbed = without_lists(&without_addresses(&without_quoted(text)));
     if cut {
         scrubbed.push_str("{…}");
     }
     scrubbed
+}
+
+/// `text` with each double-quoted string's content made `…`; an unclosed
+/// quote's rest, which may be a value cut short, too.
+fn without_quoted(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut quoted = false;
+    let mut escaped = false;
+    for c in text.chars() {
+        if !quoted {
+            kept.push(c);
+            quoted = c == '"';
+            continue;
+        }
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => {
+                kept.push_str("…\"");
+                quoted = false;
+            }
+            _ => {}
+        }
+    }
+    if quoted {
+        kept.push_str("…\"");
+    }
+    kept
+}
+
+/// `text` with each IP address, or socket address, made `<address>`: a
+/// run of hexadecimal digits, colons, dots and square brackets that is not
+/// part of a word (so not `a::b` in a Rust path) and parses as one, less
+/// any colons, dots and brackets that end it.
+fn without_addresses(text: &str) -> String {
+    let part = |c: char| c.is_ascii_hexdigit() || matches!(c, ':' | '.' | '[' | ']');
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut kept = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut at = 0;
+    while let Some(offset) = text[at..].find(part) {
+        let start = at + offset;
+        let end = text[start..]
+            .find(|c: char| !part(c))
+            .map_or(text.len(), |length| start + length);
+        at = end;
+        if word(text[..start].chars().next_back()) || word(text[end..].chars().next()) {
+            continue;
+        }
+        let mut run = &text[start..end];
+        while !run.is_empty() && !is_address(run) {
+            run = run.strip_suffix([':', '.', '[', ']']).unwrap_or_default();
+        }
+        if !run.is_empty() {
+            kept.push_str(&text[copied..start]);
+            kept.push_str("<address>");
+            copied = start + run.len();
+        }
+    }
+    kept.push_str(&text[copied..]);
+    kept
+}
+
+fn is_address(run: &str) -> bool {
+    run.chars().any(|c| c.is_ascii_hexdigit())
+        && (run.parse::<SocketAddr>().is_ok()
+            || run.parse::<IpAddr>().is_ok()
+            || run
+                .strip_prefix('[')
+                .and_then(|run| run.strip_suffix(']'))
+                .is_some_and(|run| run.parse::<IpAddr>().is_ok()))
+}
+
+/// `text` with each bracketed list, nested ones within it, made `[…]`.
+fn without_lists(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '[' => {
+                if depth == 0 {
+                    kept.push_str("[…");
+                }
+                depth += 1;
+            }
+            ']' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    kept.push(']');
+                }
+            }
+            _ if depth > 0 => {}
+            _ => kept.push(c),
+        }
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -356,23 +438,31 @@ mod tests {
         for (message, sent) in [
             (
                 r#""Tasks.fmp12": an operation came without the passwords it takes, or with some it does not: CommitRecords(CommitRecords { account: "Admin", list: [5, 1] })"#,
-                r#""Tasks.fmp12": an operation came without the passwords it takes, or with some it does not: CommitRecords(CommitRecords {…}"#,
+                r#""…": an operation came without the passwords it takes, or with some it does not: CommitRecords(CommitRecords {…}"#,
             ),
             (
-                r#"no index key for Text value ["Smith", "Jo \"Jo\" Ann"]; record 7 is left out of the index"#,
-                r#"no index key for Text value ["…", "…"]; record 7 is left out of the index"#,
+                r#"no index key for Date value ["Patient 42.fmp12", "Jo \"Jo\" Ann"]; record 7 is left out of the index"#,
+                "no index key for Date value […]; record 7 is left out of the index",
             ),
             (
-                r#"192.168.1.20:52114: login to "Contacts.FMP12" as "Admin": accepted"#,
-                r#"<address>: login to "Contacts.FMP12" as "…": accepted"#,
+                "Tasks.fmp12: index posting [[05], [01], [0b], [01], [6b, 65, 79]] has a RID encoding this server cannot edit losslessly",
+                "Tasks.fmp12: index posting […] has a RID encoding this server cannot edit losslessly",
+            ),
+            (
+                r#"192.168.1.20:52114: login to "Contacts.fmp12" as "Admin": accepted"#,
+                r#"<address>: login to "…" as "…": accepted"#,
             ),
             (
                 r#"[fe80::1]:5003: connection ended by a panic in the server: "byte index 2 is not a char boundary; it is inside 'é' of `Zoë`""#,
                 r#"<address>: connection ended by a panic in the server: "…""#,
             ),
             (
-                "listening on 0.0.0.0:5003 (from 10.0.0.1).",
-                "listening on <address> (from <address>).",
+                "Admin Console listening on https://192.0.2.10:16000/admin-console (from 10.0.0.1).",
+                "Admin Console listening on https://<address>/admin-console (from <address>).",
+            ),
+            (
+                "om_server::server: bound to 2001:db8:: at 21:04:32Z",
+                "om_server::server: bound to <address> at 21:04:32Z",
             ),
             (
                 "Schedule \"Nightly\" aborted; time limit exceeded.",

@@ -5031,6 +5031,7 @@ dependencies = [
  "sentry",
  "signal-hook",
  "socket2",
+ "ureq 3.5.2",
  "zeroize",
 ]
 

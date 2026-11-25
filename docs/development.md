@@ -1005,16 +1005,23 @@ without the commit, which the build does not record. What is sent:
 - The host name, the operating system, the architecture and the Rust
   version.
 
-Every message is scrubbed first: a quoted string (a field's value, an
-account, script, schedule or machine name, a caught panic's message)
-becomes `"…"` unless it is a hosted file's name, ending in `.fmp12`;
-everything from the first `{` on (the `Debug` output of a structure, such
-as an operation with the records it commits) becomes `{…}`; an IP address
-becomes `<address>`. Default personal data (`send_default_pii`) is off,
-and no request, record or file is attached. The console shows what it
-showed without Sentry. Limits: error texts from lower layers (`{e}` in a
-log line) are sent as they read after the scrub, and the Admin Console's
-own account name, which its lines give unquoted, is sent. Stack frames
+Every message is scrubbed first, going by how values look in it: a quoted
+string (a field's value, a file, account, script, schedule or machine
+name, a caught panic's message) becomes `"…"`; a bracketed list (key
+paths, index keys, which are made from field values, lists of values)
+becomes `[…]`; everything from the first `{` on (the `Debug` output of a
+structure, such as an operation with the records it commits) becomes
+`{…}`; an IP address, also in a URL, becomes `<address>`. Default
+personal data (`send_default_pii`) is off, and no request, record or file
+is attached. The console shows what it showed without Sentry, and each
+line before Sentry reads it.
+
+Each request to Sentry ends after 5 seconds, so an endpoint that does not
+answer holds up a program's end by about 12 seconds at most. Limits: a
+value a log line gives unquoted and outside a list (an error text from a
+lower layer, `{e}`) is sent as it reads; the Admin Console's own account
+name and file names and paths given unquoted are sent; a second signal
+ends `om-server` at once, without sending what is queued. Stack frames
 give file and line only for a build with debug info, and Sentry
 symbolicates them only with the build's debug files uploaded; a panic's
 location is in its message either way.

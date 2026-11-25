@@ -140,9 +140,11 @@ pub fn native_options() -> eframe::NativeOptions {
 /// before any thread starts (`run` does). With the `web-viewer` feature on
 /// an X server without DRI3, WebKitGTK's DMA-BUF renderer is turned off,
 /// unless `WEBKIT_DISABLE_DMABUF_RENDERER` is already set; otherwise it does
-/// nothing.
+/// nothing. Only the first call looks: a later one, such as `run`'s after
+/// the `om-gui` program's own, may come once threads run.
 pub fn prepare_web_viewers() {
-    web_viewer::prepare_environment();
+    static PREPARED: std::sync::Once = std::sync::Once::new();
+    PREPARED.call_once(web_viewer::prepare_environment);
 }
 
 /// Install the logger [`run`] reads the error that ends its event loop
