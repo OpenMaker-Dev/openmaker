@@ -975,6 +975,68 @@ Each of these cost a debugging round:
     cargo test -p om-author --test scorecard_build -- --ignored
   ```
 
+### Error reports
+
+`om-server` and `om-gui` can report errors and panics to a Sentry project
+(`om_server::reporting`). Reports are off unless `SENTRY_DSN` is set when
+the program starts: without it no Sentry client is made and nothing is
+sent. No build carries a DSN.
+
+| Variable | Meaning |
+|---|---|
+| `SENTRY_DSN` | The project's DSN, where reports go. Unset or empty: no reports |
+| `SENTRY_ENVIRONMENT` | The reports' environment; default `development` for a debug build, `production` for a release build |
+| `HTTPS_PROXY`, `HTTP_PROXY` | The reports' proxy: `HTTPS_PROXY` for an `https` DSN, else `HTTP_PROXY` (lower-case names too), as Sentry's SDK picks it. `ALL_PROXY` and `NO_PROXY` are not read |
+
+Both programs report to one project, told apart by the `app` tag
+(`om-server` or `om-gui`). The release is `openmaker@<crate version>`,
+without the commit, which the build does not record. What is sent:
+
+- A panic, with its location and stack trace. Its message is sent only
+  when the program wrote it out in full (`panic!("text")`, `unwrap` on
+  `None`); a message formatted at run time (`expect`, `unwrap` on `Err`, an
+  index out of bounds, `panic!("{value}")`) can hold any value, such as a
+  field's text, and is withheld. A panic on one of Sentry's own threads is
+  not reported.
+- Each error-level log line, as an event with the stack of the thread that
+  logged it and, as breadcrumbs, the last 100 warning and info lines logged
+  on that thread. Debug lines, `ureq`'s and Sentry's own are not read.
+  Sentry's own log (Logs) is not used: its batching can lose the last
+  batch when a program ends without closing the client, and closing it can
+  wait for a report in flight and panic after a failure in Sentry's thread.
+- The error a program ends with: `om-server`'s once reports are on, which
+  is after the command line and the Admin Console's password are read;
+  `om-gui`'s window's.
+- The host name, the operating system, the architecture and the Rust
+  version.
+
+Every message is scrubbed first, going by how values look in it: a quoted
+string (a field's value, a file, account, script, schedule or machine
+name, a caught panic's message) becomes `"…"`; a bracketed list (key
+paths, index keys, which are made from field values, lists of values)
+becomes `[…]`; a key path (`3/5/x6b6579…`, as `om-hbam` writes it in
+its errors) becomes `…`; everything from the first `{` on (the `Debug`
+output of a structure, such as an operation with the records it commits)
+becomes `{…}`; an IP address, also in a URL, becomes `<address>`. Default
+personal data (`send_default_pii`) is off, and no request, record or file
+is attached. The console shows what it showed without Sentry, and each
+line before Sentry reads it.
+
+Each request to Sentry, its name lookup included, ends after 5 seconds,
+and a program's end waits for room in Sentry's queue and then 2 seconds
+for what is queued, without waiting for Sentry's thread to finish: an
+endpoint that does not answer delays the end by about 7 seconds (about 12
+when a panic's report is being flushed at the same time), not
+indefinitely, and reports still queued then are not sent.
+
+Limits: a value a log line gives unquoted and outside a list (an error
+text from a lower layer, `{e}`) is sent as it reads; the Admin Console's
+own account name and file names and paths given unquoted are sent; a
+second signal ends `om-server` at once, without sending what is queued.
+Stack frames give file and line only for a build with debug info, and
+Sentry symbolicates them only with the build's debug files uploaded; a
+panic's location is in its message either way.
+
 ## Reverse-engineering and oracle tools
 
 Everything under `tools/` is research tooling for writing specs, not part
