@@ -1,7 +1,7 @@
 //! The store's `state` file (`docs/server-storage.md` section 6.1): this
 //! server's id, its start count, its term and vote, its log segments, the
-//! marker (section 6.3) and the repair record (section 7.5). The byte
-//! format is section 1 of `docs/server-storage-format.md`.
+//! marker and the cut count (section 6.3) and the repair record (section
+//! 7.5). The byte format is section 1 of `docs/server-storage-format.md`.
 //!
 //! The file holds two copies in fixed slots, each with a number and a
 //! SHA-256 hash. The valid copy with the highest number counts.
@@ -9,10 +9,11 @@
 //! - **A marker advance** (only the marker changes, and neither its index
 //!   nor its committed position goes down) writes the next number into the
 //!   slot that does not hold the current copy, in place, and flushes: one
-//!   write of the copy's 178 bytes and one flush, since the marker moves
+//!   write of the copy's 186 bytes and one flush, since the marker moves
 //!   once per commit batch.
-//! - **Every other update** (the term, the vote, the segments, the repair
-//!   record, a marker that goes back) and the start count raised by an
+//! - **Every other update** (the term, the vote, the segments, the cut
+//!   count, the repair record, a marker that goes back) and the start count
+//!   raised by an
 //!   open are written twice before they count: as the next number into the
 //!   other slot, flushed, then as the number after into the first slot,
 //!   flushed. So what such an update confirmed is in both slots, and
@@ -24,6 +25,17 @@
 //! the copy read is the last one confirmed or a later one that was being
 //! written.
 //!
+//! **A copy passed over** (damaged, or not readable) may have held a newer
+//! marker, which the open cannot tell (section 6.1). After flushing the copy
+//! it read, unchanged, the open writes the next copy, which carries a
+//! [`Mark`], into the slot it passed over and flushes it, then the same
+//! into the first slot: one durable copy exists at every point, and every
+//! later open finds the mark, however whole the two copies then are, until
+//! the update that settles it, which clears it in both slots. Only an open
+//! sets a mark; the log settles it (the marker moved over the whole batch
+//! that followed it) or the store does, once it has recorded that the last
+//! batch confirmed may be lost.
+//!
 //! The file is made once, by [`State::create`], under another name and
 //! renamed into place, so that `state` exists only complete.
 //!
@@ -32,8 +44,11 @@
 //! fail, and the system's cache then shows bytes the device may not hold
 //! (section 6.12). So it flushes the store folder (for `state`'s own name)
 //! and writes the copy it read back into its slot and flushes it before it
-//! writes anything over the other slot. It reads the slots one at a time:
-//! one that cannot be read does not keep it from the other.
+//! writes anything over the other slot. It writes it back as the very
+//! bytes it read, so that a write cut short leaves it as it was, and a copy
+//! of an older version reaches the newer form only as new copies. It reads
+//! the slots one at a time, each up to [`READ_ATTEMPTS`] times: one that
+//! cannot be read does not keep it from the other.
 //!
 //! A [`State`] holds the store folder's lock for as long as it lives, so
 //! that one lock makes one writer. After a write or flush of `state` fails
@@ -53,21 +68,27 @@ pub const FILE: &str = "state";
 /// place.
 pub const NEW_FILE: &str = "state.new";
 
-/// The format version this code writes, and the newest it reads.
-pub const VERSION: u16 = 1;
+/// The format version this code writes, and the newest it reads. Version
+/// 1, without the cut count, is read as a cut count of 0; versions 1 and 2,
+/// without the mark, as no mark.
+pub const VERSION: u16 = 3;
 
 /// The size of each copy's slot. A copy never exceeds it.
 pub const SLOT: usize = 4096;
 
-/// The bytes of a version 1 copy its hash covers, with the hash: the rest
-/// of the slot is padding.
-pub const COPY_V1: usize = HEADER + BODY_V1 + HASH;
+/// The bytes of a copy this code writes that its hash covers, with the
+/// hash: the rest of the slot is padding.
+pub const COPY: usize = HEADER + BODY_V3 + HASH;
 
 const MAGIC: [u8; 8] = *b"OMSTATE\0";
 const HEADER: usize = 24;
 const HASH: usize = 32;
 /// The body of a version 1 copy.
 const BODY_V1: usize = 122;
+/// The body of a version 2 copy: version 1's, then the cut count.
+const BODY_V2: usize = BODY_V1 + 8;
+/// The body of a version 3 copy: version 2's, then the mark.
+const BODY_V3: usize = BODY_V2 + 9;
 
 /// A server's id: 16 random bytes drawn when its store is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -85,7 +106,8 @@ pub struct Segments {
 }
 
 /// The marker (section 6.3): the last entry a flushed batch holds, and the
-/// highest committed position this server has heard of.
+/// committed position: the last entry of this server's log known to be
+/// committed, never past the marker's index in a copy the log writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Marker {
     pub index: u64,
@@ -101,6 +123,14 @@ pub struct Repair {
     pub required_end: u64,
 }
 
+/// The mark an open leaves when it passed over a copy (module docs): the
+/// marker's index in the copy it read, which may be one advance behind what
+/// the server confirmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub marker: u64,
+}
+
 /// What a copy of `state` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Values {
@@ -114,8 +144,16 @@ pub struct Values {
     pub vote: Option<ServerId>,
     pub segments: Segments,
     pub marker: Marker,
+    /// How many times the log was cut back over entries the marker covered
+    /// (section 6.3). It never goes down. Every batch the log writes
+    /// carries it, so that what was written before a cut is never read
+    /// after it.
+    pub cut_count: u64,
     /// Present while the server is in repair.
     pub repair: Option<Repair>,
+    /// Present from an open that passed over a copy until the update that
+    /// settles it (module docs).
+    pub mark: Option<Mark>,
 }
 
 impl Values {
@@ -180,16 +218,21 @@ impl SlotFault {
     }
 }
 
-/// What an open read, for the server's log. Nothing depends on it: what a
-/// confirmed update recorded is in both slots.
+/// What an open read, for the server's log. What a confirmed update recorded
+/// is in both slots; whether the other slot was passed over is in the mark
+/// the open wrote ([`Values::mark`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Opened {
     /// The number of the copy it read.
     pub number: u64,
     /// The slot that copy was in.
     pub slot: usize,
-    /// The other slot: its copy's number, or why it gave none.
+    /// The other slot: its copy's number, or why it gave none (passed
+    /// over).
     pub other: Result<u64, SlotFault>,
+    /// The mark the copy read carried: an earlier open passed over a copy,
+    /// and nothing has settled it yet.
+    pub mark_read: Option<Mark>,
 }
 
 /// Why `state` could not be opened, created or updated.
@@ -344,7 +387,9 @@ impl State {
                 hash: [0; 32],
                 committed: 0,
             },
+            cut_count: 0,
             repair: None,
+            mark: None,
         };
         let mut bytes = encode(1, &values);
         bytes.resize(SLOT, 0);
@@ -371,10 +416,13 @@ impl State {
     /// Open `state` (module docs): flush the store folder, read the slots
     /// one at a time, take the valid copy with the highest number (the
     /// first slot between equal numbers), write it back into its slot and
-    /// flush, then write it with the start count raised by one into both
-    /// slots, flushing each, before returning. The state keeps `lock`, the
-    /// store folder's, while it lives; on an error the lock is released
-    /// with it.
+    /// flush, then write it with the start count raised by one into the
+    /// other slot and then its own, flushing each, before returning. When
+    /// the other slot gave no valid copy (it was passed over), what it
+    /// writes carries a [`Mark`] (the copy read's own, when it carried one):
+    /// so the mark is in the slot passed over before the copy read is
+    /// written over. The state keeps `lock`, the store folder's, while it
+    /// lives; on an error the lock is released with it.
     pub fn open(fs: &dyn Fs, lock: FolderLock) -> Result<Self, StateError> {
         check_lock(fs, &lock)?;
         let file = match fs.open(FILE, FileOptions::PLAIN) {
@@ -389,14 +437,14 @@ impl State {
                 return Err(StateError::NewerFormat { version: *version });
             }
         }
-        let fault = |i: usize| match slots[i] {
-            Err(Ok(fault)) => fault,
+        let fault = |i: usize| match &slots[i] {
+            Err(Ok(fault)) => *fault,
             _ => SlotFault::Invalid(Invalid::Short),
         };
         let number = |i: usize| {
             slots[i]
                 .as_ref()
-                .map(|(number, _)| *number)
+                .map(|(number, _, _)| *number)
                 .map_err(|_| fault(i))
         };
         // The highest number; between equal ones, the first slot.
@@ -413,16 +461,29 @@ impl State {
                 })
             }
         };
-        let Ok((read_number, values)) = slots[chosen] else {
+        let Ok((read_number, values, read_bytes)) = &slots[chosen] else {
             unreachable!("chosen among the valid copies");
         };
+        let (read_number, values) = (*read_number, *values);
         let other = number(1 - chosen);
+        // A copy passed over may have held a newer marker: mark it, keeping
+        // the mark of an earlier open that has not been settled.
+        let mark = match (values.mark, other) {
+            (Some(mark), _) => Some(mark),
+            (None, Err(_)) => Some(Mark {
+                marker: values.marker.index,
+            }),
+            (None, Ok(_)) => None,
+        };
         let start_count = values
             .start_count
             .checked_add(1)
             .ok_or(StateError::Refused("the start count is at its limit"))?;
-        // The copy read, back into its slot and onto the device.
-        file.write_at((chosen * SLOT) as u64, &encode(read_number, &values))?;
+        // The copy read, back into its slot and onto the device, as the very
+        // bytes that were read: a write cut short then leaves the copy as it
+        // was, whatever version it is of. A copy of an older version reaches
+        // the newer form only as new copies, in the two writes below.
+        file.write_at((chosen * SLOT) as u64, read_bytes)?;
         file.flush()?;
         let mut state = Self {
             file,
@@ -434,12 +495,16 @@ impl State {
                 number: read_number,
                 slot: chosen,
                 other,
+                mark_read: values.mark,
             }),
             failed: false,
         };
+        // The other slot first: when it was passed over, the mark is there
+        // before the copy read is written over.
         state.write(
             Values {
                 start_count,
+                mark,
                 ..values
             },
             true,
@@ -462,12 +527,27 @@ impl State {
         self.opened.as_ref()
     }
 
+    /// Whether the store folder's lock this state holds is `fs`'s own and
+    /// still held. What writes the store's other files (the log) checks it,
+    /// so that the one lock makes one writer of all of them.
+    pub fn holds_lock_of(&self, fs: &dyn Fs) -> bool {
+        fs.owns(&self._lock)
+    }
+
+    /// The store folder's lock this state holds, for the other files of the
+    /// store that check it is held when they are opened (the page file).
+    pub fn folder_lock(&self) -> &FolderLock {
+        &self._lock
+    }
+
     /// Change the values with `change` and make the result durable: a
     /// marker advance in one slot, anything else in both (module docs); a
     /// change that changes nothing writes nothing.
     /// Refused, with nothing written, when the result changes the server id
-    /// or the start count, lowers the term, changes a vote already cast in
-    /// the term, or changes the required end of a repair. After an error
+    /// or the start count, lowers the term or the cut count, changes a vote
+    /// already cast in the term, changes the required end of a repair, or
+    /// sets or changes a mark (only an open sets one; an update clears it,
+    /// in both slots, to settle it). After an error
     /// other than a refusal, every later update fails with
     /// [`StateError::Failed`].
     pub fn update(&mut self, change: impl FnOnce(&mut Values)) -> Result<(), StateError> {
@@ -516,22 +596,34 @@ impl State {
 
 /// What a slot holds: a valid copy, or why it gave none, or (as the inner
 /// error) a copy of a newer format.
-type SlotRead = Result<(u64, Values), Result<SlotFault, u16>>;
+/// The copy's bytes are those its hash covers, and the hash.
+type SlotRead = Result<(u64, Values, Vec<u8>), Result<SlotFault, u16>>;
 
-/// Read slot `slot` of `file`. A slot the device fails to read is a fault
-/// of that slot; an error of anything else (the process stopping) is the
-/// open's.
+/// How many times a slot is read before the device's failures to read it
+/// count as the slot's fault: a read that fails once may succeed again, and
+/// a slot passed over loses its copy (it is written over before the open
+/// returns).
+pub const READ_ATTEMPTS: usize = 3;
+
+/// Read slot `slot` of `file`. A slot the device fails to read
+/// [`READ_ATTEMPTS`] times is a fault of that slot; an error of anything
+/// else (the process stopping) is the open's.
 fn read_slot(file: &dyn File, slot: usize) -> Result<SlotRead, StateError> {
     let mut bytes = vec![0u8; SLOT];
-    let n = match file.read_at((slot * SLOT) as u64, &mut bytes) {
-        Ok(n) => n,
-        Err(e) if e.kind() == ErrorKind::Read => {
-            return Ok(Err(Ok(SlotFault::Unreadable(e.kind()))))
+    let mut attempt = 0;
+    let n = loop {
+        attempt += 1;
+        match file.read_at((slot * SLOT) as u64, &mut bytes) {
+            Ok(n) => break n,
+            Err(e) if e.kind() == ErrorKind::Read && attempt < READ_ATTEMPTS => {}
+            Err(e) if e.kind() == ErrorKind::Read => {
+                return Ok(Err(Ok(SlotFault::Unreadable(e.kind()))))
+            }
+            Err(e) => return Err(e.into()),
         }
-        Err(e) => return Err(e.into()),
     };
     Ok(match decode(&bytes[..n]) {
-        Ok(Decoded::Valid(number, values)) => Ok((number, values)),
+        Ok(Decoded::Valid(number, values, len)) => Ok((number, values, bytes[..len].to_vec())),
         Ok(Decoded::Newer(version)) => Err(Err(version)),
         Err(invalid) => Err(Ok(SlotFault::Invalid(invalid))),
     })
@@ -550,8 +642,14 @@ fn check(before: &Values, after: &Values) -> Result<(), StateError> {
     if after.term < before.term {
         return Err(StateError::Refused("the term never goes back"));
     }
+    if after.cut_count < before.cut_count {
+        return Err(StateError::Refused("the cut count never goes back"));
+    }
     if after.term == before.term && before.vote.is_some() && after.vote != before.vote {
         return Err(StateError::Refused("a vote cast in a term stays"));
+    }
+    if after.mark.is_some() && after.mark != before.mark {
+        return Err(StateError::Refused("a mark is set only by an open"));
     }
     if let (Some(was), Some(now)) = (before.repair, after.repair) {
         if was != now {
@@ -574,7 +672,9 @@ fn check(before: &Values, after: &Values) -> Result<(), StateError> {
 /// A copy, or a copy of a newer format.
 #[derive(Debug)]
 enum Decoded {
-    Valid(u64, Values),
+    /// The copy's number, its values, and how many bytes it takes with its
+    /// hash.
+    Valid(u64, Values, usize),
     Newer(u16),
 }
 
@@ -582,11 +682,11 @@ enum Decoded {
 /// hash. An update writes just these at the start of a slot; what follows
 /// them in the slot is not read.
 fn encode(number: u64, values: &Values) -> Vec<u8> {
-    let mut out = Vec::with_capacity(COPY_V1);
+    let mut out = Vec::with_capacity(COPY);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&(BODY_V1 as u32).to_le_bytes());
+    out.extend_from_slice(&(BODY_V3 as u32).to_le_bytes());
     out.extend_from_slice(&number.to_le_bytes());
     out.extend_from_slice(&values.server_id.0);
     out.extend_from_slice(&values.start_count.to_le_bytes());
@@ -600,7 +700,10 @@ fn encode(number: u64, values: &Values) -> Vec<u8> {
     out.extend_from_slice(&values.marker.committed.to_le_bytes());
     out.push(u8::from(values.repair.is_some()));
     out.extend_from_slice(&values.repair.map_or(0, |r| r.required_end).to_le_bytes());
-    debug_assert_eq!(out.len(), HEADER + BODY_V1);
+    out.extend_from_slice(&values.cut_count.to_le_bytes());
+    out.push(u8::from(values.mark.is_some()));
+    out.extend_from_slice(&values.mark.map_or(0, |m| m.marker).to_le_bytes());
+    debug_assert_eq!(out.len(), HEADER + BODY_V3);
     let hash = digest::digest(&digest::SHA256, &out);
     out.extend_from_slice(hash.as_ref());
     out
@@ -637,7 +740,13 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
     if version > VERSION {
         return Ok(Decoded::Newer(version));
     }
-    if version == 0 || slot[10..12] != [0, 0] || length != BODY_V1 {
+    let body_len = match version {
+        1 => BODY_V1,
+        2 => BODY_V2,
+        3 => BODY_V3,
+        _ => return Err(Invalid::Malformed),
+    };
+    if slot[10..12] != [0, 0] || length != body_len {
         return Err(Invalid::Malformed);
     }
     let number = u64::from_le_bytes(slot[16..24].try_into().expect("8 bytes"));
@@ -656,6 +765,16 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
         }),
         _ => return Err(Invalid::Malformed),
     };
+    let mark = match version {
+        1 | 2 => None,
+        _ => match body[130] {
+            0 if u64_at(131) == 0 => None,
+            1 => Some(Mark {
+                marker: u64_at(131),
+            }),
+            _ => return Err(Invalid::Malformed),
+        },
+    };
     let values = Values {
         server_id: id_at(0),
         start_count: u64_at(16),
@@ -670,7 +789,9 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
             hash: body[73..105].try_into().expect("32 bytes"),
             committed: u64_at(105),
         },
+        cut_count: if version >= 2 { u64_at(122) } else { 0 },
         repair,
+        mark,
     };
     if values
         .segments
@@ -680,7 +801,7 @@ fn decode(slot: &[u8]) -> Result<Decoded, Invalid> {
     {
         return Err(Invalid::Malformed);
     }
-    Ok(Decoded::Valid(number, values))
+    Ok(Decoded::Valid(number, values, end + HASH))
 }
 
 #[cfg(test)]
