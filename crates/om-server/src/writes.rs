@@ -407,12 +407,16 @@ pub(crate) fn get_serial(req: &GetSerial, file: &str, tx: &mut Transaction<'_>) 
 /// ([`crate::engine::SetNextSerial`]): replace a field's next serial value
 /// within a commit, which the engine saves before it counts and takes back
 /// when it cannot, as a record commit. 102 for a table without the field,
-/// which changes nothing.
+/// which changes nothing; 3 on a file hosted read-only, before anything is
+/// written or a commit begun, so no save is tried and none fails.
 pub(crate) fn set_next_serial(
     op: SetNextSerial,
     file: &str,
     tx: &mut Transaction<'_>,
 ) -> Result<(), u32> {
+    if tx.is_read_only() {
+        return Err(UNAVAILABLE);
+    }
     let SetNextSerial {
         table,
         field,
@@ -825,13 +829,17 @@ pub fn stage_upload(
 }
 
 /// op70: commit the listed records the session staged (`staged`, lent by
-/// its temporary area) into the file (write-path.md 3.4, 5). A record
-/// another lock user holds is left alone, rather than half-applied as
-/// FileMaker Server does, and so is one whose modification count is not a
-/// count (5.4, [`modcount::counted`]): the uploaded record is dropped and
-/// the lock kept. A new record is left alone when its id was not issued or a
-/// record already has it, so it never replaces one (write-path.md 2;
-/// OpenMaker's choice). The commit counts once the engine saved it: when it
+/// its temporary area) into the file (write-path.md 3.4, 5). It stores
+/// every record it names or none: each is checked under the write lock
+/// before anything is written ([`unstorable`], as [`commit_records`] checks
+/// a server script's), and a commit naming one it cannot store (a table the
+/// file does not have, a record another lock user holds, rather than
+/// half-applied as FileMaker Server does, a new record whose id was not
+/// issued or a record already has, so it never replaces one, a staged
+/// record whose modification count is not a count, 5.4) is refused whole
+/// as [`CommitError::Refused`], its staged records left staged. A record it
+/// names with nothing staged for it, or the deletion of one that is not
+/// there, asks for nothing. The commit counts once the engine saved it: when it
 /// cannot be, every record is put back, the records stay locked and the
 /// save's error is returned as [`CommitError::NotSaved`], which fails the
 /// op70. `account` and `access` are the account the session logged in as
@@ -852,6 +860,22 @@ pub(crate) fn commit(
         mut staged,
         withheld,
     } = op;
+    // A file found read-only here, under the write lock (it can become so
+    // after the request was admitted), takes nothing of the commit: the
+    // staged records go back to the session, as a refusal at admission
+    // leaves them, and the commit is answered as not stored.
+    if tx.is_read_only() {
+        let refused = CommitError::NotSaved(
+            "commit refused: the file is hosted read-only; nothing was taken from staging".into(),
+        );
+        return (
+            CommitReply {
+                result: Err(refused),
+                unused: staged,
+            },
+            Vec::new(),
+        );
+    }
     let mut record_environment = || crate::recalc::record_environment_in(&account, environment);
     if let Some((table, action)) = refused_action(
         tx.view(),
@@ -864,6 +888,18 @@ pub(crate) fn commit(
         let refused = CommitError::Refused(format!(
             "commit refused: the account's privilege set does not allow {action:?} of a record of \
              table {table:02x?}"
+        ));
+        return (
+            CommitReply {
+                result: Err(refused),
+                unused: staged,
+            },
+            Vec::new(),
+        );
+    }
+    if let Some(why) = unstorable(user, locks, &staged, &list, tx) {
+        let refused = CommitError::Refused(format!(
+            "commit refused: {why}; nothing was written, and the staged records stay staged"
         ));
         return (
             CommitReply {
@@ -894,7 +930,8 @@ pub(crate) fn commit(
 /// Why an op70 [`commit`] wrote nothing, each with its log line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommitError {
-    /// The account's privilege set refuses a record's action. Nothing was
+    /// The account's privilege set refuses a record's action, or a record
+    /// the commit names cannot be stored ([`unstorable`]). Nothing was
     /// written.
     Refused(String),
     /// The file could not be saved: the commit was taken back and its
@@ -994,9 +1031,64 @@ fn refused_action(
     None
 }
 
+/// Why commit `list` cannot store every record it names, checked before
+/// [`commit_list`] writes any: the first entry it would have to leave out
+/// (see [`commit`]). An entry with nothing staged for it, and the deletion
+/// of a record that is not there, ask for nothing and pass.
+fn unstorable(
+    user: LockUser,
+    locks: &mut Locks<'_>,
+    staged: &Staged,
+    list: &OwnedNode,
+    tx: &mut Transaction<'_>,
+) -> Option<String> {
+    for table in &list.children {
+        let t = table.segment.as_slice();
+        let Some(records) = table.child(RECORDS) else {
+            continue;
+        };
+        for entry in &records.children {
+            let path = vec![t.to_vec(), RECORDS.to_vec(), entry.segment.clone()];
+            let id = serial::decode(&entry.segment).filter(|_| tx.has_table(t));
+            let value = entry.value.as_deref();
+            if !entry.push && value == Some(&[COMMIT_DELETED]) {
+                let Some(id) = id.filter(|id| tx.has_record(t, *id)) else {
+                    continue;
+                };
+                if locks.held_by_other(&path, user) {
+                    return Some(format!("another session holds record {id}, to be deleted"));
+                }
+                continue;
+            }
+            let Some(record) = staged.get(&path) else {
+                continue;
+            };
+            let Some(id) = id else {
+                return Some(format!("{path:02x?} is no record of a table the file has"));
+            };
+            if locks.held_by_other(&path, user) {
+                return Some(format!("another session holds record {id}"));
+            }
+            if !entry.push && value == Some(&[COMMIT_NEW]) {
+                if id > tx.last_record_id(t) {
+                    return Some(format!("new record {id} is past the last issued id"));
+                }
+                if tx.has_record(t, id) {
+                    return Some(format!("new record {id}: a record has that id"));
+                }
+            }
+            if !modcount::counted(record) {
+                return Some(format!("record {id}'s modification count is not one"));
+            }
+        }
+    }
+    None
+}
+
 /// op70's writes of the records `list` names (see [`commit`]), taking them
 /// out of `staged`; an edited record keeps its stored values of the
-/// `hidden` fields.
+/// `hidden` fields. Every entry passed [`unstorable`]: what it leaves out
+/// below asked for nothing.
 fn commit_list(
     file: &str,
     user: LockUser,

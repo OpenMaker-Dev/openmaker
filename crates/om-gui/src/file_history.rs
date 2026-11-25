@@ -140,7 +140,7 @@ pub(crate) enum Change {
     },
     /// Save `host` under Hosts unless one at its address and port is
     /// saved: Open Network File's Add to Hosts, which leaves a name
-    /// another instance gave it.
+    /// another instance gave it. It is saved as its file opens.
     AddHost(SavedHost),
     /// Forget the saved host at this address and port.
     RemoveHost(String, u16),

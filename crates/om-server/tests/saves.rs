@@ -433,8 +433,20 @@ fn lock(client: &mut om_session::Session, txn: u32, want_mod_count: bool) -> wri
 /// Edit Tasks record 1 as a client does (write-path.md 0): lock it asking
 /// for its modification count, upload it with Name `name` and `count` as
 /// its `fc`, commit the change of Name and release. Returns the count the
-/// lock reported.
+/// lock reported; the commit must be answered done.
 fn edit(client: &mut om_session::Session, txn: u32, name: &str, count: Vec<u8>) -> Vec<u8> {
+    let (locked, committed) = edit_answered(client, txn, name, count);
+    committed.unwrap();
+    locked
+}
+
+/// [`edit`], with the commit's answer.
+fn edit_answered(
+    client: &mut om_session::Session,
+    txn: u32,
+    name: &str,
+    count: Vec<u8>,
+) -> (Vec<u8>, Result<(), om_session::SessionError>) {
     let write::LockReply::Granted {
         mod_count: Some(locked),
     } = lock(client, txn, true)
@@ -455,15 +467,15 @@ fn edit(client: &mut om_session::Session, txn: u32, name: &str, count: Vec<u8>) 
         vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
     );
     client.upload_records(&table, vec![record]).unwrap();
-    client.commit_records(&table, vec![changed], txn).unwrap();
+    let committed = client.commit_records(&table, vec![changed], txn);
     client.kill_all_locks(txn).unwrap();
-    locked
+    (locked, committed)
 }
 
 /// A modification count is a length byte and a serial key (write-path.md
 /// 5.4). A record committed with anything else is not stored, so no lock
-/// has to report it; the record stays as it was, and other sessions edit
-/// it as before.
+/// has to report it: the commit fails, the record stays as it was, and
+/// other sessions edit it as before.
 #[test]
 fn a_commit_with_a_malformed_modification_count_is_refused() {
     let file = TempFile::new("mod-count-commit", &[], true);
@@ -472,8 +484,14 @@ fn a_commit_with_a_malformed_modification_count_is_refused() {
     let (mut b, _) = server::logged_in(port, "b");
     // 300 bytes, more than op60's reply could carry; then a length byte
     // that does not match its key.
-    assert_eq!(edit(&mut a, 0x31, "Poisoned", vec![0x55; 300]), [1, 0]);
-    assert_eq!(edit(&mut a, 0x32, "Mislabeled", vec![2, 1]), [1, 0]);
+    for (txn, name, count) in [
+        (0x31, "Poisoned", vec![0x55; 300]),
+        (0x32, "Mislabeled", vec![2, 1]),
+    ] {
+        let (locked, committed) = edit_answered(&mut a, txn, name, count);
+        assert_eq!(locked, [1, 0]);
+        assert!(committed.is_err(), "{name}");
+    }
     let records = records_of(&mut a, TABLE);
     assert_eq!(cell(&records, 1, NAME), Some("Write tests"));
     assert_eq!(cell(&records, 1, 0xfc), None);
@@ -535,8 +553,9 @@ fn a_stored_malformed_modification_count_is_reported_as_none() {
 /// hold is refused before it reaches the file's contents: a key segment
 /// over 219 bytes, a path deeper than 16 segments (hbam-writer.md 2.2, 2.3),
 /// or a child beneath a committed value, which would make a list of the
-/// value (2.2). The committed value stays byte for byte, in memory and on
-/// disk, and later commits are saved (issue #303).
+/// value (2.2). Each fails as an upload whose save failed does, rather than
+/// answer done (#737's rule). The committed value stays byte for byte, in
+/// memory and on disk, and later commits are saved (issue #303).
 #[test]
 fn an_upload_the_file_cannot_hold_leaves_the_file_saveable() {
     use om_protocol::write::Upload;
@@ -588,9 +607,8 @@ fn an_upload_the_file_cannot_hold_leaves_the_file_saveable() {
             flags: write::UPLOAD_NODE,
             dest,
         };
-        client
-            .perform(&write::build_upload_to_host(7, file_id, &upload))
-            .unwrap();
+        let answer = client.perform(&write::build_upload_to_host(7, file_id, &upload));
+        assert!(answer.is_err(), "{answer:02x?}");
     };
     upload(vec![vec![0x40]], OwnedNode::leaf(vec![7; 230], vec![1]));
     upload(vec![vec![0x40]; 16], OwnedNode::leaf(vec![7], vec![1]));
@@ -661,8 +679,9 @@ fn record_ids_near_the_largest_do_not_wrap_around() {
     assert_eq!(serial::decode(&granted.record[0]), Some(u64::MAX));
     assert_eq!(create(&mut client, 1).status, 3);
 
-    // A record committed as new: over record 1 it is refused and record 1
-    // keeps its values; with the id op71 handed out it is stored.
+    // A record committed as new: over record 1 it is refused (the commit
+    // fails) and record 1 keeps its values; with the id op71 handed out it
+    // is stored.
     let table = uint_segment(TABLE);
     let commit_new = |client: &mut om_session::Session, id: u64, name: &str| {
         let record = OwnedNode::list(
@@ -674,10 +693,10 @@ fn record_ids_near_the_largest_do_not_wrap_around() {
         );
         let entry = OwnedNode::leaf(serial::encode(id), vec![write::COMMIT_NEW]);
         client.upload_records(&table, vec![record]).unwrap();
-        client.commit_records(&table, vec![entry], 0x51).unwrap();
+        client.commit_records(&table, vec![entry], 0x51)
     };
-    commit_new(&mut client, 1, "Replaced");
-    commit_new(&mut client, u64::MAX, "Last");
+    assert!(commit_new(&mut client, 1, "Replaced").is_err());
+    commit_new(&mut client, u64::MAX, "Last").unwrap();
     client.kill_all_locks(0x51).unwrap();
     let records = records_of(&mut client, TABLE);
     assert_eq!(cell(&records, 1, NAME), Some("Write tests"));
@@ -1060,6 +1079,29 @@ fn wait_for(handle: &om_server::ServerHandle, id: u32, want: om_server::FileStat
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     panic!("file {id} not {want:?}");
+}
+
+/// A server script that sets a field and ends with its record open has the
+/// record committed as the session ends; when that commit is not stored
+/// (here its save fails), the edit is lost, and the script's result is the
+/// commit's error, never 0.
+#[test]
+fn a_script_whose_last_record_is_not_stored_reports_the_error() {
+    let left_open = script(
+        4,
+        "Left open",
+        vec![go_to_record(1), set_field(COUNT, "99")],
+    );
+    let file = TempFile::new("save-left-open", &[left_open], true);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let id = handle.files()[0].id;
+    let (mut client, _) = server::logged_in(port, "left open");
+    assert!(handle.failing_saves(id, Some(om_server::SaveFault::BeforeRename)));
+    let reply = client.perform_script_on_server(4, "", true).unwrap();
+    assert!(handle.failing_saves(id, None));
+    assert_eq!(reply.error, 800, "{reply:?}");
+    let records = records_of(&mut client, TABLE);
+    assert_eq!(cell(&records, 1, COUNT), Some("3"));
 }
 
 /// docs/server-storage.md 5, "unknown": a save that renamed its new copy

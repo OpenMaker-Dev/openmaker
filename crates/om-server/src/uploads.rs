@@ -76,8 +76,8 @@ impl UploadMemory {
         self.limit.store(limit, Ordering::Relaxed);
     }
 
-    /// What all clients hold now.
-    #[cfg(test)]
+    /// What all clients hold now (`ServerHandle::upload_memory_in_use`).
+    #[cfg(any(test, debug_assertions))]
     pub fn in_use(&self) -> usize {
         self.held().total
     }
