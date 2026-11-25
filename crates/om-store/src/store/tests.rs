@@ -70,15 +70,19 @@ struct Flaky {
     inner: sim::SimFs,
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
     lock_checks_left: Arc<std::sync::Mutex<Option<u64>>>,
-    /// Writes under a path fail once so many more of them succeeded.
-    fail_writes: Arc<std::sync::Mutex<Option<(String, u64)>>>,
+    /// Writes under a path fail, with this kind, once so many more of them
+    /// succeeded.
+    fail_writes: Arc<std::sync::Mutex<Option<(String, u64, ErrorKind)>>>,
+    /// Another process makes a store in the folder just before the lock
+    /// is taken for the so manyth time from now.
+    create_at_lock: Arc<std::sync::Mutex<Option<(u64, sim::SimRandom)>>>,
 }
 
 struct FlakyFile {
     inner: Box<dyn sys::File>,
     path: String,
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
-    fail_writes: Arc<std::sync::Mutex<Option<(String, u64)>>>,
+    fail_writes: Arc<std::sync::Mutex<Option<(String, u64, ErrorKind)>>>,
 }
 
 impl sys::Fs for Flaky {
@@ -86,6 +90,21 @@ impl sys::Fs for Flaky {
         self.inner.create_root()
     }
     fn lock(&self) -> sys::Result<sys::FolderLock> {
+        let other = {
+            let mut at = self.create_at_lock.lock().unwrap();
+            match at.as_mut() {
+                Some((0, _)) => at.take().map(|(_, random)| random),
+                Some((n, _)) => {
+                    *n -= 1;
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(random) = other {
+            let fs: Arc<dyn Fs> = Arc::new(self.inner.clone());
+            drop(Store::create(fs, &random, CONFIG).expect("the other process's creation"));
+        }
         self.inner.lock()
     }
     fn owns(&self, lock: &sys::FolderLock) -> bool {
@@ -129,6 +148,7 @@ impl Flaky {
             bad: Arc::new(std::sync::Mutex::new(None)),
             lock_checks_left: Arc::new(std::sync::Mutex::new(None)),
             fail_writes: Arc::new(std::sync::Mutex::new(None)),
+            create_at_lock: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -158,19 +178,15 @@ impl sys::File for FlakyFile {
     }
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
         let fail = match self.fail_writes.lock().unwrap().as_mut() {
-            Some((prefix, left)) if self.path.starts_with(prefix.as_str()) => {
-                let fail = *left == 0;
+            Some((prefix, left, kind)) if self.path.starts_with(prefix.as_str()) => {
+                let fail = (*left == 0).then_some(*kind);
                 *left = left.saturating_sub(1);
                 fail
             }
-            _ => false,
+            _ => None,
         };
-        if fail {
-            return Err(sys::Error::new(
-                ErrorKind::Write,
-                sys::Op::Write,
-                &self.path,
-            ));
+        if let Some(kind) = fail {
+            return Err(sys::Error::new(kind, sys::Op::Write, &self.path));
         }
         self.inner.write_at(offset, data)
     }
@@ -194,6 +210,9 @@ struct Built {
     file: u64,
     payload: Vec<u8>,
     hash: Hash,
+    /// The session it opened and those it closed, by the model, once it
+    /// was applied to it.
+    effects: Option<(Option<Session>, Vec<Session>)>,
 }
 
 impl Built {
@@ -209,6 +228,7 @@ impl Built {
             file,
             payload: bytes,
             hash,
+            effects: None,
         }
     }
 
@@ -732,7 +752,11 @@ impl Run {
                         "seed {seed}: the loss reported"
                     );
                 } else {
-                    assert_eq!(d.kept.index, d.marker, "seed {seed}: the loss reported");
+                    // Nothing after it was given up: it is the later of the
+                    // marker and the checkpoint's entry (a lost copy of
+                    // `state` can leave the marker behind the checkpoint).
+                    let firm = d.marker.max(opened.checkpoint.entry.index);
+                    assert_eq!(d.kept.index, firm, "seed {seed}: the loss reported");
                     assert!(
                         durable.index >= d.kept.index,
                         "seed {seed}: the loss reported"
@@ -915,9 +939,6 @@ impl Run {
                 }
                 Err(OpenError::UnreadableEnd { end, last }) => {
                     self.reached.unreadable_ends += 1;
-                    if self.plan.below(4) == 0 {
-                        continue;
-                    }
                     // The place stays unreadable: the give-up must not need
                     // to read it again.
                     *self.bad.lock().unwrap() =
@@ -993,6 +1014,14 @@ impl Run {
                         self.reached.space_freed += 1;
                     }
                     continue;
+                }
+                // The framing before the checkpoint's entry broken: the
+                // acceptance refuses, and only a restore helps.
+                Err(e @ OpenError::Log(LogError::FramingBroken { .. })) => {
+                    assert!(self.lying || self.damaged("log/"), "seed {seed}: {e}");
+                    self.reached.ended_unopenable += 1;
+                    self.unopenable = true;
+                    return false;
                 }
                 Err(
                     OpenError::Disk(_)
@@ -1095,7 +1124,9 @@ impl Run {
                 self.reached.extended += u64::from(appended.extended);
                 self.reached.appended += 1;
                 *self.reached.kinds.entry(built.kind).or_default() += 1;
-                self.appended.apply(&built.entry()).unwrap();
+                let outcome = self.appended.apply(&built.entry()).unwrap();
+                let mut built = built;
+                built.effects = Some((outcome.opened, outcome.closed));
                 self.record.truncate(built.index as usize - 1);
                 self.record.push(built);
                 true
@@ -1114,7 +1145,7 @@ impl Run {
                 self.read_failed(e.to_string());
                 false
             }
-            Err(WriteError::Failed(_) | WriteError::Stopped(_)) => {
+            Err(WriteError::Failed(_) | WriteError::NoSpace(_) | WriteError::Stopped(_)) => {
                 self.reached.stopped_after_failure += 1;
                 let power_loss = self.plan.below(2) == 0;
                 self.stop(power_loss);
@@ -1161,6 +1192,18 @@ impl Run {
                         assert_eq!(p.applied.position.hash, built.hash, "seed {seed}");
                         let payload = Payload::decode(built.kind, &built.payload).unwrap();
                         assert_eq!(p.applied.payload, payload, "seed {seed}: notices and reply");
+                        // What it did to the sessions, as the model says; and
+                        // what its checks listed, within the format's bound of
+                        // one row held per level of listing (section 5.8).
+                        if let Some((opened, closed)) = &built.effects {
+                            assert_eq!(&p.applied.opened, opened, "seed {seed}: opened");
+                            let mut got = p.applied.closed.clone();
+                            let mut want = closed.clone();
+                            got.sort_by_key(|s| (s.server, s.start, s.connection));
+                            want.sort_by_key(|s| (s.server, s.start, s.connection));
+                            assert_eq!(got, want, "seed {seed}: closed");
+                        }
+                        assert!(p.applied.listed.held <= 2, "seed {seed}: listed");
                     }
                     let last = published
                         .last()
@@ -1178,7 +1221,7 @@ impl Run {
                 }
                 self.published = self.appended.clone();
             }
-            Err(WriteError::Failed(_) | WriteError::Stopped(_)) => {
+            Err(WriteError::Failed(_) | WriteError::NoSpace(_) | WriteError::Stopped(_)) => {
                 self.reached.stopped_after_failure += 1;
                 let power_loss = self.plan.below(2) == 0;
                 self.stop(power_loss);
@@ -1272,7 +1315,12 @@ impl Run {
                 }
             }
             Err(CheckpointFailed::Refused(_)) => {}
-            Err(CheckpointFailed::Failed(_) | CheckpointFailed::Stopped(_)) => {
+            Err(CheckpointFailed::NoSpace(_)) if store.stopped().is_none() => {}
+            Err(
+                CheckpointFailed::Failed(_)
+                | CheckpointFailed::Stopped(_)
+                | CheckpointFailed::NoSpace(_),
+            ) => {
                 self.reached.stopped_after_failure += 1;
                 let power_loss = self.plan.below(2) == 0;
                 self.stop(power_loss);
@@ -2304,7 +2352,7 @@ fn a_loss_accepted_before_the_open_fails_is_reported() {
     let at = bytes.windows(100).position(|w| w == [8u8; 100]).unwrap();
     sim.damage(&path, at as u64 + 10, 4).unwrap();
     let fail_writes = |prefix: &str, after: u64| {
-        *flaky.fail_writes.lock().unwrap() = Some((prefix.to_owned(), after));
+        *flaky.fail_writes.lock().unwrap() = Some((prefix.to_owned(), after, ErrorKind::Write));
     };
     // The update of `state` that records the decision fails, after the
     // writes of `state`'s own open (counted on an open of it alone).
@@ -2399,4 +2447,586 @@ fn a_caller_cannot_write_this_servers_start() {
     let tree = view.store_tree().unwrap().unwrap();
     assert!(!tree.is_open(&session).unwrap(), "the next start closed it");
     assert_eq!(tree.server(&server).unwrap().unwrap().start, start + 1);
+}
+
+/// A store whose log spans four segments, with the older checkpoint in the
+/// first and the newest in the second, for the shapes of damage below.
+struct Shaped {
+    sim: Sim,
+    flaky: Flaky,
+    file: u64,
+    /// The newest checkpoint's entry, and the last durable one.
+    start: u64,
+    durable: Position,
+    /// The segments' files, in order.
+    segments: Vec<String>,
+    /// Each tag's entry: its index, its segment (by place in `segments`)
+    /// and the offset of its payload there.
+    entries: BTreeMap<u8, (u64, usize, u64)>,
+}
+
+const SHAPE_PAYLOAD: usize = 6000;
+
+/// The shapes' pieces: [`CONFIG`]'s, with room for their large entries
+/// waiting for a checkpoint.
+const SHAPE_CONFIG: Config = Config {
+    pages: pagefile::Config {
+        dirty_budget: 4096,
+        ..CONFIG.pages
+    },
+    ..CONFIG
+};
+
+impl Shaped {
+    fn new() -> Shaped {
+        let sim = Sim::new(60);
+        let flaky = Flaky::new(&sim);
+        let fs: Arc<dyn Fs> = Arc::new(flaky.clone());
+        let (mut store, _) = Store::create(fs, &sim.random(), SHAPE_CONFIG).unwrap();
+        let file = add_file(&mut store, "f");
+        let mut indexes = BTreeMap::new();
+        let mut tag = 0u8;
+        let mut write = |store: &mut Store| {
+            store
+                .append(file, &put(&[tag], &[tag; SHAPE_PAYLOAD]))
+                .unwrap();
+            store.flush().unwrap();
+            indexes.insert(tag, store.published().index);
+            tag += 1;
+        };
+        for _ in 0..3 {
+            write(&mut store);
+        }
+        store.checkpoint(None).unwrap();
+        while store.log_segments().count < 2 {
+            write(&mut store);
+        }
+        write(&mut store);
+        store.checkpoint(None).unwrap();
+        let start = store.checkpoints()[0].entry.index;
+        while store.log_segments().count < 4 {
+            write(&mut store);
+        }
+        write(&mut store);
+        let durable = store.published();
+        let first = store.log_segments().first;
+        assert_eq!(store.log_segments().count, 4);
+        drop(store);
+        sim.restart();
+        let segments: Vec<String> = (first..first + 4)
+            .map(|n| format!("{}/{n:016x}", log::FOLDER))
+            .collect();
+        let image = sim.image();
+        let mut entries = BTreeMap::new();
+        for (&tag, &index) in &indexes {
+            for (at, path) in segments.iter().enumerate() {
+                let bytes = image
+                    .iter()
+                    .find(|(p, _)| p == path)
+                    .and_then(|(_, b)| b.as_ref())
+                    .unwrap();
+                if let Some(offset) = bytes
+                    .windows(SHAPE_PAYLOAD)
+                    .position(|w| w == [tag; SHAPE_PAYLOAD])
+                {
+                    entries.insert(tag, (index, at, offset as u64));
+                }
+            }
+        }
+        assert_eq!(entries.len(), indexes.len(), "every entry found once");
+        Shaped {
+            sim,
+            flaky,
+            file,
+            start,
+            durable,
+            segments,
+            entries,
+        }
+    }
+
+    fn fs(&self) -> Arc<dyn Fs> {
+        Arc::new(self.flaky.clone())
+    }
+
+    fn bytes(&self, path: &str) -> Option<Vec<u8>> {
+        self.sim
+            .image()
+            .into_iter()
+            .find(|(p, _)| p == path)
+            .and_then(|(_, b)| b)
+    }
+
+    /// The tags of the entries in segment `at`, in order.
+    fn tags_in(&self, at: usize) -> Vec<u8> {
+        self.entries
+            .iter()
+            .filter(|(_, (_, seg, _))| *seg == at)
+            .map(|(tag, _)| *tag)
+            .collect()
+    }
+
+    fn index(&self, tag: u8) -> u64 {
+        self.entries[&tag].0
+    }
+
+    /// The tag of the entry at `index`.
+    fn tag_at(&self, index: u64) -> u8 {
+        *self
+            .entries
+            .iter()
+            .find(|(_, (i, _, _))| *i == index)
+            .expect("an entry of the shape")
+            .0
+    }
+
+    fn remove(&self, at: usize) {
+        let fs = self.sim.fs();
+        fs.remove(&self.segments[at]).unwrap();
+        fs.flush_folder(log::FOLDER).unwrap();
+    }
+
+    /// Damage `len` bytes of entry `tag`'s value, `from` bytes into it.
+    fn damage(&self, tag: u8, from: u64, len: u64) {
+        let (_, at, offset) = self.entries[&tag];
+        self.sim
+            .damage(&self.segments[at], offset + from, len)
+            .unwrap();
+    }
+
+    /// Damage the index in entry `tag`'s fixed fields, which begin with it
+    /// (format section 3.4): found as the entry's index, little-endian,
+    /// last before its payload.
+    fn damage_head(&self, tag: u8) {
+        let (index, at, offset) = self.entries[&tag];
+        let bytes = self.bytes(&self.segments[at]).unwrap();
+        let from = offset.saturating_sub(256) as usize;
+        let head = bytes[from..offset as usize]
+            .windows(8)
+            .rposition(|w| w == index.to_le_bytes())
+            .expect("the entry's index before its payload");
+        let place = (from + head) as u64;
+        self.sim.damage(&self.segments[at], place, 8).unwrap();
+    }
+
+    /// Where segment `at`'s batches end: after its last batch, by the
+    /// format's description of a batch header (its mark, `OMBATCH\0`, and
+    /// the length of its entries at bytes 24 to 32; 136 bytes in all).
+    fn end_of_batches(&self, at: usize) -> u64 {
+        let bytes = self.bytes(&self.segments[at]).unwrap();
+        let mark = bytes
+            .windows(8)
+            .rposition(|w| w == b"OMBATCH\0")
+            .expect("a batch");
+        let length = u64::from_le_bytes(bytes[mark + 24..mark + 32].try_into().unwrap());
+        mark as u64 + 136 + length
+    }
+
+    /// Segment `at` cut to its first `len` bytes.
+    fn shorten(&self, at: usize, len: u64) {
+        let bytes = self.bytes(&self.segments[at]).unwrap();
+        let fs = self.sim.fs();
+        let path = &self.segments[at];
+        fs.remove(path).unwrap();
+        let file = fs.create(path, sys::FileOptions::PLAIN).unwrap();
+        file.write_at(0, &bytes[..len as usize]).unwrap();
+        file.flush().unwrap();
+        fs.flush_folder(log::FOLDER).unwrap();
+    }
+
+    /// Segment `at`'s header made one of a newer format (its hash kept
+    /// right, by the format's description: the version at bytes 8 to 10,
+    /// the hash over the first 96 bytes at 96 to 128).
+    fn newer(&self, at: usize) {
+        let mut header = self.bytes(&self.segments[at]).unwrap()[..128].to_vec();
+        header[8..10].copy_from_slice(&2u16.to_le_bytes());
+        let hash = ring::digest::digest(&ring::digest::SHA256, &header[..96]);
+        header[96..128].copy_from_slice(hash.as_ref());
+        let file = self
+            .sim
+            .fs()
+            .open(&self.segments[at], sys::FileOptions::PLAIN)
+            .unwrap();
+        file.write_at(0, &header).unwrap();
+        file.flush().unwrap();
+    }
+
+    fn number(&self, at: usize) -> u64 {
+        u64::from_str_radix(&self.segments[at][log::FOLDER.len() + 1..], 16).unwrap()
+    }
+}
+
+/// What a shape of damage leads to.
+enum Want {
+    /// The ordinary open opens the store, with nothing lost.
+    Opens,
+    /// The ordinary open reports damage, and accepting the loss keeps
+    /// through entry `kept`, the segments `listed` (by place), lengthens
+    /// the segments `lengthened`, and copies the one whose tail it gives
+    /// up, `tail`.
+    Accepts {
+        kept: u64,
+        listed: Option<(usize, usize)>,
+        lengthened: Vec<usize>,
+        tail: Option<usize>,
+    },
+    /// The acceptance is refused with nothing changed.
+    Refused(fn(&OpenError) -> bool),
+}
+
+/// Accepting the loss after damage, over the shapes the damage can take: a
+/// hole before, at and after the segment of the checkpoint's successor;
+/// several holes; the last segment missing; an entry that does not verify
+/// before the checkpoint's entry, at it and after it; a file short only in
+/// its padding, and one short into an entry; a segment of a newer format; a
+/// read the device fails while deciding; the framing broken before the
+/// checkpoint's entry. Whatever is kept opens; whatever is given up is
+/// copied first, byte for byte; a refusal changes nothing.
+#[test]
+fn accepting_the_loss_over_every_shape_of_damage() {
+    type Shape = (&'static str, fn(&Shaped), fn(&Shaped) -> Want);
+    let shapes: Vec<Shape> = vec![
+        (
+            "a hole before",
+            |s| s.remove(0),
+            |s| Want::Accepts {
+                kept: s.durable.index,
+                listed: Some((1, 3)),
+                lengthened: vec![],
+                tail: None,
+            },
+        ),
+        (
+            "a hole at the checkpoint's successor",
+            |s| s.remove(1),
+            |s| Want::Accepts {
+                kept: s.start,
+                listed: None,
+                lengthened: vec![],
+                tail: None,
+            },
+        ),
+        (
+            "a hole after",
+            |s| s.remove(2),
+            |s| Want::Accepts {
+                kept: s.index(*s.tags_in(1).last().unwrap()),
+                listed: Some((0, 1)),
+                lengthened: vec![],
+                tail: Some(1),
+            },
+        ),
+        (
+            "several holes",
+            |s| {
+                s.remove(0);
+                s.remove(2);
+            },
+            |s| Want::Accepts {
+                kept: s.index(*s.tags_in(1).last().unwrap()),
+                listed: Some((1, 1)),
+                lengthened: vec![],
+                tail: Some(1),
+            },
+        ),
+        (
+            "the last segment missing",
+            |s| s.remove(3),
+            |s| Want::Accepts {
+                kept: s.index(*s.tags_in(2).last().unwrap()),
+                listed: Some((0, 2)),
+                lengthened: vec![],
+                tail: Some(2),
+            },
+        ),
+        (
+            "an entry that does not verify before the checkpoint's",
+            |s| s.damage(s.tags_in(1)[0], 100, 4),
+            |_| Want::Opens,
+        ),
+        (
+            "the checkpoint's entry does not verify",
+            |s| s.damage(s.tag_at(s.start), 100, 4),
+            |_| Want::Opens,
+        ),
+        (
+            "an entry after the checkpoint's does not verify",
+            |s| s.damage(s.tag_at(s.start + 2), 100, 4),
+            |s| Want::Accepts {
+                kept: s.start + 1,
+                listed: Some((0, 1)),
+                lengthened: vec![],
+                tail: Some(1),
+            },
+        ),
+        (
+            "a file short only in its padding",
+            |s| {
+                let last = *s.tags_in(3).last().unwrap();
+                let end = s.entries[&last].2 + SHAPE_PAYLOAD as u64 + 32;
+                s.shorten(3, end);
+            },
+            |s| Want::Accepts {
+                kept: s.durable.index,
+                listed: Some((0, 3)),
+                lengthened: vec![3],
+                tail: None,
+            },
+        ),
+        (
+            "a file short into its last entry",
+            |s| {
+                let last = *s.tags_in(3).last().unwrap();
+                s.shorten(3, s.entries[&last].2 + 100);
+            },
+            |s| Want::Accepts {
+                kept: s.durable.index - 1,
+                listed: Some((0, 3)),
+                lengthened: vec![3],
+                tail: Some(3),
+            },
+        ),
+        (
+            "a segment of a newer format",
+            |s| s.newer(2),
+            |_| Want::Refused(|e| matches!(e, OpenError::Log(LogError::NewerFormat { .. }))),
+        ),
+        (
+            "a read the device fails while deciding",
+            |s| {
+                s.remove(0);
+                let tag = s.tag_at(s.start + 3);
+                let (_, at, offset) = s.entries[&tag];
+                *s.flaky.bad.lock().unwrap() = Some((s.segments[at].clone(), offset + 10));
+            },
+            |_| Want::Refused(|e| matches!(e, OpenError::Log(LogError::Unreadable { .. }))),
+        ),
+        (
+            "the framing broken before the checkpoint's entry",
+            |s| s.damage_head(s.tags_in(1)[0]),
+            |_| Want::Refused(|e| matches!(e, OpenError::Log(LogError::FramingBroken { .. }))),
+        ),
+    ];
+    for (name, harm, want) in shapes {
+        let s = Shaped::new();
+        harm(&s);
+        let want = want(&s);
+        let before = s.sim.image();
+        s.sim.restart();
+        let ordinary = Store::open(s.fs(), SHAPE_CONFIG);
+        match want {
+            Want::Opens => {
+                let (store, opened) = ordinary.unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(opened.recovered, s.durable, "{name}");
+                let view = store.view().unwrap();
+                for &tag in s.entries.keys() {
+                    let value = read(&view, s.file, &[tag]);
+                    assert_eq!(value, Some(vec![tag; SHAPE_PAYLOAD]), "{name}: {tag}");
+                }
+                drop(store);
+                s.sim.restart();
+                let refused = Store::accept_damage(s.fs(), SHAPE_CONFIG);
+                assert!(
+                    matches!(refused, Err(OpenError::Log(LogError::Refused(_)))),
+                    "{name}: {refused:?}"
+                );
+            }
+            Want::Refused(is) => {
+                assert!(ordinary.is_err(), "{name}: the ordinary open opened");
+                drop(ordinary);
+                // The log as it is: its files and any acceptance's folder
+                // (the store's own open writes `state` and the page file's
+                // slots, as every open does).
+                let log = |sim: &Sim| -> Vec<(String, Option<Vec<u8>>)> {
+                    sim.image()
+                        .into_iter()
+                        .filter(|(p, _)| p.starts_with("log"))
+                        .collect()
+                };
+                let at_refusal = log(&s.sim);
+                s.sim.restart();
+                let refused = Store::accept_damage(s.fs(), SHAPE_CONFIG);
+                let Err(e) = &refused else {
+                    panic!("{name}: accepted")
+                };
+                assert!(is(e), "{name}: {e}");
+                assert!(
+                    log(&s.sim) == at_refusal,
+                    "{name}: the refusal changed the log"
+                );
+            }
+            Want::Accepts {
+                kept,
+                listed,
+                lengthened,
+                tail,
+            } => {
+                assert!(ordinary.is_err(), "{name}: the ordinary open opened");
+                drop(ordinary);
+                s.sim.restart();
+                let (store, opened) = Store::accept_damage(s.fs(), SHAPE_CONFIG)
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                let Some(GaveUp::Damage(d)) = &opened.gave_up else {
+                    panic!("{name}: {opened:?}")
+                };
+                assert_eq!(d.kept.index, kept, "{name}: kept");
+                assert_eq!(opened.recovered.index, kept, "{name}: opened at");
+                let want_listed = listed.map(|(a, b)| (s.number(a), (b - a + 1) as u64));
+                let got_listed = (d.listed.count > 0).then_some((d.listed.first, d.listed.count));
+                assert_eq!(got_listed, want_listed, "{name}: listed");
+                let lengthened: Vec<u64> = lengthened.iter().map(|&a| s.number(a)).collect();
+                assert_eq!(d.lengthened, lengthened, "{name}: lengthened");
+                assert_eq!(d.tail_copied, tail.map(|a| s.number(a)), "{name}: tail");
+                // Every file given up, and the tail, copied byte for byte.
+                let copied: Vec<u64> = d
+                    .given_up
+                    .iter()
+                    .filter(|g| g.copied)
+                    .map(|g| g.number)
+                    .chain(d.tail_copied)
+                    .collect();
+                for number in copied {
+                    let original = before
+                        .iter()
+                        .find(|(p, _)| *p == format!("{}/{number:016x}", log::FOLDER))
+                        .and_then(|(_, b)| b.clone())
+                        .unwrap();
+                    let folder = d.folder.as_ref().expect("a folder for the copies");
+                    let copy = s.bytes(&format!("{folder}/{number:016x}"));
+                    assert!(copy == Some(original), "{name}: the copy of {number}");
+                }
+                // The entries kept read back; those given up do not.
+                let view = store.view().unwrap();
+                for (&tag, &(index, _, _)) in &s.entries {
+                    let value = read(&view, s.file, &[tag]);
+                    if index <= kept {
+                        assert_eq!(value, Some(vec![tag; SHAPE_PAYLOAD]), "{name}: {tag}");
+                    } else {
+                        assert_eq!(value, None, "{name}: {tag}");
+                    }
+                }
+                drop(store);
+                s.sim.restart();
+                let (_, again) =
+                    Store::open(s.fs(), SHAPE_CONFIG).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert!(again.gave_up.is_none(), "{name}");
+                assert_eq!(
+                    again.recovered.index,
+                    kept + 1,
+                    "{name}: the acceptance's start"
+                );
+            }
+        }
+    }
+}
+
+/// An acceptance `state` recorded, after which the log's open meets an
+/// unreadable end, says what it gave up in the error; giving up the end
+/// then opens the store, and the acceptance stands.
+#[test]
+fn an_unreadable_end_after_a_recorded_acceptance_says_what_was_given_up() {
+    let s = Shaped::new();
+    s.remove(0);
+    let end = s.end_of_batches(3);
+    *s.flaky.bad.lock().unwrap() = Some((s.segments[3].clone(), end));
+    s.sim.restart();
+    let failed = Store::accept_damage(s.fs(), SHAPE_CONFIG);
+    let Err(OpenError::AfterGivingUp(after)) = &failed else {
+        panic!("{failed:?}")
+    };
+    let GaveUp::Damage(accepted) = &after.gave_up else {
+        panic!("{failed:?}")
+    };
+    assert_eq!(after.recorded, Recorded::Done);
+    assert_eq!(accepted.listed.first, s.number(1));
+    let OpenError::UnreadableEnd { last, .. } = &after.error else {
+        panic!("{failed:?}")
+    };
+    s.sim.restart();
+    let (store, opened) = Store::give_up_unreadable_end(s.fs(), SHAPE_CONFIG, *last).unwrap();
+    assert_eq!(opened.recovered, s.durable);
+    assert_eq!(
+        store.log_segments().first,
+        s.number(1),
+        "the acceptance stands"
+    );
+}
+
+/// An open that finds no `state` while another process creates the store,
+/// between its two holds of the lock, opens what was created; it never
+/// says to restore it.
+#[test]
+fn an_open_during_a_creation_opens_what_was_created() {
+    let sim = Sim::new(61);
+    let flaky = Flaky::new(&sim);
+    *flaky.create_at_lock.lock().unwrap() = Some((1, sim.random()));
+    let opened = Store::open(Arc::new(flaky), CONFIG);
+    assert!(opened.is_ok(), "{opened:?}");
+}
+
+/// A start whose own entry finds no room after its reservation (the log's
+/// write, the marker's write) says to free space, and the store opens once
+/// there is room.
+#[test]
+fn a_start_that_finds_no_room_says_to_free_space() {
+    for (path, measure) in [("log/", false), (crate::state::FILE, true)] {
+        let sim = Sim::new(62);
+        let flaky = Flaky::new(&sim);
+        let fs: Arc<dyn Fs> = Arc::new(flaky.clone());
+        drop(Store::create(fs.clone(), &sim.random(), CONFIG).unwrap());
+        let fail = |after: u64| {
+            *flaky.fail_writes.lock().unwrap() = Some((path.to_owned(), after, ErrorKind::NoSpace));
+        };
+        // For `state`, the writes of its own open go first (counted on an
+        // open of it alone).
+        let skip = if measure {
+            fail(1000);
+            sim.restart();
+            drop(State::open(&*fs, fs.lock().unwrap()).unwrap());
+            1000 - flaky.fail_writes.lock().unwrap().as_ref().unwrap().1
+        } else {
+            0
+        };
+        fail(skip);
+        sim.restart();
+        let failed = Store::open(fs.clone(), CONFIG);
+        let Err(e @ OpenError::Start(_)) = &failed else {
+            panic!("{path}: {failed:?}")
+        };
+        assert!(e.remedy().starts_with("free space"), "{path}: {e}");
+        *flaky.fail_writes.lock().unwrap() = None;
+        sim.restart();
+        Store::open(fs, CONFIG).unwrap_or_else(|e| panic!("{path}: {e}"));
+    }
+}
+
+/// A configuration whose largest payload cannot hold this start's own
+/// entry is refused before anything is created or opened: no file made,
+/// no start counted.
+#[test]
+fn a_configuration_too_small_for_the_start_is_refused_first() {
+    let small = Config {
+        log: log::Config {
+            max_payload: 25,
+            ..CONFIG.log
+        },
+        ..CONFIG
+    };
+    let sim = Sim::new(63);
+    let created = Store::create(Arc::new(sim.fs()), &sim.random(), small);
+    assert!(matches!(created, Err(OpenError::Config(_))), "{created:?}");
+    assert!(sim.image().is_empty(), "nothing was created");
+    let (store, opened) = made(&sim);
+    drop(store);
+    sim.restart();
+    let before = sim.image();
+    let refused = Store::open(Arc::new(sim.fs()), small);
+    assert!(matches!(refused, Err(OpenError::Config(_))), "{refused:?}");
+    assert!(sim.image() == before, "nothing was written");
+    let (_, again) = reopened(&sim).unwrap();
+    assert_eq!(
+        again.start_count,
+        opened.start_count + 1,
+        "no start counted"
+    );
 }

@@ -172,6 +172,9 @@ pub enum WriteError {
     /// has stopped (the reason). Its outcome is unknown to the caller:
     /// open the store again, and the durable log says.
     Failed(String),
+    /// As [`WriteError::Failed`], the disk having had no room for the
+    /// write: free space before the store is opened again.
+    NoSpace(String),
 }
 
 impl fmt::Display for WriteError {
@@ -193,6 +196,11 @@ impl fmt::Display for WriteError {
                 "the store stopped: {why}; what was not flushed has an unknown outcome, and \
                  the store must be opened again"
             ),
+            WriteError::NoSpace(why) => write!(
+                f,
+                "the store stopped, the disk having no room: {why}; what was not flushed has \
+                 an unknown outcome; free space, then open the store again"
+            ),
         }
     }
 }
@@ -209,6 +217,9 @@ pub enum CheckpointFailed {
     Refused(String),
     /// A write or flush failed: the store has stopped (section 6.12).
     Failed(String),
+    /// The disk had no room for the checkpoint: nothing was written, or a
+    /// write failed so and the store has stopped ([`Store::stopped`]).
+    NoSpace(String),
 }
 
 impl fmt::Display for CheckpointFailed {
@@ -219,6 +230,7 @@ impl fmt::Display for CheckpointFailed {
             }
             CheckpointFailed::Refused(why) => write!(f, "checkpoint refused: {why}"),
             CheckpointFailed::Failed(why) => write!(f, "the store stopped: {why}"),
+            CheckpointFailed::NoSpace(why) => write!(f, "no room on the disk: {why}"),
         }
     }
 }
@@ -271,6 +283,9 @@ pub enum OpenError {
     Start(Box<StartFailed>),
     /// The call breaks a rule.
     Refused(&'static str),
+    /// The configuration cannot hold the store: refused before anything
+    /// is created or opened.
+    Config(String),
     /// An explicit call gave something up, and the open then failed
     /// ([`GaveUpThenFailed`]).
     AfterGivingUp(Box<GaveUpThenFailed>),
@@ -325,6 +340,10 @@ impl OpenError {
                 "open the store again later, restore it from a backup, or accept the loss of what \
                  may follow the place (Store::give_up_unreadable_end)"
             }
+            OpenError::Log(LogError::FramingBroken { .. }) => {
+                "restore the store from a backup: what the log holds after the checkpoint cannot \
+                 be found"
+            }
             OpenError::Log(LogError::NoSpace(_)) => {
                 "free space on the disk, then open the store again"
             }
@@ -340,6 +359,7 @@ impl OpenError {
             }
             OpenError::Start(_) => "open the store again",
             OpenError::Refused(_) => "a defect of the caller",
+            OpenError::Config(_) => "correct the store's configuration",
             OpenError::AfterGivingUp(failed) => failed.error.remedy(),
         }
     }
@@ -378,6 +398,7 @@ impl fmt::Display for OpenError {
                 )
             }
             OpenError::Refused(why) => write!(f, "refused: {why}"),
+            OpenError::Config(why) => write!(f, "the configuration: {why}"),
             OpenError::AfterGivingUp(failed) => {
                 let GaveUpThenFailed {
                     gave_up,
@@ -413,7 +434,7 @@ impl StartFailed {
     pub fn disk_full(&self) -> bool {
         matches!(
             self.error,
-            WriteError::Full(_) | WriteError::Log(LogError::NoSpace(_))
+            WriteError::Full(_) | WriteError::Log(LogError::NoSpace(_)) | WriteError::NoSpace(_)
         )
     }
 }
@@ -623,6 +644,15 @@ fn position_of(p: log::Position) -> Position {
     }
 }
 
+/// Whether a failure of the log came from a disk with no room.
+fn log_no_space(e: &LogError) -> bool {
+    match e {
+        LogError::NoSpace(_) => true,
+        LogError::Disk(e) | LogError::State(StateError::Disk(e)) => e.kind() == ErrorKind::NoSpace,
+        _ => false,
+    }
+}
+
 /// Whether applying failed because the device failed to read a page (not
 /// because a page did not check).
 fn device_read(e: &apply::Error) -> bool {
@@ -706,6 +736,29 @@ fn creation_done(fs: &dyn Fs) -> Result<(), OpenError> {
     }
 }
 
+/// Checks `config` against what the store itself must be able to write:
+/// the log's and the page file's own bounds, and this start's entry, which
+/// every open writes. Before anything is created or opened.
+fn check_config(config: &Config) -> Result<(), OpenError> {
+    let refused = |why: String| OpenError::Config(why);
+    config.log.check().map_err(|e| refused(e.to_string()))?;
+    config.pages.check().map_err(|e| refused(e.to_string()))?;
+    let start = Payload::Session(SessionEvent::Started {
+        server: [0xff; 16],
+        count: u64::MAX,
+    })
+    .encode()
+    .map_err(|e| refused(e.to_string()))?;
+    if start.len() > config.log.max_payload as usize {
+        return Err(refused(format!(
+            "the largest payload, {} bytes, is smaller than this start's own entry, {} bytes",
+            config.log.max_payload,
+            start.len()
+        )));
+    }
+    Ok(())
+}
+
 impl Store {
     /// Makes a new store in a folder that holds none, and opens it: `state`
     /// with a new server id drawn from `random`, the page file's first
@@ -721,6 +774,7 @@ impl Store {
         random: &dyn Random,
         config: Config,
     ) -> Result<(Store, Opened), OpenError> {
+        check_config(&config)?;
         let disk = |e: sys::Error| OpenError::Disk(e.to_string());
         let lock = fs.lock().map_err(disk)?;
         if exists(&*fs, crate::state::FILE)? {
@@ -781,20 +835,31 @@ impl Store {
     }
 
     fn start(fs: Arc<dyn Fs>, config: Config, how: How) -> Result<(Store, Opened), OpenError> {
+        check_config(&config)?;
         // 1. The lock and `state`.
-        let lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
-        let state = match State::open(&*fs, lock) {
-            Ok(state) => state,
-            Err(StateError::Missing) => {
-                // Without `state`: nothing, a creation cut short, or a store
-                // whose `state` is gone. Looked at under the lock.
-                let _lock = fs.lock().map_err(|e| OpenError::Disk(e.to_string()))?;
-                return Err(match store_left(&*fs)? {
-                    Some(found) => OpenError::NoState { found },
-                    None => OpenError::Missing,
-                });
+        let disk = |e: sys::Error| OpenError::Disk(e.to_string());
+        let mut looks = 0;
+        let state = loop {
+            let lock = fs.lock().map_err(disk)?;
+            match State::open(&*fs, lock) {
+                Ok(state) => break state,
+                Err(StateError::Missing) => {
+                    // Without `state`: nothing, a creation cut short, or a
+                    // store whose `state` is gone, looked at under the lock
+                    // again. `State::open` let it go: another process may
+                    // have made `state` meanwhile, and it is opened then.
+                    let _lock = fs.lock().map_err(disk)?;
+                    looks += 1;
+                    if exists(&*fs, crate::state::FILE)? && looks < 3 {
+                        continue;
+                    }
+                    return Err(match store_left(&*fs)? {
+                        Some(found) => OpenError::NoState { found },
+                        None => OpenError::Missing,
+                    });
+                }
+                Err(e) => return Err(OpenError::State(e)),
             }
-            Err(e) => return Err(OpenError::State(e)),
         };
         // A creation whose last step was cut short.
         creation_done(&*fs)?;
@@ -868,10 +933,15 @@ impl Store {
                 ))
             }
             (_, Some(end)) => {
-                return Err(OpenError::UnreadableEnd {
+                let error = OpenError::UnreadableEnd {
                     end,
                     last: log.durable(),
-                })
+                };
+                // After an acceptance `state` recorded, the error says so.
+                return Err(match gave_up {
+                    Some(gave_up) => OpenError::after(gave_up, Recorded::Done, error),
+                    None => error,
+                });
             }
             (_, None) => {}
         }
@@ -1018,7 +1088,11 @@ impl Store {
                     checkpointed = true;
                     if let Err(e) = store.checkpoint(None) {
                         let why = format!("the checkpoint before this start's entry: {e}");
-                        return Err(failed(None, WriteError::Failed(why)));
+                        let error = match e {
+                            CheckpointFailed::NoSpace(_) => WriteError::NoSpace(why),
+                            _ => WriteError::Failed(why),
+                        };
+                        return Err(failed(None, error));
                     }
                     replay_checkpoints += 1;
                 }
@@ -1057,6 +1131,17 @@ impl Store {
         let why = why.into();
         self.stopped = Some(why.clone());
         WriteError::Failed(why)
+    }
+
+    /// The store stops for a failure of the log, keeping a full disk as the
+    /// cause.
+    fn stop_log(&mut self, why: String, e: &LogError) -> WriteError {
+        self.stopped = Some(why.clone());
+        if log_no_space(e) {
+            WriteError::NoSpace(why)
+        } else {
+            WriteError::Failed(why)
+        }
     }
 
     /// Whether the store has stopped, and why.
@@ -1162,7 +1247,7 @@ impl Store {
         // Whatever the log would refuse is refused now, before the unit.
         match self.log.ready_for(term, bytes.len()) {
             Ok(()) => {}
-            Err(e) if self.log.is_poisoned() => return Err(self.stop(e.to_string())),
+            Err(e) if self.log.is_poisoned() => return Err(self.stop_log(e.to_string(), &e)),
             Err(e) => return Err(WriteError::Log(e)),
         }
         let prev = self.log.appended();
@@ -1204,7 +1289,8 @@ impl Store {
                 ))
             }
             Err(e) => {
-                return Err(self.stop(format!("the log refused an entry already applied: {e}")))
+                let why = format!("the log refused an entry already applied: {e}");
+                return Err(self.stop_log(why, &e));
             }
         }
         let position = applied.position;
@@ -1227,7 +1313,10 @@ impl Store {
         let last = self.log.appended().index;
         let durable = match self.log.flush_batch(Some(last)) {
             Ok(durable) => durable,
-            Err(e) => return Err(self.stop(format!("the log's flush failed: {e}"))),
+            Err(e) => {
+                let why = format!("the log's flush failed: {e}");
+                return Err(self.stop_log(why, &e));
+            }
         };
         if durable.index != last {
             return Err(self.stop("the flush made another entry durable than the last appended"));
@@ -1314,7 +1403,15 @@ impl Store {
             Err(e @ (CheckpointError::Disk(_) | CheckpointError::Failed)) => {
                 let why = format!("a checkpoint failed: {e}");
                 self.stopped = Some(why.clone());
-                return Err(CheckpointFailed::Failed(why));
+                return Err(match e {
+                    CheckpointError::Disk(d) if d.kind() == ErrorKind::NoSpace => {
+                        CheckpointFailed::NoSpace(why)
+                    }
+                    _ => CheckpointFailed::Failed(why),
+                });
+            }
+            Err(e @ CheckpointError::Space(_)) => {
+                return Err(CheckpointFailed::NoSpace(e.to_string()))
             }
             Err(e) => return Err(CheckpointFailed::Refused(e.to_string())),
         };
@@ -1323,7 +1420,11 @@ impl Store {
             Err(e) => {
                 let why = format!("the log's retirement failed: {e}");
                 self.stopped = Some(why.clone());
-                return Err(CheckpointFailed::Failed(why));
+                return Err(if log_no_space(&e) {
+                    CheckpointFailed::NoSpace(why)
+                } else {
+                    CheckpointFailed::Failed(why)
+                });
             }
         };
         let reclaimed: Reclaimed = self.pages.reclaim(RECLAIM_AFTER_CHECKPOINT);

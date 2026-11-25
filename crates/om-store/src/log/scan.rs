@@ -117,6 +117,11 @@ pub(crate) struct Found {
     pub hash: [u8; 32],
     /// The payload, when the walk keeps payloads.
     pub payload: Vec<u8>,
+    /// Its hash was checked over its bytes, chained. An entry the walk
+    /// took by its framing alone, at or before the entry it is anchored at
+    /// ([`Scanner::anchored_at`]), was not; the anchor's own hash and term
+    /// are then the anchor's, not what its bytes say.
+    pub verified: bool,
     /// The entry's bytes as verified, when the walk keeps them.
     pub bytes: Vec<u8>,
     /// Where its batch's header is.
@@ -177,6 +182,8 @@ enum Probe {
     /// position, written under another cut count: nothing more of it is
     /// read.
     Stale(BatchStart),
+    /// A batch's mark, and no valid header that continues the log.
+    Marked,
     Nothing,
 }
 
@@ -213,6 +220,13 @@ pub(crate) struct Scanner<'a> {
     ended: bool,
     keep: Keep,
     judge: Option<Judge>,
+    /// The entry the walk is anchored at, while the walk has not passed
+    /// it: index, hash and term. Until then entries are taken by their
+    /// framing alone (format section 3.5, "Anchored walks").
+    anchor: Option<(u64, [u8; 32], u64)>,
+    /// The walk ended where a batch still had an entry to come, or where a
+    /// batch's mark is and no valid header continues the log.
+    broke: bool,
     /// A buffer for the next place.
     spare: Vec<u8>,
 }
@@ -234,8 +248,36 @@ impl<'a> Scanner<'a> {
             ended: false,
             keep,
             judge: None,
+            anchor: None,
+            broke: false,
             spare: Vec::new(),
         }
+    }
+
+    /// Anchor the walk at entry `index`, whose hash and term are `hash` and
+    /// `term` (the entry a checkpoint covers): the entries up to it are
+    /// taken by their framing alone (their fixed fields, the lengths of
+    /// entries and batches, a batch header's own hash), not by the chain,
+    /// since nothing before the anchor is needed after it; the entry after
+    /// it is checked by the chain from `hash`. Nothing changes when the
+    /// walk begins after the anchor.
+    pub fn anchored_at(mut self, index: u64, hash: [u8; 32], term: u64) -> Self {
+        if self.next <= index {
+            self.anchor = Some((index, hash, term));
+        }
+        self
+    }
+
+    /// Whether the walk has not yet passed the entry it is anchored at.
+    pub fn before_anchor(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    /// Whether the walk ended where its framing broke: a batch still had an
+    /// entry to come, or a batch's mark stood where no valid header
+    /// continued the log.
+    pub fn broke(&self) -> bool {
+        self.broke
     }
 
     /// Walk under the open's rule after its firm position (see [`Judge`]).
@@ -298,14 +340,17 @@ impl<'a> Scanner<'a> {
             return Ok(Probe::Nothing);
         }
         let Some(start) = BatchStart::decode(self.get(place, BATCH_START)?) else {
-            return Ok(Probe::Nothing);
+            return Ok(Probe::Marked);
         };
         let fits = offset
             .checked_add(BATCH_HEADER)
             .and_then(|o| o.checked_add(start.length))
             .is_some_and(|end| end <= size);
-        if start.first != self.next || start.prev != self.prev || !fits {
-            return Ok(Probe::Nothing);
+        // Before the anchor the chain is not followed: the batch must only
+        // begin at the index expected.
+        let chained = self.anchor.is_some() || start.prev == self.prev;
+        if start.first != self.next || !chained || !fits {
+            return Ok(Probe::Marked);
         }
         if let Some(judge) = self.judge {
             if start.first > judge.firm && start.cut_count != judge.cut_count {
@@ -320,7 +365,7 @@ impl<'a> Scanner<'a> {
                     .try_into()
                     .expect("a whole header"),
             ),
-            None => Probe::Nothing,
+            None => Probe::Marked,
         })
     }
 
@@ -351,11 +396,26 @@ impl<'a> Scanner<'a> {
             self.recycle(place);
             return Ok(None);
         }
-        let hash = entry_hash(&self.prev, &bytes[..content]);
-        if hash[..] != bytes[content..] {
-            self.recycle(place);
-            return Ok(None);
-        }
+        let framed = self.anchor.filter(|(at, _, _)| head.index <= *at);
+        let (hash, term, verified) = match framed {
+            // Taken by its framing: the anchor is the checkpoint's entry,
+            // with the checkpoint's hash and term; an entry before it is
+            // passed with the hash its bytes name.
+            Some((at, hash, term)) if head.index == at => (hash, term, false),
+            Some(_) => {
+                let mut stored = [0u8; 32];
+                stored.copy_from_slice(&bytes[content..]);
+                (stored, head.term, false)
+            }
+            None => {
+                let hash = entry_hash(&self.prev, &bytes[..content]);
+                if hash[..] != bytes[content..] {
+                    self.recycle(place);
+                    return Ok(None);
+                }
+                (hash, head.term, true)
+            }
+        };
         let (payload, bytes) = match self.keep {
             Keep::Payloads => {
                 let mut buf = std::mem::take(&mut place.buf);
@@ -382,12 +442,13 @@ impl<'a> Scanner<'a> {
             offset,
             size,
             index: head.index,
-            term: head.term,
+            term,
             kind: head.kind,
             file: head.file,
             hash,
             payload,
             bytes,
+            verified,
             batch_offset: batch.offset,
             first_in_batch: batch.read == 0,
         }))
@@ -406,6 +467,7 @@ impl<'a> Scanner<'a> {
 
     /// The current batch ends at `offset`, and the walk with it.
     fn end_batch_here(&mut self, offset: u64) -> Event {
+        self.broke = true;
         self.batch = None;
         self.ending = Some((self.seg, offset));
         Event::BatchEnd { whole: false }
@@ -459,7 +521,7 @@ impl<'a> Scanner<'a> {
                 let probe = self.probe(&mut place)?;
                 self.recycle(place);
                 return Ok(match probe {
-                    Probe::Nothing => self.end_batch_here(offset),
+                    Probe::Nothing | Probe::Marked => self.end_batch_here(offset),
                     found => {
                         self.batch = None;
                         self.pending = Some((found, offset));
@@ -472,7 +534,7 @@ impl<'a> Scanner<'a> {
             // is looked for only when they begin with its mark.
             if is_batch_mark(self.get(&mut place, ENTRY_FIXED)?) {
                 match self.probe(&mut place)? {
-                    Probe::Nothing => {}
+                    Probe::Nothing | Probe::Marked => {}
                     found => {
                         self.recycle(place);
                         self.batch = None;
@@ -489,6 +551,9 @@ impl<'a> Scanner<'a> {
                     self.next = found.index + 1;
                     self.prev = found.hash;
                     self.prev_term = found.term;
+                    if self.anchor.is_some_and(|(at, _, _)| found.index >= at) {
+                        self.anchor = None;
+                    }
                     if let Some(batch) = &mut self.batch {
                         batch.read += 1;
                     }
@@ -554,7 +619,8 @@ impl<'a> Scanner<'a> {
                     header: None,
                 })
             }
-            (Probe::Nothing, _) => {
+            (probe @ (Probe::Nothing | Probe::Marked), _) => {
+                self.broke |= matches!(probe, Probe::Marked);
                 self.ended = true;
                 Ok(Event::End {
                     seg: self.seg,
