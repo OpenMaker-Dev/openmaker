@@ -1462,8 +1462,8 @@ impl ServerHost {
         }
     }
 
-    /// [`Self::require_edit_access`], and on a file hosted read-only 3
-    /// before anything else: no record is opened for editing, created or
+    /// [`Self::require_edit_access`], and on a file hosted read-only, on
+    /// either engine, 3 before anything else: no record is opened for editing, created or
     /// deleted, so that a step that would change one fails where the
     /// script sees it, rather than at a commit that comes later or at the
     /// session's end (OpenMaker's choice, as the account steps answer on

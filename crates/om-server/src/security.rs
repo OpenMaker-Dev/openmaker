@@ -30,7 +30,7 @@ use om_protocol::authoring::{
 };
 
 use crate::accounts::{AccountKind, AccountStatus};
-use crate::engine::{Child, Direction, FileEngine, Head, ReadError, View};
+use crate::engine::{Child, Direction, Engine, Head, ReadError, View};
 use crate::hosting::Hosted;
 
 const ACCOUNTS: [&[u8]; 3] = [&[23], &[1], &[5]];
@@ -78,7 +78,7 @@ const EXTENDED_MEMBERS: [Member; 2] = [Member::Keys(5), Member::Text(0x10)];
 const MEMBER_LIMIT: usize = MAX_DEFINITION_BYTES;
 
 /// `hosted`'s security catalog in the version `engine` holds now.
-pub(crate) fn catalog(engine: &FileEngine, hosted: &Hosted) -> Result<SecurityCatalog, ReadError> {
+pub(crate) fn catalog(engine: &Engine, hosted: &Hosted) -> Result<SecurityCatalog, ReadError> {
     engine.read(hosted).serve(|read| read_catalog(read.view))
 }
 

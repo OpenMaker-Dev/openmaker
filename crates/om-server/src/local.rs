@@ -57,8 +57,8 @@ use crate::connection::Shared;
 #[cfg(target_os = "linux")]
 use crate::engine::{export, ExportError, Progress};
 use crate::engine::{
-    ChangePassword, Credentials, FileEngine, Operation, Password, Read as FileRead, ReadError,
-    Reply, SaveFoundSet, NO_LIMIT,
+    ChangePassword, Credentials, Operation, Password, Read as FileRead, ReadError, Reply,
+    SaveFoundSet, NO_LIMIT,
 };
 use crate::filelock::{link_count, same_file, FileLock, LockKind};
 use crate::hosting::Hosting;
@@ -285,7 +285,7 @@ impl LocalHost {
                 save_copy_path(&path).display()
             );
         }
-        let engine = FileEngine::default();
+        let engine = crate::engine::Engine::default();
         let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some())
             .map_err(|e| LocalHostError::Undecodable(e.to_string()))?;
         drop(hbam);
@@ -427,7 +427,9 @@ impl LocalHost {
                 crate::store::ReadOnlyCause::Unwritable => ReadOnly::Unwritable,
                 crate::store::ReadOnlyCause::DeferredWork => ReadOnly::DeferredWork,
                 // Opened so: the reason it was opened with, which is set.
-                crate::store::ReadOnlyCause::Opened => ReadOnly::NotWritable,
+                crate::store::ReadOnlyCause::Opened | crate::store::ReadOnlyCause::StoreEngine => {
+                    ReadOnly::NotWritable
+                }
             })
         })
     }
