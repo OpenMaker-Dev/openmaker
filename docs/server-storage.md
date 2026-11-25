@@ -384,7 +384,9 @@ it ends there for that start, cuts nothing and takes no appends
 ([server-storage-format.md](server-storage-format.md) section 3.6). On a
 cluster the leader's consistency check has the follower cut from the entry
 after the last one it read, under the rule above; a cut from further on
-removes nothing. On a single server the store stops and reports (section
+removes nothing. What followed that place may have been acknowledged, so
+the member is in repair until it holds the leader's log again (section
+7.5). On a single server the store stops and reports (section
 6.12), and the administrator opens it again later, restores, or accepts
 the loss of whatever may follow that place. Accepting it discards only what
 lies after the last entry the start verified, never an entry the marker
@@ -690,9 +692,9 @@ store take unbounded memory or disk:
 
 | Fault | Found by | Response |
 |---|---|---|
-| The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged |
+| The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged, unless a copy of `state` was damaged or unreadable at the same start and took the marker back one advance (section 6.1): then a cluster member is in repair (section 7.5), and a single server reports that the last batch it confirmed may be lost |
 | The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
-| The log cannot be read at a place after the marker | the device's error | the log ends there for that start, cuts nothing and takes no appends (section 6.3). A cluster member is cut there by its leader (section 7.1). A single server stops the store and reports; the administrator opens it again, restores (section 11), or explicitly accepts the loss of what may follow |
+| The log cannot be read at a place after the marker | the device's error | the log ends there for that start, cuts nothing and takes no appends (section 6.3). A cluster member is in repair and is cut there by its leader (sections 7.1 and 7.5). A single server stops the store and reports; the administrator opens it again, restores (section 11), or explicitly accepts the loss of what may follow |
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
@@ -727,10 +729,20 @@ in `om-store`, with these rules as the paper gives them:
   as its own durable log, and asks the others whether they would vote
   before it starts an election.
 - A follower whose entry at an index differs from the leader's cuts its
-  log from there, never at or before its committed position.
+  log from there: never at or before its committed position or the entry
+  of the checkpoint it started from, and only once it has heard a
+  committed position from the leader since it started, because the one
+  its marker recorded can be one advance behind (section 6.1).
 - The leader counts servers only for entries of its own term. An entry is
   **committed** when a majority has it durable and it is of the leader's
   term, or when a later entry is committed.
+- Beyond the paper: the leader counts a server as holding an entry only
+  by an acknowledgement that server sent in its current start. Every
+  message between servers carries the sender's start count (section 6.1),
+  and when a follower's rises the leader forgets what it had counted for
+  it and learns it again from the follower's answers. A server that came
+  back in repair (section 7.5) is then not counted for entries it no
+  longer holds.
 - A new leader's first entry is `empty`. It runs no operation and answers
   no request until that entry is committed and published, so that its
   state, with the session and lock tables, holds everything committed
@@ -889,11 +901,32 @@ of the current term.
 **In repair.** A server that cannot produce what it confirmed - its log
 does not hold every entry through its marker, neither checkpoint on disk
 can be used, or it has no space to apply a committed entry - is in repair.
+So is one that may have lost what it confirmed without its marker showing
+it.
 
 - **The required end.** Before anything else it records in `state`,
   flushed, that it is in repair and its **required end**: the marker's
   index as it was when it entered repair. The marker is outside the log,
   so the required end is known however much of the log is gone.
+- **May have lost what it acknowledged.** The marker can be one advance
+  behind what a server confirmed when a copy of `state` was damaged or
+  could not be read at a start (section 6.1). The log's tail normally
+  makes up for it: a whole batch after the marker is kept and the marker
+  moved over it (section 6.7, step 3). A server is in repair when that
+  did not happen: at a start where a copy of `state` was passed over, the
+  log held no whole batch after the marker (it ended there, or its tail
+  was cut as damaged); or the log ended at a place it could not read
+  (section 6.3), whatever `state` showed. Its marker then does not give
+  its required end. It first records in `state`, flushed, that it is in
+  repair with its required end not yet known, which fences it across
+  restarts like any server in repair. Then it asks the leader of the
+  current term for the last entry of the leader's log, and records that
+  as its required end before it stores anything from the leader. The
+  answer is given after this start, so whatever this server acknowledged
+  in an earlier start and that was committed is in that log by then: a
+  leader holds every committed entry, and this server, fenced, gave no
+  vote that could elect one that does not. What it acknowledged and was
+  never committed needs no protection.
 - **Nothing lowers it.** Installing a checkpoint, discarding or replacing
   its log, a restart, and any marker written while in repair leave the
   required end as it is.
