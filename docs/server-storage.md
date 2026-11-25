@@ -330,9 +330,16 @@ The readers that read through views:
   extended privilege's sets `05` as the keys of its children, all the
   reply takes of them, nothing below those keys. A name, a keyword or the
   sets of one record may take what one reply carries (1 MiB,
-  `MEMBER_LIMIT`), counted as the keys and values the view hands out for
-  it; one past it refuses the request. FileMaker's own security editor is
-  not known to write a member of that size (unmeasured). Never an
+  `MEMBER_LIMIT`), as stored: the keys and values of what the decoder is
+  given of it (a text member's own value or its pieces, each set's key
+  and own value), not the probe for a first child or the rest of the page
+  a listing fetched. One past it refuses the request. The limit is on the
+  stored bytes read for a member the reply uses, input from a file (rule
+  6 of AGENTS.md), not on the reply: a name stored in pieces past it
+  refuses the whole catalog even where its text would be short (SCSU) or
+  not decode at all (a bad chunk header), where reading it whole left that
+  one name out. FileMaker's own security editor is not known to write a
+  member of that size (unmeasured). Never an
   account's password `06` or its `04`. Before, it borrowed the three lists
   whole from the store;
 - the desktop's private host (`LocalHost`): the account its account
@@ -1309,7 +1316,13 @@ taking the change back puts it back as that key. Every writer keeps its
 changes this way, op72's and Set Next Serial Value's serial node under its
 field definition too (`Store::kept_before`). A key that becomes a list
 drops an empty value of its own (`OwnedNode::ensure`), as the writer
-writes such a list: memory holds what the file will. The
+writes such a list: memory holds what the file will. A key that already is
+a list and carries an explicit empty value (a push slot with a zero-length
+value, which the page format can hold and the reader gives as an empty
+value, from a file or an op13 upload) is kept so in memory, while a save
+writes a bare list: that one form differs between memory and the file
+([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754); no
+FileMaker Pro 26 template holds it). The
 journal keeps what the change itself decided, never a second account of
 it: op88's choice between the member that already holds the data and a
 new one is made once (`library::store_plan`), and so is op87's between
@@ -1360,12 +1373,15 @@ accounts, what waits, the locks, the record of unsaved changes, the
 read-only and no-more-changes states, the saves, the file on disk) with
 what they were before; and while the store counts nothing as changed,
 memory with the file on disk. Nine trees run by default, 2,000 seeded ones
-in an ignored run.
+in an ignored run. Its trees are written by OpenMaker's writer, so none
+holds a list with an explicit empty value (#754).
 
 *The record of unsaved changes.* The store keeps whether memory may hold
 what the file on disk lacks (`Store::has_unsaved_changes`). Clear, it
 means that memory is known to equal the file on disk, and an export then
-copies that file rather than walk the tree ("Exports", above). Every
+copies that file rather than walk the tree ("Exports", above); but for a
+list that carries an explicit empty value, which memory keeps and a save
+writes as a bare list ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)). Every
 change of the tree sets it, and a save that renamed its new copy over the
 file clears it, its folder flush confirmed or not. A roll-back of a change
 whose save was not written puts back what it was before the change: the
@@ -1420,7 +1436,7 @@ create file on disk".
 | op70 | a system exception (MARSHAL), as before; not stored, the records stay locked and the staged records the commit did not reach go back to the temporary area | no status (write-path.md 3.4) |
 | op71 | status 800, 809 or 810, the key `[00]` | a status (write-path.md 3.1) |
 | op72 | status 800, 809 or 810, an empty value | a status (write-path.md 3.2) |
-| op13 | a system exception (MARSHAL), as op70 | no status (schema-path.md 3.3) |
+| op13 | a system exception (MARSHAL), as op70; the log says it was not stored, or, unknown, that it may or may not be stored (`connection::upload_not_stored`) | no status (schema-path.md 3.3) |
 | op73 | a system exception (MARSHAL), as its refusals | an empty reply (write-path.md 3.6) |
 | op86 with schema instructions (UploadMultiple, GenerateMemberKey, DeleteTable) | the error slot `[00] = 02 <800, 809 or 810>` alone | the error slot (query-program.md 11.2) |
 | op86 without them, a server script's find | the program's answer: what it found waiting and could not store (indexes finds built, member keys other programs reserved) waits again for the next write, logged | (a program that changes nothing stores nothing of its own) |

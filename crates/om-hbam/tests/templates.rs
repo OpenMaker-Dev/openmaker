@@ -673,3 +673,44 @@ fn stream_matches_the_key_tree() {
     }
     println!("{} files, {nodes} nodes", files.len());
 }
+
+/// No shipped file holds a list that carries a value of its own: a push
+/// slot whose code has a value class (hbam-writer.md 2.2), which the reader
+/// gives as a value, empty or not, beside the list's children, and which
+/// the file writer writes as a bare push (`docs/server-storage.md` 5). The
+/// page format can say it; FileMaker's files are not seen to. Reads
+/// whichever of the extractions this host has, and prints what it counted.
+#[test]
+#[ignore = "requires the git-ignored extracted templates or FileMaker Server samples"]
+fn no_shipped_file_holds_a_list_with_a_value() {
+    let dirs: Vec<&str> = [WIN_TEMPLATES, MAC_TEMPLATES, FMS_SAMPLES]
+        .into_iter()
+        .filter(|dir| Path::new(dir).is_dir())
+        .collect();
+    let files = files_in(&dirs);
+    assert!(!files.is_empty(), "no extracted files");
+    let (mut nodes, mut lists, mut with_value) = (0usize, 0usize, Vec::new());
+    for path in &files {
+        let file = HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        tree.root.walk(&mut |at, node| {
+            if at.is_empty() {
+                return;
+            }
+            nodes += 1;
+            if node.push {
+                lists += 1;
+                if let Some(value) = node.value {
+                    with_value.push((path.display().to_string(), at.len(), value.len()));
+                }
+            }
+        });
+    }
+    println!(
+        "{} files ({}), {nodes} nodes, {lists} lists, {} with a value",
+        files.len(),
+        dirs.join(", "),
+        with_value.len()
+    );
+    assert!(with_value.is_empty(), "{with_value:?}");
+}
