@@ -1025,9 +1025,13 @@ each lookup.
 A reading is held only for the reads. A read returns what it read, owned
 where the work after it needs it, and that work is done once the reading
 is let go: the find over a transaction's own records ("The overlay
-view", below), building the Design functions' schema, and the account
-facts, which check an empty password against the account's verifier, as
-a login does. It never holds a reading across a write it submits (every
+view", below), compiling the Design functions' schema (but for
+GetNextSerialValue's first call in a version, which resolves its field
+in the version whose serial value it reads), and the account facts,
+which check an empty password against the account's verifier, as a
+login does; debug builds check that no reading is held there
+(`FileAccount::authenticated_info`), and the desktop's private host
+works its account facts out the same way. It never holds a reading across a write it submits (every
 write is submitted with none held), so a read after the session's
 commit, reservation or account edit reads the version that write made:
 the session sees what it wrote
