@@ -70,7 +70,12 @@ pub(crate) fn counts_key(index: u8) -> u8 {
 }
 
 /// A file's accounts as [`read_accounts`] decodes them, in key order, or
-/// why they could not be read. Shared: replacing them copies none.
+/// why they could not be read. The two differ: an error is a read of the
+/// security catalog that failed (the view's); an account record that was
+/// read but does not decode is left out, or holds `None` for a part that
+/// does not (its kind, status or privilege set) and an unavailable
+/// password for a verifier this server cannot check. Shared: replacing
+/// them copies none.
 pub type Accounts = Result<Arc<[Arc<FileAccount>]>, ReadError>;
 
 /// What readers need of a file besides its tree (the module doc).
@@ -247,8 +252,9 @@ impl Derived {
     }
 
     /// The file's account named `name`, matched as FileMaker matches
-    /// account names ([`crate::hosting::account_named`]); an error when the
-    /// accounts could not be read.
+    /// account names ([`crate::hosting::account_named`]): `None` for none,
+    /// also for one whose record does not decode; an error when the
+    /// security catalog could not be read ([`Accounts`]).
     pub fn account(&self, name: &str) -> Result<Option<Arc<FileAccount>>, ReadError> {
         let accounts = self.accounts.as_ref().map_err(ReadError::clone)?;
         Ok(crate::hosting::account_named(accounts, name))

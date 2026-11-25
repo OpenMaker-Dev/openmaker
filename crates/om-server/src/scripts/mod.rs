@@ -616,9 +616,14 @@ pub(crate) fn run(
     host.set_access(access);
     let mut outcome = execute(&mut host, script, parameter, slot);
     // A save at the script's end that failed is the script's error: what
-    // it left unsaved is not on disk (docs/server-storage.md 5).
+    // it left unsaved is not on disk (docs/server-storage.md 5). A read
+    // that failed, also one the close made, ends the run with 802 and no
+    // result (section 5, "A read that fails ends the run").
     if let Some(error) = host.close() {
         outcome.error = error;
+        if error == UNREADABLE {
+            outcome.result.clear();
+        }
     }
     // (The session's locks go with it, before another can get its id.)
     drop(host);
@@ -1712,6 +1717,41 @@ mod tests {
         host.close();
     }
 
+    /// The reads kept to one version (docs/server-storage.md 5, "A script
+    /// session's reads"), each through one reading, counted by the test
+    /// hook that counts the readings a session takes: a Design function's
+    /// schema parts and the account facts of its session information, and
+    /// a committed row with its containers' file names.
+    #[test]
+    fn the_reads_kept_to_one_version_take_one_reading() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_photo(&mut tree);
+        let file = TempFile::from_tree("one-version-reads", &tree);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let fault = &hosted(&shared).read_fault;
+        fault.fail(0, false);
+        let context = host.calc_context_for_test();
+        let field_type = om_calc::eval::evaluate_text(
+            "FieldType ( Get ( FileName ) ; \"Tasks::Name\" )",
+            &mut host,
+            &context,
+        );
+        assert_eq!(field_type.code(), 0, "{:?}", field_type.value);
+        assert_eq!(fault.reads.load(Relaxed), 1, "a Design function");
+        fault.fail(0, false);
+        let row = host.sql_row_for_tests(fixture::TABLE, 1).expect("record 1");
+        assert_eq!(
+            fault.reads.load(Relaxed),
+            1,
+            "a row and its containers' names"
+        );
+        let photo = row.get(fixture::PHOTO, 1).expect("a photo");
+        assert_eq!(text(&host, photo), "photo2.png", "the member's file name");
+        host.close();
+    }
+
     /// docs/server-storage.md 5, "A script session's reads": a read of the
     /// file that fails ends the run with 802, "Unable to open file", for
     /// each kind of read, and the session changes nothing in the file from
@@ -1912,9 +1952,10 @@ mod tests {
         );
         host.close();
 
-        // The accounts Change Password checks, which the engine's derived
-        // state gives: accounts it could not read answer as before, with 3
-        // (docs/server-storage.md 5), and end nothing.
+        // The accounts Change Password checks, which the reading's derived
+        // state gives: a security catalog that could not be read is a read
+        // that failed. The step is refused as before (3), the run ends with
+        // 802, and a serial write after it does not happen.
         let file = TempFile::new("fail-accounts", &[], true);
         let changing = shared(&file);
         let mut host = session(&changing);
@@ -1929,8 +1970,17 @@ mod tests {
         );
         assert_eq!(
             om_scripts::runtime::ScriptHost::take_step_error(&mut host),
-            None
+            Some(ErrorCode(i32::from(UNREADABLE))),
+            "the accounts' read failed"
         );
+        let before = hosted(&changing).read_store().node(&[]).cloned();
+        assert_eq!(
+            host.set_next_serial_value(field(fixture::COUNT), Value::text("100")),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "a serial write after it"
+        );
+        let after = hosted(&changing).read_store().node(&[]).cloned();
+        assert!(before == after, "the serial write did not happen");
         host.close();
     }
 
@@ -1959,6 +2009,28 @@ mod tests {
             step
         };
         let report = || fixture::exit_with("Get ( LastError )");
+        let change_password = || {
+            let mut step = ScriptStep::new(83);
+            step.set_calculation(
+                0,
+                Some(&fixture::calc(&format!("\"{}\"", fixture::PASSWORD))),
+            );
+            step.set_calculation(1, Some(&fixture::calc("\"another secret\"")));
+            step
+        };
+        let next_serial = |text: &str| {
+            let mut step = ScriptStep::new(116);
+            step.set_field_spec(
+                0,
+                Some(FieldSpec::new(
+                    StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                    StoredKey::from_id(fixture::COUNT).unwrap(),
+                    1,
+                )),
+            );
+            step.set_calculation(0, Some(&fixture::calc(text)));
+            step
+        };
         let scripts: Vec<(&str, Vec<ScriptStep>)> = vec![
             (
                 "Set Field from a field",
@@ -2120,6 +2192,22 @@ mod tests {
                     report(),
                 ],
             ),
+            // Script 18.
+            (
+                "Exit Script with a global",
+                vec![fixture::exit_with("\"prefix:\" & Tasks::Setting")],
+            ),
+            (
+                "A subscript's result",
+                vec![
+                    fixture::perform_script(18),
+                    fixture::exit_with("Get ( ScriptResult ) & \"/\" & Get ( LastError )"),
+                ],
+            ),
+            (
+                "Change Password, then Set Next Serial Value",
+                vec![change_password(), next_serial("100"), report()],
+            ),
         ];
         scripts
             .into_iter()
@@ -2177,12 +2265,7 @@ mod tests {
         script: u64,
         fail: u64,
         after: bool,
-    ) -> (
-        PerformScriptReply,
-        u64,
-        Option<om_hbam::OwnedNode>,
-        Option<om_hbam::OwnedNode>,
-    ) {
+    ) -> FaultRun {
         use std::sync::atomic::Ordering::Relaxed;
         let file = TempFile::from_tree(&format!("read-fault-{script}-{fail}"), tree);
         let shared = shared(&file);
@@ -2195,51 +2278,112 @@ mod tests {
         let hosted = hosted(&shared);
         hosted.read_fault.fail(fail, after);
         let reply = perform(&shared, request(&shared, script, "", 0));
-        let reads = hosted.read_fault.reads.load(Relaxed);
-        let ended = hosted.read_store().node(&[]).cloned();
-        (reply, reads, ended, hosted.read_fault.tree_at_failure())
+        let fault = &hosted.read_fault;
+        let (ended, waiting_ended) = {
+            let store = hosted.read_store();
+            (store.node(&[]).cloned(), store.waiting_for_tests())
+        };
+        let waiting_at_failure = fault.waiting_at_failure.lock().unwrap().clone();
+        let since = fault.since.lock().unwrap().clone();
+        FaultRun {
+            reply,
+            reads: fault.reads.load(Relaxed),
+            failed: fault.failed.load(Relaxed),
+            ended,
+            at_failure: fault.tree_at_failure(),
+            waiting_ended,
+            waiting_at_failure,
+            since,
+        }
     }
 
-    /// docs/server-storage.md 5, "A script session's reads": a read of the
-    /// file that fails ends the run with 802, and nothing a step read as
-    /// missing reaches the file. For each script of a corpus that between
-    /// them make every kind of read (`read_fault_corpus`), the k-th read of
-    /// the run fails, for every k up to the run's number of reads, and with
-    /// `after` every read after it too: the run ends with 802; no step runs
-    /// after the one the read failed in (the script's result, from its last
-    /// step, is none, or the one it gives without a failure when the read
-    /// that failed is the session's close's); and the file's whole tree
-    /// when the session has ended is the tree when that read failed.
-    /// Returns the runs made.
+    /// What [`run_with_failed_read`] found.
+    struct FaultRun {
+        reply: PerformScriptReply,
+        /// The reads the run made.
+        reads: u64,
+        /// Whether a read failed.
+        failed: bool,
+        /// The file's tree when the session ended, and when the read
+        /// failed.
+        ended: Option<om_hbam::OwnedNode>,
+        at_failure: Option<om_hbam::OwnedNode>,
+        /// The file's waiting set when the session ended, and when the read
+        /// failed.
+        waiting_ended: crate::hosting::WaitingSnapshot,
+        waiting_at_failure: Option<crate::hosting::WaitingSnapshot>,
+        /// What the session did after the read failed
+        /// (`hosting::ReadFault::since`).
+        since: Vec<String>,
+    }
+
+    /// docs/server-storage.md 5, "A read that fails ends the run": from the
+    /// failed read on, the session has no effect outside itself but
+    /// releasing what it holds, and the run ends with 802 and no result.
+    /// For each script of a corpus that between them make every kind of
+    /// read (`read_fault_corpus`), the k-th read of the run fails, for every
+    /// k up to the run's number of reads, and with `after` every read after
+    /// it too. Recorded from the failure on (`hosting::ReadFault`), each run
+    /// must show: no step entered after the one the read failed in; nothing
+    /// submitted but releases, so no lock taken; the file's waiting set and
+    /// its whole tree, when the session has ended, as they were at the
+    /// failure; error 802; and no result. Returns the runs made.
     fn every_failed_read_ends_the_run(after: bool) -> usize {
         let scripts = read_fault_corpus();
         let tree = read_fault_tree(&scripts);
         let mut runs = 0;
         let mut failures = Vec::new();
         for script in &scripts {
-            let (whole, reads, _, _) = run_with_failed_read(&tree, script.id, 0, false);
-            assert_ne!(whole.error, 802, "{}: without a failed read", script.name);
+            let whole = run_with_failed_read(&tree, script.id, 0, false);
+            let reads = whole.reads;
+            assert_ne!(
+                whole.reply.error, 802,
+                "{}: without a failed read",
+                script.name
+            );
             assert!(reads > 1, "{}: {reads} reads", script.name);
             for fail in 1..=reads {
-                let (reply, _, ended, at_failure) =
-                    run_with_failed_read(&tree, script.id, fail, after);
+                let run = run_with_failed_read(&tree, script.id, fail, after);
                 let what = format!("{}: read {fail} of {reads} failing", script.name);
                 runs += 1;
-                let Some(at_failure) = at_failure else {
+                if !run.failed {
                     failures.push(format!("{what}: no read failed"));
                     continue;
-                };
-                if reply.error != 802 {
-                    failures.push(format!("{what}: the run ended with {}", reply.error));
                 }
-                if !reply.result.is_empty() && reply.result != whole.result {
-                    failures.push(format!(
-                        "{what}: a step ran after it, the result is {:?}",
-                        reply.result
-                    ));
+                let steps = run.since.iter().filter(|s| *s == "step").count();
+                if steps > 0 {
+                    failures.push(format!("{what}: {steps} steps entered after it"));
                 }
-                if ended != Some(at_failure) {
+                let locks: Vec<&String> = run
+                    .since
+                    .iter()
+                    .filter(|s| ["TakeScriptLock", "TakeLock", "UpgradeLock"].contains(&s.as_str()))
+                    .collect();
+                if !locks.is_empty() {
+                    failures.push(format!("{what}: locks taken after it: {locks:?}"));
+                }
+                let submitted: Vec<&String> = run
+                    .since
+                    .iter()
+                    .filter(|s| *s != "step" && !s.starts_with("Release") && !locks.contains(s))
+                    .collect();
+                if !submitted.is_empty() {
+                    failures.push(format!("{what}: submitted after it: {submitted:?}"));
+                }
+                if run.reply.error != 802 {
+                    failures.push(format!("{what}: the run ended with {}", run.reply.error));
+                }
+                if !run.reply.result.is_empty() {
+                    failures.push(format!("{what}: a result, {:?}", run.reply.result));
+                }
+                if run.ended != run.at_failure {
                     failures.push(format!("{what}: the file changed after the read failed"));
+                }
+                if Some(&run.waiting_ended) != run.waiting_at_failure.as_ref() {
+                    failures.push(format!(
+                        "{what}: the waiting set changed after it: {:?} at the failure, {:?} at the end",
+                        run.waiting_at_failure, run.waiting_ended
+                    ));
                 }
             }
         }

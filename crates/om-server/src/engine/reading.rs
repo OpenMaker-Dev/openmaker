@@ -110,6 +110,16 @@ impl Waiting {
         }
     }
 
+    /// The indexes noted as due to be stored, in order.
+    pub fn indexes(&self) -> Vec<IndexId> {
+        self.on_demand
+            .lock()
+            .expect("index lock")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     /// Whether finds built indexes that are not yet stored.
     pub fn has_indexes(&self) -> bool {
         !self.on_demand.lock().expect("index lock").is_empty()

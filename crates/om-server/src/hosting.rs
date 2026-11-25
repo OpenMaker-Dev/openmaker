@@ -261,9 +261,10 @@ pub struct Hosted {
 
 /// A test's switch that fails the n-th read a script session makes of the
 /// file (`scripts::host::SessionReads::begin`), counted from when it is
-/// set, or every read from the n-th on, and keeps the file's tree as it
-/// was when the first of them failed, for the test to compare with what
-/// the session left.
+/// set, or every read from the n-th on. It keeps what the file held when
+/// the first of them failed (its tree and its waiting set), and what the
+/// session did after it (each step it entered, each operation it
+/// submitted), for the test to compare with what the session left.
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct ReadFault {
@@ -273,9 +274,20 @@ pub(crate) struct ReadFault {
     pub after: std::sync::atomic::AtomicBool,
     /// The reads counted.
     pub reads: std::sync::atomic::AtomicU64,
+    /// Whether the read failed.
+    pub failed: std::sync::atomic::AtomicBool,
     /// The file's tree when the read failed.
     pub at_failure: Mutex<Option<om_hbam::OwnedNode>>,
+    /// The file's waiting set when the read failed (`Waiting::snapshot`).
+    pub waiting_at_failure: Mutex<Option<WaitingSnapshot>>,
+    /// What the session did after the read failed, in order: `step` for a
+    /// step it entered, and each operation or draft it submitted by name.
+    pub since: Mutex<Vec<String>>,
 }
+
+/// The indexes and member keys a file's waiting set holds.
+#[cfg(test)]
+pub(crate) type WaitingSnapshot = (Vec<crate::store::IndexId>, Vec<crate::store::MemberKey>);
 
 #[cfg(test)]
 impl ReadFault {
@@ -286,12 +298,22 @@ impl ReadFault {
         self.reads.store(0, Relaxed);
         self.fail_at.store(n, Relaxed);
         self.after.store(after, Relaxed);
+        self.failed.store(false, Relaxed);
         *self.at_failure.lock().unwrap() = None;
+        *self.waiting_at_failure.lock().unwrap() = None;
+        self.since.lock().unwrap().clear();
     }
 
     /// The tree kept when the read failed, if one did.
     pub fn tree_at_failure(&self) -> Option<om_hbam::OwnedNode> {
         self.at_failure.lock().unwrap().clone()
+    }
+
+    /// Note `what` the session did, once the read failed.
+    pub fn note(&self, what: impl FnOnce() -> String) {
+        if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+            self.since.lock().unwrap().push(what());
+        }
     }
 }
 
@@ -565,8 +587,10 @@ impl Hosted {
             return Ok(());
         }
         if n == at {
-            let tree = self.read_store().node(&[]).cloned();
-            *fault.at_failure.lock().unwrap() = tree;
+            let store = self.read_store();
+            *fault.at_failure.lock().unwrap() = store.node(&[]).cloned();
+            *fault.waiting_at_failure.lock().unwrap() = Some(store.waiting_for_tests());
+            fault.failed.store(true, Relaxed);
         }
         Err(ReadError::Unreadable {
             path: Vec::new(),

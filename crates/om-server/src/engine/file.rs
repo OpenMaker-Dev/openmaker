@@ -295,6 +295,8 @@ impl FileEngine {
         credentials: Credentials,
     ) -> Outcome {
         super::reading::assert_no_reading_held("an operation submitted");
+        #[cfg(test)]
+        file.read_fault.note(|| submitted(&operation));
         let environment = &*self.environment;
         match needs(&operation) {
             Needs::LockTable => {
@@ -344,6 +346,8 @@ impl FileEngine {
         match needs(&operation) {
             Needs::Transaction => {
                 let store = file.try_write_store(&WRITER)?;
+                #[cfg(test)]
+                file.read_fault.note(|| submitted(&operation));
                 Some(self.submit_write(file, store, Credentials::None, |_| {
                     (operation, Taken::default())
                 }))
@@ -359,6 +363,9 @@ impl FileEngine {
     /// replays.
     pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Outcome {
         super::reading::assert_no_reading_held("an operation submitted");
+        #[cfg(test)]
+        file.read_fault
+            .note(|| format!("draft {}", submitted(&draft)));
         self.submit_write(
             file,
             file.write_store(&WRITER),
@@ -579,4 +586,16 @@ fn stored(file: &Hosted, released: &[Vec<Vec<u8>>], emptied: &[Vec<Vec<u8>>]) {
     for library in released.iter().chain(emptied) {
         thumbnails.forget_library(library);
     }
+}
+
+/// The name of what a test's read fault notes as submitted
+/// (`hosting::ReadFault::since`): its variant, without its contents.
+#[cfg(test)]
+fn submitted(what: &dyn std::fmt::Debug) -> String {
+    let debug = format!("{what:?}");
+    debug
+        .split(['(', ' ', '{'])
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }

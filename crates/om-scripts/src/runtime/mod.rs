@@ -1143,6 +1143,13 @@ impl Runtime {
             if let Some(stop) = self.debug_check() {
                 return RunState::Debugger(stop);
             }
+            // The host's error ends the run before a step begins: one met
+            // before it (also before the first step), or in bringing the
+            // session up to date for it.
+            if let Some(code) = host.take_step_error() {
+                self.halt_on_host_error(host, code);
+                continue;
+            }
             host.before_step();
             if let Some(code) = host.take_step_error() {
                 self.halt_on_host_error(host, code);
@@ -1752,9 +1759,13 @@ impl Runtime {
     /// The host met an error that ends the run ([`ScriptHost::take_step_error`]):
     /// the script halts before any further step or trigger, its transaction
     /// reverted, with `code` as the run's error and `Get ( LastError )`, as
-    /// an unknown step aborts it.
+    /// an unknown step aborts it. A halted run has no result
+    /// ([`Self::final_result`]): one the failing step gave (an Exit Script
+    /// whose calculation read what failed) is dropped, the request's and a
+    /// caller frame's alike (the frames go with the halt).
     fn halt_on_host_error(&mut self, host: &mut dyn ScriptHost, code: ErrorCode) {
         self.halt_script(host);
+        self.final_result = None;
         self.abort_error = Some(code);
         self.set_last_error(code, true);
     }

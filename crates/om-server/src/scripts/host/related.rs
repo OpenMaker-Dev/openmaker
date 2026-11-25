@@ -28,7 +28,6 @@ use om_hbam::{FieldKind, RidList};
 use om_scripts::runtime::{ErrorCode, HostError, HostResult, LayoutTarget, RelatedRecords};
 
 use super::{values, FindSource, ServerHost, Window, INDEXES, VALUE_INDEX};
-use crate::engine::Draft;
 use crate::engine::NO_LIMIT;
 use crate::modcount;
 
@@ -252,15 +251,7 @@ impl ServerHost {
 
     /// A record's stored values for calculations, typed by its table's
     /// fields; repetition n of field F is the cell `F * 256 + n`.
-    ///
-    /// One read of a relationship's walk, a call of its own
-    /// ([`ServerHost::one_call`]): the walk reads records and indexes in
-    /// turn, each as the base read it under a guard of its own.
     pub(super) fn record_values(&self, table: u64, record: u64) -> Option<RecordValues> {
-        self.one_call(|| self.record_values_now(table, record))
-    }
-
-    fn record_values_now(&self, table: u64, record: u64) -> Option<RecordValues> {
         let definition = self.schema.catalog.table(table)?;
         let cx = self.cx();
         self.with_record(table, record, |node| {
@@ -302,17 +293,6 @@ impl ServerHost {
         value_type: ValueType,
         texts: &[String],
     ) -> Result<RidList, CalcError> {
-        self.one_call(|| self.index_lookup_now(table, field, value_type, texts))
-    }
-
-    /// [`Self::index_lookup`], one read of a relationship's walk.
-    fn index_lookup_now(
-        &self,
-        table: u64,
-        field: u64,
-        value_type: ValueType,
-        texts: &[String],
-    ) -> Result<RidList, CalcError> {
         let data_type = match value_type {
             ValueType::Number => om_hbam::DataType::Number,
             ValueType::Date => om_hbam::DataType::Date,
@@ -324,6 +304,7 @@ impl ServerHost {
         // Through a reading taken for it: each key's entry of the stored
         // index, or of the index built on demand (noted to be stored). A
         // read that fails is 802 ([`ServerHost::read`]).
+        let built = crate::engine::Waiting::default();
         let looked_up = self.read(|read| {
             let keys: BTreeSet<Vec<u8>> = texts
                 .iter()
@@ -342,9 +323,9 @@ impl ServerHost {
                         found = found.or(&ids);
                     }
                 }
-                return Ok(Ok((found, read.waiting.has_indexes())));
+                return Ok(Ok(found));
             }
-            let source = FindSource::new(read);
+            let source = FindSource::over(read.view, read.derived, &built);
             let built = om_query::Source::index_on_demand(&source, &t, &f, VALUE_INDEX);
             source.failed()?;
             let Ok(on_demand) = built else {
@@ -359,18 +340,12 @@ impl ServerHost {
                     found = found.or(&ids);
                 }
             }
-            Ok(Ok((found, read.waiting.has_indexes())))
+            Ok(Ok(found))
         });
-        let (found, built) = looked_up
+        let found = looked_up
             .map_err(|_| CalcError::from_code(802).expect("nonzero"))?
             .map_err(|()| CalcError::from_code(3).expect("nonzero"))?;
-        // Not after a read that failed: the session writes nothing more.
-        if built && !self.read_failed() {
-            self.shared
-                .engine
-                .submit_draft(&self.hosted, Draft::StoreIndexes);
-            self.reads.wrote();
-        }
+        self.store_built_indexes(&built);
         Ok(found)
     }
 

@@ -45,7 +45,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Bound;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -853,46 +853,22 @@ fn find_failure(error: om_query::QueryError) -> FindError {
 
 /// What a session knows of its reads of its file ([`ServerHost::read`]),
 /// shared with its record rules' container reader.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct SessionReads {
     /// A read failed: the run ends after the step it failed in, and the
-    /// session writes nothing more to the file (docs/server-storage.md 5,
-    /// "A script session's reads").
+    /// session has no effect outside itself but releasing what it holds
+    /// (docs/server-storage.md 5, "A read that fails ends the run").
     failed: AtomicBool,
-    /// Readings taken in the current call into the host
-    /// ([`ServerHost::one_call`]), [`NO_CALL`] outside one: debug builds check
-    /// that a call takes at most one, unless it wrote in between.
-    readings: AtomicU32,
-}
-
-/// [`SessionReads::readings`] outside a call into the host.
-const NO_CALL: u32 = u32::MAX;
-
-impl Default for SessionReads {
-    fn default() -> Self {
-        SessionReads {
-            failed: AtomicBool::new(false),
-            readings: AtomicU32::new(NO_CALL),
-        }
-    }
 }
 
 impl SessionReads {
-    /// A reading of `hosted` is about to be taken: counted against the
-    /// call it is taken in, and, in a test that asked for it, failed
-    /// (`Hosted::read_fault`).
+    /// A reading of `hosted` is about to be taken: in a test that asked for
+    /// it, counted and failed (`Hosted::read_fault`).
     fn begin(&self, hosted: &Hosted) -> Result<(), ReadError> {
-        let taken = self.readings.load(Ordering::Relaxed);
-        if taken != NO_CALL {
-            debug_assert!(
-                taken == 0,
-                "{:?}: a second reading in one call into a script session",
-                hosted.name
-            );
-            self.readings.store(taken + 1, Ordering::Relaxed);
-        }
         #[cfg(test)]
         hosted.script_read()?;
+        #[cfg(not(test))]
+        let _ = hosted;
         Ok(())
     }
 
@@ -907,25 +883,6 @@ impl SessionReads {
 
     fn has_failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
-    }
-
-    /// A call into the host begins: its readings count from none. Returns
-    /// the count of the call it is made in, for [`Self::leave`].
-    pub(super) fn enter(&self) -> u32 {
-        self.readings.swap(0, Ordering::Relaxed)
-    }
-
-    pub(super) fn leave(&self, outer: u32) {
-        self.readings.store(outer, Ordering::Relaxed);
-    }
-
-    /// The session submitted a write: a call may take a reading again, to
-    /// read what it wrote.
-    fn wrote(&self) {
-        let taken = self.readings.load(Ordering::Relaxed);
-        if taken != NO_CALL {
-            self.readings.store(0, Ordering::Relaxed);
-        }
     }
 }
 
@@ -976,8 +933,9 @@ pub(super) fn transaction_cover(table: u64, records: &[(u64, &OwnedNode)]) -> Ve
 /// through a view that keeps the first read that failed
 /// ([`FindSource::failed`], which a find answers with 802), and each index
 /// a find reads that the file lacks built on demand from the view's
-/// records, noted in `waiting` to be stored (`derived::index_on_demand`),
-/// as for a client's find.
+/// records, noted in `waiting` (`derived::index_on_demand`): the find's own,
+/// added to the file's only once the find ended without a failed read
+/// ([`ServerHost::store_built_indexes`]).
 pub(super) struct FindSource<'r> {
     view: crate::engine::Noted<'r>,
     derived: &'r crate::derived::Derived,
@@ -985,10 +943,6 @@ pub(super) struct FindSource<'r> {
 }
 
 impl<'r> FindSource<'r> {
-    pub(super) fn new(read: Read<'r>) -> Self {
-        Self::over(read.view, read.derived, read.waiting)
-    }
-
     /// The source reading `view`, with `derived`'s schema, noting the
     /// indexes it builds in `waiting`.
     pub(super) fn over(
@@ -1272,17 +1226,6 @@ impl ServerHost {
         if let Err(error) = &result {
             self.note_failed_read(error);
         }
-        result
-    }
-
-    /// `call`, one call into the host from the calculation engine or the
-    /// record rules: everything it reads of the file comes from one reading
-    /// (debug builds check it, [`SessionReads::begin`]), unless it wrote in
-    /// between. A call made inside it counts its own.
-    pub(super) fn one_call<T>(&self, call: impl FnOnce() -> T) -> T {
-        let outer = self.reads.enter();
-        let result = call();
-        self.reads.leave(outer);
         result
     }
 
@@ -1881,7 +1824,11 @@ impl ServerHost {
         .unwrap_or_default()
     }
 
+    /// The session's lock on a record, which it takes to open it: not
+    /// after a read that failed, when the session has no effect outside
+    /// itself but releasing what it holds (docs/server-storage.md 5).
     fn lock_record(&self, table: u64, id: u64) -> HostResult {
+        self.refuse_after_failed_read()?;
         self.lock_path(record_path(table, id)).map_err(|conflict| {
             info!(
                 "{:?}: script session refused record {id}: in use by {}",
@@ -3452,8 +3399,9 @@ impl ServerHost {
         // transaction's records needs of the version, the table's field
         // catalog `[T, 03]` and its derived state.
         let t = uint_segment(table);
+        let built = crate::engine::Waiting::default();
         let ran = self.read_with_derived(|read| {
-            let source = FindSource::new(read);
+            let source = FindSource::over(read.view, read.derived, &built);
             let outcome = om_query::execute(&source, &program, &context);
             source.failed()?;
             let fields = match written.is_empty() {
@@ -3463,18 +3411,10 @@ impl ServerHost {
                     .subtree(&[&t, &[3]], NO_LIMIT)?
                     .map(Cow::into_owned),
             };
-            Ok((self.found(outcome), read.waiting.has_indexes(), fields))
+            Ok((self.found(outcome), fields))
         });
-        let ((found, built, fields), derived) =
-            ran.map_err(|_| FindError::Query(UNREADABLE_CODE))?;
-        if built && !self.read_failed() {
-            // Indexes the find built on demand are stored (query-program.md
-            // 7.1), as for a client's find; not after a read that failed.
-            self.shared
-                .engine
-                .submit_draft(&self.hosted, Draft::StoreIndexes);
-            self.reads.wrote();
-        }
+        let ((found, fields), derived) = ran.map_err(|_| FindError::Query(UNREADABLE_CODE))?;
+        self.store_built_indexes(&built);
         let mut found = found?;
         if changed.is_empty() {
             return Ok(found);
@@ -3567,22 +3507,39 @@ impl ServerHost {
             file_id: self.hosted.id,
             connection_key: None,
         };
+        let built = crate::engine::Waiting::default();
         let ran = self.read(|read| {
-            let source = FindSource::new(read);
+            let source = FindSource::over(read.view, read.derived, &built);
             let outcome = om_query::execute(&source, &program, &context);
             source.failed()?;
-            Ok((self.found(outcome), read.waiting.has_indexes()))
+            Ok(self.found(outcome))
         });
-        let (found, built) = ran.map_err(|_| FindError::Query(UNREADABLE_CODE))?;
-        if built && !self.read_failed() {
-            // Indexes the find built on demand are stored (query-program.md
-            // 7.1), as for a client's find; not after a read that failed.
-            self.shared
-                .engine
-                .submit_draft(&self.hosted, Draft::StoreIndexes);
-            self.reads.wrote();
-        }
+        let found = ran.map_err(|_| FindError::Query(UNREADABLE_CODE))?;
+        self.store_built_indexes(&built);
         found
+    }
+
+    /// The indexes a find of the session built on demand, in `built`, its
+    /// own waiting set: added to the file's and stored by a draft
+    /// (query-program.md 7.1), as for a client's find, once the find ended
+    /// without a failed read. The stored index is built again from the
+    /// records then (`Store::store_indexes_in`). After a read that failed
+    /// the session has no effect outside itself, so none is added, and
+    /// an index added before the failure stays (docs/server-storage.md 5).
+    pub(super) fn store_built_indexes(&self, built: &crate::engine::Waiting) {
+        if !built.has_indexes() || self.read_failed() {
+            return;
+        }
+        {
+            let reading = self.shared.engine.read(&self.hosted);
+            let waiting = reading.read().waiting;
+            for index in built.indexes() {
+                waiting.note_index(index);
+            }
+        }
+        self.shared
+            .engine
+            .submit_draft(&self.hosted, Draft::StoreIndexes);
     }
 
     /// The records a find's `outcome` found, or why it failed.
@@ -3731,11 +3688,13 @@ impl ServerHost {
     ///
     /// The account is looked up in the derived state of a reading taken for
     /// it ([`Self::read_accounts`]) and its facts worked out once the
-    /// reading is let go (they check a password, which is no read). Accounts
-    /// the engine could not decode give none, as before.
+    /// reading is let go (they check a password, which is no read). An
+    /// account that was read but does not decode gives none, as before; a
+    /// security catalog that could not be read is a read that failed, which
+    /// ends the run ([`Self::read`]), and gives none meanwhile.
     fn authenticated_account_info(&self) -> om_data::host::AccountInfo {
         let account = self
-            .read_accounts(|read| Ok(read.derived.account(&self.account).ok().flatten()))
+            .read_accounts(|read| read.derived.account(&self.account))
             .ok()
             .flatten();
         account
@@ -3810,6 +3769,15 @@ impl ServerHost {
         let file = FileCalc::new(&schema, &source, self.today);
         let mut sql = FileSql::new(file, &session, vars);
         om_data::sql::calc::execute_sql(&mut sql, variant, args)
+    }
+
+    /// A committed row as ExecuteSQL reads it, with its containers' file
+    /// names ([`SessionSource::record_values`]), for a test.
+    #[cfg(test)]
+    pub(super) fn sql_row_for_tests(&self, table: u64, record: u64) -> Option<Arc<RecordValues>> {
+        let schema = self.schema.calc().cloned()?;
+        let source = SessionSource::new(self, &schema);
+        source.record_values(table, record).ok().flatten()
     }
 }
 
@@ -3943,25 +3911,25 @@ impl SessionSource<'_> {
 
 impl CalcSource for SessionSource<'_> {
     fn record(&self, table: u64, record: u64) -> Result<Option<Arc<RecordValues>>, CalcError> {
-        self.host.one_call(|| self.record_values(table, record))
+        self.record_values(table, record)
     }
 
     fn records(&self, table: u64) -> Result<Arc<[u64]>, CalcError> {
-        self.host.one_call(|| self.record_ids(table))
+        self.record_ids(table)
     }
 
     /// The session's global values (those a step set, the file's stored
     /// ones otherwise).
     fn globals(&self, table: u64) -> Result<Arc<RecordValues>, CalcError> {
-        self.host.one_call(|| Ok(self.host.session_globals(table)))
+        Ok(self.host.session_globals(table))
     }
 
     fn found_set(&self, occurrence: u64, table: u64) -> Result<Arc<[u64]>, CalcError> {
-        self.host.one_call(|| self.found_ids(occurrence, table))
+        self.found_ids(occurrence, table)
     }
 
     fn lookup(&self, table: u64, field: u64, text: &str) -> Result<Option<Arc<[u64]>>, CalcError> {
-        self.host.one_call(|| self.lookup_ids(table, field, text))
+        self.lookup_ids(table, field, text)
     }
 
     /// A query stops when its script is aborted or runs out of time.
@@ -3970,8 +3938,7 @@ impl CalcSource for SessionSource<'_> {
     }
 }
 
-/// [`CalcSource`]'s calls, each one call into the host
-/// ([`ServerHost::one_call`]).
+/// [`CalcSource`]'s reads.
 impl SessionSource<'_> {
     fn record_values(
         &self,
@@ -4110,7 +4077,7 @@ impl CalcHost for ServerHost {
         container: &om_calc::Container,
         _context: &Context,
     ) -> Result<om_calc::eval::StoredContainer, CalcError> {
-        self.one_call(|| self.load_container(container))
+        self.load_container(container)
     }
 
     fn today(&self) -> Date {
@@ -4141,7 +4108,7 @@ impl CalcHost for ServerHost {
         field: u64,
         repetition: u32,
     ) -> Result<Value, CalcError> {
-        self.one_call(|| self.stored_field_value(occurrence, record, field, repetition))
+        self.stored_field_value(occurrence, record, field, repetition)
     }
 
     /// Through the file's relationships (file-metadata.md 4.3); nothing
@@ -4226,12 +4193,8 @@ impl CalcHost for ServerHost {
     /// The session's `Get` answers ([`get`]), as FileMaker Server's script
     /// engine gives them.
     fn get(&mut self, selector: u8, _context: &Context) -> Result<Value, CalcError> {
-        let outer = self.reads.enter();
-        let answer = self
-            .get_answer(selector)
-            .unwrap_or_else(|| Ok(self.get_value(selector)));
-        self.reads.leave(outer);
-        answer
+        self.get_answer(selector)
+            .unwrap_or_else(|| Ok(self.get_value(selector)))
     }
 
     fn variables(&mut self, scope: VarScope) -> &mut Variables {
@@ -4248,10 +4211,7 @@ impl CalcHost for ServerHost {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
-        let outer = self.reads.enter();
-        let called = self.host_call(function, args, context);
-        self.reads.leave(outer);
-        called
+        self.host_call(function, args, context)
     }
 
     fn call_reporting(
@@ -4261,10 +4221,7 @@ impl CalcHost for ServerHost {
         context: &Context,
     ) -> (Value, Option<CalcError>) {
         if let Some(variant) = Variant::of(&function) {
-            let outer = self.reads.enter();
-            let answered = self.execute_sql(variant, args);
-            self.reads.leave(outer);
-            return answered;
+            return self.execute_sql(variant, args);
         }
         match self.call(function, args, context) {
             Ok(v) => (v, None),
@@ -4570,6 +4527,8 @@ impl ScriptHost for ServerHost {
 
     /// Each step sees the schema as it is when the step starts.
     fn before_step(&mut self) {
+        #[cfg(test)]
+        self.hosted.read_fault.note(|| "step".into());
         self.refresh_schema();
     }
 
@@ -6462,15 +6421,15 @@ impl Accounts for ServerHost {
             return Err(HostError::Unsupported);
         };
         // The file's accounts as the engine holds them now (the derived
-        // state of a reading taken for it). Accounts the engine could not
-        // decode are none, as before (3); a read that fails ends the run
-        // ([`Self::read`]).
+        // state of a reading taken for it). An account that was read but
+        // does not decode is not one, as before (3); a security catalog that
+        // could not be read is a read that failed, which ends the run
+        // ([`Self::read`]), the step refused meanwhile as before.
         let is_file_account = self
             .read_accounts(|read| {
-                Ok(read.derived.accounts().as_ref().is_ok_and(|accounts| {
-                    accounts.iter().any(|a| {
-                        a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
-                    })
+                let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
+                Ok(accounts.iter().any(|a| {
+                    a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
                 }))
             })
             .unwrap_or(false);

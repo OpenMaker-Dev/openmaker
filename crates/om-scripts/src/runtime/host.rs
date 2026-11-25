@@ -825,10 +825,11 @@ pub trait ScriptHost:
 
     /// An error that ends the run, which the host met before or while the
     /// last step ran, taken: a server session's read of its file that
-    /// failed (OpenMaker's rule for a storage failure). Asked after
-    /// [`Self::before_step`] and after each step; the runtime then halts the
-    /// script before any further step or trigger, reverting its transaction,
-    /// with the error as the run's and `Get ( LastError )`. `None` for a
+    /// failed (OpenMaker's rule for a storage failure). Asked before and
+    /// after [`Self::before_step`] and after each step, once the step's own
+    /// handling is done; the runtime then halts the script before any
+    /// further step or trigger, reverting its transaction, with the error
+    /// as the run's and `Get ( LastError )`, and no result. `None` for a
     /// host that never ends a run so.
     fn take_step_error(&mut self) -> Option<ErrorCode> {
         None

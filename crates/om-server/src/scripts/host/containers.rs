@@ -220,21 +220,17 @@ impl om_data::rules::ContainerReader for SessionContainers {
         if let Some(pending) = self.pending.get(text) {
             return Some(pending.clone());
         }
-        let outer = self.reads.enter();
         let stored = read_file(&self.shared, &self.hosted, &self.reads, |read| {
             stored_container(read.view, table, text)
-        });
-        self.reads.leave(outer);
-        let stored = stored.ok()?;
+        })
+        .ok()?;
         stored.library.is_some().then_some(stored)
     }
 
     fn data(&self, table: u64, member: &[u8]) -> Option<StoredContainer> {
-        let outer = self.reads.enter();
         let loaded = read_file(&self.shared, &self.hosted, &self.reads, |read| {
             load_member(read.view, &self.hosted.path, table, member, None)
         });
-        self.reads.leave(outer);
         loaded.ok().flatten().map(|loaded| loaded.0)
     }
 }

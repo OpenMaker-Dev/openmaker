@@ -98,8 +98,9 @@ impl ServerHost {
     }
 
     /// The Design view of the file's schema as the engine holds it now, and
-    /// `then` of it, read through the same reading: one reading for one call
-    /// ([`ServerHost::one_call`]). It is compiled from the catalogs the Design
+    /// `then` of it, read through the same reading, one of the reads kept to
+    /// one version (docs/server-storage.md 5). It is compiled from the
+    /// catalogs the Design
     /// functions read and the catalog, locale and language of that
     /// reading's derived state, all of one version, and kept by that
     /// version, which a later call of the same version reuses. It is
@@ -267,7 +268,8 @@ impl ServerHost {
                 (true, Some(schema)) => self.next_serial_in(schema, read, args, context)?,
                 _ => None,
             };
-            let account = read.derived.account(&self.account).ok().flatten();
+            // A security catalog that could not be read fails the read.
+            let account = read.derived.account(&self.account)?;
             Ok((next, account))
         })?;
         let schema = schema?;
