@@ -318,12 +318,18 @@ bytes are zero, it fits in its batch and segment, and its hash matches.
 Terms do not go down along the log (the append refuses a lower one).
 
 **Bounds the format sets, whatever the configuration.** A payload is at
-most 64 MiB, and an index at most 2^64 - 2, so that the index after every
-entry can be represented. An entry whose fixed fields declare more is not
+most 64 MiB, and an index at most 2^54 - 1. An entry's first 8 bytes are
+its index, and the batch mark `OMBATCH\0` read as a little-endian number
+is about 2.03 * 10^16, above the bound: so no valid entry begins with the
+mark, and a walk never takes an entry for a batch header (3.5, rule 2) or
+reads past an entry to rule one out. The bound also leaves the index after
+every entry representable. An entry whose fixed fields declare more is not
 valid, and nothing is read for its payload: the fixed fields are checked
 before anything else is read. An entry written under a larger
 `Config::max_payload` than the current one stays readable within the
-format's bound. The append refuses an index past the bound.
+format's bound. The bound holds wherever an index enters the log: the
+append refuses an index past it, a segment header or batch header that
+names one is not valid, and an open refuses a start or a marker past it.
 
 ### 3.5 Walking the log
 
@@ -535,8 +541,11 @@ A disk too full for it refuses the append (`LogError::NoSpace`) before
 anything of the entry is kept, and so does an allocation that fails part
 way; neither stops the log, since nothing listed changed, and a later call
 finishes the file: it opens the file the refused call made, and flushes it
-and the folder as if it had made it. A failed flush stops the log. A crash
-at any point leaves an unlisted file, which the next open removes.
+and the folder as if it had made it. A failed flush stops the log. A
+segment number whose run `state` could not list (the run's end past the
+largest number, 1.2) is refused before anything is made, so that no batch
+is written into a segment `state` would then refuse. A crash at any point
+leaves an unlisted file, which the next open removes.
 
 ### 3.8 A batch flush
 
@@ -594,7 +603,11 @@ cut lowers the marker only to the entry before an index past the
 committed position; an open, giving up and retiring move the marker
 forward or leave it; the first open of a version 1 copy writes its values
 unchanged. A copy this log did not write may hold a committed position
-past its marker: the open keeps it as it is, and every cut is refused.
+past its marker: the open keeps it as it is, nothing repairs it, and the
+cut guard protects every entry through it. With the durable entry at 6
+and a recorded committed position of 7, `set_committed(6)` confirms and 7
+stays; a cut from 7 or before is refused, and a cut from 8 finds nothing
+to remove.
 
 ### 3.9 A cut
 
@@ -664,10 +677,14 @@ failed to read** (whether the place was given up behind a fresh segment,
 which the cut drops, or the cut was the first thing done about it), what
 is certain is that nothing written before that cut is part of the log
 again: it carries an older cut count. The place itself is not settled.
-Appends continue in that segment and are written over it in time, with
-synchronous writes like every batch. An open that then cannot read there
-at or before the marker fails `LogError::Unreadable`, as for any place;
-one whose end falls on it ends unreadable again, and it is given up again.
+Appends continue in that segment from the cut. When it has room for the
+next batch, batches are written over the place in time, with synchronous
+writes like every batch; when it has too little, the writer starts the
+next segment (3.3), and walks move to it before they reach the old range
+(3.5, rule 1). Wherever a later walk still needs bytes at the place, an
+open that cannot read them at or before the marker fails
+`LogError::Unreadable`, as for any place, and one whose end falls on them
+ends unreadable again, and it is given up again.
 
 **Giving up an unreadable end** (`Log::give_up_unreadable_end`, and a cut
 from the entry after the durable one of a log that ends at an unreadable
@@ -778,7 +795,14 @@ oldest entry needed afterwards.
   failed flush is never retried, and the store stops and opens again
   (server-storage.md 6.12). The refusals of 3.7 are the exceptions: they
   touch only the unlisted spare. A `state` update `state` refuses writes
-  nothing and does not stop the log.
+  nothing to `state`; it stops the log when the call had already written
+  to a segment (a batch flush, giving up), since what reached the segment
+  is then not recorded and the log's memory no longer matches it. Calls
+  that write nothing before their update (`Log::set_committed`, a flush of
+  an empty batch, `Log::update_state`, a cut, a refused `Log::prepare`) go
+  on after a refusal. A segment number `state` could not list is refused
+  by `Log::prepare` before anything is written (3.7); a copy number at its
+  limit is refused only at the update.
 - **Everything the log reads is checked before it is used**: headers by
   their hashes, lengths against the batch, the segment and the format's
   bounds (3.4), entries by the chain. No length read from disk makes the
