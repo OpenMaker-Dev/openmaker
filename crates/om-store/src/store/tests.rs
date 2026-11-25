@@ -828,17 +828,14 @@ fn compare(view: &View, model: &Model, at: &str) -> Result<(), String> {
         );
         assert_eq!(row.staged, group.staged_bytes, "{at}: group {id}'s bytes");
     }
-    // The trees the view holds: the catalog's files, the files groups are
-    // making, and the staged groups' staging trees, no other. A file a
-    // group is making is in no catalog and holds the group's parts.
+    // The trees a reader opens: the store's and the catalog's files, no
+    // other. An open group's tree, a staged group's staging or the file a
+    // group is making, has the name `group:<id>`, which no reader asks for,
+    // and the view does not list it: a file being made has no root as a
+    // file, in the current view and in a restore point's. The version
+    // holds it, as the group's parts left it.
     let mut want: Vec<TreeId> = vec![TreeId::Store];
     want.extend(model.files.keys().map(|id| TreeId::File(*id)));
-    for (id, group) in &model.groups {
-        want.push(match group.making {
-            Some(_) => TreeId::File(*id),
-            None => TreeId::Group(*id),
-        });
-    }
     want.sort();
     let mut trees: Vec<TreeId> = view
         .roots()
@@ -847,13 +844,41 @@ fn compare(view: &View, model: &Model, at: &str) -> Result<(), String> {
         .collect();
     trees.sort();
     assert_eq!(trees, want, "{at}: the view's trees");
+    let mut held: Vec<TreeId> = view
+        .version
+        .pin
+        .roots()
+        .iter()
+        .map(|(name, _)| TreeId::from_name(name.as_bytes()).expect("a tree the state names"))
+        .filter(|t| matches!(t, TreeId::Group(_)))
+        .collect();
+    held.sort();
+    let groups: Vec<TreeId> = model.groups.keys().map(|id| TreeId::Group(*id)).collect();
+    assert_eq!(held, groups, "{at}: the open groups' trees");
     for (id, group) in &model.groups {
-        let Some(nodes) = &group.making else { continue };
+        assert_eq!(
+            view.root(TreeId::File(*id)),
+            None,
+            "{at}: group {id}'s file"
+        );
+        assert_eq!(
+            view.root(TreeId::Group(*id)),
+            None,
+            "{at}: group {id}'s tree"
+        );
         assert!(
             view.file_tree(*id).map_err(|e| fail(&e))?.is_none(),
             "{at}: file {id}, still being made, opened through the view"
         );
-        let root = view.root(TreeId::File(*id)).expect("listed");
+        let Some(nodes) = &group.making else { continue };
+        let root = view
+            .version
+            .pin
+            .roots()
+            .iter()
+            .find(|(name, _)| *name == TreeId::Group(*id).name())
+            .map(|(_, root)| *root)
+            .expect("listed");
         let tree = Tree::open(&*view.pages, root).map_err(|e| fail(&e))?;
         let mut got = Vec::new();
         for item in tree.walk(&[] as &[Vec<u8>]) {
@@ -3037,6 +3062,143 @@ fn a_restart_discards_a_group_on_a_disk_that_cannot_grow() {
         .groups()
         .unwrap()
         .is_empty());
+}
+
+/// What [`ending_entries_find_room_at_a_full_segments_end`] does at the
+/// log's end once it is full.
+#[derive(Clone, Copy, Debug)]
+enum AtTheEnd {
+    /// Each group discarded by an entry, then a restart.
+    Discard,
+    /// The new file's publication, refused for the disk, then its discard
+    /// and a restart.
+    Publish,
+    /// A restart with every group still open: one `empty` entry.
+    Restart,
+}
+
+/// Review of #796, round 2, finding 2 (and point 6): an entry that only
+/// gives back can always be appended. Two staged groups and a new file
+/// group open; the log's segment filled with changes beside them until no
+/// ordinary entry fits, on a disk that cannot grow, with the segments
+/// since the last checkpoint all still needed. The discards, or a
+/// restart's `empty` entry for all three groups and its start's entry,
+/// take the room the log kept; a publication, which is not one of them, is
+/// refused for the disk with nothing changed, and its group's discard runs.
+#[test]
+fn ending_entries_find_room_at_a_full_segments_end() {
+    for end in [AtTheEnd::Discard, AtTheEnd::Publish, AtTheEnd::Restart] {
+        let what = format!("{end:?}");
+        let sim = Sim::new(47);
+        let (mut store, _) = made(&sim);
+        let file = add_file(&mut store, "f");
+        store.flush().unwrap();
+        store.checkpoint(None).unwrap();
+        let mut groups = Vec::new();
+        for k in 0..2u8 {
+            let id = store.next_index();
+            let open = Payload::Change(Change {
+                group: Some(Group {
+                    id,
+                    step: Step::Open(vec![GroupPath {
+                        file,
+                        path: vec![vec![b'g', k]],
+                    }]),
+                }),
+                edits: vec![Edit::leaf(vec![vec![b'g', k], vec![0]], vec![1; 300])],
+                ..Change::default()
+            });
+            store.append(file, &open).unwrap();
+            groups.push(id);
+        }
+        let made_file = store.next_index();
+        store
+            .append(made_file, &Payload::Group(GroupEvent::NewFile))
+            .unwrap();
+        let part = Payload::Change(Change {
+            group: Some(Group {
+                id: made_file,
+                step: Step::Part,
+            }),
+            edits: vec![Edit::leaf(vec![b"r".to_vec()], vec![2; 300])],
+            ..Change::default()
+        });
+        store.append(made_file, &part).unwrap();
+        groups.push(made_file);
+        store.flush().unwrap();
+        let used: u64 = sim
+            .image()
+            .iter()
+            .map(|(_, b)| b.as_ref().map_or(0, |b| b.len() as u64))
+            .sum();
+        sim.set_capacity(used);
+        // Changes beside the groups, each a notice of decreasing size, each
+        // flushed, until not even one without a notice fits.
+        let mut sizes = vec![8000usize, 1000, 100, 10, 0].into_iter();
+        let mut size = sizes.next();
+        while let Some(n) = size {
+            let change = Payload::Change(Change {
+                notices: vec![vec![3; n]],
+                ..Change::default()
+            });
+            match store.append(file, &change) {
+                Ok(_) => store
+                    .flush()
+                    .map(drop)
+                    .unwrap_or_else(|e| panic!("{what}: {e}")),
+                Err(WriteError::Log(LogError::NoSpace(_))) => size = sizes.next(),
+                Err(e) => panic!("{what}: a change beside: {e}"),
+            }
+        }
+        match end {
+            AtTheEnd::Discard => {
+                for id in &groups {
+                    let discard = Payload::Group(GroupEvent::Discard { id: *id });
+                    store
+                        .append(0, &discard)
+                        .unwrap_or_else(|e| panic!("{what}: the discard of {id}: {e}"));
+                    store.flush().unwrap();
+                }
+            }
+            AtTheEnd::Publish => {
+                let publish = Payload::Group(GroupEvent::Publish {
+                    id: made_file,
+                    name: b"made".to_vec(),
+                    flags: 0,
+                    page0: Vec::new(),
+                });
+                let before = store.next_index();
+                match store.append(made_file, &publish) {
+                    Err(WriteError::Log(LogError::NoSpace(_))) => {}
+                    other => panic!("{what}: the publication: {other:?}"),
+                }
+                assert_eq!(store.next_index(), before, "{what}");
+                let discard = Payload::Group(GroupEvent::Discard { id: made_file });
+                store
+                    .append(0, &discard)
+                    .unwrap_or_else(|e| panic!("{what}: the discard: {e}"));
+                store.flush().unwrap();
+            }
+            AtTheEnd::Restart => {}
+        }
+        let open_before = StoreTree::of(&*store.pages)
+            .unwrap()
+            .groups()
+            .unwrap()
+            .len();
+        drop(store);
+        let (store, opened) = reopened(&sim).unwrap_or_else(|e| panic!("{what}: the open: {e}"));
+        assert_eq!(opened.discarded.is_some(), open_before > 0, "{what}");
+        assert!(
+            StoreTree::of(&*store.pages)
+                .unwrap()
+                .groups()
+                .unwrap()
+                .is_empty(),
+            "{what}"
+        );
+        assert_eq!(store.space().groups, 0, "{what}");
+    }
 }
 
 /// Review of #796, finding 2: an entry that ends a group, which takes what

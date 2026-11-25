@@ -794,6 +794,9 @@ pub struct Log {
     /// the next.
     here: u64,
     there: u64,
+    /// The bytes at the end of a segment that an ordinary entry leaves
+    /// free ([`Log::keep`]); an entry appended into them takes them.
+    kept: u64,
     /// The next segment, made, its space taken and flushed, its name
     /// durable, not listed yet.
     spare: Option<Box<dyn File>>,
@@ -1491,6 +1494,7 @@ impl Log {
                     batch: Vec::new(),
                     here: 0,
                     there: 0,
+                    kept: 0,
                     spare: None,
                     poisoned: false,
                 };
@@ -2529,7 +2533,30 @@ impl Log {
         file: u64,
         payload: &[u8],
     ) -> Result<Position, LogError> {
-        let next_segment = self.admit(term, payload.len())?;
+        self.append_in(term, kind, file, payload, false)
+    }
+
+    /// [`Log::append`], for an entry that may take the room kept at the end
+    /// of the segment ([`Log::keep`]).
+    pub fn append_kept(
+        &mut self,
+        term: u64,
+        kind: u16,
+        file: u64,
+        payload: &[u8],
+    ) -> Result<Position, LogError> {
+        self.append_in(term, kind, file, payload, true)
+    }
+
+    fn append_in(
+        &mut self,
+        term: u64,
+        kind: u16,
+        file: u64,
+        payload: &[u8],
+        into_kept: bool,
+    ) -> Result<Position, LogError> {
+        let next_segment = self.admit(term, payload.len(), into_kept)?;
         let index = self.appended.index + 1;
         let size = ENTRY_OVERHEAD + payload.len() as u64;
         let (bytes, hash) = encode_entry(&self.appended.hash, index, term, kind, file, payload);
@@ -2555,12 +2582,31 @@ impl Log {
     /// store applies an entry before it appends it) asks first: nothing
     /// changes the answer before the `append` that follows, but a failure.
     pub fn ready_for(&mut self, term: u64, len: usize) -> Result<(), LogError> {
-        self.admit(term, len).map(|_| ())
+        self.admit(term, len, false).map(|_| ())
+    }
+
+    /// [`Log::ready_for`], for an entry that may take the room kept at the
+    /// end of the segment ([`Log::append_kept`]).
+    pub fn ready_for_kept(&mut self, term: u64, len: usize) -> Result<(), LogError> {
+        self.admit(term, len, true).map(|_| ())
+    }
+
+    /// Keep `bytes` free at the end of the segment entries are written in
+    /// (format section 3.4): an entry appended with [`Log::append`] goes to
+    /// the next segment rather than into them, and is refused as any entry
+    /// that needs the next segment is when the disk has no room for it
+    /// ([`LogError::NoSpace`]); one appended with [`Log::append_kept`] may
+    /// take them. The store keeps the room the entries that end its open
+    /// groups and its next start need, so that they never need a segment
+    /// the disk may not have.
+    pub fn keep(&mut self, bytes: u64) {
+        self.kept = bytes;
     }
 
     /// The checks of an append, and the next segment made when it is
-    /// needed: whether the entry goes to the next segment.
-    fn admit(&mut self, term: u64, len: usize) -> Result<bool, LogError> {
+    /// needed: whether the entry goes to the next segment. An entry not
+    /// `into_kept` leaves the kept room free in either segment.
+    fn admit(&mut self, term: u64, len: usize, into_kept: bool) -> Result<bool, LogError> {
         self.usable()?;
         if let Some(unreadable) = self.unreadable {
             return Err(LogError::EndUnreadable(unreadable.end));
@@ -2580,13 +2626,19 @@ impl Log {
             return Err(LogError::Refused("the log is at its last index"));
         }
         let size = ENTRY_OVERHEAD + len as u64;
+        let keep = if into_kept { 0 } else { self.kept };
         let room = match (self.write, self.segs.last()) {
             (Some(offset), Some(seg)) => seg.header.size - offset,
             _ => 0,
         };
-        let next_segment = self.there > 0 || BATCH_HEADER + self.here + size > room;
+        let next_segment = self.there > 0 || BATCH_HEADER + self.here + size + keep > room;
         if next_segment {
-            if SEGMENT_HEADER + BATCH_HEADER + self.there + size > self.config.segment_size {
+            if SEGMENT_HEADER + BATCH_HEADER + size + keep > self.config.segment_size {
+                return Err(LogError::Refused(
+                    "the entry does not fit in a segment beside the room kept for ending groups",
+                ));
+            }
+            if SEGMENT_HEADER + BATCH_HEADER + self.there + size + keep > self.config.segment_size {
                 return Err(LogError::BatchFull);
             }
             self.prepare()?;

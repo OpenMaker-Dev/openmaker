@@ -40,10 +40,29 @@ use crate::tree::{self, key, Direction, Edit, Node, Root, Tree};
 pub const MAX_OPEN_GROUPS: u64 = 256;
 
 /// The most bytes a staged group's parts may stage, as their edits encode
-/// (format section 5.6): the largest payload one entry may have, so that a
-/// close holds no more in memory than the largest entry decodes to. A part
-/// past it is refused.
+/// (format section 5.6): the largest payload one entry may have. With
+/// [`MAX_GROUP_EDITS`] it bounds what a close holds in memory, the decoded
+/// edits, by what the largest change decodes to. A part past it is refused.
 pub const MAX_GROUP_STAGED: u64 = crate::entry::MAX_PAYLOAD as u64;
+
+/// The most edits a staged group's parts may stage: the most one change may
+/// carry ([`crate::entry::MAX_EDITS`]).
+pub const MAX_GROUP_EDITS: u64 = crate::entry::MAX_EDITS as u64;
+
+/// The most parts a staged group may have, its opening part included: each
+/// is at least one item of the staging tree, which the close reads whole.
+pub const MAX_GROUP_PARTS: u64 = 1 << 16;
+
+/// Which bound of a staged group a part would pass ([`Refusal::GroupTooLarge`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupBound {
+    /// [`MAX_GROUP_STAGED`] bytes.
+    Bytes,
+    /// [`MAX_GROUP_EDITS`] edits.
+    Edits,
+    /// [`MAX_GROUP_PARTS`] parts.
+    Parts,
+}
 
 /// The top-level segments of the store's own tree, and the segments under a
 /// file's row (format section 5.3). Each is one byte.
@@ -85,8 +104,10 @@ pub enum TreeId {
     Store,
     /// A file's tree, by the file's id.
     File(u64),
-    /// An open group's staging: its parts' edits, kept until the group is
-    /// closed or discarded (format section 5.3).
+    /// An open group's tree (format section 5.3): a staged group's
+    /// staging, its parts' edits, or the file a new file group is making,
+    /// which takes the file's name only when the group publishes it. No
+    /// reader of files asks for this name.
     Group(u64),
 }
 
@@ -166,12 +187,14 @@ pub enum GroupKind {
 }
 
 /// An open group's row (format section 5.3): the pages it holds for its
-/// end, how many parts it has, the bytes its parts staged, and its kind.
+/// end, how many parts it has, the bytes and the edits its parts staged,
+/// and its kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GroupRow {
     pub held: u64,
     pub parts: u64,
     pub staged: u64,
+    pub edits: u64,
     pub kind: GroupKind,
 }
 
@@ -288,9 +311,14 @@ pub enum Refusal {
     /// The entry is for the other kind of group than open group `group`
     /// is: a close, an open or a publication that does not fit it.
     GroupKind { group: u64 },
-    /// A staged group's part would make its parts stage more than
-    /// [`MAX_GROUP_STAGED`] bytes.
-    GroupTooLarge { group: u64, staged: u64, max: u64 },
+    /// A staged group's part would take it past one of its bounds: `count`
+    /// would be its bytes, edits or parts with the part, past `max`.
+    GroupTooLarge {
+        group: u64,
+        of: GroupBound,
+        count: u64,
+        max: u64,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -349,9 +377,19 @@ impl fmt::Display for Refusal {
             Refusal::GroupKind { group } => {
                 write!(f, "group {group} is of the other kind")
             }
-            Refusal::GroupTooLarge { group, staged, max } => write!(
+            Refusal::GroupTooLarge {
+                group,
+                of,
+                count,
+                max,
+            } => write!(
                 f,
-                "group {group} would stage {staged} bytes, past the {max} a group may"
+                "group {group} would stage {count} {}, past the {max} a group may",
+                match of {
+                    GroupBound::Bytes => "bytes",
+                    GroupBound::Edits => "edits",
+                    GroupBound::Parts => "parts",
+                }
             ),
         }
     }
@@ -585,6 +623,7 @@ fn held_value(row: GroupRow) -> Vec<u8> {
     let mut out = row.held.to_le_bytes().to_vec();
     out.extend_from_slice(&row.parts.to_le_bytes());
     out.extend_from_slice(&row.staged.to_le_bytes());
+    out.extend_from_slice(&row.edits.to_le_bytes());
     out.push(match row.kind {
         GroupKind::Staged => 1,
         GroupKind::NewFile => 2,
@@ -713,15 +752,16 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         let Some(v) = self.value(&group_held(id))? else {
             return Ok(None);
         };
-        let kind = match v.get(24) {
-            Some(1) if v.len() == 25 => GroupKind::Staged,
-            Some(2) if v.len() == 25 => GroupKind::NewFile,
+        let kind = match v.get(32) {
+            Some(1) if v.len() == 33 => GroupKind::Staged,
+            Some(2) if v.len() == 33 => GroupKind::NewFile,
             _ => return Err(Error::Malformed("a group's row")),
         };
         Ok(Some(GroupRow {
             held: le64(&v[..8]),
             parts: le64(&v[8..16]),
             staged: le64(&v[16..24]),
+            edits: le64(&v[24..32]),
             kind,
         }))
     }
@@ -1058,9 +1098,13 @@ struct Plan {
     /// Edits of the store's tree, in order.
     store: Vec<Edit>,
     /// The file whose tree the change's edits go to, and its root.
-    file: Option<(u64, Root)>,
-    make: Option<u64>,
+    file: Option<(TreeId, Root)>,
+    /// The tree made: a file's, or the tree a new file group writes the
+    /// file in until it publishes it.
+    make: Option<TreeId>,
     drop: Option<u64>,
+    /// A new file group published: its tree takes the file's name.
+    publish: Option<u64>,
     opened: Option<Session>,
     closed: Vec<Session>,
     /// A part's edits, kept in its group's staging tree (made by the
@@ -1176,10 +1220,14 @@ fn later_pages<S: PageStore + ?Sized>(store: &S, file: u64, edits: &[Edit]) -> R
 
 /// What a group holds from its open for the entry that ends it (format
 /// section 4.8): an upper bound on what that entry writes in the store's
-/// tree ([`entry_bound`]), at that tree's height now and one level more:
-/// the deletes of the group's rows and of its index rows in `files`, the
-/// last entry's position, and for a new file its catalog rows, with a name
-/// and a page 0 of the largest size.
+/// tree ([`entry_bound`]): the deletes of the group's rows and of its
+/// index rows in `files`, the last entry's position; for a staged group,
+/// the session row of the operation its close may complete, with a reply
+/// of the largest size; for a new file, its catalog rows with a name and a
+/// page 0 of the largest size, and the table room of its tree's new name.
+/// The bound is at the store tree's height now plus one: an ending entry
+/// that finds the tree taller takes what it needs past the hold as any
+/// entry extends its reservation, from free pages and the reserve.
 fn end_pages<S: PageStore + ?Sized>(
     store: &S,
     id: u64,
@@ -1200,18 +1248,24 @@ fn end_pages<S: PageStore + ?Sized>(
         .collect();
     edits.push(Edit::delete(group_row(id)));
     edits.push(Edit::leaf(vec![seg(keys::APPLIED)], vec![0; 48]));
-    if kind == GroupKind::NewFile {
-        // Zero bytes take two in a key: the longest name's path.
-        let name = vec![0; crate::entry::MAX_NAME];
-        edits.push(Edit::leaf(file_field(id, keys::FILE_NAME), name.clone()));
-        edits.push(Edit::leaf(file_field(id, keys::FILE_FLAGS), vec![0; 4]));
-        edits.push(Edit::leaf(
-            file_field(id, keys::FILE_PAGE0),
-            vec![0; crate::entry::MAX_PAGE0],
-        ));
-        edits.push(Edit::leaf(name_path(&name), vec![0; 8]));
-    }
-    Ok(entry_bound(&edits, height + 1))
+    // Zero bytes take two in a key: the longest paths.
+    let room = match kind {
+        GroupKind::Staged => {
+            let session = Session {
+                server: [0; 16],
+                start: 0,
+                connection: 0,
+            };
+            edits.extend(session_row(&session, 0, &[0; crate::entry::MAX_REPLY]));
+            0
+        }
+        GroupKind::NewFile => {
+            let name = vec![0; crate::entry::MAX_NAME];
+            edits.extend(catalog_rows(id, &name, 0, &[0; crate::entry::MAX_PAGE0]));
+            crate::pagefile::TABLE_ROOM
+        }
+    };
+    Ok(entry_bound(&edits, height + 1).saturating_add(room))
 }
 
 /// The files an opening part's paths are in, each once, in order.
@@ -1437,22 +1491,32 @@ fn plan_group<S: PageStore + ?Sized>(
     } else {
         encode_edits(&change.edits).map_err(Refusal::Payload)?
     };
+    let parts = row.parts.saturating_add(1);
+    let edits = row.edits.saturating_add(change.edits.len() as u64);
     let staged = row.staged.saturating_add(bytes.len() as u64);
-    if staged > MAX_GROUP_STAGED {
-        return Err(Refusal::GroupTooLarge {
-            group: id,
-            staged,
-            max: MAX_GROUP_STAGED,
+    for (of, count, max) in [
+        (GroupBound::Parts, parts, MAX_GROUP_PARTS),
+        (GroupBound::Edits, edits, MAX_GROUP_EDITS),
+        (GroupBound::Bytes, staged, MAX_GROUP_STAGED),
+    ] {
+        if count > max {
+            return Err(Refusal::GroupTooLarge {
+                group: id,
+                of,
+                count,
+                max,
+            }
+            .into());
         }
-        .into());
     }
     let hold = later_pages(store, file, &change.edits)?;
     plan.store.push(Edit::leaf(
         group_held(id),
         held_value(GroupRow {
             held: row.held.saturating_add(hold),
-            parts: row.parts + 1,
+            parts,
             staged,
+            edits,
             kind: GroupKind::Staged,
         }),
     ));
@@ -1500,8 +1564,8 @@ fn plan_end<S: PageStore + ?Sized>(
     Ok(())
 }
 
-/// Open group `id` discarded: its rows deleted, and its tree dropped, the
-/// staging tree of a staged group or the file a group was making.
+/// Open group `id` discarded: its rows deleted, and its tree `group:<id>`
+/// dropped, a staged group's staging or the file a group was making.
 fn plan_discard<S: PageStore + ?Sized>(
     state: &StoreTree<'_, S>,
     id: u64,
@@ -1511,10 +1575,7 @@ fn plan_discard<S: PageStore + ?Sized>(
         .group(id)?
         .ok_or(Error::Malformed("a group listed without its row"))?;
     plan_end(state, id, row.kind, plan)?;
-    plan.dropped.push(match row.kind {
-        GroupKind::Staged => TreeId::Group(id),
-        GroupKind::NewFile => TreeId::File(id),
-    });
+    plan.dropped.push(TreeId::Group(id));
     Ok(())
 }
 
@@ -1655,17 +1716,20 @@ pub fn apply<S: PageStore + ?Sized>(store: &S, entry: &Entry<'_>) -> Result<Appl
 
     // Everything is decided; now the writes, all in one unit.
     let mut unit = store.begin()?;
-    if let Some(id) = plan.make {
+    if let Some(tree) = plan.make {
         let root = tree::apply(store, &mut unit, None, entry.index, &[])?;
-        unit.add_tree(&TreeId::File(id).name(), root);
+        unit.add_tree(&tree.name(), root);
     }
-    if let (Some((id, root)), Payload::Change(change)) = (plan.file, &payload) {
+    if let (Some((tree, root)), Payload::Change(change)) = (plan.file, &payload) {
         if !change.edits.is_empty() {
             let new = tree::apply(store, &mut unit, Some(root), entry.index, &change.edits)?;
             if new != root {
-                unit.set_root(&TreeId::File(id).name(), new);
+                unit.set_root(&tree.name(), new);
             }
         }
+    }
+    if let Some(id) = plan.publish {
+        unit.rename_tree(&TreeId::Group(id).name(), &TreeId::File(id).name());
     }
     if let Some(id) = plan.drop {
         unit.drop_tree(&TreeId::File(id).name());
@@ -1720,6 +1784,7 @@ fn plan<S: PageStore + ?Sized>(
         file: None,
         make: None,
         drop: None,
+        publish: None,
         opened: None,
         closed: Vec::new(),
         stage: None,
@@ -1777,7 +1842,9 @@ fn plan<S: PageStore + ?Sized>(
                 }),
             ));
             if !edits.is_empty() {
-                plan.file = Some((*id, root_of(*id)?));
+                let tree = TreeId::Group(*id);
+                let root = store.root(&tree.name()).ok_or(Error::MissingRoot(tree))?;
+                plan.file = Some((tree, root));
             }
         }
         Payload::Change(change) => {
@@ -1840,7 +1907,7 @@ fn plan<S: PageStore + ?Sized>(
             }
             // A part's edits go to its group's staging, not to the file.
             if !plan_group(store, state, entry, change, &mut plan)? {
-                plan.file = Some((file, root_of(file)?));
+                plan.file = Some((TreeId::File(file), root_of(file)?));
             }
         }
         Payload::Session(event) => {
@@ -1909,7 +1976,7 @@ fn plan<S: PageStore + ?Sized>(
                 }
                 let id = entry.index;
                 plan.store.extend(catalog_rows(id, name, *flags, page0));
-                plan.make = Some(id);
+                plan.make = Some(TreeId::File(id));
             }
             FileEvent::Removed => {
                 let row = existing()?;
@@ -2005,7 +2072,7 @@ fn plan<S: PageStore + ?Sized>(
                     ..GroupRow::default()
                 }),
             ));
-            plan.make = Some(id);
+            plan.make = Some(TreeId::Group(id));
         }
         Payload::Group(GroupEvent::Publish {
             id,
@@ -2025,9 +2092,11 @@ fn plan<S: PageStore + ?Sized>(
             if state.file_named(name)?.is_some() {
                 return Err(Refusal::NameTaken(name.clone()).into());
             }
-            // The file takes its place in the catalog; its tree stays.
+            // The file takes its place in the catalog, and its tree, as
+            // the parts left it, the file's name.
             plan.store.extend(catalog_rows(*id, name, *flags, page0));
             plan_end(state, *id, GroupKind::NewFile, &mut plan)?;
+            plan.publish = Some(*id);
         }
     }
     Ok(plan)

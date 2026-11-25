@@ -1065,6 +1065,19 @@ largest number, 1.2) is refused before anything is made, so that no batch
 is written into a segment `state` would then refuse. A crash at any point
 leaves an unlisted file, which the next open removes.
 
+**Room kept at a segment's end.** The caller can ask the log to keep a
+number of bytes free at the end of the segment entries go to
+(`Log::keep`). An entry appended with `Log::append` leaves them free: one
+that would reach into them goes to the next segment instead, as one that
+does not fit at all does, and is refused for the disk like any such
+entry when the next segment cannot be made (`LogError::NoSpace`, nothing
+kept). An entry appended with `Log::append_kept` may take them. The log
+writes nothing for the room: it is a rule on where entries go, so a
+segment can end short by up to that many bytes. The store keeps the room
+the entries that end its open groups need (6.3); with no group open it
+keeps none. An entry that cannot fit in an empty segment beside the room
+kept is refused (`LogError::Refused`).
+
 ### 3.8 A batch flush
 
 `Log::flush_batch` writes the open batch (3.3), every batch carrying the
@@ -1945,11 +1958,16 @@ rebuilt for them when those entries are applied again (4.7).
 - **Holds for groups** (server-storage.md 6.9). Before the entry that
   opens a group is applied, the store holds the room for the entry that
   will end it (`PageFile::hold`): `entry_bound` of that entry's
-  store-tree edits at the store tree's height plus one, the group's rows
-  and index rows deleted and the last entry's position written, and for
-  a new file its catalog rows with a name and a page 0 of the largest
-  size (89 pages for a staged group in one file in the measurements,
-  505 for a new file). Before a staged group's part is applied, the
+  store-tree edits, the group's rows and index rows deleted and the last
+  entry's position written; for a staged group, the session row of the
+  operation its close may complete, with a reply of the largest size
+  (65,535 bytes); for a new file, its catalog rows with a name and a page
+  0 of the largest size, and the table room of its tree's new name. The
+  bound is at the store tree's height when the group opens, plus one: an
+  ending entry that finds that tree taller takes what it needs past the
+  hold as any entry extends its reservation, from free pages and the
+  reserve, and can be refused as full on a disk with neither, the same
+  kind of limit as the close's below. Before a staged group's part is applied, the
   store holds, for the close that will apply it, the pages section 5.8
   says. Holds are set aside as a reservation's pages are, judged against
   the same floor and grown for the same way, but kept past the entry,
@@ -2140,10 +2158,13 @@ page file keeps them, outside any tree:
 |---|---|---|
 | the store's own | `store` | 5.3's table below |
 | a file's | `file:` and the id in decimal | exactly the file's key tree, nothing else |
-| an open staged group's staging | `group:` and the group's id in decimal | the edits of its parts, below |
+| an open group's | `group:` and the group's id in decimal | a staged group's staging, the edits of its parts (below); or the file a new file group is making, its key tree as its parts left it |
 
-A file a group is making has its `file:` tree from the group's open, and
-no catalog row (`[03, id]`) or name until the group publishes it.
+A file a group is making has no tree of a file's name, no catalog row
+(`[03, id]`) and no name until the group publishes it: its tree is the
+group's, `group:<id>`, which no reader of files asks for, and its
+publication renames it `file:<id>` in the unit that writes the catalog
+rows.
 
 No item of any tree holds a page number, so a root hash depends on
 content alone: servers that place pages differently have the same root
@@ -2168,7 +2189,7 @@ little-endian.
 | `[06, server, start connection, 02]` | value: that operation's reply, empty for none |
 | `[07, server, start connection, file, lock]` | value: a lock's value. `lock` is the key's length (2, big-endian), the key, then the user |
 | `[0a, 01, id]` | list: an open group's row, there exactly while it is open; `id` is the group's id (8) |
-| `[0a, 01, id, 01]` | value: the pages the group holds for its end (8, 4.8), the number of its parts (8), the bytes its parts staged (8, 0 for a new file) and its kind (1: 1 staged, 2 new file) |
+| `[0a, 01, id, 01]` | value: the pages the group holds for its end (8, 4.8), the number of its parts (8), the bytes and the edits its parts staged (8 each, 0 for a new file) and its kind (1: 1 staged, 2 new file) |
 | `[0a, 01, id, 02, file, n]` | value: the group's declared path number `n` (2) in file `file` (8), as a key (2.1) |
 | `[0a, 02, file, id]` | value, empty: group `id` declared a path in file `file`; the index the checks of 5.6 read. A group making a new file declares the file's whole tree, the empty path |
 
@@ -2340,9 +2361,11 @@ Then, by kind:
     declared in the entry's file (*outside group*, naming the edit);
   - no edit of any change may meet a path another open group declared in
     the entry's file (*in group*, naming the group and the edit);
-  - an open or a part must not take the bytes its group's parts staged,
-    as their edits encode (5.2), past 64 MiB, the largest payload
-    (`MAX_GROUP_STAGED`, *group too large*).
+  - an open or a part must not take its group past its bounds, checked in
+    this order (*group too large*, naming the bound): 65,536 parts
+    (`MAX_GROUP_PARTS`), 1,048,576 edits (`MAX_GROUP_EDITS`, the most one
+    change carries), and 64 MiB of edits as they encode (5.2,
+    `MAX_GROUP_STAGED`, the largest payload).
 
   An open writes the group's row, its declared paths and the index rows
   of its files (5.3), and makes the staging tree. An open or a part writes
@@ -2377,16 +2400,16 @@ Then, by kind:
   version*) and not below the state's (*format version lowered*, which
   cannot arise while 1 is the only version); it is recorded.
 - **group.** *Discard*: the group must be open (*no such group*); its
-  rows are deleted and its tree dropped, a staged group's staging tree
-  or the file a group was making, and nothing of it shows. *New file*:
-  at most 256 groups may be open after it (*too many groups*); the
-  file's tree is made empty, and the group's row (of kind 2), its
-  declared path (the whole file) and its index row are written. *Publish*:
-  the group must be open (*no such group*) and making a new file (*group
-  kind*), and the name free (*name taken*); the file's catalog rows are
-  written as a `file` entry's *added* writes them, and the group's rows
-  deleted. Its tree stays as its parts left it: the work does not depend
-  on the group's size.
+  rows are deleted and its tree `group:<id>` dropped, a staged group's
+  staging or the file a group was making, and nothing of it shows. *New
+  file*: at most 256 groups may be open after it (*too many groups*);
+  the file's tree is made empty, named `group:<id>`, and the group's row
+  (of kind 2), its declared path (the whole file) and its index row are
+  written. *Publish*: the group must be open (*no such group*) and making
+  a new file (*group kind*), and the name free (*name taken*); the file's
+  catalog rows are written as a `file` entry's *added* writes them, the
+  group's rows deleted, and its tree, as its parts left it, renamed
+  `file:<id>`: the work does not depend on the group's size.
 - **empty** discards every open group, as a discard each: a new leader's
   first entry, and a restart's (6.2). **mark** changes nothing else.
 
@@ -2429,8 +2452,9 @@ root it holds for it. The store's own tree is made the same way by entry
 1: before it the store holds no tree. A staged group's staging tree is
 made by its open with `add_tree`, changed by each part with `set_root`,
 and dropped by its close or discard with `drop_tree`. The tree of a file
-a group is making is made by the group's open, changed by its parts like
-any file's, kept by its publication, and dropped by a discard. Each tree is changed
+a group is making is made by the group's open under the group's name,
+changed by its parts like any file's, renamed by its publication with
+`rename_tree`, and dropped by a discard. Each tree is changed
 at most once per entry (a close, which carries no edits of its own,
 changes each of its files' trees once, with all their staged edits), so
 no tree reads a page of the unit before it is committed.
@@ -2489,17 +2513,27 @@ listings visited and the most held at once.
 - **A new file's open** makes an empty tree and four rows and holds the
   room for its end; **a part** reads the group's row and is a change to
   the file's tree, at what any change costs, with no hold; **its
-  publication** writes the catalog rows and deletes the group's: a fixed
-  number of rows, whatever the group's size.
+  publication** writes the catalog rows, deletes the group's and renames
+  the tree: a fixed number of rows and one name, whatever the group's
+  size.
 - **A close** reads the whole staging tree and holds every staged edit,
-  decoded, at once: memory is linear in the group's size (about 150 MiB
-  more for 10,000 parts of 4 KiB, server-storage.md 6.9). It applies each
-  file's edits with one `tree::apply`, so it writes what one entry with
-  all of them writes (2.7: each page once, in place of once a part), and
-  drops the staging tree with one release.
+  decoded, at once. The bounds of 5.6 (1,048,576 edits, 64 MiB encoded)
+  hold that to what the largest change decodes to: measured for the
+  worst shape found, a million puts at paths of 26 segments, the decoded
+  edits and the tree's working copy peaked at 1,086 MiB; for the 4 KiB
+  puts of the measurements, 362 MiB at the bound
+  (performance/store-groups.md). It applies each file's edits with one
+  `tree::apply`, so it writes what one entry with all of them writes
+  (2.7: each page once, in place of once a part), and drops the staging
+  tree with one release.
 - **A discard, and an `empty` entry with groups open,** list the open
-  groups (at most 256) and their files, delete their rows, and drop each
-  staging tree with one release, whatever its size.
+  groups (at most 256) and their files, delete their rows and index rows
+  (for a new file, its whole list), and drop each group's tree,
+  `group:<id>`, with one release whatever its size: a staged group's
+  staging, or the file a new file group was making, whose pages go back
+  as any dropped tree's do. Neither reads the trees it drops. The pages
+  each writes are the store tree's: the group's held end pays for them
+  (4.8).
 
 ### 5.9 Limits
 
@@ -2641,7 +2675,9 @@ store whose `state` is gone, reported for a restore (server-storage.md
    treated as this start's entry is (step 6): the recovered version is
    checkpointed and the entry appended again, once. A failure fails the
    open with `OpenError::Start`, which says whether the log took the
-   `empty` entry (`StartFailed::discarded`). Each
+   `empty` entry (`StartFailed::discarded`). The `empty` entry and this
+   start's entry may take the room the log kept for them (6.3), so on a
+   disk that cannot give the log a segment they still fit. Each
    start begins a new term, one above every term `state` and the log
    recorded, and writes its entries in it: the `empty` entry and this
    start's entry make it durable when they are. `state`'s own term, for
@@ -2831,7 +2867,17 @@ nothing changed. Then it:
 
 1. asks the log whether it would take an entry of that size and term
    (`Log::ready_for`, every refusal of an append, the next segment made
-   when it would need one): a refusal changes nothing;
+   when it would need one): a refusal changes nothing. While groups are
+   open, the log keeps room at its segment's end (3.7) for a discard of
+   each group open after this entry, each in a batch of its own, and for
+   the next start's `empty` entry and its own entry in one batch:
+   `136 + 2 × 64 + 26` bytes and `136 + 64 + 10` more a group, so 500
+   bytes for one group and 54,050 for 256. A discard, an `empty` entry
+   and a start's own entry may take that room (`Log::append_kept`);
+   every other entry, a close and a publication included, leaves it, and
+   on a full disk is refused as an entry that needs a segment the disk
+   cannot give (`WriteError::Log` with `LogError::NoSpace`), with nothing
+   changed. So an entry that only gives back never needs a new segment;
 2. reserves pages for the entry (`Purpose::Entry`, never the reserve)
    and applies it (`apply::apply`) in its one unit of work, which commits
    at its end; a unit that runs short is dropped, the reservation
@@ -2924,9 +2970,10 @@ published.
 - On a disk with no room, an open that cannot make room for this start's
   entry by checkpointing (the log retired and dying pages freed as far as
   the checkpoints and restore points on disk allow) fails, and says to
-  free space: the log keeps no room of its own for the next start's
-  entry, so a disk that filled can need space freed before the store
-  opens again.
+  free space. The log keeps room for the next start's entry only while
+  groups are open (6.3), and for one start: after an open that used it,
+  with no group open, a disk that filled can need space freed before the
+  store opens again.
 - Recovery reserves a fixed few pages for each entry and extends them,
   rather than the count each entry took the first time (`Reservation::taken`):
   entries do not carry it. An entry the replay extends may take the

@@ -15,7 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::apply::{Position, Refusal, MAX_GROUP_STAGED, MAX_OPEN_GROUPS};
+use crate::apply::{
+    GroupBound, Position, Refusal, MAX_GROUP_EDITS, MAX_GROUP_PARTS, MAX_GROUP_STAGED,
+    MAX_OPEN_GROUPS,
+};
 use crate::entry::{
     encode_edits, entry_hash, Change, Entry, FileEvent, Group as GroupOf, GroupEvent, GroupPath,
     Kind, LockEdit, Members, Payload, ServerId, Session, SessionEvent, Step,
@@ -67,8 +70,9 @@ pub struct Model {
 pub struct Group {
     pub paths: Vec<GroupPath>,
     pub staged: Vec<(u64, Vec<crate::tree::Edit>)>,
-    /// The bytes its parts staged, as their edits encode.
+    /// The bytes its parts staged, as their edits encode, and the edits.
     pub staged_bytes: u64,
+    pub staged_edits: u64,
     pub making: Option<BTreeMap<Path, Node>>,
 }
 
@@ -199,17 +203,27 @@ impl Model {
                 }
             }
         }
-        // What a staged group's parts stage, held to its bound.
+        // What a staged group's parts stage, held to its bounds: its
+        // parts, its edits and its bytes, in that order.
         if let Some(GroupOf { id, step }) = &change.group {
             if *step != Step::Close {
-                let before = self.groups.get(id).map_or(0, |g| g.staged_bytes);
-                let staged = before + encoded(&change.edits);
-                if staged > MAX_GROUP_STAGED {
-                    return Err(Refusal::GroupTooLarge {
-                        group: *id,
-                        staged,
-                        max: MAX_GROUP_STAGED,
-                    });
+                let group = self.groups.get(id);
+                let parts = group.map_or(0, |g| g.staged.len() as u64) + 1;
+                let edits = group.map_or(0, |g| g.staged_edits) + change.edits.len() as u64;
+                let bytes = group.map_or(0, |g| g.staged_bytes) + encoded(&change.edits);
+                for (of, count, max) in [
+                    (GroupBound::Parts, parts, MAX_GROUP_PARTS),
+                    (GroupBound::Edits, edits, MAX_GROUP_EDITS),
+                    (GroupBound::Bytes, bytes, MAX_GROUP_STAGED),
+                ] {
+                    if count > max {
+                        return Err(Refusal::GroupTooLarge {
+                            group: *id,
+                            of,
+                            count,
+                            max,
+                        });
+                    }
                 }
             }
         }
@@ -440,6 +454,7 @@ impl Model {
                                 paths: paths.clone(),
                                 staged: vec![(file, change.edits.clone())],
                                 staged_bytes: encoded(&change.edits),
+                                staged_edits: change.edits.len() as u64,
                                 making: None,
                             },
                         );
@@ -451,6 +466,7 @@ impl Model {
                         if let Some(group) = self.groups.get_mut(id) {
                             group.staged.push((file, change.edits.clone()));
                             group.staged_bytes += encoded(&change.edits);
+                            group.staged_edits += change.edits.len() as u64;
                         }
                     }
                     Some(GroupOf {
@@ -605,6 +621,7 @@ impl Model {
                         }],
                         staged: Vec::new(),
                         staged_bytes: 0,
+                        staged_edits: 0,
                         making: Some(BTreeMap::new()),
                     },
                 );

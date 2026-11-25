@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use om_hbam::OwnedNode;
 use om_store::apply::{
-    apply, Applied, Error, FileRow, GroupKind, LockRow, Position, Refusal, ServerRow, SessionRow,
-    StoreTree, TreeId, MAX_GROUP_STAGED,
+    apply, Applied, Error, FileRow, GroupBound, GroupKind, LockRow, Position, Refusal, ServerRow,
+    SessionRow, StoreTree, TreeId, MAX_GROUP_EDITS, MAX_GROUP_PARTS, MAX_GROUP_STAGED,
 };
 use om_store::entry::{
     decode_edits, encode_edits, entry_hash, Change, Entry, Feature, FileEvent, Group, GroupEvent,
@@ -78,21 +78,9 @@ fn edit_path(edit: &Edit) -> &Path {
     }
 }
 
-/// The files the state has a tree for: the catalog's, and the files open
-/// groups are making.
+/// The files the state has a tree of a file's name for: the catalog's.
 fn file_trees(model: &Model) -> BTreeSet<u64> {
-    model
-        .files
-        .keys()
-        .copied()
-        .chain(
-            model
-                .groups
-                .iter()
-                .filter(|(_, g)| g.making.is_some())
-                .map(|(id, _)| *id),
-        )
-        .collect()
+    model.files.keys().copied().collect()
 }
 
 /// The paths the open groups declared in `file`.
@@ -958,7 +946,7 @@ fn compare<S: PageStore + ?Sized>(store: &S, model: &Model, at: &str) {
     assert_eq!(
         roots.files.keys().copied().collect::<Vec<_>>(),
         file_trees(model).into_iter().collect::<Vec<_>>(),
-        "{at}: file trees: the catalog's, and the files groups are making"
+        "{at}: file trees: the catalog's, no other"
     );
     for (id, file) in &model.files {
         assert_eq!(state.file_named(&file.name).unwrap(), Some(*id), "{at}");
@@ -1037,16 +1025,15 @@ fn compare<S: PageStore + ?Sized>(store: &S, model: &Model, at: &str) {
     );
     assert_eq!(
         roots.groups.keys().copied().collect::<Vec<_>>(),
-        model
-            .groups
-            .iter()
-            .filter(|(_, g)| g.making.is_none())
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>(),
-        "{at}: staging trees"
+        model.groups.keys().copied().collect::<Vec<_>>(),
+        "{at}: the groups' trees: a staging tree, or the file being made"
     );
-    // A file's list of groups with paths in it goes with the file.
-    let trees = file_trees(model);
+    // A file's list of groups with paths in it goes with the file, or with
+    // the group that was making it.
+    let trees: BTreeSet<u64> = file_trees(model)
+        .into_iter()
+        .chain(model.groups.keys().copied())
+        .collect();
     let rows = match store.root(&TreeId::Store.name()) {
         Some(root) => walk_all(store, root),
         None => Vec::new(),
@@ -1075,7 +1062,11 @@ fn compare<S: PageStore + ?Sized>(store: &S, model: &Model, at: &str) {
                 None,
                 "{at}: file {id} in the catalog"
             );
-            let got = walk_all(store, roots.files[&id]);
+            assert!(
+                !roots.files.contains_key(&id),
+                "{at}: file {id}'s tree, named"
+            );
+            let got = walk_all(store, roots.groups[&id]);
             let want: Vec<(Path, Node)> =
                 nodes.iter().map(|(p, n)| (p.clone(), n.clone())).collect();
             assert!(got == want, "{at}: the file group {id} is making");
@@ -1125,15 +1116,17 @@ fn run_against_the_model(seed: u64, entries: u64, reached: &mut Reached) {
         store.take_released();
         let before = roots_of(&store);
         let trees_before = file_trees(&model);
+        let groups_before: BTreeSet<u64> = model.groups.keys().copied().collect();
         let applied = apply(&store, &built.entry()).unwrap_or_else(|e| panic!("{at}: {e}"));
         let outcome = model
             .apply(&built.entry())
             .unwrap_or_else(|e| panic!("{at}: the model refused: {e}"));
         assert_eq!(applied.opened, outcome.opened, "{at}");
         assert_eq!(applied.closed, outcome.closed, "{at}");
-        // The trees the store holds now: the file added, or opened by a
-        // group, made; the file removed, or discarded with its group,
-        // dropped, its root released by the store.
+        // The trees the store holds now: the file added, or published by
+        // its group (its tree renamed, not made), named; the file removed
+        // dropped, and the tree of a group ended otherwise than by its
+        // publication, its root released by the store.
         let after = roots_of(&store);
         let trees_after = file_trees(&model);
         let made: Vec<u64> = after
@@ -1143,18 +1136,34 @@ fn run_against_the_model(seed: u64, entries: u64, reached: &mut Reached) {
             .copied()
             .collect();
         let want: Vec<u64> = trees_after.difference(&trees_before).copied().collect();
-        assert_eq!(made, want, "{at}: files made");
+        assert_eq!(made, want, "{at}: files named");
         if let Some(id) = outcome.added {
             assert!(made.contains(&id), "{at}");
         }
         let released = store.take_released();
+        let dropped = |root: &Root| released.contains(&(root.page, root.hash, Release::Dropped));
         for id in trees_before.difference(&trees_after) {
-            let root = before.files[id];
             assert!(!after.files.contains_key(id), "{at}");
             assert!(
-                released.contains(&(root.page, root.hash, Release::Dropped)),
+                dropped(&before.files[id]),
                 "{at}: file {id}'s tree released"
             );
+        }
+        let groups_after: BTreeSet<u64> = model.groups.keys().copied().collect();
+        for id in groups_before.difference(&groups_after) {
+            let root = before.groups[id];
+            assert!(!after.groups.contains_key(id), "{at}: group {id}'s tree");
+            if model.files.contains_key(id) && !before.files.contains_key(id) {
+                // Published: the same root, under the file's name.
+                assert_eq!(
+                    after.files.get(id),
+                    Some(&root),
+                    "{at}: file {id} published"
+                );
+                assert!(!dropped(&root), "{at}: file {id} published, released");
+            } else {
+                assert!(dropped(&root), "{at}: group {id}'s tree released");
+            }
         }
         compare(&store, &model, &at);
     }
@@ -2125,9 +2134,10 @@ fn new_file_group_entries_that_cannot_be_right_are_refused() {
     );
 }
 
-/// A staged group stages at most `MAX_GROUP_STAGED` bytes: the part that
-/// would pass it is refused, typed, with nothing changed, and the group
-/// can still be closed.
+/// A staged group stages at most `MAX_GROUP_STAGED` bytes,
+/// `MAX_GROUP_EDITS` edits and `MAX_GROUP_PARTS` parts: the part that would
+/// pass one is refused, typed, with nothing changed, and the group can
+/// still be closed or discarded.
 #[test]
 fn a_staged_group_stages_at_most_its_bound() {
     let mut f = Fixture::new();
@@ -2170,7 +2180,8 @@ fn a_staged_group_stages_at_most_its_bound() {
                 &built,
                 Refusal::GroupTooLarge {
                     group: id,
-                    staged: staged + more,
+                    of: GroupBound::Bytes,
+                    count: staged + more,
                     max: MAX_GROUP_STAGED,
                 },
             );
@@ -2185,6 +2196,71 @@ fn a_staged_group_stages_at_most_its_bound() {
     f.push(file, part(Step::Close, Vec::new()));
     // The fixture's 302 nodes, the declared path's list, and the parts'.
     assert_eq!(f.model.files[&file].nodes.len(), 303 + n as usize * 16);
+
+    // At most MAX_GROUP_EDITS edits: the largest change's worth.
+    let id = f.model.applied.index + 1;
+    let declared = vec![b"many".to_vec()];
+    let tiny = |from: u32, n: u32| -> Vec<Edit> {
+        (from..from + n)
+            .map(|i| {
+                let mut path = declared.clone();
+                path.push(i.to_be_bytes().to_vec());
+                Edit::leaf(path, Vec::new())
+            })
+            .collect()
+    };
+    let open = |id: u64, edits| {
+        Payload::Change(Change {
+            group: Some(Group {
+                id,
+                step: Step::Open(vec![GroupPath {
+                    file,
+                    path: declared.clone(),
+                }]),
+            }),
+            edits,
+            ..Change::default()
+        })
+    };
+    let part = |id: u64, edits| {
+        Payload::Change(Change {
+            group: Some(Group {
+                id,
+                step: Step::Part,
+            }),
+            edits,
+            ..Change::default()
+        })
+    };
+    f.push(file, open(id, tiny(0, MAX_GROUP_EDITS as u32)));
+    let built = f.seal(file, &part(id, tiny(MAX_GROUP_EDITS as u32, 1)));
+    f.refused(
+        &built,
+        Refusal::GroupTooLarge {
+            group: id,
+            of: GroupBound::Edits,
+            count: MAX_GROUP_EDITS + 1,
+            max: MAX_GROUP_EDITS,
+        },
+    );
+    f.push(0, Payload::Group(GroupEvent::Discard { id }));
+
+    // At most MAX_GROUP_PARTS parts, the opening part counted.
+    let id = f.model.applied.index + 1;
+    f.push(file, open(id, Vec::new()));
+    for _ in 1..MAX_GROUP_PARTS {
+        f.push(file, part(id, Vec::new()));
+    }
+    let built = f.seal(file, &part(id, Vec::new()));
+    f.refused(
+        &built,
+        Refusal::GroupTooLarge {
+            group: id,
+            of: GroupBound::Parts,
+            count: MAX_GROUP_PARTS + 1,
+            max: MAX_GROUP_PARTS,
+        },
+    );
 }
 
 #[test]

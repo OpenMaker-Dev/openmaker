@@ -2196,21 +2196,32 @@ use a group, and what is marked *not built* below, are not.
   the file as it was before the group or as it is after it. Because the
   parts are in the state, a checkpoint taken while a group is open has
   all of it, and a reopen finds the group whole or not at all. A staged
-  group stages at most 64 MiB of edits (as they encode), the largest
-  payload of one entry, so that its close holds no more in memory than
-  the largest entry decodes to; a part past that is refused, typed
-  (format 5.6).
+  group has at most 65,536 parts and stages at most 1,048,576 edits and
+  64 MiB of them as they encode: the most edits one change carries and
+  the largest payload, so that its close holds no more in memory than
+  the largest change decodes to (measured for the worst shape found,
+  1,086 MiB). A part past a bound is refused, typed, naming it (format
+  5.6).
 - **Written in place, then published.** A new file group's open makes
-  the file's tree, empty, and no catalog row: no view lists the file or
-  opens its tree (`View::file_tree` answers only for files in the
-  view's catalog), and no entry but the group's parts reaches it. Each
-  part is applied to the tree as any change is, reserving only its own
+  the file's tree, empty, under the group's name, `group:<id>`, which no
+  reader of files asks for, and no catalog row or name. Each part is
+  applied to that tree as any change is, reserving only its own
   application, and keys that arrive in order take the append path. The
-  publication writes the catalog rows and the name in one unit, a fixed
-  amount of work whatever the group's size; a name taken refuses it,
-  typed, with nothing changed. A discard, by an entry or a restart, drops
-  the tree, whose pages go back to the free pages. The group's declared
-  path is the whole new file.
+  publication writes the catalog rows and the name, and renames the tree
+  `file:<id>`, in one unit, a fixed amount of work whatever the group's
+  size; a name taken refuses it, typed, with nothing changed. Until then
+  the file is no file to any reader, by its tree's name: the version has
+  no `file:<id>`. A discard, by an entry or a restart, drops the tree,
+  whose pages go back to the free pages. The group's declared path is the
+  whole new file, and no entry but the group's parts reaches it.
+- **What a view shows of an open group.** A view, current or a restore
+  point's, lists only the store's tree and the files' trees
+  (`View::roots`); a group's tree is not among them, and `View::root`
+  gives no root for it. Of an open group a view shows the rows of the
+  store's tree: that the group is open, its kind, how many parts it has,
+  the bytes and edits it staged, the pages it holds, and its declared
+  paths (for a new file, the whole file under its future id). Not its
+  staged edits, and not the file it is making.
 - **The staging is the parts' edits.** The staging tree, `group:` and the
   group's id, keeps each part's edits as the change carries them, keyed
   by file, part and chunk (format 5.3): a part appends at the end of its
@@ -2228,13 +2239,13 @@ use a group, and what is marked *not built* below, are not.
 - **Cost, measured** ([performance/store-groups.md](performance/store-groups.md)).
   For N parts of one 4 KiB put each, a staged group's close wrote 3
   pages for N = 1, 109 for 100 and 10,672 for 10,000, about one page a
-  part, in 1.1, 10 and 338 ms, and its parts held 148, 5,989 and 590,089
-  pages. A new file group's publication wrote 1 page in under 21 ms at
-  every size up to 10,000 parts, and 623 ms at 110 MB (26,856 parts),
-  and it held 505 pages whatever its size. Its parts wrote what the same
-  changes to an existing file write: the page file at 110 MB was 132 MiB
-  with 4,000-byte values, and 482 MiB with 4 KiB values, each of which
-  takes an overflow page of its own
+  part, in 0.9, 2.9 and 325 ms, and the group held 431, 6,272 and 590,372
+  pages. A new file group's publication wrote 5 pages in 107 ms or less
+  at every size up to 110 MB (26,856 parts), and the group held 509 pages
+  whatever its size. Its parts wrote what the same changes to an
+  existing file write: the page file at 110 MB was 132 MiB with
+  4,000-byte values, and 483 MiB with 4 KiB values, each of which takes
+  an overflow page of its own
   ([#802](https://github.com/OpenMaker-Dev/openmaker/issues/802)).
 - **What it changes.** A group declares the paths it changes. While it is
   open, an entry that changes one of them, or anything above or below
@@ -2282,14 +2293,28 @@ use a group, and what is marked *not built* below, are not.
 - **Space.** The entry that opens a group holds the room for the entry
   that will end it, and a staged group's part holds the room for its
   later application (format 4.8), before it is appended; a part's own
-  writes are reserved as any entry's are. The entry that ends a group (a
-  close, a publication, a discard, an `empty` entry) takes what the group
-  holds as its reservation, so a discard is funded by what it releases
-  and runs on a disk that cannot grow; what it writes past that may take
-  the reserve. What it does not take, and the dropped tree's pages, go
-  back to the free pages. The holds are recorded in the group's row, so a
-  reopen holds them again before it replays, and the accounting holds
-  across checkpoints and reopens with a group left open. The bound a
+  writes are reserved as any entry's are. The end's room counts what
+  that entry writes in the store's tree: for a staged close, the
+  session's sequence and a reply of the largest size; for a
+  publication, the catalog rows of the largest size and the tree's new
+  name; it is a bound at the store tree's height when the group opens,
+  plus one, and an ending entry that finds that tree taller extends past
+  it as any entry does, and can be refused as full on a disk with no
+  room left ([#787](https://github.com/OpenMaker-Dev/openmaker/issues/787)'s
+  kind of limit). The entry that ends a group (a close, a publication, a
+  discard, an `empty` entry) takes what the group holds as its
+  reservation, so a discard is funded by what it releases and runs on a
+  disk that cannot grow; what it writes past that may take the reserve.
+  What it does not take, and the dropped tree's pages, go back to the
+  free pages. The log keeps room at the end of its segment too, while
+  groups are open, for a discard of each and the next start's `empty`
+  entry and its own (format 6.3): an entry that only gives back never
+  needs a segment a full disk cannot give, and every other entry, a
+  close and a publication included, leaves that room and is refused for
+  the disk when only it is left. The holds are recorded in the group's
+  row, so a reopen holds them again before it replays, and the
+  accounting holds across checkpoints and reopens with a group left
+  open. The bound a
   staged part holds is `entry_bound` of its edits at the file tree's
   height plus one: our own choice, loose, and not a proof
   ([#787](https://github.com/OpenMaker-Dev/openmaker/issues/787)). It
@@ -2301,7 +2326,7 @@ use a group, and what is marked *not built* below, are not.
   ([#786](https://github.com/OpenMaker-Dev/openmaker/issues/786)), so a
   staged group of 10,000 such parts grows the page file to 9.9 GiB while
   it is open, and staging it took 18 to 21 s against 6.3 s with no holds.
-  The close holds the staged edits in memory, within the 64 MiB bound
+  The close holds the staged edits in memory, within the bounds above
   ([#788](https://github.com/OpenMaker-Dev/openmaker/issues/788)). A new
   file group holds only the room for its publication or discard.
 

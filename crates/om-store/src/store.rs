@@ -85,7 +85,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::apply::{self, Applied, Position, StoreTree, TreeId};
-use crate::entry::{entry_hash, Entry, Payload, PayloadError, ServerId, SessionEvent};
+use crate::entry::{
+    entry_hash, Change, Entry, Group, GroupEvent, Payload, PayloadError, ServerId, SessionEvent,
+    Step,
+};
 use crate::incident::{self, Incident, Journal, JournalError, PlanRecord, What};
 use crate::log::{self, CutDone, DamageAccepted, Log, LogError, Recorded, UnreadableEnd};
 use crate::page::{Hash, StoreError, TreeName};
@@ -659,15 +662,33 @@ impl View {
         self.version.position
     }
 
-    /// The version's trees, by name, with their roots.
-    pub fn roots(&self) -> &[(TreeName, Root)] {
-        self.version.pin.roots()
+    /// The version's trees a reader of the state opens, by name, with
+    /// their roots: the store's tree and the files'. An open group's tree
+    /// (`group:` and its id: a staged group's staging, or the file a group
+    /// is making, which has no file's name until it is published) is not
+    /// among them; of an open group, a view shows only the rows of its
+    /// store tree (section 6.9).
+    pub fn roots(&self) -> Vec<(TreeName, Root)> {
+        self.version
+            .pin
+            .roots()
+            .iter()
+            .filter(|(name, _)| {
+                !matches!(TreeId::from_name(name.as_bytes()), Some(TreeId::Group(_)))
+            })
+            .cloned()
+            .collect()
     }
 
-    /// The root of one of the state's trees.
+    /// The root of one of the state's trees a reader opens ([`View::roots`]).
     pub fn root(&self, tree: TreeId) -> Option<Root> {
+        if let TreeId::Group(_) = tree {
+            return None;
+        }
         let name = tree.name();
-        self.roots()
+        self.version
+            .pin
+            .roots()
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, r)| *r)
@@ -681,17 +702,13 @@ impl View {
         }
     }
 
-    /// A file's tree as the view holds it, if the view's catalog has the
-    /// file. A file a group is still making has a tree, but no catalog row
-    /// until the group is published (section 6.9): no view opens it.
-    pub fn file_tree(&self, id: u64) -> Result<Option<Tree<'_, PageFile>>, apply::Error> {
-        let listed = match self.store_tree()? {
-            Some(state) => state.file(id)?.is_some(),
-            None => false,
-        };
+    /// A file's tree as the view holds it, if the file exists. A file a
+    /// group is still making has no tree of that name until the group
+    /// publishes it (section 6.9).
+    pub fn file_tree(&self, id: u64) -> Result<Option<Tree<'_, PageFile>>, tree::Error> {
         match self.root(TreeId::File(id)) {
-            Some(root) if listed => Ok(Some(Tree::open(&*self.pages, root)?)),
-            _ => Ok(None),
+            Some(root) => Tree::open(&*self.pages, root).map(Some),
+            None => Ok(None),
         }
     }
 }
@@ -724,6 +741,67 @@ pub struct Store {
     pending: Vec<Unpublished>,
     stopped: Option<String>,
     journal: Journal,
+    /// The groups open in the newest applied state: the log keeps room for
+    /// the entries that would end them ([`kept_room`]).
+    groups: u64,
+}
+
+/// The bytes the log keeps at the end of its segment while `groups` groups
+/// are open (format section 6.3): a batch of its own for a discard of each,
+/// and one for the next start's `empty` entry and its own entry, so that
+/// none of them ever needs a segment a full disk cannot give. None while no
+/// group is open.
+fn kept_room(groups: u64) -> u64 {
+    if groups == 0 {
+        return 0;
+    }
+    let len = |p: &Payload| p.size().map_or(0, |n| n as u64);
+    let discard = len(&Payload::Group(GroupEvent::Discard { id: 1 }));
+    let start = len(&Payload::Session(SessionEvent::Started {
+        server: [0; 16],
+        count: 0,
+    }));
+    let entry = log::ENTRY_OVERHEAD;
+    (log::BATCH_HEADER + 2 * entry + start)
+        .saturating_add(groups.saturating_mul(log::BATCH_HEADER + entry + discard))
+}
+
+/// Whether an entry may take the room the log keeps ([`kept_room`]): one
+/// that only gives back, a discard or an `empty` entry, and a start's own
+/// entry.
+fn takes_kept_room(payload: &Payload) -> bool {
+    matches!(
+        payload,
+        Payload::Empty
+            | Payload::Group(GroupEvent::Discard { .. })
+            | Payload::Session(SessionEvent::Started { .. })
+    )
+}
+
+/// How an applied entry changes the number of open groups.
+fn groups_after(groups: u64, payload: &Payload) -> u64 {
+    match payload {
+        Payload::Change(Change {
+            group:
+                Some(Group {
+                    step: Step::Open(_),
+                    ..
+                }),
+            ..
+        })
+        | Payload::Group(GroupEvent::NewFile) => groups.saturating_add(1),
+        Payload::Change(Change {
+            group: Some(Group {
+                step: Step::Close, ..
+            }),
+            ..
+        })
+        | Payload::Group(GroupEvent::Publish { .. } | GroupEvent::Discard { .. }) => {
+            groups.saturating_sub(1)
+        }
+        Payload::Empty => 0,
+        _ => groups,
+    }
 }
 
 impl fmt::Debug for Store {
@@ -1547,6 +1625,7 @@ impl Store {
             pending: Vec::new(),
             stopped: None,
             journal,
+            groups: 0,
         };
         // 6. This start's own entry (section 7.3), the first write. It is
         // part of the recovery for space: it may take the reserve, and when
@@ -1560,6 +1639,7 @@ impl Store {
         let groups_open = StoreTree::of(&*store.pages)
             .and_then(|state| state.groups())
             .map_err(|e| state_unread(last.index, e))?;
+        store.groups = groups_open.len() as u64;
         let discarded = if groups_open.is_empty() {
             None
         } else {
@@ -1826,8 +1906,21 @@ impl Store {
         let bytes = payload.encode().map_err(WriteError::Payload)?;
         let kind = payload.kind().code();
         let term = self.term;
+        // The room the log keeps for ending the groups open after this
+        // entry, which an entry that only gives back may take.
+        let kept = takes_kept_room(payload);
+        self.log.keep(if kept {
+            0
+        } else {
+            kept_room(groups_after(self.groups, payload).max(self.groups))
+        });
         // Whatever the log would refuse is refused now, before the unit.
-        match self.log.ready_for(term, bytes.len()) {
+        let ready = if kept {
+            self.log.ready_for_kept(term, bytes.len())
+        } else {
+            self.log.ready_for(term, bytes.len())
+        };
+        match ready {
             Ok(()) => {}
             Err(e) if self.log.is_poisoned() => return Err(self.stop_log(e.to_string(), &e)),
             Err(e) => return Err(WriteError::Log(e)),
@@ -1862,7 +1955,12 @@ impl Store {
             Ok(pin) => pin,
             Err(e) => return Err(self.stop(format!("the version of entry {index}: {e}"))),
         };
-        match self.log.append(term, kind, file, &bytes) {
+        let logged = if kept {
+            self.log.append_kept(term, kind, file, &bytes)
+        } else {
+            self.log.append(term, kind, file, &bytes)
+        };
+        match logged {
             Ok(p) if p.index == index && p.hash == hash.0 => {}
             Ok(_) => {
                 return Err(self.stop(
@@ -1875,6 +1973,7 @@ impl Store {
                 return Err(self.stop_log(why, &e));
             }
         }
+        self.groups = groups_after(self.groups, payload);
         let position = applied.position;
         self.pending.push(Unpublished {
             version: Version {
