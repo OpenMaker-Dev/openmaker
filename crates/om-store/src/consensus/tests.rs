@@ -1030,8 +1030,8 @@ impl World {
         // member at that entry.
         let member = self.nodes[i].member.as_ref().unwrap();
         let published = member.store.published();
-        let roots = member.store.root_hashes();
         if published.index != self.nodes[i].seen_published {
+            let roots = member.store.root_hashes();
             self.nodes[i].seen_published = published.index;
             if published.index > 0 {
                 if self.oracle.hash(published.index) != Some(published.hash.0) {

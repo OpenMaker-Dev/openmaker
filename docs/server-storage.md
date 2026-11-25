@@ -21,15 +21,17 @@ of a file that is not a version's (whether it takes changes, its file on
 disk) it offers itself. The operations' own reads still hold the file
 engine's store (section 5, "Moving the other readers"). Still to come:
 `import` and `capabilities` (section 5). Of the store engine, `om-store`
-holds the `state` file (section 6.1), the entries and applying them to
-the state's trees (6.2, 6.3), the page trees (6.4), the page file with
-its checkpoints, restore points and the open that chooses a checkpoint
-(6.7), and the simulator (12); `om-server` reads a file's tree in it as
-a view, imports an `.fmp12` into one and exports it again (section 5,
-"The store engine's file"). No file is hosted on it yet: the log's
-segments, the store behind the engine interface, groups, clones,
-replication and everything else in sections 6 to 12 are specified here
-and not built.
+holds the `state` file (section 6.1), the log with its segments and the
+entries applied to the state's trees (6.2, 6.3), the page trees (6.4),
+the page file with its checkpoints, restore points and the open that
+chooses a checkpoint (6.7), groups (6.9), the consensus core and a
+cluster member's store for a fixed set of members (7.1, "As built"),
+and the simulators (12); `om-server` reads a file's tree in it as a
+view, imports an `.fmp12` into one and exports it again (section 5,
+"The store engine's file"). No file is hosted on it yet: the store
+behind the engine interface, clones, repair and the rest of replication
+(7.2 to 7.6), and everything else in sections 6 to 12 not named here
+are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -2392,7 +2394,9 @@ crash therefore cannot hide that a copy was lost (server-storage-format.md
 1.3). On a single server the loss is reported by recording it in the
 incident journal (section 6.12) before the mark is settled. The repair
 record a cluster member needs, in repair with a required end not yet
-known (section 7.5), is not built: it waits for replication. A server
+known (section 7.5), is not built: until it is, a member's open records
+the possible loss as a single server's does and goes on (section 7.1, "As
+built"). A server
 without a valid copy does not know what it confirmed, and does not start
 (section 7.5). The format and what the copies protect against are in
 [server-storage-format.md](server-storage-format.md) section 1
@@ -2801,6 +2805,9 @@ settled (server-storage-format.md 4.5).
    when the pages waiting for a checkpoint or the disk refuse it, the
    recovered version, which is durable, is checkpointed first, which
    frees what the checkpoints and restore points on disk no longer need.
+   A member of a cluster writes no entry at its open, since only the
+   leader appends; how its start reaches the log is section 7.3's, which
+   is not built (OpenMaker's reading, section 7.1, "As built").
 
 If the log does not hold every entry through the marker, or neither
 checkpoint can be used, the server cannot produce what it confirmed. A
@@ -3229,6 +3236,54 @@ rule (section 6.12, "What is not found").
 
 Servers talk to each other over TLS with certificates both ends check, on
 a port of its own.
+
+**As built.** `om_store::consensus` holds the core: a state machine with
+no I/O, given ticks, messages, a leader's client entries and the results
+of its own log operations, which returns the operations to perform and
+the messages to send, in order. A member (`consensus::Member`) runs them
+one at a time on its store, opened with `Store::open_member`, and takes
+its next message or tick only once the last one's operations are done,
+so that a simulator can stop it between any two. Beyond the rules above,
+these are OpenMaker's own choices:
+
+- The ask before an election is Raft's pre-vote (Ongaro's thesis, 9.6):
+  it changes no term or vote, and a server that heard from its leader
+  within an election timeout refuses it, as a leader does. A leader that
+  has not heard from a majority within an election timeout steps down.
+- A leader flushes its own entries before it sends them: a member sends
+  only durable entries, so the leader's copy counts as soon as it is
+  sent.
+- On a mismatch the follower names where to try next: before its run of
+  entries of the mismatched term, never before what it knows is
+  committed.
+- Every member, the leader too, applies and publishes an entry only once
+  it knows it is committed: the leader's working state is its published
+  state, and checking an operation against the leader's working state
+  (section 7.2) is not built.
+- A member's open replays as far as the committed position its marker
+  recorded (section 6.7, step 4), keeps the term and vote `state`
+  recorded (a single server starts a new term at each open instead), and
+  writes no entry.
+
+Not built yet, and what stands in for it:
+
+- Repair (section 7.5). A member's open that passed over a copy of
+  `state` and found no whole batch after the marker records the possible
+  loss as a single server's does and goes on, which is safe only while
+  flushed writes stay on the disk; the cluster simulator injects no other
+  faults yet. An unreadable end is not handled for a member.
+- Members (section 7.6). The members are a fixed set given when the
+  cluster is made (`consensus::Config::members`); `Core::members` is
+  where the latest `members` entry will take their place for elections,
+  votes and counting. Nothing on disk records that a store is a member:
+  its caller opens it as one, and `Store::open` on a member's folder
+  would apply entries that are not committed.
+- State transfer (section 7.5, "State"). A follower whose next entry the
+  leader's log no longer holds stays behind, and the leader reports it
+  (`Core::behind`). A leader retires its log for its own checkpoints
+  only, not for what its followers still need.
+- The transport between servers and sessions in the log (sections 7.3,
+  7.4).
 
 ### 7.2 Who executes
 
@@ -3986,6 +4041,33 @@ leader is elected without the entry and that the servers concerned stay
 in repair and say why. A schedule that injects a fault the store cannot
 find (a flushed write that leaves no trace, together with the marker
 that recorded it) is checked only against what section 6.12 says of it.
+
+**As built for a cluster** (`om_store::consensus`'s tests): 3 and 5
+members, each a store on its own simulated disk, with the network and
+the clock simulated in one thread from a seed. A schedule has calm and
+stormy phases. The network delays messages (never past an election
+timeout), drops, repeats and reorders them, and splits the members. The
+faults are power losses between steps and inside disk calls, a process
+that stops with its cache kept, and failed writes and flushes: none
+breaks what a flush promised. Faults are also drawn where a rule is at
+stake: a power loss right after an answer, and a leader cut off right
+after it sends its term's first entry, right after a commit, and
+whenever another member ends its log with entries of a later term than
+the leader's at their place (Raft's figure 8). One schedule in three
+churns leaders, with short timeouts and one entry per append. After
+every step it checks that a term has at most one leader, that no leader
+is elected whose log lacks an entry answered as committed (from the
+leader's decision on), that the committed position a member records and
+every version it publishes are of entries answered as committed (check
+4), that servers at the same entry have the same root hashes (check 3),
+that a held view reads what it read, that every server starts (check
+11), and that every error a member's store returns follows a fault its
+disk injected. At the end the faults stop: one leader must serve, and
+every member must hold and publish everything committed or be one the
+leader reports as behind. Each of these rules has a planted defect
+(`consensus::Plant`) that a seed of the default run must find. Checks 1,
+2, 5 to 9, 12 and 13, and check 10's repair, are not run on a cluster
+yet.
 
 **Both engines behind one server.** Every server test runs against both
 engines, and generated request sequences are sent to both through the real

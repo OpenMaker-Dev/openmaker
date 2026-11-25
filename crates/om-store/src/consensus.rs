@@ -482,7 +482,10 @@ impl Core {
     /// term unchanged. It does not stand when its log ends before its
     /// committed position.
     fn pre_vote(&mut self, out: &mut Vec<Action>) {
-        if !self.members().contains(&self.cfg.me) || self.durable < self.committed {
+        if !self.members().contains(&self.cfg.me)
+            || self.durable < self.committed
+            || self.term == u64::MAX
+        {
             return;
         }
         self.role = Role::PreCandidate;
@@ -623,7 +626,9 @@ impl Core {
             return;
         };
         self.behind.remove(&to);
-        let last = self.durable.min(p.next.saturating_add(self.cfg.batch) - 1);
+        let last = self
+            .durable
+            .min(p.next.saturating_add(self.cfg.batch.max(1)) - 1);
         if last < p.next && !heartbeat {
             return;
         }
@@ -699,7 +704,10 @@ impl Core {
                 if m.term > self.term {
                     self.see_term(m.term);
                     self.persist(&mut out);
-                } else if self.role == Role::PreCandidate && granted && round == self.term + 1 {
+                } else if self.role == Role::PreCandidate
+                    && granted
+                    && self.term.checked_add(1) == Some(round)
+                {
                     self.grants.insert(m.from);
                     if self.grants.len() >= self.majority() {
                         self.stand(&mut out);
@@ -756,6 +764,8 @@ impl Core {
                 p.heard = true;
                 match matched {
                     Some(k) => {
+                        // Never past what this log holds.
+                        let k = k.min(self.durable);
                         p.matched = p.matched.max(k);
                         p.next = p.next.max(k + 1);
                         self.advance(&mut out);
@@ -817,10 +827,11 @@ impl Core {
                 while first > self.base.index + 1 && self.term_at(first - 1) == Some(t) {
                     first -= 1;
                 }
-                let hint = (first - 1)
+                let hint = first
+                    .saturating_sub(1)
                     .max(self.committed)
                     .max(self.base.index)
-                    .min(prev.index - 1);
+                    .min(prev.index.saturating_sub(1));
                 let body = Body::AppendReply {
                     matched: None,
                     hint,
@@ -828,6 +839,15 @@ impl Core {
                 self.send(out, from, body);
                 return;
             }
+        }
+        // A message whose entries do not follow `prev` one by one is not
+        // the leader's: it is passed over.
+        let follows = entries
+            .iter()
+            .enumerate()
+            .all(|(k, e)| Some(e.index) == prev.index.checked_add(k as u64 + 1));
+        if !follows {
+            return;
         }
         // The entries at or before the base are committed, and so the
         // leader's too. The first that differs from this log's is cut from.
