@@ -737,6 +737,17 @@ impl ServerHandle {
             .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
     }
 
+    /// How many reads the server answered a third time through a store
+    /// copy and compared, and how many it did not, by why: for a test that
+    /// claims its reads were compared on the store engine's view. None
+    /// when the server does not check reads (`Server::checking_reads`).
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn store_comparisons(&self) -> Option<crate::engine::Compared> {
+        self.shared.engine.store_comparisons()
+    }
+
     /// Hold the file of the next write a client sends read-only
     /// (`ReadOnlyCause::DeferredWork`) after the request is admitted and
     /// before the engine takes the write lock, as another connection's op73

@@ -539,6 +539,67 @@ fn a_folder_without_hard_links_gets_full_copies() {
     assert_ne!(inode(&copy(&first)), inode(&copy(&second)));
 }
 
+/// A file closed, replaced and opened again keeps its id: the next backup
+/// copies the file it holds now, never links the copy of the one it held
+/// before, on either engine (the file engine's save count starts over at
+/// each load; the store engine's never moves).
+#[cfg(unix)]
+#[test]
+fn a_backup_after_a_file_was_replaced_and_opened_again_copies_the_new_file() {
+    for engine in ["file", "store"] {
+        let folder = Folder::new(&format!("replaced-{engine}"));
+        let file = hosted_file(&folder);
+        let backups = folder.0.join("Backups");
+        let store = folder.0.join("Store");
+        let clock = ManualClock::new(at(8, 0));
+        let mut schedule = backup_schedule("Copies", 5);
+        schedule.enabled = false;
+        let configure = {
+            let (clock, backups) = (clock.clone(), backups.clone());
+            move |server: om_server::Server| {
+                server
+                    .with_clock(clock)
+                    .with_backup_folder(&backups)
+                    .unwrap()
+                    .with_schedules(vec![schedule])
+                    .unwrap()
+            }
+        };
+        let (_, handle) = match engine {
+            "file" => server::start_configured_with_handle(&file, configure),
+            _ => server::start_on_store(&[(fixture::FILE, &file)], &store, configure),
+        };
+        assert!(handle.wait_for_schedules(WAIT), "{engine}");
+        clock.set(at(8, 1));
+        let first = back_up_now(&handle, "Copies");
+        close_file(&handle, 1);
+        let mut root = fixture::tree(&[], true);
+        let path = [
+            &uint_segment(TABLE)[..],
+            &[5],
+            &serial::encode(1),
+            &uint_segment(NAME),
+        ];
+        root.put(&path, om_scripts::text_node(&[], "Replaced"));
+        fixture::write_tree(&file.0, &root);
+        handle.open_file(1).unwrap();
+        clock.set(at(8, 2));
+        let second = back_up_now(&handle, "Copies");
+        let copy = |made: &str| backups.join(made).join("Databases/Sample.fmp12");
+        assert_eq!(
+            stored_name(&copy(&first), 1).as_deref(),
+            Some("Write tests"),
+            "{engine}"
+        );
+        assert_eq!(
+            stored_name(&copy(&second), 1).as_deref(),
+            Some("Replaced"),
+            "{engine}"
+        );
+        assert_ne!(inode(&copy(&first)), inode(&copy(&second)), "{engine}");
+    }
+}
+
 #[test]
 fn backups_taken_while_a_client_writes_are_each_a_saved_version() {
     let folder = Folder::new("concurrent");

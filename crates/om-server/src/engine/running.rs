@@ -123,12 +123,25 @@ impl Engine {
         }
     }
 
+    /// The reads the test view compared on a store copy, and those it did
+    /// not (`ServerHandle::store_comparisons`): the file engine's alone.
+    #[cfg(debug_assertions)]
+    pub(crate) fn store_comparisons(&self) -> Option<super::Compared> {
+        match self {
+            Engine::File(engine) => engine.store_comparisons(),
+            Engine::Store(_) => None,
+        }
+    }
+
     /// Fail every read of `path` in the file named `file`
-    /// (`ServerHandle::failing_reads`): the file engine's alone.
+    /// (`ServerHandle::failing_reads`); on the store engine, the empty path
+    /// makes the file's root fail to open.
     #[cfg(debug_assertions)]
     pub(crate) fn fail_reads(&self, file: &str, path: Vec<Vec<u8>>) {
-        if let Engine::File(engine) = self {
-            engine.fail_reads(file, path);
+        match self {
+            Engine::File(engine) => engine.fail_reads(file, path),
+            Engine::Store(engine) if path.is_empty() => engine.break_root(file),
+            Engine::Store(_) => {}
         }
     }
 }

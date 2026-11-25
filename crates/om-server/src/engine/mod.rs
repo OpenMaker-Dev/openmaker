@@ -182,6 +182,8 @@
 
 #[cfg(debug_assertions)]
 mod copies;
+#[cfg(debug_assertions)]
+pub use copies::Compared;
 pub(crate) mod export;
 mod file;
 mod overlay;

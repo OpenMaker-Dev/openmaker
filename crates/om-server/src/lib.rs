@@ -151,8 +151,8 @@ pub use admin::{
 };
 pub use backups::{BackupError, BackupInfo, BackupProgress, MAX_KEEP, MAX_LABEL_CHARS};
 pub use config::{
-    ConnectionLimits, EngineSettings, HostedFile, Privileges, ScriptLimits, ServerConfig,
-    ServerIdentity, SCRIPT_CALC_LIMITS,
+    check_store_folder, ConnectionLimits, EngineSettings, HostedFile, Privileges, ScriptLimits,
+    ServerConfig, ServerIdentity, SCRIPT_CALC_LIMITS,
 };
 #[cfg(debug_assertions)]
 #[doc(hidden)]
@@ -161,6 +161,9 @@ pub use connection::{
     LOGIN_INACTIVE_ACCOUNT, LOGIN_PASSWORD_CHANGE_DUE, LOGIN_UNREADABLE_ACCOUNT,
     LOGIN_UNREADABLE_FILE, LOGIN_UNSUPPORTED_PRIVILEGES,
 };
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use engine::Compared as StoreComparisons;
 pub use eventlog::{
     Alert, Level, LogEntry, LogFileInfo, LogPage, LogReadError, MAX_ALERTS, MAX_LOG_LINE,
     MAX_LOG_PAGE, MAX_LOG_SCAN, MAX_LOG_SIZE,

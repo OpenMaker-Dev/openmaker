@@ -53,12 +53,21 @@ fn a_file_hosted_from_the_store_reads_as_from_the_file_engine() {
     let (port, _) = start_on_store(&[(FILE, &file)], &store.0, |s| s);
     let (mut client, _) = server::logged_in(port, "store");
     let stored = records_of(&mut client, TABLE);
-    let (port, _) = start_hosting(&[(FILE, &file)], |s| s);
+    let (port, handle) = start_hosting(&[(FILE, &file)], |s| s);
     let (mut client, _) = server::logged_in(port, "file");
     let loaded = records_of(&mut client, TABLE);
     assert!(!stored.is_empty());
     assert_eq!(stored, loaded);
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
+    // The file engine's server also answered each read through a store
+    // copy (`engine::copies`): this test claims that comparison, so it
+    // fails when nothing was compared or the copy could not be made.
+    #[cfg(debug_assertions)]
+    {
+        let compared = handle.store_comparisons().expect("a server checking reads");
+        assert!(compared.compared > 0, "{compared:?}");
+        assert_eq!((compared.no_copy, compared.changed), (0, 0), "{compared:?}");
+    }
 }
 
 /// The Tasks file with field work deferred for a field whose definition is
@@ -324,11 +333,14 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
     both.unchanged();
 }
 
-/// docs/server-storage.md 11: a server script's step that would change the
-/// file (a commit, a new record) fails with error 3, "Command is
-/// unavailable", and changes nothing.
+/// docs/server-storage.md 11: on a file hosted read-only, on either
+/// engine alike, a server script opens no record for editing and creates
+/// none: Set Field and New Record fail with 3, "Command is unavailable",
+/// where the script sees it, and a script that sets a field and ends with
+/// the record open reports 3 too, never 0 with its edit dropped at the
+/// session's end. Nothing changes.
 #[test]
-fn server_scripts_that_write_answer_unavailable() {
+fn server_scripts_that_would_write_fail_alike_on_both_engines() {
     let edit = fixture::script(
         4,
         "Edit",
@@ -336,7 +348,6 @@ fn server_scripts_that_write_answer_unavailable() {
             fixture::on(86, true),
             fixture::go_to_record(1),
             fixture::set_field(fixture::COUNT, "99"),
-            ScriptStep::new(75),
             fixture::exit_with("Get ( LastError )"),
         ],
     );
@@ -349,9 +360,17 @@ fn server_scripts_that_write_answer_unavailable() {
             fixture::exit_with("Get ( LastError )"),
         ],
     );
-    let (file, _) = read_only_tasks("store-engine-scripts", &[edit, add]);
+    let left_open = fixture::script(
+        6,
+        "Left open",
+        vec![
+            fixture::go_to_record(1),
+            fixture::set_field(fixture::COUNT, "99"),
+        ],
+    );
+    let (file, _) = read_only_tasks("store-engine-scripts", &[edit, add, left_open]);
     let mut both = Both::host("scripts", file);
-    for script in [4, 5] {
+    for script in [4, 5, 6] {
         let [by_file, by_store] = [0, 1].map(|i| {
             let reply = both.sessions[i]
                 .0
@@ -359,9 +378,8 @@ fn server_scripts_that_write_answer_unavailable() {
                 .unwrap();
             (reply.error, reply.result)
         });
-        assert_eq!(by_store, (3, "3".to_string()), "script {script}");
-        // A file the file engine holds read-only refuses them too.
-        assert_ne!(by_file.0, 0, "script {script}");
+        assert_eq!(by_store, by_file, "script {script}");
+        assert_eq!(by_store.0, 3, "script {script}: {by_store:?}");
     }
     both.unchanged();
 }
@@ -416,6 +434,46 @@ fn authoring_edits_answer_unavailable() {
         "{by_store:?}"
     );
     both.unchanged();
+}
+
+/// docs/server-storage.md 11: a file whose tree's root no longer opens
+/// (here a test's) stays listed and open, and every request on it fails as
+/// a read of it does, also those the state derived when it was hosted could
+/// answer: a login is answered "unable to open", and a download of a
+/// session logged in before fails.
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_whose_root_does_not_open_fails_its_logins_too() {
+    use om_protocol::{LoginEnvironment, MachineInfo};
+    let file = TempFile::new("store-engine-broken-root", &[], true);
+    let store = StoreDir::new("broken-root");
+    let (port, handle) = start_on_store(&[(FILE, &file)], &store.0, |s| s);
+    let (mut before, _) = server::logged_in(port, "before");
+    handle.failing_reads(FILE, &[]);
+    let table = uint_segment(TABLE);
+    assert!(before.download(&[&table, &[5]]).is_err());
+    let client = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
+    let mut session = om_session::Session::connect(
+        "127.0.0.1",
+        port,
+        client.cert.pem().as_bytes(),
+        client.signing_key.serialize_pem().as_bytes(),
+        "127.0.0.1",
+        &MachineInfo::default(),
+    )
+    .unwrap();
+    session.open_file("127.0.0.1", FILE).unwrap();
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    let login = session
+        .login(
+            fixture::ACCOUNT,
+            fixture::PASSWORD,
+            fixture::INTERNAL_CREATION,
+            &environment,
+        )
+        .unwrap();
+    assert_eq!(login.error_code, om_server::LOGIN_UNREADABLE_FILE);
+    assert_eq!(handle.files()[0].status, FileStatus::Open);
 }
 
 /// docs/server-storage.md 11: a file the import refuses is not hosted, the

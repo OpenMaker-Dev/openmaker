@@ -1318,10 +1318,12 @@ impl ServerHost {
     /// End the session: revert an unfinished transaction, commit the open
     /// record as closing the window does (revert it when the script was
     /// aborted or the commit fails), release every lock and save what the
-    /// session left unsaved. Returns the save's FileMaker error (800, 809
-    /// or 810) when that save did not confirm that the file on disk holds
-    /// it, or 802 when a read of the file failed (then nothing is committed
-    /// or saved), which the script's result reports (`scripts::run`).
+    /// session left unsaved. Returns the error the script's result reports
+    /// (`scripts::run`): 802 when a read of the file failed (then nothing
+    /// is committed or saved); else the open record's commit's error when
+    /// it failed, as its edit is lost; else the save's FileMaker error
+    /// (800, 809 or 810) when that save did not confirm that the file on
+    /// disk holds it.
     pub fn close(&mut self) -> Option<u16> {
         self.refresh_schema();
         if self.transaction.is_some() {
@@ -1330,6 +1332,7 @@ impl ServerHost {
         // After a read that failed, what the session has not committed is
         // reverted, its open record too: nothing read as missing reaches
         // the file (docs/server-storage.md 5, "A script session's reads").
+        let mut not_committed = None;
         if self.control.aborted().is_some() || self.read_failed() {
             self.drop_open();
         } else if let Err(e) = self.commit_open(Entry::script(false, false)) {
@@ -1338,6 +1341,10 @@ impl ServerHost {
                 self.hosted.name
             );
             self.drop_open();
+            not_committed = Some(match e {
+                HostError::Error(code) => code.0 as u16,
+                HostError::Unsupported | HostError::Pending => ErrorCode::UNAVAILABLE.0 as u16,
+            });
         }
         self.release_locks();
         // The record ids the session reserved for records it did not
@@ -1375,7 +1382,7 @@ impl ServerHost {
         if self.read_failed() {
             return Some(UNREADABLE_CODE);
         }
-        saved
+        not_committed.or(saved)
     }
 
     /// Release every lock of the session (also those of a transaction or
@@ -1483,9 +1490,16 @@ impl ServerHost {
     /// Unless [`Self::may_edit`]: 200 for an account whose records are
     /// view only ([Read-Only Access]), as a client's own write is refused
     /// (inferred for a server script: FileMaker Server's code there is
-    /// unmeasured), else 9 as [`Self::require_view`].
+    /// unmeasured), else 9 as [`Self::require_view`]. On a file hosted
+    /// read-only, on either engine, 3 before anything else: no record is
+    /// opened for editing, created or deleted, so that a step that would
+    /// change one fails where the script sees it, rather than at a commit
+    /// that comes later or at the session's end (OpenMaker's choice, as
+    /// the account steps answer on such a file).
     fn require_edit(&self) -> HostResult {
-        if self.may_edit() {
+        if self.shared.engine.read_only(&self.hosted).is_some() {
+            Err(ErrorCode::UNAVAILABLE.into())
+        } else if self.may_edit() {
             Ok(())
         } else if self.may_view() {
             Err(RECORD_ACCESS_DENIED.into())
@@ -4866,9 +4880,8 @@ impl Records for ServerHost {
                 .and_then(|key| serial::decode(key))
                 .ok_or(ErrorCode::UNKNOWN)?,
             106 => return Err(TABLE_MISSING.into()),
-            // The file takes no more changes (docs/server-storage.md 5), or
-            // its engine takes none yet (3, section 11).
-            code @ (3 | 800 | 809 | 810) => return Err(ErrorCode(code as i32).into()),
+            // The file takes no more changes (docs/server-storage.md 5).
+            code @ (800 | 809 | 810) => return Err(ErrorCode(code as i32).into()),
             _ => return Err(RECORD_IN_USE.into()),
         };
         // Its serial numbers generated on creation are taken now, as

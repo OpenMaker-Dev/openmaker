@@ -513,18 +513,32 @@ The same switch checks the store engine's reads (`engine::copies::StoreCopy`).
 At a file's first read it writes the file engine's tree as an `.fmp12` and
 imports it into a store in memory, as the store engine imports a file it
 hosts (`paged::import`), with its derived state computed from that view as
-the store engine computes it (`store::derived_of`) and checked against the
-file engine's. Every read at that version is then answered a third time,
-through a `PagedView` of the copy, and must give the same answer, byte for
-byte where the answer is a reply. A read at a later version is not: the
-store engine takes no changes. So `om-server`'s tests that only read run
-their reads against both engines: of the 239 tests whose reads were
-compared, 98 only read, every read compared, and 141 wrote after some of
-their reads, whose reads after the change are compared with the test
-view's alone (counted with `OM_STORE_CHECK_LOG`, which notes each test
-once for each file, and whether the file changed). The store engine's
-answers to writes are tested on it directly (section 11). A file the
-import refuses gets no copy.
+the store engine computes it (`store::derived_of`, with the page 0 the
+file engine loaded, which the store engine records from the source it
+imports; the rewrite the copy imports has a page 0 of its own) and checked
+against the file engine's. Every read at that version is then answered a
+third time, through a `PagedView` of the copy, and must give the same
+answer, byte for byte where the answer is a reply. The third read takes
+the file engine's state of the file that is not a version's (read-only,
+the work reads leave waiting), not the store engine's. Not compared so:
+a read at a later version (the store engine takes no changes), a read a
+test told to fail (answered through the test view alone), a read that may
+run only once (`Reading::serve_once`: an export's, a program that issues
+member keys); a read of a file whose copy cannot be made (its tree cannot
+be written as an `.fmp12` or the import refuses it) fails its test. The
+switch counts each
+kind (`ServerHandle::store_comparisons`), and with `OM_STORE_CHECK_LOG`
+each read notes its kind with its test's name. In a run of
+`om-server`'s tests, 6,053 reads were compared, 70,859 came at a later
+version, 83 were told to fail, 17 ran once, and none was of a file
+without a copy: of the 248 tests whose servers read, 89 had every read
+compared, 152 some (144 with reads after their own writes, 5 with reads
+told to fail, 4 with reads that run once), and 7 none (5 export tests,
+whose reads run once, and 2 tests of reads told to fail). The store
+engine's answers to writes are tested on it directly (section 11), and a
+test that claims the comparison
+(`a_file_hosted_from_the_store_reads_as_from_the_file_engine`) fails when
+it compared nothing or its file got no copy.
 
 **Write operations.** Every change the server makes is a value of one
 type, a write operation (`engine::Operation`):
@@ -1033,11 +1047,15 @@ at the moments the store always read its catalog again
 (`Store::reread_catalog`); the locale and the date order stay those the
 file was loaded with, as before. The store engine computes it once, from
 the view of the version it hosts, when it hosts the file
-(`store::derived_of`): its files do not change. That takes 1.3 to 1.8 ms
+(`store::derived_of`): its files do not change. That took 1.3 to 2.1 ms
 for the Tasks fixture's schema, whatever its number of records
 ([store-engine-file.md](performance/store-engine-file.md), "Hosting on
-the store engine"): it reads the catalogs, the accounts and the locale,
-never the records.
+the store engine"): it reads the catalogs, the accounts and the locale.
+A file whose locale record is missing or does not read has its date
+order detected instead (`derived::detect_date_order`): for each date and
+timestamp field with a value index, every key of that index and one
+record's stored value for each key, once for each of the three orders, so
+that cost grows with the distinct dates the file indexes.
 
 The calculation schema is the catalogs a script's rules and calculations
 read, the schema `[3]`, the custom functions `[16]`, the value lists
@@ -2996,34 +3014,69 @@ One executor serves FileMaker Pro's finds (op86, `om-query`) and SQL
 
 | Setting | Meaning |
 |---|---|
-| `--engine file` or `store` | the engine for the whole server, chosen when it starts; `file` by default, and nothing changes for it |
-| `--store-dir` | the store folder (default `Store` in the state folder), made for the server's user only; one server at a time holds it (`om_store::sys::FolderLock`) |
-| `--store-cache-mib` | the page cache's size (default 256): the memory the store's reads hold, whatever the files' size |
+| `--engine file` or `store` | the engine for the whole server, chosen when it starts; `file` by default |
+| `--store-dir` | the store folder (default `Store` in the state folder), made for the server's user only; one server at a time holds it (`om_store::sys::FolderLock`). Refused when it is a database folder, inside one or holds one, and when it exists and its group or others can reach it or another user owns it (`om_server::check_store_folder`), each with what to do |
+| `--store-cache-mib` | the page cache's size (default 256): the store's pages kept in memory. What else the store engine holds is below ("Memory") |
 | `--export-on-stop` | a folder that gets an export of every file at a clean stop (not built) |
 
 Built (#779): the store engine hosts files read-only. What follows says
 what it does now; what it does not do yet is at the end of the section.
+The file engine, the default, is as before but for three things this work
+changed on both engines: a backup links a file's earlier copy only when
+the file holds what it held then, its load and saves included (a file
+closed, replaced and opened again is copied anew, "Backups" below); a
+server script on a file hosted read-only fails where it would open a
+record ("What the store engine answers"); and a script whose last record
+is not stored when it ends reports the commit's error, not 0.
 
+- **The store folder** is one page file of `om-store`'s
+  (`om_store::pagefile`) and a marker file, `om-server-store`, whose line
+  is the folder's mark: "om-server store folder 0: files imported outside
+  the log, hosted read-only; not a format promise". Nothing is written or
+  removed in a folder before it is known to be this server's
+  (`engine::store::claim`, before the folder's lock is taken and the page
+  file opened): an empty folder is given the marker first, made durable;
+  a folder with the marker goes on (one with only a marker a stop cut
+  short is written again); any other folder is refused untouched, the
+  server does not start, and the message names what the folder holds and
+  says to give an empty or new folder. The page file's own tree
+  `om-server:hosted` records the files and carries the mark again; a page
+  file with trees and another mark, or none, is refused too. The folder
+  is not a format promise (section 6.10; groups are
+  [#778](https://github.com/OpenMaker-Dev/openmaker/issues/778)): a later
+  server that finds another mark refuses the folder, and its files are
+  imported again from their `.fmp12`s into a new folder. The folder is
+  input like a file: what it holds is read with bounds and checked by hash
+  (section 6.11), and a read that fails is an error, never a panic.
 - **Moving to the store engine.** Each file the server hosts (named on the
   command line or found in a `--database-folder`) that the store does not
   hold as it is on disk is imported when the server starts
   (`StoreFolder::hold`). The `.fmp12` is opened read-only and never
-  written. The store records, for the name clients open the file by, its
-  tree, the source's length and SHA-256 and its page 0. At each start the
-  source is read once to hash it: a source whose length and hash are the
-  recorded ones is served from the tree the store holds; a changed one is
-  imported again, its old tree dropped. The Admin Console's open of a
-  closed file does the same, so a file replaced while it was closed is
-  imported again.
-- **A stop at any point.** An import goes into a tree under a name of its
-  own (`om-server:importing:<n>`), in units of work outside the log
-  (section 6.10). One unit then records the file, drops the tree it
+  written. The import reads it once and takes its SHA-256 in the same
+  pass, in file order (`engine::store::Hashing`: the bytes the import reads
+  ahead are the ones hashed); the file's length, modification and change
+  times and inode are read before and after, and a file that changed while
+  it was imported is not recorded (`StoreError::SourceChanged`): its tree
+  is dropped, it is not hosted, and the next start imports it again. The
+  store records, for the name clients open the file by, its tree, the
+  source's length and SHA-256 and its page 0. At a later start the source
+  is read once to hash it: one whose length and hash are the recorded ones
+  is served from the tree the store holds; a changed one is imported again,
+  its old tree dropped. The Admin Console's open of a closed file does the
+  same, so a file replaced while it was closed is imported again.
+- **A stop or a failure at any point.** An import goes into a tree under a
+  name of its own (`om-server:importing:<n>`), in units of work outside the
+  log (section 6.10). One unit then records the file, drops the tree it
   replaces and gives the new one the file's tree name, and a checkpoint
-  makes it durable. What an earlier start left under an import's name is
-  dropped when the folder is opened. So the store holds each file whole,
-  as imported or as before, never part of an import
+  makes it durable. An import that fails after its tree was made (the last
+  unit, the checkpoint, a source that changed) drops that tree at once, so
+  the next import, which takes the same number, finds nothing in its way;
+  what a stop left under an import's name is dropped when the folder is
+  opened. So the store holds each file whole, as imported or as before,
+  never part of an import
   (`engine::store::tests::an_import_stopped_at_any_step_leaves_the_file_whole_or_as_it_was`,
-  which stops one at every step of the page file's simulator).
+  which stops one at every step of the page file's simulator, and
+  `an_import_that_fails_at_its_last_unit_leaves_nothing_in_the_way`).
 - **A file the import refuses** (`engine::paged::ImportError`, section 5,
   "The store engine's file") is not hosted: the log names the file and the
   typed reason, an alert is raised, and the other files are hosted, as for
@@ -3031,34 +3084,41 @@ what it does now; what it does not do yet is at the end of the section.
   import refuses ([#792](https://github.com/OpenMaker-Dev/openmaker/issues/792)).
   A file with deferred field work pending is hosted with the work pending,
   logged ([#794](https://github.com/OpenMaker-Dev/openmaker/issues/794)).
-- **The store folder** is one page file of `om-store`'s
-  (`om_store::pagefile`), whose tree `om-server:hosted` records the files
-  and carries the folder's mark: "om-server store folder 0: files
-  imported outside the log, hosted read-only; not a format promise". The
-  folder is not a format promise (section 6.10; groups are
-  [#778](https://github.com/OpenMaker-Dev/openmaker/issues/778)): a server
-  that finds another mark, or none, in a folder whose page file holds
-  trees refuses the folder and does not start, so a later server can tell
-  this one's folder and import its files again from their `.fmp12`s
-  (remove the folder). The folder is input like a file: what it holds is
-  read with bounds and checked by hash (section 6.11), and a read that
-  fails is an error, never a panic.
 - **Reads.** Each file is read through a `PagedView` of the version the
   store held when it hosted the file, pinned for as long as it is hosted
   (`engine::StoreFile`); its derived state is computed from that view
-  then (section 5, "Derived state"). A view that no longer reads fails
-  every read with `ReadError::Unreadable`, as a damaged page does.
+  then (section 5, "Derived state"), what that reads whole within a limit
+  (`HOSTING_LIMIT`, "Memory" below). A read that reaches a page that does
+  not read or check fails with `ReadError::Unreadable`, as section 6.12
+  says. When the version's root itself no longer opens, every reading of
+  the file is broken: every read fails, and so does what would be
+  answered from the derived state alone, as its accounts are held
+  unreadable then (`Reading::of_store`). A client then sees: the file
+  still listed and opening (its name and internal creation are the
+  hosting's), its status download and every other download, find or
+  thumbnail failing with the system exception of a read that fails, and a
+  login, also with a right password, answered 802 "unable to open"
+  (`LOGIN_UNREADABLE_FILE`), as a file whose accounts cannot be read; a
+  schedule's run on it is aborted the same way. The file stays open in the
+  Admin Console until the administrator closes it
+  (`a_file_whose_root_does_not_open_fails_its_logins_too`).
 - **Exports and backups** are written from the view (`paged::export`),
   whatever the kind asked: a backup schedule's copy of a file, and the
-  Admin Console's. Each backup writes the file again, never a link to an
-  earlier backup's copy.
+  Admin Console's. A backup links an earlier backup's copy, as on the file
+  engine, only when the file holds what that copy holds: on the store
+  engine, the same imported source (its length and SHA-256); a file
+  replaced and opened again is copied anew
+  (`tests/backups.rs`,
+  `a_backup_after_a_file_was_replaced_and_opened_again_copies_the_new_file`,
+  on both engines).
 
 **What the store engine answers.** Every file is hosted read-only. A
 client's write requests are refused before they reach the engine, as
 those to any file the server hosts read-only are, byte for byte
 (`tests/store_engine.rs`,
-`a_clients_writes_are_refused_as_on_a_file_hosted_read_only`); what
-FileMaker Server answers for a file it hosts read-only is unmeasured
+`a_clients_writes_are_refused_as_on_a_file_hosted_read_only`): the
+refusals of section 5, "Writes to a file hosted read-only". What FileMaker
+Server answers for a file it hosts read-only is unmeasured
 ([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790), for the
 live test):
 
@@ -3066,24 +3126,64 @@ live test):
 |---|---|
 | op71 create a record | status 200 (access denied) |
 | op72 a serial | status 200, no value |
-| op13 or op14, into the file or into the temporary area; op70 commit; op73 update a table | a MARSHAL system exception, as a write whose save failed ([#737](https://github.com/OpenMaker-Dev/openmaker/issues/737), [#800](https://github.com/OpenMaker-Dev/openmaker/issues/800)) |
+| op13 or op14, into the file or into the temporary area; op70 commit; op73 update a table | a MARSHAL system exception, as a write whose save failed, never the completion reply ([#737](https://github.com/OpenMaker-Dev/openmaker/issues/737), [#800](https://github.com/OpenMaker-Dev/openmaker/issues/800)) |
 | op88 container data | status 200 |
 | op87 a reference count | `ffffffff`, the count failed |
 | op86 a program with schema instructions | the error slot with 200 |
 | op86 a find that builds an index | answered; the index is not stored ([#793](https://github.com/OpenMaker-Dev/openmaker/issues/793)) |
 | op60, op61, op62 locks | as on any file; op60's modification count is read from the view |
 
-What the engine cannot do yet and still reaches it answers a typed
-"unavailable", FileMaker's error 3 ("Command is unavailable";
-OpenMaker's choice, as a server script's account step answers on a file
-hosted read-only), and changes nothing (`StoreEngine::submit_with`):
+A server script, on a file hosted read-only on either engine, opens no
+record for editing and creates or deletes none: the step that would
+(Set Field, New Record, Delete Record, Replace Field Contents, Import
+Records and the rest that edit records) fails with 3, "Command is
+unavailable", where the script sees it (`ServerHost::require_edit`). So no
+edit waits for a commit that would be refused later, the explicit Commit
+Records or the one when the session ends. Whatever makes that last commit
+fail (on a writable file, a save that fails), the script's result is its
+error, never 0 (`ServerHost::close`; `tests/saves.rs`,
+`a_script_whose_last_record_is_not_stored_reports_the_error`). What the
+engine cannot do yet and still reaches it answers a typed "unavailable",
+FileMaker's error 3 (OpenMaker's choice, as a server script's account step
+answers on a file hosted read-only), and changes nothing
+(`StoreEngine::submit_with`):
 
 | What | Answer |
 |---|---|
-| a server script's step that writes: a commit, New Record, Set Next Serial Value, an account step | the step fails with 3 (`tests/store_engine.rs`, `server_scripts_that_write_answer_unavailable`) |
+| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 3, the same on both engines (`server_scripts_that_would_write_fail_alike_on_both_engines`) |
+| a server script's Set Next Serial Value, account steps | 3 |
 | an authoring edit (op240: a script's steps, a field, a layout and the rest) | refused, status 3, "nothing was changed" |
 | op240 Save | refused, status 3, the file being read-only, as on any file hosted read-only (`authoring_edits_answer_unavailable`) |
 | the Admin Console's close and open of a file | done; the open holds the file again, imported again when it changed (`a_file_opened_again_is_imported_again_once_it_changed`) |
+
+**Memory.** The page cache (`--store-cache-mib`) bounds the store's pages
+in memory. Outside that bound, the store engine also holds:
+
+- each file's derived state (section 5): its decoded schema and layout
+  catalogs, field catalogs, accounts, privilege sets and calculation
+  schema, for as long as the file is hosted, as the file engine does.
+  What hosting reads whole to compute it, each catalog, the privilege sets
+  and each account on its own, is read within `HOSTING_LIMIT` (256 MiB,
+  counted as an owned tree's memory); a file past it is not hosted
+  (`HostingError::TooLarge`; OpenMaker's choice);
+- one roots table for each version a file is pinned at: every tree of the
+  page file then. Files held at one start without an import share one
+  table; a start that imports n files keeps n tables, about n²/2 entries
+  (41 MB for 1,000 files;
+  [#804](https://github.com/OpenMaker-Dev/openmaker/issues/804));
+- the pages written and waiting for a checkpoint, up to the page file's
+  budget, during an import;
+- what each find, sort and download holds while it runs: a find through a
+  stored index reads that index whole
+  ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)), a find
+  on a field without one builds its index whole, and builds it again at
+  each find ([#793](https://github.com/OpenMaker-Dev/openmaker/issues/793)),
+  a sort holds a key per record for each of its fields, and a download
+  holds the pages it has not sent, up to `--download-memory-mib`.
+
+Measured on files of 110 and 548 MB, against the file engine:
+[store-engine-file.md](performance/store-engine-file.md), "Hosting on the
+store engine".
 
 **Not yet on the store engine:** any change to a file (the log, groups
 and the write side, sections 6.3, 6.9), indexes kept for later finds
@@ -3093,10 +3193,7 @@ and sorts that read an index through a listing rather than whole
 the import refuses ([#792](https://github.com/OpenMaker-Dev/openmaker/issues/792)),
 deferred field work ([#794](https://github.com/OpenMaker-Dev/openmaker/issues/794)),
 the desktop's own files (its private host runs the file engine), and
-`--export-on-stop`. Its times and memory against the file engine's, on
-files of 110 and 548 MB, are in
-[store-engine-file.md](performance/store-engine-file.md), "Hosting on the
-store engine".
+`--export-on-stop`.
 
 - **Moving back.** Start with `--engine file` on the `.fmp12`s: the store
   engine never writes them. Once it takes changes: export, then start
@@ -3182,12 +3279,14 @@ engines, and generated request sequences are sent to both through the real
 connection code, with replies compared byte for byte. Both runs take the
 host clock, connection ids and nonces from the same seeded source, so
 replies that carry them are comparable. Built so far, while the store
-engine only reads: every read of `om-server`'s test servers is answered
-also through a store copy of the file and compared (section 5, "Views",
-the test view), so its tests that only read run against both engines'
-reads; and `tests/store_engine.rs` hosts files on the store engine itself
-and compares its answers to a client's writes with a read-only file's on
-the file engine, byte for byte. Generated sequences are not built.
+engine only reads: the reads of `om-server`'s test servers are answered
+also through a store copy of the file and compared, each at the version
+the copy holds and where a copy can be made (section 5, "Views", the test
+view, which counts what it compared and what not), so its tests that
+only read run their reads against both engines; and
+`tests/store_engine.rs` hosts files on the store engine itself and
+compares its answers to a client's writes with a read-only file's on the
+file engine, byte for byte. Generated sequences are not built.
 
 **FileMaker.** Exports pass FileMaker's consistency check
 (hbam-writer.md 8) and open in FileMaker Pro. The runs of section 14 use
