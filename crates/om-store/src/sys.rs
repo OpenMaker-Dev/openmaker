@@ -50,6 +50,7 @@
 //! error of this layer: damage is found above it, by hashes.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -179,20 +180,54 @@ pub struct FolderLock {
     _held: Box<dyn Send + Sync>,
 }
 
-/// What makes a lock itself: its allocation, which outlives no lock.
-struct Token;
+/// What makes a lock itself: its allocation, which outlives no lock; and
+/// whether a page file opened with it is open now.
+struct Token {
+    page_file: Arc<AtomicBool>,
+}
 
 impl FolderLock {
     /// A new lock, which `held` keeps until it is dropped, and the record
     /// that recognizes it (for implementations).
     pub fn new(held: impl Send + Sync + 'static) -> (Self, LockRecord) {
-        let token = Arc::new(Token);
+        let token = Arc::new(Token {
+            page_file: Arc::default(),
+        });
         let record = LockRecord(Arc::downgrade(&token));
         let lock = Self {
             token,
             _held: Box::new(held),
         };
         (lock, record)
+    }
+
+    /// Marks the lock as taken by one page file, from the start of its
+    /// opening until the returned mark is dropped; `None` while another
+    /// mark is held. One page file per store folder rests on this: the
+    /// folder's lock keeps out other processes, and this mark keeps out a
+    /// second page file of the same process, which would write from its own
+    /// view of the slots over the first's.
+    pub fn take_page_file(&self) -> Option<PageFileMark> {
+        let flag = &self.token.page_file;
+        flag.compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .ok()?;
+        Some(PageFileMark(flag.clone()))
+    }
+}
+
+/// A lock taken by one page file ([`FolderLock::take_page_file`]); dropping
+/// it lets another be opened.
+pub struct PageFileMark(Arc<AtomicBool>);
+
+impl Drop for PageFileMark {
+    fn drop(&mut self) {
+        self.0.store(false, AtomicOrdering::Release);
+    }
+}
+
+impl fmt::Debug for PageFileMark {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PageFileMark")
     }
 }
 

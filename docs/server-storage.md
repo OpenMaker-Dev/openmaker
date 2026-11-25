@@ -612,14 +612,34 @@ settled (server-storage-format.md 4.5).
 **Starting up.**
 
 1. Read `state`. With no valid copy the server does not start.
-2. Of the two checkpoints on disk, newest first, take the first whose
-   superblock copy is valid, whose meta stream reads back and agrees with
-   it, and whose tree roots read back with the hashes it names; a read
-   the device fails counts as not reading back. Its copy is written into
-   both of its slots, and the other pair keeps only its predecessor's
-   copy: a checkpoint passed over is cleared before any of its pages can
-   be written over. Deeper damage is page damage (section 6.12), found when a
-   page is read, and does not send the server back to an older checkpoint.
+2. Take the newest checkpoint on disk: the one with the highest-numbered
+   valid superblock copy, whose meta stream reads back and agrees with it
+   and whose tree roots read back with the hashes it names. The open
+   gives nothing up (#750). If the device fails a read of a slot or of
+   that checkpoint, or that checkpoint's bytes do not check, it writes
+   nothing and reports which checkpoint (or slot), why, and what giving
+   it up would lose: the restore points it lists that the checkpoint
+   before it does not. A read the device fails says nothing of the bytes,
+   which a later read may return whole, so the server is started again
+   later. Giving a checkpoint up and opening on the one before it is a
+   separate, explicit call, given the approval the report carries: what
+   to give up, what goes with it, and the checkpoint to land on, each
+   checkpoint named by an identity that differs when a number comes again
+   (unless the contents are the same in every byte, and then so is the
+   loss). The call does exactly
+   that or nothing, so the server records the report durably before it
+   makes the call, and the loss it recorded is the loss that can happen. The server is to make that call by
+   itself for damage, and leave it to an administrator for a read that
+   keeps failing; that part of the store is not built yet, so a store
+   whose newest checkpoint does not check does not start by itself. The
+   checkpoint used has its copy written into both of its slots, and the
+   other pair keeps only its predecessor's copy: what an open writes over
+   is a slot that held nothing usable (bytes that do not check, or a copy
+   of a checkpoint whose pages are free), and the explicit call writes
+   over the slots of what it gave up, before any of its pages can be
+   written over. Deeper damage is page damage (section 6.12), found when
+   a page is read, and does not send the server back to an older
+   checkpoint.
 3. Read the log from that checkpoint and check it against the marker: the
    entry at the marker's index must be there, whole, with the marker's
    hash, and so must every entry between the checkpoint and it. A
@@ -792,7 +812,8 @@ store take unbounded memory or disk:
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11). A folder that holds a store's log or page file and no `state` at all is the same fault, and is never created over; only what a creation cut short left is (server-storage-format.md 6.1) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
-| The newest checkpoint's superblock or roots cannot be read | hashes | use the checkpoint before it, which is kept whole (section 6.7) |
+| The newest checkpoint's meta stream or roots do not check | hashes | the open writes nothing and reports the checkpoint and the restore points giving it up would lose; an explicit call gives it up and opens on the checkpoint before, which is kept whole. The store is to make that call by itself, recording the report first; not built yet, so such a store does not start by itself (section 6.7) |
+| The device fails a read of a slot or of the checkpoint the open is choosing | the system's error | the open fails and writes nothing; start again later. A read that keeps failing is given up only by an administrator's explicit call, which opens on the checkpoint before and reports what it gave up (section 6.7) |
 | A flush fails | the system's error | stop the server at once and recover on restart. Never retry the flush: the system may already have dropped the data (PostgreSQL's 2018 finding). An entry the failed flush covered may be found whole on restart; its outcome was unknown to its client (section 2) |
 | The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads. A start whose own entry finds no room after a checkpoint does not open, and says to free space |
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
