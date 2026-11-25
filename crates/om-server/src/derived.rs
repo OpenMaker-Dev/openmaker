@@ -734,12 +734,6 @@ pub(crate) fn written_form(
     Ok(Some(ENGLISH))
 }
 
-/// The keys of `field`'s value or word index over every record of `table`,
-/// each with the records holding it (query-program.md 7.2, 7.3); with
-/// `accounted`, `None` when a record holds a value in the field that the
-/// current rules give no value-index key, which another rule (FileMaker's)
-/// may have given one.
-#[allow(clippy::too_many_arguments)]
 /// The keys index `kind` gives a record whose field holds `texts`, and
 /// whether they account for its value: a value index gives a value that
 /// is not blank no key when the current rules key it to nothing (a date
@@ -765,6 +759,12 @@ pub(crate) fn record_keys(
     }
 }
 
+/// The keys of `field`'s value or word index over every record of `table`,
+/// each with the records holding it (query-program.md 7.2, 7.3); with
+/// `accounted`, `None` when a record holds a value in the field that the
+/// current rules give no value-index key, which another rule (FileMaker's)
+/// may have given one.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn index_entries(
     view: &dyn View,
     derived: &Derived,
