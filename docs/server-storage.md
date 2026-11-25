@@ -11,9 +11,9 @@ it except the contract in section 2.
 (`crates/om-server/src/store.rs`). Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them, and every save's outcome is reported
-(section 5). Views are built, and downloads and finds read through them;
-the other readers still hold the file engine's store (section 5, "Moving
-the other readers"). Still to come: `export`, `import` and `capabilities`
+(section 5). Views are built, and downloads, finds, logins, thumbnails
+and op88's check of a library read through them; the other readers still
+hold the file engine's store (section 5, "Moving the other readers"). Still to come: `export`, `import` and `capabilities`
 (section 5), the store engine and everything in sections 6 to 12, which
 are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
@@ -185,10 +185,12 @@ only to read (`store::SavedFile`). The exceptions:
   the engine's saves. Nothing outside the engine's saves writes through
   either.
 
-Views are built, with the file engine's behind them, and the first
-readers read through them: downloads (op90, op15, op92) and finds (op86).
-The other readers still hold the store; "Moving the other readers" below
-is the plan for them. `export`, `import` and `capabilities` are not built.
+Views are built, with the file engine's behind them, and these readers
+read through them: downloads (op90, op15, op92), finds (op86), logins
+(op80), thumbnails (op96), and op88's check of the library it stores
+into, with the read-only check of every write request. The other readers
+still hold the store; "Moving the other readers" below lists them and
+the plan for them. `export`, `import` and `capabilities` are not built.
 
 **Views.** A view (`engine::View`) is one fixed version of one file's
 tree. Nothing a view returned changes later. It answers:
@@ -276,7 +278,34 @@ The readers that read through views:
   (`exec::file_node`), and each node on the destination of
   UploadMultiple, which is measured whole as the program's work
   (`exec::upload_multiple`). The view filter evaluates a view limit on
-  the record as stored (`ViewFilter::viewable`, a record whole).
+  the record as stored (`ViewFilter::viewable`, a record whole);
+- op80 (`connection::login`): the account the login names, looked up in
+  the derived state's accounts (`Derived::account`, "Derived state"
+  below) as it was looked up before, by its name in any case. Its password
+  is checked (`hosting::check_password`) once the reading is let go, so a
+  login holds the store's read lock only for the lookup. What is checked
+  and in which order is as before: the login limits, the account, its
+  password, hashed once whether or not the name is an account's, and then
+  whether the account may log in;
+- op96 (`connection::thumbnail`): whether the account's view limits
+  withhold the table's container data, and whether the library holds the
+  member (`containers::thumbnail_key`, the member's own node); then, when
+  no thumbnail of it in that box is cached, its master image
+  (`containers::thumbnail_image`, `thumbnail::master`: each image stream
+  in turn, read whole, until one is there). The cache is looked up
+  between the two reads, outside both. The image is rendered and cached
+  after the reading is let go, as before, and the cache still forgets a
+  library's thumbnails when a write releases or empties the library. A
+  thumbnail read before such a write and cached after it outlives that,
+  as it did before
+  ([#741](https://github.com/OpenMaker-Dev/openmaker/issues/741)); keyed
+  by the version each member was read at, as an engine whose views do not
+  wait for writers needs it anyway, the cache would not keep it;
+- op88's check that the session may store into the file's own library
+  (`connection::container_library_writable`): the base tables of the
+  derived state's catalog. Every write request's check of whether the
+  file is hosted read-only (`connection::writable`, and op72's) reads the
+  file's state once from a reading, as a find's does.
 
 Every subtree these readers ask for whole is asked for with `NO_LIMIT`:
 each was read whole and without a limit before, and a limit would refuse
@@ -286,10 +315,21 @@ A read that fails reaches the client as an error, never as a reply that
 looks whole. A download (op90, op15, op92) is answered with the CORBA
 system exception `PERSIST_STORE`: its reply has no field for it, since its
 lock error is reported apart from its data, and a missing node tells the
-client the key does not exist. A find fails as a program that cannot read
-the file fails (`om_query::QueryError::File`, the error slot's code
-`ffff`). The read is logged as an error. Both are OpenMaker's choice; what
-FileMaker Server answers when it cannot read its file is unmeasured.
+client the key does not exist. A thumbnail (op96) is answered with the
+same exception: its status says only that there is no thumbnail
+(`THUMBNAIL_MISSING`), as for a member the library does not hold. A find
+fails as a program that cannot read the file fails
+(`om_query::QueryError::File`, the error slot's code `ffff`). A login to a
+file whose accounts could not be read ("Derived state" below) is
+answered with FileMaker's error 802, "Unable to open file"
+(`connection::LOGIN_UNREADABLE_FILE`): not 212, which a client takes for
+a wrong account or password and counts toward locking the account out,
+and not a success. Its password is not checked, it does not count toward
+the server's login limits (as a right password for an account the file
+does not admit does not), and no failed login is recorded in the event
+log, since no credentials were refused. The read is logged as an error.
+All of these are OpenMaker's choice; what FileMaker Server answers when it
+cannot read its file is unmeasured.
 
 These readers hold the store's read lock as long as they did, with two
 differences, both shorter and both within one hold, so each still reads
@@ -301,7 +341,25 @@ is hosted read-only (for a program that changes the file), and its
 question afterwards of whether it left work waiting, each take a reading
 of their own, as each took the store before. Both read the file's state,
 not its view, so they are read once and not through `Reading::serve`
-(below), whose two runs other readers could change it between.
+(below), whose two runs other readers could change it between. op96
+takes one reading for what it took the store twice for (the view limits,
+then the member), and so reads one version.
+
+A login takes the store's read lock, which it did not before: it read a
+copy of the accounts that had a lock of its own. So a login now waits
+while a write holds the store (an operation and its save of the file), as
+the client's next request after it, a download, already did. An unknown
+account and a wrong password wait alike, and their logins still differ
+only by the outcome: each is one lookup in the same list and one hash.
+The readers of the accounts that are not logins and do not read through
+a view (a server script's account facts, a schedule's login, the local
+host's account of a desktop that logged in, "Derived state" below) read
+the accounts as before, without waiting for the store.
+
+Each of these reads may run twice (`Reading::serve`, below): the login's
+lookup, op96's two reads and op88's list of tables change nothing they
+read. GenerateMemberKey's read alone runs once (`Reading::serve_once`),
+since it issues keys.
 
 A second view, for tests only (`engine::copies`, debug builds), shows
 that readers do not lean on the file engine's: it serves the same tree but
@@ -309,21 +367,29 @@ hands out every node as an owned copy, gives children and walks three at
 a time, and fails every read that reaches a path it was told to fail (the
 node at the path and everything below it, and a listing or walk of such
 a node whether it is there or not, as a damaged page fails the reads
-that reach it). A server switched to it (`Server::checking_reads`)
-answers each download and find through the file engine's view and then
-through this one, from the same version, and panics when the replies
-differ; it computes its derived state through this view, once for each
-load of a file and its catalog again at each schema change, and checks it
-against the file engine's, failing the check when it cannot compute it.
-The servers of `om-server`'s end-to-end tests
-(`tests/fixtures/server.rs`) and of `om-provider`'s tests of a hosted
-file, its finds, its privileges and related files are switched to it. A
+that reach it). A server switched to it (`Server::checking_reads`, and
+`LocalHost::checking_reads` for a desktop's private host) answers each
+read above through the file engine's view and then through this one,
+from the same version, and panics when the answers differ; it computes
+its derived state through this view, once for each load of a file and
+its catalog and its accounts again each time the file engine reads them
+again, and checks it against the file engine's, failing the check when it
+cannot compute it. The test servers of `om-server`, `om-provider` and
+`om-author` and of `om-gui`'s hosted-file tests, and the private hosts
+`om-server`'s local-file tests open, are switched to it; the private
+hosts the desktop opens for itself in `om-provider`'s and `om-gui`'s
+local-file tests are not. A
 read it was told to fail (`ServerHandle::failing_reads`) is answered
 through it alone, so that a test sees what the client gets
-(`tests/indexes.rs`, `a_failed_read_reaches_the_client_as_an_error`);
+(`tests/indexes.rs`, `a_failed_read_reaches_the_client_as_an_error`;
+`tests/psos_containers.rs`, `thumbnails_read_through_views_and_fail_as_downloads_do`);
 there a derived state it cannot compute is the file engine's, since
 derived state is computed when a file is loaded and when its schema
-changes, not by the read that fails.
+changes, not by the read that fails. Accounts it cannot read are held as
+unreadable instead, as an engine holds them ("Derived state" below), and
+every login is answered as for a file whose accounts could not be read
+(`tests/logins.rs`,
+`a_login_whose_accounts_cannot_be_read_is_answered_unable_to_open`).
 
 **Write operations.** Every change the server makes is a value of one
 type, a write operation (`engine::Operation`):
@@ -554,35 +620,69 @@ they are built. A feature that needs a capability the running
 engine lacks answers a typed "unavailable".
 
 **Derived state.** What readers need of a file besides its tree is one
-value, `derived::Derived`: the decoded catalog, the file's locale and the
-order of its stored dates, and two facts not in the tree that compiling
-its calculations needs, the file's name and whether it is served to a
-desktop client. It is computed from a view (`Derived::new`,
-`derived::read_catalog`) and carries the version it was computed from. It
-is not part of an engine; an engine decides when to compute it. The file
-engine computes it when it loads a file and reads the catalog again after
-each change of the schema, at the moments the store always read its
-catalog again (`Store::reread_catalog`); the locale and the date order
-stay those the file was loaded with, as before. Every reading shares the
-store's current value (`Arc`). An engine with versions keeps it by
-version, and gives it to a later view when `changed_since` says no path it
-was computed from changed.
+value, `derived::Derived`: the decoded catalog, the file's accounts, the
+file's locale and the order of its stored dates, and two facts not in the
+tree that compiling its calculations needs, the file's name and whether
+it is served to a desktop client. It is computed from a view
+(`Derived::new`, `derived::read_catalog`, `derived::read_accounts`) and
+carries the version it was computed from. It is not part of an engine; an
+engine decides when to compute it. The file engine computes it when it
+loads a file and reads the catalog again after each change of the schema,
+at the moments the store always read its catalog again
+(`Store::reread_catalog`); the locale and the date order stay those the
+file was loaded with, as before. Every reading shares the store's current
+value (`Arc`), and the catalog within it is shared too, so replacing the
+accounts copies no catalog. An engine with versions keeps it by version,
+and gives it to a later view when `changed_since` says no path it was
+computed from changed.
+
+The accounts are each account record of `[23, 1, 5]`, read whole one at
+a time (a `subtrees` listing), with the privilege set it names from
+`[23, 2, 5]`, read whole once, decoded as before (`hosting::read_accounts`,
+`hosting::FileAccount`). The file engine decodes them again at the end of
+each operation that moved the schema generation, before its save, under
+the store's write lock (`Store::follow_accounts`): the moments a copy of
+the accounts beside the store was decoded again before, when a write let
+go of a store whose generation had moved, but before the save rather
+than after it. So an account edit (Change Password, Reset Account
+Password, Enable Account, Delete Account), an op13 upload or op86 schema
+change of the security catalog, and an authoring edit (op240, none of
+which changes an account or a privilege set yet) replace the accounts in
+the step that changes the file, and a save that is not written puts back
+the accounts from before the operation with the rest of the derived state
+(the journal keeps it, `Journal::schema_from`), where before they were
+decoded again from the tree put back. A write outside an operation (the setup of a file, a
+test's) has them decoded when it lets go of the store. Accounts that
+cannot be read are held as such (`Derived::accounts` is a `Result`), not
+replaced by the last ones read, which could admit an account since
+deleted or a password since changed; every login to the file is then
+refused (Views, above). The file engine reads them from its tree, which
+never fails.
+
+The readers of the accounts that are not logins read the derived state the
+last write published when it let go of the store (`Hosted::accounts`,
+`Hosted::account`), the same value, without taking the store: a server
+script's calculation that asks for the session's account
+(`Get ( AccountType )`) may hold the store already and must not take its
+lock again, and a schedule's login and the local host's account of a
+logged-in desktop need nothing else of the file.
 
 The reads of a file through a view and derived state are functions beside
 it (`derived`): the catalogs, an index built on demand
 (`index_on_demand`, `written_form`, `index_entries`), the next member key
-of a catalog (`generate_member_key`, `member_key_refusal`), and the inputs
+of a catalog (`stored_member_key`, `issue_member_key`, `issued_keys`,
+`member_key_refusal`), and the inputs
 of a calculation and a privilege set's record limit (`with_calc_inputs`,
 `record_limit`). The store's own work calls them with a view of its tree,
 so readers and operations share one implementation.
 
-Still kept by the store, outside derived state: the accounts
-(`hosting::Accounts`, decoded again at each schema generation), the basis
-of stored calculations (`Store::basis`, below), the verified-index marks
+Still kept by the store, outside derived state: the basis of stored
+calculations (`Store::basis`, below), the verified-index marks
 (`Store::verified`), the schema generation (`Store::schema_generation`,
-which the accounts and server scripts cache by), the file's language as
-its locale record is now (`Store::file_language`), and the read-only flag
-and the file's identity on disk.
+which server scripts cache by and which says when the accounts are
+decoded again), the file's language as its locale record is now
+(`Store::file_language`), and the read-only flag and the file's identity
+on disk.
 
 The basis of stored calculations is not computed from the current view. It
 is what the stored values were last computed with, per table and field:
@@ -602,29 +702,26 @@ computes it
 ([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)).
 
 **Moving the other readers.** The readers below still hold the store
-(`Hosted::read_store`, or `Transaction::view() -> &Store` inside `run`).
-Each is listed with the `Store` helpers it reads through, what it reads
-(one node, a list a node's children make, or a subtree whole), and what it
-needs that views and derived state do not give yet. They move in this
-order, the smaller first, each with the test view's runs of its tests:
+(`Hosted::read_store`, or `Transaction::view() -> &Store` inside `run`),
+or read the accounts the store published without a view
+(`Hosted::accounts`, `Hosted::account`). Each is listed with the `Store`
+helpers it reads through, what it reads (one node, a list a node's
+children make, or a subtree whole), and what it needs that views and
+derived state do not give yet. No connection handler is among them: the
+connection reads only through readings. They move in this order, the
+smaller first, each with the test view's runs of its tests:
 
-1. Logins and the accounts cache. `hosting::Accounts::of` (accounts
-   decoded from `[23, 1, 5]` at each schema generation,
-   `hosting::file_accounts`), `security::catalog` (the security catalog
-   `[23]` whole), `local.rs`'s `LocalHost::suggested_account` and
-   `stored_login`, and `Hosted::verify_password` through the cache. Each
-   account is read whole, one child of `[23, 1, 5]` at a time (a
-   `subtrees` listing). Needs: the accounts in derived state, recomputed
-   when the access paths change, which on the file engine is when the
-   schema generation moves (`StoreWriteGuard`'s drop decodes them today).
-2. The connection's other reads. `connection::container_library_writable`
-   (`Store::catalog`), op96's view filter (`connection::thumbnail`, which
-   reads through `Store::with_read`, a read over the held store) and
-   `containers::thumbnail` (`Store::library_member`, `Store::member_data`:
-   one library member whole, `[T, 1f, 05, M]` or the file's own). Needs:
-   nothing new; the thumbnail cache keyed by the version the member was
-   read at.
-3. Server scripts and their host (`scripts/host.rs` and `scripts/host/`).
+1. The security catalog and the desktop's private host.
+   `security::catalog` (the security catalog `[23]` whole, for an
+   authoring session's view of the file's security), `local.rs`'s
+   `LocalHost::suggested_account` and `stored_login` (the account named
+   in the account catalog's header, `[23, 1, 1, 16]`, and its stored
+   password `06`, one node each; then the account from the published
+   accounts), `LocalHost::authenticated_account` (the published accounts)
+   and `LocalHost::read_only` (`Store::read_only_cause`, the file's state),
+   and a schedule's login (`schedules::log_in`, the published accounts).
+   Needs: nothing new; a reading each, the flag read once from it.
+2. Server scripts and their host (`scripts/host.rs` and `scripts/host/`).
    `Schema::load` and `refresh_schema` (`Store::catalog`, `locale`,
    `file_language`, `schema_generation`, and the design catalogs `[3]`,
    `[4]`, `[16]`, `[17]` whole, `design::design_catalogs`): derived state
@@ -642,22 +739,27 @@ order, the smaller first, each with the test view's runs of its tests:
    `containers.rs`' `value`, `data` and `pending_tokens`
    (`Store::container`, `member_data`: a library member whole), `get.rs`'
    `privilege_set` (the security catalog's set `[23, 2, 5, P]` whole),
-   `related.rs`' `index_lookup` (an index entry by key). Needs: the
+   `related.rs`' `index_lookup` (an index entry by key), and the session's
+   account facts (`ServerHost::authenticated_account_info`, Change
+   Password's check of the account's kind: the published accounts, which
+   a calculation reads while the host may hold the store). Needs: the
    overlay view, the calculation schema in derived state, and the script
    session's cache keyed by a design version rather than the store's
-   schema generation.
-4. Backups and exports. `backups::open_source` reads the store only for
+   schema generation; once a session reads through a reading of its own,
+   its account facts come from that reading's derived state, and the
+   published accounts can go.
+3. Backups and exports. `backups::open_source` reads the store only for
    the saved file it copies (`Store::saved_file`), and `LocalHost`'s
    `prepare_copy` the same. Needs: `export(view, writer)`, a walk of a
    whole version into an `.fmp12` (`om_hbam::writer` builds a file from a
    whole tree today), so that a backup is taken from a view rather than
    from the file the last save wrote.
-5. Admin commands and the hosting state. `Hosted::is_read_only`,
+4. Admin commands and the hosting state. `Hosted::is_read_only`,
    `Hosted::saved_file` (`Store::file`), `finish_close_if_drained` and
    `hosting::hosted_as` read the store's flags and the file's identity on
    disk, not its tree. Needs: those as the engine's state of a file, beside
    its views; nothing of the view.
-6. The operations' own reads inside `engine::run`, through
+5. The operations' own reads inside `engine::run`, through
    `Transaction::view() -> &Store` and the transaction's delegates
    (`has_table`, `has_record`, `last_record_id`, `node`): a commit's
    records (one record whole each, `writes::commit`, with
