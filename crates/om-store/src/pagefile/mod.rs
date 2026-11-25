@@ -1345,9 +1345,11 @@ impl PageFile {
     ///    device holds it twice (an earlier process's failed write or flush
     ///    can leave the system's cache showing a copy the device does not
     ///    hold), never over a copy of the predecessor;
-    /// 2. in the other pair, the predecessor's copy into a slot that does
-    ///    not hold it, when one does; otherwise zeros over each slot that is
-    ///    not blank.
+    /// 2. in the other pair, the predecessor's copy into both slots, when
+    ///    one shows it; otherwise zeros over both. Both are written whatever
+    ///    they show, as the opened pair's are: after an earlier process's
+    ///    failed flush the cache can show a copy, or zeros, that the device
+    ///    does not hold, and drop it later.
     ///
     /// What these keep: the checkpoint opened and the predecessor its meta
     /// stream names keep every copy they have. What goes is what the opened
@@ -1619,8 +1621,12 @@ impl PageFile {
         // else (a checkpoint passed over, a stale copy, bytes that could
         // not be read) is overwritten before any page is: a checkpoint
         // whose pages the store may now reuse must never be chosen later.
-        // The predecessor is the checkpoint whose number and meta stream
-        // the chosen one names: a number alone can belong to another
+        // Both slots are written whatever they show, as the opened pair's
+        // are: the system's cache can show a copy, or zeros, that the device
+        // does not hold (an earlier process's failed flush, after which the
+        // cache may drop what it showed and the device's older bytes come
+        // back). The predecessor is the checkpoint whose number and meta
+        // stream the chosen one names: a number alone can belong to another
         // checkpoint that never reached the disk whole.
         let older_sb = pair_slots(1 - pair)
             .into_iter()
@@ -1629,12 +1635,10 @@ impl PageFile {
         for s in pair_slots(1 - pair) {
             let other = !blank[s] && (copies[s].is_none() || copies[s] != older_sb);
             match older_sb {
-                Some(older) if copies[s] == Some(older) => continue,
                 Some(older) => {
                     file.write_at((s * SLOT) as u64, &superblock::encode(&older))?;
                     rewritten.push(s);
                 }
-                None if blank[s] => continue,
                 None => file.write_at((s * SLOT) as u64, &[0u8; COPY])?,
             }
             file.flush()?;

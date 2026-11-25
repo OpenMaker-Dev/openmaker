@@ -1030,12 +1030,15 @@ rebuilt for them when those entries are applied again (4.7).
      never writes over a copy of the predecessor here (a file this code
      wrote never holds one in this pair: pairs take checkpoints in turn);
   2. in the other pair, if a slot holds a valid copy of the predecessor
-     its meta stream names, that copy is written into the other slot of
-     the pair when that slot does not hold it already, and flushed;
-     otherwise each slot that is not blank is cleared (zeros over a
-     copy's length), and flushed. Either way a slot that held anything
-     else is overwritten before any page is: a checkpoint whose pages the
-     store may now reuse must never be taken later;
+     its meta stream names, that copy is written into both slots of the
+     pair, each flushed; otherwise zeros are written over both (a copy's
+     length), each flushed. Both are written whatever they show, as the
+     opened checkpoint's pair is: after an earlier process's failed flush
+     the system's cache can show a copy, or zeros, that the device does
+     not hold, and drop it later, so that a cleared checkpoint's copy
+     would come back. Either way a slot that held anything else is
+     overwritten before any page is: a checkpoint whose pages the store
+     may now reuse must never be taken later;
   3. if the file is shorter than the map's `end`, it is extended to it
      and flushed.
 
