@@ -426,9 +426,7 @@ fn open_proc_counting(
     };
     let wrote = wrote(&trip);
     if let Some(trip) = &trip {
-        let mut t = trip.lock().unwrap();
-        t.fail_read = None;
-        t.slot_writes = 0;
+        trip.lock().unwrap().fail_read = None;
     }
     let process = Process {
         pf,
@@ -5268,4 +5266,30 @@ fn an_approval_is_refused_for_a_checkpoint_whose_number_came_again() {
         slot_bytes(&disk) == before,
         "the refused call wrote nothing"
     );
+}
+
+/// Review of #752, round 2 (found by the long honest run, seed 112): an
+/// open writes all four slots whatever they show. A call that gave up had
+/// stopped on a failed flush after clearing a checkpoint's slots; the next
+/// open read them as zeros from the system's cache and skipped them, the
+/// cache then dropped the zeros, and the cleared checkpoint's copy came
+/// back from the device. The simulator draws whether a failed flush's
+/// cache keeps what the device lost, so this checks the rule: with both
+/// checkpoints whole in both their slots, an open still writes all four.
+#[test]
+fn an_open_writes_every_slot_whatever_it_shows() {
+    let sim = Sim::new(80);
+    let (disk, three, two, _) = a_point_only_the_newest_lists(&sim);
+    let copies = slot_numbers(&slot_bytes(&disk));
+    assert_eq!(copies.iter().filter(|c| **c == Some(3)).count(), 2);
+    assert_eq!(copies.iter().filter(|c| **c == Some(2)).count(), 2);
+    let (result, _) = open_proc_counting(&disk, config(), None, None);
+    let (proc, opened) = result.unwrap();
+    assert_eq!(
+        (opened.checkpoint, opened.predecessor),
+        (three.number, Some(two.number))
+    );
+    let writes = proc.trip.as_ref().unwrap().lock().unwrap().slot_writes;
+    assert_eq!(writes, 4, "{opened:?}");
+    assert_eq!(slot_numbers(&slot_bytes(&disk)), copies);
 }
