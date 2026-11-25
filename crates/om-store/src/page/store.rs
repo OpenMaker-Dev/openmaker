@@ -169,8 +169,13 @@ pub trait PageStore {
 ///   root is given at most once (`add_tree` or `set_root`), `drop_tree`
 ///   names a tree that existed when the entry began and that the entry gave
 ///   no root, and a page released that is a tree's root is the old root of
-///   a tree the entry gives a new one; a unit that breaks this is refused
-///   whole. A tree is named by the store's own record of it, so a caller
+///   a tree the entry gives a new one. No page the entry writes refers to a
+///   page that is a tree's root once the entry takes effect (a root it
+///   gives, or the root of a tree it leaves alone): a page two trees reach
+///   would be freed with the one dropped while the other still reached it.
+///   Clones will share pages with a share the store records; until one is
+///   recorded, such a reference is refused. A unit that breaks any of this
+///   is refused whole. A tree is named by the store's own record of it, so a caller
 ///   gives the store no root of a tree it already holds.
 /// - **Committing.** `commit` makes all of it take effect together: the
 ///   written pages become readable and reached, the releases are applied

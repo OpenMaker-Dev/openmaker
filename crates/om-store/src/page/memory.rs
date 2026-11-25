@@ -421,6 +421,20 @@ impl EntryPages for MemEntry<'_> {
                 }
             }
         }
+        // No page this unit writes refers to a page that is a tree's root
+        // once the unit takes effect (a root it gives, or one of a tree it
+        // leaves alone): dropping either tree would free a page the other
+        // still reaches. This store counts no shares, so none is allowed.
+        let roots_after: BTreeSet<PageNo> = trees.values().map(|r| r.page).collect();
+        let referring = self.pages.iter().find_map(|page| {
+            page.references()
+                .into_iter()
+                .find(|(n, _)| roots_after.contains(n))
+                .map(|(n, _)| (page.number(), n))
+        });
+        if let Some((from, to)) = referring {
+            return refused(format!("page {from} refers to page {to}, a tree's root"));
+        }
         let root_pages: BTreeSet<PageNo> = inner.trees.values().map(|r| r.page).collect();
         let mut seen = BTreeSet::new();
         for (number, hash, _) in self.released.iter().chain(&drops) {

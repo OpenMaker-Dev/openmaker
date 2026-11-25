@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::os::TempFolder;
-use crate::page::{MemStore, Numbering};
+use crate::page::{Builder, MemStore, Numbering};
 use crate::sim::{Fates, Fault as SimFault, Rates, Rng, Sim};
 use crate::tree::{self, key, Edit, Node, Tree};
 
@@ -3859,6 +3859,26 @@ enum TreeCall {
     ReleaseTwice,
     /// Another unit, begun while this one is open, makes a tree.
     OtherUnitMakes(&'static str),
+    /// Sol's sequence: a leaf and an index page over it, both written by
+    /// the unit, made the roots of two trees (the first named for the leaf).
+    MakeInside(&'static str, &'static str),
+    /// A tree made whose root, an index page the unit writes, refers to
+    /// the root of a tree the unit leaves alone.
+    MakeAbove(&'static str, &'static str),
+}
+
+/// Writes, in `unit`, an index page whose one child is `child`.
+fn index_over<E: EntryPages>(unit: &mut E, entry: u64, child: Root, stamp: u64) -> Root {
+    let number = unit.allocate().unwrap();
+    let mut builder = Builder::new(PageKind::Index, 1, entry);
+    builder.child(child.page, &child.hash, stamp, None);
+    let page = builder.finish(number).unwrap();
+    let root = Root {
+        page: number,
+        hash: page.hash(),
+    };
+    unit.write(Arc::new(page)).unwrap();
+    root
 }
 
 /// Makes trees `a` and `b`, empty, as entry `entry`: one unit.
@@ -3960,6 +3980,22 @@ fn run_tree_calls<S: PageStore + ?Sized, O: PageStore + ?Sized>(
                         .map_err(|e| e.to_string())?;
                 }
             }
+            TreeCall::MakeInside(n, of) => {
+                let leaf =
+                    tree::apply(store, &mut unit, None, entry, &[]).map_err(|e| e.to_string())?;
+                let top = index_over(&mut unit, entry, leaf, entry);
+                unit.add_tree(&name(n), leaf);
+                unit.add_tree(&name(of), top);
+            }
+            TreeCall::MakeAbove(n, other) => {
+                let below = current[&name(other)];
+                let stamp = store
+                    .read(below.page, &below.hash)
+                    .map_err(|e| e.to_string())?
+                    .written();
+                let top = index_over(&mut unit, entry, below, stamp);
+                unit.add_tree(&name(n), top);
+            }
             TreeCall::OtherUnitMakes(n) => {
                 let mut second = other.begin().map_err(|e| e.to_string())?;
                 let root = tree::apply(other, &mut second, None, entry + 1, &[])
@@ -3978,8 +4014,9 @@ fn run_tree_calls<S: PageStore + ?Sized, O: PageStore + ?Sized>(
 /// wrote; `drop_tree` names a tree that existed when the unit began and
 /// that the unit gave no root; a tree replaced whole may release its old
 /// root either way; a page is released once, with its hash; one unit is
-/// open at a time (round 2). A unit both accept is one the page file can
-/// checkpoint.
+/// open at a time (round 2); no page the unit writes refers to a page that
+/// is a tree's root once the unit takes effect (round 3). A unit both
+/// accept is one the page file can checkpoint.
 #[test]
 fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
     use TreeCall::*;
@@ -4005,6 +4042,8 @@ fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
         (&[WrongHash], false),
         (&[ReleaseTwice], false),
         (&[OtherUnitMakes("c"), Drop("c")], false),
+        (&[MakeInside("c", "d")], false),
+        (&[MakeAbove("c", "b")], false),
     ];
     for (i, (calls, ok)) in cases.iter().enumerate() {
         // The page file: one reservation an entry.
@@ -4080,12 +4119,18 @@ fn a_pin_is_of_a_version_the_page_file_has() {
 /// Review of #744 (P1): a pin of an older checkpoint carries the roots of
 /// its trees, read from its meta stream as the pin is taken; they stay with
 /// the pin, and its trees stay readable, after later checkpoints and
-/// reclaims have reused that meta stream's pages.
+/// reclaims have reused that meta stream's pages. A read of that stream
+/// the device fails refuses the pin with the device's error (round 3).
 #[test]
 fn a_pin_of_an_older_checkpoint_carries_its_roots() {
     let sim = Sim::new(64);
     let name = tree_name(0);
-    let (_fs, pf, trees) = gated(&sim, config(), std::slice::from_ref(&name));
+    // No cache: the pin reads the older meta stream from the device.
+    let config = Config {
+        cache_bytes: 0,
+        ..config()
+    };
+    let (fs, pf, trees) = gated(&sim, config, std::slice::from_ref(&name));
     let edits = |v: u8| [Edit::leaf(vec![b"k".to_vec()], vec![v; 10])];
     let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
     let first = edit_tree(&res, &name, &edits(1)).unwrap();
@@ -4096,7 +4141,19 @@ fn a_pin_of_an_older_checkpoint_carries_its_roots() {
     edit_tree(&res, &name, &edits(2)).unwrap();
     drop(res);
     pf.checkpoint(entry_id(3), None).unwrap();
-    // Entry 2's checkpoint is the older one on disk now.
+    // Entry 2's checkpoint is the older one on disk now. The device fails
+    // to read its meta stream: the pin is refused with that cause.
+    let meta = pf.kept_checkpoints()[1].meta;
+    fs.trip.lock().unwrap().fail_read = Some(meta.0);
+    match pf.pin(2) {
+        Err(PinError::Meta(MetaFault::Page(PageFault {
+            page,
+            fault: Fault::Io(_),
+            ..
+        }))) => assert_eq!(page, meta.0),
+        other => panic!("{other:?}"),
+    }
+    fs.trip.lock().unwrap().fail_read = None;
     let pin = pf.pin(2).unwrap();
     assert_eq!(pin.roots(), &[(name.clone(), first)][..]);
     for index in 4..12 {
@@ -4119,6 +4176,21 @@ fn forge_newest_table(pf: &PageFile, edit: impl FnOnce(&mut Vec<(TreeName, Root)
         let inner = pf.lock();
         (inner.newest.sb, inner.newest.pair)
     };
+    let root = forge_table(pf, sb, edit);
+    let copy = superblock::encode(&Superblock { meta: root, ..sb });
+    for s in pair_slots(pair) {
+        pf.file.write_at((s * SLOT) as u64, &copy).unwrap();
+    }
+    pf.file.flush().unwrap();
+}
+
+/// Rewrites the tree table in the meta stream of checkpoint `sb`, into the
+/// same pages; returns the stream's new first page.
+fn forge_table(
+    pf: &PageFile,
+    sb: Superblock,
+    edit: impl FnOnce(&mut Vec<(TreeName, Root)>),
+) -> (PageNo, Hash) {
     let (stream, pages) = pf.read_meta(sb.meta).unwrap();
     let mut meta = Meta::decode(&stream).unwrap();
     edit(&mut meta.trees);
@@ -4136,14 +4208,9 @@ fn forge_newest_table(pf: &PageFile, edit: impl FnOnce(&mut Vec<(TreeName, Root)
             .write_at(page.number() * PAGE, page.bytes())
             .unwrap();
     }
-    let copy = superblock::encode(&Superblock { meta: root, ..sb });
-    for s in pair_slots(pair) {
-        pf.file.write_at((s * SLOT) as u64, &copy).unwrap();
-    }
     pf.file.flush().unwrap();
+    root
 }
-
-const SHARED_ROOT: &str = "two trees name one root page, which the map does not record as shared";
 
 /// Review of #744, round 2 (P0): a checkpoint whose table names one root
 /// page for two trees, which the map does not record as shared, is
@@ -4276,4 +4343,58 @@ fn a_checkpoint_of_a_root_that_died_is_refused() {
     let (proc, opened) = open_proc(&disk, config()).unwrap();
     assert_eq!(opened.checkpoint, 2);
     assert_eq!(proc.pf.root(&x), Some(inside));
+}
+
+/// Review of #744, round 3: a page of the newest checkpoint's meta stream
+/// that is dying (what a table #719 wrote with a root inside another tree
+/// can lead to, once that page is taken for the meta stream and the tree
+/// still referring to it is taken down) refuses the checkpoint instead of
+/// stopping the process in the plan.
+#[test]
+fn a_checkpoint_whose_meta_page_is_dying_is_refused() {
+    let sim = Sim::new(68);
+    let (_fs, pf, _) = gated(&sim, config(), &[tree_name(0)]);
+    let (n, h) = pf.lock().newest.meta_pages[0];
+    pf.lock()
+        .map
+        .die(n, h, None, Version::at(2), false)
+        .unwrap();
+    let next = pf.next_checkpoint();
+    match pf.checkpoint(entry_id(1), None) {
+        Err(CheckpointError::Refused(why)) => {
+            assert_eq!(
+                why,
+                "a page of the newest checkpoint's meta stream is not in use"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(pf.next_checkpoint(), next);
+    assert!(!pf.failed());
+}
+
+/// Review of #744, round 3: a pin of an older checkpoint applies to its
+/// table the rule open applies to the newest: one root page named by two
+/// trees, which the map does not record as shared, refuses the pin, as a
+/// stream that breaks a rule of the reader's.
+#[test]
+fn a_pin_refuses_a_table_with_one_root_for_two_trees() {
+    let sim = Sim::new(69);
+    let (t0, t1) = (tree_name(0), tree_name(1));
+    let (_fs, pf, trees) = gated(&sim, config(), std::slice::from_ref(&t0));
+    let a = trees[0].1;
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let edits = [Edit::leaf(vec![b"k".to_vec()], vec![2; 10])];
+    edit_tree(&res, &t0, &edits).unwrap();
+    drop(res);
+    pf.checkpoint(entry_id(2), None).unwrap();
+    // Entry 1's checkpoint is the older one; its table, rewritten as #719
+    // could have written it, names tree 0's root for tree 1 too.
+    let older = pf.lock().older.unwrap().sb;
+    let meta = forge_table(&pf, older, |trees| trees.push((t1, a)));
+    pf.lock().older.as_mut().unwrap().sb.meta = meta;
+    match pf.pin(1) {
+        Err(PinError::Meta(MetaFault::Malformed(why))) => assert_eq!(why, SHARED_ROOT),
+        other => panic!("{other:?}"),
+    }
 }

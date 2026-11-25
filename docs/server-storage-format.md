@@ -421,7 +421,18 @@ holds each tree's name and root and changes them only then. Within one
 unit a tree's root is given at most once (made, or given a new root),
 and only a page the unit wrote; a tree dropped is one that existed when
 the unit began and that the unit gave no root; the old root of a tree
-given a new one is released by the unit, either way. One unit is open
+given a new one is released by the unit, either way; and no page the
+unit writes refers to a page that is a tree's root once the unit takes
+effect (a root it gives, or the root of a tree it leaves alone), since a
+page two trees reach would be freed with the one dropped while the other
+still reached it (clones will share pages with a share the store
+records; until one is recorded, such a reference is refused). The tree
+code never writes one: a page it writes refers only to pages of its own
+tree below the root, and the root is written last. A root the unit
+gives cannot be referred to by a page already committed: it is a page
+the unit wrote under a number it allocated, which was free, and a page
+is freed only once no version reaches it and what referred to it was
+taken down. One unit is open
 at a time: a second is refused while one is open, so nothing changes the
 trees between a unit's begin and its commit. A unit that breaks any of
 this is refused whole, by the page file and by the store in memory
@@ -1435,9 +1446,11 @@ rebuilt for them when those entries are applied again (4.7).
   point, read while the I/O lock is held, which a reclaim, a checkpoint
   and a restore point's drop hold too, so that none of them frees,
   reuses or retires those pages first. Two pins of one entry are of one
-  version and carry the same roots; a pin whose roots cannot be had (the
-  version a checkpoint is writing, a meta stream that does not read
-  back) is refused. A birth not known yet counts as the earliest.
+  version and carry the same roots; a pin whose roots cannot be had is
+  refused: the version a checkpoint is writing, or a meta stream that
+  does not read back (with the page's fault, so a read the device failed
+  is told from bytes that do not check) or that breaks the format or the
+  open's rule on shared roots. A birth not known yet counts as the earliest.
 - **Settling** needs the page's bytes: its birth is its stamp (section
   2.2), and an index page's children carry theirs; a dropped page's
   references are what `Page::references` lists. The bytes are at hand
@@ -1530,7 +1543,9 @@ rebuilt for them when those entries are applied again (4.7).
      dropped is one that existed when the unit began and that it gave no
      root, and the page file releases the root it holds for it; a page
      released that is still in memory must have the hash it is released
-     with. A unit that breaks any of this is refused whole;
+     with; no page the unit writes refers to a page that is a tree's root
+     once the unit takes effect, beyond the share the map counts for it.
+     A unit that breaks any of this is refused whole;
   7. the restore point a checkpoint keeps counts in the floor (4.8) from
      its first check, and a checkpoint that keeps one is refused while
      any reservation is open.
@@ -1554,7 +1569,9 @@ rebuilt for them when those entries are applied again (4.7).
   wrote from roots its caller gave can (a tree's root that is a page
   inside another tree passes the open, which would have to walk every
   tree to see it, and dies when that tree is dropped and taken down).
-  Then it reads back from the file every tree's root that is not in
+  Such a table can also leave a page of the newest checkpoint's meta
+  stream dying ("An open", below), which refuses the checkpoint too,
+  before the plan would mark that page dying again. Then it reads back from the file every tree's root that is not in
   memory, and checks it, and is refused, naming the tree, when one does
   not read back. The writer keeps every limit the reader enforces
   (trees, restore points, names, numbers), and the meta stream goes
@@ -1595,7 +1612,20 @@ rebuilt for them when those entries are applied again (4.7).
   root page named by more trees than its map counts sharing it (a clone
   shares its root; a table #719 wrote from roots its caller gave could
   name one page for two trees with no share, and dropping one of them
-  would mark the page dying while the other still names it). A
+  would mark the page dying while the other still names it). It does not
+  look for a root that is a page inside another tree, which a table #719
+  wrote could hold too: that would take a walk of every tree. A unit
+  cannot make one (rule 6). In such a table, dropping the tree whose
+  root is the inner page frees that page while the other tree still
+  reaches it; once the page is taken again, the other tree's reads
+  under it fail their hash check (reported as damaged or stale, never
+  returned as good), and if the other tree is then dropped too, the map
+  takes the page down by its number under the old hash: whatever now
+  holds it is marked dying and never freed (its bytes never check), a
+  unit releasing it is refused, and a checkpoint is refused when it is a
+  root or a page of the newest meta stream. Dropping the outer tree
+  first leaves the inner tree's root dying and refuses every later
+  checkpoint. A
   device read error or bytes that do not check pass the checkpoint over,
   with the reason; any other failure of a read (the process stopping)
   fails the open. Then, before it returns:
