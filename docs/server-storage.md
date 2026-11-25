@@ -372,6 +372,22 @@ the caller supplies must cover everything it has ever been told was
 committed: in a cluster the current leader's committed position, never a
 value of the follower's own choosing. On a single server nothing cuts.
 
+**An unreadable end.** When the log cannot read a place after its marker,
+it ends there for that start, cuts nothing and takes no appends
+([server-storage-format.md](server-storage-format.md) section 3.6). On a
+cluster the leader's consistency check has the follower cut there, under
+the rule above. On a single server the store stops and reports (section
+6.12), and the administrator opens it again later, restores, or accepts
+the loss of whatever may follow that place. Accepting it discards only what
+lies after the last entry the start verified, never an entry the marker
+covers, so it needs no committed position. The confirmation rule keeps a
+cut from reaching entries the server confirmed before a restart made it
+forget; past the marker such entries exist only when a lost copy of
+`state` took the marker back one advance (section 6.1). Giving them up is
+then the loss the administrator accepts: a single server has no leader to
+give a committed position, and the one it recorded is at or behind the
+marker. A cluster member never gives up an unreadable end.
+
 The marker says "everything through here was written and flushed", and it
 is kept outside the log on purpose: a segment, or the end of one, can be
 lost without taking the record of what it held. That is what lets a
@@ -668,6 +684,7 @@ store take unbounded memory or disk:
 |---|---|---|
 | The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged |
 | The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss |
+| The log cannot be read at a place after the marker | the device's error | the log ends there for that start, cuts nothing and takes no appends (section 6.3). A cluster member is cut there by its leader (section 7.1). A single server stops the store and reports; the administrator opens it again, restores (section 11), or explicitly accepts the loss of what may follow |
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
@@ -1168,7 +1185,7 @@ reason, on an engine that lacks its capability. The Admin Console
 | import, export, clone, rename and remove a file; set a restore point; restore a file | entries, run by the leader from any server |
 | add, remove or promote a member; hand over leadership; raise the tree format version | `members` entries, run by the leader |
 | check every page and entry now; repair a page; copy the leader's state | on one server |
-| accept the loss of entries after damage on a single server (section 6.12); choose a copy after a comparison no majority settles (section 7.5) | on the servers concerned, with the entries or files named |
+| accept the loss of entries after damage, or of what may follow a place the log cannot read, on a single server (section 6.12); choose a copy after a comparison no majority settles (section 7.5) | on the servers concerned, with the entries or files named |
 | export from a store folder with no server running | the command line only |
 
 ## 12. Testing

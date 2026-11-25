@@ -349,13 +349,32 @@ right: what the marker covers was written and flushed, and is chained to
 the marker's hash, whatever cut count its batch carries. After the marker,
 only batches of the current cut count count (3.6).
 
-**What the walk reads** is exactly what the record it is deciding on
-takes, and nothing ahead of it: a batch header's 136 bytes, an entry's 32
-fixed bytes, then the rest of that entry. So a place the device cannot
-read is met only by the record that holds it, and a read error is that
-record's: no error in bytes the walk does not need (a stale payload, the
-rest of a batch it has judged) can fail a decision about the records
-before them.
+**What the walk reads.** Each place the walk decides on is read once,
+into one buffer, in steps that each go only as far as the decision at hand
+needs, and nothing ahead of it (3.11, "Whatever is checked is what is
+used"):
+
+- where a batch may begin (rule 3, and rule 2's header): nothing when
+  fewer bytes are left in the segment than a header and one entry of no
+  payload (200); else the 8-byte mark; only if it is there, the rest of
+  the header's start, to byte 72 (version, count, first index, length,
+  cut count, the previous hash); only if those name the index expected and
+  the entry just read, and the batch fits in the segment, the rest, to
+  byte 136, and the header's hash. At an open, a header of another cut
+  count after the firm position is settled by its start alone (3.6);
+- where an entry is expected (rule 2): its 32 fixed bytes, which also hold
+  a header's mark if a header begins there (the rest of the header is then
+  read as above, into the same buffer); then, once the fixed fields are
+  checked, the rest of the entry, once. Its hash is checked over the bytes
+  the fields were decoded from, and every field returned comes from them.
+  Where the batch has no room left for an entry, only a header can be
+  there, and only its mark is read first.
+
+So a place the device cannot read is met only by a decision that needs it,
+and a read error is that decision's: no error in bytes the walk does not
+need (a stale payload, the rest of a batch it has judged, the bytes past a
+whole batch that a header's mark already rules out) can fail a decision
+about the records before them.
 
 **Reading** (`Log::read`) walks from the segment that holds the first
 entry asked for, through the entries before it in that segment, and returns
@@ -392,16 +411,26 @@ the marker.
    is read at all. The first batch that is not whole, or carries an older
    count, and everything after it, is **cut**; so is anything after a walk
    that ended.
-5. After the firm position, a read the device fails ends the log **for
-   this open only** (`Opened::unreadable_end`: the segment, the offset and
-   the index expected there). Nothing past it is cut, dropped or written
-   over, and the cut count stays: the log may continue past it, and the
-   caller can tell that from an end the open found. The log refuses
-   appends (`LogError::EndUnreadable`) until it is opened again, or until
-   a cut moves its end before that place. An open that can read it takes
-   what follows as any whole tail of the current cut count. At or before
-   the firm position a read the device fails is `LogError::Unreadable`,
-   which the caller tells apart from damage.
+5. **Where the log ends** after the firm position is decided from what
+   must be there, reading only what decides it (3.5, "What the walk
+   reads"). After a whole batch, the log ends there when fewer bytes are
+   left in the segment than a header and one entry of no payload, or when
+   the bytes that would hold the next header's start can be read and do
+   not begin a valid header that follows the entry just read and carries
+   the current cut count (a wrong mark settles it in 8 bytes). Inside a
+   batch, the next entry's own bytes decide, or a header's. Only when the
+   bytes a decision needs cannot be read is the end unreadable.
+6. After the firm position, a read the device fails ends the log **for
+   this open only** (`Opened::unreadable_end`: the segment, the offset of
+   the read that failed and the index expected there). Nothing past it is
+   cut, dropped or written over, and the cut count stays: the log may
+   continue past it, and the caller can tell that from an end the open
+   found. The log refuses appends (`LogError::EndUnreadable`) until it is
+   opened again, or until a cut (3.9) or giving it up (3.9, "Giving up an
+   unreadable end") discards what may follow. An open that can read it
+   takes what follows as any whole tail of the current cut count. At or
+   before the firm position a read the device fails is
+   `LogError::Unreadable`, which the caller tells apart from damage.
 
 On damage the open returns it (`LogError::Damaged`: what, the segment, the
 offset and the index expected there) and writes nothing: nothing is cut,
@@ -412,35 +441,46 @@ It hands `state` back on every other error too, so that the open can be
 tried again in the same process; a `state` whose own write failed refuses
 every update until it is opened again.
 
-Otherwise the open makes what it found durable, in this order:
+Every batch kept after the firm position is **written again** as the
+walk goes, with synchronous writes, from the buffers the walk verified it
+in (3.11): its entries as they are read, held up to 1 MiB and written in
+runs, and its header last, once the batch is found whole and current
+(header and entries in one write when they were held together). Nothing is
+read for it a second time. An earlier process may have written the batch
+and stopped without a power failure, or seen a flush of it fail, leaving it
+whole in the system's cache only: a flush would find nothing to do and
+vouch for bytes the device does not hold. A batch that is not kept has its
+header never written, and the entries of it already written are the bytes
+the walk read there, so the next walk finds it as this one did. Entries at
+or before the firm position are not written again: what the marker covers
+was written by a synchronous write that returned, and what the start
+covers is in a checkpoint, which covers only published entries, published
+only once a marker covered them (server-storage.md 6.5 and 6.7); the
+marker is behind the start only when a lost copy of `state` took it back
+(1.5), after those entries were on the device. Then, in this order:
 
 1. `log/` is made if it is missing, and the store folder flushed, on every
    open: an earlier open may have made `log/` and failed to flush, and a
    later one that finds it must not take its name for durable. The same
    rule holds for every name the log makes: its folder is flushed after
    it, whoever made it and whenever (3.7).
-2. Every batch holding entries after the marker is **written again**, as
-   the walk read it, with synchronous writes (3.11, "What is read back").
-   An earlier process may have written it and stopped without a power
-   failure, or seen a flush of it fail, leaving it whole in the system's
-   cache only: a flush would find nothing to do and vouch for bytes the
-   device does not hold.
-3. One `state` update moves the marker to the last entry kept (its
+2. One `state` update moves the marker to the last entry kept (its
    committed position unchanged) and drops the listed segments after the
    one the log ends in (none when the log ends at an unreadable place): a
    marker advance in one slot when only the marker moves, both slots
    otherwise.
-4. Segment files `state` does not list are removed, and `log/` is flushed,
+3. Segment files `state` does not list are removed, and `log/` is flushed,
    on every open.
 
 A crash at any point leaves a log that the next open reads to the same end:
-step 2 only writes what the walk found whole, as it found it; until step 3
-the marker is where it was, and the dropped segments are after the end;
-step 4 removes only what `state` no longer lists. What follows the end is
-not written over at the open: a torn batch stays torn, and a batch of an
-older cut count stays older, however a later crash settles the system's
-cache, so nothing there decides the end differently. The next batch is
-written where the log ends.
+what is written again during the walk is what the walk found, as it found
+it; until step 2 the marker is where it was, and the dropped segments are
+after the end; step 3 removes only what `state` no longer lists. Nothing
+after the end is changed at the open (what was written again of a batch
+that is not kept is the bytes the walk read there, and never its header):
+a torn batch stays torn, and a batch of an older cut count stays older,
+however a later crash settles the system's cache, so nothing there decides
+the end differently. The next batch is written where the log ends.
 
 **A tail that comes back is harmless.** A later open keeps what follows
 an earlier open's end when it finds it whole, chained and of the current
@@ -462,14 +502,15 @@ after the marker the earlier open ended at:
 **What appends leave behind.** Appends write at the end the open found.
 After an open that ended at an unreadable place they are refused, so they
 never write over a batch a lost marker may have confirmed; after a cut
-that moved the end before that place (which raises the cut count), or an
-open that read past it, they go on. What remains past a new batch is never
-read as part of the log unless it truly continues it: a batch counts after
-the marker only if its header names the entry just read as the one before
-its first (a SHA-256 hash, so an old batch cannot name an entry written
-after it) and carries the current cut count, and an entry is read only
-inside such a batch. Old bytes inside a new batch's span are overwritten,
-or end the walk where they do not chain.
+that moved the end before that place (which raises the cut count), after
+what may follow it was given up (which lists a fresh segment, 3.9), or
+after an open that read past it, they go on. What remains past a new batch
+is never read as part of the log unless it truly continues it: a batch
+counts after the marker only if its header names the entry just read as
+the one before its first (a SHA-256 hash, so an old batch cannot name an
+entry written after it) and carries the current cut count, and an entry is
+read only inside such a batch. Old bytes inside a new batch's span are
+overwritten, or end the walk where they do not chain.
 
 A part of a batch written to a new segment whose `state` update was lost is
 not kept: the segment is not listed, so it is not part of the log. Its
@@ -494,8 +535,8 @@ A disk too full for it refuses the append (`LogError::NoSpace`) before
 anything of the entry is kept, and so does an allocation that fails part
 way; neither stops the log, since nothing listed changed, and a later call
 finishes the file: it opens the file the refused call made, and flushes it
-and the folder as if it had made it. A failed flush stops the log. A crash at any point
-leaves an unlisted file, which the next open removes.
+and the folder as if it had made it. A failed flush stops the log. A crash
+at any point leaves an unlisted file, which the next open removes.
 
 ### 3.8 A batch flush
 
@@ -578,6 +619,57 @@ header where the cut entry was, which ends the batch the cut entry was in
 | after the first slot's flush returns | the cut done: the next open reads the new copy, writes it to both slots, ends the log at the entry before the cut and removes the dropped segments' files. Unless that slot, the only one with the new copy, is lost or cannot be read before that open: the open then takes the old copy, and the cut is undone, as one slot lost costs the update it held alone (1.5) |
 | after step 2 | the cut done; dropped files still there are removed by the next open |
 
+**What it returns** (`CutDone`) says what it did: the last entry left, how
+many entries of the open batch were dropped, how many durable entries were
+cut, the cut count `state` recorded (none when nothing was written), the
+unreadable end it discarded what may follow, if the log had one, the fresh
+segment it listed, and the segment files it removed. A cut that finds
+nothing at or after its index changes nothing and says so.
+
+**A log that ends at an unreadable place** (3.6) has no durable entry past
+its end, and takes no appends. A cut at or before its durable entry is the
+cut above: the log then ends before the place, the batch that follows the
+new end carries an older cut count, and no walk reads as far as the place
+again, so appends go on. A cut at any index after the durable entry gives
+up what may follow the place, as below.
+
+**Giving up an unreadable end** (`Log::give_up_unreadable_end`, and a cut
+past the durable entry of a log that ends at an unreadable place)
+discards whatever may follow the place, for good, whatever an open can
+read there later. Raising the cut count alone would not do: the next open
+would still read the bytes after the last entry to decide whether a batch
+begins there, and fail on the same place. So the log continues in a fresh
+segment that a walk moves to from the last entry, by rule 1 of 3.5, before
+it reads anything more of the segment it ended in:
+
+1. the next segment is made as in 3.7, and its header, naming the entry
+   after the last verified one as its first and that entry's hash and term
+   as the previous ones, is written with a synchronous write;
+2. one `state` update, written to both slots, lists it and raises the cut
+   count by one; the marker stays at the last verified entry. **It is
+   done from the moment the first slot's flush returns**, as a cut is.
+
+Appends then go to the fresh segment. What lay past the last verified
+entry in the segment the log ended in is never read again; a batch there
+that an open could read later carries an older cut count too. The
+operation is refused, with nothing written, when the log does not end at
+an unreadable place, when the entry the caller names (index and hash) is
+not the last one the open verified, and when `state` lists segments after
+the one the log ends in. No write of this log leaves that: every update
+lists a segment only with a marker in it or just before it (3.8, 3.9, this
+section), an open drops what follows the segment it ends in, and a lost
+copy of `state` goes back to a run and a marker that agree; an open that
+ends at an unreadable place has therefore passed the marker in the last
+listed segment. A disk too full for the segment refuses it as it refuses
+an append (`LogError::NoSpace`, 3.7). It needs no committed position: it
+removes nothing at or before the durable entry (server-storage.md 6.3).
+
+| A crash | leaves |
+|---|---|
+| before step 2 | the old copy of `state`: nothing given up; the fresh segment is unlisted, removed by the next open, which ends at the unreadable place again |
+| during step 2, before the first slot's flush returns | the old copy, or the new one if its write landed: nothing given up, or given up |
+| after the first slot's flush returns | given up, unless that slot is lost or cannot be read before the next open (1.5) |
+
 ### 3.10 Retiring
 
 `Log::retire` is given the oldest entry still needed (the entry after the
@@ -600,8 +692,9 @@ oldest entry needed afterwards.
   to do and succeeds. So what must become durable is written again by
   this process with a synchronous write, and only that write's success
   counts. Where it applies:
-  - the tail an open keeps after the marker is written again, as read,
-    before the marker moves over it (3.6);
+  - the tail an open keeps after the firm position is written again, from
+    the buffers the walk verified it in, before the marker moves over it;
+    what is at or before the firm position is on the device already (3.6);
   - `state`'s open writes the copy it chose back, as the bytes it read,
     before it writes over the other slot (1.3);
   - every batch and segment header is written with synchronous writes, so
@@ -615,6 +708,28 @@ oldest entry needed afterwards.
   - for folders, the same rule is a flush of the folder after every
     change the log makes and at every open, whoever made the change and
     whenever (3.6, 3.7, 3.9, 3.10).
+- **Whatever is checked is what is used.** A range of a file is read once
+  into memory, and every decision about it (hashes, counts, lengths, the
+  fields returned to the caller) and every write-back of it uses that
+  buffer; nothing is read a second time to be acted on. A second read can
+  return other bytes than the first (a cache that dropped what a failed
+  flush left, a device that misreads), and bytes that were not checked are
+  not known. Every read of the log and of `state`:
+  - the walk (3.5), for an open, a read and a cut: each place once, in
+    steps that each read only bytes not read before; a header's fields
+    and hash, and an entry's fields, hash and payload, from one buffer.
+    `Log::read` returns the fields and payloads of that buffer;
+  - the open's write-back of the tail: the walk's buffers (3.6);
+  - segment headers at an open: each read once, 128 bytes, checked and
+    decoded from them, and not read again: the walk starts after them, from
+    the header decoded at the open;
+  - a cut's walk to its first cut entry is the walk above; the cut writes
+    only `state`. Giving up an unreadable end reads nothing: it uses the
+    last entry the open verified;
+  - `Log::prepare` reads nothing of a file it finds;
+  - `state`'s open reads each slot once (again only after a read that
+    failed, which gave no bytes), and decodes the copy it chooses, and
+    writes it back, from that buffer (1.3).
 - **After a failed write, flush or `state` update** the log refuses every
   call (`LogError::Poisoned`): what reached the device is unknown, the
   failed flush is never retried, and the store stops and opens again
@@ -624,8 +739,9 @@ oldest entry needed afterwards.
 - **Everything the log reads is checked before it is used**: headers by
   their hashes, lengths against the batch, the segment and the format's
   bounds (3.4), entries by the chain. No length read from disk makes the
-  log hold more than one record in memory: a payload of at most 64 MiB, or
-  a header.
+  log hold more than one record in memory, a payload of at most 64 MiB or
+  a header, besides what an open holds of a batch it writes again: at most
+  1 MiB of its entries and one more entry (3.6).
 - **One owner.** The log owns `state` and the store folder's lock from its
   open until it is dropped (`Log::into_state` hands `state` back). Every
   call that writes checks that the lock is still held, so a log of a
