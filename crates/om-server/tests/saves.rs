@@ -1398,3 +1398,81 @@ fn a_program_that_only_reads_keeps_its_answer_when_what_waits_cannot_be_stored()
     assert_eq!(client.query(&read).unwrap().slots, answer);
     client.disconnect().unwrap();
 }
+
+/// An op70 entry in the edit form for a record the file does not hold
+/// creates nothing (#840 of github.com/OpenMaker-Dev/openmaker): only an
+/// entry marked new (`01`) creates a record, and only under an issued, free
+/// id. So a client cannot plant a record under an id an honest client's
+/// next new record gets, nor bring back a record another client deleted.
+/// Each refused commit fails whole and leaves its staged record staged.
+#[test]
+fn an_edit_of_a_record_that_is_not_there_creates_nothing() {
+    let file = TempFile::new("edit-of-missing", &[], true);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let table = uint_segment(TABLE);
+    let record = |id: u64, name: &str| {
+        OwnedNode::list(
+            serial::encode(id),
+            vec![
+                OwnedNode::leaf(uint_segment(NAME), om_scsu::encode_scsu(name)),
+                OwnedNode::leaf(vec![0xfc], vec![1, 1]),
+            ],
+        )
+    };
+    let edited = |id: u64| {
+        OwnedNode::list(
+            serial::encode(id),
+            vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+        )
+    };
+
+    // X plants record 5, past the last issued id 2, in the edit form.
+    let (mut x, _) = server::logged_in(port, "x");
+    x.upload_records(&table, vec![record(5, "Planted")])
+        .unwrap();
+    let staged = handle.upload_memory_in_use();
+    assert!(x.commit_records(&table, vec![edited(5)], 0x31).is_err());
+    assert_eq!(handle.upload_memory_in_use(), staged, "still staged");
+    assert_eq!(last_id_on_disk(&file), 2);
+    assert_eq!(on_disk(&file, 5, NAME), None);
+
+    // H is issued 3 to 5, and its new record 5 is stored.
+    let (mut h, h_file) = server::logged_in(port, "h");
+    let create = write::CreateRecord {
+        table: vec![table.clone()],
+        count: 3,
+        txn: 0x41,
+    };
+    let reply = h
+        .perform(&write::build_create_record(1, h_file, &create))
+        .unwrap();
+    assert_eq!(write::parse_create_record_reply(&reply).unwrap().status, 0);
+    h.upload_records(&table, vec![record(5, "Honest5")])
+        .unwrap();
+    let new = OwnedNode::leaf(serial::encode(5), vec![write::COMMIT_NEW]);
+    h.commit_records(&table, vec![new], 0x41).unwrap();
+    assert_eq!(on_disk(&file, 5, NAME).as_deref(), Some("Honest5"));
+
+    // B stages record 1 without a lock; A deletes it; B's edit of it then
+    // brings nothing back.
+    let (mut b, _) = server::logged_in(port, "b");
+    b.upload_records(&table, vec![record(1, "Ghost")]).unwrap();
+    let (mut a, _) = server::logged_in(port, "a");
+    assert!(matches!(
+        lock(&mut a, 0x51, true),
+        write::LockReply::Granted { .. }
+    ));
+    let deleted = OwnedNode::leaf(serial::encode(1), vec![write::COMMIT_DELETED]);
+    a.commit_records(&table, vec![deleted], 0x51).unwrap();
+    a.kill_all_locks(0x51).unwrap();
+    assert_eq!(on_disk(&file, 1, NAME), None);
+    let staged = handle.upload_memory_in_use();
+    assert!(b.commit_records(&table, vec![edited(1)], 0x61).is_err());
+    assert_eq!(handle.upload_memory_in_use(), staged, "still staged");
+    assert_eq!(on_disk(&file, 1, NAME), None, "not back");
+
+    // An ordinary edit, of record 2, still stores.
+    a.upload_records(&table, vec![record(2, "Edited")]).unwrap();
+    a.commit_records(&table, vec![edited(2)], 0x52).unwrap();
+    assert_eq!(on_disk(&file, 2, NAME).as_deref(), Some("Edited"));
+}
