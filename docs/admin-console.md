@@ -596,11 +596,13 @@ list shows them.
   the same field (`FileInfo::error`) with its status unchanged; closing it
   and opening it again clears it (docs/server-storage.md 5, "Failed
   saves"). The Admin API's and the console's database lists do not show
-  the field. A file opened with something at its save's copy name
-  (`<file>.omsave`) is served, and an alert names the entry, which
-  nothing removes: each change fails at its save, taken back, until the
-  administrator removes it, and then the next one is saved
-  (docs/server-storage.md 5, "A leftover copy"). Every hosted file is
+  the field. On the file engine, a file opened with something at its
+  save's copy name (`<file>.omsave`) is served, and an alert names the
+  entry, which nothing removes: each change fails at its save, taken back,
+  until the administrator removes it, and then the next one is saved
+  (docs/server-storage.md 5, "A leftover copy"); the store engine, which
+  never saves to the file it hosts, has neither the alert nor the
+  failures. Every hosted file is
   opened at startup; the administrator closes, opens, pauses and resumes
   it (below).
 - Each client as its entry holds it, oldest session first, and whether it is

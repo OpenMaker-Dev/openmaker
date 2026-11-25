@@ -2551,9 +2551,9 @@ of the save's new copy. Nothing in OpenMaker removes the entry, or
 anything else at that name: a file it did not create in the same call is
 never unlinked.
 
-- OpenMaker Server hosts a file opened with anything at its save's copy
-  name as it hosts any file, and raises an alert that names the entry's
-  path (`Event::save_copy_in_the_way`; `hosting::load_hosted`,
+- OpenMaker Server's file engine hosts a file opened with anything at its
+  save's copy name as it hosts any file, and raises an alert that names
+  the entry's path (`Event::save_copy_in_the_way`; `hosting::load_file`,
   `store::copy_beside`, which looks in the file's folder without
   following a link, and counts an entry it cannot look at). Every change
   then fails at its save as above, loudly, and that ends by itself when
@@ -2561,7 +2561,9 @@ never unlinked.
   to close and open the file. Deferred field work found as the file is
   opened ends as the recovery rule says: its save fails, the work is
   taken back and the file is served read-only, as its disk holds it
-  (above, "finishing deferred work").
+  (above, "finishing deferred work"). The store engine never saves to the
+  file it hosts (`EngineRef::saves_to_source`, section 11): it has neither
+  the alert nor these save failures.
 - The desktop opens such a file read-only (`ReadOnly::CopyInTheWay`), as
   at #715's head, says why in the window and logs the entry's path. It
   looks with `symlink_metadata` on the path, so an entry it cannot look

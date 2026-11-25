@@ -1998,6 +1998,15 @@ pub struct Slot {
     state: Mutex<SlotState>,
 }
 
+/// A slot as one look saw it ([`Slot::seen`]).
+pub struct SlotSeen {
+    pub status: FileStatus,
+    /// Why the file is closed: its last open failed.
+    pub error: Option<String>,
+    /// The file, while it is served.
+    pub file: Option<Arc<Hosted>>,
+}
+
 #[derive(Debug)]
 struct SlotState {
     status: FileStatus,
@@ -2034,6 +2043,19 @@ impl Slot {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The file's status, why it is closed and the file while it is served,
+    /// from one look at the slot, so that they agree with each other: a
+    /// close that finishes meanwhile is seen whole or not at all (the
+    /// administrator's list of files, `ServerHandle::files`).
+    pub fn seen(&self) -> SlotSeen {
+        let state = self.state();
+        SlotSeen {
+            status: state.status,
+            error: state.error.clone(),
+            file: state.file.clone(),
+        }
     }
 
     /// What state the file is in.
@@ -2353,16 +2375,18 @@ impl Hosting {
     }
 }
 
-/// Load the file `hosted` describes with server id `id`, finishing and
-/// saving first, with `engine`, the deferred field work it records as
-/// pending: a server's files are recovered as they are loaded. An insecure
-/// file is refused, before anything is written, unless `insecure_files`. A
-/// file with anything at its save's copy name (`<file>.omsave`, an earlier
-/// save's leftover or not) is hosted as any file is, and an alert names
-/// the entry: each of its saves fails, the change taken back, until the
-/// administrator removes it; nothing removes it here
-/// (docs/server-storage.md 5). A failed save, that of the deferred work
-/// included, is recorded in `events`.
+/// Load the file `hosted` describes with server id `id` on `engine`. An
+/// insecure file is refused, before anything is written, unless
+/// `insecure_files`. On the file engine ([`load_file`]) the deferred field
+/// work it records as pending is finished and saved first, a file its user
+/// may not write is held read-only, and a file with anything at its save's
+/// copy name (`<file>.omsave`, an earlier save's leftover or not) is hosted
+/// as any file is, and an alert names the entry: each of its saves fails,
+/// the change taken back, until the administrator removes it; nothing
+/// removes it here (docs/server-storage.md 5). A failed save, that of the
+/// deferred work included, is recorded in `events`. The store engine
+/// ([`load_stored`]) never saves to the file it hosts and does none of
+/// this.
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,

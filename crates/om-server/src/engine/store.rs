@@ -1338,11 +1338,14 @@ impl StoreEngine {
         self.submit(file, operation)
     }
 
-    /// Why `file` takes no changes: the store engine takes none yet. Read
-    /// from the cause its hosting set as it hosted the file
-    /// (`Hosted::from_store`), as the file engine reads its own.
+    /// Why `file` takes no changes: the store engine takes none yet. The
+    /// cause its hosting set as it hosted the file (`Hosted::from_store`),
+    /// which readers that hold no lock read from the same cell; the
+    /// engine's own answer does not hang on that cell having been filled,
+    /// since every write's admission asks it, so a file with an empty cell
+    /// is read-only too, for the store engine's cause.
     pub fn read_only(&self, file: &Hosted) -> Option<ReadOnlyCause> {
-        file.read_only_cause()
+        Some(file.read_only_cause().unwrap_or(ReadOnlyCause::StoreEngine))
     }
 
     /// Whether this engine saves a hosted file by writing the file it was

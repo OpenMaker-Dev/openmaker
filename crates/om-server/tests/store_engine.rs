@@ -687,16 +687,33 @@ fn a_refused_start_makes_nothing() {
 /// write (mode 444) is no reason to hold the file read-only for that, so it
 /// raises no alert and the file keeps the store engine's own cause, which
 /// the administrator's list of files gives (read without the store's lock,
-/// `Hosted::read_only_cause`).
+/// `Hosted::read_only_cause`). Where the mode does not bind (root, or a user
+/// with its override), the permission check would find nothing to report
+/// whether it ran or not, so the test says so on standard error and checks
+/// nothing.
 #[cfg(unix)]
 #[test]
 fn a_source_the_server_may_not_write_keeps_the_store_engines_cause() {
+    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
     let file = TempFile::new("store-engine-mode-444", &[], true);
     let mode = |mode: u32| {
         std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(mode)).unwrap();
     };
     mode(0o444);
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file.0)
+        .is_ok()
+    {
+        mode(0o644);
+        let _ = writeln!(
+            std::io::stderr(),
+            "a_source_the_server_may_not_write_keeps_the_store_engines_cause: skipped: this \
+             user writes a file of mode 444 (root?)"
+        );
+        return;
+    }
     let store = StoreDir::new("mode-444");
     let (_port, handle) = start_on_store(&[(FILE, &file)], &store.0, |s| s);
     let alerts: Vec<String> = handle.alerts().into_iter().map(|a| a.message).collect();
