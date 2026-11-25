@@ -248,6 +248,7 @@ impl FileEngine {
     /// Check each operation's reads and writes through its transaction
     /// (`super::checking`, `Server::checking_reads`).
     /// Nothing in a release build, which has no check.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub(crate) fn check_writes(&self) {
         #[cfg(debug_assertions)]
         self.checking_writes

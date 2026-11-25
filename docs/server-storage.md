@@ -208,9 +208,11 @@ changes and why, which file on disk it last read or saved) it offers
 itself ("The engine's state of a file", below). `export` is built
 ("Exports", below): it copies the file on disk where that holds the
 version and walks a view otherwise, and backup schedules and the
-desktop's Save a Copy as make their copies with it. Server scripts and
-the operations' own reads still hold the store; "Moving the other
-readers" below lists them and the plan for them. `import` and
+desktop's Save a Copy as make their copies with it. The operations read
+and write through their transaction ("The operations' transaction",
+below), but for a commit's records, op73's field work and the indexes a
+find stores, which still hold the store; "Moving the other readers"
+below lists them and what they need. `import` and
 `capabilities` are not built. Of the store engine, its view of one file,
 the import of an `.fmp12` into it and its export are ("The store engine's
 file", below); no file is hosted on it yet.
@@ -606,11 +608,10 @@ replay draws the same. It returns the
 the transaction and the lock table, which keep what the engine needs to
 take them back. An operation that does not change the tree gets less than
 a transaction (`engine::Hold`): op60 a view, op61, op62 and op65 nothing of
-the tree, so that these three do not wait for the store, as before. In the
-file engine
-the transaction (`engine::Transaction`) is still a thin wrapper of the
-store and its journal: it exposes the store's methods the operations use,
-and the store itself as the view that derived state is computed from. The
+the tree, so that these three do not wait for the store, as before. What
+the transaction (`engine::Transaction`) reads and writes, and how the
+file engine carries its writes out, is under "The operations'
+transaction", below. The
 reply is typed, one shape per operation (`engine::Reply`); the caller
 encodes it for the wire. Operations on one file run one at a time, in one
 order; how far the file engine does that today is under "The file engine
@@ -996,10 +997,11 @@ rules nor the calculations read: a table's deferred field work `[T, 03,
 01, fd]` and each field's next serial value `[T, 03, 05, F, 0c]` (the
 Design functions read the stored one from their own catalogs). So it is
 the same between changes of the schema whenever it is computed, and the
-test view's own, computed later, equals the file engine's. An edit of a
-catalog the decoded schema does not hold, a script `[17]` or a layout
-(`Store::replace_members_in`), now replaces the derived state too, kept
-in the journal, so that a session keyed by its version reads it again.
+test view's own, computed later, equals the file engine's. A write to a
+catalog the decoded schema does not hold, a script `[17]` or a layout,
+replaces the derived state too ("The operations' transaction", below),
+kept in the journal, so that a session keyed by its version reads it
+again.
 
 Every reading shares the store's current
 value (`Arc`), and the catalog within it is shared too, so replacing the
@@ -1354,6 +1356,79 @@ the transaction's records into the version's indexes instead would have
 answered a find for duplicates (`!`) and the form checks of a text
 field's language otherwise than before.
 
+**The operations' transaction.** An operation reads the file through its
+transaction (`engine::Transaction`), which is a view (`engine::View`) of
+the version the operation started on with the operation's own writes
+applied, and the derived state of that tree (`Transaction::derived`). It
+changes the tree with three writes, in the store engine's vocabulary
+(`om_store::tree::Edit`, section 6.3), so that they become an entry's
+edits without translation: put a node without its children
+(`Transaction::put`), remove a node and everything under it
+(`Transaction::remove`), and replace a subtree (`Transaction::replace`:
+the node, then each node under it in key order, as an entry holds it). A
+put creates missing parents and turns a parent that holds an empty value
+into an empty list, as `OwnedNode::put` does. No operation that moved
+needed a fourth.
+
+In the file engine each write is applied to the store's tree at once,
+under the commit's journal (`Store::write_in`), so a failed operation or
+save puts every node and flag back as before
+(`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`,
+the seeded test of [#751](https://github.com/OpenMaker-Dev/openmaker/pull/751),
+unchanged). A put the
+file cannot hold there (`om_hbam::writer::put_refusals`: beneath a value,
+or a node the writer cannot write) is refused and changes nothing; an
+operation logs it as before, or, where its own checks leave no refusal
+to expect (op87, op88, op240), fails its commit with it
+(`Transaction::refuse`). Whether a write reaches the derived state is
+decided by its path (`store::feeds_derived`): everything outside the
+tables and the file's container library `[1f]` does, and in a table its
+root and its field catalog `[T, 03]` do, but for a field's next serial
+value `[T, 03, 05, F, 0c]` and the deferred field work `[T, 03, 01, fd]`,
+which the derived state leaves out; a put that creates a parent or turns
+one into a list counts by that parent's path too. Such a write advances
+the schema generation (`Store::schema_generation`, which the
+verified-index marks, the accounts and the server script sessions follow)
+and has the schema read again before the derived state is next used, or
+when the operation ends (`Transaction::settle`). Every write counts the
+tree as changed since its save.
+
+Before, each operation changed the tree through the store's own helpers,
+which read the schema again after any upload or schema write, whatever
+its path. What follows from moving them: op13's upload, op86's writes and
+op240's edits to what the derived state does not read (records, the found
+set `[TO, 07]`, the file's container library `[1f]`) no longer read the
+schema again or advance the generation; op86 counts the tree as changed
+only when a write was made (a write it refuses, which `om-query` stops
+before, counted before); and Delete Account removes the account's member
+and writes the index instead of rewriting the whole catalog, so a catalog
+that holds something the file cannot write elsewhere no longer refuses
+it. No reply changes. The library's rules (`library::Reads`,
+`store_changes`, `adjust_changes`) read a library through a small
+interface and say their changes as puts and removals: op87 and op88
+write them through the transaction, a commit applies them to the library
+in memory, and both refuse through the same check read through a view
+(`library::refusal`). op88's member count is a count of the member list
+`[L, 01, 07]` through a listing, which on the file engine walks the list
+in pages where it read its length before.
+
+The checking transaction (`engine::checking`, debug builds, switched on
+with the test view: `Server::checking_reads`, `LocalHost::checking_reads`,
+`FileEngine::check_writes`) keeps the tree the operation started on and
+records its writes as edits. Every read through the transaction is
+answered again from the starting tree with the writes laid over it
+(`engine::Overlay`) and must be the file engine's answer; at the end, the
+starting tree changed by the edits must be the file engine's tree node
+for node and kind for kind, the derived state must be what that tree
+decodes to, and a written tree must count as changed. A difference
+panics, naming paths only (an account's node holds its password's
+verifier). The server's, `om-author`'s and `om-gui`'s tests run with it.
+An operation still on the store's helpers is not checked
+(`Check::by_store`). It found one write that bypassed the derived state
+while the operations moved: op13's upload to `[T, 03, 01, fd]` created
+the missing `[T, 03, 01]`, which the calculation catalogs read, without
+reading the schema again.
+
 **Moving the other readers.** The readers below, but those marked moved,
 still hold the store (`Hosted::read_store`, or
 `Transaction::view() -> &Store` inside `run`). Each is listed
@@ -1377,24 +1452,36 @@ first, each with the test view's runs of its tests:
    compacted copy.
 4. Admin commands and the hosting state: moved. They read the engine's
    state of a file ("The engine's state of a file", above), not a view.
-5. The operations' own reads inside `engine::run`, through
-   `Transaction::view() -> &Store` and the transaction's delegates
-   (`has_table`, `has_record`, `last_record_id`, `node`): a commit's
-   records (one record whole each, `writes::commit`, with
-   `Store::record_limit` and `views::hidden_fields`), op71's and op72's
-   counters (one node), op13's and op86's refusals (`put_refusals` over
-   the tree: each node on a path, and a chunked value whole), op73's
-   recalculation (every record of a table, listed with each record whole,
-   and the basis), the stored indexes' upkeep (`Store::index_agrees`,
-   `reindex_plan`: index entries by key, and whole indexes for a check),
-   op87's and op88's library members, op240's catalog members and their
-   indexes (`authoring::edit`: one member whole, a catalog's index), and
-   the account edits (`[23, 1, 5]` listed, one account whole). Needs: a
-   transaction that is a view plus put, delete and replace-subtree, which
-   reads its own writes; the basis of stored calculations and the
-   verified-index marks in derived state, by version; and `om-query`'s
-   `Index` over a seekable listing instead of a whole index, which the
-   finds above need too before an engine with pages serves them.
+5. The operations' own reads and writes inside `engine::run`: moved for
+   op60's modification count, op71's and op72's counters and Set Next
+   Serial Value, op13's upload, op86's member keys and schema writes,
+   op87's and op88's library members, op240's edits, the account edits
+   and the desktop's saved found sets ("The operations' transaction",
+   below). Still on the store, through `Transaction::view() -> &Store`
+   and the transaction's delegates to the store's helpers (an operation
+   that calls one is not checked, `Check::by_store`):
+   - a commit's records (op70 and a server script's commit,
+     `writes::commit`): one record whole each, with `Store::record_limit`
+     and `views::hidden_fields`, written by `Store::write_record`, which
+     keeps `[T, 0d]` and the stored indexes current (`put_record`: index
+     entries by key, and `Store::index_agrees`, which checks an index
+     whole once), and stores, counts and releases container data. Needs:
+     the verified-index marks by version
+     ([#782](https://github.com/OpenMaker-Dev/openmaker/issues/782)) and
+     `om-query`'s `Index` over a seekable listing instead of a whole index
+     ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)), so
+     that the indexes' upkeep reads and writes index entries through the
+     transaction;
+   - op73's field work and the deferred work a file is opened with
+     (`Store::update_table`, `Store::recover`): every record of a table,
+     listed with each record whole, the basis of stored calculations, and
+     the indexes it drops and builds. Needs: the basis by version
+     ([#781](https://github.com/OpenMaker-Dev/openmaker/issues/781)) and
+     the two above;
+   - the indexes a find builds and stores (op86's `StoreIndexes` and the
+     indexes of its program, `Store::store_indexes_in`): the table's
+     records listed whole and each index written whole. Needs: the
+     indexes' upkeep above.
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a `Source` method for the head NodeExists and GetKey read,

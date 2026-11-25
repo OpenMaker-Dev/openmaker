@@ -332,7 +332,7 @@ pub(crate) fn create_record(
     // Each refusal comes before anything changes, in this order: the count,
     // the connection's lock room, then the reservation's own (a count of 0,
     // ids past the largest, a table node the last issued id cannot go
-    // beneath; `Store::reserve_record_ids`), then (`durable`) the engine's
+    // beneath; `reserve_record_ids`), then (`durable`) the engine's
     // save of the new last issued id, which a refusal takes back. Only a
     // lock another user holds on a reserved id refuses after the ids are
     // reserved, as FileMaker Server does (write-path.md 3.1, step 4).
@@ -1165,11 +1165,11 @@ fn over_cap(file: &str, holder: &str, path: &[Vec<u8>]) -> LockReply {
 }
 
 /// op60: take a lock without waiting, answering with the locked node's
-/// modification count in `store` when asked (write-path.md 4.2,
+/// modification count `view` reads when asked (write-path.md 4.2,
 /// schema-path.md 4.1). The grant is framed before the lock is taken, so a
 /// lock is only held by a client the reply tells of it: a grant that cannot
-/// be framed (a count longer than 255 bytes, which [`Store::mod_count`]
-/// does not return) is refused with error 3 and takes nothing. A new lock
+/// be framed (a count longer than 255 bytes, which [`mod_count`] does not
+/// return) is refused with error 3 and takes nothing. A new lock
 /// is refused when `room`, the locks the connection may still take
 /// ([`MAX_LOCKS`]), is 0.
 pub(crate) fn lock(op: TakeLock, file: &str, view: &dyn View, locks: &mut Locks<'_>) -> LockReply {

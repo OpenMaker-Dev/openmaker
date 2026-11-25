@@ -358,8 +358,8 @@ impl LocalHost {
     }
 
     /// Answer every read of the file that goes through a view through the
-    /// test view as well as the file engine's (`Server::checking_reads`).
-    /// Only in debug builds.
+    /// test view as well as the file engine's, and check every operation's
+    /// writes (`Server::checking_reads`). Only in debug builds.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn checking_reads(self) -> Self {
