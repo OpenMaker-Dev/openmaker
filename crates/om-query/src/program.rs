@@ -95,7 +95,7 @@ pub(crate) struct Work {
 }
 
 impl Work {
-    fn new(limit: Size) -> Self {
+    pub(crate) fn new(limit: Size) -> Self {
         Self {
             done: Cell::default(),
             limit,

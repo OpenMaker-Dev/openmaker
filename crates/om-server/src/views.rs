@@ -182,6 +182,16 @@ impl ViewFilter {
         self.limits.contains_key(table) || self.hidden.contains_key(table)
     }
 
+    /// Whether [`ViewFilter::filter`] can change the node at `path` or
+    /// anything below it: the root, the file's own library and a
+    /// view-limited table. Elsewhere the session reads the file as it is.
+    pub(crate) fn filters(&self, path: &[&[u8]]) -> bool {
+        match path {
+            [] | [[LIBRARY], ..] => true,
+            [table, ..] => self.limits(table),
+        }
+    }
+
     /// Whether field `field` of `table` (their keys) is hidden.
     fn hides(&self, table: &[u8], field: &[u8]) -> bool {
         self.hidden

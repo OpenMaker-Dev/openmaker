@@ -481,7 +481,22 @@ impl<'h> Reading<'h> {
     pub fn serve<T: PartialEq + std::fmt::Debug>(&self, mut read: impl FnMut(Read<'_>) -> T) -> T {
         #[cfg(debug_assertions)]
         if let Some(copies) = &self.copies {
-            return copies.serve(self, false, read);
+            return copies.serve(self, (false, false), read);
+        }
+        read(self.read())
+    }
+
+    /// [`Self::serve`] for a find (op86's program, a server script's find):
+    /// the running server reads as [`Self::serve`] does; the test view also
+    /// refuses the find an index read whole (`copies`' module doc), which a
+    /// find reads through listings (docs/server-storage.md 5, "Views").
+    pub fn serve_find<T: PartialEq + std::fmt::Debug>(
+        &self,
+        mut read: impl FnMut(Read<'_>) -> T,
+    ) -> T {
+        #[cfg(debug_assertions)]
+        if let Some(copies) = &self.copies {
+            return copies.serve(self, (false, true), read);
         }
         read(self.read())
     }
@@ -497,7 +512,7 @@ impl<'h> Reading<'h> {
     ) -> T {
         #[cfg(debug_assertions)]
         if let Some(copies) = &self.copies {
-            return copies.serve(self, true, read);
+            return copies.serve(self, (true, false), read);
         }
         read(self.read())
     }
@@ -508,7 +523,16 @@ impl<'h> Reading<'h> {
     pub fn serve_once<T>(&self, read: impl FnOnce(Read<'_>) -> T) -> T {
         #[cfg(debug_assertions)]
         if let Some(copies) = &self.copies {
-            return copies.serve_once(self, read);
+            return copies.serve_once(self, false, read);
+        }
+        read(self.read())
+    }
+
+    /// [`Self::serve_once`] for a find ([`Self::serve_find`]).
+    pub fn serve_find_once<T>(&self, read: impl FnOnce(Read<'_>) -> T) -> T {
+        #[cfg(debug_assertions)]
+        if let Some(copies) = &self.copies {
+            return copies.serve_once(self, true, read);
         }
         read(self.read())
     }

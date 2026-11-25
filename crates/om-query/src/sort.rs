@@ -6,12 +6,14 @@
 //! an unindexed text field from its stored value keyed by `om-collate`.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
 
 use om_hbam::{serial, DataType, FieldKind, OwnedNode, RidList};
 
 use crate::exec::single_segment;
 use crate::index::{Indexes, VALUE_INDEX};
 use crate::program::{keys, leaf, measure, take_key_string, Instruction, Program, Size, Work};
+use crate::source::Direction;
 use crate::QueryError;
 
 /// The inline row set under `[01, i, 01]` (spec 10.1).
@@ -131,12 +133,15 @@ fn sort_keys(
         // until every record has one.
         let mut keys: HashMap<u64, Vec<u8>> = HashMap::new();
         let wanted = records.len();
-        for at in 0..index.len() {
-            if keys.len() == wanted {
+        let every_key = (Bound::Unbounded, Bound::Unbounded);
+        let mut entries = index.scan(every_key, Direction::Forward, work)?;
+        while keys.len() < wanted {
+            let Some(entry) = entries.next() else {
                 break;
-            }
-            for id in index.records(at, work)?.and(records).iter() {
-                keys.entry(id).or_insert_with(|| index.key(at).to_vec());
+            };
+            let entry = entry?;
+            for id in entry.records(work)?.and(records).iter() {
+                keys.entry(id).or_insert_with(|| entry.key().to_vec());
             }
         }
         (keys, text)

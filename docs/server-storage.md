@@ -290,23 +290,34 @@ The readers that read through views:
   key selects what walking it beside the children did before;
 - op86 (`connection::run_query`, `QuerySource`): `om_query::Source` over
   a read. Its catalog is the derived state's; a node is the view's
-  subtree, filtered as before; an index built on demand reads each record
-  as the view lists it (`derived::index_on_demand`); GenerateMemberKey
-  reads the catalog's index nodes (`derived::issue_member_key`).
-  `Source` gained `record_ids`, a table's record list read entry by entry
-  (`[T, 0d]`); its default, which the other sources (`HbamFile`, a server
-  script's `FindSource`) keep, decodes `Source::node`'s node.
-  What `om-query` still asks of `Source::node` whole: a field's index (`Indexes::load`: `Index` finds keys by position,
-  checks their order once and reads entries by position, so it needs the
-  entries at hand), a record's cell (`Indexes::stored_text`), the node
-  NodeExists and GetKey name, of which only its own value is read
+  subtree, filtered as before; a field's index is listed (below); an
+  index built on demand reads each record as the view lists it
+  (`derived::index_on_demand`); GenerateMemberKey reads the catalog's
+  index nodes (`derived::issue_member_key`). `Source` gained
+  `record_ids`, a table's record list read entry by entry (`[T, 0d]`;
+  its default, which `HbamFile` keeps, decodes `Source::node`'s node), and
+  `children`: a node's children listed a page at a time in key order from
+  a bound (`om_query::Listing`, through `View::subtrees_page`:
+  `connection::ViewListing`) where no account filter reaches the node
+  (`ViewFilter::filters`), and the node whole through `Source::node`
+  otherwise. `om_query::Index` reads a field's index so: a lookup by key
+  is one page of one entry, a range or a full read pages through the
+  entries it passes (8 a page, growing to 256), and no instruction needs
+  an entry by its position (the module doc of `om-query`'s `index`). An
+  index held whole (a file on disk, a source without listings, an index
+  built on demand) is read as before, its order checked once and its keys
+  found by binary search. What `om-query` still asks of `Source::node`
+  whole: a record's cell (`Indexes::stored_text`), the node NodeExists
+  and GetKey name, of which only its own value is read
   (`exec::file_node`), and each node on the destination of
   UploadMultiple, which is measured whole as the program's work
   (`exec::upload_multiple`). The view filter evaluates a view limit on
   the record as stored (`ViewFilter::viewable`, a record whole);
 - a server script's find (`scripts::host::FindSource`): `om_query::Source`
   over a read, its catalog the derived state's, a node the view's
-  subtree, an index built on demand as op86's, and no GenerateMemberKey;
+  subtree, a field's index and a table's record list listed as op86's
+  (no account filter applies), an index built on demand as op86's, and
+  no GenerateMemberKey;
   a find inside a transaction reads an overlay of the version ("The
   overlay view", below);
 - op80 (`connection::login`): the account the login names, looked up in
@@ -470,7 +481,13 @@ other reader its derived state holds no accounts, so one that read them
 without asking would fail its check
 (`engine::tests::the_test_view_reads_the_accounts_only_for_a_reader_of_them`),
 and the test view copies no password verifier for it (Describe Security
-included). The test servers of `om-server`, `om-provider` and
+included). For a find (`Reading::serve_find`: op86's program, a server
+script's find and its related records' lookup) it also refuses a subtree
+at or above a field's index `[T, 01, F, kind]`, and a page of subtrees
+that would give one, so that a find that read an index whole answers
+otherwise than the file engine and fails the test that made it
+(`engine::copies::tests::the_test_view_refuses_a_find_an_index_read_whole`).
+The test servers of `om-server`, `om-provider` and
 `om-author` and of `om-gui`'s hosted-file tests, and the private hosts
 `om-server`'s local-file tests open, are switched to it; the private
 hosts the desktop opens for itself in `om-provider`'s and `om-gui`'s
@@ -1461,15 +1478,22 @@ first, each with the test view's runs of its tests:
    indexes (`authoring::edit`: one member whole, a catalog's index), and
    the account edits (`[23, 1, 5]` listed, one account whole). Needs: a
    transaction that is a view plus put, delete and replace-subtree, which
-   reads its own writes; the basis of stored calculations and the
-   verified-index marks in derived state, by version; and `om-query`'s
-   `Index` over a seekable listing instead of a whole index, which the
-   finds above need too before an engine with pages serves them.
+   reads its own writes; and the basis of stored calculations and the
+   verified-index marks in derived state, by version. The upkeep's reads
+   of an index are written over the listing a find reads it through
+   (`om_query::upkeep`): a commit's entries by key (`entries_at`),
+   whether an index holds more entries than a move leaves
+   (`holds_more_than`), the check of an index against one built from the
+   records in one pass that stops at the first difference
+   (`holds_exactly`), and a sweep's entries in key order (`entries`).
+   Which fields have which indexes is read from the heads of `[T, 01,
+   F]`'s children, and an index node's own value from its head. The
+   upkeep itself still reads and writes the store's tree.
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a `Source` method for the head NodeExists and GetKey read,
-a measure of a subtree for UploadMultiple's work without holding it, and
-an index read by key and position over `children` listings.
+and a measure of a subtree for UploadMultiple's work without holding it.
+A field's index is read through listings ("Views", op86).
 
 **The file engine behind it.** `FileEngine::submit` takes what each request
 took before the interface: the store's write lock for op70, op71, op72,

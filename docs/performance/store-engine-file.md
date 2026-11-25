@@ -331,30 +331,34 @@ Remove `target/m` afterwards.
   demand, then the same find again; a SortList of every record by Name; and a
   download of the table's records `[T, 05]` in pages (op90).
 - **The machine:** an Intel Xeon Gold 6134 (16 threads) virtual machine with
-  50 GB of memory, ext4. The load average was 2.4 to 4.9 during the runs below;
-  the small file's repeat runs at a load near 7 were 10 to 40% slower and are
-  not shown.
+  50 GB of memory, ext4, shared with other work: each step waits for a
+  one-minute load average under 5 for up to ten minutes and starts anyway
+  after that. The load was 2.9 to 3.9 at the start of the steps below.
+- **The build:** a field's index read through listings
+  ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)), on the same
+  files as the run before it, whose find on Name is the column's second figure
+  (the load 3.8 to 5.0 at its steps).
 
 ### Results
 
 | | file engine | store engine, first start | store engine, second start |
 |---|---|---|---|
 | **200,000 records (138.8 MB)** | | | |
-| Start to hosted | 2.57 s | 4.89 s (import 4.80 s) | 0.39 s (hash 0.37 s) |
+| Start to hosted | 3.01 s | 5.26 s (import 5.05 s) | 0.43 s (hash 0.36 s) |
 | Resident once hosted (peak) | 549 MB (702 MB) | 220 MB (220 MB) | 13 MB (13 MB) |
-| Find on Name, stored index | 7.8 ms | 223 ms | 231 ms |
-| Find on Code, index built: first, again | 2,236 ms, 2,047 ms | 2,051 ms, 1,981 ms | 2,670 ms, 2,163 ms |
-| Sort of every record by Name | 3,247 ms | 2,087 ms | 2,246 ms |
-| Download of `[T, 05]` (op90) | 695 ms | 884 ms | 975 ms |
-| Resident after the reads (peak) | 664 MB (1,291 MB) | 596 MB (854 MB) | 621 MB (879 MB) |
+| Find on Name, stored index (before: whole) | 0.5 ms (8.2 ms) | 0.6 ms (219 ms) | 0.6 ms (243 ms) |
+| Find on Code, index built: first, again | 2,333 ms, 2,113 ms | 2,090 ms, 2,040 ms | 2,633 ms, 2,176 ms |
+| Sort of every record by Name | 3,281 ms | 3,005 ms | 3,449 ms |
+| Download of `[T, 05]` (op90) | 658 ms | 975 ms | 938 ms |
+| Resident after the reads (peak) | 665 MB (1,292 MB) | 553 MB (811 MB) | 550 MB (808 MB) |
 | **1,000,000 records (694.0 MB)** | | | |
-| Start to hosted | 11.94 s | 29.84 s (import 29.65 s) | 1.79 s (hash 1.75 s) |
+| Start to hosted | 14.07 s | 33.17 s (import 32.38 s) | 1.99 s (hash 1.95 s) |
 | Resident once hosted (peak) | 2,698 MB (3,478 MB) | 568 MB (568 MB) | 13 MB (13 MB) |
-| Find on Name, stored index | 43.9 ms | 2,573 ms | 2,565 ms |
-| Find on Code, index built: first, again | 11,652 ms, 10,327 ms | 17,256 ms, 14,724 ms | 17,113 ms, 17,581 ms |
-| Sort of every record by Name | refused after 10,334 ms | refused after 6,825 ms | refused after 7,543 ms |
-| Download of `[T, 05]` (op90) | 3,219 ms | 7,398 ms | 8,373 ms |
-| Resident after the reads (peak) | 3,466 MB (4,343 MB) | 1,861 MB (2,377 MB) | 1,309 MB (1,826 MB) |
+| Find on Name, stored index (before: whole) | 2.2 ms (54.3 ms) | 3.9 ms (2,608 ms) | 2.6 ms (2,480 ms) |
+| Find on Code, index built: first, again | 12,287 ms, 10,783 ms | 15,062 ms, 14,774 ms | 15,314 ms, 16,194 ms |
+| Sort of every record by Name | refused after 11,150 ms | refused after 13,029 ms | refused after 13,128 ms |
+| Download of `[T, 05]` (op90) | 3,636 ms | 7,472 ms | 7,377 ms |
+| Resident after the reads (peak) | 3,466 MB (4,344 MB) | 1,600 MB (2,116 MB) | 1,048 MB (1,564 MB) |
 
 The store folder holds 214 MB for the first file and 988 MB for the second.
 Its derived state took 1.3 to 2.1 ms to compute at each start, whatever the
@@ -372,20 +376,20 @@ records: it reads the catalogs, the accounts and the locale.
   the configuration, not measured on a larger file); it stays resident once
   hosted.
 - **Memory grows with the file in the reads, not in the hosting.** Each of
-  these holds something whole, sized by the table: a find through a stored
-  index reads the field's whole index as a tree (the paged view copies it, the
-  file engine lends it: [#783](https://github.com/OpenMaker-Dev/openmaker/issues/783));
-  a find that builds an index holds the index it builds, and on the store
-  engine builds it again for each find
-  ([#793](https://github.com/OpenMaker-Dev/openmaker/issues/793)); a sort holds
-  a key per record; a download holds the pages it has not sent, up to
-  `--download-memory-mib`. The peak during the reads is 854 to 879 MB at
-  200,000 records and 1.8 to 2.4 GB at 1,000,000, about five times as much for
-  five times the records, and the allocator keeps most of it resident
-  afterwards (600 MB and 1.3 to 1.9 GB).
-- **Finds through a stored index** cost the store engine the copy of the whole
-  index: 30 to 60 times the file engine's time, growing with the table
-  ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)).
+  these holds something whole, sized by the table: a find that builds an
+  index holds the index it builds, and on the store engine builds it again
+  for each find ([#793](https://github.com/OpenMaker-Dev/openmaker/issues/793));
+  a sort holds a key per record; a download holds the pages it has not sent,
+  up to `--download-memory-mib`. The peak during the reads is 808 to 811 MB
+  at 200,000 records and 1.6 to 2.1 GB at 1,000,000, and the allocator keeps
+  most of it resident afterwards (550 MB and 1.0 to 1.6 GB). A find through
+  a stored index no longer adds to it.
+- **Finds through a stored index** read the entries they need, listed from
+  a bound a page at a time ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)):
+  0.5 to 3.9 ms on either engine, where reading the whole index took 219 to
+  243 ms and 2.5 to 2.6 s on the store engine. The file engine is faster too
+  (8.2 to 0.5 ms, 54 to 2.2 ms): it lent the index before, but checked the
+  order of every key once per find.
 - **A find that builds an index** costs about the same on both engines at
   200,000 records and 1.5 times as much on the store engine at 1,000,000
   (its records read through pages). The file engine here rebuilds it too,
@@ -393,6 +397,12 @@ records: it reads the catalogs, the accounts and the locale.
   writable folder it stores the index and the next find reads it.
 - **The sort** of 1,000,000 records by a 64-character field is refused on
   both engines, after seconds of work
-  ([#795](https://github.com/OpenMaker-Dev/openmaker/issues/795)).
+  ([#795](https://github.com/OpenMaker-Dev/openmaker/issues/795)). It reads
+  the index from its first key until every record has one, which here is the
+  whole index. Through listings that cost the store engine more than the
+  whole copy did (3.0 to 3.4 s against 2.3 to 2.5 s at 200,000 records),
+  because its view builds each entry's subtree with a seek of its own
+  (`PagedView::subtrees_page`, [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767));
+  the file engine's is unchanged (3.3 s against 3.2 s, one run each).
 - **The download** is 1.3 times the file engine's at 200,000 records and 2.3
   to 2.6 times at 1,000,000.

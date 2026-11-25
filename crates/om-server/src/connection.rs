@@ -2699,9 +2699,9 @@ fn query(
                     run_query(file, read, program, late, &context)
                 };
                 let ran = if repeatable {
-                    reading.serve(&mut run)
+                    reading.serve_find(&mut run)
                 } else {
-                    reading.serve_once(&mut run)
+                    reading.serve_find_once(&mut run)
                 };
                 match ran {
                     Ran::ReadOnly => return Err(Refused.into()),
@@ -2954,6 +2954,68 @@ fn run_query(
     Ran::Answered(Queried(outcome), source.issued.into_inner())
 }
 
+/// A table's record list `[T, 0d]` as `view` lists its entries, never held
+/// as a tree (`om_query::Source::record_ids`).
+pub(crate) fn listed_record_ids(
+    view: &dyn crate::engine::View,
+    table: &[u8],
+) -> om_hbam::Result<RidList> {
+    let path: [&[u8]; 2] = [table, &[0x0d]];
+    let mut ids = RidList::new();
+    for entry in view.children(&path, std::ops::Bound::Unbounded, Direction::Forward) {
+        let entry = entry?;
+        ids.add_entry(
+            &entry.segment,
+            entry.head.value.as_deref().unwrap_or_default(),
+        )?;
+    }
+    Ok(ids)
+}
+
+/// A node's children listed through a view a page at a time, each with
+/// its subtree ([`crate::engine::View::subtrees_page`]), as a find reads a
+/// field's index: an entry at a time from a bound, never the index whole
+/// (`om_query::Listing`; docs/server-storage.md 5, "Views").
+pub(crate) struct ViewListing<'v> {
+    view: &'v dyn crate::engine::View,
+    path: Vec<Vec<u8>>,
+}
+
+impl<'v> ViewListing<'v> {
+    /// The listing of the node at `path`, `None` when there is no node.
+    pub(crate) fn of(
+        view: &'v dyn crate::engine::View,
+        path: &[&[u8]],
+    ) -> om_hbam::Result<Option<om_query::Children<'v>>> {
+        if view.node(path)?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(om_query::Children::Listed(Box::new(ViewListing {
+            view,
+            path: path.iter().map(|s| s.to_vec()).collect(),
+        }))))
+    }
+}
+
+impl om_query::Listing for ViewListing<'_> {
+    fn page<'a>(
+        &'a self,
+        from: std::ops::Bound<&[u8]>,
+        direction: om_query::Direction,
+        max: usize,
+        out: &mut Vec<Cow<'a, OwnedNode>>,
+    ) -> om_hbam::Result<bool> {
+        let path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
+        let direction = match direction {
+            om_query::Direction::Forward => Direction::Forward,
+            om_query::Direction::Backward => Direction::Backward,
+        };
+        Ok(self
+            .view
+            .subtrees_page(&path, from, direction, max, NO_LIMIT, out)?)
+    }
+}
+
 /// A hosted file as a query source, read through a view and its derived
 /// state. Restricted accounts see account-member parents, other whole
 /// members and the `04` and `06` children as missing; their own whole
@@ -3010,31 +3072,37 @@ impl om_query::Source for QuerySource<'_> {
         })
     }
 
+    /// A node's children listed through the view a page at a time
+    /// ([`ViewListing`]: a field's index, which a find reads an entry at a
+    /// time), when nothing the source filters reaches the node; through
+    /// [`om_query::Source::node`], whole, otherwise.
+    fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Children<'_>>> {
+        let segments = || path.iter().copied();
+        let filtered = (self.restricted
+            && (credential_path(segments())
+                || self
+                    .account_key
+                    .is_some_and(|key| account_member_path(segments(), key))))
+            || self.view.as_ref().is_some_and(|view| view.filters(path));
+        if filtered {
+            return Ok(self.node(path)?.map(om_query::Children::Whole));
+        }
+        ViewListing::of(self.read.view, path)
+    }
+
     /// The record list's entries as the view lists them, never held as a
     /// tree, when no view limit filters what the account reads; through
     /// [`om_query::Source::node`] otherwise. No credential path is a
     /// record list.
     fn record_ids(&self, table: &[u8]) -> om_hbam::Result<RidList> {
-        let path: [&[u8]; 2] = [table, &[0x0d]];
         if self.view.is_some() {
+            let path: [&[u8]; 2] = [table, &[0x0d]];
             return Ok(match self.node(&path)? {
                 Some(node) => RidList::from_owned(&node)?,
                 None => RidList::new(),
             });
         }
-        let mut ids = RidList::new();
-        for entry in self
-            .read
-            .view
-            .children(&path, std::ops::Bound::Unbounded, Direction::Forward)
-        {
-            let entry = entry?;
-            ids.add_entry(
-                &entry.segment,
-                entry.head.value.as_deref().unwrap_or_default(),
-            )?;
-        }
-        Ok(ids)
+        listed_record_ids(self.read.view, table)
     }
 
     fn index_on_demand(
