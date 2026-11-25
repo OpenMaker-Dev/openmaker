@@ -1282,16 +1282,23 @@ fn planted_defects_found_by_how_many_seeds() {
         Plant::PublishDurable,
     ] {
         let seeds = seeds(SEEDS);
-        let found: Vec<u64> = seeds
-            .iter()
-            .copied()
-            .filter(|seed| run(*seed, setup(*seed, STEPS, Some(plant))).is_err())
-            .collect();
-        eprintln!(
-            "{plant:?}: found by {} of {} seeds, the first {:?}",
-            found.len(),
-            seeds.len(),
-            found.first()
-        );
+        // Which check found it: the failure without its numbers, with how
+        // many seeds and the first.
+        let mut kinds: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for seed in &seeds {
+            if let Err(e) = run(*seed, setup(*seed, STEPS, Some(plant))) {
+                let what = e.split_once(": ").map_or(e.as_str(), |(_, w)| w);
+                let kind: String = what
+                    .chars()
+                    .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                    .collect();
+                kinds.entry(kind).or_insert((0, *seed)).0 += 1;
+            }
+        }
+        let found: u64 = kinds.values().map(|k| k.0).sum();
+        eprintln!("{plant:?}: found by {found} of {} seeds", seeds.len());
+        for (kind, (n, first)) in kinds {
+            eprintln!("  {n} seeds, the first {first}: {kind}");
+        }
     }
 }
