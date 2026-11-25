@@ -1717,6 +1717,195 @@ mod tests {
         host.close();
     }
 
+    /// After a failed read, no step has an effect outside the session and
+    /// the file engine (docs/server-storage.md 5, "A read that fails ends
+    /// the run"). In a session whose read of a global failed, each host
+    /// method that writes a file, sends mail or makes a request is called
+    /// with arguments that would otherwise have its effect (the host's
+    /// moment after a step's argument read failed): each is refused with
+    /// 802 and the run ends with 802; no file is made or changed, also where
+    /// the destination exists; nothing reaches the loopback mail and web
+    /// servers. Create Data File and Delete File read nothing of the file
+    /// for their arguments, so only a direct call reaches them so.
+    #[test]
+    fn a_failed_read_stops_every_effect_outside_the_file() {
+        use om_scripts::runtime::{
+            Encoding, ErrorCode, Files as _, HostResult, Mail, MailVia, Network as _,
+            ScriptHost as _, SmtpOptions, TransferCall, UrlRequest,
+        };
+        use om_transfer::spec::ExportField;
+        use std::fs;
+        let tag = format!("{}-{:?}", std::process::id(), std::thread::current().id())
+            .replace(['(', ')'], "");
+        let root = std::env::temp_dir().join(format!("om-effects-{tag}"));
+        let _ = fs::remove_dir_all(&root);
+        let documents = root.join("Documents");
+        fs::create_dir_all(&documents).unwrap();
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_photo(&mut tree);
+        let file = TempFile(root.join(fixture::FILE));
+        fixture::write_tree(&file.0, &tree);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        // Files the steps would change, which exist.
+        let existing = [
+            "export.tab",
+            "created.txt",
+            "written.txt",
+            "deleted.txt",
+            "renamed.txt",
+        ];
+        for name in existing {
+            fs::write(documents.join(name), "old").unwrap();
+        }
+        let path = |name: &str| vec![format!("file:{}", documents.join(name).display())];
+        let id = host.open_data_file(&path("written.txt")).unwrap();
+        let listener = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        };
+        let (mail_server, web_server) = (listener(), listener());
+        // A read of the global fails.
+        shared
+            .engine
+            .fail_reads(fixture::FILE, vec![uint_segment(fixture::TABLE), vec![8]]);
+        let context = host.calc_context_for_test();
+        let _ = om_calc::eval::evaluate_text("Tasks::Setting", &mut host, &context);
+        let unreadable = Some(ErrorCode(i32::from(UNREADABLE)));
+        assert_eq!(host.take_step_error(), unreadable, "the read failed");
+        let options = om_transfer::ExportOptions {
+            fields: vec![ExportField {
+                field: om_transfer::FieldSpec::new(fixture::OCCURRENCE, fixture::NAME),
+                sum_by: om_transfer::FieldSpec::none(),
+            }],
+            group_by: Vec::new(),
+            formatting: false,
+            charset: om_transfer::ExportCharset::Utf8,
+            use_name_alias: Some(1),
+            field_names: None,
+        };
+        let step = om_scripts::ScriptStep::new(36);
+        let export = TransferCall {
+            id: 36,
+            step: &step,
+            paths: path("export.tab"),
+            with_dialog: false,
+            restore: true,
+            create_folders: false,
+            open_automatically: false,
+            create_email: false,
+            verify_ssl: false,
+            source_kind: 0,
+            import_order: None,
+            export_order: Some(options.encode()),
+            profile: Some(om_transfer::Profile::new(om_transfer::FileType::TabSeparated).encode()),
+            profile_ex: None,
+            field_flags: None,
+            slots: Vec::new(),
+        };
+        let port = |server: &std::net::TcpListener| server.local_addr().unwrap().port();
+        let request = UrlRequest {
+            url: format!("http://127.0.0.1:{}/", port(&web_server)),
+            curl_options: None,
+            verify_ssl: false,
+            with_dialog: false,
+            encode_url: false,
+            variables: Vec::new(),
+            target: None,
+        };
+        let mail = Mail {
+            via: MailVia::Smtp,
+            to: "kim@example.org".into(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Weekly report".into(),
+            message: String::new(),
+            collect: [false; 3],
+            one_per_record: false,
+            attachments: String::new(),
+            with_dialog: false,
+            smtp: Some(SmtpOptions {
+                name: "Pat".into(),
+                email: "pat@example.org".into(),
+                reply_to: String::new(),
+                server: "127.0.0.1".into(),
+                port: port(&mail_server).to_string(),
+                encryption: 0,
+                authentication: 1,
+                user: String::new(),
+                password: String::new(),
+            }),
+        };
+        let refused = Err(HostError::Error(ErrorCode(i32::from(UNREADABLE))));
+        let mut steps: Vec<(&str, HostResult)> = vec![
+            ("Export Records", host.export_records(&export)),
+            (
+                "Export Field Contents",
+                host.export_field_contents(Some(field(fixture::PHOTO)), &path("photo.png"), false),
+            ),
+            (
+                "Create Data File",
+                host.create_data_file(&path("created.txt"), false),
+            ),
+            (
+                "Create Data File, new",
+                host.create_data_file(&path("new.txt"), false),
+            ),
+            (
+                "Write to Data File",
+                host.write_data_file(id, &Value::text("new"), Encoding::Utf8, false),
+            ),
+            ("Delete File", host.delete_file(&path("deleted.txt"))),
+            (
+                "Rename File",
+                host.rename_file(&path("renamed.txt"), "moved.txt"),
+            ),
+        ];
+        // A request that is made ends within seconds: the loopback servers
+        // never answer.
+        let soon = || Control {
+            abort: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            deadline: Some(Instant::now() + Duration::from_secs(2)),
+        };
+        host.set_control(soon());
+        steps.push(("Insert from URL", host.fetch_url(&request).map(|_| ())));
+        host.set_control(soon());
+        steps.push(("Send Mail", host.send_mail(&mail)));
+        let mut failures: Vec<String> = steps
+            .into_iter()
+            .filter(|(_, result)| *result != refused)
+            .map(|(step, result)| format!("{step}: {result:?}"))
+            .collect();
+        assert_eq!(host.take_step_error(), unreadable, "the run ends with 802");
+        let mut names: Vec<String> = fs::read_dir(&documents)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let mut expected: Vec<String> = existing.iter().map(|name| name.to_string()).collect();
+        expected.sort();
+        if names != expected {
+            failures.push(format!("files made, deleted or renamed: {names:?}"));
+        }
+        for name in existing {
+            let now = fs::read_to_string(documents.join(name)).unwrap_or_default();
+            if now != "old" {
+                failures.push(format!("{name} changed: {now:?}"));
+            }
+        }
+        for (server, what) in [(&mail_server, "mail"), (&web_server, "web")] {
+            let accepted = server.accept().map(|_| ());
+            if !accepted.is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock) {
+                failures.push(format!("a connection reached the {what} server"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        host.close();
+        drop(file);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// The reads kept to one version (docs/server-storage.md 5, "A script
     /// session's reads"), each through one reading, counted by the test
     /// hook that counts the readings a session takes: a Design function's
@@ -1982,6 +2171,34 @@ mod tests {
         let after = hosted(&changing).read_store().node(&[]).cloned();
         assert!(before == after, "the serial write did not happen");
         host.close();
+
+        // The same fault through the account facts of ExecuteSQL's session
+        // and through a Design call's: each is a read that failed.
+        for (what, text) in [
+            (
+                "ExecuteSQL's account facts",
+                "ExecuteSQL ( \"SELECT Name FROM Tasks\" ; \"\" ; \"\" )",
+            ),
+            (
+                "a Design call's account facts",
+                "FieldType ( Get ( FileName ) ; \"Tasks::Name\" )",
+            ),
+        ] {
+            let file = TempFile::new("fail-accounts-calc", &[], true);
+            let calculating = shared(&file);
+            let mut host = session(&calculating);
+            calculating
+                .engine
+                .fail_reads(fixture::FILE, vec![vec![23], vec![1], vec![5]]);
+            let context = host.calc_context_for_test();
+            let _ = om_calc::eval::evaluate_text(text, &mut host, &context);
+            assert_eq!(
+                om_scripts::runtime::ScriptHost::take_step_error(&mut host),
+                Some(ErrorCode(i32::from(UNREADABLE))),
+                "{what}"
+            );
+            host.close();
+        }
     }
 
     /// The scripts of [`a_failed_read_ends_the_run_and_writes_nothing`]:

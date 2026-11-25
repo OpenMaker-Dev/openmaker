@@ -1250,6 +1250,18 @@ impl ServerHost {
         }
     }
 
+    /// 802 when a read of the file failed in this session, for a step whose
+    /// effect is outside the session and the file engine: a file written,
+    /// made, renamed or deleted, mail sent, a request made. Each such method
+    /// of the host calls it before its effect (the `Files` and `Network`
+    /// impls, Export Field Contents), and
+    /// `scripts::tests::a_failed_read_stops_every_effect_outside_the_file`
+    /// lists them (docs/server-storage.md 5, "A read that fails ends the
+    /// run").
+    fn refuse_outside_effect(&self) -> HostResult {
+        self.refuse_after_failed_read()
+    }
+
     /// A step closed the session's last window (13.25: the script stops,
     /// and FileMaker Server's run ends with 0 and no result).
     pub fn closed_last_window(&self) -> bool {
@@ -5246,6 +5258,7 @@ impl FieldSteps for ServerHost {
         paths: &[String],
         create_folders: bool,
     ) -> HostResult {
+        self.refuse_outside_effect()?;
         self.export_contents(field, paths, create_folders)
     }
 
@@ -6220,7 +6233,11 @@ impl Files for ServerHost {
         self.import_step(call)
     }
 
+    // A method here with an effect outside the session and the file engine
+    // calls `refuse_outside_effect` first.
+
     fn export_records(&mut self, call: &om_scripts::runtime::TransferCall<'_>) -> HostResult {
+        self.refuse_outside_effect()?;
         self.export_step(call)
     }
 
@@ -6236,6 +6253,7 @@ impl Files for ServerHost {
     }
 
     fn create_data_file(&mut self, paths: &[String], create_folders: bool) -> HostResult {
+        self.refuse_outside_effect()?;
         Ok(self.create_data_file_at(paths, create_folders)?)
     }
 
@@ -6250,6 +6268,7 @@ impl Files for ServerHost {
         encoding: om_scripts::runtime::Encoding,
         line_feed: bool,
     ) -> HostResult {
+        self.refuse_outside_effect()?;
         Ok(self.write_data_file_at(id, data, encoding, line_feed)?)
     }
 
@@ -6275,22 +6294,28 @@ impl Files for ServerHost {
     }
 
     fn delete_file(&mut self, paths: &[String]) -> HostResult {
+        self.refuse_outside_effect()?;
         Ok(self.delete_data_file(paths)?)
     }
 
     fn rename_file(&mut self, paths: &[String], new_name: &str) -> HostResult {
+        self.refuse_outside_effect()?;
         Ok(self.rename_data_file(paths, new_name)?)
     }
 }
+/// Both make a request outside the session: each calls
+/// `refuse_outside_effect` first.
 impl Network for ServerHost {
     fn fetch_url(
         &mut self,
         request: &om_scripts::runtime::UrlRequest,
     ) -> HostResult<om_scripts::runtime::UrlResponse> {
+        self.refuse_outside_effect()?;
         self.fetch_url_step(request)
     }
 
     fn send_mail(&mut self, mail: &om_scripts::runtime::Mail) -> HostResult {
+        self.refuse_outside_effect()?;
         self.send_mail_step(mail)
     }
 }
