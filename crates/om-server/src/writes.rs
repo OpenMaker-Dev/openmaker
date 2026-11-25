@@ -620,6 +620,22 @@ pub(crate) fn commit(
         mut staged,
         withheld,
     } = op;
+    // A file found read-only here, under the write lock (it can become so
+    // after the request was admitted), takes nothing of the commit: the
+    // staged records go back to the session, as a refusal at admission
+    // leaves them, and the commit is answered as not stored.
+    if tx.is_read_only() {
+        let refused = CommitError::NotSaved(
+            "commit refused: the file is hosted read-only; nothing was taken from staging".into(),
+        );
+        return (
+            CommitReply {
+                result: Err(refused),
+                unused: staged,
+            },
+            Vec::new(),
+        );
+    }
     let mut record_environment = || crate::recalc::record_environment_in(&account, environment);
     if let Some((table, action)) = refused_action(
         tx.view(),

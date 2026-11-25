@@ -541,6 +541,27 @@ impl Transfers {
         self.keep_upload(owner, held.perform, resume.cursor, (payload, scan, charge))
     }
 
+    /// Drop the upload that `resume` continues, when `owner` holds it, with
+    /// its charge, and remember its cursor, so that a later part of it is
+    /// refused: a continuation refused before it reaches
+    /// [`Transfers::upload`] (its file became read-only, its session may no
+    /// longer write) ends the upload it belongs to, rather than leave the
+    /// parts already held charged until they are evicted.
+    pub fn abandon_upload(&mut self, owner: Owner, resume: &Resume) {
+        if !resume.has_more() {
+            return;
+        }
+        let Some(held) = self.remove(resume.cursor) else {
+            return;
+        };
+        match held.transfer {
+            Transfer::Upload { .. } if held.owner == owner && held.perform == resume.perform => {
+                self.remember(resume.cursor);
+            }
+            transfer => self.insert(resume.cursor, Held { transfer, ..held }),
+        }
+    }
+
     /// Drop the transfers of file `file_id`, whose session in it ended (the
     /// client closed the file, logged out of it, or logged in to it again):
     /// their charges are given back and their cursors remembered, so that

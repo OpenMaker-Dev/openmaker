@@ -2780,6 +2780,7 @@ impl ServerHost {
             records,
             bulk_delete,
         };
+        crate::connection::before_engine_write(&self.shared, &self.hosted);
         let outcome = self
             .shared
             .engine

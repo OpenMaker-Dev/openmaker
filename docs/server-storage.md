@@ -1175,24 +1175,47 @@ happened. A write request is admitted once (`connection::writable`, which
 says why it refused: the session, or the file hosted read-only), and a
 file that becomes read-only after that, as another connection's op73 can
 make it, is refused by the engine, which decides again under the write
-lock; the request answers either refusal alike. A request whose reply has
+lock; the request answers either refusal alike, and leaves the session as
+either leaves it (a commit's staged records stay staged: the engine checks
+before the commit takes any, `writes::commit`). A request whose reply has
 no status to carry the refusal fails with the system exception a write
-whose save failed gets (MARSHAL, COMPLETED_NO): op13 and op14, into the
-file or into the temporary area, whatever the part; op70; op73. The
-engine refuses an op13 upload on a read-only file with its own error
-(`Reply::UploadToCatalog(Err(..))`), not as an upload that had nothing to
-change. The others answer their own refusal: op71, op72 and op88 status
-200 (access denied), op87 a failed count, op86 with schema instructions
-the error slot with 200 (an IMP_LIMIT exception when the file became
-read-only while the program ran), op240's edits a save error (810, or 800
-when the edit was made and taken back) and its Save status 3, and a
-window's saved found set on the desktop is not kept, which only the log
-says. These answers are OpenMaker's choice; what FileMaker Server answers
-for a file it serves read-only, and what FileMaker Pro does with each, is
-unmeasured ([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)).
-`tests/recalc.rs` sends each to a file hosted read-only, and op13, op70
-and op73 to a file made read-only between their admission and the
-engine's write (`ServerHandle::read_only_before_next_write`).
+whose save failed gets (MARSHAL, COMPLETED_NO): op13 and op14 into the
+file, whatever the part; op70; op73. An upload into a session's own
+temporary area (op14, or op13 with the flag) changes no file: it is
+refused with that exception on a file already read-only at admission, to
+save the work, and staged when the file becomes read-only after, as its
+reply says; the op70 that would commit it is where the file would change,
+and is refused. The engine refuses an op13 upload on a read-only file with
+its own error (`Reply::UploadToCatalog(Err(..))`), not as an upload that
+had nothing to change, and so it refuses one the file cannot hold where it
+is sent (what the file writer cannot write there, or a change to a value
+the upload does not name), on any file. The others answer their own
+refusal: op71, op72 and op88 status 200 (access denied), op87 a failed
+count, op86 with schema instructions or a key it reserves the error slot
+with 200 (at admission, when the program runs, and when the engine refuses
+its draft; a key-only program whose file becomes read-only after it issued
+its key and before its draft is submitted answers 800 when the key stayed
+waiting, which stays queued, or the program's own answer when another
+writer had saved it before), op240's edits a save error (810, or 800 when
+the edit was made and taken back) and its Save status 3, a server script's
+step that would open, create or delete a record 3 where the script sees
+it, and a script whose last record is not stored when it ends that
+commit's error as the run's result, never 0 (op30's reply when it waits;
+one that does not wait answers only that the script started); on the
+desktop, Change Password an unwritten error and a window's saved found set
+is not kept, which only the log says. A later part of an upload refused so
+(op13, op14, op70, op88) ends the upload it belongs to, the parts held and
+their charge given back. These answers are OpenMaker's choice; what
+FileMaker Server answers for a file it serves read-only, and what FileMaker
+Pro does with each, is unmeasured
+([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)). Two
+refusals that are the session's, not the file's, still answer the
+completion reply: an op70 whose record the account's privilege set refuses,
+and the cases of [#801](https://github.com/OpenMaker-Dev/openmaker/issues/801).
+`tests/recalc.rs` sends each request first to a writable copy, where it
+makes its change, read back, then to a file hosted read-only, and each that
+reaches the engine also to a file made read-only between its admission and
+the engine's write (`ServerHandle::read_only_before_next_write`).
 
 **A script session's reads.** A server script session reads its file
 through readings of its own (`ServerHost::read`), at the points where it
