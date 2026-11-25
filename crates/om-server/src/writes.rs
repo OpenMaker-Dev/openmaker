@@ -837,9 +837,10 @@ pub fn stage_upload(
 /// half-applied as FileMaker Server does, a new record whose id was not
 /// issued or a record already has, so it never replaces one, a staged
 /// record whose modification count is not a count, 5.4) is refused whole
-/// as [`CommitError::Refused`], its staged records left staged. A record it
-/// names with nothing staged for it, or the deletion of one that is not
-/// there, asks for nothing. The commit counts once the engine saved it: when it
+/// as [`CommitError::Refused`], its staged records left staged. So is a
+/// commit naming a record, other than for its deletion, with nothing staged
+/// for it ([`unstorable`]); the deletion of one that is not there asks for
+/// nothing. The commit counts once the engine saved it: when it
 /// cannot be, every record is put back, the records stay locked and the
 /// save's error is returned as [`CommitError::NotSaved`], which fails the
 /// op70. `account` and `access` are the account the session logged in as
@@ -1039,8 +1040,16 @@ fn refused_action(
 
 /// Why commit `list` cannot store every record it names, checked before
 /// [`commit_list`] writes any: the first entry it would have to leave out
-/// (see [`commit`]). An entry with nothing staged for it, and the deletion
-/// of a record that is not there, ask for nothing and pass. Only an entry
+/// (see [`commit`]). The deletion of a record that is not there asks for
+/// nothing and passes. An entry other than a deletion with nothing staged
+/// for it is refused (#839 of github.com/OpenMaker-Dev/openmaker), so that a
+/// commit whose save failed, which took its staged records, fails again
+/// when it is sent again rather than answer done with nothing stored:
+/// FileMaker Pro uploads every record it commits new or changed, with op14
+/// before the op70 (write-path.md 0 and 1.1, captured), and the server's log
+/// of its first run against OpenMaker had no commit of a record never
+/// uploaded; a FileMaker Pro commit of a record it did not upload would show
+/// this wrong (docs/server-storage.md 5). Only an entry
 /// marked new (`01`) creates a record, and only one whose id was issued and
 /// is free; an entry in the edit form for a record the file does not hold
 /// is refused, whatever its id (#840 of github.com/OpenMaker-Dev/openmaker:
@@ -1073,7 +1082,10 @@ fn unstorable(
                 continue;
             }
             let Some(record) = staged.get(&path) else {
-                continue;
+                return Some(match id {
+                    Some(id) => format!("record {id} was never uploaded: nothing is staged for it"),
+                    None => format!("{path:02x?} was never uploaded: nothing is staged for it"),
+                });
             };
             let Some(id) = id else {
                 return Some(format!("{path:02x?} is no record of a table the file has"));

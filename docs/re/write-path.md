@@ -502,7 +502,15 @@ whole commit, whatever its id: only an entry marked new creates a record, and
 only under an issued, free id (OpenMaker's choice until measured,
 [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840); it never
 brings back a deleted record, nor lets a client plant a record under an id
-another client's next new record gets). Value `02` (`kModifiedRow`) is the
+another client's next new record gets).
+
+An entry, other than a deletion, naming a record with nothing uploaded for
+it (op14, 3.3) asks FileMaker Server for nothing that was measured.
+OpenMaker Server refuses it, and the whole commit, as the ordering above
+(0, 1.1) shows FileMaker Pro uploading every record it commits new or
+changed ([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839);
+OpenMaker's choice, which a FileMaker Pro commit of a record it did not
+upload would show wrong). Value `02` (`kModifiedRow`) is the
 engine's internal state for a modified record; on the wire a modified record
 is the node form.
 

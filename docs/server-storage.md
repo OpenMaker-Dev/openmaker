@@ -724,7 +724,9 @@ op70's staged records travel in it: the session's temporary area lends
 them (`writes::TempArea::lend`) and takes back those the commit did not
 take. A commit that was not stored has still taken the records it reached,
 as before the interface: the file is put back, the staged edits are gone,
-and the client uploads them again to retry. op88's container data is read
+and the client uploads them again to retry; the same op70 sent again
+without them is refused, as a commit naming a record with nothing staged
+is ("Writes to a file hosted read-only", below). op88's container data is read
 from the upload before its operation, within the memory the client may
 hold (`--upload-memory-mib`), and travels in it, or, when it is not valid
 binary data, why not; the request keeps the charge until `submit` returns.
@@ -1416,10 +1418,22 @@ id was not issued or that a record already has, an entry in the edit form
 for a record the file does not hold (deleted, or never created: only an
 entry marked new creates a record; OpenMaker's choice, write-path.md 3.4,
 [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840)), a staged
-record whose modification count is not one. FileMaker Server half-writes a record
-another lock user holds and answers done (write-path.md 3.4); OpenMaker
-refuses. A record the list names with nothing staged for it, and the
-deletion of one that is not there, ask for nothing. op73 for a path that
+record whose modification count is not one, and a record the list names
+with nothing staged for it, other than for its deletion
+([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839)).
+FileMaker Server half-writes a record another lock user holds and answers
+done (write-path.md 3.4); OpenMaker refuses. The deletion of a record that
+is not there asks for nothing. Refusing a commit of a record with nothing
+staged rests on this evidence: FileMaker Pro uploads every record it
+commits new or changed, with op14 before the op70 (write-path.md 0 and 1.1,
+captures cap:914-948 and the edit sequence), and the server's log of the
+first FileMaker Pro run against OpenMaker Server (on
+[#673](https://github.com/OpenMaker-Dev/openmaker/issues/673)) has no
+`commit of record ... that was never uploaded`. FileMaker Pro committing a
+record it did not upload would show it wrong; the follow-up run looks for
+that in the flows that leave a record unchanged. It makes a commit whose
+save failed, which took its staged records, fail again when it is sent
+again, where it answered done with nothing stored. op73 for a path that
 is not one table fails too; op73 refused for the session still answers
 its empty reply
 ([#801](https://github.com/OpenMaker-Dev/openmaker/issues/801)).
@@ -2008,7 +2022,8 @@ save's outcome ("Failed saves", below):
 - op70: its commit. A save that fails takes the commit back and its
   records stay locked; the staged records the commit did not reach go
   back to the session's temporary area, as when it is refused (those it
-  reached are gone, and the client uploads them again);
+  reached are gone, and the client uploads them again; the op70 sent again
+  without them is refused, as naming records with nothing staged);
 - a client's op71: the new last issued id, before the ids are answered
   (#927); on a read-only file the save fails. A failed save takes back
   the reservation and the locks it took. A server script's op71 saves

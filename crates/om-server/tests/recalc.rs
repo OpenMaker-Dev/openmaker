@@ -1784,14 +1784,18 @@ fn a_continuation_answers_as_its_request_does() {
         ))
         .is_err());
 
-    // op70 of 40 entries in two parts, record 1 staged, then its last part
-    // again.
+    // op70 of 40 entries in two parts, record 1 staged and changed, then
+    // deletions of records that are not there, which ask for nothing (an
+    // entry naming a record with nothing staged would refuse the commit,
+    // #839), then its last part again.
     lock_record_1(&mut client);
     let t = uint_segment(TABLE);
     client
         .upload_records(&t, vec![staged_record(1, "Twice", Vec::new())])
         .unwrap();
-    let entries: Vec<Entry> = (1..=40).map(Entry::Edit).collect();
+    let entries: Vec<Entry> = std::iter::once(Entry::Edit(1))
+        .chain((1000..1039).map(Entry::Delete))
+        .collect();
     let list = commit_list_of(&t, &entries);
     let (list_first, list_rest) = list.split_at(list.len() / 2);
     let part = |list: &[u8], resume: Resume| write::Commit {

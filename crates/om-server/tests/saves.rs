@@ -329,7 +329,23 @@ fn a_client_commit_that_cannot_be_saved_changes_nothing() {
     drop(blocked);
     assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Write tests"));
 
-    // Once saves work, the same commit applies.
+    // The failed save took the staged record. The same op70 sent again
+    // without its upload names a record with nothing staged: refused, not
+    // answered done with nothing stored (#839 of
+    // github.com/OpenMaker-Dev/openmaker).
+    let path: [&[u8]; 3] = [&table, &[5], &serial::encode(1)];
+    assert!(matches!(
+        client.lock(&path, 0x32, true).unwrap(),
+        write::LockReply::Granted { .. }
+    ));
+    let error = client
+        .commit_records(&table, vec![changed()], 0x32)
+        .unwrap_err();
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.kill_all_locks(0x32).unwrap();
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Write tests"));
+
+    // Once saves work, the same commit, with its upload, applies.
     commit(&mut client, "Saved").unwrap();
     let records = records_of(&mut client, TABLE);
     assert_eq!(cell(&records, 1, NAME), Some("Saved"));
