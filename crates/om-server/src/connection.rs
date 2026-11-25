@@ -3175,12 +3175,12 @@ enum Unwritable {
 /// Debug builds: hold `hosted` read-only now when a test asked for it
 /// (`ServerHandle::read_only_before_next_write`), after its request was
 /// admitted and before the engine takes the write lock, as another
-/// connection's op73 can make a file read-only between the two.
+/// connection's op73 can make a file read-only between the two. (The store
+/// engine's files are read-only already.)
 fn before_engine_write(shared: &Shared, hosted: &Hosted) {
     #[cfg(debug_assertions)]
     if shared.read_only_before_write.swap(false, Ordering::Relaxed) {
-        shared
-            .engine
+        Engine::as_ref(&shared.engine)
             .hold_read_only(hosted, crate::store::ReadOnlyCause::DeferredWork);
     }
     #[cfg(not(debug_assertions))]

@@ -3042,10 +3042,9 @@ live test):
 |---|---|
 | op71 create a record | status 200 (access denied) |
 | op72 a serial | status 200, no value |
-| op14 stage records, op70 commit | the upload's reply, nothing staged or committed |
-| op13 upload into the file, op73 update a table | a MARSHAL system exception ([#737](https://github.com/OpenMaker-Dev/openmaker/issues/737)) |
-| op75 container data | status 200 |
-| op76 a reference count | `ffffffff`, the count failed |
+| op13 or op14, into the file or into the temporary area; op70 commit; op73 update a table | a MARSHAL system exception, as a write whose save failed ([#737](https://github.com/OpenMaker-Dev/openmaker/issues/737), [#800](https://github.com/OpenMaker-Dev/openmaker/issues/800)) |
+| op88 container data | status 200 |
+| op87 a reference count | `ffffffff`, the count failed |
 | op86 a program with schema instructions | the error slot with 200 |
 | op86 a find that builds an index | answered; the index is not stored ([#793](https://github.com/OpenMaker-Dev/openmaker/issues/793)) |
 | op60, op61, op62 locks | as on any file; op60's modification count is read from the view |

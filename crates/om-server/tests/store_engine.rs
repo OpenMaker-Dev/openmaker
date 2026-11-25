@@ -132,11 +132,12 @@ type Row<'a> = (&'a str, Box<dyn Fn(u32) -> Vec<u8> + 'a>);
 
 /// docs/server-storage.md 11: each write request a client sends a file the
 /// store engine hosts is refused as the file engine refuses it for a file
-/// it hosts read-only, byte for byte, before it changes anything: op71,
-/// op72, op14 and op70, op13 into the file and op73 (#737: a system
-/// exception), op75 and op76 (containers), and op86 programs that change
-/// the schema. A lock (op60) is still granted, with the record's
-/// modification count read from the store.
+/// it hosts read-only, byte for byte, before it changes anything: op71 and
+/// op72 (status 200); op14 into the temporary area, op70, op13 into the
+/// file and op73 (a system exception, #737 and #800); op88 and op87
+/// (containers); and op86 programs that change the schema. A lock (op60)
+/// is still granted, with the record's modification count read from the
+/// store.
 #[test]
 fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
     let (file, catalog) = read_only_tasks("store-engine-writes", &[]);
@@ -244,7 +245,7 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
             Box::new(|id| schema::build_update_table(1006, id, &tables)),
         ),
         (
-            "op75 upload container data",
+            "op88 upload container data",
             Box::new(|id| {
                 container::build_upload_binary(
                     1007,
@@ -261,7 +262,7 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
             }),
         ),
         (
-            "op76 adjust a reference count",
+            "op87 adjust a reference count",
             Box::new(|id| {
                 container::build_adjust_reference_count(
                     1008,
