@@ -1003,12 +1003,13 @@ value index a validation checks (unique, existing, a value list from a
 field), each batch of a find's finders (`FindSource`), the Design
 functions' catalogs and a field's next serial value, a container's
 library member, the privilege set, a related-record lookup, and the
-account facts. Two more readings read only derived state, which a read
-cannot fail: which cells of a record are containers', for the data a
-commit uploads (`ServerHost::uploads`), and the file's waiting set, to
-add the indexes a find built (`ServerHost::store_built_indexes`). Every
-other reading goes through `SessionReads::begin`, where a test fails it
-(`Hosted::read_fault`).
+account facts. Every read of the file goes through `SessionReads::begin`,
+where a test fails it (`Hosted::read_fault`). Two more readings read
+nothing of the file, so the test does not fail them: one reads which
+cells of a record are containers', from derived state, for the data a
+commit uploads (`ServerHost::uploads`); the other adds the indexes a find
+built to the file's waiting set, the store's own coordination state
+(`ServerHost::store_built_indexes`).
 
 Three reads are kept to one version, because their answer was otherwise
 wrong: the Design functions compile from the wire, the catalogs, the
@@ -1040,10 +1041,13 @@ held, as it was under the store's guard
 schema read again before a step is loaded in its reading
 (`ServerHost::refresh_schema`, `Schema::load`); a container member's
 streams are hashed and inflated in the reading that read it
-(`load_member`, `om_data::containers::read_with`); a unique or
-existing-value check on a field without a value index scans and keys
-every record's values in one reading (`ServerHost::field_holds`); the
-Design functions write the catalogs they captured to wire in theirs
+(`load_member`, `om_data::containers::read_with`); a check against a
+value list from a field without a value index scans and keys the stored
+records' values in one reading, until one matches
+(`ServerHost::field_holds`), where a unique or existing-value check
+without one reads the record ids, then each record in a reading of its
+own (`ServerHost::value_held_elsewhere`); the Design functions write the
+catalogs they captured to wire in theirs
 (`design_catalogs`); and a find runs in its reading
 (`ServerHost::query`), also on stored indexes.
 
@@ -1055,13 +1059,21 @@ is cached by the version of the derived state it was read from, and read
 again before a step whenever the engine's is another (a schema change, a
 script or layout edit, a roll-back that put one back). The account facts,
 Change Password's check and a Design call read the reading's accounts
-(`Reading::serve_with_accounts`), which keep two cases apart
-(`derived::Accounts`): a security catalog that could not be read is a
-read that failed ("A read that fails ends the run", below); an account
-record that was read but does not decode is left out of them, or holds
-`None` for the part that does not, and answers as before: Change
-Password is refused with 3 and the account facts read as none, what
-OpenMaker does for what it cannot do. The privilege set is read through
+(`Reading::serve_with_accounts`, `derived::Accounts`), and three cases
+differ. A security catalog that could not be read is a read that failed
+("A read that fails ends the run", below). An account record whose name
+does not decode, or whose key is too long for a login reply, is left out
+(`hosting::read_accounts`), and answers as no account does: the account
+facts read as none and Change Password is refused with 3. An account
+record kept with a part that does not decode holds `None` for that part
+(its kind, its status, its privilege set, the days its password lasts)
+or an unavailable password, and each answer reads only what decoded
+(`FileAccount::authenticated_info`): the account type is given only for
+a kind that decodes as a FileMaker file account, and a password's expiry
+only from what decodes. Change Password is refused with 3 when the kind
+does not decode so; with the kind decoded and another part not (a
+privilege set it cannot read), it passes that check and goes on to the
+account edit's own checks, as before. The privilege set is read through
 the security catalog's names and set references alone (each account's
 `10` and `0b`, a set's member, each extended privilege's `10` and its set
 keys); before, it borrowed the catalog `[23]` whole, the passwords' `06`
@@ -1102,29 +1114,45 @@ session has no effect outside itself but releasing what it holds:
   a find adds no index to the file's waiting set: it builds into a set
   of its own and adds that only when it ended without a failed read
   (`ServerHost::store_built_indexes`). An index added before the failure
-  stays.
+  stays waiting. An index added is not sure to be stored: a client's
+  query refused for an index it cannot key takes back what it built,
+  which can take back the same index a script added
+  ([#729](https://github.com/OpenMaker-Dev/openmaker/issues/729)).
+- Nothing reaches the world outside the session and the file engine:
+  Export Records, Export Field Contents, Create Data File, Write to Data
+  File, Delete File, Rename File, Insert from URL and Send Mail are
+  refused with 802 before their effect (`ServerHost::refuse_outside_effect`,
+  which each such host method calls first;
+  `scripts::tests::a_failed_read_stops_every_effect_outside_the_file`
+  lists them). Open, read, position and close a data file, and whether a
+  file exists or its size, change nothing outside the session. The other
+  steps with such effects (Save a Copy as, Open URL, Perform Script on
+  Server from a server script, and the like) are refused on this host
+  anyway.
 - The step the read failed in runs on with what it read as missing, but
   can change only the session's own state (its globals and variables, a
-  record's draft, a find's criteria, a found set), all of which goes with
-  the session.
+  record's draft, a find's criteria, a found set, a data file's
+  position), all of which goes with the session.
 - The script halts after that step, control steps included, before any
   further step or trigger, so that a value read as missing steers
   nothing. The run's error, `Get ( LastError )` and what the caller of
   Perform Script on Server gets are 802, "Unable to open file", as a
   login, Describe Security and a schedule answer one; the run has no
-  result, also when the read that failed is the session's close's (a
-  result an Exit Script gave in the failing step, at the top or for a
-  caller, is dropped). The host tells the runtime through
+  result (a result an Exit Script gave in the failing step, at the top
+  or for a caller, is dropped). The host tells the runtime through
   `ScriptHost::take_step_error`. The runtime asks it before a step
   begins, again once the session was brought up to date for the step
   (`ScriptHost::before_step`, where the schema is read again), and after
   the step, once the step's own handling is done (its error, error
   capture, a transaction reverted on error) and before trigger actions
-  and triggers. A step that leaves the run waiting is asked about at the
-  next step; a server session has no such step and no runtime triggers.
-  A host that never fails a read, the desktop's among them, leaves the
-  hook at `None`. At the session's start, a failed read of the schema
-  runs nothing.
+  and triggers. A step that left the run waiting has its finishing and
+  trigger actions run before the runtime next asks; a server session has
+  no such step and no runtime triggers. A host that never fails a read,
+  the desktop's among them, leaves the hook at `None`. A read that fails
+  in the session's close, after the runtime returned, changes the reply
+  there (`scripts::run`): its error becomes 802 and its result is
+  dropped. At the session's start, a failed read of the schema runs
+  nothing.
 - What is uncommitted is reverted when the run ends: the drafts of the
   records the session holds and an open transaction. The commit a
   session's close makes otherwise does not happen.
@@ -1150,7 +1178,11 @@ derived state is not a reading the hook fails;
 `scripts::tests::each_kind_of_read_that_fails_is_802` fails it, with each
 other kind of path, through the test view, and checks that Set Next
 Serial Value after it changes nothing. `runtime::host_error_tests` in
-`om-scripts` checks that a run its host ends has no result.
+`om-scripts` checks that a run its host ends has no result. The sweep
+does not see an index added to the waiting set and taken back without a
+submission, a step body the runtime reaches by a path that does not pass
+`before_step`, or an effect outside the file engine other than those the
+table of `a_failed_read_stops_every_effect_outside_the_file` covers.
 
 **The overlay view.** A view of one version with some subtrees covered
 (`engine::Overlay`). A covered path is read from the node laid over it,
@@ -1163,20 +1195,25 @@ it, without the empty value of a leaf it was, with any other value it
 held; one with only removals below it is the version's. A cover with the
 empty path changes nothing, as `put` and `remove` change nothing there.
 
-A page of the children of a node above covers costs what it gives. Which
-children the covers decide (a covered child, laid or removed, and a child
-on the way to a deeper cover) is known from the covers alone. The page
-applies its bound before it reads or decides anything, asks the version
-only for as many children as it can still use, and merges in key order;
-a laid child's head is lent from what lies over it, not copied, and a
-child on the way has its head read only when the page gives it. What a
-cover hides is never read: a covered child the version cannot read does
-not fail the listing. A child of the version that cannot be read, and
-that no cover hides, fails the page only when the page reaches it. A
-subtree above covers is built from that listing a child at a time; it
-charges a head before it copies it, lists no more children than could
-still fit, and is refused once it passes its limit, before the rest is
-read. A walk across covered and uncovered nodes gives them in the key
+A page of the children of a node above covers merges the version's
+children with those the covers decide (a covered child, laid or removed,
+and a child on the way to a deeper cover), in key order. Each request it
+makes of the version starts within the page's bound and asks for no more
+children than the page still needs; a laid child's head is lent from
+what lies over it, not copied. Its work can still grow with the covers:
+it walks every cover below the node for each page, and it can fetch
+heads of the version it then drops, of children the covers decide or
+that come after decided ones the page gives first
+([#774](https://github.com/OpenMaker-Dev/openmaker/issues/774)). A
+covered child the version cannot read does not fail the listing. A child
+of the version that cannot be read, and that no cover hides, fails the
+page only when the page reaches it. A subtree above covers is built from
+that listing: it charges a head, as `om_hbam::tree::memory` counts it,
+before it copies it, and with a limit takes one child at a time,
+charging each before it reads the next, so a child that alone passes
+the limit is refused as too large whatever follows it. A page of
+subtrees above covers reads one child's subtree, refused at its limit,
+before it asks for the next child. A walk across covered and uncovered nodes gives them in the key
 order of that tree. The overlay reads the version's version, and
 anything at, above or below a cover counts as changed since any other.
 It answers every view operation with the same paging and limits as the
