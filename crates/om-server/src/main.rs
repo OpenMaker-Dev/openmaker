@@ -398,10 +398,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Read before the server starts any thread (it may change the
     // environment).
     let admin = admin_console_account(&args)?;
+    // The store folder is checked before the server makes anything a
+    // refusal would leave behind (the TLS identity, the default database
+    // folder).
+    let engine = engine_settings(&args)?;
     let identity = tls_identity(&args)?;
     #[cfg(feature = "admin-console")]
     let console_identity = admin.as_ref().map(|_| identity.clone());
-    let engine = engine_settings(&args)?;
     let (paths, database_folders) = hosted_paths(&args);
     // No files is a server with nothing hosted yet, as FileMaker Server
     // starts before any database is opened: its Admin Console and listener
@@ -522,11 +525,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The engine `args` choose (`--engine`, `--store-dir`, `--store-cache-mib`;
-/// docs/server-storage.md 11): the store engine's folder by default in the
-/// state folder, made for the server's user only. A folder that overlaps a
-/// database folder is refused (`om_server::check_store_folder`), and one
-/// other users can reach is refused by the engine when it opens it. The
-/// folder is used by its absolute path, the one checked.
+/// docs/server-storage.md 11): the store engine's folder by default
+/// `Store` in the state folder, which is made if missing, as the TLS
+/// identity makes it. The folder's parent must exist; the folder is used
+/// by its parent resolved and its own name, and one that overlaps a
+/// database folder is refused (`om_server::check_store_folder`). Nothing
+/// of it is made here: the engine makes the folder itself, checks it again
+/// and refuses one other users can reach when it opens it.
 fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
     if !args.store_engine {
         return Ok(EngineSettings::File);
@@ -535,34 +540,35 @@ fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
         .state_dir
         .clone()
         .or_else(default_identity::state_folder);
-    let dir = match &args.store_dir {
-        Some(dir) => dir.clone(),
-        None => state
-            .as_ref()
-            .map(|state| state.join("Store"))
-            .ok_or("--engine store: no --store-dir and no state folder to put the store in")?,
+    let dir = match (&args.store_dir, &state) {
+        (Some(dir), _) => dir.clone(),
+        (None, Some(state)) => {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+                .create(state)
+                .map_err(|e| format!("the state folder {}: {e}", state.display()))?;
+            state.join("Store")
+        }
+        (None, None) => {
+            return Err(
+                "--engine store: no --store-dir and no state folder to put the store in".into(),
+            )
+        }
     };
-    let dir =
-        std::path::absolute(&dir).map_err(|e| format!("--store-dir {}: {e}", dir.display()))?;
     // The folders `hosted_paths` searches.
-    let database_folders = match args.database_folders.is_empty() {
+    let database_folders: Vec<PathBuf> = match args.database_folders.is_empty() {
         true => state.iter().map(|state| state.join("Databases")).collect(),
         false => args.database_folders.clone(),
     };
-    om_server::check_store_folder(&dir, &database_folders)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)
-            .map_err(|e| format!("--store-dir {}: {e}", dir.display()))?;
-    }
+    let dir = om_server::check_store_folder(&dir, &database_folders)?;
     let mib = args.store_cache_mib.unwrap_or(256);
     Ok(EngineSettings::Store {
         dir,
         cache_bytes: mib.saturating_mul(1 << 20),
+        database_folders,
     })
 }
 
