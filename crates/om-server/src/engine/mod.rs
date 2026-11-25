@@ -231,6 +231,8 @@ pub(crate) use export::{Destination, ExportError, OnDisk, Progress, Source};
 pub(crate) use file::FileEngine;
 pub(crate) use overlay::{Cover, Overlay};
 pub(crate) use reading::{assert_no_reading_held, Read, Waiting};
+#[cfg(test)]
+pub(crate) use transaction::written;
 pub(crate) use transaction::{Hold, Locks, Transaction};
 /// For views written in tests outside the engine.
 #[cfg(test)]

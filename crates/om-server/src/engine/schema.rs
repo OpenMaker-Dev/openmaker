@@ -209,28 +209,10 @@ mod tests {
     use om_hbam::OwnedNode;
     use om_query::{Source, Write};
 
-    use super::{apply, write_member_keys, Transaction};
+    use super::{apply, write_member_keys};
+    use crate::engine::written;
     use crate::library::LIBRARY;
     use crate::store::tests::store_of;
-    use crate::store::Store;
-
-    /// `write` run over a transaction of `store`, with its writes checked
-    /// as the engine checks an operation's (`super::super::checking`).
-    fn written<T>(store: &mut Store, write: impl FnOnce(&mut Transaction<'_>) -> T) -> T {
-        let mut tx = Transaction::new(store);
-        #[cfg(debug_assertions)]
-        tx.checked();
-        let out = write(&mut tx);
-        tx.settle();
-        #[cfg(debug_assertions)]
-        let check = tx.check.take();
-        drop(tx);
-        #[cfg(debug_assertions)]
-        if let Some(check) = check {
-            check.finish(store);
-        }
-        out
-    }
 
     #[test]
     fn deleted_tables_take_their_libraries() {

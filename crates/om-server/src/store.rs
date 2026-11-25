@@ -33,9 +33,7 @@ use om_data::containers::{self, MemberInfo};
 use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::slot::{be_uint, uint_segment};
-use om_hbam::writer::{
-    holds_value, put_refusals, unwritable, unwritable_in_tree, value_on_path, Unwritable,
-};
+use om_hbam::writer::{holds_value, put_refusals, unwritable_in_tree, value_on_path, Unwritable};
 use om_hbam::{serial, Catalog, DataType, HbamFile, KeyTree, OwnedNode, RidList};
 use om_query::keys::{record_value_entries, word_entries, Reading, TextKeys};
 
@@ -2009,153 +2007,18 @@ impl Store {
         Some(current)
     }
 
-    /// op88: store binary data in the library at `path` (`[T, 1f]` or
-    /// `[1f]`), creating the library on first use (containers.md 3.4).
-    #[cfg(test)]
-    pub fn store_binary(
-        &mut self,
-        path: &[&[u8]],
-        data: BinaryData,
-        unique_id: impl FnMut() -> [u8; 16],
-    ) -> Option<Stored> {
-        let mut journal = self.begin_commit();
-        self.store_binary_in(&mut journal, path, data, unique_id)
-    }
-
-    /// [`Store::store_binary`] within `journal`, which keeps what the store
-    /// changes ([`library::store_keys`]): the member that counts one more
-    /// reference, or the header and the new member, or, for a new library,
-    /// the library's absence.
-    pub fn store_binary_in(
-        &mut self,
-        journal: &mut Journal,
-        path: &[&[u8]],
-        data: BinaryData,
-        unique_id: impl FnMut() -> [u8; 16],
-    ) -> Option<Stored> {
-        if let Some(reason) = self.library_refusal(path, Some(&data), None) {
-            warn!("{}: container data not stored: {reason}", self.name);
-            return None;
-        }
-        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-        // One decision, which the journal keeps and the store carries out.
-        let plan = library::store_plan(self.node(path), &data.md5);
-        match plan.keys(self.node(path)) {
-            None => journal.save_path(&self.root, base),
-            Some(keys) => {
-                for keys in keys {
-                    let mut at = base.clone();
-                    at.extend(keys);
-                    journal.save_path(&self.root, at);
-                }
-            }
-        }
-        let stored = library::store_as(self.root.ensure(path), data, &plan, unique_id)?;
-        self.dirty = true;
-        Some(stored)
-    }
-
     /// Why a store of `data` into the library at `path` (or, with `member`,
-    /// an adjustment of that member's count by its delta) would change a
-    /// value it does not name, add what the file cannot hold, or advance a
-    /// counter past the largest a serial key holds: a node on the library's
-    /// path, its header, lists, members or the member that holds a value
-    /// ([`library::store_refusal`], [`library::adjust_refusal`]), a last
-    /// member id or modification count the file holds at the largest
-    /// ([`library::store_counter_refusal`],
-    /// [`library::adjust_counter_refusal`]), or an uploaded key the new
-    /// member could not hold (`om_hbam::writer::unwritable`). For a log
-    /// line; `None` when the write is safe.
+    /// an adjustment of that member's count by its delta) is refused in the
+    /// tree as it is ([`library::refusal`]), for a log line; `None` when
+    /// the write is safe.
     fn library_refusal(
         &self,
         path: &[&[u8]],
         data: Option<&BinaryData>,
         member: Option<(&[u8], i32)>,
     ) -> Option<String> {
-        if let Some(found) = value_on_path(&self.root, path) {
-            return Some(describe_value(&found));
-        }
-        let library = self.node(path);
-        let inner = match (member, data) {
-            (Some((member, _)), _) => library.and_then(|l| library::adjust_refusal(l, member)),
-            (None, Some(data)) => library.and_then(|l| library::store_refusal(l, &data.md5)),
-            (None, None) => None,
-        };
-        if let Some(inner) = inner {
-            let mut found: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-            found.extend(inner);
-            return Some(describe_value(&found));
-        }
-        let counters = match (member, data) {
-            (Some((member, delta)), _) => {
-                library.and_then(|l| library::adjust_counter_refusal(l, member, delta))
-            }
-            (None, Some(data)) => {
-                library.and_then(|l| library::store_counter_refusal(l, &data.md5))
-            }
-            (None, None) => None,
-        };
-        if let Some(reason) = counters {
-            return Some(format!("{path:02x?}: {reason}"));
-        }
-        let data = data?;
-        if library.is_some_and(|l| {
-            library::reused_member(l, &data.md5)
-                .is_some_and(|existing| library::member(l, &existing).is_some())
-        }) {
-            return None;
-        }
-        let Some(new_member) = library::next_member(library) else {
-            return Some(format!("{path:02x?}: no member id is left"));
-        };
-        let mut parents = path.to_vec();
-        parents.push(&[library::MEMBERS]);
-        parents.push(&new_member);
-        data.keys
-            .iter()
-            .map(|key| unwritable(&parents, key, 3))
-            .find(|refused| !refused.is_empty())
-            .map(|refused| describe(&refused))
-    }
-
-    /// op87: add `delta` to a member's reference count in the library at
-    /// `path`, deleting it at 0 (containers.md 5.3). `None` when there is no
-    /// such member.
-    #[cfg(test)]
-    pub fn adjust_reference_count(
-        &mut self,
-        path: &[&[u8]],
-        member: &[u8],
-        delta: i32,
-    ) -> Option<u32> {
-        let mut journal = self.begin_commit();
-        self.adjust_reference_count_in(&mut journal, path, member, delta)
-    }
-
-    /// [`Store::adjust_reference_count`] within `journal`, which keeps the
-    /// member's count keys, or the member and the header when it goes.
-    pub fn adjust_reference_count_in(
-        &mut self,
-        journal: &mut Journal,
-        path: &[&[u8]],
-        member: &[u8],
-        delta: i32,
-    ) -> Option<u32> {
-        if let Some(reason) = self.library_refusal(path, None, Some((member, delta))) {
-            warn!("{}: reference count not changed: {reason}", self.name);
-            return None;
-        }
-        // The decision the adjustment makes; none for a delta of 0.
-        let changed = library::adjust_keys(self.node(path)?, member, delta)?;
-        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-        for keys in changed {
-            let mut at = base.clone();
-            at.extend(keys);
-            journal.save_node(&self.root, at);
-        }
-        let count = library::adjust(self.root.at_mut(path)?, member, delta)?;
-        self.dirty |= delta != 0;
-        Some(count)
+        library::refusal(&self.tree_view(), path, data, member)
+            .expect("the file engine's tree never fails a read")
     }
 
     /// A member of the library at `path`.
@@ -4632,7 +4495,7 @@ pub(crate) mod tests {
 
     /// A library whose last member id or member count the file holds at the
     /// largest a serial key holds (#361): op88 and op87 are refused through
-    /// `library_refusal`, as the script's container store and its reference
+    /// `library::refusal`, as the script's container store and its reference
     /// counting are, and change nothing.
     #[test]
     fn library_counters_at_the_largest_are_refused() {
@@ -4640,13 +4503,18 @@ pub(crate) mod tests {
         let table: &[u8] = &[0x80, 0x01];
         let path: [&[u8]; 2] = [table, &[LIBRARY]];
         let mut store = store_of(OwnedNode::default());
-        let stored = store.store_binary(&path, data(b"a"), || [1; 16]);
+        let store_binary = |store: &mut Store, data, id: u8| {
+            crate::engine::written(store, |tx| {
+                crate::containers::store_binary(tx, "", &path, data, || [id; 16])
+            })
+        };
+        let stored = store_binary(&mut store, data(b"a"), 1);
         assert_eq!(stored, Some(Stored::New(vec![1])));
         let largest = |key: u8| modcount::serial_leaf(key, u64::MAX);
         store.root.put(&[table, &[LIBRARY], &[1], &[0]], largest(0));
         // Reusing data advances its member's counters, not the last issued id.
         assert_eq!(
-            store.store_binary(&path, data(b"a"), || [2; 16]),
+            store_binary(&mut store, data(b"a"), 2),
             Some(Stored::Existing(vec![1]))
         );
         assert_eq!(
@@ -4659,9 +4527,12 @@ pub(crate) mod tests {
         );
         let before = store.root.clone();
         // A new member, the member reused, its count adjusted.
-        assert_eq!(store.store_binary(&path, data(b"b"), || [2; 16]), None);
-        assert_eq!(store.store_binary(&path, data(b"a"), || [2; 16]), None);
-        assert_eq!(store.adjust_reference_count(&path, &[1], 1), None);
+        assert_eq!(store_binary(&mut store, data(b"b"), 2), None);
+        assert_eq!(store_binary(&mut store, data(b"a"), 2), None);
+        let adjusted = crate::engine::written(&mut store, |tx| {
+            crate::containers::adjust_count(tx, "", &path, &[1], 1)
+        });
+        assert_eq!(adjusted, None);
         assert_eq!(store.root, before);
     }
 
@@ -4690,7 +4561,9 @@ pub(crate) mod tests {
         let path: [&[u8]; 2] = [table, &[LIBRARY]];
         let mut store = store_of(OwnedNode::default());
         for _ in 0..2 {
-            store.store_binary(&path, file_data(b"a"), || [1; 16]);
+            crate::engine::written(&mut store, |tx| {
+                crate::containers::store_binary(tx, "", &path, file_data(b"a"), || [1; 16])
+            });
         }
         let count =
             |store: &Store| library::reference_count(store.library_member(&path, &[1]).unwrap());

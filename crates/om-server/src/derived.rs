@@ -803,7 +803,10 @@ pub(crate) fn index_on_demand(
 /// view): a value of its own, or one split into pieces below it (a list
 /// with no value of its own whose first child is the header `0` of a
 /// chunked value, `OwnedNode::assembled`), which only then is read whole.
-fn value_on_path(view: &dyn View, path: &[&[u8]]) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+pub(crate) fn value_on_path(
+    view: &dyn View,
+    path: &[&[u8]],
+) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
     for depth in 1..=path.len() {
         let at = &path[..depth];
         let Some(head) = view.node(at)? else {

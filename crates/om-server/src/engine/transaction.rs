@@ -13,7 +13,7 @@ use om_protocol::write::{Conflict, KeyPath};
 
 use super::view::{Child, Direction, Head, ReadError, Step, Version, View};
 use crate::derived::Derived;
-use crate::library::{BinaryData, Stored};
+use crate::library::BinaryData;
 use crate::locks::{LockTable, LockUser};
 use crate::store::{IndexId, Journal, Store};
 
@@ -89,6 +89,26 @@ pub struct Transaction<'a> {
     /// The check of its writes, in tests (`super::checking`).
     #[cfg(debug_assertions)]
     pub(super) check: Option<Box<super::checking::Check>>,
+}
+
+/// `write` run over a transaction of `store`, its writes checked as the
+/// engine checks an operation's (`super::checking`), for tests of what an
+/// operation writes.
+#[cfg(test)]
+pub(crate) fn written<T>(store: &mut Store, write: impl FnOnce(&mut Transaction<'_>) -> T) -> T {
+    let mut tx = Transaction::new(store);
+    #[cfg(debug_assertions)]
+    tx.checked();
+    let out = write(&mut tx);
+    tx.settle();
+    #[cfg(debug_assertions)]
+    let check = tx.check.take();
+    drop(tx);
+    #[cfg(debug_assertions)]
+    if let Some(check) = check {
+        check.finish(store);
+    }
+    out
 }
 
 impl<'a> Transaction<'a> {
@@ -377,32 +397,6 @@ impl<'a> Transaction<'a> {
     /// is not.
     pub fn add_field_basis_once_stored(&mut self, table: Vec<u8>, field: u64) {
         self.field_bases.push((table, field));
-    }
-
-    /// op88: store container data in the library at `path`
-    /// (`Store::store_binary_in`).
-    pub fn store_binary(
-        &mut self,
-        path: &[&[u8]],
-        data: BinaryData,
-        unique_id: impl FnMut() -> [u8; 16],
-    ) -> Option<Stored> {
-        self.by_store();
-        self.store
-            .store_binary_in(&mut self.journal, path, data, unique_id)
-    }
-
-    /// op87: add `delta` to a library member's reference count
-    /// (`Store::adjust_reference_count_in`).
-    pub fn adjust_reference_count(
-        &mut self,
-        path: &[&[u8]],
-        member: &[u8],
-        delta: i32,
-    ) -> Option<u32> {
-        self.by_store();
-        self.store
-            .adjust_reference_count_in(&mut self.journal, path, member, delta)
     }
 
     /// op73: a table's deferred field work (`Store::update_table`), each
