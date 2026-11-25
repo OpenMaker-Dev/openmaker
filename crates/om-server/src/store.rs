@@ -230,6 +230,11 @@ pub enum ReadOnlyCause {
     /// The folder that holds it does not allow the new copy a save writes
     /// beside it ([`save_refused`]).
     FolderNotWritable,
+    /// Whether a save may write it could not be checked: a question of its
+    /// permissions could not be asked, or the entry at its name is not the
+    /// file loaded ([`save_refused`]; the log says which). Held read-only
+    /// all the same: nothing is written where it may be forbidden.
+    Unchecked,
 }
 
 impl ReadOnlyCause {
@@ -247,6 +252,9 @@ impl ReadOnlyCause {
             }
             ReadOnlyCause::FolderNotWritable => {
                 "its folder does not allow the new copy a save writes beside it"
+            }
+            ReadOnlyCause::Unchecked => {
+                "whether a save may write it could not be checked (the server's log says why)"
             }
         }
     }
@@ -686,56 +694,67 @@ enum Undo {
 
 /// Why this process may not save the hosted file `at`, the one it loaded
 /// (`loaded`, its device and inode), the way a save writes it, a new copy
-/// beside it renamed over it, with what the log says of it. Asked through
-/// the file's folder as the save asks, never through a link: the user may
-/// not write the file, or its file system is read-only (opening it for
-/// writing is refused as [`refuses_writing`] says: `NotWritable`); the
-/// entry is not the file loaded, or cannot be told to be (also
-/// `NotWritable`: the check is of the hosted file, and a save there would
-/// be refused); or its folder does not allow the new copy
-/// (`FolderNotWritable`, [`Folder::allows_new_entries`]). A server hosting
-/// the file asks once, as it hosts it; the desktop's host asks the same
-/// two questions as it opens a file, which it keeps open
-/// (`local::open_file`).
+/// beside it renamed over it, with what the log says of it. Asked of the
+/// file's folder and entry as a save finds them, never through a link and
+/// without opening the file, so nothing is copied up, no lease is broken
+/// and no time changes: the entry must be the regular file loaded
+/// ([`Folder::entry`]); this process may not write it, or its file system
+/// is read-only (`NotWritable`, [`Folder::may_write`]); its folder does not
+/// allow the new copy (`FolderNotWritable`, [`Folder::allows_new_entries`]).
+/// Where the entry is not the file loaded, or a question could not be
+/// asked, the file is held read-only all the same, never written where it
+/// may be forbidden, for a cause that says so (`Unchecked`), the detail in
+/// what is returned. A server hosting the file asks once, as it hosts it;
+/// the desktop's host asks the same two questions as it opens a file, which
+/// it keeps open (`local::open_file`). On Windows the entry has no identity
+/// here, so it is not verified to be the file loaded.
 pub(crate) fn save_refused(at: &FileAt, loaded: Option<FileId>) -> Option<(ReadOnlyCause, String)> {
-    let not_writable = |why: String| Some((ReadOnlyCause::NotWritable, why));
+    let unchecked = |why: String| Some((ReadOnlyCause::Unchecked, why));
     let folder = match at.folder() {
         Ok(folder) => folder,
         Err(error) => {
-            return not_writable(format!(
+            return unchecked(format!(
                 "its folder could not be opened to check it: {error}"
             ))
         }
     };
-    match folder.open_writable(at.name()) {
-        Err(error) if refuses_writing(&error) => {
-            return not_writable(ReadOnlyCause::NotWritable.why().to_owned())
+    match folder.entry(at.name()) {
+        Ok(Some(entry)) if entry.regular && entry.id == loaded => {}
+        Ok(_) => {
+            return unchecked(
+                "the entry at its name is not the file it loaded, so whether a save may \
+                 write it was not asked"
+                    .to_owned(),
+            )
         }
         Err(error) => {
-            return not_writable(format!(
-                "it could not be opened to check that it may be written: {error}"
+            return unchecked(format!(
+                "whether the entry at its name is the file it loaded could not be asked: {error}"
             ))
         }
-        Ok(file) => match crate::anchored::file_identity(&file) {
-            Ok(id) if id == loaded => {}
-            Ok(_) => {
-                return not_writable(
-                    "the entry at its name is not the file it loaded, so whether that may be \
-                     written was not checked"
-                        .to_owned(),
-                )
-            }
-            Err(error) => {
-                return not_writable(format!(
-                    "whether the entry at its name is the file it loaded cannot be told: {error}"
-                ))
-            }
-        },
     }
-    (!folder.allows_new_entries()).then(|| {
-        let cause = ReadOnlyCause::FolderNotWritable;
-        (cause, cause.why().to_owned())
-    })
+    match folder.may_write(at.name()) {
+        Ok(true) => {}
+        Ok(false) => {
+            let cause = ReadOnlyCause::NotWritable;
+            return Some((cause, cause.why().to_owned()));
+        }
+        Err(error) => {
+            return unchecked(format!(
+                "whether it may be written could not be asked: {error}"
+            ))
+        }
+    }
+    match folder.allows_new_entries() {
+        Ok(true) => None,
+        Ok(false) => {
+            let cause = ReadOnlyCause::FolderNotWritable;
+            Some((cause, cause.why().to_owned()))
+        }
+        Err(error) => unchecked(format!(
+            "whether its folder allows a save's new copy could not be asked: {error}"
+        )),
+    }
 }
 
 /// Whether `error`, of opening a file for writing, says this user may not
@@ -4362,11 +4381,11 @@ pub(crate) mod tests {
     }
 
     /// The check of a hosted file's permissions is of the file the server
-    /// loaded (the review of #842 of github.com/OpenMaker-Dev/openmaker):
-    /// through its folder, never through a link, and of that file's device
-    /// and inode. Another file at its name, or a link there, holds it
-    /// read-only, saying why; the file loaded, writable, in a writable
-    /// folder, holds nothing.
+    /// loaded (the reviews of #842 of github.com/OpenMaker-Dev/openmaker):
+    /// asked of its folder's entry, never through a link, and of that
+    /// file's device and inode. Another file at its name, or a link there,
+    /// holds it read-only as unchecked, saying why; the file loaded,
+    /// writable, in a writable folder, holds nothing.
     #[cfg(unix)]
     #[test]
     fn the_permission_check_is_of_the_file_loaded() {
@@ -4383,15 +4402,15 @@ pub(crate) mod tests {
         let loaded = file_identity(&std::fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(save_refused(&at, loaded), None);
         let (cause, why) = save_refused(&at, Some((0, 0))).unwrap();
-        assert_eq!(cause, ReadOnlyCause::NotWritable);
+        assert_eq!(cause, ReadOnlyCause::Unchecked);
         assert!(why.contains("not the file it loaded"), "{why}");
         // A link at the name, to the very file: not followed.
         let real = folder.join("Real.fmp12");
         std::fs::rename(&path, &real).unwrap();
         std::os::unix::fs::symlink(&real, &path).unwrap();
         let (cause, why) = save_refused(&at, loaded).unwrap();
-        assert_eq!(cause, ReadOnlyCause::NotWritable);
-        assert!(why.contains("could not be opened"), "{why}");
+        assert_eq!(cause, ReadOnlyCause::Unchecked);
+        assert!(why.contains("not the file it loaded"), "{why}");
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

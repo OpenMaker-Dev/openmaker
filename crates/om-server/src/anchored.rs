@@ -211,50 +211,37 @@ impl Folder {
         Ok(file)
     }
 
-    /// Open entry `name` for reading and writing, as the check that this
-    /// process may write the file it hosts there: never through a link,
-    /// without blocking, and without creating, truncating or writing it;
-    /// refused unless it is a regular file.
-    pub fn open_writable(&self, name: &OsStr) -> io::Result<File> {
+    /// Whether this process may read and write entry `name`, asked of the
+    /// entry without opening it and never through a link: on Unix
+    /// `faccessat` by the effective ids, as a save's writes are checked, so
+    /// nothing is copied up, no lease is broken and no time changes; on
+    /// Windows the entry's read-only attribute alone. `Ok(false)` when it
+    /// may not (refused, or a read-only file system); an error when that
+    /// could not be asked.
+    pub fn may_write(&self, name: &OsStr) -> io::Result<bool> {
         #[cfg(unix)]
-        let file = {
-            use rustix::fs::{Mode, OFlags};
-            File::from(rustix::fs::openat(
+        {
+            use rustix::fs::{Access, AtFlags};
+            answer(rustix::fs::accessat(
                 &self.fd,
                 name,
-                OFlags::RDWR | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )?)
-        };
-        #[cfg(not(unix))]
-        let file = {
-            let path = self.dir.join(name);
-            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!("{} is a symbolic link", path.display()),
-                ));
-            }
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(path)?
-        };
-        if !file.metadata()?.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "not a regular file",
-            ));
+                Access::READ_OK | Access::WRITE_OK,
+                AtFlags::EACCESS | AtFlags::SYMLINK_NOFOLLOW,
+            ))
         }
-        Ok(file)
+        #[cfg(not(unix))]
+        {
+            let metadata = std::fs::symlink_metadata(self.dir.join(name))?;
+            Ok(!metadata.permissions().readonly())
+        }
     }
 
     /// Whether this process may make a new entry in this folder, as a
     /// save makes its new copy: on Unix, write and search permission by
     /// its effective ids, as the save's `openat` is checked; on Windows,
     /// the folder's read-only attribute alone (its access control list is
-    /// not read).
-    pub fn allows_new_entries(&self) -> bool {
+    /// not read). An error when that could not be asked.
+    pub fn allows_new_entries(&self) -> io::Result<bool> {
         #[cfg(unix)]
         {
             may_create_in(&self.fd, Path::new("."))
@@ -419,7 +406,7 @@ pub fn file_identity(file: &File) -> io::Result<Option<FileId>> {
 /// file at `path` (`.` for a bare name), as a save makes its new copy
 /// there: [`Folder::allows_new_entries`], asked by the path, for the
 /// desktop's host, which keeps the file open itself.
-pub fn folder_allows_new_entries(path: &Path) -> bool {
+pub fn folder_allows_new_entries(path: &Path) -> io::Result<bool> {
     #[cfg(unix)]
     {
         may_create_in(rustix::fs::CWD, folder_of(path))
@@ -434,21 +421,34 @@ pub fn folder_allows_new_entries(path: &Path) -> bool {
 /// effective ids, which a save's `openat` is checked with (`access` would
 /// ask with the real ones).
 #[cfg(unix)]
-fn may_create_in(dir: impl std::os::fd::AsFd, path: &Path) -> bool {
+fn may_create_in(dir: impl std::os::fd::AsFd, path: &Path) -> io::Result<bool> {
     use rustix::fs::{Access, AtFlags};
-    rustix::fs::accessat(
+    answer(rustix::fs::accessat(
         dir,
         path,
         Access::WRITE_OK | Access::EXEC_OK,
         AtFlags::EACCESS,
-    )
-    .is_ok()
+    ))
+}
+
+/// What `faccessat` answered: allowed, refused (`EACCES`, `EPERM`, or a
+/// read-only file system, `EROFS`), or an error saying it could not be
+/// asked (`ENOSYS` from a kernel without `faccessat2` when the real and
+/// effective ids differ, among others), which is no answer.
+#[cfg(unix)]
+fn answer(asked: rustix::io::Result<()>) -> io::Result<bool> {
+    use rustix::io::Errno;
+    match asked {
+        Ok(()) => Ok(true),
+        Err(Errno::ACCESS | Errno::PERM | Errno::ROFS) => Ok(false),
+        Err(errno) => Err(errno.into()),
+    }
 }
 
 /// Whether folder `dir` lacks the read-only attribute.
 #[cfg(not(unix))]
-fn not_read_only(dir: &Path) -> bool {
-    std::fs::metadata(dir).is_ok_and(|m| !m.permissions().readonly())
+fn not_read_only(dir: &Path) -> io::Result<bool> {
+    Ok(!std::fs::metadata(dir)?.permissions().readonly())
 }
 
 /// The folder `path` names its file in: `.` for a bare name.
@@ -486,7 +486,21 @@ mod tests {
     /// package's folder, which they may write.
     #[test]
     fn a_bare_file_name_is_in_the_current_folder() {
-        assert!(super::folder_allows_new_entries(Path::new("./Tasks.fmp12")));
-        assert!(super::folder_allows_new_entries(Path::new("Tasks.fmp12")));
+        assert!(super::folder_allows_new_entries(Path::new("./Tasks.fmp12")).unwrap());
+        assert!(super::folder_allows_new_entries(Path::new("Tasks.fmp12")).unwrap());
+    }
+
+    /// A permission that could not be asked is no answer, not a refusal
+    /// (the second review of #842): `ENOSYS`, as a kernel without
+    /// `faccessat2` answers when the real and effective ids differ, is an
+    /// error; `EACCES`, `EPERM` and `EROFS` say "may not".
+    #[test]
+    fn a_question_that_could_not_be_asked_is_no_answer() {
+        use rustix::io::Errno;
+        assert!(super::answer(Ok(())).unwrap());
+        for refused in [Errno::ACCESS, Errno::PERM, Errno::ROFS] {
+            assert!(!super::answer(Err(refused)).unwrap());
+        }
+        assert!(super::answer(Err(Errno::NOSYS)).is_err());
     }
 }

@@ -94,6 +94,10 @@ pub enum ReadOnly {
     NotWritable,
     /// The folder holding it does not allow the new copy a save writes.
     FolderNotWritable,
+    /// Whether a save may write it could not be checked (a permission
+    /// that could not be asked, `store::save_refused`): nothing is written
+    /// where it may be forbidden.
+    Unchecked,
     /// The file has other names (hard links), which a save would leave
     /// with the old contents.
     OtherNames,
@@ -123,6 +127,7 @@ impl std::fmt::Display for ReadOnly {
         f.write_str(match self {
             ReadOnly::NotWritable => "you may not change it",
             ReadOnly::FolderNotWritable => "its folder does not allow saving it",
+            ReadOnly::Unchecked => "whether it may be saved could not be checked",
             ReadOnly::OtherNames => "it has other names (hard links) a save would not update",
             ReadOnly::NoLocks => "it cannot be locked here, so other programs could change it",
             ReadOnly::CopyInTheWay => {
@@ -430,6 +435,7 @@ impl LocalHost {
                 // file (`open_file`) and keeps itself; named here alike.
                 crate::store::ReadOnlyCause::NotWritable => ReadOnly::NotWritable,
                 crate::store::ReadOnlyCause::FolderNotWritable => ReadOnly::FolderNotWritable,
+                crate::store::ReadOnlyCause::Unchecked => ReadOnly::Unchecked,
                 // Opened so: the reason it was opened with, which is set.
                 crate::store::ReadOnlyCause::Opened => ReadOnly::NotWritable,
             })
@@ -897,8 +903,12 @@ fn open_file(path: &Path) -> Result<(File, Option<ReadOnly>), LocalHostError> {
     match File::options().read(true).write(true).open(path) {
         Ok(file) => Ok((
             file,
-            (!crate::anchored::folder_allows_new_entries(path))
-                .then_some(ReadOnly::FolderNotWritable),
+            match crate::anchored::folder_allows_new_entries(path) {
+                Ok(true) => None,
+                Ok(false) => Some(ReadOnly::FolderNotWritable),
+                // Never written where it may be forbidden.
+                Err(_) => Some(ReadOnly::Unchecked),
+            },
         )),
         Err(e) if crate::store::refuses_writing(&e) => File::open(path)
             .map(|file| (file, Some(ReadOnly::NotWritable)))
