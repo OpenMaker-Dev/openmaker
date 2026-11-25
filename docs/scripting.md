@@ -113,7 +113,11 @@ Done, verified against FileMaker:
   also stop a calculation in the middle of a step), related records, Go to
   Related Record, stored sorts and finds, repetitions and the file's
   locale. It recomputes stored calculations after a Manage
-  Database save changes them (op73), as FileMaker Server does.
+  Database save changes them (op73), as FileMaker Server does. It reads
+  op30's script key as FileMaker Pro sends it, a length byte before the
+  script's serial key, and as OpenMaker's client sends it, the serial key
+  alone; whether FileMaker Server reads the second form is unmeasured
+  ([#831](https://github.com/OpenMaker-Dev/openmaker/issues/831)).
 - `om-sql`: FileMaker's SQL engine behind `ExecuteSQL`/`ExecuteSQLe`: the
   FQL grammar with FileMaker's error messages and positions, execution over
   an `SqlSource`, the system tables, and a local `.fmp12` source; 1,617 of

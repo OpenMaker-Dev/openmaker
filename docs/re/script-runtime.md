@@ -1274,7 +1274,7 @@ end, network-protocol.md 4.2) (obs, `Call`):
 | 1 | `Call` argument 8: in PSOS with callback the client callback id (the key of the client's callback map) (only if the connection's protocol version is 9 or more) | u32 BE |
 | 2 | `Call` argument 7 (same condition; inf: the callback file-user id) | u32 BE |
 | 3 | script parameter | `Push(Text, max 1,000,000)` (styled text) or an empty unistring when there is no parameter |
-| 4 | script key bytes | the `HBSerialKey<7>` content bytes, then a 1-byte length (Pascal string pushed bytes-first) |
+| 4 | script key | a counted key: one byte of length, then the script's serial key (`HBSerialKey<7>`, file-metadata.md 1); pushed as its bytes, then a 1-byte length of them all (Pascal string pushed bytes-first). `01 0a` (length 2) names script 10 (obs, see the notes) |
 | 5 | flags | u16 BE; bit 0 = asynchronous (do not wait) (DWARF `kAsyncFlag` = 1) |
 
 A parameter longer than 1,000,000 characters fails before sending with 513
@@ -2601,10 +2601,24 @@ Wire (11.2, 11.4)
 - The parameter's `Push(Text)` is taken as the unistring of its characters
   (styles are not sent); no parameter is the empty unistring, so the
   server's `Get ( ScriptParameter )` is empty text then (inf).
-- The script key is the catalog member's key segment as `[17, 5, S]` stores
-  it (minimal big-endian bytes, what `uint_segment` writes), then its 1-byte
-  length; at most 7 bytes (`HBSerialKey<7>`) (inf for ids of 0x80 and up,
-  where the serial-key and stored forms could differ).
+- The script key FileMaker Pro sends is a counted key: one byte of length,
+  then the serial key the script catalog stores the script under
+  (file-metadata.md 1). Observed: FileMaker Pro 26.0.3, calling scripts 10
+  and 11 of a Tasks starter file with Perform Script on Server, sent `01 0a`
+  and `01 0b` to OpenMaker Server (the run of #673,
+  [#828](https://github.com/OpenMaker-Dev/openmaker/issues/828)). Inferred:
+  for ids of 128 and up, whose serial key is two bytes or more, the same
+  length byte before it (`02 80 0d` for script 141); not seen yet. The
+  key's own limit (`HBSerialKey<7>`) puts the length byte at 1 to 7.
+- This spec first read the field as the serial key alone (`80 0d` for 141),
+  from the key the catalog stores rather than from a capture; OpenMaker's
+  client (`om-session`) still sends that form. No capture shows FileMaker
+  Server reading it
+  ([#831](https://github.com/OpenMaker-Dev/openmaker/issues/831)).
+  OpenMaker Server reads both: a counted key starts with its length, 1 to
+  7, and is at least two bytes long; a serial key of one byte is one byte
+  long, and one of two bytes or more starts with a byte of `80` or more, so
+  no key reads as both.
 - Callback ids: argument 8 (the client's callback id) is pushed first,
   argument 7 second; `om-session` sends the server's file id as argument 7
   and both as 0 for plain PSOS (inf). They are sent when the Login reply

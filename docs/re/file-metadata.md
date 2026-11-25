@@ -72,7 +72,7 @@ and value-list definitions an absent value-list key is written `00`, not
 Every catalog member is stored under `[cat, 5, key]`, and the id FileMaker
 shows (XML `id` attributes, Design functions such as `ScriptIDs`,
 `LayoutIDs`, `ValueListIDs`, `FieldIDs`, `TableIDs`, script and layout
-references in steps and triggers, Perform Script on Server's script key) is that key segment decoded as an
+references in steps and triggers, Perform Script on Server's script key, which op30 carries after a length byte, `01 0a` for script 10, script-runtime.md 11.2) is that key segment decoded as an
 `HBSerialKey` (query-program.md 2.6, `om_hbam::serial::decode`): the count
 of leading 1 bits of the first byte gives the length, the remaining bits
 plus the length's offset give the value. One-byte keys `01`..`7f` are the
