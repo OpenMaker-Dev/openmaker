@@ -37,6 +37,9 @@ struct Inner {
     written: Vec<PageNo>,
     /// The trees, by name, with their roots.
     trees: BTreeMap<TreeName, Root>,
+    /// Whether a unit is open: one at a time, as in the page file, so that
+    /// nothing changes the trees between a unit's begin and its commit.
+    unit_open: bool,
     /// Calls made so far, and the one to fail.
     calls: u64,
     fail_at: Option<u64>,
@@ -81,6 +84,7 @@ impl MemStore {
                 released: Vec::new(),
                 written: Vec::new(),
                 trees: BTreeMap::new(),
+                unit_open: false,
                 calls: 0,
                 fail_at: None,
             }),
@@ -211,10 +215,10 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The changes of one entry to a [`MemStore`]. The numbers it allocates and
-/// does not commit go back to the store's free numbers, which no entry
-/// holds, so entries open at once never get the same number, and an entry
-/// retried after a failure numbers its pages as before.
+/// The changes of one entry to a [`MemStore`], the only one open. The
+/// numbers it allocates and does not commit go back to the store's free
+/// numbers, so an entry retried after a failure numbers its pages as
+/// before.
 pub struct MemEntry<'a> {
     store: &'a MemStore,
     allocated: Vec<PageNo>,
@@ -256,6 +260,12 @@ impl PageStore for MemStore {
         if inner.fails() {
             return Err(injected());
         }
+        if inner.unit_open {
+            return Err(StoreError::Failed(
+                "a unit while another is open: one at a time".into(),
+            ));
+        }
+        inner.unit_open = true;
         Ok(MemEntry {
             store: self,
             allocated: Vec::new(),
@@ -464,10 +474,11 @@ impl EntryPages for MemEntry<'_> {
 
 impl Drop for MemEntry<'_> {
     fn drop(&mut self) {
+        let mut inner = self.store.lock();
+        inner.unit_open = false;
         if self.committed {
             return;
         }
-        let mut inner = self.store.lock();
         for number in &self.allocated {
             inner.taken.remove(number);
             inner.free.insert(*number);
@@ -478,58 +489,11 @@ impl Drop for MemEntry<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::{Builder, PageKind};
 
-    fn page(number: PageNo) -> Arc<Page> {
-        Arc::new(Builder::new(PageKind::Leaf, 0, 1).finish(number).unwrap())
-    }
-
-    /// Review of #697: an entry dropped while another committed in between
-    /// does not hand out a number the other one took.
+    /// A dropped entry gives its numbers back, so a retry numbers pages as
+    /// an undisturbed store would.
     #[test]
-    fn entries_open_at_once_never_share_a_number() {
-        let store = MemStore::new(Numbering::Sequential);
-        let mut a = store.begin().unwrap();
-        let mut b = store.begin().unwrap();
-        let n = b.allocate().unwrap();
-        b.write(page(n)).unwrap();
-        b.commit().unwrap();
-        let m = a.allocate().unwrap();
-        assert_ne!(m, n);
-        drop(a);
-        let mut c = store.begin().unwrap();
-        let k = c.allocate().unwrap();
-        assert_ne!(k, n);
-        c.write(page(k)).unwrap();
-        c.commit().unwrap();
-        assert_eq!(store.numbers(), vec![n, k]);
-        assert_eq!(store.taken(), vec![n, k]);
-
-        // Final re-check of #697: A takes a number, B begins, A drops, B
-        // takes A's number, C takes the next and stays open, B drops. D
-        // gets B's number back, not C's.
-        let store = MemStore::new(Numbering::Sequential);
-        let mut a = store.begin().unwrap();
-        let first = a.allocate().unwrap();
-        let mut b = store.begin().unwrap();
-        drop(a);
-        assert_eq!(b.allocate().unwrap(), first);
-        let mut c = store.begin().unwrap();
-        let held = c.allocate().unwrap();
-        assert_ne!(held, first);
-        drop(b);
-        let mut d = store.begin().unwrap();
-        let next = d.allocate().unwrap();
-        assert_eq!(next, first);
-        assert_eq!(store.taken(), vec![first, held]);
-        drop((c, d));
-        assert!(store.taken().is_empty());
-    }
-
-    /// A dropped entry that was alone gives its numbers back, so a retry
-    /// numbers pages as an undisturbed store would.
-    #[test]
-    fn a_dropped_entry_alone_gives_its_numbers_back() {
+    fn a_dropped_entry_gives_its_numbers_back() {
         let store = MemStore::new(Numbering::Sequential);
         let mut a = store.begin().unwrap();
         assert_eq!(a.allocate().unwrap(), 1);
