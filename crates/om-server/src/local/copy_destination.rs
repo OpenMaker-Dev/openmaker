@@ -117,7 +117,7 @@ impl Destination {
     /// and flush the folder. A folder that cannot be flushed is logged and
     /// the copy kept.
     pub(super) fn publish(self) -> io::Result<()> {
-        if let (_, Named::NotFlushed(error)) = self.staged.publish()? {
+        if let (_, Named::NotFlushed(error)) = self.staged.publish(&|| false)? {
             warn!("saved a copy, but flushing its folder failed: {error}");
         }
         Ok(())

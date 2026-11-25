@@ -354,22 +354,24 @@ pub fn copy_checked(
         )));
     }
     target.seek(SeekFrom::Start(0)).map_err(ExportError::Io)?;
-    // No more than the file held when it was opened, and one byte to see
+    // No more than the file held when it was opened, then one byte to see
     // whether it holds more now: a file another program writes to cannot
     // make the copy run on.
-    let limit = len.saturating_add(1);
     let mut copied = 0u64;
-    while copied < limit {
+    while copied < len {
         if (progress.stop)() {
             return Err(ExportError::Stopped);
         }
-        let part = (limit - copied).min(COPY_PART);
+        let part = (len - copied).min(COPY_PART);
         let n = io::copy(&mut io::Read::take(from, part), target).map_err(ExportError::Io)?;
         if n == 0 {
             break;
         }
         copied += n;
         (progress.written)(n);
+    }
+    if copied == len {
+        copied += io::copy(&mut io::Read::take(from, 1), target).map_err(ExportError::Io)?;
     }
     if copied != len {
         return Err(ExportError::SourceChanged {
@@ -571,12 +573,19 @@ impl Prepared {
 
     /// Flush the export and give it its name, never over an entry there,
     /// then flush the folder ([`ExportError::NotFlushed`] when that fails:
-    /// the file stays).
-    pub fn publish(self) -> Result<Exported, ExportError> {
+    /// the file stays). Where the folder's file system refuses the link for
+    /// lack of hard links, the export is copied into its name a part at a
+    /// time, asking `stop` before each ([`ExportError::Stopped`]). Once the
+    /// name is given, a failure to read the file's length or identity is
+    /// [`ExportError::Io`] and hides whether the folder flush failed; the
+    /// file stays complete under its name either way.
+    pub fn publish(self, stop: &dyn Fn() -> bool) -> Result<Exported, ExportError> {
         let Prepared { staged, name } = self;
-        let (file, named) = staged.publish().map_err(|e| {
+        let (file, named) = staged.publish(stop).map_err(|e| {
             if e.kind() == io::ErrorKind::AlreadyExists {
                 ExportError::Exists(name.clone())
+            } else if crate::staged::is_stopped(&e) {
+                ExportError::Stopped
             } else {
                 ExportError::Io(e)
             }
@@ -622,7 +631,7 @@ pub fn copy(
 ) -> Result<Exported, ExportError> {
     let (prepared, filled) = prepare_copy(on_disk, to, progress)?;
     filled?;
-    prepared.publish()
+    prepared.publish(progress.stop)
 }
 
 /// Which file an export of the version a store holds writes.
@@ -642,10 +651,11 @@ pub enum Kind {
 ///
 /// A caller's file must be empty, open for reading and writing at any
 /// position, not for appending (refused before anything is written: a walk
-/// writes its pages at offsets), and the caller's alone while the export
-/// fills it: what another holder of the same file writes meanwhile cannot
-/// be seen, and can be overwritten or make the export wrong. It is written
-/// from its first byte and checked to be as long as the export.
+/// writes its pages at offsets; on systems other than Unix this is not
+/// checked), and the caller's alone while the export fills it: what
+/// another holder of the same file writes meanwhile cannot be seen, and can
+/// be overwritten or make the export wrong. It is written from its first
+/// byte and checked to be as long as the export.
 pub enum Target<'t, 'd> {
     #[allow(
         dead_code,
@@ -699,7 +709,7 @@ impl FileEngine {
                 // A file that failed is dropped after the lock.
                 drop(reading);
                 filled?;
-                prepared.publish()
+                prepared.publish(progress.stop)
             }
             (Source::Written { change_number }, Target::File(into)) => {
                 reading.serve_once(|read| write_walked(read, change_number, into, progress))?;
@@ -1221,6 +1231,68 @@ mod tests {
         }
     }
 
+    /// A folder whose file system refuses hard links, as some do.
+    struct NoLinks<'a>(&'a crate::anchored::Folder);
+
+    impl Folder for NoLinks<'_> {
+        fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+            Folder::descriptor(self.0)
+        }
+
+        fn links(&self) -> bool {
+            false
+        }
+    }
+
+    /// Where the folder refuses hard links, an export is copied into its
+    /// name after its first copy (a backup's on such a file system). A stop
+    /// asked once the first copy is complete stops it before the second one
+    /// makes the name: the export is stopped and nothing is under its name.
+    #[test]
+    fn a_stop_reaches_the_copy_into_a_name_after_a_refused_link() {
+        let (disk, file) = hosted("export-no-links");
+        let scratch = Scratch::new("no-links");
+        let folder = scratch.folder();
+        let no_links = NoLinks(&folder);
+        let engine = engine(None);
+        let len = std::fs::metadata(&disk.0).unwrap().len();
+        let to = |name| Destination {
+            folder: &no_links,
+            name: OsStr::new(name),
+            permissions: None,
+        };
+        // Without a stop: a full copy under its name.
+        engine
+            .export(
+                &file,
+                Kind::Current,
+                Target::Folder(&to("copied.fmp12")),
+                Progress::none(),
+            )
+            .unwrap();
+        assert_eq!(
+            scratch.read("copied.fmp12"),
+            std::fs::read(&disk.0).unwrap()
+        );
+        // A stop once the first copy has all its bytes.
+        let written = Cell::new(0u64);
+        let count = |n| written.set(written.get() + n);
+        let stop = || written.get() >= len;
+        let progress = Progress {
+            stop: &stop,
+            written: &count,
+        };
+        let stopped = engine.export(
+            &file,
+            Kind::Current,
+            Target::Folder(&to("stopped.fmp12")),
+            progress,
+        );
+        assert!(matches!(stopped, Err(ExportError::Stopped)), "{stopped:?}");
+        assert_eq!(written.get(), len);
+        assert_eq!(scratch.names(), ["copied.fmp12"]);
+    }
+
     /// A caller's file open for appending is refused before anything is
     /// written, copied or walked: a walk writes its pages at offsets.
     #[test]
@@ -1432,7 +1504,7 @@ mod templates {
                 let (prepared, filled) =
                     prepare_walked(read, change_number, &to, Progress::none()).unwrap();
                 filled.unwrap();
-                prepared.publish().unwrap();
+                prepared.publish(&|| false).unwrap();
                 true
             }
         };
@@ -1643,7 +1715,7 @@ mod measurement {
                     prepare_walked(read, change_number, &to, Progress::none()).unwrap();
                 held = started.elapsed();
                 filled.unwrap();
-                prepared.publish().unwrap();
+                prepared.publish(&|| false).unwrap();
             }
             "copy" => {
                 let Source::OnDisk(on_disk) = store.export_source(&at).unwrap() else {

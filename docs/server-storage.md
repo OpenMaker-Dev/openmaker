@@ -617,15 +617,20 @@ as shares). Into a folder, one of two ways:
 - **Under its name**, everywhere else, as copies were made before exports:
   the file is created under its final name, only where nothing is, and
   written there. That covers other Unix systems (macOS), file systems
-  without unnamed files, and a file system that refuses the link because
-  it has no hard links, where the complete unnamed file is copied into the
-  newly created name. A crash, or a failure while it is written, can leave
-  a partial file under its name, as before exports.
+  without unnamed files, and, for an export, a file system that refuses
+  the link because it has no hard links, where the complete unnamed file
+  is copied into the newly created name, a part at a time, stopping when
+  asked (a backup's cancel). A crash, a stop or a failure while it is
+  written can leave a partial file under its name, as before exports. The
+  desktop's copy is never made this way: a refused link is its error, and
+  nothing is under the name, as before exports.
 
 Nothing removes a name. After the name is given the folder is flushed;
 when that fails the export is complete under its name, the file stays,
 and the export says so (`ExportError::NotFlushed`): whether the name
-survives a crash is not established. A backup then goes on: it flushes
+survives a crash is not established; if the file's length or identity
+cannot then be read, the export reports that instead, and the file stays
+complete under its name either way. A backup then goes on: it flushes
 every folder of the backup before naming the backup and fails if one
 cannot be, as it always did. The desktop logs it and keeps the copy, as
 it always did. What else a failure leaves:
@@ -640,8 +645,8 @@ A file that fails while the view is walked is dropped after the store's
 read lock is let go. An export can also fill a file its caller made
 (`engine::export::Target::File`, the desktop's): it must be empty, open
 for reading and writing at any position and not for appending (refused
-before anything is written: a walk writes its pages at offsets), and the
-caller's alone while it is filled. It is written from its first byte and
+before anything is written on Unix: a walk writes its pages at offsets),
+and the caller's alone while it is filled. It is written from its first byte and
 checked to be as long as the export. Windows has no folder descriptors
 here: an export to a folder fails as unsupported, and backups are not
 made on Windows. Memory is what the kernel's copy takes, or what the
@@ -691,6 +696,10 @@ at any time from a running server, at a clean stop, and `om-server export`
   the file was opened fails that open).
 - What another holder of a caller's file writes while an export fills it
   cannot be seen: it can be overwritten, or make the export wrong.
+- On systems other than Unix a caller's file open for appending is not
+  refused: a walk into it would put its pages in the wrong places. The
+  only caller, the desktop's Save a Copy as, is Linux-only and passes its
+  own unnamed file.
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's locale and the

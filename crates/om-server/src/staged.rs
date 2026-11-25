@@ -11,10 +11,13 @@
 //! - **Under its name**, everywhere else, as copies were made before
 //!   exports: the file is created under its final name, only where nothing
 //!   is, and written there. That covers other systems (macOS), file systems
-//!   without unnamed files, and a file system that refuses the link
-//!   because it has no hard links, where the unnamed file, complete, is
-//!   copied into the newly created name. A crash, or a failure while it is
-//!   written, can leave a partial file under its name, as before.
+//!   without unnamed files, and, for an export ([`Staged::new`]), a file
+//!   system that refuses the link because it has no hard links, where the
+//!   unnamed file, complete, is copied into the newly created name, a part
+//!   at a time, stopping when asked. A crash, a stop or a failure while it
+//!   is written can leave a partial file under its name, as before. The
+//!   desktop's copy ([`Staged::unnamed`]) is never made this way: a refused
+//!   link is its error, and nothing is under the name, as before exports.
 //!
 //! Nothing here removes a name. After the name is given the folder is
 //! flushed; when that fails the file stays complete under its name and the
@@ -25,9 +28,9 @@
 //! call fails as unsupported.
 
 #[cfg(not(unix))]
-pub(crate) use other::Staged;
+pub(crate) use other::{is_stopped, Staged};
 #[cfg(unix)]
-pub(crate) use unix::Staged;
+pub(crate) use unix::{is_stopped, Staged};
 
 /// How a published file's folder flush went.
 #[derive(Debug)]
@@ -49,6 +52,10 @@ mod unix {
 
     use super::Named;
 
+    /// How many bytes the copy into a name copies between two looks at
+    /// whether to stop: a backup's part.
+    const PART: u64 = 8 << 20;
+
     /// A file being written for a name in a folder (the module doc).
     pub(crate) struct Staged {
         file: File,
@@ -57,6 +64,9 @@ mod unix {
         name: OsString,
         /// `/proc/self/fd`, for an unnamed file: it is linked from there.
         descriptors: Option<OwnedFd>,
+        /// A refused link for lack of hard links makes the file under its
+        /// name by a copy (an export), rather than failing (the desktop).
+        copy_if_unlinked: bool,
         /// The link is to be refused as a file system without hard links
         /// refuses it (tests).
         no_links: bool,
@@ -125,7 +135,9 @@ mod unix {
             #[cfg(target_os = "linux")]
             if let Some(descriptors) = descriptors() {
                 if let Some(file) = unnamed(&folder)? {
-                    return Ok(Staged::of(file, folder, name, Some(descriptors)));
+                    let mut staged = Staged::of(file, folder, name, Some(descriptors));
+                    staged.copy_if_unlinked = true;
+                    return Ok(staged);
                 }
             }
             let file = create(&folder, name)?;
@@ -153,6 +165,7 @@ mod unix {
                 folder,
                 name: name.to_owned(),
                 descriptors,
+                copy_if_unlinked: false,
                 no_links: false,
                 #[cfg(test)]
                 fail_flush: false,
@@ -177,9 +190,14 @@ mod unix {
 
         /// Flush the file and give it its name, never over an entry there
         /// ([`io::ErrorKind::AlreadyExists`]), then flush the folder (the
-        /// module doc); the file under the name. On an error before the name
-        /// is given, nothing has the name but a file created under it.
-        pub(crate) fn publish(self) -> io::Result<(File, Named)> {
+        /// module doc); the file under the name. A link refused for lack of
+        /// hard links is the error of a file made by [`Staged::unnamed`] (the
+        /// desktop's: nothing is then under the name); a file made by
+        /// [`Staged::new`] (an export's) is then copied into its name a part
+        /// at a time, asking `stop` before each, and a stop is an error
+        /// [`is_stopped`] recognizes. On an error before the name is given,
+        /// nothing has the name but a file created under it.
+        pub(crate) fn publish(self, stop: &dyn Fn() -> bool) -> io::Result<(File, Named)> {
             self.file.sync_all()?;
             let mut named = None;
             if let Some(descriptors) = &self.descriptors {
@@ -199,11 +217,21 @@ mod unix {
                     // No hard links on this file system: the complete file
                     // is copied into its name, created only where nothing
                     // is.
-                    Err(Errno::PERM | Errno::OPNOTSUPP | Errno::NOSYS) => {
+                    Err(Errno::PERM | Errno::OPNOTSUPP | Errno::NOSYS) if self.copy_if_unlinked => {
+                        if stop() {
+                            return Err(stopped());
+                        }
                         let mut copy = create(&self.folder, &self.name)?;
                         let mut from = &self.file;
                         io::Seek::seek(&mut from, io::SeekFrom::Start(0))?;
-                        io::copy(&mut from, &mut copy)?;
+                        loop {
+                            if stop() {
+                                return Err(stopped());
+                            }
+                            if io::copy(&mut io::Read::take(from, PART), &mut copy)? == 0 {
+                                break;
+                            }
+                        }
                         copy.set_permissions(self.file.metadata()?.permissions())?;
                         copy.sync_all()?;
                         named = Some(copy);
@@ -225,6 +253,27 @@ mod unix {
             };
             Ok((named.unwrap_or(self.file), flushed))
         }
+    }
+
+    /// The error of a copy into a name stopped by its caller.
+    #[derive(Debug)]
+    struct Stopped;
+
+    impl std::fmt::Display for Stopped {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("stopped")
+        }
+    }
+
+    impl std::error::Error for Stopped {}
+
+    fn stopped() -> io::Error {
+        io::Error::other(Stopped)
+    }
+
+    /// Whether `e` is a stop [`Staged::publish`] was asked for.
+    pub(crate) fn is_stopped(e: &io::Error) -> bool {
+        e.get_ref().is_some_and(|inner| inner.is::<Stopped>())
     }
 
     #[cfg(test)]
@@ -286,13 +335,12 @@ mod unix {
                         }),
                     ));
                     ways.push((
-                        "unnamed, links refused",
+                        "an export's unnamed file, links refused",
                         Box::new(|name| {
                             let folder = scratch.folder();
-                            let mut staged = Staged::unnamed(
-                                std::os::fd::AsFd::as_fd(&folder),
-                                OsStr::new(name),
-                            )?;
+                            let mut staged =
+                                Staged::new(std::os::fd::AsFd::as_fd(&folder), OsStr::new(name))?;
+                            assert!(staged.descriptors.is_some());
                             staged.refuse_links();
                             Ok(staged)
                         }),
@@ -324,7 +372,7 @@ mod unix {
                 let mut staged = make("final").unwrap();
                 staged.file_mut().write_all(b"staged").unwrap();
                 assert!(
-                    matches!(staged.publish().unwrap().1, Named::Flushed),
+                    matches!(staged.publish(&|| false).unwrap().1, Named::Flushed),
                     "{way}"
                 );
                 assert_eq!(scratch.names(), ["final"], "{way}");
@@ -337,7 +385,7 @@ mod unix {
                     Err(e) => e,
                     Ok(mut staged) => {
                         staged.file_mut().write_all(b"staged").unwrap();
-                        staged.publish().map(|_| ()).unwrap_err()
+                        staged.publish(&|| false).map(|_| ()).unwrap_err()
                     }
                 };
                 assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{way}");
@@ -349,7 +397,7 @@ mod unix {
                 staged.file_mut().write_all(b"staged").unwrap();
                 staged.fail_flush = true;
                 assert!(
-                    matches!(staged.publish().unwrap().1, Named::NotFlushed(_)),
+                    matches!(staged.publish(&|| false).unwrap().1, Named::NotFlushed(_)),
                     "{way}"
                 );
                 assert_eq!(scratch.names(), ["taken", "unflushed"], "{way}");
@@ -358,6 +406,31 @@ mod unix {
                     b"staged"
                 );
                 std::fs::remove_file(scratch.0.join("unflushed")).unwrap();
+            }
+            // The desktop's copy is linked or fails: a refused link is its
+            // error, and nothing is under the name.
+            #[cfg(target_os = "linux")]
+            if let Ok(mut desktop) = Staged::unnamed(
+                std::os::fd::AsFd::as_fd(&scratch.folder()),
+                OsStr::new("desktop"),
+            ) {
+                desktop.file_mut().write_all(b"staged").unwrap();
+                desktop.refuse_links();
+                let refused = desktop.publish(&|| false).map(|_| ()).unwrap_err();
+                assert_eq!(refused.raw_os_error(), Some(Errno::PERM.raw_os_error()));
+                assert_eq!(scratch.names(), ["taken"]);
+            }
+            // An export's copy into its name stops when asked, before it
+            // makes the name.
+            let folder = scratch.folder();
+            let mut stopped =
+                Staged::new(std::os::fd::AsFd::as_fd(&folder), OsStr::new("stopped")).unwrap();
+            if stopped.descriptors.is_some() {
+                stopped.file_mut().write_all(b"staged").unwrap();
+                stopped.refuse_links();
+                let refused = stopped.publish(&|| true).map(|_| ()).unwrap_err();
+                assert!(is_stopped(&refused), "{refused}");
+                assert_eq!(scratch.names(), ["taken"]);
             }
         }
     }
@@ -393,8 +466,12 @@ mod other {
             &mut self.file
         }
 
-        pub(crate) fn publish(self) -> io::Result<(File, Named)> {
+        pub(crate) fn publish(self, _stop: &dyn Fn() -> bool) -> io::Result<(File, Named)> {
             Err(Self::unsupported())
         }
+    }
+
+    pub(crate) fn is_stopped(_e: &io::Error) -> bool {
+        false
     }
 }
