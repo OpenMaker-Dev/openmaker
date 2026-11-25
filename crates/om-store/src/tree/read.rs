@@ -600,6 +600,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             bound,
             direction,
             done: false,
+            cursor: None,
         }
     }
 
@@ -678,6 +679,9 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     Start,
+    /// A new starting bound, sought from where the cursor is
+    /// ([`Cursor::seek`]).
+    Seek,
     Running,
     Done,
 }
@@ -739,6 +743,109 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             Bound::Unbounded => page.count(),
             Bound::Included(k) => pages.items_below(&page, k, !forward)?,
             Bound::Excluded(k) => pages.items_below(&page, k, forward)?,
+        };
+        let count = page.count();
+        if forward {
+            self.stack.push((page, n));
+            if n < count {
+                return Ok(true);
+            }
+        } else if n > 0 {
+            self.stack.push((page, n - 1));
+            return Ok(true);
+        } else {
+            self.stack.push((page, 0));
+        }
+        self.next_leaf()
+    }
+
+    /// Starts the cursor again from `bound` (its low bound going forward,
+    /// its high one backward), to be sought from where it is on its next
+    /// step rather than from the root ([`Cursor::reposition`]).
+    fn seek(&mut self, bound: Bound<Vec<u8>>) {
+        match self.direction {
+            Direction::Forward => self.lo = bound,
+            Direction::Backward => self.hi = bound,
+        }
+        self.state = State::Seek;
+    }
+
+    /// Goes to the first item within the starting bound, as
+    /// [`Cursor::position`] does, from the pages the cursor holds: the leaf
+    /// it is in when the item lies inside it (an item of the leaf on either
+    /// side of it), otherwise the pages from the root down as long as each
+    /// would choose the child it holds, descending anew only below the
+    /// first that would not. Each choice is the one `position` makes, so
+    /// the item found is the same, and the pages kept are not read again.
+    fn reposition(&mut self) -> Result<bool> {
+        let forward = self.direction == Direction::Forward;
+        let bound = if forward { &self.lo } else { &self.hi };
+        if matches!(bound, Bound::Unbounded) {
+            return self.position();
+        }
+        let Some((leaf, _)) = self.stack.last() else {
+            return self.position();
+        };
+        let pages = &self.tree.pages;
+        // How many of the leaf's items lie before the bound, as `position`
+        // counts them at its leaf.
+        let below = |page: &Page| match bound {
+            Bound::Included(k) => pages.items_below(page, k, !forward),
+            Bound::Excluded(k) => pages.items_below(page, k, forward),
+            Bound::Unbounded => Ok(0),
+        };
+        let n = below(leaf)?;
+        if n > 0 && n < leaf.count() {
+            // An item of the leaf lies on each side of the bound: the
+            // descent from the root reaches this leaf.
+            let at = if forward { n } else { n - 1 };
+            if let Some(last) = self.stack.last_mut() {
+                last.1 = at;
+            }
+            self.edge = Edge::First;
+            return Ok(true);
+        }
+        // The deepest page from the root whose choice of child is the one
+        // the cursor holds.
+        let choice = |page: &Page| match bound {
+            Bound::Included(k) => pages.separators_below(page, k, true),
+            Bound::Excluded(k) => pages.separators_below(page, k, forward),
+            Bound::Unbounded => Ok(0),
+        };
+        let levels = self.stack.len() - 1;
+        let mut depth = 0;
+        let mut changed = None;
+        while depth < levels {
+            let (page, c) = &self.stack[depth];
+            let want = choice(page)?;
+            if want != *c {
+                changed = Some(want);
+                break;
+            }
+            depth += 1;
+        }
+        self.edge = Edge::First;
+        let (page, n) = match changed {
+            None => {
+                // The same leaf as the descent from the root would reach.
+                let (leaf, _) = self.stack.pop().expect("a stack with a leaf");
+                (leaf, n)
+            }
+            Some(want) => {
+                self.stack.truncate(depth + 1);
+                let (parent, c) = self.stack.last_mut().expect("the page that chose anew");
+                *c = want;
+                let parent = parent.clone();
+                let mut page = pages.child(&parent, want)?;
+                while page.kind() == PageKind::Index {
+                    let c = choice(&page)?;
+                    let child = pages.child(&page, c)?;
+                    self.stack.push((page, c));
+                    page = child;
+                }
+                let n = below(&page)?;
+                (page, n)
+            }
         };
         let count = page.count();
         if forward {
@@ -868,6 +975,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         let moved = match self.state {
             State::Done => return Ok(false),
             State::Start => self.position(),
+            State::Seek => self.reposition(),
             State::Running => self.advance(),
         };
         self.state = State::Running;
@@ -952,7 +1060,12 @@ impl<'t, 's, S: PageStore + ?Sized> Iterator for Cursor<'t, 's, S> {
     }
 }
 
-/// The children of one node: each child's segment and node.
+/// The children of one node: each child's segment and node. Each child is
+/// found by a seek past the one before it, from where the cursor that found
+/// that one is ([`Cursor::seek`]): within the same leaf, or from the
+/// deepest page that still holds the next child, never from the root again
+/// (#767). The cursor holds pages of the one version its tree is, which no
+/// later write changes.
 pub struct Children<'t, 's, S: ?Sized> {
     tree: &'t Tree<'s, S>,
     prefix: Vec<u8>,
@@ -960,6 +1073,7 @@ pub struct Children<'t, 's, S: ?Sized> {
     bound: Bound<Vec<u8>>,
     direction: Direction,
     done: bool,
+    cursor: Option<Cursor<'t, 's, S>>,
 }
 
 impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
@@ -975,18 +1089,27 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
             .end
             .as_deref()
             .map_or(Bound::Unbounded, Bound::Excluded);
-        let bound = self.bound.as_ref().map(Vec::as_slice);
-        let mut cursor = if forward {
-            self.tree.range(bound, upper, Direction::Forward)
-        } else {
-            self.tree.range(lower, bound, Direction::Backward)
+        let tree = self.tree;
+        let cursor = match &mut self.cursor {
+            Some(cursor) => {
+                cursor.seek(self.bound.clone());
+                cursor
+            }
+            None => {
+                let bound = self.bound.as_ref().map(Vec::as_slice);
+                self.cursor.insert(if forward {
+                    tree.range(bound, upper, Direction::Forward)
+                } else {
+                    tree.range(lower, bound, Direction::Backward)
+                })
+            }
         };
         // Only keys are read on the way: the node read is the child's own.
         let found = cursor.step()?;
         let Some((leaf, i)) = cursor.at().filter(|_| found) else {
             return Ok(None);
         };
-        let orphan = || {
+        let orphan = |cursor: &Cursor<'t, 's, S>| {
             let (page, hash) = cursor.leaf().unwrap_or_default();
             fault(page, hash, Fault::Malformed("a node without its parent"))
         };
@@ -997,19 +1120,28 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
         // child's own key is longer than the 1,024 bytes a spilled key keeps
         // in its page; then the found key's overflow pages are read as far
         // as the child's key goes, and no further.
-        let child_key = pages
-            .key_through_segment(leaf, i, self.prefix.len())?
-            .ok_or_else(orphan)?;
-        let child_key = child_key.as_slice();
-        let child_end = child_key.len();
-        let node = if child_end == item.key_len {
+        let Some(child_key) = pages.key_through_segment(leaf, i, self.prefix.len())? else {
+            return Err(orphan(cursor));
+        };
+        let own = child_key.len() == item.key_len;
+        let node = if own {
             pages.item_node(leaf, i)?
         } else if forward {
             // The child sorts before everything under it.
-            return Err(orphan());
+            return Err(orphan(cursor));
         } else {
-            self.tree.get_key(child_key)?.ok_or_else(orphan)?
+            // Backward the child is found from the last key under it, and
+            // its own node, before them, is sought from there.
+            cursor.seek(Bound::Included(child_key.clone()));
+            let found = cursor.step()?;
+            match cursor.at().filter(|_| found) {
+                Some((leaf, i)) if pages.cmp_item(leaf, i, &child_key)? == Ordering::Equal => {
+                    pages.item_node(leaf, i)?
+                }
+                _ => return Err(orphan(cursor)),
+            }
         };
+        let child_key = child_key.as_slice();
         let segment = key::decode(&child_key[self.prefix.len()..])
             .and_then(|mut s| s.pop())
             .unwrap_or_default();
@@ -1049,6 +1181,149 @@ mod tests {
         let new = crate::tree::apply(store, &mut unit, Some(root), entry, edits)?;
         unit.commit()?;
         Ok(new)
+    }
+
+    /// A page store that counts the pages read from it.
+    struct Counting<'s> {
+        inner: &'s MemStore,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl PageStore for Counting<'_> {
+        type Entry<'a>
+            = crate::page::MemEntry<'a>
+        where
+            Self: 'a;
+
+        fn read(&self, number: PageNo, hash: &Hash) -> std::result::Result<Arc<Page>, Fault> {
+            self.reads.set(self.reads.get() + 1);
+            self.inner.read(number, hash)
+        }
+
+        fn trees(&self) -> Vec<(crate::page::TreeName, Root)> {
+            self.inner.trees()
+        }
+
+        fn root(&self, name: &crate::page::TreeName) -> Option<Root> {
+            self.inner.root(name)
+        }
+
+        fn begin(&self) -> std::result::Result<Self::Entry<'_>, crate::page::StoreError> {
+            self.inner.begin()
+        }
+    }
+
+    /// A tree whose node `t` has `count` children, each with three leaves
+    /// of 40 bytes below it, over many leaf pages; its root, and the
+    /// children's segments in order.
+    fn wide(store: &MemStore, count: u32) -> (Root, Vec<Vec<u8>>) {
+        let mut unit = store.begin().unwrap();
+        let mut root = crate::tree::apply(
+            store,
+            &mut unit,
+            None,
+            1,
+            &[Edit::list(vec![b"t".to_vec()])],
+        )
+        .unwrap();
+        unit.commit().unwrap();
+        let segments: Vec<Vec<u8>> = (0..count).map(|n| n.to_be_bytes().to_vec()).collect();
+        for (n, batch) in segments.chunks(250).enumerate() {
+            let mut edits = Vec::new();
+            for segment in batch {
+                edits.push(Edit::list(vec![b"t".to_vec(), segment.clone()]));
+                for leaf in [1u8, 2, 3] {
+                    edits.push(Edit::leaf(
+                        vec![b"t".to_vec(), segment.clone(), vec![leaf]],
+                        vec![leaf; 40],
+                    ));
+                }
+            }
+            root = apply(store, root, 2 + n as u64, &edits).unwrap();
+        }
+        (root, segments)
+    }
+
+    /// A listing of a node's children finds each from where the cursor
+    /// that found the one before it is (#767), never from the root again:
+    /// over 2,000 children of four nodes each, on many leaves, a listing in
+    /// either direction reads no more pages than a walk of the node's
+    /// subtree does (and a page per level for each child, as a seek from
+    /// the root, would be far more), and gives each child once, in order.
+    #[test]
+    fn a_listing_reads_no_more_pages_than_a_walk() {
+        let store = MemStore::new(Numbering::Sequential);
+        let (root, segments) = wide(&store, 2_000);
+        let counting = Counting {
+            inner: &store,
+            reads: std::cell::Cell::new(0),
+        };
+        let tree = Tree::open(&counting, root).unwrap();
+        assert!(tree.height() >= 2, "{}", tree.height());
+        let t = [b"t".to_vec()];
+        let read = |run: &mut dyn FnMut()| {
+            counting.reads.set(0);
+            run();
+            counting.reads.get()
+        };
+        let walk = read(&mut || assert_eq!(tree.walk(&t).count(), 1 + 4 * segments.len()));
+        assert!(walk > 20, "{walk} pages: the tree should span many leaves");
+        for direction in [Direction::Forward, Direction::Backward] {
+            let mut listed = Vec::new();
+            let pages = read(&mut || {
+                listed = tree
+                    .children(&t, Bound::Unbounded, direction)
+                    .map(|child| child.unwrap().0)
+                    .collect();
+            });
+            let mut expected = segments.clone();
+            if direction == Direction::Backward {
+                expected.reverse();
+            }
+            assert_eq!(listed, expected, "{direction:?}");
+            assert!(
+                pages <= walk + tree.height(),
+                "{direction:?}: {pages} pages, a walk {walk}"
+            );
+        }
+    }
+
+    /// The place a listing keeps is in the version its tree is, whose pages
+    /// no write changes: writes that split and merge the leaves under the
+    /// listed node (new versions) while a listing of the old one runs leave
+    /// what it gives that version's children, as a listing started afresh
+    /// gives them.
+    #[test]
+    fn a_listing_keeps_to_its_version_while_writes_split_and_merge_its_leaves() {
+        let store = MemStore::new(Numbering::Sequential);
+        let (old, segments) = wide(&store, 1_000);
+        let tree = Tree::open(&store, old).unwrap();
+        let t = [b"t".to_vec()];
+        let mut listing = tree.children(&t, Bound::Unbounded, Direction::Forward);
+        let mut listed: Vec<Vec<u8>> = (&mut listing).take(300).map(|c| c.unwrap().0).collect();
+        // Splits: many children inserted among those still to come; merges:
+        // many of them deleted.
+        let mut edits = Vec::new();
+        for n in 300..700u32 {
+            let between = [&n.to_be_bytes()[..], &[0x80]].concat();
+            edits.push(Edit::leaf(vec![b"t".to_vec(), between], vec![7; 200]));
+        }
+        let mut newer = apply(&store, old, 100, &edits).unwrap();
+        let deletes: Vec<Edit> = (700..1_000u32)
+            .map(|n| Edit::Delete {
+                path: vec![b"t".to_vec(), n.to_be_bytes().to_vec()],
+            })
+            .collect();
+        newer = apply(&store, newer, 101, &deletes).unwrap();
+        assert_ne!(newer, old);
+        listed.extend(listing.map(|c| c.unwrap().0));
+        assert_eq!(listed, segments);
+        let fresh: Vec<Vec<u8>> = Tree::open(&store, old)
+            .unwrap()
+            .children(&t, Bound::Unbounded, Direction::Forward)
+            .map(|c| c.unwrap().0)
+            .collect();
+        assert_eq!(fresh, segments);
     }
 
     /// Re-check of #697: an empty leaf below the root, which these rules
