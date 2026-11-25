@@ -2712,7 +2712,7 @@ fn query(
                         return Ok(reply(error_slot(code), Resume::complete())
                             .to_result_within(max_return as usize));
                     }
-                    Ran::Ran(Queried(outcome), issued) => (outcome, issued),
+                    Ran::Answered(Queried(outcome), issued) => (outcome, issued),
                 }
             };
             if let Some(error) = &outcome.error {
@@ -2882,7 +2882,7 @@ enum Ran {
     /// reason (a save's outcome was unknown): refused before it runs.
     NoMoreChanges(String),
     /// Its outcome, with the member ids it issued and their catalogs.
-    Ran(Queried, Vec<(Vec<Vec<u8>>, u64)>),
+    Answered(Queried, Vec<(Vec<Vec<u8>>, u64)>),
 }
 
 /// A program's outcome, compared by its reply, its writes and its error's
@@ -2946,7 +2946,7 @@ fn run_query(
     if let Some(error) = source.failed.borrow().as_ref() {
         error!("{:?}: a query's read failed: {error}", file.hosted.name);
     }
-    Ran::Ran(Queried(outcome), source.issued.into_inner())
+    Ran::Answered(Queried(outcome), source.issued.into_inner())
 }
 
 /// A hosted file as a query source, read through a view and its derived
