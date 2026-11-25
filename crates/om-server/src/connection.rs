@@ -3433,7 +3433,7 @@ fn upload_payload(
     header: &Header,
     resume: &Resume,
     part: Vec<u8>,
-) -> Result<Result<(Vec<u8>, Charge), Resume>, Refused> {
+) -> Result<Result<(Vec<u8>, Charge), Resume>, PerformError> {
     let owner = Owner::of(header);
     let upload = session
         .transfers
@@ -3441,7 +3441,21 @@ fn upload_payload(
     Ok(match upload? {
         Upload::Complete(payload, held) => Ok((payload, held)),
         Upload::Partial(resume) => Err(resume),
-        Upload::Unknown => Err(unknown_cursor(peer, resume)),
+        // A continuation of an upload this connection does not hold (its
+        // earlier parts never came, or it ended): nothing of it can be
+        // stored, so it fails rather than answer the last page a download
+        // of an unknown cursor gets, which for an upload says done.
+        Upload::Unknown => {
+            debug!(
+                "{peer}: continuation of unknown upload cursor {:#x}",
+                resume.cursor
+            );
+            return Err(PerformError::Status(format!(
+                "a continuation of upload {:#x}, which this connection does not hold: nothing \
+                 stored",
+                resume.cursor
+            )));
+        }
     })
 }
 
@@ -3489,14 +3503,25 @@ fn upload(
                 .abandon_upload(Owner::of(header), &request.resume);
             return Err(Refused.into());
         }
-        Err(Unwritable::Session) => return Ok(done),
+        // The reply has no status: an upload the session may not make
+        // fails, rather than answer done with nothing stored or staged.
+        Err(Unwritable::Session) => {
+            return Err(PerformError::Status(format!(
+                "upload to {:02x?} not {}: the session may not write the file",
+                request.dest,
+                if to_file { "stored" } else { "staged" }
+            )))
+        }
     };
     // Native uploads can replace a script through any catalog ancestor or
     // descendant. Apply the same account boundary as opcode 240 to every
     // direct catalog upload; staged record edits stay separate.
     if to_file && !full_access(file) {
         info!("{peer}: refusing a catalog upload without Full Access");
-        return Ok(done);
+        return Err(PerformError::Status(format!(
+            "upload to {:02x?} not stored: the account does not have [Full Access]",
+            request.dest
+        )));
     }
     let hosted = file.hosted.clone();
     let part = std::mem::take(&mut request.payload);
@@ -3517,7 +3542,13 @@ fn upload(
         .or_insert_with(|| writes::TempArea::new(Charge::none(&shared.upload_memory, client)));
     match writes::stage_upload(temp, &request.dest, &payload, &mut reading) {
         Ok(records) => debug!("{peer}: staged {records} record(s)"),
-        Err(writes::StageError::Malformed(e)) => warn!("{peer}: {e}"),
+        // Nothing staged: it fails, as a refused upload does.
+        Err(writes::StageError::Malformed(e)) => {
+            return Err(PerformError::Status(format!(
+                "upload to {:02x?} not staged: {e}",
+                request.dest
+            )))
+        }
         Err(writes::StageError::Full) => {
             warn!("{peer}: refusing to stage records past what the client may hold");
             return Err(Refused.into());
@@ -3558,21 +3589,19 @@ fn upload_to_file(
     payload: &[u8],
     room: usize,
 ) -> Result<(), PerformError> {
-    if request.dest.is_empty() {
-        warn!("{peer}: refusing an upload over the whole file");
-        return Ok(());
-    }
+    // An upload over the whole file (an empty destination) is refused by
+    // the engine, which decides every destination the file cannot hold
+    // (`engine::schema::upload_to_catalog`), and fails below.
     let node = if request.flags & !write::UPLOAD_TO_TEMP == write::UPLOAD_VALUE {
         OwnedNode::leaf(Vec::new(), request.terminal.clone())
     } else {
         match writes::read_upload(payload, room) {
             Ok(tree) => OwnedNode { push: true, ..tree },
             Err(writes::StageError::Malformed(e)) => {
-                warn!(
-                    "{peer}: upload to {:02x?} is not a slot list: {e}",
+                return Err(PerformError::Status(format!(
+                    "upload to {:02x?} not stored: it is not a slot list: {e}",
                     request.dest
-                );
-                return Ok(());
+                )));
             }
             Err(writes::StageError::Full) => {
                 warn!("{peer}: refusing to read an upload past the connection's limit");
@@ -3755,12 +3784,24 @@ fn commit(
                 .abandon_upload(Owner::of(header), &request.resume);
             return Err(PerformError::Status(format!("commit not saved: {why}")));
         }
-        Err(Unwritable::Session) => return Ok(done),
+        // The reply has no status: a commit the session may not make fails,
+        // rather than answer done with nothing saved, and a refused
+        // continuation ends its list.
+        Err(Unwritable::Session) => {
+            session
+                .transfers
+                .abandon_upload(Owner::of(header), &request.resume);
+            return Err(PerformError::Status(
+                "commit not saved: the session may not write the file".into(),
+            ));
+        }
     };
     let hosted = file.hosted.clone();
     // `writable` admits only a session with a set.
     let Some(account) = file.account.clone() else {
-        return Ok(done);
+        return Err(PerformError::Status(
+            "commit not saved: the session has no account".into(),
+        ));
     };
     let (user, _) = lock_user(session, file, request.txn);
     let (list, held) =
@@ -3773,8 +3814,9 @@ fn commit(
     let list = match writes::read_upload(&list, reading.bytes()) {
         Ok(list) => list,
         Err(writes::StageError::Malformed(e)) => {
-            warn!("{peer}: commit list is not a slot list: {e}");
-            return Ok(done);
+            return Err(PerformError::Status(format!(
+                "commit not saved: its list is not a slot list: {e}"
+            )));
         }
         Err(writes::StageError::Full) => {
             warn!("{peer}: refusing to read a commit list past what the client may hold");
@@ -3783,8 +3825,9 @@ fn commit(
     };
     // `writable` admits only a session with a set.
     let Some(access) = account.access.clone() else {
-        warn!("{peer}: commit refused: the account has no privilege set");
-        return Ok(done);
+        return Err(PerformError::Status(
+            "commit not saved: the account has no privilege set".into(),
+        ));
     };
     // The records of the list this session was served without their values
     // (`writes::refused_action`).
@@ -3805,8 +3848,8 @@ fn commit(
         .or_insert_with(|| writes::TempArea::new(Charge::none(&shared.upload_memory, client)));
     let (staged, lent) = temp.lend(&list);
     // The account's set decides each record's action under the write lock
-    // (`writes::refused_action`); a refused commit writes nothing and the
-    // reply cannot say so (the client checks first and reports 200).
+    // (`writes::refused_action`); a refused commit writes nothing, and fails
+    // as one not saved does (FileMaker Pro checks first and reports 200).
     // Saved by the engine; a commit that could not be saved was taken back
     // and fails with a system exception (MARSHAL, COMPLETED_NO) rather than
     // the page that says it was done: op70's reply has no status
@@ -3837,9 +3880,10 @@ fn commit(
             outcome.notices.deliver(&hosted, &shared.mailboxes);
             Ok(done)
         }
+        // Refused under the write lock, record by record, by the account's
+        // set: nothing was written, and the staged records stay staged.
         Err(writes::CommitError::Refused(e)) => {
-            warn!("{peer}: {e}");
-            Ok(done)
+            Err(PerformError::Status(format!("commit not saved: {e}")))
         }
         Err(writes::CommitError::NotSaved(e)) => {
             warn!("{peer}: {e}");

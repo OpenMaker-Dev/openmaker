@@ -407,12 +407,16 @@ pub(crate) fn get_serial(req: &GetSerial, file: &str, tx: &mut Transaction<'_>) 
 /// ([`crate::engine::SetNextSerial`]): replace a field's next serial value
 /// within a commit, which the engine saves before it counts and takes back
 /// when it cannot, as a record commit. 102 for a table without the field,
-/// which changes nothing.
+/// which changes nothing; 3 on a file hosted read-only, before anything is
+/// written or a commit begun, so no save is tried and none fails.
 pub(crate) fn set_next_serial(
     op: SetNextSerial,
     file: &str,
     tx: &mut Transaction<'_>,
 ) -> Result<(), u32> {
+    if tx.is_read_only() {
+        return Err(UNAVAILABLE);
+    }
     let SetNextSerial {
         table,
         field,

@@ -1460,19 +1460,34 @@ impl ServerHost {
         }
     }
 
+    /// [`Self::require_edit_access`], and on a file hosted read-only 3
+    /// before anything else: no record is opened for editing, created or
+    /// deleted, so that a step that would change one fails where the
+    /// script sees it, rather than at a commit that comes later or at the
+    /// session's end (OpenMaker's choice, as the account steps answer on
+    /// such a file). A step calls it before it holds anything for the edit
+    /// (a container's data, a record's lock).
+    fn require_edit(&self) -> HostResult {
+        self.require_writable_file()?;
+        self.require_edit_access()
+    }
+
+    /// 3 on a file hosted read-only ([`Self::require_edit`]).
+    fn require_writable_file(&self) -> HostResult {
+        match self.shared.engine.read_only(&self.hosted) {
+            Some(_) => Err(ErrorCode::UNAVAILABLE.into()),
+            None => Ok(()),
+        }
+    }
+
     /// Unless [`Self::may_edit`]: 200 for an account whose records are
     /// view only ([Read-Only Access]), as a client's own write is refused
     /// (inferred for a server script: FileMaker Server's code there is
-    /// unmeasured), else 9 as [`Self::require_view`]. On a file hosted
-    /// read-only, 3 before anything else: no record is opened for editing,
-    /// created or deleted, so that a step that would change one fails
-    /// where the script sees it, rather than at a commit that comes later
-    /// or at the session's end (OpenMaker's choice, as the account steps
-    /// answer on such a file).
-    fn require_edit(&self) -> HostResult {
-        if self.shared.engine.read_only(&self.hosted).is_some() {
-            Err(ErrorCode::UNAVAILABLE.into())
-        } else if self.may_edit() {
+    /// unmeasured), else 9 as [`Self::require_view`]. The account's check
+    /// alone, for what changes no record: a global's value, which is the
+    /// session's, on a file hosted read-only too.
+    fn require_edit_access(&self) -> HostResult {
+        if self.may_edit() {
             Ok(())
         } else if self.may_view() {
             Err(RECORD_ACCESS_DENIED.into())
@@ -2892,9 +2907,10 @@ impl ServerHost {
         let ty = values::value_type(def.data_type);
         // A global's value is the session's, but it is set as a record's
         // field is (inferred: FileMaker's answer for a set whose records
-        // are view only is unmeasured).
+        // are view only is unmeasured). It needs no record, lock or save,
+        // so a file hosted read-only takes it.
         if Self::is_global(&def) {
-            self.require_edit()?;
+            self.require_edit_access()?;
             self.globals
                 .insert((table, field.field, field.repetition), value);
             return Ok(());
@@ -2915,6 +2931,10 @@ impl ServerHost {
             return Ok(());
         }
         let cell = cell_id(field.field, field.repetition).ok_or(HostError::Unsupported)?;
+        // Checked before a container's data is held for the edit: a
+        // refused step leaves nothing in the session (`open_current`
+        // checks again).
+        self.require_edit()?;
         let container = def.data_type == DataType::Container;
         let stored = if container {
             // Data, a reference or text ([`containers`]).
@@ -5337,6 +5357,10 @@ impl FieldSteps for ServerHost {
     /// record commit is. Not once the script is aborted: the step's
     /// calculation may have been stopped, leaving `?`.
     fn set_next_serial_value(&mut self, field: FieldRef, value: Value) -> HostResult {
+        // On a file hosted read-only, 3 first, as the steps that would
+        // change a record answer ([`Self::require_edit`]): nothing is
+        // journaled or saved.
+        self.require_writable_file()?;
         // It changes the field's definition: only [Full Access] (inferred;
         // FileMaker Server's answer for the other sets is unmeasured).
         self.require_full_access()?;
@@ -5351,6 +5375,7 @@ impl FieldSteps for ServerHost {
             field: uint_segment(field.field),
             value: text,
         };
+        crate::connection::before_engine_write(&self.shared, &self.hosted);
         match self
             .shared
             .engine
