@@ -21,7 +21,7 @@ cover only the copy, and what follows a copy's hash is not read.
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 8 | `OMSTATE` followed by a zero byte |
-| 8 | 2 | format version, 2 (version 1 is read too, 1.2) |
+| 8 | 2 | format version, 3 (versions 1 and 2 are read too, 1.2) |
 | 10 | 2 | zero (reserved) |
 | 12 | 4 | body length `L` |
 | 16 | 8 | copy number |
@@ -38,11 +38,13 @@ hash matches and whose version is newer than the server reads makes the
 open fail ("newer format"): the server does not pass over it as damaged
 and fall back to an older copy.
 
-### 1.2 The body, version 2
+### 1.2 The body, version 3
 
-`L` is 130. Version 1 is the same body without its last field, the cut
-count (`L` is 122); it is read with a cut count of 0, and the next update
-writes version 2.
+`L` is 139. Version 2 is the same body without its last two fields, the
+mark (`L` is 130); it is read with no mark. Version 1 is version 2's body
+without the cut count (`L` is 122); it is read with a cut count of 0 and
+no mark. The next copies an open writes are of version 3 (1.3, "A format
+change").
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -59,10 +61,12 @@ writes version 2.
 | 113 | 1 | 1 while the server is in repair (section 7.5), otherwise 0 |
 | 114 | 8 | the repair's required end, or zero |
 | 122 | 8 | the cut count: how many times the log was cut back over entries the marker covered (section 3.9); it never goes down |
+| 130 | 1 | the mark: 1 from an open that passed over a copy until the update that settles it, otherwise 0 (1.3) |
+| 131 | 8 | with the mark, the marker's index in the copy that open read; otherwise zero |
 
-A flag byte other than 0 or 1, an id or required end that is not zero
-where its flag is 0, a reserved field that is not zero, or a segment
-number and count whose sum overflows, makes the copy malformed.
+A flag byte other than 0 or 1, an id, required end or marked index that
+is not zero where its flag is 0, a reserved field that is not zero, or a
+segment number and count whose sum overflows, makes the copy malformed.
 
 **The segments in use** are a contiguous run of numbered files: the log
 retires segments from its front and cuts them from its back
@@ -86,13 +90,12 @@ log.
   neither its index nor its committed position, and keeps the hash when
   the index is the same - writes the next copy number into the slot that
   does not hold the current copy and flushes the file (`fdatasync`): one
-  write of 186 bytes in place and one flush. `state` is rewritten once
+  write of 195 bytes in place and one flush. `state` is rewritten once
   per commit batch (server-storage.md 6.3), so this is never a new file
   and a rename.
 - **Any other update** - the term, the vote, the segments, the cut count,
-  the repair record and its required end, a marker that goes back - is
-  written
-  twice before it counts: as the next number into the other slot,
+  the repair record and its required end, the mark settled, a marker that
+  goes back - is written twice before it counts: as the next number into the other slot,
   flushed, then as the number after into the first slot, flushed. What
   such an update confirmed is then in both slots.
 - **An update that changes nothing** writes nothing.
@@ -104,6 +107,21 @@ log.
   flushes, and as the number after into the first slot and flushes,
   before it returns. So an open costs three writes, three file flushes
   and a folder flush.
+  - **A copy passed over** (the other slot gave no valid copy: damaged,
+    or not readable) may have held a newer marker, which the open cannot
+    tell (server-storage.md 6.1). The two copies it writes then carry the
+    **mark**, with the marker's index of the copy it read (or that copy's
+    own mark, when it carried one, unchanged). The first of them goes into
+    the slot passed over, and only after its flush is the copy read
+    written over: one durable copy exists at every point, and from the
+    moment the first lands, every later open reads a copy that carries the
+    mark, or passes over a slot again and marks it again. A mark is kept,
+    however whole the two copies are, until an update settles it: an
+    update that clears it, written to both slots. Only an open sets a
+    mark; an update that sets or changes one is refused. Who settles it is
+    the log (the marker moved over a whole batch after it, 3.6) or the
+    store, once it has recorded that the last batch confirmed may be lost
+    (section 7; server-storage.md 6.12).
   - The folder flush makes `state`'s own name durable, in case an earlier
     creation stopped between its rename and its folder flush.
   - The write back is there because an earlier process may have stopped
@@ -116,8 +134,8 @@ log.
     the copy as it was, of whatever version; the new form reaches the
     disk only as new copies, through the two writes that follow (next
     number into the other slot, flushed, then the first slot, flushed).
-    Version 1 copies become version 2 this way at the first open by this
-    code. Every later version keeps this rule.
+    Version 1 and 2 copies become version 3 this way at the first open by
+    this code. Every later version keeps this rule.
   - A slot the device fails to read is read again, up to three times in
     all; one that fails every time is passed over like an invalid one,
     and written over before the open returns, so that its copy is lost:
@@ -138,8 +156,8 @@ log.
 
 ### 1.4 Cost and bounds
 
-- A copy is at most one slot, 4096 bytes; version 2 uses 186 of them.
-- A marker advance is one 186-byte write in place and one flush of the
+- A copy is at most one slot, 4096 bytes; version 3 uses 195 of them.
+- A marker advance is one 195-byte write in place and one flush of the
   file. Any other update is two such writes and two flushes. An open is
   three writes, three file flushes and one folder flush. Before it, the
   server makes sure of the store folder itself (`Fs::create_root`): it
@@ -163,6 +181,9 @@ any time:
   returned, so losing either slot loses none of them. An update of both
   slots counts from the moment the first slot's flush returns: an open
   takes the higher-numbered copy and writes it to both slots.
+- **That a copy was passed over** is not forgotten: the mark is in the
+  slot passed over before anything is written over the copy read, and in
+  both slots once the open returns, until an update settles it.
 - **The marker** goes back by at most one advance: an advance is in one
   slot, and the other holds the copy before it. Recovery re-establishes
   the lost advance's index and hash from the log, whose entries through
@@ -197,12 +218,14 @@ The seeded tests (`crates/om-store/src/state/tests.rs`) check each of
 these: every open against the copies each slot can hold, and every
 confirmed value against what the open returns.
 
-This section describes the format and code as they are. The design asks
-for two things they do not have yet (server-storage.md 6.1 and 7.5): a
-mark, written when an open passes over a copy and kept until it is
-settled, and a repair record whose required end is not yet known. Until
-they are built, an open that passed over a copy writes the same values
-back with no mark, as 1.3 says.
+The design asks for one thing more that the format does not have yet
+(server-storage.md 7.5): a repair record whose required end is not yet
+known, for a cluster member whose start passed over a copy and found no
+whole batch after the marker. It waits for replication
+([issue #673](https://github.com/OpenMaker-Dev/openmaker/issues/673), step
+3); on
+one server the mark is settled by the store's record of the possible loss
+instead (section 7).
 
 ## 2. Pages and trees
 
@@ -2323,7 +2346,8 @@ listings visited and the most held at once.
 How `om_store::store` joins `state` (section 1), the page file (section
 4), the log (section 3) and applying entries (section 5) on one server:
 the order of every write of its operations, and what a crash at each step
-leaves. Nothing here adds a byte format. The store is driven by its
+leaves. Its one file of its own is the incident journal (section 7). The
+store is driven by its
 caller: no thread, timer or background work, so every step below is a
 call the simulated disk can stop.
 
@@ -2341,7 +2365,9 @@ call the simulated disk can stop.
    else is made (a creation begun again finds it there);
 3. a `pages` left by a creation that did not reach `state` is removed,
    and the page file is created (4.6: checkpoint 1 at entry 0, written to
-   `pages.new`, flushed, renamed, the folder flushed);
+   `pages.new`, flushed, renamed, the folder flushed); then the incident
+   journal, empty (section 7), and the folder flushed, so that a store
+   whose journal is missing lost it;
 4. `state` is created (1.3: both copies in `state.new`, flushed, renamed,
    the folder flushed);
 5. the marker is removed and the store folder flushed;
@@ -2369,10 +2395,33 @@ store whose `state` is gone, reported for a restore (server-storage.md
    both slots; a creation's marker left by step 5 of 6.1 is removed. A
    folder without `state` is looked at under the lock taken again: when
    `state` has appeared (another process created the store meanwhile), it
-   is opened; otherwise the folder is told apart as 6.1 says;
-2. the page file opened (4.6): the newest checkpoint that reads back, or
-   the one before it; its entry is the **start**;
-3. the log opened from the start (3.6), checked against the marker;
+   is opened; otherwise the folder is told apart as 6.1 says. When `state`
+   passed over a copy, the mark is durable in both slots before anything
+   else is written (1.3). The incident journal is read (section 7); a
+   missing one is recorded as such (`JournalLost`);
+2. the page file opened (4.6) on its newest checkpoint; its entry is the
+   **start**. When the page file answers that the checkpoint does not
+   check (`Damaged`) with an approval, the store records the approval
+   (with the restore points that go with it) in the journal, flushed, and
+   then calls `PageFile::open_giving_up` with it; when that call answers
+   damage again (the damage changed meanwhile), that approval is recorded
+   and given in turn, at most eight times; when it is refused because
+   nothing stops the open any more, the page file is opened plainly.
+   When the device fails a read the page file needs (`Unreadable`), the
+   open fails (`OpenError::Pages`, with the approval and its remedy):
+   only the administrator's call `Store::give_up_pages`, given that
+   approval, records it and gives it up, as above. The page file keeps
+   the restore points of the checkpoint it opens; the store keeps none of
+   its own, so those given up are gone from it with the checkpoint, and
+   named by the incident;
+3. the log opened from the start (3.6), checked against the marker. When
+   `state` carries a mark and the log holds no whole batch after the
+   marker, the log's open writes nothing and says what it would do
+   (`LogError::LossNotRecorded`): the store records that the last batch
+   confirmed may be lost (`LastBatch`, with the cut and the unreadable end
+   the open meets), and opens the log again settling the mark in its
+   update (`Log::open_settling`). A whole batch after the marker settles
+   it silently;
 4. the entries after the start applied again, each once, in order,
    through the durable entry: each is reserved with the reserve allowed
    (`Purpose::Recovery`), applied in its one unit of work, and the
@@ -2399,7 +2448,8 @@ store whose `state` is gone, reported for a restore (server-storage.md
    of the entry, or of the marker, that the disk refuses for room, the
    cause kept through the error.
 
-Steps 1 to 3 write what their own opens write. Step 4 writes nothing to
+Steps 1 to 3 write what their own opens write, and the journal's records
+before what they name. Step 4 writes nothing to
 disk but what a forced checkpoint writes. A crash at any step leaves what
 the piece's own table says, and the next open does the same work again:
 the entries step 4 applied are in memory only until a checkpoint, and are
@@ -2425,7 +2475,15 @@ entry. Two calls go past two of them, and nothing else does:
   entries it held as far as the headers say. `Store::accept_damage` takes
   that plan and does exactly that, or refuses with nothing changed when a
   fresh plan differs (`LogError::PlanChanged`); an administrator who would
-  rather keep what a plan gives up restores, or repairs by hand. The plan
+  rather keep what a plan gives up restores, or repairs by hand. Before it
+  changes anything it records the plan in the incident journal (section
+  7: `LogDamage`, with where each file goes and the entries it holds),
+  flushed, and, when `state` carries a mark the plan does not make up for
+  (no whole batch kept after the marker), that the last batch may be lost
+  (`LastBatch`). A plan made after an acceptance that failed or was cut
+  short names each listed segment that acceptance renamed, from its
+  record, with where it went and its entries (`Fate::MovedEarlier`),
+  while the record is not acknowledged. The plan
   is made from the start, the checkpoint the store opens on. Every listed
   segment the folder holds is opened, and a file shorter than its header
   says is read as it will read once lengthened: its bytes, then zeros to
@@ -2508,11 +2566,14 @@ entry. Two calls go past two of them, and nothing else does:
 
   | A crash | leaves |
   |---|---|
-  | after some renames, before `state`'s update | `state` listing segments whose files were renamed: the open reports them missing, and accepting again finds them so and gives them up; their bytes are under the earlier names, which the new plan does not show, nor the entries they held |
+  | before the record is flushed | nothing changed; the record may be there or not, cut short (section 7) |
+  | after some renames, before `state`'s update | `state` listing segments whose files were renamed: the open reports them missing; a new plan names each with where it went and its entries, from the record, and gives it up |
   | while copying the tail, before `state`'s update | a partial copy under its new name, the log otherwise as the renames left it |
   | after lengthening a kept file, before `state`'s update | that file at its header's size; nothing else changed |
   | after `state`'s first slot is flushed | the decision, which stands |
-- `Store::give_up_unreadable_end` (`Log::give_up_unreadable_end`, 3.9).
+- `Store::give_up_unreadable_end` (`Log::give_up_unreadable_end`, 3.9),
+  after it has recorded what it gives up (`UnreadableEnd`: the last entry
+  kept and the place), flushed.
 
 Each is done from the moment its `state` update's first slot is flushed,
 whether or not the open goes on to succeed. An open that fails after the
@@ -2521,10 +2582,16 @@ was given up (`OpenError::AfterGivingUp`): with
 `Recorded::Done` it stands, and the next open starts from it without
 reporting it again; with `Recorded::Unknown` the `state` update failed
 part way, and the next open shows which (it ends the log where the
-decision does, or reports the damage again). When the open passed over a
-copy of `state` and the log kept no whole batch after the marker, the
-open succeeds and says that the last batch confirmed may be lost
-(`Opened::last_batch_may_be_lost`). When the chain of entries before the
+decision does, or reports the damage again). Either way the decision's
+record is in the journal, and an open that failed after recording says
+so (`OpenError::AfterIncidents`). When `state` carries a mark and the log
+kept no whole batch after the marker, the open records that the last
+batch confirmed may be lost before it settles the mark, and says so
+(`Opened::last_batch_may_be_lost`). Every open reports every incident no
+administrator has acknowledged (`Opened::incidents`), and what the read of
+the journal found (`Opened::journal`); `Store::acknowledge` (or, with the
+store closed, `Store::acknowledge_incidents`) acknowledges them. When the
+chain of entries before the
 checkpoint's entry, in the segment that holds the one after it, stops
 checking (3.6, step 3), the open succeeds and says where
 (`Opened::before_start`), and whether the checkpoint on disk before the
@@ -2650,8 +2717,126 @@ published.
   header does not check, one segment or more after the one that holds the
   start's successor, with what follows it, although its entries chain. The
   plan does not look across either.
-- An acceptance that fails or crashes after renaming some files and before
-  `state`'s update leaves their bytes under the given-up names, but its
-  error does not list them, and a new plan, which does not look at
-  given-up names, shows those segments missing: neither where they went
-  nor the entries they held.
+- A plan names what an earlier acceptance set aside only from that
+  acceptance's record while it is not acknowledged: once it is, a listed
+  segment that acceptance renamed shows as missing.
+
+## 7. The incident journal
+
+`<store>/incidents` (server-storage.md 6.1 and 6.12), read and written by
+`om_store::incident`. What the store gives up, it records here first: the
+record is written and the file flushed (and the store folder, when the
+call made the file) before the store acts, and the store acts only on a
+record whose flush returned. Every open reports the records no
+administrator has acknowledged. The journal is the store's own: it is read
+without `state`, the log or the page file, so a store whose log or page
+file cannot be read still says what it gave up (`Store::read_incidents`).
+
+### 7.1 Records
+
+The file is a sequence of records, each beginning at a multiple of 512
+bytes:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 8 | `OMINCID` followed by a zero byte |
+| 8 | 2 | format version, 1 |
+| 10 | 2 | kind (7.2) |
+| 12 | 4 | payload length `L`, at most 65,536 |
+| 16 | 8 | record number: 1 for the first record of the store, one more for each next; 0 for a base record |
+| 24 | 8 | the start count of the open that wrote it (0 when written with the store closed) |
+| 32 | `L` | payload (7.2) |
+| 32 + `L` | 32 | SHA-256 of bytes 0 to 32 + `L` |
+
+Then zeros to the next multiple of 512. Integers are little-endian; a
+text is its length in two bytes (at most 2,048) and its UTF-8 bytes; an
+optional field is a byte 0 (none) or 1 followed by the field.
+
+A record **checks** when it begins with the mark, its length fits, its
+hash matches, and its payload is exactly what its kind says. A record of
+a newer version whose hash matches makes the read fail ("newer format"):
+the store does not write to a journal it cannot read.
+
+### 7.2 Kinds
+
+| Kind | Name | Payload |
+|---:|---|---|
+| 0 | base | the number the next record takes (8 bytes) |
+| 1 | `Checkpoints` | whether the page file found damage (1) or a read failed (0); whether the administrator gave it (1) or the store by itself (0); the error's text; the approval: the checkpoints given up (count, then each one's number, meta stream's first page and hash, and the restore points lost with it: 0, a count and each name and checkpoint number, or 1 for unknown), the slots written over unread (count, then each), and the checkpoint landed on (number, page, hash) |
+| 2 | `LogDamage` | the plan of an acceptance (format 6.2): the start, the entry kept and the one it opens at (index, term, hash each), the marker, the cut count raised to (optional), the segments listed before and after (first, count each), each file's fate (number, first and last entries optional, then 0 kept, 1 lengthened with its size, 2 set aside with its reason's place in the list of reasons, 3 missing, 4 set aside earlier with where), the segment whose tail is copied (optional), where the chain before the start stops (optional: segment, offset, index, unreadable), and the prefix of the names it gives (optional) |
+| 3 | `UnreadableEnd` | the last entry kept (index, term, hash) and the place given up (segment, offset, index) |
+| 4 | `LastBatch` | the marker read (index, hash, committed); the cut the open makes (optional: index, segment, offset, segments dropped, why); the unreadable place it ends at (optional) |
+| 5 | `JournalLost` | none: the journal was missing at an open, so incidents recorded before and not acknowledged are unknown |
+
+### 7.3 Reading
+
+The file is read, at most its first 16.2 MiB (257 records of the largest
+size: the base and 256 records), and each multiple of 512 is looked at:
+
+- a record that checks is taken, unless its number is not higher than the
+  record before it (then it is a place that does not check), and the read
+  goes on after it;
+- 512 bytes of zeros are passed over;
+- anything else is a place that does not check: the read passes over 512
+  bytes and looks again. A record a crash cut short, or bytes damaged
+  since, so cost what was in them and nothing after.
+
+A block the device fails to read is read again a sector at a time; a
+sector it still fails is taken as zeros, and the read says so. What the
+read found besides its records is reported with them (`Found`): the
+journal missing, the places that do not check (the first 16 and how
+many), whether the last of them comes after the last record (a record
+cut short, on which nothing was acted, or one damaged since, whose
+incident is unknown), the places the device failed, and a file longer
+than the read takes.
+
+The next record's number is one past the last record's and the base
+record's, and one more for each place that does not check after the last
+record (each could have begun one): a number is never used twice, though
+some are skipped.
+
+### 7.4 Writing
+
+A record goes after everything the file holds, at the next multiple of
+512 past its end: nothing is written over, so a record cut short or
+damaged stays where it is and is reported until acknowledged. The file
+is flushed, and the store folder when the call made the file, before the
+call returns. After a write or flush fails, nothing more is written until
+the store is opened again. A record that would make the records not
+acknowledged more than 256, or the file longer than the read takes, is
+refused, with nothing given up (`OpenError::Journal`, whose remedy is to
+acknowledge).
+
+A store is made with an empty journal (6.1, step 3). An open that finds
+no journal records that it was missing (`JournalLost`), making the file.
+
+### 7.5 Acknowledging
+
+`Store::acknowledge(through)` acknowledges every record numbered up to
+`through`, and every place that does not check: the journal is written
+again, under `incidents.new` (one left by an acknowledgement cut short is
+removed first), as a base record carrying the next number followed by the
+records after `through`, each the bytes it had; the file is flushed,
+renamed over `incidents`, and the store folder flushed. A crash leaves the
+journal as it was or as it is now. So the journal holds only what no
+administrator has acknowledged, and numbers go on.
+
+### 7.6 Who records what
+
+| Give-up | Recorded before |
+|---|---|
+| the page file's newest checkpoint does not check | the store's own call of `PageFile::open_giving_up` with the approval (`Checkpoints`, by the store) |
+| the device keeps failing a read the page file needs | the administrator's call `Store::give_up_pages`, which then calls `PageFile::open_giving_up` (`Checkpoints`, by the administrator) |
+| accepting the log's damage | the acceptance's renames, copy, lengthening and `state` update (`LogDamage`) |
+| whatever may follow an unreadable end | the log's give-up (`UnreadableEnd`) |
+| a copy of `state` passed over, no whole batch after the marker | the log's open that cuts and settles the mark (`LastBatch`) |
+
+### 7.7 Limits
+
+- A record damaged after it was written loses what it said: the read
+  reports the place, and an incident there is unknown until acknowledged.
+- A record cut short by a crash is reported as a place that does not
+  check until an acknowledgement; nothing was acted on it.
+- The read takes the journal whole into memory, at most 16.2 MiB.
+- An acknowledgement acknowledges every place that does not check, not
+  only those before `through`: what was there cannot be known.

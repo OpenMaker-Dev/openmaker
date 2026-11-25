@@ -3498,3 +3498,440 @@ fn a_configuration_too_small_for_the_start_is_refused_first() {
         "no start counted"
     );
 }
+
+/// A store with restore point "point" kept at its newest checkpoint, the
+/// checkpoint before it, and an entry after it: the simulator, its flaky
+/// folder, the newest checkpoint's meta page, the number of the checkpoint
+/// that kept the point, and the last entry answered as stored.
+fn with_a_point(seed: u64) -> (Sim, Flaky, u64, u64, Position) {
+    let sim = Sim::new(seed);
+    let flaky = Flaky::new(&sim);
+    let fs: Arc<dyn Fs> = Arc::new(flaky.clone());
+    let (mut store, _) = Store::create(fs, &sim.random(), CONFIG).unwrap();
+    let file = add_file(&mut store, "f");
+    for (i, kept) in [None, Some("point")].into_iter().enumerate() {
+        store.append(file, &put(&[i as u8], b"value")).unwrap();
+        store.flush().unwrap();
+        store.checkpoint(kept).unwrap();
+    }
+    store.append(file, &put(b"after", b"value")).unwrap();
+    store.flush().unwrap();
+    let newest = store.checkpoints()[0].clone();
+    let acked = store.published();
+    drop(store);
+    sim.restart();
+    (sim, flaky, newest.meta.0, newest.number, acked)
+}
+
+/// The newest checkpoint's meta stream damaged: the store gives it up by
+/// itself, the approval recorded before the call, with the restore point
+/// that goes with it; every open reports it until it is acknowledged.
+#[test]
+fn a_damaged_newest_checkpoint_is_given_up_by_the_store_with_its_incident() {
+    let (sim, flaky, meta, number, acked) = with_a_point(70);
+    sim.damage(pagefile::FILE, meta * crate::page::PAGE_SIZE as u64 + 64, 8)
+        .unwrap();
+    let fs: Arc<dyn Fs> = Arc::new(flaky);
+    let (store, opened) = Store::open(fs.clone(), CONFIG).unwrap();
+    assert_eq!(opened.checkpoint.passed_over.len(), 1, "{opened:?}");
+    assert_eq!(
+        opened.recovered, acked,
+        "the entries after the older one replayed"
+    );
+    assert!(store.restore_points().is_empty());
+    let [incident] = &opened.incidents[..] else {
+        panic!("{:?}", opened.incidents)
+    };
+    assert!(
+        matches!(
+            incident.what,
+            What::Checkpoints {
+                damaged: true,
+                by_administrator: false,
+                ..
+            }
+        ),
+        "{incident:?}"
+    );
+    assert!(names_point(incident, "point", number), "{incident:?}");
+    drop(store);
+    sim.restart();
+    let (mut store, opened) = Store::open(fs.clone(), CONFIG).unwrap();
+    assert_eq!(opened.incidents, std::slice::from_ref(incident));
+    assert_eq!(store.acknowledge(incident.number).unwrap(), 1);
+    drop(store);
+    sim.restart();
+    let (_, opened) = Store::open(fs, CONFIG).unwrap();
+    assert!(opened.incidents.is_empty());
+    assert!(opened.journal.is_clean());
+}
+
+/// The device fails every read of the newest checkpoint's meta stream: no
+/// open gives it up, and none records anything; the administrator's call,
+/// given the approval the error carries, records it and then gives it up.
+#[test]
+fn a_read_that_keeps_failing_is_given_up_only_by_the_explicit_call() {
+    let (sim, flaky, meta, number, acked) = with_a_point(71);
+    *flaky.bad.lock().unwrap() = Some((
+        pagefile::FILE.to_owned(),
+        meta * crate::page::PAGE_SIZE as u64 + 64,
+    ));
+    let fs: Arc<dyn Fs> = Arc::new(flaky);
+    let mut approval = None;
+    for _ in 0..2 {
+        sim.restart();
+        let failed = Store::open(fs.clone(), CONFIG);
+        let Err(e @ OpenError::Pages(p @ pagefile::OpenError::Unreadable { .. })) = &failed else {
+            panic!("{failed:?}")
+        };
+        assert!(e.remedy().contains("Store::give_up_pages"), "{e}");
+        approval = p.give_up().cloned();
+    }
+    sim.restart();
+    let (recorded, _) = Store::read_incidents(&fs).unwrap();
+    assert!(recorded.is_empty(), "nothing given up, nothing recorded");
+    sim.restart();
+    let (store, opened) =
+        Store::give_up_pages(fs.clone(), CONFIG, &approval.expect("an approval")).unwrap();
+    assert_eq!(opened.checkpoint.passed_over.len(), 1);
+    assert_eq!(opened.recovered, acked);
+    assert!(store.restore_points().is_empty());
+    let [incident] = &opened.incidents[..] else {
+        panic!("{:?}", opened.incidents)
+    };
+    assert!(
+        matches!(
+            incident.what,
+            What::Checkpoints {
+                by_administrator: true,
+                ..
+            }
+        ),
+        "{incident:?}"
+    );
+    assert!(names_point(incident, "point", number), "{incident:?}");
+}
+
+/// An acceptance renames what it sets aside and then fails before `state`
+/// records it: the next plan names each of those segments with where it
+/// went and its entries, from the acceptance's record, and accepting that
+/// plan reports them so.
+#[test]
+fn an_acceptance_interrupted_after_its_renames_is_understood_by_the_next_plan() {
+    let s = Shaped::new();
+    s.remove(1);
+    s.sim.restart();
+    let plan = Store::plan_damage(s.fs(), SHAPE_CONFIG).unwrap();
+    let prefix = plan.prefix.clone().expect("something set aside");
+    let moved: Vec<(u64, Option<u64>, Option<u64>)> = plan
+        .files
+        .iter()
+        .filter(|f| matches!(f.fate, log::Fate::SetAside { .. }))
+        .map(|f| (f.number, f.first, f.last))
+        .collect();
+    assert!(!moved.is_empty(), "{plan:?}");
+    // `state`'s own open writes three copies; the acceptance's update is
+    // the next write, and fails.
+    *s.flaky.fail_writes.lock().unwrap() =
+        Some((crate::state::FILE.to_owned(), 3, ErrorKind::Write));
+    s.sim.restart();
+    let failed = Store::accept_damage(s.fs(), SHAPE_CONFIG, &plan);
+    assert!(failed.is_err(), "{failed:?}");
+    *s.flaky.fail_writes.lock().unwrap() = None;
+    s.sim.restart();
+    let again = Store::plan_damage(s.fs(), SHAPE_CONFIG).unwrap();
+    for &(number, first, last) in &moved {
+        let to = format!("{}/{prefix}{number:016x}", log::FOLDER);
+        assert!(s.bytes(&to).is_some(), "{to} is there");
+        let fate = again.files.iter().find(|f| f.number == number).unwrap();
+        assert_eq!(
+            fate.fate,
+            log::Fate::MovedEarlier { to: to.clone() },
+            "{again:?}"
+        );
+        assert_eq!((fate.first, fate.last), (first, last), "{again:?}");
+    }
+    s.sim.restart();
+    let (_, opened) = Store::accept_damage(s.fs(), SHAPE_CONFIG, &again).unwrap();
+    let Some(GaveUp::Damage(accepted)) = &opened.gave_up else {
+        panic!("{opened:?}")
+    };
+    for &(number, _, _) in &moved {
+        let given = accepted
+            .given_up
+            .iter()
+            .find(|g| g.number == number)
+            .unwrap();
+        assert_eq!(
+            given.moved_to.as_deref(),
+            Some(format!("{}/{prefix}{number:016x}", log::FOLDER).as_str())
+        );
+    }
+}
+
+/// A give-up path to crash, built once: the disk as the call finds it (and
+/// a place of it the device keeps failing to read), what must not go
+/// missing without an incident (a restore point, by name and the checkpoint
+/// that kept it; the last entry answered as stored), and the call.
+struct GivingUp {
+    image: Vec<(String, Option<Vec<u8>>)>,
+    bad: Option<(String, u64)>,
+    config: Config,
+    point: Option<(String, u64)>,
+    acked: u64,
+    call: OpenCall,
+}
+
+/// A call that opens the store.
+type OpenCall = Box<dyn Fn(Arc<dyn Fs>) -> Result<(Store, Opened), OpenError>>;
+
+impl GivingUp {
+    /// A new simulated disk holding the image, its folder failing reads
+    /// of `bad`.
+    fn disk(&self) -> (Sim, Arc<dyn Fs>) {
+        let sim = Sim::new(90);
+        let flaky = Flaky::new(&sim);
+        *flaky.bad.lock().unwrap() = self.bad.clone();
+        let fs = sim.fs();
+        fs.create_root().unwrap();
+        let mut folders = vec![String::new()];
+        for (path, bytes) in &self.image {
+            match bytes {
+                None if !path.is_empty() => {
+                    fs.create_folder(path).unwrap();
+                    folders.push(path.clone());
+                }
+                None => {}
+                Some(bytes) => {
+                    let file = fs.create(path, sys::FileOptions::PLAIN).unwrap();
+                    file.write_at(0, bytes).unwrap();
+                    file.flush().unwrap();
+                }
+            }
+        }
+        for folder in folders.iter().rev() {
+            fs.flush_folder(folder).unwrap();
+        }
+        sim.restart();
+        (sim, Arc::new(flaky))
+    }
+}
+
+/// Open the store as an administrator would after a failure: again, and
+/// through whichever explicit call the error names.
+fn settle_open(sim: &Sim, fs: &Arc<dyn Fs>, config: Config) -> (Store, Opened) {
+    for _ in 0..12 {
+        sim.restart();
+        let opened = match Store::open(fs.clone(), config) {
+            Ok(opened) => return opened,
+            Err(e) => match peel(&e) {
+                OpenError::LogDamaged(_) => {
+                    sim.restart();
+                    plan_and_accept(fs.clone(), config)
+                }
+                OpenError::UnreadableEnd { last, .. } => {
+                    sim.restart();
+                    Store::give_up_unreadable_end(fs.clone(), config, *last)
+                }
+                OpenError::Pages(p) if p.give_up().is_some() => {
+                    let approval = p.give_up().cloned().expect("checked");
+                    sim.restart();
+                    Store::give_up_pages(fs.clone(), config, &approval)
+                }
+                _ => continue,
+            },
+        };
+        if let Ok(opened) = opened {
+            return opened;
+        }
+    }
+    panic!("the store does not open after the crash")
+}
+
+/// The newest checkpoint's meta stream, as a place of the page file.
+fn meta_place(meta: u64) -> u64 {
+    meta * crate::page::PAGE_SIZE as u64 + 64
+}
+
+/// Every give-up path, with a crash at each of its steps, settled one of
+/// three ways in turn (all three in the long run): at the next open that
+/// succeeds, what is missing (the restore point whose keep returned,
+/// entries answered as stored) is named by an incident that open reports.
+/// Each path's incident is reported after some crash, and the paths that
+/// can lose a restore point or an entry answered as stored reach a case
+/// where one is missing and named.
+#[test]
+fn every_give_up_names_what_it_gave_up_after_a_crash_at_every_step() {
+    give_ups_crashed_at_every_step(false);
+}
+
+#[test]
+#[ignore = "long: every step of the five give-up paths, each settled three ways (about 1 minute in debug)"]
+fn long_every_give_up_names_what_it_gave_up_after_a_crash_at_every_step() {
+    give_ups_crashed_at_every_step(true);
+}
+
+fn give_ups_crashed_at_every_step(every_fate: bool) {
+    type Build = fn() -> GivingUp;
+    let paths: [(&str, Build); 5] = [
+        ("the page file's damage, by the store", || {
+            let (sim, _, meta, number, acked) = with_a_point(72);
+            sim.damage(pagefile::FILE, meta_place(meta), 8).unwrap();
+            GivingUp {
+                image: sim.image(),
+                bad: None,
+                config: CONFIG,
+                point: Some(("point".into(), number)),
+                acked: acked.index,
+                call: Box::new(|fs| Store::open(fs, CONFIG)),
+            }
+        }),
+        ("a read of the page file, by the administrator", || {
+            let (sim, flaky, meta, number, acked) = with_a_point(73);
+            let bad = Some((pagefile::FILE.to_owned(), meta_place(meta)));
+            *flaky.bad.lock().unwrap() = bad.clone();
+            let Err(OpenError::Pages(e)) = Store::open(Arc::new(flaky), CONFIG) else {
+                panic!("the read fails")
+            };
+            let approval = e.give_up().cloned().expect("an approval");
+            sim.restart();
+            GivingUp {
+                image: sim.image(),
+                bad,
+                config: CONFIG,
+                point: Some(("point".into(), number)),
+                acked: acked.index,
+                call: Box::new(move |fs| Store::give_up_pages(fs, CONFIG, &approval)),
+            }
+        }),
+        ("the log's damage, accepted", || {
+            let s = Shaped::new();
+            s.remove(1);
+            s.sim.restart();
+            let plan = Store::plan_damage(s.fs(), SHAPE_CONFIG).unwrap();
+            s.sim.restart();
+            GivingUp {
+                image: s.sim.image(),
+                bad: None,
+                config: SHAPE_CONFIG,
+                point: None,
+                acked: s.durable.index,
+                call: Box::new(move |fs| Store::accept_damage(fs, SHAPE_CONFIG, &plan)),
+            }
+        }),
+        ("the log's unreadable end", || {
+            let s = Shaped::new();
+            let bad = Some((s.segments[3].clone(), s.end_of_batches(3)));
+            *s.flaky.bad.lock().unwrap() = bad.clone();
+            s.sim.restart();
+            let Err(OpenError::UnreadableEnd { last, .. }) = Store::open(s.fs(), SHAPE_CONFIG)
+            else {
+                panic!("the end is unreadable")
+            };
+            s.sim.restart();
+            GivingUp {
+                image: s.sim.image(),
+                bad,
+                config: SHAPE_CONFIG,
+                point: None,
+                acked: s.durable.index,
+                call: Box::new(move |fs| Store::give_up_unreadable_end(fs, SHAPE_CONFIG, last)),
+            }
+        }),
+        ("the last batch after a passed-over copy of state", || {
+            let s = Shaped::new();
+            // The newest copy of `state` damaged: the marker read is one
+            // advance behind; and the batch after it damaged too.
+            let state = s.bytes(crate::state::FILE).unwrap();
+            let number = |slot: usize| {
+                let at = slot * crate::state::SLOT + 16;
+                u64::from_le_bytes(state[at..at + 8].try_into().unwrap())
+            };
+            let newest = usize::from(number(1) > number(0));
+            s.sim
+                .damage(
+                    crate::state::FILE,
+                    (newest * crate::state::SLOT + 40) as u64,
+                    4,
+                )
+                .unwrap();
+            let last = *s.entries.keys().last().unwrap();
+            s.damage(last, 100, 4);
+            s.sim.restart();
+            GivingUp {
+                image: s.sim.image(),
+                bad: None,
+                config: SHAPE_CONFIG,
+                point: None,
+                acked: s.durable.index,
+                call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
+            }
+        }),
+    ];
+    for (name, build) in paths {
+        let g = build();
+        let steps = {
+            let (sim, fs) = g.disk();
+            let begin = sim.steps();
+            (g.call)(fs).unwrap_or_else(|e| panic!("{name}: {e}"));
+            sim.steps() - begin
+        };
+        eprintln!("{name}: {steps} steps");
+        let mut missing = 0;
+        let mut reported = 0;
+        let all = [Fates::KeepAll, Fates::LoseAll, Fates::Drawn];
+        for step in 1..=steps {
+            let fates_now = if every_fate {
+                &all[..]
+            } else {
+                &all[step as usize % 3..step as usize % 3 + 1]
+            };
+            for &fates in fates_now {
+                let (sim, fs) = g.disk();
+                sim.set_crash_fates(fates);
+                sim.place(sim.steps() + step, Fault::Crash);
+                let crashed = (g.call)(fs.clone());
+                assert!(crashed.is_err(), "{name}, step {step}: the crash fired");
+                let (store, opened) = settle_open(&sim, &fs, g.config);
+                let case = format!("{name}, step {step}, {fates:?}");
+                reported += opened.incidents.len();
+                if let Some((point, number)) = &g.point {
+                    if !store.restore_points().iter().any(|rp| rp.name == *point) {
+                        missing += 1;
+                        assert!(
+                            opened
+                                .incidents
+                                .iter()
+                                .any(|i| names_point(i, point, *number)),
+                            "{case}: {point} is gone, and no incident names it: {:?}",
+                            opened.incidents
+                        );
+                    }
+                }
+                let at = opened.recovered.index;
+                if at < g.acked {
+                    missing += 1;
+                    let named = opened.incidents.iter().any(|i| match &i.what {
+                        What::LogDamage(plan) => plan.kept.index <= at,
+                        What::UnreadableEnd { last, .. } => last.index <= at,
+                        What::LastBatch { marker, .. } => marker.index <= at,
+                        _ => false,
+                    });
+                    assert!(
+                        named,
+                        "{case}: entry {} was answered as stored, the store opened at {at}, and \
+                         no incident names it: {:?}",
+                        g.acked, opened.incidents
+                    );
+                }
+            }
+        }
+        eprintln!("{name}: {missing} missing and named, {reported} incidents reported");
+        assert!(reported > 0, "{name}: no incident was reported at any step");
+        let can_lose = !name.contains("unreadable end");
+        assert!(
+            !can_lose || missing > 0,
+            "{name}: nothing went missing at any step"
+        );
+    }
+}

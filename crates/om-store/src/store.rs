@@ -60,6 +60,19 @@
 //! carries out what [`Store::plan_damage`] showed, and
 //! [`Store::give_up_unreadable_end`]) are the only way past a damaged log
 //! and an unreadable end.
+//!
+//! **What is given up is recorded first** (section 6.12), in the store's
+//! incident journal ([`crate::incident`]), flushed, before it is given up:
+//! the page file's damage, which the store gives up by itself; a read of
+//! the page file that keeps failing, given up by the administrator's call
+//! ([`Store::give_up_pages`]); an accepted loss of the log, with where each
+//! file goes; an unreadable end; and the last batch after a copy of
+//! `state` passed over, before its mark is settled. Every open reports the
+//! incidents no administrator has acknowledged ([`Opened::incidents`]); an
+//! open that fails after recording one says so
+//! ([`OpenError::AfterIncidents`]); [`Store::acknowledge`] acknowledges.
+//! The store keeps no restore points of its own: those the page file gives
+//! up go with the checkpoint, named by its incident.
 
 #[cfg(test)]
 mod tests;

@@ -247,8 +247,11 @@ one file on a file system that ignores case (`om_store::sys`):
 <store>/blobs/     container data by content hash (section 8)
 <store>/state      this server's id, its start count, its term and vote,
                    the run of log segments in use, the marker and the cut
-                   count (section 6.3), and whether it is in repair
-                   (section 7.5)
+                   count (section 6.3), whether it is in repair
+                   (section 7.5), and the mark of a copy passed over
+<store>/incidents  what the store gave up, each recorded before it was
+                   given up, until an administrator acknowledges it
+                   (section 6.12)
 ```
 
 The start count is raised by one and flushed each time the server starts,
@@ -280,9 +283,11 @@ slots: the marker moved over the whole batch that followed it in the
 log, or, when the log holds none, the server recorded in repair on a
 cluster (section 7.5) and the loss reported on a single server (section
 6.12). The open changes nothing in the log before the mark is durable. A
-crash therefore cannot hide that a copy was lost. The mark is a
-requirement of this design: the `state` format and code do not have it
-yet (server-storage-format.md section 1.5). A server
+crash therefore cannot hide that a copy was lost (server-storage-format.md
+1.3). On a single server the loss is reported by recording it in the
+incident journal (section 6.12) before the mark is settled. The repair
+record a cluster member needs, in repair with a required end not yet
+known (section 7.5), is not built: it waits for replication. A server
 without a valid copy does not know what it confirmed, and does not start
 (section 7.5). The format and what the copies protect against are in
 [server-storage-format.md](server-storage-format.md) section 1
@@ -648,10 +653,12 @@ settled (server-storage-format.md 4.5).
    (unless the contents are the same in every byte, and then so is the
    loss). The call does exactly
    that or nothing, so the server records the report durably before it
-   makes the call, and the loss it recorded is the loss that can happen. The server is to make that call by
-   itself for damage, and leave it to an administrator for a read that
-   keeps failing; that part of the store is not built yet, so a store
-   whose newest checkpoint does not check does not start by itself. The
+   makes the call, and the loss it recorded is the loss that can happen.
+   The store makes that call by itself for damage, after recording the
+   approval, with the restore points that go with it, in its incident
+   journal (section 6.12); for a read that keeps failing it stops and
+   reports, and an administrator's explicit call records the approval and
+   then makes it. The
    checkpoint used has its copy written into both of its slots, and the
    other pair keeps only its predecessor's copy: what an open writes over
    is a slot that held nothing usable (bytes that do not check, or a copy
@@ -833,15 +840,28 @@ store take unbounded memory or disk:
 | The log after the marker is damaged or incomplete | entry and batch hashes | cut from the first bad entry, and log the cut. Nothing after the marker was acknowledged, unless the same start passed over a copy of `state`, or found the mark of an earlier start that did (below) |
 | The log does not hold, whole, every entry through the marker: an entry is damaged, the log ends early, or a segment `state` lists is missing | the hash chain, against the marker and the segment list | never cut. A cluster member is in repair (section 7.5). A single server stops the store and reports; the administrator restores (section 11) or explicitly accepts the loss: first shown what would be kept and given up (a plan that changes nothing), then that plan done exactly, or refused when the log has changed since. The plan is made from the checkpoint the store opens on: the chain from it through every segment that still reads is kept, only what cannot be checked is given up, and every file given up is kept, set aside under a name no open removes (server-storage-format.md 6.2) |
 | The log cannot be read at a place after the marker | the device's error | the log ends there for that start, cuts nothing and takes no appends (section 6.3). A cluster member is in repair and is cut there by its leader (sections 7.1 and 7.5). A single server stops the store and reports; the administrator opens it again, restores (section 11), or explicitly accepts the loss of what may follow |
-| One copy of `state` is damaged or cannot be read, and the other is valid | its hash, the device's error | the valid copy counts and is written to both slots with a mark that one was passed over (section 6.1). Its marker can be one advance behind, which the server cannot tell. When the log holds a whole batch after the marker, the marker is moved over it, and no entry the lost advance can have covered is lost (a committed position recorded alone can still be forgotten, and is learned again). Otherwise, whether the log's tail was cut or it ends at the marker, a cluster member is in repair (section 7.5), and a single server reports that the last batch it confirmed may be lost |
+| One copy of `state` is damaged or cannot be read, and the other is valid | its hash, the device's error | the valid copy counts and is written to both slots with a mark that one was passed over (section 6.1). Its marker can be one advance behind, which the server cannot tell. When the log holds a whole batch after the marker, the marker is moved over it, and no entry the lost advance can have covered is lost (a committed position recorded alone can still be forgotten, and is learned again). Otherwise, whether the log's tail was cut or it ends at the marker, a cluster member is in repair (section 7.5), and a single server records in its incident journal that the last batch it confirmed may be lost, before it cuts the log's tail or settles the mark, and reports it until acknowledged |
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11). A folder that holds a store's log or page file and no `state` at all is the same fault, and is never created over; only what a creation cut short left is (server-storage-format.md 6.1) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
-| The newest checkpoint's meta stream or roots do not check | hashes | the open writes nothing and reports the checkpoint and the restore points giving it up would lose; an explicit call gives it up and opens on the checkpoint before, which is kept whole. The store is to make that call by itself, recording the report first; not built yet, so such a store does not start by itself (section 6.7) |
-| The device fails a read of a slot or of the checkpoint the open is choosing | the system's error | the open fails and writes nothing; start again later. A read that keeps failing is given up only by an administrator's explicit call, which opens on the checkpoint before and reports what it gave up (section 6.7) |
+| The newest checkpoint's meta stream or roots do not check | hashes | the page file's open writes nothing and reports the checkpoint and the restore points giving it up would lose; the store records that in its incident journal and then gives it up by itself, opening on the checkpoint before, which is kept whole (section 6.7) |
+| The device fails a read of a slot or of the checkpoint the open is choosing | the system's error | the open fails and writes nothing; start again later. A read that keeps failing is given up only by an administrator's explicit call, which records what it gives up and then opens on the checkpoint before (section 6.7) |
 | A flush fails | the system's error | stop the server at once and recover on restart. Never retry the flush: the system may already have dropped the data (PostgreSQL's 2018 finding). An entry the failed flush covered may be found whole on restart; its outcome was unknown to its client (section 2) |
 | The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads. A start whose own entry finds no room after a checkpoint does not open, and says to free space |
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
+
+**Recorded first, reported until acknowledged.** Everything the store
+gives up is written to its incident journal (`<store>/incidents`,
+server-storage-format.md section 7), flushed, before it is given up: a
+checkpoint of the page file and the restore points that go with it, by
+the store or by an administrator's call; entries of the log, and the
+segment files set aside, by an accepted loss; whatever may follow an
+unreadable end; and the last batch confirmed after a passed-over copy of
+`state`. Every start reports every incident no administrator has
+acknowledged, an open that fails after recording one says so, and
+acknowledging is an explicit call. The journal is the store's own and is
+read without the log or the page file; one that is missing, cut short or
+damaged does not stop a start, which says what it found.
 
 **What is not found.** The store finds writes a crash interrupted, damage
 to any byte it stored, the loss of a file it listed, and a log that ends
@@ -1452,7 +1472,7 @@ reason, on an engine that lacks its capability. The Admin Console
 | import, export, clone, rename and remove a file; set a restore point; restore a file | entries, run by the leader from any server |
 | add, remove or promote a member; hand over leadership; raise the tree format version | `members` entries, run by the leader |
 | check every page and entry now; repair a page; copy the leader's state | on one server |
-| accept the loss of entries after damage, or of what may follow a place the log cannot read, on a single server (section 6.12): for damage, the plan of what would be kept and given up is shown first and accepted as shown, or refused when the log changed since; choose a copy after a comparison no majority settles (section 7.5) | on the servers concerned, with the entries or files named |
+| accept the loss of entries after damage, or of what may follow a place the log cannot read, or give up a checkpoint whose read keeps failing, on a single server (section 6.12): for damage, the plan of what would be kept and given up is shown first and accepted as shown, or refused when the log changed since; each is recorded in the store's incident journal before it is done; acknowledge the incidents a start reports; choose a copy after a comparison no majority settles (section 7.5) | on the servers concerned, with the entries or files named |
 | export from a store folder with no server running | the command line only |
 
 ## 12. Testing
