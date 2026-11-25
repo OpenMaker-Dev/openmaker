@@ -204,7 +204,7 @@ fn each_failed_save_takes_its_step_back(
                 // Its work list is back, and the file is served read-only,
                 // as when the work cannot be done: nothing after it runs
                 // as recorded.
-                assert!(file.is_read_only(), "step {step}: read-only");
+                assert!(engine.read_only(&file).is_some(), "step {step}: read-only");
                 continue 'failing;
             }
             drawn.store(draws, Ordering::Relaxed);
@@ -3778,7 +3778,7 @@ fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_r
     // Hosted again with saves working, it is recovered.
     drop(file);
     let file = load(&disk);
-    assert!(!file.is_read_only());
+    assert!(engine().read_only(&file).is_none());
     assert!(node_at(&file, &deferred).is_none());
     assert_eq!(
         node_at(&file, &doubled).and_then(|n| n.value),
@@ -3804,7 +3804,7 @@ fn deferred_work_a_panic_left_is_not_taken_as_done() {
     super::transaction::PANIC_RECOVERING.with(|panics| panics.set(false));
     assert!(ran.is_err());
     assert_eq!(node_at(&file, &deferred), Some(work.clone()), "taken back");
-    assert!(!file.is_read_only());
+    assert!(engine.read_only(&file).is_none());
     // The next login.
     file.recover(&engine);
     assert_eq!(
@@ -4037,4 +4037,120 @@ fn a_commit_that_panics_leaves_a_clean_file_clean() {
     super::transaction::PANIC_WRITING_RECORDS.with(|panics| panics.set(false));
     assert!(ran.is_err());
     assert_eq!(untouched(&file, &_disk), before);
+}
+
+/// An export copies the file on disk while the store counts nothing as
+/// changed since its last save (`engine::export`), so that count must be
+/// exact after a save that is not written: the journal keeps the parents a
+/// change creates as absent, and the roll-back takes them back with it
+/// (docs/server-storage.md 5, "Taking a change back"). The first record of
+/// a table without one creates its record list `[T, 05]` on the way; its
+/// commit, whose save fails before its rename, is taken back whole, the
+/// list too, and an export of the version held then, a copy of the file on
+/// disk, holds exactly the tree in memory.
+#[test]
+fn an_export_after_a_failed_save_holds_what_memory_holds() {
+    use super::export::{Kind, Progress, Source, Target};
+    // Notes without its records: its record list, record ids and indexes.
+    let table = uint_segment(fixture::NOTES);
+    let mut tree = fixture::tree(&[], true);
+    for key in [0x05u8, 0x0d, 0x01] {
+        tree.remove(&[&table, &[key]]);
+    }
+    let (disk, file) = host("engine-export-after-failure", &tree);
+    let records = vec![table.clone(), vec![0x05]];
+    assert_eq!(node_at(&file, &records), None, "no record list yet");
+    let engine = engine();
+    let user = LockUser {
+        connection: 1,
+        txn: 7,
+    };
+    let reserve = Operation::ReserveRecordIds(ReserveRecordIds {
+        user,
+        holder: "A (Admin)".into(),
+        request: CreateRecord {
+            table: vec![table.clone()],
+            count: 1,
+            txn: user.txn,
+        },
+        room: writes::MAX_LOCKS,
+        durable: true,
+    });
+    let Reply::ReserveRecordIds(reserved) = engine.submit(&file, reserve).reply else {
+        panic!("not op71's reply");
+    };
+    assert_eq!(reserved.status, 0);
+    let id = reserved.record[0].clone();
+    let new = OwnedNode::list(
+        id.clone(),
+        vec![
+            text_node(&uint_segment(fixture::BODY), "First"),
+            serial_leaf(MOD_COUNT, 1),
+        ],
+    );
+    let list = OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            table.clone(),
+            vec![OwnedNode::list(
+                vec![0x05],
+                vec![OwnedNode::leaf(id.clone(), vec![COMMIT_NEW])],
+            )],
+        )],
+    );
+    let commit = Operation::CommitRecords(CommitRecords {
+        user,
+        account: fixture::ACCOUNT.into(),
+        access: file
+            .account(fixture::ACCOUNT)
+            .unwrap()
+            .access
+            .clone()
+            .unwrap(),
+        list,
+        staged: Staged::from([(vec![table.clone(), vec![0x05], id.clone()], new)]),
+        withheld: Withheld::default(),
+    });
+    file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
+    let failed = engine.submit(&file, commit);
+    file.fail_saves(None);
+    assert!(is_storage_error(&failed.reply), "{:?}", failed.reply);
+    assert_eq!(
+        node_at(&file, &records),
+        None,
+        "the record list is taken back"
+    );
+    assert!(matches!(
+        engine.read(&file).export_source().unwrap(),
+        Source::OnDisk(_)
+    ));
+    let path = disk.0.with_extension("export");
+    let mut into = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    engine
+        .export(
+            &file,
+            Kind::Current,
+            Target::File(&mut into),
+            Progress::none(),
+        )
+        .unwrap();
+    drop(into);
+    let exported = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        exported,
+        std::fs::read(&disk.0).unwrap(),
+        "the file on disk"
+    );
+    let read = om_hbam::HbamFile::from_bytes(exported).unwrap();
+    assert_eq!(
+        Some(read.key_tree().unwrap().root.to_owned_node()),
+        node_at(&file, &[]),
+        "what memory holds"
+    );
 }

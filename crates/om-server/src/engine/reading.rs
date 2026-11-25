@@ -116,7 +116,7 @@ impl Waiting {
     }
 
     /// The last member id and modification count issued for `catalog`
-    /// that wait to be written (`Store::member_keys_for_tests`).
+    /// that wait to be written (`ServerHandle::member_keys`).
     #[cfg(debug_assertions)]
     pub(crate) fn issued_for(&self, catalog: &[Vec<u8>]) -> Option<(u64, u64)> {
         self.issued().get(catalog).copied()
@@ -261,6 +261,13 @@ impl FileEngine {
             derived.version() == view.version()
                 || view.changed_since(&[], derived.version()) == Ok(true)
         );
+        // What the last write published for the readers that do not take
+        // the store is this version and its derived state: a write
+        // publishes before it lets go of the store (`hosting::Published`).
+        debug_assert!({
+            let published = file.published();
+            published.version == view.version() && Arc::ptr_eq(&published.derived, &derived)
+        });
         Reading {
             file,
             view,

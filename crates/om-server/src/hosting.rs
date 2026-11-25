@@ -20,7 +20,8 @@ use crate::connection::host_time_key_at;
 use crate::derived::Derived;
 use crate::engine::{
     AccountStamp, ChangePassword, DeleteAccount, Direction, EnableAccount, Environment, FileEngine,
-    Operation, Password, ReadError, Reply, ResetPassword, Transaction, View, Writer, NO_LIMIT,
+    Operation, Password, ReadError, Reply, ResetPassword, Transaction, Version, View, Writer,
+    NO_LIMIT,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -238,14 +239,14 @@ pub struct Hosted {
     pub thumbnails: Mutex<thumbnail::Cache>,
     /// `mInternalCreation` (`[2, 254]`), the second half of the Login nonce.
     pub internal_creation: u32,
-    /// The store's derived state as the last writer left it
-    /// ([`StoreWriteGuard`]), the accounts with it: for the readers of the
-    /// accounts that do not take the store ([`Hosted::accounts`]), which
-    /// may hold it already, as a server script's calculation does when it
-    /// asks for the session's account (`Get ( AccountType )`), and must not
-    /// take its lock twice (#421). A login reads the accounts through a
-    /// view instead (`engine::Read::derived`).
-    published: RwLock<Arc<Derived>>,
+    /// The derived state of the version the last write left, published
+    /// with that version ([`Published`]): for the readers of the accounts
+    /// that do not take the store ([`Hosted::accounts`]), which may hold it
+    /// already, as a server script's calculation does when it asks for the
+    /// session's account (`Get ( AccountType )`), and must not take its
+    /// lock twice (#421). Every other reader of the accounts reads them
+    /// through a reading (`engine::Read::derived`).
+    published: RwLock<Published>,
     /// Where the deferred field work the file records as pending stands
     /// ([`Hosted::recover`]): finished and saved, a server's file's as it
     /// is loaded, a local file's when an account it admits first logs in,
@@ -274,11 +275,31 @@ enum Recovery {
     Ended,
 }
 
+/// A version's derived state, published with the version
+/// ([`Hosted::published`]). It is published while the write that made the
+/// version still holds the store's write lock, after the write, its save
+/// or its roll-back, and its accounts ([`StoreWriteGuard`]'s drop), and
+/// before the lock is let go. So a reader that takes the store after a
+/// write finds the version that write published, and a reader of the
+/// published state gets the last version a write let go: while a write
+/// runs, the one before it, which every reader of the store had until
+/// then.
+#[derive(Clone)]
+pub(crate) struct Published {
+    /// The version the store held when the write let go of it
+    /// (`engine::View::version`); a reading checks that it is its own
+    /// (`FileEngine::read`, debug builds).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub version: Version,
+    /// The derived state of that version, shared with every reading of it.
+    pub derived: Arc<Derived>,
+}
+
 /// The store of a [`Hosted`] file held for writing ([`Hosted::write_store`]).
 /// When it is let go, the file's accounts follow a write that changed the
 /// schema and did not decode them itself, as an operation does
-/// (`Store::follow_accounts`), and the store's derived state is published
-/// for the readers that do not take the store (`Hosted::published`).
+/// (`Store::follow_accounts`), and the version and its derived state are
+/// published for the readers that do not take the store ([`Published`]).
 pub struct StoreWriteGuard<'a> {
     hosted: &'a Hosted,
     store: RwLockWriteGuard<'a, Store>,
@@ -303,15 +324,16 @@ impl Drop for StoreWriteGuard<'_> {
         // store and the accounts disagree: a write outside an operation
         // (the setup of a file, a test's) has its accounts decoded here.
         self.store.follow_accounts(None);
-        let derived = self.store.derived();
+        let version = self.store.tree_view().version();
         let mut published = self
             .hosted
             .published
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !Arc::ptr_eq(&published, derived) {
-            *published = derived.clone();
-        }
+        *published = Published {
+            version,
+            derived: self.store.derived().clone(),
+        };
     }
 }
 
@@ -380,7 +402,10 @@ impl Hosted {
                 store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
-        let published = RwLock::new(store.derived().clone());
+        let published = RwLock::new(Published {
+            version: store.tree_view().version(),
+            derived: store.derived().clone(),
+        });
         Ok(Hosted {
             id,
             name: hosted.name.clone(),
@@ -434,8 +459,7 @@ impl Hosted {
                     &self.name,
                     "finishing its deferred field work was left part way",
                 ));
-                self.store_for_writing()
-                    .set_read_only(crate::store::ReadOnlyCause::DeferredWork);
+                engine.hold_read_only(self, crate::store::ReadOnlyCause::DeferredWork);
                 *state = Recovery::Ended;
                 return;
             }
@@ -499,8 +523,8 @@ impl Hosted {
         self.store_for_writing()
     }
 
-    /// The file's contents for writing, for this module's setup of a file
-    /// no one else can reach yet and for its test switch.
+    /// The file's contents for writing: the engine's ([`Hosted::write_store`])
+    /// and this module's test switches'.
     fn store_for_writing(&self) -> StoreWriteGuard<'_> {
         let mut store = self.store.write().unwrap_or_else(|poisoned| {
             warn!("{:?}: a request panicked holding the store", self.name);
@@ -542,16 +566,21 @@ impl Hosted {
         self.store.is_poisoned()
     }
 
-    /// The accounts in the file's security catalog, as its store holds
-    /// it now, read without taking the store (`Hosted::published`): none
-    /// when they could not be read, which on the file engine they always
-    /// can.
-    pub fn accounts(&self) -> Arc<[Arc<FileAccount>]> {
-        let published = self
-            .published
+    /// The version the last write let go and its derived state
+    /// ([`Published`]), read without taking the store.
+    pub(crate) fn published(&self) -> Published {
+        self.published
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match published.accounts() {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The accounts in the file's security catalog in the version the last
+    /// write let go, read without taking the store ([`Hosted::published`]):
+    /// none when they could not be read, which on the file engine they
+    /// always can.
+    pub fn accounts(&self) -> Arc<[Arc<FileAccount>]> {
+        match self.published().derived.accounts() {
             Ok(accounts) => accounts.clone(),
             Err(_) => Arc::new([]),
         }
@@ -570,11 +599,6 @@ impl Hosted {
     /// The file's lock table, to change: only the engine has a [`Writer`].
     pub(crate) fn locks(&self, _: &Writer) -> &Mutex<LockTable> {
         &self.locks
-    }
-
-    /// Whether the file is hosted read-only, including after refused deferred work.
-    pub fn is_read_only(&self) -> bool {
-        self.read_store().is_read_only()
     }
 
     /// The connections registered for the file's change notifications,
@@ -1708,14 +1732,15 @@ impl Slot {
         &self.at
     }
 
-    /// The file this slot last read or saved, even after its store is closed.
-    pub(crate) fn saved_file(&self) -> Option<FileId> {
+    /// The file on disk this slot's engine last read or saved for it
+    /// ([`FileEngine::file_on_disk`]), also after the file is closed.
+    pub(crate) fn saved_file(&self, engine: &FileEngine) -> Option<FileId> {
         let (served, closed) = {
             let state = self.state();
             (state.file.clone(), state.closed_file)
         };
         match served {
-            Some(file) => file.read_store().file(),
+            Some(file) => engine.file_on_disk(&file),
             None => closed,
         }
     }
@@ -1770,7 +1795,7 @@ impl Slot {
     /// file is handed out ([`Slot::admit`]): once it is closed no one holds
     /// the old store, so it can never save over the file opened again.
     /// Returns whether it closed.
-    pub(crate) fn finish_close_if_drained(&self) -> bool {
+    pub(crate) fn finish_close_if_drained(&self, engine: &FileEngine) -> bool {
         let mut state = self.state();
         let drained = state
             .file
@@ -1780,7 +1805,10 @@ impl Slot {
             return false;
         }
         state.status = FileStatus::Closed;
-        state.closed_file = state.file.take().and_then(|file| file.read_store().file());
+        state.closed_file = state
+            .file
+            .take()
+            .and_then(|file| engine.file_on_disk(&file));
         state.closing = None;
         true
     }
@@ -1850,12 +1878,13 @@ impl Hosting {
                     error: om_hbam::Error::from(e),
                 })
                 .and_then(|at| {
-                    let taken = |file: FileId| hosted_as(&hosting.slots, file, id);
+                    let taken = |file: FileId| hosted_as(&hosting.slots, file, id, engine);
                     load_hosted(id, hosted, &at, insecure_files, events, &taken, engine)
                 });
             match loaded {
                 Ok(loaded) => {
-                    events.record(Event::file_opened(&loaded.name, loaded.is_read_only()));
+                    let read_only = engine.read_only(&loaded).is_some();
+                    events.record(Event::file_opened(&loaded.name, read_only));
                     hosting.slots.push(Slot::serving(loaded));
                 }
                 Err(e) => {
@@ -1904,7 +1933,7 @@ impl Hosting {
             &slot.at,
             self.insecure_files,
             events,
-            &|file| hosted_as(&self.slots, file, id),
+            &|file| hosted_as(&self.slots, file, id, engine),
             engine,
         );
         let mut state = slot.state();
@@ -2046,7 +2075,7 @@ fn load_hosted(
     )?);
     // Before any save: saves write only where the path still leads to
     // this file (#468).
-    loaded.store_for_writing().set_file(on_disk);
+    engine.loaded_from(&loaded, on_disk);
     drop(file);
     // Looked at in the file's folder, without following a link; one that
     // cannot be looked at counts.
@@ -2088,14 +2117,14 @@ fn read_regular_file(at: &FileAt) -> std::io::Result<(Vec<u8>, Option<FileId>)> 
 }
 
 /// The name of the slot other than `id` among `slots` that serves the file
-/// with device and inode `file`.
-fn hosted_as(slots: &[Slot], file: FileId, id: u32) -> Option<String> {
+/// with device and inode `file` ([`FileEngine::file_on_disk`]).
+fn hosted_as(slots: &[Slot], file: FileId, id: u32, engine: &FileEngine) -> Option<String> {
     slots
         .iter()
         .filter(|slot| slot.id != id)
         .find(|slot| {
             slot.served()
-                .is_some_and(|served| served.read_store().file() == Some(file))
+                .is_some_and(|served| engine.file_on_disk(&served) == Some(file))
         })
         .map(|slot| slot.name.clone())
 }

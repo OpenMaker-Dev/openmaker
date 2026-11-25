@@ -952,7 +952,7 @@ fn protected(shared: &Shared) -> io::Result<Protected> {
             }
             // The last saved file may lie in a backup if its path no
             // longer leads to it, even while the slot is closed (#468).
-            if !leads_to_saved(at, slot.saved_file()) {
+            if !leads_to_saved(at, slot.saved_file(&shared.engine)) {
                 protected.add_unresolved(at.place());
             }
         }

@@ -5640,7 +5640,7 @@ impl ServerHost {
         step: &str,
         edit: impl FnOnce(AccountStamp) -> (Operation, Credentials),
     ) -> HostResult<Reply> {
-        if self.hosted.is_read_only() {
+        if self.shared.engine.read_only(&self.hosted).is_some() {
             info!(
                 "{:?}: {step} changed nothing: the file is hosted read-only",
                 self.hosted.name

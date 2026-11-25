@@ -774,8 +774,13 @@ impl ServerHandle {
             .iter()
             .find(|slot| slot.id == id)
             .and_then(|slot| slot.served())?;
-        let keys = hosted.read_store().member_keys_for_tests(catalog);
-        Some(keys)
+        // The engine's own read of the version it holds, once: what waits is
+        // its state, not the view's.
+        let reading = self.shared.engine.read(&hosted);
+        let read = reading.read();
+        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
+        let stored = crate::derived::stored_member_key(read.view, &path).ok()?;
+        Some((read.waiting.issued_for(catalog), stored))
     }
 
     /// The hosted files in id order, open or not, each with its state and
@@ -1087,7 +1092,7 @@ fn finish_close(shared: &Shared, id: u32) {
                 }
             }
         }
-        if slot.finish_close_if_drained() {
+        if slot.finish_close_if_drained(&shared.engine) {
             info!("{:?}: closed", slot.name);
             return;
         }

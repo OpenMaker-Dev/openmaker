@@ -161,7 +161,7 @@ fn only_verified_accounts_log_in_and_refusals_leave_the_file_unchanged() {
     let host = open_host(&path, &client.cert).unwrap();
     assert_eq!(host.file_name(), FILE);
     assert_eq!(host.read_only(), None);
-    assert_eq!(host.suggested_account().as_deref(), Some(ACCOUNT));
+    assert_eq!(host.suggested_account().unwrap().as_deref(), Some(ACCOUNT));
     // Wrong passwords, unknown accounts and [Guest] are wrong credentials.
     for (account, password) in [
         (ACCOUNT, ""),
@@ -195,6 +195,53 @@ fn only_verified_accounts_log_in_and_refusals_leave_the_file_unchanged() {
     assert_eq!(login(&host, &client, "admin", PASSWORD), 0);
     assert!(host.close());
     assert_eq!(folder.files(), [FILE]);
+}
+
+/// The local host reads the file through a reading of one version
+/// (docs/server-storage.md 5): the suggested account and the stored login
+/// from the account catalog's header `[23, 1, 1]` (the account through the
+/// reading's accounts), the logged-in account's facts from the accounts.
+/// Answered through both views, they are as the file holds them. With the
+/// test view failing what one reads, it is an error, never an answer that
+/// looks whole ("no suggestion", "no stored login", an account with no
+/// facts); the others go on. Whether the file is read-only is the
+/// engine's state of the file, not a version's: it reads no view, and
+/// stays answered.
+#[cfg(debug_assertions)]
+#[test]
+fn the_local_hosts_failed_reads_are_errors() {
+    let folder = Folder::new("failed-reads");
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(
+            &[&[23], &[1], &[1], &[6]],
+            om_scripts::text_node(&[], PASSWORD),
+        );
+    });
+    let client = client();
+    let host = open_host(&path, &client.cert).unwrap();
+    // Admin's record key 2, as a Login reply frames it.
+    let admin = [1, 2];
+    assert_eq!(host.suggested_account().unwrap().as_deref(), Some(ACCOUNT));
+    let (account, password) = host.stored_login().unwrap().unwrap();
+    assert_eq!((account.as_str(), password.as_str()), (ACCOUNT, PASSWORD));
+    assert!(host
+        .authenticated_account(&admin)
+        .unwrap()
+        .set_access
+        .is_some());
+
+    assert!(host.failing_reads(&[&[23], &[1], &[1]]));
+    assert!(host.suggested_account().is_err());
+    assert!(host.stored_login().is_err());
+    assert!(host
+        .authenticated_account(&admin)
+        .unwrap()
+        .set_access
+        .is_some());
+    assert!(host.failing_reads(&[&[23], &[1], &[5]]));
+    assert!(host.authenticated_account(&admin).is_err());
+    assert_eq!(host.read_only(), None);
+    assert!(host.close());
 }
 
 #[test]
@@ -549,7 +596,7 @@ fn an_account_without_a_stored_password_cannot_log_in() {
     fixture::write_tree(&path, &root);
     let client = client();
     let host = open_host(&path, &client.cert).unwrap();
-    assert_eq!(host.suggested_account(), None);
+    assert_eq!(host.suggested_account().unwrap(), None);
     assert_eq!(login(&host, &client, ACCOUNT, ""), 212);
     assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 212);
 }
@@ -1637,7 +1684,9 @@ fn accounts_filemaker_put_in_the_built_in_sets_open_with_their_limits() {
             .unwrap();
         assert_eq!(reply.error_code, 0, "{account}");
         assert_eq!(
-            host.authenticated_account(&reply.result_key).set_access,
+            host.authenticated_account(&reply.result_key)
+                .unwrap()
+                .set_access,
             Some(SetAccess::BuiltIn(set)),
             "{account}"
         );

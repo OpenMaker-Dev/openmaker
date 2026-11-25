@@ -102,6 +102,10 @@ pub mod status {
     pub const LAYOUT_IN_USE: u16 = 304;
     /// No such value list ("Value list is missing").
     pub const VALUE_LIST_MISSING: u16 = 108;
+    /// The host could not read the part of the file the request reads
+    /// ("Unable to open file"), as a login to a file whose accounts cannot
+    /// be read is answered.
+    pub const UNREADABLE: u16 = 802;
 }
 
 /// Operation numbers.

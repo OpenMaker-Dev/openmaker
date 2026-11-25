@@ -4335,22 +4335,6 @@ fn increment_serial(text: &str, by: i32) -> String {
     )
 }
 
-#[cfg(debug_assertions)]
-impl Store {
-    /// The last member id and modification count issued for `catalog`
-    /// that wait to be written, and those the tree holds (the inputs of
-    /// GenerateMemberKey, `om_query::Source::generate_member_key`).
-    pub(crate) fn member_keys_for_tests(
-        &self,
-        catalog: &[Vec<u8>],
-    ) -> (Option<(u64, u64)>, (u64, u64)) {
-        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
-        let stored = derived::stored_member_key(&self.tree_view(), &path)
-            .expect("the file engine's tree never fails a read");
-        (self.waiting.issued_for(catalog), stored)
-    }
-}
-
 #[cfg(test)]
 impl Store {
     /// The basis of stored calculations, by table ([`recalc`]): tests check

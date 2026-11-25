@@ -57,7 +57,8 @@ use crate::connection::Shared;
 #[cfg(target_os = "linux")]
 use crate::engine::{export, ExportError, Progress};
 use crate::engine::{
-    ChangePassword, Credentials, FileEngine, Operation, Password, Reply, SaveFoundSet,
+    ChangePassword, Credentials, FileEngine, Operation, Password, Read as FileRead, ReadError,
+    Reply, SaveFoundSet, NO_LIMIT,
 };
 use crate::filelock::{link_count, same_file, FileLock, LockKind};
 use crate::hosting::Hosting;
@@ -368,6 +369,20 @@ impl LocalHost {
         self
     }
 
+    /// Fail every read of `path` (and below it) in the file, answering its
+    /// reads through the test view alone (`ServerHandle::failing_reads`):
+    /// whether the file is served. Only in debug builds, for tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_reads(&self, path: &[&[u8]]) -> bool {
+        let Some((shared, file)) = self.served() else {
+            return false;
+        };
+        let path = path.iter().map(|segment| segment.to_vec()).collect();
+        shared.engine.fail_reads(&file.name, path);
+        true
+    }
+
     /// The loopback port the file is served on.
     pub fn port(&self) -> u16 {
         self.port
@@ -400,11 +415,13 @@ impl LocalHost {
     /// which it takes no more changes).
     pub fn read_only(&self) -> Option<ReadOnly> {
         self.read_only.or_else(|| {
-            let (_, file) = self.served()?;
-            if file.writes_refused().is_some() {
+            let (shared, file) = self.served()?;
+            // The engine's state of the file, not a version's
+            // (`engine::state`).
+            if shared.engine.writes_refused(&file).is_some() {
                 return Some(ReadOnly::NoMoreChanges);
             }
-            let cause = file.read_store().read_only_cause()?;
+            let cause = shared.engine.read_only(&file)?;
             Some(match cause {
                 crate::store::ReadOnlyCause::Unwritable => ReadOnly::Unwritable,
                 crate::store::ReadOnlyCause::DeferredWork => ReadOnly::DeferredWork,
@@ -419,15 +436,14 @@ impl LocalHost {
     /// it is one of the file's accounts: the name a client suggests when it
     /// asks for an account. Possibly FileMaker Pro's File Options account
     /// [I]; it is no evidence that FileMaker would log in without asking.
-    pub fn suggested_account(&self) -> Option<String> {
-        let handle = self.handle.as_ref()?;
-        let hosted = handle.shared.hosting.files().into_iter().next()?;
-        let name = {
-            let store = hosted.read_store();
-            let bytes = store.node(&SUGGESTED_ACCOUNT)?.assembled()?;
-            om_scsu::decode_scsu(&bytes).ok()?
+    /// Read through a reading of the file: the header from its view, the
+    /// account from its derived state. A read that fails is an error.
+    pub fn suggested_account(&self) -> io::Result<Option<String>> {
+        let Some((shared, hosted)) = self.served() else {
+            return Ok(None);
         };
-        hosted.account(&name).map(|account| account.name.clone())
+        let suggested = shared.engine.read(&hosted).serve(suggested_account);
+        suggested.map_err(io::Error::other)
     }
 
     /// File Options' "Log in using" account and password (local-files.md
@@ -435,47 +451,44 @@ impl LocalHost {
     /// file without asking: `None` when the option is off or names the
     /// [Guest] account (its name is not text), which OpenMaker does not
     /// log in as (#158). The password is as the file stores it, in the
-    /// clear once unmasked.
-    pub fn stored_login(&self) -> Option<(String, zeroize::Zeroizing<String>)> {
-        let handle = self.handle.as_ref()?;
-        let hosted = handle.shared.hosting.files().into_iter().next()?;
-        let store = hosted.read_store();
-        let name = store.node(&SUGGESTED_ACCOUNT)?.assembled()?;
-        // [Guest]'s login is its own name, `[` U+E002 `]`, for both.
-        let account = om_scsu::decode_scsu(&name)
-            .ok()
-            .filter(|name| !name.is_empty() && name != "[\u{e002}]")?;
-        // The password, wiped when dropped, its masked bytes too.
-        let password = match store.node(&STORED_PASSWORD) {
-            None => zeroize::Zeroizing::new(String::new()),
-            // A plain value is the store's own bytes; a value assembled
-            // from parts is a copy, wiped.
-            Some(node) => match node.assembled()? {
-                std::borrow::Cow::Borrowed(masked) => om_scsu::decode_scsu_secret(masked).ok()?,
-                std::borrow::Cow::Owned(masked) => {
-                    let masked = zeroize::Zeroizing::new(masked);
-                    om_scsu::decode_scsu_secret(&masked).ok()?
-                }
-            },
+    /// clear once unmasked. Read through a reading of the file
+    /// ([`stored_login`]); a read that fails is an error.
+    pub fn stored_login(&self) -> io::Result<Option<(String, zeroize::Zeroizing<String>)>> {
+        let Some((shared, hosted)) = self.served() else {
+            return Ok(None);
         };
-        Some((account, password))
+        let login = shared
+            .engine
+            .read(&hosted)
+            .serve(stored_login)
+            .map_err(io::Error::other)?;
+        Ok(login.map(|login| (login.account, login.password)))
     }
 
-    /// Resolve a successful login's account key in this file only.
-    pub fn authenticated_account(&self, result_key: &[u8]) -> om_data::host::AccountInfo {
+    /// Resolve a successful login's account key in this file only, from
+    /// the accounts of a reading of it (`engine::Read::derived`). Accounts
+    /// that could not be read are an error.
+    pub fn authenticated_account(
+        &self,
+        result_key: &[u8],
+    ) -> io::Result<om_data::host::AccountInfo> {
         let Some(key) = om_data::host::security::account_key(result_key) else {
-            return Default::default();
+            return Ok(Default::default());
         };
-        self.handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-            .and_then(|file| {
-                file.accounts()
+        let Some((shared, file)) = self.served() else {
+            return Ok(Default::default());
+        };
+        let info = shared.engine.read(&file).serve(|read| {
+            let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
+            Ok::<_, ReadError>(
+                accounts
                     .iter()
                     .find(|account| account.key == key)
                     .map(|account| account.authenticated_info())
-            })
-            .unwrap_or_default()
+                    .unwrap_or_default(),
+            )
+        });
+        info.map_err(io::Error::other)
     }
 
     /// Set account `name`'s password from `old` to `new`, as FileMaker
@@ -492,7 +505,7 @@ impl LocalHost {
         let Some((shared, file)) = self.served() else {
             return Err(crate::hosting::PasswordChangeError::Refused);
         };
-        if file.is_read_only() {
+        if shared.engine.read_only(&file).is_some() {
             return Err(crate::hosting::PasswordChangeError::Unwritten(
                 "the file is read-only".into(),
             ));
@@ -715,6 +728,115 @@ impl LocalHost {
 impl Drop for LocalHost {
     fn drop(&mut self) {
         self.shut_down();
+    }
+}
+
+/// [`LocalHost::suggested_account`] of `read`.
+fn suggested_account(read: FileRead<'_>) -> Result<Option<String>, ReadError> {
+    let Some(node) = read.view.subtree(&SUGGESTED_ACCOUNT, NO_LIMIT)? else {
+        return Ok(None);
+    };
+    let Some(name) = node
+        .assembled()
+        .and_then(|bytes| om_scsu::decode_scsu(&bytes).ok())
+    else {
+        return Ok(None);
+    };
+    Ok(read
+        .derived
+        .account(&name)?
+        .map(|account| account.name.clone()))
+}
+
+/// File Options' "Log in using" account and password as a reading holds
+/// them ([`LocalHost::stored_login`]). Its `Debug` shows no password, so
+/// that the test view's comparison of two reads (`Reading::serve`) never
+/// prints one.
+struct StoredLogin {
+    account: String,
+    password: zeroize::Zeroizing<String>,
+}
+
+impl PartialEq for StoredLogin {
+    fn eq(&self, other: &Self) -> bool {
+        self.account == other.account && *self.password == *other.password
+    }
+}
+
+impl std::fmt::Debug for StoredLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredLogin")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
+    }
+}
+
+/// [`LocalHost::stored_login`] of `read`: the account named in the account
+/// catalog's header, then, unless it is none or [Guest], the stored
+/// password. The masked password is read as the store held it before: a
+/// view that lends the store's own bytes (the file engine's) copies
+/// nothing, a value assembled from parts is a copy wiped when dropped, and
+/// a copy the view itself hands over (a view that reads pages, the test
+/// view) is wiped when dropped too ([`Wiped`]).
+fn stored_login(read: FileRead<'_>) -> Result<Option<StoredLogin>, ReadError> {
+    use std::borrow::Cow;
+    let Some(name) = read.view.subtree(&SUGGESTED_ACCOUNT, NO_LIMIT)? else {
+        return Ok(None);
+    };
+    let Some(name) = name.assembled() else {
+        return Ok(None);
+    };
+    // [Guest]'s login is its own name, `[` U+E002 `]`, for both.
+    let Some(account) = om_scsu::decode_scsu(&name)
+        .ok()
+        .filter(|name| !name.is_empty() && name != "[\u{e002}]")
+    else {
+        return Ok(None);
+    };
+    // The password, wiped when dropped, its masked bytes too.
+    let password = match read.view.subtree(&STORED_PASSWORD, NO_LIMIT)? {
+        None => zeroize::Zeroizing::new(String::new()),
+        Some(node) => {
+            let node = Wiped(node);
+            let Some(masked) = node.0.assembled() else {
+                return Ok(None);
+            };
+            let password = match masked {
+                Cow::Borrowed(masked) => om_scsu::decode_scsu_secret(masked).ok(),
+                Cow::Owned(masked) => {
+                    let masked = zeroize::Zeroizing::new(masked);
+                    om_scsu::decode_scsu_secret(&masked).ok()
+                }
+            };
+            let Some(password) = password else {
+                return Ok(None);
+            };
+            password
+        }
+    };
+    Ok(Some(StoredLogin { account, password }))
+}
+
+/// A subtree a view gave: lent (the store's own) it is left alone; a copy
+/// the view made is wiped when dropped, for it holds a stored password.
+struct Wiped<'v>(std::borrow::Cow<'v, om_hbam::OwnedNode>);
+
+impl Drop for Wiped<'_> {
+    fn drop(&mut self) {
+        /// Every value of `node`, wiped. Bounded: a node of the file is at
+        /// most 17 keys deep (`om_hbam::slot::MAX_DEPTH`).
+        fn wipe(node: &mut om_hbam::OwnedNode) {
+            use zeroize::Zeroize;
+            if let Some(value) = node.value.as_mut() {
+                value.zeroize();
+            }
+            for child in &mut node.children {
+                wipe(child);
+            }
+        }
+        if let std::borrow::Cow::Owned(node) = &mut self.0 {
+            wipe(node);
+        }
     }
 }
 

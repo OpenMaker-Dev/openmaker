@@ -309,6 +309,27 @@ fn runs_that_cannot_start_keep_their_error() {
     assert_eq!(record_count(&file), 2);
 }
 
+/// A run whose file's accounts cannot be read (the test view failing
+/// `[23, 1, 5]`, as a damaged page would, docs/server-storage.md 5) is
+/// aborted with 802, as a client's login to that file is answered, not as
+/// an account that cannot log in (212); nothing of its script runs.
+#[cfg(debug_assertions)]
+#[test]
+fn a_run_whose_accounts_cannot_be_read_is_aborted_unable_to_open() {
+    let file = TempFile::new("sched-unreadable", &[fixture::server_work()], true);
+    let clock = ManualClock::new(at(8, 0));
+    let handle = start(
+        &file,
+        vec![schedule("Work", "Server Work")],
+        &clock,
+        ScriptLimits::DEFAULT,
+    );
+    handle.failing_reads(fixture::FILE, &[&[23], &[1], &[5]]);
+    let last = run_now(&handle, "Work");
+    assert_eq!((last.ran, last.error), (false, 802), "{last:?}");
+    assert_eq!(stored(&file, 1, COUNT).as_deref(), Some("3"));
+}
+
 #[test]
 fn a_start_while_the_last_run_executes_is_skipped() {
     // The run pauses until the administrator aborts it.

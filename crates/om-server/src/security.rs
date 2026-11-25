@@ -8,8 +8,14 @@
 //! status `0a` and privilege set `0b`; a set's name `10`, record flags `02`
 //! and password lifetime `0c`; an extended privilege's keyword `10` and its
 //! sets `05`. An account's password `06` and its undecoded `04` are never
-//! read, so no credential can reach the reply. What cannot be read is
+//! read, so no credential can reach the reply. What cannot be decoded is
 //! `None`, never a default.
+//!
+//! It is read through a reading of the file (`engine::Reading::serve`): its
+//! records listed one key at a time and each member it decodes read whole,
+//! all from one version. A read that fails is the caller's error.
+
+use std::ops::Bound;
 
 use om_hbam::OwnedNode;
 use om_protocol::authoring::{
@@ -18,29 +24,60 @@ use om_protocol::authoring::{
 };
 
 use crate::accounts::{AccountKind, AccountStatus};
+use crate::engine::{Direction, FileEngine, ReadError, View, NO_LIMIT};
 use crate::hosting::Hosted;
 
 const ACCOUNTS: [&[u8]; 3] = [&[23], &[1], &[5]];
 const PRIVILEGE_SETS: [&[u8]; 3] = [&[23], &[2], &[5]];
 const EXTENDED_PRIVILEGES: [&[u8]; 3] = [&[23], &[3], &[5]];
 
-/// `hosted`'s security catalog as its store holds it now.
-pub(crate) fn catalog(hosted: &Hosted) -> SecurityCatalog {
-    let store = hosted.read_store();
-    let records = |path: &[&[u8]]| {
-        store
-            .node(path)
-            .map(|node| node.children.as_slice())
-            .unwrap_or_default()
-    };
-    SecurityCatalog {
-        accounts: records(&ACCOUNTS).iter().map(account).collect(),
-        privilege_sets: records(&PRIVILEGE_SETS).iter().map(privilege_set).collect(),
-        extended_privileges: records(&EXTENDED_PRIVILEGES)
-            .iter()
-            .map(extended_privilege)
-            .collect(),
+/// The members of an account record decoded ([`account`]), in key order.
+const ACCOUNT_MEMBERS: [u8; 4] = [2, 0x0a, 0x0b, 16];
+/// The members of a privilege set record decoded ([`privilege_set`]), in
+/// key order.
+const SET_MEMBERS: [u8; 3] = [2, 0x0c, 0x10];
+/// The members of an extended privilege record decoded
+/// ([`extended_privilege`]), in key order.
+const EXTENDED_MEMBERS: [u8; 2] = [5, 0x10];
+
+/// `hosted`'s security catalog in the version `engine` holds now.
+pub(crate) fn catalog(engine: &FileEngine, hosted: &Hosted) -> Result<SecurityCatalog, ReadError> {
+    engine.read(hosted).serve(|read| {
+        Ok(SecurityCatalog {
+            accounts: records(read.view, &ACCOUNTS, &ACCOUNT_MEMBERS)?
+                .iter()
+                .map(account)
+                .collect(),
+            privilege_sets: records(read.view, &PRIVILEGE_SETS, &SET_MEMBERS)?
+                .iter()
+                .map(privilege_set)
+                .collect(),
+            extended_privileges: records(read.view, &EXTENDED_PRIVILEGES, &EXTENDED_MEMBERS)?
+                .iter()
+                .map(extended_privilege)
+                .collect(),
+        })
+    })
+}
+
+/// The records of the catalog at `path` in key order, each with only its
+/// `members` (those present, each whole, in key order, as a record holds
+/// them): what the decoders below read.
+fn records(view: &dyn View, path: &[&[u8]], members: &[u8]) -> Result<Vec<OwnedNode>, ReadError> {
+    let mut records = Vec::new();
+    for child in view.children(path, Bound::Unbounded, Direction::Forward) {
+        let key = child?.segment;
+        let mut record = OwnedNode::list(key.to_vec(), Vec::new());
+        for member in members {
+            let member = [*member];
+            let at: Vec<&[u8]> = path.iter().copied().chain([&key[..], &member]).collect();
+            if let Some(node) = view.subtree(&at, NO_LIMIT)? {
+                record.children.push(node.into_owned());
+            }
+        }
+        records.push(record);
     }
+    Ok(records)
 }
 
 fn account(record: &OwnedNode) -> CatalogAccount {

@@ -186,6 +186,7 @@ pub(crate) mod export;
 mod file;
 mod reading;
 mod schema;
+mod state;
 mod transaction;
 mod view;
 

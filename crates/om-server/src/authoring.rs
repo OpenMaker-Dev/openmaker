@@ -59,7 +59,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use log::{info, warn};
+use log::{error, info, warn};
 use om_data::field_catalog::{self, NewField, Refusal, ScalarType};
 use om_data::layout_catalog::{self, NewLayout};
 use om_data::layout_objects::{self, ObjectFrame};
@@ -242,7 +242,19 @@ pub(crate) fn perform(
         }),
         Request::Save => save(shared, peer, file)?,
         Request::DescribeSecurity => {
-            let catalog = crate::security::catalog(file);
+            let catalog = match crate::security::catalog(&shared.engine, file) {
+                Ok(catalog) => catalog,
+                Err(e) => {
+                    error!(
+                        "{peer}: the security catalog of {:?} could not be read: {e}",
+                        file.name
+                    );
+                    return Ok(authoring::build_reply(&refused(
+                        status::UNREADABLE,
+                        "The file's security catalog could not be read.",
+                    )));
+                }
+            };
             // Counts only: names and keys stay out of the log.
             info!(
                 "{peer}: security catalog of {:?}: {} accounts, {} privilege sets, {} extended \

@@ -476,6 +476,15 @@ const LOGIN_UNSUPPORTED_PRIVILEGES: i32 = om_server::LOGIN_UNSUPPORTED_PRIVILEGE
 /// (`om_server::LOGIN_TOO_MANY_ATTEMPTS`).
 const LOGIN_TOO_MANY_ATTEMPTS: i32 = om_server::LOGIN_TOO_MANY_ATTEMPTS as i32;
 
+/// A local file whose host could not read what it was asked for
+/// (`om_server::LocalHost`: its stored login, its suggested account, the
+/// logged-in account's facts): FileMaker's 802, "Unable to open file", as
+/// a login to a file whose accounts cannot be read is answered
+/// (`om_server::LOGIN_UNREADABLE_FILE`; OpenMaker's choice).
+pub(crate) fn local_unreadable(error: std::io::Error) -> DataError {
+    DataError::with_code(802, format!("The file could not be read: {error}"))
+}
+
 /// Whether a local file's Login error leaves the file waiting for another
 /// account.
 fn local_refusal(code: i32) -> bool {
@@ -2511,6 +2520,8 @@ impl NativeProvider {
                 .local
                 .as_ref()
                 .map(|host| host.authenticated_account(&login.result_key))
+                .transpose()
+                .map_err(local_unreadable)?
                 .unwrap_or_else(|| om_data::host::AccountInfo {
                     // Hosted Root uses its own authenticated set reply,
                     // as each hosted related owner does. Local hosts keep
@@ -2881,12 +2892,17 @@ impl NativeProvider {
         // OpenMaker does not read: it always asks, suggesting the account
         // the file names (not a sign that it would open without asking).
         let Some((account, password)) = &file.credentials else {
-            let suggested = host.suggested_account().unwrap_or_default();
+            let suggested = host
+                .suggested_account()
+                .map_err(local_unreadable)?
+                .unwrap_or_default();
             // File Options' "Log in using" (local-files.md 3.1): FileMaker
             // Pro opens the file with it without asking, and asks when it
             // is refused or when the user holds Option or Shift.
             let stored = (!self.ask_for_account)
                 .then(|| host.stored_login())
+                .transpose()
+                .map_err(local_unreadable)?
                 .flatten();
             self.local = Some(host);
             if let Some((account, password)) = stored {
