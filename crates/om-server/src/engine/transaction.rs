@@ -34,21 +34,26 @@ pub enum Hold<'h, 'a> {
 ///
 /// It exposes the `Store` methods the operations use, and `view` for the
 /// state derived from the tree (a privilege set's hidden fields and record
-/// limits, the decoded catalog an authoring edit checks). The changes are
-/// a commit's record writes (with a server script's container data and
-/// reference counts), an authoring edit's and an account edit's catalog
-/// members, Set Next Serial Value's value and a window's saved found set
-/// (`Journal`), op71's reservation and op72's serial value, and the schema
-/// changes of op13, op73 and op86 with a find's stored indexes, op87's and
-/// op88's container data and the deferred field work finished at opening,
-/// which are made in place and not taken back (their saves are not checked
-/// yet, or, for the deferred work, wait).
+/// limits, the decoded catalog an authoring edit checks). Every change goes
+/// into one `Journal`, which keeps what each replaced: a commit's record
+/// writes (with a server script's container data and reference counts), an
+/// authoring edit's and an account edit's catalog members, Set Next Serial
+/// Value's value, a window's saved found set, op71's last issued id, op72's
+/// serial value, op13's and op86's catalog writes (moved into it, not
+/// copied), the member keys op86 writes, a find's stored indexes, op87's
+/// and op88's library entries, and op73's records, work list, global
+/// values, indexes, library entries and basis, which the deferred field
+/// work finished at opening keeps the same way.
 pub struct Transaction<'a> {
     pub(super) store: &'a mut Store,
-    /// The commit the record writes go into ([`Self::begin_commit`]).
-    pub(super) journal: Option<Journal>,
-    /// op71's reservation, to take back when it cannot be saved.
-    pub(super) reservation: Option<Reservation>,
+    /// Every change the operation made to the tree, which the engine
+    /// stores or takes back.
+    pub(super) journal: Journal,
+    /// Whether the operation began a commit ([`Self::begin_commit`]), which
+    /// is saved even if it writes nothing.
+    pub(super) committing: bool,
+    /// Whether op71 reserved ids, which are saved before they are answered.
+    pub(super) reserved: bool,
     /// Log lines that say a change was made, written once it is stored.
     pub(super) stored_lines: Vec<String>,
     /// The container libraries deleted tables took with them
@@ -66,20 +71,14 @@ pub struct Transaction<'a> {
     pub(super) wrote_member_keys: bool,
 }
 
-/// The last issued id of `table` as it was before a reservation
-/// (`Store::take_back_record_ids`).
-pub(super) struct Reservation {
-    pub(super) table: Vec<u8>,
-    pub(super) before: Option<OwnedNode>,
-    pub(super) dirty: bool,
-}
-
 impl<'a> Transaction<'a> {
     pub(super) fn new(store: &'a mut Store) -> Self {
+        let journal = store.begin_commit();
         Transaction {
             store,
-            journal: None,
-            reservation: None,
+            journal,
+            committing: false,
+            reserved: false,
             stored_lines: Vec::new(),
             released_libraries: Vec::new(),
             emptied_libraries: Vec::new(),
@@ -115,23 +114,19 @@ impl<'a> Transaction<'a> {
     }
 
     /// Reserve `count` record ids of `table` (`Store::reserve_record_ids`).
-    /// The reservation is not part of a commit: the engine saves it, or
-    /// takes it back byte for byte when the save fails.
+    /// The reservation is not a commit: the engine saves it before the ids
+    /// are answered, or takes it back byte for byte when the save fails.
     pub fn reserve_record_ids(&mut self, table: &[u8], count: u32) -> Option<u64> {
-        let before = self.store.last_record_id_node(table);
-        let dirty = self.store.has_unsaved_changes();
-        let first = self.store.reserve_record_ids(table, count)?;
-        self.reservation.get_or_insert(Reservation {
-            table: table.to_vec(),
-            before,
-            dirty,
-        });
+        let first = self
+            .store
+            .reserve_record_ids(&mut self.journal, table, count)?;
+        self.reserved = true;
         Some(first)
     }
 
     /// A field's next serial value, read and possibly replaced or advanced
-    /// (`Store::serial_value`). Not taken back: a serial value handed out
-    /// is never handed out again.
+    /// (`Store::serial_value_in`): taken back when the save fails, and then
+    /// not handed out either, as the reply is the storage error.
     pub fn serial_value(
         &mut self,
         table: &[u8],
@@ -139,25 +134,27 @@ impl<'a> Transaction<'a> {
         replace: Option<&str>,
         increment: Option<i32>,
     ) -> Option<String> {
-        self.store.serial_value(table, field, replace, increment)
+        self.store
+            .serial_value_in(&mut self.journal, table, field, replace, increment)
     }
 
     /// Start the commit the record writes go into, which the engine saves
     /// whole or takes back (`Store::save_commit`), even if it writes
     /// nothing.
     pub fn begin_commit(&mut self) {
-        if self.journal.is_none() {
-            self.journal = Some(self.store.begin_commit());
-        }
+        self.committing = true;
     }
 
     /// Write record `id` of `table` (`None` deletes it) within the commit
     /// (`Store::write_record_in`).
     pub fn write_record(&mut self, table: &[u8], id: u64, record: Option<OwnedNode>) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        self.store.write_record_in(journal, table, id, record);
+        self.committing = true;
+        self.store
+            .write_record_in(&mut self.journal, table, id, record);
+        #[cfg(test)]
+        if PANIC_WRITING_RECORDS.with(std::cell::Cell::get) {
+            panic!("a test's panic after writing a record");
+        }
     }
 
     /// Store container data a server script set into a cell of a record of
@@ -170,11 +167,9 @@ impl<'a> Transaction<'a> {
         data: BinaryData,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Vec<u8> {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
+        self.committing = true;
         self.store
-            .store_container_in(journal, table, data, unique_id)
+            .store_container_in(&mut self.journal, table, data, unique_id)
     }
 
     /// Count the container references of a server script's record of
@@ -187,20 +182,17 @@ impl<'a> Transaction<'a> {
         new: Option<&OwnedNode>,
         counted: &[Vec<u8>],
     ) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
+        self.committing = true;
         self.store
-            .count_containers_in(journal, table, old, new, counted);
+            .count_containers_in(&mut self.journal, table, old, new, counted);
     }
 
     /// Release the container references of the records the commit deleted
     /// (`Store::release_deleted_record_containers`).
     pub fn release_deleted_record_containers(&mut self) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        self.store.release_deleted_record_containers(journal);
+        self.committing = true;
+        self.store
+            .release_deleted_record_containers(&mut self.journal);
     }
 
     /// Delete All Records or Truncate Table: drop the library of `table`
@@ -208,10 +200,8 @@ impl<'a> Transaction<'a> {
     /// (`Store::drop_emptied_library_in`), its thumbnails forgotten once
     /// the commit is stored. Whether it did.
     pub fn drop_emptied_library(&mut self, table: &[u8]) -> bool {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        let dropped = self.store.drop_emptied_library_in(journal, table);
+        self.committing = true;
+        let dropped = self.store.drop_emptied_library_in(&mut self.journal, table);
         if dropped {
             self.emptied_libraries
                 .push(vec![table.to_vec(), vec![crate::library::LIBRARY]]);
@@ -224,29 +214,28 @@ impl<'a> Transaction<'a> {
     /// `None` when the table has no such field or the tree cannot take the
     /// value, which changes nothing and begins no commit.
     pub fn set_serial(&mut self, table: &[u8], field: &[u8], value: &str) -> Option<String> {
-        let begun = self.journal.is_some();
-        let mut journal = self
-            .journal
-            .take()
-            .unwrap_or_else(|| self.store.begin_commit());
-        let set = self.store.set_serial_in(&mut journal, table, field, value);
-        if set.is_some() || begun {
-            self.journal = Some(journal);
-        }
+        let set = self
+            .store
+            .set_serial_in(&mut self.journal, table, field, value);
+        self.committing |= set.is_some();
         set
     }
 
-    /// Run `work`: when it panics, the commit's changes are put back before
-    /// the panic goes on, as `Store::guarded` does, so the store a poisoned
-    /// lock hands to the next request is the one before the operation.
+    /// Run `work`: when it panics, the operation's changes are put back
+    /// before the panic goes on, as `Store::guarded` does, so the store a
+    /// poisoned lock hands to the next request is the one before the
+    /// operation.
     pub fn guarded<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
         let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
         match done {
             Ok(value) => value,
             Err(panic) => {
-                if let Some(journal) = self.journal.take() {
-                    self.store.roll_back(journal);
-                }
+                let journal = std::mem::replace(&mut self.journal, self.store.begin_commit());
+                self.store.roll_back(journal);
+                // Begun again from the store as it was put back, so that the
+                // engine, rolling this one back, leaves it so: its unsaved
+                // state the one before the operation.
+                self.journal = self.store.begin_commit();
                 std::panic::resume_unwind(panic)
             }
         }
@@ -257,70 +246,62 @@ impl<'a> Transaction<'a> {
         self.stored_lines.push(line);
     }
 
-    /// op13: put `node` at `path` (`Store::put_subtree`); whether it was
+    /// op13: put `node` at `path` (`Store::put_subtree_in`); whether it was
     /// stored.
     pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
-        self.store.put_subtree(path, node)
+        self.store.put_subtree_in(&mut self.journal, path, node)
     }
 
-    /// op86's UploadMultiple and DeleteTable writes (`Store::apply`). The
-    /// libraries deleted tables took go with them, and so do their
-    /// thumbnails ([`Self::released_libraries`]).
+    /// op86's UploadMultiple and DeleteTable writes (`Store::apply_in`).
+    /// The libraries deleted tables took go with them, and so do their
+    /// thumbnails once the writes are stored ([`Self::released_libraries`]).
     pub fn apply(&mut self, writes: Vec<om_query::Write>) {
-        let released = self.store.apply(writes);
+        let released = self.store.apply_in(&mut self.journal, writes);
         self.released_libraries.extend(released);
     }
 
-    /// GenerateMemberKey's issued keys (`Store::write_member_keys`).
+    /// GenerateMemberKey's issued keys (`Store::write_member_keys_in`).
     pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
         self.wrote_member_keys = true;
-        self.store.write_member_keys(keys);
+        self.store.write_member_keys_in(&mut self.journal, keys);
     }
 
-    /// Indexes finds built on demand (`Store::store_indexes`).
+    /// Indexes finds built on demand (`Store::store_indexes_in`).
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
         #[cfg(test)]
         if PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
             panic!("a test's panic while storing indexes");
         }
-        self.store.store_indexes(indexes);
+        self.store.store_indexes_in(&mut self.journal, indexes);
     }
 
     /// Replace catalog members the schema does not hold, such as a script
     /// and the script catalog's index, within the commit
     /// (`Store::replace_members_in`).
     pub fn replace_members(&mut self, members: Vec<(Vec<Vec<u8>>, OwnedNode)>) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        self.store.replace_members_in(journal, members);
+        self.committing = true;
+        self.store.replace_members_in(&mut self.journal, members);
     }
 
     /// Replace the schema node at `path` within the commit, the schema read
     /// again (`Store::replace_schema_in`).
     pub fn replace_schema(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        self.store.replace_schema_in(journal, path, node);
+        self.committing = true;
+        self.store.replace_schema_in(&mut self.journal, path, node);
     }
 
     /// Remove the schema node at `path` within the commit
     /// (`Store::remove_schema_in`).
     pub fn remove_schema(&mut self, path: Vec<Vec<u8>>) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        self.store.remove_schema_in(journal, path);
+        self.committing = true;
+        self.store.remove_schema_in(&mut self.journal, path);
     }
 
     /// Replace the node at `path` within the commit
     /// (`Store::replace_node_in`): a window's saved found set.
     pub fn replace_node(&mut self, path: Vec<Vec<u8>>, node: OwnedNode) {
-        let journal = self
-            .journal
-            .get_or_insert_with(|| self.store.begin_commit());
-        self.store.replace_node_in(journal, path, node);
+        self.committing = true;
+        self.store.replace_node_in(&mut self.journal, path, node);
     }
 
     /// Count field `field` of `table`, which the commit adds, as computed
@@ -331,48 +312,60 @@ impl<'a> Transaction<'a> {
     }
 
     /// op88: store container data in the library at `path`
-    /// (`Store::store_binary`).
+    /// (`Store::store_binary_in`).
     pub fn store_binary(
         &mut self,
         path: &[&[u8]],
         data: BinaryData,
         unique_id: impl FnMut() -> [u8; 16],
     ) -> Option<Stored> {
-        self.store.store_binary(path, data, unique_id)
+        self.store
+            .store_binary_in(&mut self.journal, path, data, unique_id)
     }
 
     /// op87: add `delta` to a library member's reference count
-    /// (`Store::adjust_reference_count`).
+    /// (`Store::adjust_reference_count_in`).
     pub fn adjust_reference_count(
         &mut self,
         path: &[&[u8]],
         member: &[u8],
         delta: i32,
     ) -> Option<u32> {
-        self.store.adjust_reference_count(path, member, delta)
+        self.store
+            .adjust_reference_count_in(&mut self.journal, path, member, delta)
     }
 
     /// op73: a table's deferred field work (`Store::update_table`), each
     /// record's environment for a recalculation from `environment`, and
-    /// the unique ids of container data it stores from `unique_id`.
+    /// the unique ids of container data it stores from `unique_id`, every
+    /// change in the journal.
     pub fn update_table(
         &mut self,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> Result<bool, &'static str> {
-        self.store.update_table(table, environment, unique_id)
+        self.store
+            .update_table(Some(&mut self.journal), table, environment, unique_id)
     }
 
     /// The deferred field work the file records as pending, as op73 does
-    /// it for each table (`Store::recover`): whether it changed the file.
-    /// Work that cannot be done is kept, and the file hosted read-only.
+    /// it for each table (`Store::recover`), every change in the journal:
+    /// whether it changed the file. Work that cannot be done is kept, and
+    /// the file hosted read-only.
     pub fn recover(
         &mut self,
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
-        self.store.recover(environment, unique_id)
+        let recovered = self
+            .store
+            .recover(Some(&mut self.journal), environment, unique_id);
+        #[cfg(test)]
+        if PANIC_RECOVERING.with(std::cell::Cell::get) {
+            panic!("a test's panic after finishing deferred work");
+        }
+        recovered
     }
 }
 
@@ -381,6 +374,14 @@ thread_local! {
     /// Makes [`Transaction::store_indexes`] panic on this thread
     /// (`engine::tests`).
     pub(super) static PANIC_STORING_INDEXES: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    /// Makes [`Transaction::write_record`] panic on this thread once it
+    /// wrote (`engine::tests`).
+    pub(super) static PANIC_WRITING_RECORDS: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    /// Makes [`Transaction::recover`] panic on this thread once it
+    /// finished the work (`engine::tests`).
+    pub(super) static PANIC_RECOVERING: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 

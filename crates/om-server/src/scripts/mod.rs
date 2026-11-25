@@ -612,8 +612,12 @@ pub(crate) fn run(
     host.set_calc_limits(slot.calc_limits);
     host.set_account_key(account_key);
     host.set_access(access);
-    let outcome = execute(&mut host, script, parameter, slot);
-    host.close();
+    let mut outcome = execute(&mut host, script, parameter, slot);
+    // A save at the script's end that failed is the script's error: what
+    // it left unsaved is not on disk (docs/server-storage.md 5).
+    if let Some(error) = host.close() {
+        outcome.error = error;
+    }
     // (The session's locks go with it, before another can get its id.)
     drop(host);
     drop(session);

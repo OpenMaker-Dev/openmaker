@@ -751,15 +751,28 @@ fn save(shared: &Shared, peer: &str, file: &Hosted) -> Result<Reply, PerformErro
             status::UNSUPPORTED,
             "The file is open read-only: nothing is written to it.",
         ),
-        engine::Reply::SaveFile(Err(FileNotSaved::Failed)) => {
+        engine::Reply::SaveFile(Err(FileNotSaved::Failed(error))) => {
             warn!(
-                "{peer}: {:?}: a save the client asked for failed",
+                "{peer}: {:?}: a save the client asked for failed: {error}",
                 file.name
             );
             refused(
-                status::SAVE_FAILED[0],
+                error.code,
                 "The file could not be written to disk: its changes are kept in the host's \
                  memory until a save succeeds.",
+            )
+        }
+        engine::Reply::SaveFile(Err(FileNotSaved::Unknown(error))) => {
+            warn!(
+                "{peer}: {:?}: a save the client asked for could not be confirmed: {error}",
+                file.name
+            );
+            refused(
+                status::OUTCOME_UNKNOWN,
+                format!(
+                    "Whether the file on disk holds every change is unknown: {error}. The file \
+                     takes no more changes until it is hosted again."
+                ),
             )
         }
         other => return Err(mismatched(&other)),

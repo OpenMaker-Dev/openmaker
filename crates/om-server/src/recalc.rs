@@ -215,11 +215,14 @@ pub const CONTAINER_BUDGET: usize = 256 << 20;
 /// it draws one `Random` sequence, as one operation does. A record node
 /// that holds a value is not a record
 /// FileMaker writes and is left as it is: setting a cell would make a list
-/// of the value (`om_hbam::writer::holds_value`).
+/// of the value (`om_hbam::writer::holds_value`). `before_change` sees each
+/// record as it is just before it changes, for a journal that may have to
+/// put it back.
 pub fn recompute_records(
     records: &mut OwnedNode,
     recalc: &Recalculation,
     environment: &mut dyn FnMut() -> RecordEnvironment,
+    before_change: &mut dyn FnMut(&OwnedNode),
 ) -> Outcome {
     let per_record = recalc.uses_uuid();
     let mut shared = environment();
@@ -263,6 +266,7 @@ pub fn recompute_records(
         if result.values.is_empty() && result.containers.is_empty() {
             continue;
         }
+        before_change(record);
         // Changed without a new count, a client's copy would not show as
         // stale: a record whose count cannot advance keeps its values (#361).
         if modcount::bump(record, 1).is_none() {

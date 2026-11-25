@@ -88,7 +88,7 @@ use crate::config::{Privileges, SCRIPT_CALC_LIMITS};
 use crate::connection::Shared;
 use crate::engine::{
     AccountStamp, AdvanceSerial, ChangePassword, CommitScriptRecords, Credentials, DeleteAccount,
-    Draft, EnableAccount, Operation, Password, ReleaseLocks, ReleaseScriptLock,
+    Draft, EnableAccount, FileNotSaved, Operation, Password, ReleaseLocks, ReleaseScriptLock,
     ReleaseSessionLocks, Reply, ReserveRecordIds, ResetPassword, SetNextSerial, TakeScriptLock,
 };
 use crate::hosting::Hosted;
@@ -992,8 +992,11 @@ impl ServerHost {
 
     /// End the session: revert an unfinished transaction, commit the open
     /// record as closing the window does (revert it when the script was
-    /// aborted or the commit fails) and release every lock.
-    pub fn close(&mut self) {
+    /// aborted or the commit fails), release every lock and save what the
+    /// session left unsaved. Returns the save's FileMaker error (800, 809
+    /// or 810) when that save did not confirm that the file on disk holds
+    /// it, which the script's result reports (`scripts::run`).
+    pub fn close(&mut self) -> Option<u16> {
         self.refresh_schema();
         if self.transaction.is_some() {
             let _ = Records::revert_transaction(self);
@@ -1012,7 +1015,21 @@ impl ServerHost {
         // commit wait unsaved for a commit; with none left to come they are
         // saved now, with anything else the file holds unsaved, as op240's
         // Save saves them (`engine::Save::Requested`).
-        self.shared.engine.submit(&self.hosted, Operation::SaveFile);
+        let saved = match self
+            .shared
+            .engine
+            .submit(&self.hosted, Operation::SaveFile)
+            .reply
+        {
+            Reply::SaveFile(Err(FileNotSaved::Failed(error) | FileNotSaved::Unknown(error))) => {
+                warn!(
+                    "{:?}: the save at the script's end failed: {error}",
+                    self.hosted.name
+                );
+                Some(error.code)
+            }
+            _ => None,
+        };
         self.data_files.close_all();
         self.remove_temporary_folder();
         self.log.flush();
@@ -1023,6 +1040,7 @@ impl ServerHost {
                 self.log.total()
             );
         }
+        saved
     }
 
     /// Release every lock of the session (also those of a transaction or
@@ -2137,7 +2155,14 @@ impl ServerHost {
                     "{:?}: no serial number for field {field} of table {table:#x}: error {}",
                     self.hosted.name, reply.status
                 );
-                return Err(ErrorCode::UNAVAILABLE.into());
+                // A serial that could not be saved fails the step with the
+                // save's error, as the record's own commit would.
+                let saved = u16::try_from(reply.status)
+                    .ok()
+                    .filter(|code| om_protocol::authoring::status::SAVE_FAILED.contains(code));
+                return Err(saved
+                    .map_or(ErrorCode::UNAVAILABLE, |code| ErrorCode(i32::from(code)))
+                    .into());
             }
             reserved.insert(field, reply.value);
         }
@@ -4108,6 +4133,8 @@ impl Records for ServerHost {
                 .and_then(|key| serial::decode(key))
                 .ok_or(ErrorCode::UNKNOWN)?,
             106 => return Err(TABLE_MISSING.into()),
+            // The file takes no more changes (docs/server-storage.md 5).
+            code @ (800 | 809 | 810) => return Err(ErrorCode(code as i32).into()),
             _ => return Err(RECORD_IN_USE.into()),
         };
         // Its serial numbers generated on creation are taken now, as
@@ -5719,11 +5746,17 @@ impl Accounts for ServerHost {
         match reply {
             Reply::ChangePassword(Ok(())) => Ok(()),
             Reply::ChangePassword(Err(e)) => {
-                if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
-                    warn!(
+                match &e {
+                    crate::hosting::PasswordChangeError::Unwritten(reason) => warn!(
                         "{:?}: Change Password changed nothing: {reason}",
                         self.hosted.name
-                    );
+                    ),
+                    crate::hosting::PasswordChangeError::OutcomeUnknown(reason) => warn!(
+                        "{:?}: Change Password may or may not have changed the password: \
+                         {reason}",
+                        self.hosted.name
+                    ),
+                    _ => {}
                 }
                 Err(ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into())
             }
@@ -5809,10 +5842,18 @@ impl Accounts for ServerHost {
 impl ServerHost {
     /// The step error for Reset Account Password's or Enable Account's
     /// `e`: its FileMaker code, or 3 for an account or file that could not
-    /// be written, logged.
+    /// be written or whose save could not be confirmed, each logged as what
+    /// it is.
     fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
-        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
-            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        match e {
+            crate::hosting::AccountEditError::Unwritten(reason) => {
+                warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name)
+            }
+            crate::hosting::AccountEditError::OutcomeUnknown(reason) => warn!(
+                "{:?}: {step} may or may not have changed the account: {reason}",
+                self.hosted.name
+            ),
+            _ => {}
         }
         ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
     }

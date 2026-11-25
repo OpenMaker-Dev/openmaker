@@ -159,6 +159,15 @@ pub struct Store {
     /// Only in debug builds.
     #[cfg(debug_assertions)]
     pub(crate) fail_commit_saves: bool,
+    /// A test makes every save fail at one step ([`SaveFault`],
+    /// [`crate::ServerHandle::failing_saves`]). Only in debug builds.
+    #[cfg(debug_assertions)]
+    pub(crate) save_fault: Option<SaveFault>,
+    /// Why the file takes no more changes: a save renamed its new copy over
+    /// the file and could not flush the folder, so whether the file on disk
+    /// keeps the change is unknown ([`SaveError::Unknown`]). Every later
+    /// save is refused; hosting the file again clears it.
+    unknown: Option<String>,
     /// Counts the schema changes (catalogs replaced, op73's field work):
     /// what was read from the schema before a change is stale after it
     /// ([`Store::schema_generation`]).
@@ -184,9 +193,23 @@ pub struct Store {
     /// last saved as, where it has them ([`Store::set_file`]): a save
     /// without a lock writes only where the path still leads to it (#468).
     file: Option<FileId>,
-    /// The file may not be written: saves fail, their changes stay in
-    /// memory ([`Store::set_read_only`]).
-    read_only: bool,
+    /// Why the file may not be written, if it may not: saves fail, their
+    /// changes stay in memory ([`Store::set_read_only`]).
+    read_only: Option<ReadOnlyCause>,
+}
+
+/// Why a hosted file may not be written ([`Store::set_read_only`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOnlyCause {
+    /// The desktop's host opened it so: it may not be written there, it
+    /// has other names, it cannot be locked, or something is at its save's
+    /// copy name (`crate::local::ReadOnly`).
+    Opened,
+    /// It holds content the writer cannot write back.
+    Unwritable,
+    /// Its deferred field work cannot be done, or could not be saved, and
+    /// is kept (`Store::recover`, op73).
+    DeferredWork,
 }
 
 /// An index: its table, field and kind (value 0, word 1).
@@ -208,6 +231,42 @@ impl SavedFile {
     }
 }
 
+/// What became of the member keys a request issued
+/// ([`Store::issued_keys`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssuedKeysAre<'a> {
+    /// Each is in its catalog's index.
+    Stored,
+    /// One of them is not in its catalog's index: no save stored it.
+    NotStored,
+    /// The file takes no more changes, for this reason: whether they are
+    /// on disk is unknown.
+    Unknown(&'a str),
+}
+
+impl IssuedKeysAre<'_> {
+    /// The FileMaker error an op86 request that issued these keys answers
+    /// with its error slot, or `None` for the program's own answer:
+    /// `draft_failed`, the error of its own draft when that was not
+    /// stored; `own_writes`, whether the program had catalog writes of its
+    /// own besides the keys. The file taking no more changes answers 800
+    /// (an unknown outcome); a key not stored, the draft's error (800 when
+    /// it had none: the keys did not reach a save, the file read-only); keys
+    /// stored, the program's answer, unless its own catalog writes failed,
+    /// which keeps that failure. So for a program whose only write is its
+    /// keys this look decides both ways: a draft that failed and whose keys
+    /// a later write stored answers as stored.
+    pub fn error(&self, draft_failed: Option<u16>, own_writes: bool) -> Option<u16> {
+        match self {
+            IssuedKeysAre::Unknown(why) => Some(crate::hosting::save_error(
+                &std::io::Error::other((*why).to_owned()),
+            )),
+            IssuedKeysAre::NotStored => Some(draft_failed.unwrap_or(800)),
+            IssuedKeysAre::Stored => draft_failed.filter(|_| own_writes),
+        }
+    }
+}
+
 /// A catalog path with the last member id and modification count
 /// GenerateMemberKey issued for it (schema-path.md 3.4).
 pub type MemberKey = (Vec<Vec<u8>>, (u64, u64));
@@ -220,6 +279,10 @@ pub type MemberKey = (Vec<Vec<u8>>, (u64, u64));
 pub struct Journal {
     /// Whether the tree had unsaved changes before the commit.
     was_dirty: bool,
+    /// Whether the tree's root was a list (`OwnedNode::push`) before the
+    /// commit: a file's root reads as not one, and a put at the top level
+    /// makes it one.
+    root_push: bool,
     /// In the order made.
     undo: Vec<Undo>,
     /// The paths of the nodes saved in `undo`: the first saving of a path
@@ -237,14 +300,85 @@ pub struct Journal {
     /// commit changed or deleted in it and the keys each keeps: when the
     /// commit finishes they leave every other entry ([`Store::sweep_index`]).
     sweep: BTreeMap<IndexId, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
-    /// Whether the commit changed the schema the store reads
-    /// ([`Store::replace_schema_in`]): a roll-back reads it again.
-    schema: bool,
+    /// The derived state (`derived::Derived`, the decoded catalog with it)
+    /// as the store held it before the commit's first change to the
+    /// catalogs it reads ([`Journal::schema_from`]): a roll-back puts it
+    /// back as it was. Reading the tree put back instead could fail (a
+    /// catalog that does not decode, which the store served with the
+    /// schema it last read) and keep the schema the commit decoded.
+    schema: Option<Arc<Derived>>,
     /// Why a write of the commit was refused (for example, a posting
     /// whose RID encoding the writer cannot preserve). The refused write
     /// changed nothing. [`Store::save_commit`] takes back the rest of the
     /// commit and fails it.
     refused: Option<String>,
+    /// The basis of stored calculations of each table op73 recomputed, as
+    /// it was before ([`Store::update_table`]): a roll-back puts it back.
+    basis: Vec<(Vec<u8>, Option<TableBasis>)>,
+    /// Log lines that say what the change did, written once it is stored
+    /// ([`Journal::take_lines`]) and dropped when it is taken back.
+    lines: Vec<String>,
+}
+
+/// Where a save failed, for a test that makes saves fail on purpose
+/// ([`crate::ServerHandle::failing_saves`]). Only in debug builds.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveFault {
+    /// Before the new copy is renamed over the file: the file on disk is
+    /// as it was ([`SaveError::NotWritten`]).
+    BeforeRename,
+    /// Flushing the folder after the rename: the file holds the change,
+    /// which may or may not survive a crash ([`SaveError::Unknown`]).
+    FolderFlush,
+}
+
+/// Why a save did not confirm that the file on disk holds the tree
+/// (docs/server-storage.md 2, rule 4; 5).
+#[derive(Debug)]
+pub enum SaveError {
+    /// The file on disk is as it was before the save: it stopped before
+    /// the new copy was renamed over the file (or the file is read-only,
+    /// or takes no more changes), and the copy it made is gone.
+    NotWritten(std::io::Error),
+    /// The new copy was renamed over the file, but flushing the folder
+    /// failed: the file holds the tree, which may or may not survive a
+    /// crash. The store takes no more changes from now on
+    /// ([`Store::writes_refused`]).
+    Unknown(std::io::Error),
+}
+
+impl SaveError {
+    /// The error the save failed with.
+    pub fn error(&self) -> &std::io::Error {
+        match self {
+            SaveError::NotWritten(e) | SaveError::Unknown(e) => e,
+        }
+    }
+
+    /// Whether the file on disk may hold the change.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, SaveError::Unknown(_))
+    }
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::NotWritten(e) => e.fmt(f),
+            SaveError::Unknown(e) => write!(
+                f,
+                "the file was written but could not be confirmed on disk ({e})"
+            ),
+        }
+    }
+}
+
+impl From<std::io::Error> for SaveError {
+    fn from(error: std::io::Error) -> Self {
+        SaveError::NotWritten(error)
+    }
 }
 
 /// An index whose counts leaf is due: table, field, index and counts keys.
@@ -253,14 +387,39 @@ type Recount = (Vec<u8>, Vec<u8>, u8, u8);
 /// Pending field operations and the named cell keys used to resolve them.
 type DeferredFieldWork<'a> = (&'a [(Vec<u8>, u32)], &'a BTreeSet<Vec<u8>>);
 
+/// What a recalculation draws: each record's environment, and the unique
+/// ids of the container data it stores.
+type Draws<'a> = (
+    &'a mut dyn FnMut() -> RecordEnvironment,
+    &'a mut dyn FnMut() -> [u8; 16],
+);
+
 /// One index a record write changes: the field, the index (value 0, word
 /// 1), and the record's entries in it before and after.
 type Reindex = (Vec<u8>, u8, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>);
 
 impl Journal {
+    /// Keep `derived`, the state the store derives from its catalogs,
+    /// before the commit's first change to them ([`Journal::schema`]).
+    fn schema_from(&mut self, derived: &Arc<Derived>) {
+        if self.schema.is_none() {
+            self.schema = Some(derived.clone());
+        }
+    }
+
     /// Keep the node at `path` of `root` as it is now, unless this commit
-    /// already kept it.
+    /// already kept it, and what a change there would create on its way
+    /// ([`Self::save_parents`]): a missing parent is kept as missing, so a
+    /// roll-back removes all the change created, the parent included.
     fn save_node(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
+        if self.save_parents(root, &path) {
+            self.keep_node(root, path);
+        }
+    }
+
+    /// Keep the node at `path` of `root` as it is now, unless this commit
+    /// already kept it; its parents are not looked at.
+    fn keep_node(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
         if self.saved.contains(&path) {
             return;
         }
@@ -268,6 +427,109 @@ impl Journal {
         let old = root.at(&segments).cloned();
         self.saved.insert(path.clone());
         self.undo.push(Undo::Node(path, old));
+    }
+
+    /// Keep what putting a node at `path` of `root` changes besides the
+    /// node there: the parents `OwnedNode::ensure` would create, or turn
+    /// into lists. The first of them that is missing is kept as missing,
+    /// so a roll-back removes all it created; a node on the way that is not
+    /// a list yet (it has no children) is kept as it is. Returns whether
+    /// every parent exists as a list already.
+    fn save_parents(&mut self, root: &OwnedNode, path: &[Vec<u8>]) -> bool {
+        let Some((_, parents)) = path.split_last() else {
+            return true;
+        };
+        let mut node = root;
+        for depth in 1..=parents.len() {
+            match node.child(&parents[depth - 1]) {
+                Some(child) if child.push => node = child,
+                _ => {
+                    self.keep_node(root, parents[..depth].to_vec());
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Keep what putting a node at `path` of `root` changes: its parents
+    /// ([`Self::save_parents`]) and the node there now, copied.
+    fn save_path(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
+        self.save_node(root, path);
+    }
+
+    /// Remove the node at `path` of `root`, kept here (moved, not copied)
+    /// unless this commit already kept the path, and return whether there
+    /// was one.
+    fn take(&mut self, root: &mut OwnedNode, path: Vec<Vec<u8>>) -> bool {
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let old = root.remove(&segments);
+        let was = old.is_some();
+        if self.saved.insert(path.clone()) {
+            self.undo.push(Undo::Node(path, old));
+        }
+        was
+    }
+
+    /// Put `node` at `path` of `root`, replacing what is there, which is
+    /// kept here (moved) with the parents the put creates.
+    fn replace(&mut self, root: &mut OwnedNode, path: Vec<Vec<u8>>, node: OwnedNode) {
+        self.save_parents(root, &path);
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let old = root.remove(&segments);
+        root.put(&segments, node);
+        if self.saved.insert(path.clone()) {
+            self.undo.push(Undo::Node(path, old));
+        }
+    }
+
+    /// Keep record `record` of `table` as it is now, before a change of its
+    /// own made in place (op73's field work), unless this commit already
+    /// kept it.
+    fn save_record(&mut self, table: &[u8], record: &OwnedNode) {
+        let path = vec![table.to_vec(), vec![keys::RECORDS], record.segment.clone()];
+        if self.saved.insert(path.clone()) {
+            self.undo.push(Undo::Node(path, Some(record.clone())));
+        }
+    }
+
+    /// Take `inner`'s changes into this journal, after its own: a part of
+    /// the change that kept a journal of its own and was not taken back.
+    fn absorb(&mut self, inner: Journal) {
+        self.saved.extend(inner.saved);
+        self.undo.extend(inner.undo);
+        self.lines.extend(inner.lines);
+    }
+
+    /// Note a log line that says what the change did, written once it is
+    /// stored.
+    fn note(&mut self, line: String) {
+        self.lines.push(line);
+    }
+
+    /// The log lines that say what the change did ([`Self::note`]), for
+    /// the caller to write once it is stored.
+    pub fn take_lines(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.lines)
+    }
+
+    /// Whether the change has effects to store or take back: it changed
+    /// the tree, op73's basis, or a write of it was refused.
+    pub fn changed(&self) -> bool {
+        !self.undo.is_empty()
+            || !self.basis.is_empty()
+            || self.refused.is_some()
+            || !self.ids.is_empty()
+    }
+}
+
+/// Write `line` about the file named `name` into `journal`'s log lines, or
+/// now without one.
+fn note(name: &str, journal: Option<&mut Journal>, line: String) {
+    let line = format!("{name}: {line}");
+    match journal {
+        Some(journal) => journal.note(line),
+        None => info!("{line}"),
     }
 }
 
@@ -291,6 +553,16 @@ fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
     let mut temporary = name.to_owned();
     temporary.push(".omsave");
     temporary
+}
+
+/// Whether anything is under the name of a save's new copy beside the file
+/// named `name` in `folder` (`<name>.omsave`, [`save_copy_path`]), looked
+/// at without following a link: a copy a save left when it stopped part
+/// way, or anything else. Saves of the file fail while it is there, and
+/// nothing removes it: a server opening the file raises an alert that
+/// names it (docs/server-storage.md 5).
+pub(crate) fn copy_beside(folder: &Folder, name: &std::ffi::OsStr) -> std::io::Result<bool> {
+    Ok(folder.entry(&save_copy_name(name))?.is_some())
 }
 
 /// Whether `file`, the copy a save created, is still entry `name` of the
@@ -363,12 +635,15 @@ impl Store {
             saves: 0,
             #[cfg(debug_assertions)]
             fail_commit_saves: false,
+            #[cfg(debug_assertions)]
+            save_fault: None,
+            unknown: None,
             generation: 0,
             waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
-            read_only: false,
+            read_only: None,
         };
         // A file holding keys or values the writer cannot write (a reader
         // accepts longer key segments and one more level) is served but
@@ -381,7 +656,7 @@ impl Store {
                  it is hosted read-only",
                 describe(&unwritable)
             );
-            store.read_only = true;
+            store.read_only = Some(ReadOnlyCause::Unwritable);
         }
         // Tables with deferred work pending (the server stopped between a
         // client's op13 and its op73) get no basis: [`Store::recover`]
@@ -414,6 +689,7 @@ impl Store {
     /// whether anything changed.
     pub fn recover(
         &mut self,
+        mut journal: Option<&mut Journal>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
@@ -435,19 +711,20 @@ impl Store {
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
-                self.set_read_only();
+                self.set_read_only(ReadOnlyCause::DeferredWork);
                 return false;
             }
         }
         let mut changed = false;
         for table in pending {
-            info!(
-                "{}: finishing the deferred field work of table {table:02x?}",
-                self.name
+            note(
+                &self.name,
+                journal.as_deref_mut(),
+                format!("finished the deferred field work of table {table:02x?}"),
             );
             // The preflight checked every pending table before any changed.
             changed |= self
-                .update_table(&table, environment, unique_id)
+                .update_table(journal.as_deref_mut(), &table, environment, unique_id)
                 .unwrap_or(false);
         }
         changed
@@ -532,14 +809,20 @@ impl Store {
     /// Refuse to write the file: a save fails without touching it, and its
     /// changes stay in memory (a commit's are taken back,
     /// [`Store::save_commit`]).
-    pub fn set_read_only(&mut self) {
-        self.read_only = true;
+    pub fn set_read_only(&mut self, cause: ReadOnlyCause) {
+        self.read_only.get_or_insert(cause);
+    }
+
+    /// Why the file may not be written ([`Store::set_read_only`]), the
+    /// first cause that made it so.
+    pub fn read_only_cause(&self) -> Option<ReadOnlyCause> {
+        self.read_only
     }
 
     /// Whether the file may not be written: [`Store::set_read_only`], or it
     /// loaded with content the writer cannot write back.
     pub fn is_read_only(&self) -> bool {
-        self.read_only
+        self.read_only.is_some()
     }
 
     /// How many saves have written the file since it was loaded. The file
@@ -565,14 +848,18 @@ impl Store {
     ///
     /// The new copy, [`save_copy_path`], is created only where nothing is:
     /// an entry of that name the store did not make (a copy a crash left,
-    /// a link to another file) stops the save, untouched. A store holding
+    /// a link to another file) stops the save, untouched ([`copy_beside`]).
+    /// A store holding
     /// the file's lock first checks that its locked descriptor is still the
     /// file's entry in its folder, with no other names (a file another
     /// program replaced or linked is not saved over), and locks the new
-    /// copy before the rename. On an error the file is the old one, the
-    /// copy the store made is removed (only it) and the tree stays unsaved;
-    /// once the rename succeeded the file is the new one, so a failure to
-    /// flush the folder after it is only logged. Every step goes through
+    /// copy before the rename. On an error before the rename the file is
+    /// the old one, the copy the store made is removed (only it), the tree
+    /// stays unsaved and the error is [`SaveError::NotWritten`]. Once the
+    /// rename succeeded the file is the new one: a failure to flush the
+    /// folder after it is [`SaveError::Unknown`], since the rename may not
+    /// survive a crash, and the store takes no more changes until the file
+    /// is hosted again ([`Store::writes_refused`]). Every step goes through
     /// the file's folder, opened again and checked to be the one the file
     /// was hosted from ([`FileAt::folder`]): a folder of the path swapped
     /// for a link, or moved, since then fails the save rather than move it
@@ -585,7 +872,7 @@ impl Store {
     /// would go on reading it whatever its permissions became. With no file
     /// there it is a new file from the start (0666 less the umask);
     /// when the old file's permissions cannot be read, nothing is saved.
-    pub fn save(&mut self, at: &FileAt) -> std::io::Result<bool> {
+    pub fn save(&mut self, at: &FileAt) -> Result<bool, SaveError> {
         self.save_observed(at, &mut |_| {})
     }
 
@@ -595,12 +882,56 @@ impl Store {
         &mut self,
         at: &FileAt,
         created: &mut dyn FnMut(&Path),
-    ) -> std::io::Result<bool> {
-        use std::io::{Error, ErrorKind};
+    ) -> Result<bool, SaveError> {
+        use std::io::Error;
         if !self.dirty {
             return Ok(false);
         }
-        if self.read_only {
+        if let Some(why) = &self.unknown {
+            return Err(SaveError::NotWritten(Error::other(why.clone())));
+        }
+        let folder = self.write_new_copy(at, created)?;
+        self.dirty = false;
+        self.saves += 1;
+        #[cfg(debug_assertions)]
+        let flushed = match self.save_fault {
+            Some(SaveFault::FolderFlush) => Err(Error::other("a test makes the folder flush fail")),
+            _ => folder.sync(),
+        };
+        #[cfg(not(debug_assertions))]
+        let flushed = folder.sync();
+        if let Err(e) = flushed {
+            let why = format!(
+                "the file takes no more changes until it is hosted again: its last save \
+                 could not flush the folder of {} ({e}), so whether the file on disk keeps \
+                 that change is unknown",
+                at.path().display()
+            );
+            error!("{}: {why}", self.name);
+            self.unknown = Some(why);
+            return Err(SaveError::Unknown(e));
+        }
+        Ok(true)
+    }
+
+    /// Why the file takes no more changes, when a save's outcome is
+    /// unknown ([`SaveError::Unknown`]): every later save is refused, and
+    /// the engine refuses every operation that would change the file.
+    pub fn writes_refused(&self) -> Option<&str> {
+        self.unknown.as_deref()
+    }
+
+    /// The steps of [`Store::save`] up to and including the rename: an
+    /// error is a save that did not write the file, which is as it was.
+    /// After the rename the store holds the new file's identity, lock and
+    /// page 0. Returns the folder the rename was made in, to flush.
+    fn write_new_copy(
+        &mut self,
+        at: &FileAt,
+        created: &mut dyn FnMut(&Path),
+    ) -> std::io::Result<Folder> {
+        use std::io::{Error, ErrorKind};
+        if self.read_only.is_some() {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "the file is open read-only",
@@ -707,6 +1038,10 @@ impl Store {
                 if !owned_copy(&folder, &owner, &temporary) {
                     return Err(Error::other("the save's new copy was replaced"));
                 }
+                #[cfg(debug_assertions)]
+                if self.save_fault == Some(SaveFault::BeforeRename) {
+                    return Err(Error::other("a test makes saves fail before the rename"));
+                }
                 folder.rename(&temporary, name)?;
                 Ok((lock, identity))
             });
@@ -722,16 +1057,7 @@ impl Store {
             self.lock = lock;
         }
         self.superblock = bytes[..self.superblock.len()].to_vec();
-        self.dirty = false;
-        self.saves += 1;
-        if let Err(e) = folder.sync() {
-            warn!(
-                "{}: saved, but flushing the folder of {} failed: {e}",
-                self.name,
-                at.path().display()
-            );
-        }
-        Ok(true)
+        Ok(folder)
     }
 
     /// The file as the store last loaded or saved it, for a copy of it: a
@@ -769,14 +1095,17 @@ impl Store {
     pub fn begin_commit(&self) -> Journal {
         Journal {
             was_dirty: self.dirty,
+            root_push: self.root.push,
             undo: Vec::new(),
             saved: BTreeSet::new(),
             ids: BTreeMap::new(),
             deleted_container_refs: BTreeMap::new(),
             recount: BTreeSet::new(),
             sweep: BTreeMap::new(),
-            schema: false,
+            schema: None,
             refused: None,
+            basis: Vec::new(),
+            lines: Vec::new(),
         }
     }
 
@@ -794,6 +1123,9 @@ impl Store {
             .node(&[table, &[keys::RECORDS], &serial::encode(id)])
             .cloned();
         journal.save_node(&self.root, vec![table.to_vec(), vec![keys::RECORD_IDS]]);
+        // The first record of a table creates its record list `[T, 05]`.
+        let at = vec![table.to_vec(), vec![keys::RECORDS], serial::encode(id)];
+        journal.save_parents(&self.root, &at);
         let (existed, exists) = (old.is_some(), record.is_some());
         let mut recount = std::mem::take(&mut journal.recount);
         let put = self.put_record(
@@ -940,20 +1272,15 @@ impl Store {
                 journal.refused.get_or_insert(reason);
                 continue;
             }
-            let Some(count) = self
+            // The member's counts, or the member with its entries in the
+            // header when it goes: the decision the adjustment makes.
+            let Some(changed) = self
                 .node(&library)
-                .and_then(|l| library::member(l, &member))
-                .map(library::reference_count)
+                .and_then(|l| library::adjust_keys(l, &member, delta))
             else {
                 continue;
             };
             let base = vec![table.to_vec(), vec![LIBRARY]];
-            let changed: Vec<Vec<Vec<u8>>> = if i64::from(count) + i64::from(delta) <= 0 {
-                // The member goes, with its entries in the header.
-                library::deletion_keys(&member).into_iter().collect()
-            } else {
-                library::count_keys(&member).into_iter().collect()
-            };
             for keys in changed {
                 let mut path = base.clone();
                 path.extend(keys);
@@ -1067,7 +1394,10 @@ impl Store {
             journal.refused.get_or_insert(reason);
             return Vec::new();
         }
-        match library::store_keys(self.node(&[table, &[LIBRARY]]), &data.md5) {
+        // One decision, which the journal keeps and the store carries out.
+        let library = self.node(&[table, &[LIBRARY]]);
+        let plan = library::store_plan(library, &data.md5);
+        match plan.keys(library) {
             None => journal.save_node(&self.root, base),
             Some(keys) => {
                 for keys in keys {
@@ -1078,7 +1408,8 @@ impl Store {
             }
         }
         self.dirty = true;
-        match library::store(self.root.ensure(&[table, &[LIBRARY]]), data, unique_id) {
+        let library = self.root.ensure(&[table, &[LIBRARY]]);
+        match library::store_as(library, data, &plan, unique_id) {
             Some(Stored::New(member) | Stored::Existing(member)) => member,
             // Not reached: `library_refusal` checked the same counters.
             None => {
@@ -1157,24 +1488,49 @@ impl Store {
     /// tree before the commit, the field indexes among it are taken out
     /// ([`Store::drop_unwritable_indexes`]), so the next commit is saved;
     /// anything else stays as it is and is logged.
-    pub fn save_commit(&mut self, at: &FileAt, mut journal: Journal) -> std::io::Result<()> {
+    pub fn save_commit(&mut self, at: &FileAt, journal: Journal) -> Result<(), SaveError> {
+        self.save_journal(at, journal, true)
+    }
+
+    /// [`Store::save_commit`] for a change that is not a commit (op71's
+    /// reservation, op72's serial, the schema and container operations,
+    /// op240's Save): the same, except that the test switch that makes
+    /// commits fail ([`crate::ServerHandle::failing_commit_saves`]) does not
+    /// apply.
+    pub fn save_change(&mut self, at: &FileAt, journal: Journal) -> Result<(), SaveError> {
+        self.save_journal(at, journal, false)
+    }
+
+    fn save_journal(
+        &mut self,
+        at: &FileAt,
+        mut journal: Journal,
+        commit: bool,
+    ) -> Result<(), SaveError> {
+        #[cfg(not(debug_assertions))]
+        let _ = commit;
         let saved = self.guarded(&mut journal, |store, journal| {
             if let Some(reason) = journal.refused.take() {
-                return Err(std::io::Error::new(
+                return Err(SaveError::NotWritten(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("a write of the commit was refused: {reason}"),
-                ));
+                )));
             }
             store.finish_commit(journal);
             #[cfg(debug_assertions)]
-            if store.fail_commit_saves {
-                return Err(std::io::Error::other("a test makes commit saves fail"));
+            if commit && store.fail_commit_saves {
+                return Err(SaveError::NotWritten(std::io::Error::other(
+                    "a test makes commit saves fail",
+                )));
             }
             store.save(at)
         });
         let error = match saved {
             Ok(_) => return Ok(()),
-            Err(e) => e,
+            // The file may hold the commit: the tree keeps it, as the
+            // renamed file's content.
+            Err(SaveError::Unknown(e)) => return Err(SaveError::Unknown(e)),
+            Err(SaveError::NotWritten(e)) => e,
         };
         self.roll_back(journal);
         let (dropped, kept) = self.drop_unwritable_indexes();
@@ -1194,7 +1550,7 @@ impl Store {
                 describe(&kept)
             );
         }
-        Err(error)
+        Err(SaveError::NotWritten(error))
     }
 
     /// After a save failed: take out of the tree the field indexes the file
@@ -1210,7 +1566,7 @@ impl Store {
     /// indexes taken out (each once) and what stays.
     pub fn drop_unwritable_indexes(&mut self) -> (Vec<Unwritable>, Vec<Unwritable>) {
         let (mut dropped, mut kept): (Vec<Unwritable>, Vec<Unwritable>) = (Vec::new(), Vec::new());
-        if self.read_only {
+        if self.read_only.is_some() {
             return (dropped, kept);
         }
         loop {
@@ -1267,8 +1623,11 @@ impl Store {
         match done {
             Ok(value) => value,
             Err(panic) => {
-                let journal = std::mem::replace(journal, self.begin_commit());
-                self.roll_back(journal);
+                let taken = std::mem::replace(journal, self.begin_commit());
+                self.roll_back(taken);
+                // Begun again from the store as it was put back, so that a
+                // handler outside, rolling this one back, leaves it so.
+                *journal = self.begin_commit();
                 std::panic::resume_unwind(panic)
             }
         }
@@ -1311,13 +1670,20 @@ impl Store {
                 }
             }
         }
-        if journal.schema {
-            self.reread_catalog();
+        if let Some(derived) = journal.schema {
+            self.derived = derived;
+        }
+        for (table, basis) in journal.basis.into_iter().rev() {
+            match basis {
+                Some(basis) => self.basis.insert(table, basis),
+                None => self.basis.remove(&table),
+            };
         }
         // Catalog members put back are a change readers of them must see,
         // as their replacement was (the accounts, `hosting::Accounts`).
         self.generation += 1;
         self.dirty = journal.was_dirty;
+        self.root.push = journal.root_push;
     }
 
     /// The file's schema as last read.
@@ -1349,7 +1715,8 @@ impl Store {
             view: &tree,
             derived: &self.derived,
             waiting: &self.waiting,
-            read_only: self.read_only,
+            read_only: self.read_only.is_some(),
+            writes_refused: self.writes_refused(),
         })
     }
 
@@ -1432,12 +1799,18 @@ impl Store {
     }
 
     /// Reserve `count` record ids in `table` (op71): returns the first and
-    /// stores the new last issued id. `None`, changing nothing, for a count
-    /// of 0, when the ids would pass the largest a serial key holds (the
-    /// last issued id comes from the file, and a catalog upload can set it:
-    /// ids must not wrap around to those records have), and when the
-    /// table's node holds a value, which the id cannot go beneath.
-    pub fn reserve_record_ids(&mut self, table: &[u8], count: u32) -> Option<u64> {
+    /// stores the new last issued id, its old node kept in `journal`.
+    /// `None`, changing nothing, for a count of 0, when the ids would pass
+    /// the largest a serial key holds (the last issued id comes from the
+    /// file, and a catalog upload can set it: ids must not wrap around to
+    /// those records have), and when the table's node holds a value, which
+    /// the id cannot go beneath.
+    pub fn reserve_record_ids(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        count: u32,
+    ) -> Option<u64> {
         // The count and the arithmetic first, from the values alone; then
         // the write against the tree as it is. Neither changes anything, so
         // either refusal leaves the table as it was.
@@ -1466,6 +1839,7 @@ impl Store {
         let segment = serial::encode(new_last);
         let mut value = vec![segment.len() as u8];
         value.extend(segment);
+        journal.save_path(&self.root, vec![table.to_vec(), vec![keys::LAST_RECORD_ID]]);
         self.root.put(
             &[table, &[keys::LAST_RECORD_ID]],
             OwnedNode::leaf(Vec::new(), value),
@@ -1473,25 +1847,6 @@ impl Store {
         self.dirty = true;
         // At most `new_last`, as `count` is at least 1.
         Some(last + 1)
-    }
-
-    /// The table's last issued record id `[T, 00]` as stored, for
-    /// [`Self::take_back_record_ids`]: its node, `None` when absent.
-    pub fn last_record_id_node(&self, table: &[u8]) -> Option<OwnedNode> {
-        self.node(&[table, &[keys::LAST_RECORD_ID]]).cloned()
-    }
-
-    /// Take back a reservation [`Self::reserve_record_ids`] made that could
-    /// not be saved (#927): `[T, 00]` as it was before it, byte for byte,
-    /// and the store as unsaved as it was. The ids are not issued.
-    pub fn take_back_record_ids(&mut self, table: &[u8], before: Option<OwnedNode>, dirty: bool) {
-        match before {
-            Some(node) => self.root.put(&[table, &[keys::LAST_RECORD_ID]], node),
-            None => {
-                self.root.remove(&[table, &[keys::LAST_RECORD_ID]]);
-            }
-        }
-        self.dirty = dirty;
     }
 
     /// A field's next serial value (op72), read and possibly replaced or
@@ -1547,10 +1902,55 @@ impl Store {
         Some(current)
     }
 
+    /// [`Store::serial_value`] (op72), its serial node as it was kept in
+    /// `journal` when it changes.
+    pub fn serial_value_in(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        field: &[u8],
+        replace: Option<&str>,
+        increment: Option<i32>,
+    ) -> Option<String> {
+        let path: Vec<Vec<u8>> = vec![
+            table.to_vec(),
+            vec![keys::FIELDS],
+            vec![keys::FIELD_DEFINITIONS],
+            field.to_vec(),
+            vec![keys::SERIAL_VALUE],
+        ];
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let old = self.node(&segments).cloned();
+        let current = self.serial_value(table, field, replace, increment)?;
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        if self.node(&segments) != old.as_ref() && journal.saved.insert(path.clone()) {
+            // Only an existing field definition gets a serial node, so its
+            // parents were there.
+            journal.undo.push(Undo::Node(path, old));
+        }
+        Some(current)
+    }
+
     /// op88: store binary data in the library at `path` (`[T, 1f]` or
     /// `[1f]`), creating the library on first use (containers.md 3.4).
+    #[cfg(test)]
     pub fn store_binary(
         &mut self,
+        path: &[&[u8]],
+        data: BinaryData,
+        unique_id: impl FnMut() -> [u8; 16],
+    ) -> Option<Stored> {
+        let mut journal = self.begin_commit();
+        self.store_binary_in(&mut journal, path, data, unique_id)
+    }
+
+    /// [`Store::store_binary`] within `journal`, which keeps what the store
+    /// changes ([`library::store_keys`]): the member that counts one more
+    /// reference, or the header and the new member, or, for a new library,
+    /// the library's absence.
+    pub fn store_binary_in(
+        &mut self,
+        journal: &mut Journal,
         path: &[&[u8]],
         data: BinaryData,
         unique_id: impl FnMut() -> [u8; 16],
@@ -1559,7 +1959,20 @@ impl Store {
             warn!("{}: container data not stored: {reason}", self.name);
             return None;
         }
-        let stored = library::store(self.root.ensure(path), data, unique_id)?;
+        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
+        // One decision, which the journal keeps and the store carries out.
+        let plan = library::store_plan(self.node(path), &data.md5);
+        match plan.keys(self.node(path)) {
+            None => journal.save_path(&self.root, base),
+            Some(keys) => {
+                for keys in keys {
+                    let mut at = base.clone();
+                    at.extend(keys);
+                    journal.save_path(&self.root, at);
+                }
+            }
+        }
+        let stored = library::store_as(self.root.ensure(path), data, &plan, unique_id)?;
         self.dirty = true;
         Some(stored)
     }
@@ -1630,8 +2043,22 @@ impl Store {
     /// op87: add `delta` to a member's reference count in the library at
     /// `path`, deleting it at 0 (containers.md 5.3). `None` when there is no
     /// such member.
+    #[cfg(test)]
     pub fn adjust_reference_count(
         &mut self,
+        path: &[&[u8]],
+        member: &[u8],
+        delta: i32,
+    ) -> Option<u32> {
+        let mut journal = self.begin_commit();
+        self.adjust_reference_count_in(&mut journal, path, member, delta)
+    }
+
+    /// [`Store::adjust_reference_count`] within `journal`, which keeps the
+    /// member's count keys, or the member and the header when it goes.
+    pub fn adjust_reference_count_in(
+        &mut self,
+        journal: &mut Journal,
         path: &[&[u8]],
         member: &[u8],
         delta: i32,
@@ -1639,6 +2066,14 @@ impl Store {
         if let Some(reason) = self.library_refusal(path, None, Some((member, delta))) {
             warn!("{}: reference count not changed: {reason}", self.name);
             return None;
+        }
+        // The decision the adjustment makes; none for a delta of 0.
+        let changed = library::adjust_keys(self.node(path)?, member, delta)?;
+        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
+        for keys in changed {
+            let mut at = base.clone();
+            at.extend(keys);
+            journal.save_node(&self.root, at);
         }
         let count = library::adjust(self.root.at_mut(path)?, member, delta)?;
         self.dirty |= delta != 0;
@@ -1694,6 +2129,22 @@ impl Store {
         }
     }
 
+    /// What became of the member keys a request's GenerateMemberKey issued
+    /// (each catalog with its id), asked once the request submitted its
+    /// own write ([`derived::issued_keys`], read through the store's tree).
+    pub fn issued_keys(&self, issued: &[(Vec<Vec<u8>>, u64)]) -> IssuedKeysAre<'_> {
+        derived::issued_keys(&self.tree_view(), self.writes_refused(), issued)
+            .expect("the file engine's tree never fails a read")
+    }
+
+    /// Issue the next member id and modification count of the catalog at
+    /// `catalog` ([`derived::issue_member_key`]); [`Store::write_member_keys`]
+    /// stores them.
+    pub fn issue_member_key(&self, catalog: &[Vec<u8>]) -> Option<(u64, u64)> {
+        derived::issue_member_key(&self.tree_view(), &self.waiting, &self.name, catalog)
+            .expect("the file engine's tree never fails a read")
+    }
+
     /// Whether GenerateMemberKey issued ids not yet written.
     pub fn has_issued_member_keys(&self) -> bool {
         self.waiting.has_member_keys()
@@ -1717,7 +2168,15 @@ impl Store {
     /// ([`Store::take_issued_member_keys`]) into their catalogs' indexes, as
     /// FileMaker Server does (schema-path.md 3.4). A value the index
     /// already passed stays.
+    #[cfg(test)]
     pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
+        let mut journal = self.begin_commit();
+        self.write_member_keys_in(&mut journal, keys);
+    }
+
+    /// [`Store::write_member_keys`] within `journal`, which keeps each
+    /// index key it advances.
+    pub fn write_member_keys_in(&mut self, journal: &mut Journal, keys: Vec<MemberKey>) {
         for (catalog, (id, count)) in keys {
             let mut path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
             // Checked again here: the tree may have changed since the key
@@ -1730,10 +2189,18 @@ impl Store {
                 continue;
             }
             path.push(&[CATALOG_INDEX]);
-            let index = self.root.ensure(&path);
+            // Each key the index has passed already stays; one that
+            // advances is kept in the journal, with the index it creates,
+            // as it is changed.
             for (key, value) in [(LAST_MEMBER_ID, id), (MOD_COUNT, count)] {
-                if modcount::serial_value(index.child(&[key])) < value {
-                    index.set_child(modcount::serial_leaf(key, value));
+                let current = self.root.at(&path).and_then(|index| index.child(&[key]));
+                if modcount::serial_value(current) < value {
+                    let mut at: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
+                    at.push(vec![key]);
+                    journal.save_path(&self.root, at);
+                    self.root
+                        .ensure(&path)
+                        .set_child(modcount::serial_leaf(key, value));
                 }
             }
             self.dirty = true;
@@ -1768,15 +2235,25 @@ impl Store {
     /// container data goes with `[T]` (`[T, 1f]`, containers.md 1.1), every
     /// member at once, so no reference is left to release; the caller
     /// forgets what it derived from them (thumbnails).
+    #[cfg(test)]
     pub fn apply(&mut self, writes: Vec<Write>) -> Vec<Vec<Vec<u8>>> {
+        let mut journal = self.begin_commit();
+        self.apply_in(&mut journal, writes)
+    }
+
+    /// [`Store::apply`] within `journal`, which keeps what each write
+    /// replaces or removes (moved, not copied) and the parents it creates,
+    /// and reads the schema again when it is taken back.
+    pub fn apply_in(&mut self, journal: &mut Journal, writes: Vec<Write>) -> Vec<Vec<Vec<u8>>> {
         let mut released = Vec::new();
         if writes.is_empty() {
             return released;
         }
+        journal.schema_from(&self.derived);
         for write in writes {
             match write {
-                Write::Put { path, node } => {
-                    let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+                Write::Put { path: owned, node } => {
+                    let path: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
                     let Some((last, parents)) = path.split_last() else {
                         warn!("{}: refusing a write over the whole file", self.name);
                         continue;
@@ -1795,7 +2272,7 @@ impl Store {
                         );
                         continue;
                     }
-                    self.root.put(&path, placed);
+                    journal.replace(&mut self.root, owned, placed);
                 }
                 Write::Remove { path } => {
                     let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
@@ -1804,15 +2281,18 @@ impl Store {
                             .node(&[table, &[LIBRARY], &[containers::keys::MEMBERS]])
                             .map_or(0, |m| m.children.len());
                         if members > 0 {
-                            info!(
-                                "{}: table {table:02x?} deleted with its {members} container \
-                                 library member(s)",
-                                self.name
+                            note(
+                                &self.name,
+                                Some(journal),
+                                format!(
+                                    "table {table:02x?} deleted with its {members} container \
+                                     library member(s)"
+                                ),
                             );
                         }
                         released.push(vec![table.to_vec(), vec![LIBRARY]]);
                     }
-                    self.root.remove(&segments);
+                    journal.take(&mut self.root, path);
                 }
             }
         }
@@ -1836,7 +2316,7 @@ impl Store {
                 journal.refused.get_or_insert(reason);
                 continue;
             }
-            journal.save_node(&self.root, path.clone());
+            journal.save_path(&self.root, path.clone());
             let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
             self.root.put(&segments, node);
         }
@@ -1859,8 +2339,8 @@ impl Store {
             journal.refused.get_or_insert(reason);
             return;
         }
-        journal.save_node(&self.root, path.clone());
-        journal.schema = true;
+        journal.save_path(&self.root, path.clone());
+        journal.schema_from(&self.derived);
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         self.root.put(&segments, node);
         self.schema_changed();
@@ -1875,7 +2355,7 @@ impl Store {
             journal.refused.get_or_insert(reason);
             return;
         }
-        journal.save_node(&self.root, path.clone());
+        journal.save_path(&self.root, path.clone());
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         self.root.put(&segments, node);
         self.dirty = true;
@@ -1887,7 +2367,7 @@ impl Store {
     /// written.
     pub fn remove_schema_in(&mut self, journal: &mut Journal, path: Vec<Vec<u8>>) {
         journal.save_node(&self.root, path.clone());
-        journal.schema = true;
+        journal.schema_from(&self.derived);
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         self.root.remove(&segments);
         self.schema_changed();
@@ -1917,8 +2397,21 @@ impl Store {
     /// op13 refuses an upload it cannot store, and the tree is unchanged.
     /// Returns whether it was stored.
     pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
-        let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let Some((last, parents)) = path.split_last() else {
+        let mut journal = self.begin_commit();
+        self.put_subtree_in(&mut journal, path, node)
+    }
+
+    /// [`Store::put_subtree`] within `journal`, which keeps the subtree it
+    /// replaces (moved, not copied) and the parents it creates, and reads
+    /// the schema again when it is taken back.
+    pub fn put_subtree_in(
+        &mut self,
+        journal: &mut Journal,
+        path: &[Vec<u8>],
+        node: OwnedNode,
+    ) -> bool {
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let Some((last, parents)) = segments.split_last() else {
             warn!("{}: refusing an upload over the whole file", self.name);
             return false;
         };
@@ -1929,13 +2422,14 @@ impl Store {
         let refused = put_refusals(&self.root, parents, &placed, 3);
         if !refused.is_empty() {
             warn!(
-                "{}: refusing an upload to {path:02x?} the file cannot hold: {}",
+                "{}: refusing an upload to {segments:02x?} the file cannot hold: {}",
                 self.name,
                 describe(&refused)
             );
             return false;
         }
-        self.root.put(&path, placed);
+        journal.replace(&mut self.root, path.to_vec(), placed);
+        journal.schema_from(&self.derived);
         self.schema_changed();
         true
     }
@@ -1978,9 +2472,16 @@ impl Store {
     /// Everything happens in memory under the caller's write lock; the
     /// caller's one save then writes it all or, if the server stops first,
     /// nothing (the work list stays in the file for [`Store::recover`]).
+    /// With a `journal` (op73) every change goes into it, so a save that
+    /// fails takes it all back: each record as it was before its first
+    /// change, the work list, global values, indexes and library entries
+    /// replaced or removed, and the table's basis; the log lines that say
+    /// what changed wait in it too. Without one (a test's) the changes are
+    /// made in place.
     /// Returns whether anything changed.
     pub fn update_table(
         &mut self,
+        mut journal: Option<&mut Journal>,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
@@ -2007,13 +2508,19 @@ impl Store {
                     "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
                     self.name
                 );
-                self.set_read_only();
+                self.set_read_only(ReadOnlyCause::DeferredWork);
                 return Err(reason);
             }
         };
         let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
         let list = Self::deferred_path(table);
-        let mut changed = self.root.remove(&list).is_some();
+        let mut changed = match journal.as_deref_mut() {
+            Some(journal) => {
+                let list = list.iter().map(|s| s.to_vec()).collect();
+                journal.take(&mut self.root, list)
+            }
+            None => self.root.remove(&list).is_some(),
+        };
         // Every field the work names keeps its own cells: a field deleted in
         // the same edit is no longer in the catalog, and its key may read as
         // another's repetition (`repetition_cells`).
@@ -2032,10 +2539,13 @@ impl Store {
                     1
                 };
                 let container = bits & deferred::CONTAINER != 0;
+                let values = (from, container);
                 if bits & deferred::GLOBAL != 0 {
-                    self.drop_global_value(table, field, from, container, &named, &mut removed);
+                    let journal = journal.as_deref_mut();
+                    self.drop_global_value(journal, table, field, values, &named, &mut removed);
                 } else {
-                    self.drop_field_values(table, field, from, container, &named, &mut removed);
+                    let journal = journal.as_deref_mut();
+                    self.drop_field_values(journal, table, field, values, &named, &mut removed);
                 }
                 changed = true;
             }
@@ -2046,33 +2556,49 @@ impl Store {
             let kept = bits & (deferred::DELETE | deferred::CONTAINER | deferred::GLOBAL) == 0;
             if kept && bits & (deferred::TO_DATE | deferred::TO_TIMESTAMP) != 0 {
                 let timestamp = bits & deferred::TO_TIMESTAMP != 0;
-                changed |= self.convert_field_values(table, field, timestamp, &named, environment);
+                let journal = journal.as_deref_mut();
+                changed |= self.convert_field_values(
+                    journal,
+                    table,
+                    field,
+                    timestamp,
+                    &named,
+                    environment,
+                );
             }
             if bits & (deferred::DELETE | deferred::DROP_INDEX) != 0 {
-                changed |= self
-                    .root
-                    .remove(&[table, &[keys::INDEXES], field])
-                    .is_some();
+                let index = [table, &[keys::INDEXES], field.as_slice()];
+                changed |= match journal.as_deref_mut() {
+                    Some(journal) => {
+                        let index = index.iter().map(|s| s.to_vec()).collect();
+                        journal.take(&mut self.root, index)
+                    }
+                    None => self.root.remove(&index).is_some(),
+                };
             }
         }
-        self.basis.insert(table.to_vec(), basis);
+        let before = self.basis.insert(table.to_vec(), basis);
+        if let Some(journal) = journal.as_deref_mut() {
+            journal.basis.push((table.to_vec(), before));
+        }
         for field in &retyped {
-            changed |= self.drop_retyped_cells(table, *field, &named);
+            let journal = journal.as_deref_mut();
+            changed |= self.drop_retyped_cells(journal, table, *field, &named);
         }
         if !removed.is_empty() {
             let naming = self.naming_cells(table, &work, &named);
-            self.release_containers(table, removed, &naming);
+            self.release_containers(journal.as_deref_mut(), table, removed, &naming);
         }
         let recomputed = if stale.is_empty() {
             Vec::new()
         } else {
             self.recalculate(
+                journal.as_deref_mut(),
                 table,
                 &definition,
                 &stale,
                 (&work, &named),
-                environment,
-                unique_id,
+                (environment, unique_id),
             )
         };
         changed |= !recomputed.is_empty();
@@ -2130,7 +2656,8 @@ impl Store {
             let word = options & WORD_INDEX_OPTION != 0 || has(keys::WORD_INDEX, keys::WORD_COUNTS);
             let missing = index.is_none();
             if rebuild.contains(&field) || (missing && (value || word)) {
-                self.build_index(table, &field, data_type, value, word);
+                let journal = journal.as_deref_mut();
+                self.build_index(journal, table, &field, data_type, (value, word));
                 changed = true;
             }
         }
@@ -2171,12 +2698,12 @@ impl Store {
     /// logged. Returns the calculations recomputed.
     fn recalculate(
         &mut self,
+        mut journal: Option<&mut Journal>,
         table: &[u8],
         definition: &om_hbam::Table,
         stale: &BTreeSet<u64>,
         deferred: DeferredFieldWork<'_>,
-        environment: &mut dyn FnMut() -> RecordEnvironment,
-        unique_id: &mut dyn FnMut() -> [u8; 16],
+        (environment, unique_id): Draws<'_>,
     ) -> Vec<u64> {
         let Some(plan) = self.with_calc_inputs(table, |tree, calc| {
             Recalculation::plan(definition, tree, calc, stale)
@@ -2219,9 +2746,19 @@ impl Store {
             }
             environment
         };
+        let mut before_change = |record: &OwnedNode| {
+            if let Some(journal) = journal.as_deref_mut() {
+                journal.save_record(table, record);
+            }
+        };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match self.root.at_mut(&[table, &[keys::RECORDS]]) {
-                Some(records) => recalc::recompute_records(records, &plan, &mut with_containers),
+                Some(records) => recalc::recompute_records(
+                    records,
+                    &plan,
+                    &mut with_containers,
+                    &mut before_change,
+                ),
                 None => recalc::Outcome::default(),
             }
         }));
@@ -2238,6 +2775,7 @@ impl Store {
             let mut naming = self.naming_cells(table, deferred.0, deferred.1);
             for (record, cells) in &outcome.containers {
                 self.store_recomputed_containers(
+                    journal.as_deref_mut(),
                     table,
                     record,
                     cells,
@@ -2266,9 +2804,13 @@ impl Store {
             .iter()
             .filter_map(|f| definition.field(*f).map(|f| f.name.as_str()))
             .collect();
-        info!(
-            "{}: table {:?}: recomputed {names:?} on {} record(s), {} changed",
-            self.name, definition.name, outcome.records, outcome.changed
+        note(
+            &self.name,
+            journal,
+            format!(
+                "table {:?}: recomputed {names:?} on {} record(s), {} changed",
+                definition.name, outcome.records, outcome.changed
+            ),
         );
         self.dirty |= outcome.changed > 0;
         fields
@@ -2281,7 +2823,13 @@ impl Store {
     /// lost one counts one more modification; one whose count cannot
     /// advance loses it too (it is not a container value), logged.
     /// Returns whether a record changed.
-    fn drop_retyped_cells(&mut self, table: &[u8], field: u64, named: &BTreeSet<Vec<u8>>) -> bool {
+    fn drop_retyped_cells(
+        &mut self,
+        mut journal: Option<&mut Journal>,
+        table: &[u8],
+        field: u64,
+        named: &BTreeSet<Vec<u8>>,
+    ) -> bool {
         let key = uint_segment(field);
         let mut cells = self.repetition_cells(table, &key, named);
         cells.insert(key);
@@ -2291,6 +2839,12 @@ impl Store {
         let mut changed = false;
         let mut exhausted = 0usize;
         for record in &mut records.children {
+            if !record.children.iter().any(|c| cells.contains(&c.segment)) {
+                continue;
+            }
+            if let Some(journal) = journal.as_deref_mut() {
+                journal.save_record(table, record);
+            }
             let before = record.children.len();
             record
                 .children
@@ -2329,8 +2883,10 @@ impl Store {
     /// form of a member reference. Releases cannot spend the references
     /// reserved for those cells or for this record's new results.
     /// `naming` follows the record's change only once storage succeeds.
+    #[allow(clippy::too_many_arguments)]
     fn store_recomputed_containers(
         &mut self,
+        outer: Option<&mut Journal>,
         table: &[u8],
         record: &[u8],
         cells: &BTreeMap<u64, ContainerResult>,
@@ -2399,6 +2955,10 @@ impl Store {
             );
             self.roll_back(journal);
             return;
+        }
+        if let Some(outer) = outer {
+            outer.absorb(journal);
+            outer.save_record(table, &old);
         }
         if let Some(node) = self.root.at_mut(&path) {
             for (member, (added, removed, _)) in references {
@@ -2485,6 +3045,7 @@ impl Store {
     /// that still appear in records and globals.
     fn release_containers(
         &mut self,
+        mut journal: Option<&mut Journal>,
         table: &[u8],
         removed: BTreeMap<Vec<u8>, i32>,
         naming: &BTreeMap<Vec<u8>, i64>,
@@ -2502,6 +3063,17 @@ impl Store {
                     self.name
                 );
                 continue;
+            }
+            if let Some(journal) = journal.as_deref_mut() {
+                let changed = self
+                    .node(&path)
+                    .and_then(|l| library::adjust_keys(l, &member, -release))
+                    .unwrap_or_default();
+                for keys in changed {
+                    let mut at = vec![table.to_vec(), vec![LIBRARY]];
+                    at.extend(keys);
+                    journal.save_node(&self.root, at);
+                }
             }
             if let Some(library) = self.root.at_mut(&path) {
                 library::adjust(library, &member, -release);
@@ -2521,15 +3093,25 @@ impl Store {
     /// "Global values"), releasing a container's library members.
     fn drop_global_value(
         &mut self,
+        journal: Option<&mut Journal>,
         table: &[u8],
         field: &[u8],
-        from: u16,
-        container: bool,
+        (from, container): (u16, bool),
         others: &BTreeSet<Vec<u8>>,
         removed: &mut BTreeMap<Vec<u8>, i32>,
     ) {
         let cells = self.cells_from(table, field, from, others);
-        let Some(globals) = self.root.at_mut(&[table, &[keys::GLOBALS]]) else {
+        let globals = [table, &[keys::GLOBALS]];
+        let Some(values) = self.root.at(&globals) else {
+            return;
+        };
+        if !values.children.iter().any(|c| cells.contains(&c.segment)) {
+            return;
+        }
+        if let Some(journal) = journal {
+            journal.save_node(&self.root, vec![table.to_vec(), vec![keys::GLOBALS]]);
+        }
+        let Some(globals) = self.root.at_mut(&globals) else {
             return;
         };
         let (gone, kept): (Vec<OwnedNode>, Vec<OwnedNode>) = std::mem::take(&mut globals.children)
@@ -2555,6 +3137,7 @@ impl Store {
     /// A styled (nested) value stays as stored. Whether any changed.
     fn convert_field_values(
         &mut self,
+        mut journal: Option<&mut Journal>,
         table: &[u8],
         field: &[u8],
         timestamp: bool,
@@ -2596,6 +3179,9 @@ impl Store {
                 if rewrites.is_empty() {
                     continue;
                 }
+                if let Some(journal) = journal.as_deref_mut() {
+                    journal.save_record(table, record);
+                }
                 if modcount::bump(record, 1).is_none() {
                     kept += 1;
                     continue;
@@ -2615,11 +3201,14 @@ impl Store {
             );
         }
         if converted > 0 {
-            info!(
-                "{}: {converted} record(s) of table {table:02x?}: field {field:02x?}'s values \
-                 rewritten as {}",
-                self.name,
-                if timestamp { "timestamps" } else { "dates" }
+            note(
+                &self.name,
+                journal,
+                format!(
+                    "{converted} record(s) of table {table:02x?}: field {field:02x?}'s values \
+                     rewritten as {}",
+                    if timestamp { "timestamps" } else { "dates" }
+                ),
             );
             self.dirty = true;
         }
@@ -2635,10 +3224,10 @@ impl Store {
     /// (#361).
     fn drop_field_values(
         &mut self,
+        mut journal: Option<&mut Journal>,
         table: &[u8],
         field: &[u8],
-        from: u16,
-        container: bool,
+        (from, container): (u16, bool),
         others: &BTreeSet<Vec<u8>>,
         removed: &mut BTreeMap<Vec<u8>, i32>,
     ) {
@@ -2649,6 +3238,9 @@ impl Store {
             for record in &mut records.children {
                 if !record.children.iter().any(is_value) {
                     continue;
+                }
+                if let Some(journal) = journal.as_deref_mut() {
+                    journal.save_record(table, record);
                 }
                 if modcount::bump(record, 1).is_none() {
                     kept += 1;
@@ -2679,14 +3271,25 @@ impl Store {
     /// field is left without an index.
     fn build_index(
         &mut self,
+        mut journal: Option<&mut Journal>,
         table: &[u8],
         field: &[u8],
         data_type: DataType,
-        value: bool,
-        word: bool,
+        (value, word): (bool, bool),
     ) {
         let word = word && data_type == DataType::Text;
-        self.root.remove(&[table, &[keys::INDEXES], field]);
+        match journal.as_deref_mut() {
+            Some(journal) => {
+                let index = vec![table.to_vec(), vec![keys::INDEXES], field.to_vec()];
+                journal.take(&mut self.root, index.clone());
+                let mut kind = index;
+                kind.push(vec![keys::VALUE_INDEX]);
+                journal.save_parents(&self.root, &kind);
+            }
+            None => {
+                self.root.remove(&[table, &[keys::INDEXES], field]);
+            }
+        }
         self.dirty = true;
         // An index language whose keys this server does not build leaves
         // the field without an index rather than with English keys (#159):
@@ -2707,8 +3310,13 @@ impl Store {
             let index = self.index_keys(table, field, data_type, keys::WORD_INDEX, form);
             self.put_index(table, field, keys::WORD_INDEX, index);
         }
-        info!(
-            "built the indexes of table {table:02x?} field {field:02x?} (value {value}, word {word})"
+        note(
+            &self.name,
+            journal,
+            format!(
+                "built the indexes of table {table:02x?} field {field:02x?} (value {value}, \
+                 word {word})"
+            ),
         );
         self.dirty = true;
     }
@@ -2808,7 +3416,22 @@ impl Store {
     /// ([`Store::take_indexes_on_demand`]), so that record writes keep them
     /// current from now on (query-program.md 7.1). Each is built again
     /// here, under the write lock, from the records as they are now.
+    #[cfg(test)]
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
+        let mut journal = self.begin_commit();
+        self.store_indexes_in(&mut journal, indexes);
+    }
+
+    /// Put `indexes`, taken by [`Store::take_indexes_on_demand`] and not
+    /// stored, back among those waiting: the write that took them was not
+    /// stored, so the next one stores them.
+    pub fn put_back_indexes(&mut self, indexes: Vec<IndexId>) {
+        self.waiting.put_back_indexes(indexes);
+    }
+
+    /// [`Store::store_indexes`] within `journal`, which keeps what each
+    /// index replaces (nothing, as a rule) and the parents it creates.
+    pub fn store_indexes_in(&mut self, journal: &mut Journal, indexes: Vec<IndexId>) {
         for (table, field, kind) in indexes {
             let index = [table.as_slice(), &[keys::INDEXES], &field];
             if self
@@ -2828,8 +3451,14 @@ impl Store {
                 continue;
             };
             let index = self.index_keys(&table, &field, data_type, kind, form);
+            for key in [kind, counts_key(kind)] {
+                let path = vec![table.clone(), vec![keys::INDEXES], field.clone(), vec![key]];
+                journal.save_path(&self.root, path);
+            }
             if self.put_index(&table, &field, kind, index) {
-                info!("built index {kind} of table {table:02x?} field {field:02x?} on demand");
+                journal.note(format!(
+                    "built index {kind} of table {table:02x?} field {field:02x?} on demand"
+                ));
                 self.dirty = true;
             }
         }
@@ -2922,12 +3551,15 @@ impl Store {
             saves: 0,
             #[cfg(debug_assertions)]
             fail_commit_saves: false,
+            #[cfg(debug_assertions)]
+            save_fault: None,
+            unknown: None,
             generation: 0,
             waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
-            read_only: false,
+            read_only: None,
         }
     }
 
@@ -3508,11 +4140,10 @@ impl om_query::Source for Store {
     }
 
     /// Issue the catalog's next member id and modification count
-    /// ([`derived::generate_member_key`]); [`Store::write_member_keys`]
-    /// stores them.
+    /// ([`Store::issue_member_key`]), as key strings.
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
-        derived::generate_member_key(&self.tree_view(), &self.waiting, &self.name, catalog)
-            .expect("the file engine's tree never fails a read")
+        let next = self.issue_member_key(catalog)?;
+        Some((modcount::key_string(next.0), modcount::key_string(next.1)))
     }
 }
 
@@ -3622,6 +4253,37 @@ fn increment_serial(text: &str, by: i32) -> String {
     )
 }
 
+#[cfg(debug_assertions)]
+impl Store {
+    /// The last member id and modification count issued for `catalog`
+    /// that wait to be written, and those the tree holds (the inputs of
+    /// GenerateMemberKey, `om_query::Source::generate_member_key`).
+    pub(crate) fn member_keys_for_tests(
+        &self,
+        catalog: &[Vec<u8>],
+    ) -> (Option<(u64, u64)>, (u64, u64)) {
+        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
+        let stored = derived::stored_member_key(&self.tree_view(), &path)
+            .expect("the file engine's tree never fails a read");
+        (self.waiting.issued_for(catalog), stored)
+    }
+}
+
+#[cfg(test)]
+impl Store {
+    /// The basis of stored calculations, by table ([`recalc`]): tests check
+    /// that a change not stored leaves it as it was.
+    pub(crate) fn basis_for_tests(&self) -> &HashMap<Vec<u8>, TableBasis> {
+        &self.basis
+    }
+
+    /// What reads left waiting: the indexes built on demand and the member
+    /// keys issued, each in order.
+    pub(crate) fn waiting_for_tests(&self) -> (Vec<IndexId>, Vec<MemberKey>) {
+        self.waiting.snapshot()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3695,12 +4357,15 @@ mod tests {
             saves: 0,
             #[cfg(debug_assertions)]
             fail_commit_saves: false,
+            #[cfg(debug_assertions)]
+            save_fault: None,
+            unknown: None,
             generation: 0,
             waiting: Waiting::default(),
             verified: (0, BTreeMap::new()),
             lock: None,
             file: None,
-            read_only: false,
+            read_only: None,
         }
     }
 
@@ -3807,7 +4472,6 @@ mod tests {
         assert_eq!(store.file(), published);
         assert!(written.is_some_and(|n| n > 3), "{written:?}");
     }
-
     #[test]
     fn serials_advance_their_last_number() {
         assert_eq!(increment_serial("698047", 1), "698048");
@@ -4063,13 +4727,20 @@ mod tests {
         }
         // Cut to one repetition: from repetition 2 up.
         let mut removed = BTreeMap::new();
-        store.drop_field_values(table, &first, 2, true, &BTreeSet::new(), &mut removed);
+        store.drop_field_values(
+            None,
+            table,
+            &first,
+            (2, true),
+            &BTreeSet::new(),
+            &mut removed,
+        );
         let naming = store.naming_cells(
             table,
             &[(first.clone(), deferred::FEWER | deferred::CONTAINER)],
             &BTreeSet::new(),
         );
-        store.release_containers(table, removed, &naming);
+        store.release_containers(None, table, removed, &naming);
         let cell = |cell: &[u8]| {
             store
                 .node(&[table, &[keys::RECORDS], &record, cell])

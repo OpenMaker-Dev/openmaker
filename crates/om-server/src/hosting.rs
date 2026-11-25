@@ -23,7 +23,7 @@ use crate::engine::{
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
 use crate::locks::LockTable;
-use crate::store::{Journal, Store};
+use crate::store::{Journal, SaveError, Store};
 use crate::thumbnail;
 
 /// An account defined in a file's security catalog.
@@ -239,13 +239,32 @@ pub struct Hosted {
     /// The accounts in the file's security catalog as the store holds it
     /// at a schema generation ([`Hosted::accounts`]).
     accounts: RwLock<Accounts>,
-    /// Deferred field work [`Store::recover`] finished in memory and not
-    /// saved yet: a local file keeps it provisional until an eligible
-    /// account logs in ([`Hosted::commit_recovery`]); closing before that
-    /// leaves the file as it was.
-    pending_recovery: std::sync::atomic::AtomicBool,
+    /// Where the deferred field work the file records as pending stands
+    /// ([`Hosted::recover`]): finished and saved, a server's file's as it
+    /// is loaded, a local file's when an account it admits first logs in,
+    /// so that closing before that leaves the file as it was.
+    recovery: Mutex<Recovery>,
+    /// Why the file takes no more changes, once a save's outcome was
+    /// unknown (`Store::writes_refused`): kept here too, so that the
+    /// administrator's list of files reads it without waiting for the
+    /// store ([`Hosted::writes_refused`]). Set once; hosting the file again
+    /// makes a new `Hosted`.
+    unknown: std::sync::OnceLock<String>,
     /// Where a failed save is recorded and raised as an alert.
     events: EventLog,
+}
+
+/// Where a file's deferred field work stands ([`Hosted::recover`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Recovery {
+    /// Still to be finished and saved.
+    Due,
+    /// Begun and not ended: a run a panic left stays so.
+    Begun,
+    /// Ended with an outcome: saved, nothing to do, taken back (the file
+    /// read-only) or unknown (the file taking no more changes); or found
+    /// left by a panic and the file made read-only.
+    Ended,
 }
 
 /// A file's accounts, decoded from its store at the store's schema
@@ -328,11 +347,10 @@ impl std::fmt::Debug for Hosted {
 impl Hosted {
     /// The hosted file `hosted`, whose contents `file` holds, with server
     /// id `id`, as the file holds it: deferred field work a stop
-    /// interrupted is finished by [`Hosted::finish_deferred_work`] before
-    /// the file is served. A local file comes with its lock and whether it
-    /// is read-only. A file FileMaker Server calls insecure is refused
-    /// unless `insecure_files` (a local file never is). A failed save is
-    /// recorded in `events`.
+    /// interrupted is finished by [`Hosted::recover`]. A local file comes
+    /// with its lock and whether it is read-only. A file FileMaker Server
+    /// calls insecure is refused unless `insecure_files` (a local file
+    /// never is). A failed save is recorded in `events`.
     fn load(
         id: u32,
         hosted: &HostedFile,
@@ -366,7 +384,7 @@ impl Hosted {
                 store.set_lock(lock);
             }
             if local_read_only {
-                store.set_read_only();
+                store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
         let accounts = RwLock::new(Accounts::of(&store));
@@ -381,36 +399,75 @@ impl Hosted {
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
             accounts,
-            pending_recovery: std::sync::atomic::AtomicBool::new(false),
+            recovery: Mutex::new(Recovery::Due),
+            unknown: std::sync::OnceLock::new(),
             events: events.clone(),
         })
     }
 
-    /// Finish the deferred field work the file records as pending, with
-    /// `engine`, before the file is served (schema-path.md "Implementation
-    /// notes (recalculation)"; [`Operation::FinishDeferredWork`]): in
-    /// memory, where every reader sees it from then on, and unsaved until
-    /// [`Self::commit_recovery`].
-    pub(crate) fn finish_deferred_work(&self, engine: &FileEngine) {
-        use std::sync::atomic::Ordering;
-        let finished = engine.submit(self, Operation::FinishDeferredWork);
-        let changed = finished.reply == Reply::FinishDeferredWork(true);
-        self.pending_recovery.store(changed, Ordering::Release);
-    }
-
-    /// Save, with `engine`, what [`Self::finish_deferred_work`] finished
-    /// when the file was loaded, if it is still unsaved: a server's file at
-    /// once, a local file once an eligible account logged in
-    /// ([`Operation::SaveFile`]). A failed save is logged and alerted, and
-    /// the work waits in memory for the next save.
-    pub(crate) fn commit_recovery(&self, engine: &FileEngine) {
-        use std::sync::atomic::Ordering;
-        if self.pending_recovery.swap(false, Ordering::AcqRel) {
-            info!(
-                "{:?}: saving the deferred field work finished on opening",
+    /// Finish and save, with `engine`, the deferred field work the file
+    /// records as pending (schema-path.md "Implementation notes
+    /// (recalculation)"; [`Operation::FinishDeferredWork`]), once: a
+    /// server's file as it is loaded, before it is served, a local file
+    /// when an account it admits first logs in, so that a local file closed
+    /// before that is left as it was. The work and its save are one
+    /// operation: when the save fails, the work is taken back, the file is
+    /// served as its disk holds it, read-only, and the failure is logged and
+    /// alerted; when the save's outcome is unknown, the file keeps the work
+    /// and takes no more changes (docs/server-storage.md 5).
+    /// The check and the operation are one step, under the state's mutex: a
+    /// login that comes while another login's recovery runs waits for it to
+    /// end (finished, taken back or unknown) before it is answered, so no
+    /// login to a local file is answered, and no record served to it,
+    /// before the work ended. The work is marked ended only once the
+    /// operation has an outcome: one a panic left (the engine took back
+    /// what it did, so the file is as its disk holds it, the work pending)
+    /// is found begun by the next login, which gets the file read-only, as
+    /// when the work cannot be done, never as if it were recovered.
+    pub(crate) fn recover(&self, engine: &FileEngine) {
+        let mut state = self
+            .recovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *state {
+            Recovery::Ended => return,
+            Recovery::Begun => {
+                error!(
+                    "{:?}: the deferred field work finished on opening was left part way; \
+                     the file is served read-only as its disk holds it",
+                    self.name
+                );
+                self.events.alert(Event::hosted_read_only(
+                    &self.name,
+                    "finishing its deferred field work was left part way",
+                ));
+                self.store_for_writing()
+                    .set_read_only(crate::store::ReadOnlyCause::DeferredWork);
+                *state = Recovery::Ended;
+                return;
+            }
+            Recovery::Due => {}
+        }
+        *state = Recovery::Begun;
+        let reply = engine.submit(self, Operation::FinishDeferredWork).reply;
+        *state = Recovery::Ended;
+        match reply {
+            Reply::FinishDeferredWork(Ok(true)) => info!(
+                "{:?}: saved the deferred field work finished on opening",
                 self.name
-            );
-            engine.submit(self, Operation::SaveFile);
+            ),
+            Reply::FinishDeferredWork(Ok(false)) => {}
+            Reply::FinishDeferredWork(Err(error)) if error.unknown => warn!(
+                "{:?}: the deferred field work finished on opening may or may not be on \
+                 disk: {error}",
+                self.name
+            ),
+            Reply::FinishDeferredWork(Err(error)) => warn!(
+                "{:?}: the deferred field work finished on opening was taken back, and the \
+                 file is served read-only: {error}",
+                self.name
+            ),
+            other => warn!("{:?}: the engine answered {other:?}", self.name),
         }
     }
 
@@ -472,6 +529,20 @@ impl Hosted {
         self.store_for_writing().fail_commit_saves = fail;
     }
 
+    /// Make every save of this file fail at `fault`, or work again with
+    /// `None` (`ServerHandle::failing_saves`, a test's switch).
+    #[cfg(debug_assertions)]
+    pub(crate) fn fail_saves(&self, fault: Option<crate::store::SaveFault>) {
+        self.store_for_writing().save_fault = fault;
+    }
+
+    /// Why the file takes no more changes until it is hosted again: a
+    /// save's outcome was unknown ([`crate::store::SaveError::Unknown`]).
+    /// Read without waiting for the store.
+    pub fn writes_refused(&self) -> Option<&str> {
+        self.unknown.get().map(String::as_str)
+    }
+
     /// Whether a request panicked holding the store.
     #[cfg(test)]
     pub(crate) fn store_is_poisoned(&self) -> bool {
@@ -518,102 +589,71 @@ impl Hosted {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Write `store`, this file's, which the caller holds, back to disk if
-    /// its contents changed: whether the disk now holds every change, or
-    /// the last error. A failure of the disk is logged and the changes stay
-    /// in memory for the next attempt; this is for changes that may wait
-    /// (reserved record ids and serial numbers, indexes built on demand,
-    /// schema and container uploads). Every such change is checked against
-    /// the tree before it is made, so it cannot leave what the file cannot
-    /// hold. If a field index the file cannot hold is in the tree anyway,
-    /// it is taken out ([`Store::drop_unwritable_indexes`]; the next find
-    /// that reads it builds it again), logged, and the save tried again.
-    /// Anything else the file cannot hold is kept as it is and logged, and
-    /// saves fail rather than delete data. Record commits are saved with
-    /// [`Self::save_commit`], which takes them back when the file cannot be
-    /// written. A change that must be on disk before it is answered (an
-    /// issued record id, #927) is taken back by the engine when this
-    /// fails.
-    pub(crate) fn save_held(&self, store: &mut Store) -> std::io::Result<()> {
-        if store.is_read_only() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ReadOnlyFilesystem,
-                "the file is hosted read-only",
-            ));
-        }
+    /// Store `journal`, the change an operation made to `store`, this
+    /// file's, which the engine holds for writing: the file is written if
+    /// it holds changes the disk lacks ([`Store::save_commit`] for a
+    /// commit, [`Store::save_change`] for another change; each also writes
+    /// the changes others left waiting). Logged, and alerted in the event
+    /// log unless it is a [`Saving::QuietCommit`] (a window's found set): a
+    /// save that did not write the file put back what the change did when
+    /// it had effects (otherwise what waited stays waiting), and one whose
+    /// outcome is unknown leaves the file taking no more changes, which is
+    /// alerted once, quiet or not.
+    pub(crate) fn save_change(
+        &self,
+        store: &mut Store,
+        journal: Journal,
+        saving: Saving,
+    ) -> Result<(), SaveError> {
         let started = Instant::now();
-        let error = match store.save(&self.at) {
-            Ok(true) => {
-                debug!("{:?}: saved in {:?}", self.name, started.elapsed());
-                return Ok(());
-            }
-            Ok(false) => return Ok(()),
-            Err(e) => e,
+        let effects = journal.changed();
+        let quiet = saving == Saving::QuietCommit;
+        let saved = match saving {
+            Saving::Commit | Saving::QuietCommit => store.save_commit(&self.at, journal),
+            Saving::Change => store.save_change(&self.at, journal),
         };
-        let (dropped, kept) = store.drop_unwritable_indexes();
-        if !kept.is_empty() {
-            error!(
-                "{:?}: saving to {} failed ({error}): the file cannot hold what the tree holds \
-                 here, which is kept as it is and not saved: {}",
-                self.name,
-                self.path.display(),
-                crate::store::describe(&kept)
-            );
-            self.events.alert(Event::save_failed(
-                &self.name,
-                &error,
-                SaveOutcome::Unwritable,
-            ));
-        }
-        if dropped.is_empty() {
-            if kept.is_empty() {
-                error!(
-                    "{:?}: saving to {} failed, unsaved changes are kept in memory: {error}",
+        match &saved {
+            Ok(()) => debug!("{:?}: saved in {:?}", self.name, started.elapsed()),
+            Err(SaveError::Unknown(e)) => {
+                let why = store
+                    .writes_refused()
+                    .map_or_else(|| e.to_string(), str::to_owned);
+                if self.unknown.set(why).is_ok() {
+                    error!(
+                        "{:?}: saving to {} could not be confirmed on disk ({e}): the file \
+                         keeps the change in memory and takes no more changes until it is \
+                         hosted again",
+                        self.name,
+                        self.path.display()
+                    );
+                    self.events
+                        .alert(Event::save_failed(&self.name, e, SaveOutcome::Unknown));
+                }
+            }
+            Err(SaveError::NotWritten(e)) if quiet => {
+                debug!(
+                    "{:?}: saving to {} failed: {e}",
                     self.name,
                     self.path.display()
                 );
-                self.events
-                    .alert(Event::save_failed(&self.name, &error, SaveOutcome::Kept));
             }
-            return Err(error);
-        }
-        error!(
-            "{:?}: saving to {} failed ({error}): took out field indexes the file cannot hold, \
-             which the next find that reads them builds again: {}",
-            self.name,
-            self.path.display(),
-            crate::store::describe(&dropped)
-        );
-        if !kept.is_empty() {
-            return Err(error);
-        }
-        if let Err(e) = store.save(&self.at) {
-            error!(
-                "{:?}: saving to {} failed, unsaved changes are kept in memory: {e}",
-                self.name,
-                self.path.display()
-            );
-            self.events
-                .alert(Event::save_failed(&self.name, &e, SaveOutcome::Kept));
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    /// [`Store::save_commit`] for this file, logged.
-    pub(crate) fn save_commit(&self, store: &mut Store, journal: Journal) -> std::io::Result<()> {
-        let started = Instant::now();
-        let saved = store.save_commit(&self.at, journal);
-        match &saved {
-            Ok(()) => debug!("{:?}: saved in {:?}", self.name, started.elapsed()),
-            Err(e) => {
+            Err(SaveError::NotWritten(e)) if effects => {
                 error!(
-                    "{:?}: saving to {} failed, the commit was taken back: {e}",
+                    "{:?}: saving to {} failed, the change was taken back: {e}",
                     self.name,
                     self.path.display()
                 );
                 self.events
                     .alert(Event::save_failed(&self.name, e, SaveOutcome::TakenBack));
+            }
+            Err(SaveError::NotWritten(e)) => {
+                error!(
+                    "{:?}: saving to {} failed, unsaved changes are kept in memory: {e}",
+                    self.name,
+                    self.path.display()
+                );
+                self.events
+                    .alert(Event::save_failed(&self.name, e, SaveOutcome::Kept));
             }
         }
         saved
@@ -656,6 +696,18 @@ impl Hosted {
         let matched = std::hint::black_box(stored.verify(password));
         account.filter(|account| matched && account.password.is_ok())
     }
+}
+
+/// What [`Hosted::save_change`] stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Saving {
+    /// A commit: op70, an authoring edit, a server script's commit and Set
+    /// Next Serial Value, an account edit.
+    Commit,
+    /// A window's saved found set, whose failed save is not alerted.
+    QuietCommit,
+    /// Any other change.
+    Change,
 }
 
 /// FileMaker's error for a save that failed (OpenMaker's choice; how
@@ -1104,6 +1156,10 @@ pub enum PasswordChangeError {
     Inactive,
     /// The file could not be written, and nothing changed.
     Unwritten(String),
+    /// The file was written but could not be confirmed on disk: the
+    /// password may or may not be the new one there, and the file takes no
+    /// more changes until it is hosted again (docs/server-storage.md 5).
+    OutcomeUnknown(String),
 }
 
 /// Why Reset Account Password or Enable Account changed nothing.
@@ -1127,24 +1183,29 @@ pub enum AccountEditError {
     /// The account could not be rewritten, or the file could not be
     /// written, and nothing changed.
     Unwritten(String),
+    /// The file was written but could not be confirmed on disk: the edit
+    /// may or may not be in it, and the file takes no more changes until it
+    /// is hosted again (docs/server-storage.md 5).
+    OutcomeUnknown(String),
 }
 
 impl AccountEditError {
     /// FileMaker's error code; `None` for an account or file that could not
-    /// be written.
+    /// be written, or whose save could not be confirmed.
     pub fn code(&self) -> Option<i32> {
         match self {
             Self::Missing => Some(213),
             Self::NotFileAccount => Some(206),
             Self::TooLong => Some(11),
             Self::Unsupported | Self::FullAccess => Some(3),
-            Self::Unwritten(_) => None,
+            Self::Unwritten(_) | Self::OutcomeUnknown(_) => None,
         }
     }
 }
 
 impl PasswordChangeError {
-    /// FileMaker's error code; `None` for a file that could not be written.
+    /// FileMaker's error code; `None` for a file that could not be written,
+    /// or whose save could not be confirmed.
     pub fn code(&self) -> Option<i32> {
         match self {
             Self::Refused => Some(212),
@@ -1153,7 +1214,7 @@ impl PasswordChangeError {
             Self::Unchanged => Some(209),
             Self::TooLong => Some(11),
             Self::Inactive => Some(210),
-            Self::Unwritten(_) => None,
+            Self::Unwritten(_) | Self::OutcomeUnknown(_) => None,
         }
     }
 }
@@ -1842,15 +1903,13 @@ impl Hosting {
     /// Host one file a local client opened, already read from its locked
     /// descriptor: `lock` (none where the file cannot be locked, and then
     /// `read_only`) stays with the file's store, and a `read_only` file is
-    /// never written. Deferred work finished with `engine` on loading stays
-    /// unsaved until an eligible account logs in
-    /// ([`Hosted::commit_recovery`]).
+    /// never written. Its deferred work is finished and saved when an
+    /// account it admits first logs in ([`Hosted::recover`]).
     pub(crate) fn local(
         hosted: &HostedFile,
         file: &HbamFile,
         lock: Option<FileLock>,
         read_only: bool,
-        engine: &FileEngine,
     ) -> Result<Self, HostingError> {
         let configured = vec![hosted.clone()];
         // The path the desktop opened and locked, as it named it.
@@ -1867,7 +1926,6 @@ impl Hosting {
             false,
             &EventLog::default(),
         )?;
-        hosted.finish_deferred_work(engine);
         Ok(Hosting {
             slots: vec![Slot::serving(Arc::new(hosted))],
             configured,
@@ -1922,7 +1980,12 @@ impl Hosting {
 /// saving first, with `engine`, the deferred field work it records as
 /// pending: a server's files are recovered as they are loaded. An insecure
 /// file is refused, before anything is written, unless `insecure_files`. A
-/// failed save, that one included, is recorded in `events`.
+/// file with anything at its save's copy name (`<file>.omsave`, an earlier
+/// save's leftover or not) is hosted as any file is, and an alert names
+/// the entry: each of its saves fails, the change taken back, until the
+/// administrator removes it; nothing removes it here
+/// (docs/server-storage.md 5). A failed save, that of the deferred work
+/// included, is recorded in `events`.
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,
@@ -1960,8 +2023,27 @@ fn load_hosted(
     // this file (#468).
     loaded.store_for_writing().set_file(on_disk);
     drop(file);
-    loaded.finish_deferred_work(engine);
-    loaded.commit_recovery(engine);
+    // Looked at in the file's folder, without following a link; one that
+    // cannot be looked at counts.
+    let copy_in_the_way = !matches!(
+        at.folder()
+            .and_then(|folder| crate::store::copy_beside(&folder, at.name())),
+        Ok(false)
+    );
+    if copy_in_the_way {
+        let copy = crate::store::save_copy_path(at.path());
+        error!(
+            "{:?}: something is at {}, where its saves write their new copy (an earlier \
+             save's leftover?); its changes are not saved until that is removed",
+            hosted.name,
+            copy.display()
+        );
+        events.alert(Event::save_copy_in_the_way(
+            &hosted.name,
+            &copy.display().to_string(),
+        ));
+    }
+    loaded.recover(engine);
     Ok(loaded)
 }
 
@@ -2054,6 +2136,54 @@ mod tests {
         let loaded = wait.recv_timeout(std::time::Duration::from_secs(30));
         let _ = std::fs::remove_file(&fifo);
         assert!(matches!(loaded, Ok(Ok(true))), "the good file is hosted");
+    }
+
+    /// The review's P0 on recovery: deferred work a local file holds is
+    /// finished at the first admitted login, and a login that comes while
+    /// it runs is answered only once it ended, as is the first: whichever
+    /// checks first does the work, under the lock the other waits on.
+    #[test]
+    fn a_login_while_recovery_runs_waits_for_it() {
+        use om_hbam::slot::uint_segment;
+        use om_hbam::OwnedNode;
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_tasks(&mut tree, 1..=3);
+        let deferred = [uint_segment(fixture::TABLE), vec![3], vec![1], vec![0xfd]];
+        let path: Vec<&[u8]> = deferred.iter().map(Vec::as_slice).collect();
+        let work = OwnedNode::leaf(uint_segment(fixture::COUNT), 0x40u32.to_be_bytes().to_vec());
+        tree.put(&path, OwnedNode::list(vec![0xfd], vec![work]));
+        let disk = fixture::TempFile::from_tree("hosting-recovery-race", &tree);
+        let hbam = HbamFile::open(&disk.0).unwrap();
+        let hosted = HostedFile {
+            name: fixture::FILE.into(),
+            path: disk.0.clone(),
+        };
+        let hosting = Hosting::local(&hosted, &hbam, None, false).unwrap();
+        let file = hosting.by_name(fixture::FILE).unwrap();
+        assert!(
+            file.read_store().node(&path).is_some(),
+            "not before a login"
+        );
+        let engine = FileEngine::default();
+        let (done, answered) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            // The work cannot run until the store is let go of.
+            let held = file.store_for_writing();
+            for login in 0..2 {
+                let (file, engine, done) = (&file, &engine, done.clone());
+                scope.spawn(move || {
+                    file.recover(engine);
+                    done.send(login).unwrap();
+                });
+            }
+            assert!(
+                answered.recv_timeout(Duration::from_millis(300)).is_err(),
+                "no login is answered before the work ended"
+            );
+            drop(held);
+        });
+        assert_eq!(answered.try_iter().count(), 2);
+        assert!(file.read_store().node(&path).is_none(), "the work is done");
     }
 
     /// A password changed over the wire (#732's review: FileMaker Pro's

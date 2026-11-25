@@ -787,8 +787,18 @@ than a second reader and writer.
   safely: this user or its file system may not write it, its folder does not
   allow the new copy a save writes, it has other names (hard links, which
   the renamed copy would leave with old contents), it cannot be locked here
-  (Windows; file systems without `flock`), or an entry already has the name
-  of a save's copy (`<file>.omsave`). The window shows why; the provider
+  (Windows; file systems without `flock`), or anything already has the
+  name of a save's copy (`<file>.omsave`), a copy an earlier save left
+  when it stopped part way included: nothing removes it, the user does
+  (docs/server-storage.md 5, "A leftover copy"). A file also becomes
+  read-only after it opened: when the deferred field work it held could
+  not be saved at the first admitted login, or was left part way, and when
+  a save's outcome was unknown, after which it takes no more changes
+  (docs/server-storage.md 5). Each has its own reason (`ReadOnly`), and
+  the reason the provider gives when the opening login ends, and at each
+  later check, is the host's state then. The window shows why (the reason
+  given when it opened: one a later save brings is not shown, though the
+  provider refuses the writes); the provider
   refuses changes before sending them (FileMaker's error 6, also for the
   deletions scripts and portals make), the host refuses every write request
   (record creation, uploads, commits, serials, schema and container
@@ -829,7 +839,9 @@ than a second reader and writer.
     has, whatever is renamed over the path meanwhile. A compacted copy is
     the key tree written as a new packed file (hbam-writer.md 7.2). So is a
     copy while changes a failed save left wait in memory, or of a file the
-    host could not lock.
+    host could not lock. Before any login the tree is the file as its disk
+    holds it, deferred field work list included, so a compacted copy saved
+    then finishes that work when an account first logs in to it.
   - *Destinations.* Linux only. The resolved path must lead through
     existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
     be owned by root or the effective user and either deny group and other
@@ -865,10 +877,14 @@ than a second reader and writer.
     the resulting store [I]. A later I/O failure or a destination that
     becomes occupied during the commit returns 800.
 - **Recovery.** Deferred field work an earlier stop left in the file
-  (schema-path.md) is finished in memory when the file opens and saved only
-  once an admitted account logs in to a writable file: a wrong password,
-  a refused account, Cancel or a failed open leave the file as it was.
-  OpenMaker Server's own files are still recovered as it starts.
+  (schema-path.md) is finished and saved, as one operation, when an
+  admitted account first logs in to a writable file: a wrong password, a
+  refused account, Cancel or a failed open leave the file as it was. When
+  that save fails the work is taken back and the file is served as its
+  disk holds it, read-only; so it is when the work was left part way (a
+  panic), which the next login finds. A second login waits for the first
+  one's work to end. OpenMaker Server's own files are recovered the same
+  way as it starts.
 - **Closing.** Closing the file disconnects its session and gives up the
   session's hold on the host (below, "Related files and other files"). When
   no other session of the window's files has the file open, the host stops,

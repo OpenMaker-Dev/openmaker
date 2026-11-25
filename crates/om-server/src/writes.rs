@@ -666,7 +666,8 @@ pub enum CommitError {
     /// written.
     Refused(String),
     /// The file could not be saved: the commit was taken back and its
-    /// records stay locked.
+    /// records stay locked; or the save could not be confirmed on disk,
+    /// and the file, which keeps the commit, takes no more changes.
     NotSaved(String),
 }
 
@@ -877,7 +878,7 @@ pub struct RecordWrite {
 /// table exists, no other lock user holds it, a new record's id was issued
 /// and is free, a changed or deleted record still exists, its modification
 /// count is a count, [`modcount::counted`]) and nothing is written unless
-/// all pass. The engine saves the commit (`Hosted::save_commit`); when it
+/// all pass. The engine saves the commit (`Hosted::save_change`); when it
 /// cannot, the records are put back and the commit fails with the save's
 /// FileMaker error ([`crate::hosting::save_error`]), the records still
 /// locked. Otherwise their locks are released, as op70 releases them. A

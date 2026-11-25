@@ -55,8 +55,8 @@ use crate::containers;
 use crate::engine::{
     AdjustContainerCount, AdvanceSerial, CommitRecords, Direction, Draft, FileEngine, Operation,
     Read as FileRead, ReadError as ViewError, ReleaseLock, ReleaseLocks, ReleaseSessionLocks,
-    Reply, ReserveRecordIds, StoreContainerData, TakeLock, UpdateTable, UpgradeLock,
-    UploadToCatalog, NO_LIMIT,
+    Reply, ReserveRecordIds, SchemaNotChanged, StoreContainerData, TakeLock, UpdateTable,
+    UpgradeLock, UploadToCatalog, NO_LIMIT,
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{Eligibility, FileAccount, Hosted, Hosting, Registration};
@@ -2055,9 +2055,9 @@ fn login(
             file.withheld.lock().expect("withheld records lock").clear();
             file.account = Some(account);
             if shared.local {
-                // Deferred work the local file's opening finished is saved
+                // Deferred work the local file holds is finished and saved
                 // now that an account it admits has logged in.
-                file.hosted.commit_recovery(&shared.engine);
+                file.hosted.recover(&shared.engine);
             }
             LoginReply {
                 error_code: 0,
@@ -2628,7 +2628,11 @@ fn query(
                 file_id: file.hosted.id,
                 connection_key: Some(session.key),
             };
-            let outcome = {
+            // Whether the program itself changes the file: its schema
+            // instructions, a key it reserves. Only such a program fails
+            // when what it stores is not stored.
+            let changes = query_changes_file(&program);
+            let (outcome, issued) = {
                 let reading = shared.engine.read(&file.hosted);
                 let late = shared.late_index_builds.load(Ordering::Relaxed);
                 // A program runs once for each time the reading serves it
@@ -2656,7 +2660,20 @@ fn query(
                 };
                 match ran {
                     Ran::ReadOnly => return Err(Refused.into()),
-                    Ran::Ran(Queried(outcome)) => outcome,
+                    // A file that takes no more changes (a save's outcome
+                    // was unknown) refuses them before they run, so that no
+                    // key is reserved that could never be stored
+                    // (docs/server-storage.md 5).
+                    Ran::NoMoreChanges(why) => {
+                        warn!(
+                            "{peer}: {:?}: query program refused: {why}",
+                            file.hosted.name
+                        );
+                        let code = crate::hosting::save_error(&std::io::Error::other(why));
+                        return Ok(reply(error_slot(code), Resume::complete())
+                            .to_result_within(max_return as usize));
+                    }
+                    Ran::Ran(Queried(outcome), issued) => (outcome, issued),
                 }
             };
             if let Some(error) = &outcome.error {
@@ -2675,30 +2692,107 @@ fn query(
                 let waiting = reading.read().waiting;
                 waiting.has_member_keys() || waiting.has_indexes()
             };
-            if pending || !outcome.writes.is_empty() {
-                for write in &outcome.writes {
-                    let (done, path) = match write {
-                        om_query::Write::Put { path, .. } => ("stored", path),
-                        om_query::Write::Remove { path } => ("removed", path),
-                    };
-                    info!("{peer}: {:?}: {done} {path:02x?}", file.hosted.name);
-                }
+            // Whether the program has catalog writes of its own, besides
+            // the keys it issued.
+            let own_writes = !outcome.writes.is_empty();
+            let answer = outcome.slots;
+            let mut slots = answer.clone();
+            // The FileMaker error of this request's own write, when it was
+            // not stored.
+            let mut not_stored = None;
+            if pending || own_writes {
+                let done: Vec<String> = outcome
+                    .writes
+                    .iter()
+                    .map(|write| match write {
+                        om_query::Write::Put { path, .. } => format!("stored {path:02x?}"),
+                        om_query::Write::Remove { path } => format!("removed {path:02x?}"),
+                    })
+                    .collect();
                 let draft = Draft::ChangeSchema {
                     writes: outcome.writes,
                 };
                 match shared.engine.submit_draft(&file.hosted, draft).reply {
-                    Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes => {}
-                    Reply::ChangeSchema(Err(_)) => return Err(Refused.into()),
+                    Reply::ChangeSchema(Ok(())) | Reply::StoreIndexes(Ok(())) => {
+                        for done in done {
+                            info!("{peer}: {:?}: {done}", file.hosted.name);
+                        }
+                    }
+                    // A find's answer stands: the indexes it built are a
+                    // cache of the records, which wait again for the next
+                    // write (docs/server-storage.md 5).
+                    Reply::StoreIndexes(Err(error)) => {
+                        warn!(
+                            "{peer}: {:?}: indexes built on demand not stored, waiting \
+                             again: {error}",
+                            file.hosted.name
+                        );
+                    }
+                    Reply::ChangeSchema(Err(SchemaNotChanged::Refused(_))) => {
+                        return Err(Refused.into())
+                    }
+                    // The program's writes were not stored: its reply is
+                    // the error slot with the save's FileMaker error
+                    // (query-program.md 11.2).
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) if changes => {
+                        warn!(
+                            "{peer}: {:?}: query program's writes not stored: {error}",
+                            file.hosted.name
+                        );
+                        not_stored = Some(error.code);
+                        slots = error_slot(error.code);
+                    }
+                    // What another request left waiting (a key it reserved)
+                    // was not stored: it waits again, and this program,
+                    // which changes nothing, keeps its answer.
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) => {
+                        warn!(
+                            "{peer}: {:?}: what other queries left waiting was not stored, \
+                             waiting again: {error}",
+                            file.hosted.name
+                        );
+                    }
                     other => return Err(mismatched(&other)),
                 }
             }
-            outcome.slots
+            // The keys this program issued were stored by its own write, or
+            // by another request's write that held the store first, or were
+            // not. One look, under one hold of the store, decides its answer
+            // (`IssuedKeysAre::error`; docs/server-storage.md 5, "Keys a
+            // request issued"): for a program whose only write is its keys,
+            // in both directions; one whose own catalog writes failed keeps
+            // that failure.
+            if !issued.is_empty() {
+                let looked = shared.engine.read(&file.hosted).serve(|read| {
+                    crate::derived::issued_keys(read.view, read.writes_refused, &issued)
+                        .map(|keys| (keys.error(not_stored, own_writes), format!("{keys:?}")))
+                });
+                match looked {
+                    Ok((Some(code), keys)) => {
+                        warn!(
+                            "{peer}: {:?}: the member keys this query reserved: {keys}",
+                            file.hosted.name
+                        );
+                        slots = error_slot(code);
+                    }
+                    Ok((None, _)) => slots = answer,
+                    // What became of them cannot be read: not answered as
+                    // stored, but as a program that cannot read the file
+                    // fails (`om_query::QueryError::File`).
+                    Err(error) => {
+                        error!(
+                            "{peer}: {:?}: the member keys this query reserved could not be \
+                             read: {error}",
+                            file.hosted.name
+                        );
+                        slots = error_slot(0xffff);
+                    }
+                }
+            }
+            slots
         }
         // Not open or not logged in: the error slot with "access denied".
-        _ => {
-            let code = ACCESS_DENIED.to_be_bytes();
-            vec![0x80, 0x06, 0x00, 0x03, 0x02, code[0], code[1], 0x40]
-        }
+        _ => error_slot(ACCESS_DENIED),
     };
     // The program's tree went with the query, and its charge goes now.
     drop(reading);
@@ -2717,6 +2811,13 @@ fn query(
 /// and not through `Reading::serve`.
 fn file_read_only(shared: &Shared, file: &OpenFile) -> bool {
     shared.engine.read(&file.hosted).read().read_only
+}
+
+/// An op86 reply that is the error slot alone, `[00] = 02 <code>`
+/// (query-program.md 11.2).
+fn error_slot(code: u16) -> Vec<u8> {
+    let [high, low] = code.to_be_bytes();
+    vec![0x80, 0x06, 0x00, 0x03, 0x02, high, low, 0x40]
 }
 
 /// Reject schema writes before execution: member-key reservation changes the
@@ -2738,7 +2839,11 @@ fn query_changes_file<E>(program: &Result<om_query::Program, E>) -> bool {
 enum Ran {
     /// The program changes the file, which is hosted read-only: refused.
     ReadOnly,
-    Ran(Queried),
+    /// The program changes the file, which takes no more changes, for this
+    /// reason (a save's outcome was unknown): refused before it runs.
+    NoMoreChanges(String),
+    /// Its outcome, with the member ids it issued and their catalogs.
+    Ran(Queried, Vec<(Vec<Vec<u8>>, u64)>),
 }
 
 /// A program's outcome, compared by its reply, its writes and its error's
@@ -2766,8 +2871,12 @@ fn run_query(
     late: bool,
     context: &QueryContext,
 ) -> Ran {
-    if read.read_only && query_changes_file(&program) {
+    let changes = query_changes_file(&program);
+    if read.read_only && changes {
         return Ran::ReadOnly;
+    }
+    if let Some(why) = read.writes_refused.filter(|_| changes) {
+        return Ran::NoMoreChanges(why.to_owned());
     }
     let (view, program) = match view_filter(file, read) {
         Ok(view) => (view, program),
@@ -2775,6 +2884,7 @@ fn run_query(
     };
     let source = QuerySource {
         read,
+        issued: Default::default(),
         restricted: !full_access(file),
         account_key: file
             .account
@@ -2797,7 +2907,7 @@ fn run_query(
     if let Some(error) = source.failed.borrow().as_ref() {
         error!("{:?}: a query's read failed: {error}", file.hosted.name);
     }
-    Ran::Ran(Queried(outcome))
+    Ran::Ran(Queried(outcome), source.issued.into_inner())
 }
 
 /// A hosted file as a query source, read through a view and its derived
@@ -2808,6 +2918,9 @@ fn run_query(
 /// (query-program.md 7.1).
 struct QuerySource<'s> {
     read: FileRead<'s>,
+    /// The member ids GenerateMemberKey issued, with their catalogs, which
+    /// the request looks for when it ends ([`crate::derived::issued_keys`]).
+    issued: std::cell::RefCell<Vec<(Vec<Vec<u8>>, u64)>>,
     restricted: bool,
     account_key: Option<&'s [u8]>,
     late: bool,
@@ -2911,9 +3024,15 @@ impl om_query::Source for QuerySource<'_> {
 
     fn generate_member_key(&self, catalog: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<u8>)> {
         let name = self.read.derived.name();
-        match crate::derived::generate_member_key(self.read.view, self.read.waiting, name, catalog)
-        {
-            Ok(key) => key,
+        match crate::derived::issue_member_key(self.read.view, self.read.waiting, name, catalog) {
+            Ok(Some((id, count))) => {
+                self.issued.borrow_mut().push((catalog.to_vec(), id));
+                Some((
+                    crate::modcount::key_string(id),
+                    crate::modcount::key_string(count),
+                ))
+            }
+            Ok(None) => None,
             Err(error) => {
                 *self.failed.borrow_mut() = Some(error);
                 None
@@ -3337,12 +3456,7 @@ fn upload_to_file(
             }
         }
     };
-    info!(
-        "{peer}: {:?}: stored {:02x?} ({} bytes)",
-        hosted.name,
-        request.dest,
-        payload.len().max(request.terminal.len())
-    );
+    let bytes = payload.len().max(request.terminal.len());
     let upload = UploadToCatalog {
         path: request.dest.clone(),
         node,
@@ -3352,7 +3466,19 @@ fn upload_to_file(
         .submit(hosted, Operation::UploadToCatalog(upload))
         .reply
     {
-        Reply::UploadToCatalog(_) => Ok(()),
+        Reply::UploadToCatalog(Ok(_)) => {
+            info!(
+                "{peer}: {:?}: stored {:02x?} ({bytes} bytes)",
+                hosted.name, request.dest
+            );
+            Ok(())
+        }
+        // op13's reply has no status: one that was not stored fails with a
+        // system exception, as op70's does (docs/server-storage.md 5).
+        Reply::UploadToCatalog(Err(error)) => Err(PerformError::Status(format!(
+            "upload to {:02x?} not stored: {error}",
+            request.dest
+        ))),
         other => Err(mismatched(&other)),
     }
 }
@@ -3382,7 +3508,7 @@ fn update_table(
             .reply
         {
             Reply::UpdateTable(Ok(_)) => {}
-            Reply::UpdateTable(Err(reason)) => return Err(PerformError::Status(reason.into())),
+            Reply::UpdateTable(Err(reason)) => return Err(PerformError::Status(reason)),
             other => return Err(mismatched(&other)),
         }
     }

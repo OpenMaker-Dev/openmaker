@@ -31,6 +31,8 @@ use crate::eventlog::{ClientLabel, Event};
 use crate::hosting::{FileClose, ReopenError};
 use crate::scripts::AbortReason;
 use crate::server::ServerHandle;
+#[cfg(debug_assertions)]
+use crate::store::SaveFault;
 
 /// The server, as the administrator sees it (the Admin API's
 /// `/server/metadata`).
@@ -105,7 +107,11 @@ pub struct FileInfo {
     /// How many connected clients have it open.
     pub clients: usize,
     /// Why it is closed, when it failed to open again
-    /// ([`ServerHandle::open_file`]).
+    /// ([`ServerHandle::open_file`]); or, while it is served, why it takes
+    /// no more changes: a save renamed its new copy over the file and could
+    /// not flush the folder, so whether the file on disk keeps that change
+    /// is unknown (docs/server-storage.md 5). Closing it and opening it
+    /// again, or a restart, clears that.
     pub error: Option<String>,
 }
 
@@ -672,6 +678,13 @@ impl Write for ClientSocket {
     }
 }
 
+/// For one catalog: the last member id and modification count
+/// GenerateMemberKey issued that wait to be written, and those the tree
+/// holds ([`ServerHandle::member_keys`]).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub type MemberKeys = (Option<(u64, u64)>, (u64, u64));
+
 impl ServerHandle {
     /// The server: its identity, when it started, where it listens and how
     /// many files it hosts.
@@ -724,6 +737,47 @@ impl ServerHandle {
             .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
     }
 
+    /// Make every save of hosted file `id` fail at `fault` (before the
+    /// rename, or flushing the folder after it), or work again with `None`:
+    /// for tests of an operation whose change is not stored, or whose
+    /// outcome is unknown. Whether the file is served. Only in debug
+    /// builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_saves(&self, id: u32, fault: Option<SaveFault>) -> bool {
+        let Some(hosted) = self
+            .shared
+            .hosting
+            .slots()
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.served())
+        else {
+            return false;
+        };
+        hosted.fail_saves(fault);
+        true
+    }
+
+    /// For catalog `catalog` of hosted file `id`: the last member id and
+    /// modification count GenerateMemberKey issued that wait to be
+    /// written, and those its tree holds, from which the next key is one
+    /// more. `None` when the file is not served. Only in debug builds, for
+    /// tests that check a refused request reserved no key.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn member_keys(&self, id: u32, catalog: &[Vec<u8>]) -> Option<MemberKeys> {
+        let hosted = self
+            .shared
+            .hosting
+            .slots()
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.served())?;
+        let keys = hosted.read_store().member_keys_for_tests(catalog);
+        Some(keys)
+    }
+
     /// The hosted files in id order, open or not, each with its state and
     /// how many connected clients have it open. Sizes come from the file
     /// system, so a file busy with a request is not waited for.
@@ -743,7 +797,10 @@ impl ServerHandle {
                     path,
                     status: slot.status(),
                     clients: counts.get(&slot.id).copied().unwrap_or(0),
-                    error: slot.error(),
+                    error: slot.error().or_else(|| {
+                        slot.served()
+                            .and_then(|file| file.writes_refused().map(str::to_owned))
+                    }),
                 }
             })
             .collect()

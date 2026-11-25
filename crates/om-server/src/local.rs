@@ -23,11 +23,14 @@
 //! A file is served read-only ([`ReadOnly`]) when it cannot be written
 //! safely: this user or its folder may not write it, it has other names
 //! (hard links, which a save's new copy would leave behind), it cannot be
-//! locked here, or an entry is where a save would make its new copy. Its
-//! writes are refused and nothing reaches the disk. A file that is not a
-//! FileMaker Pro 12 file, or does not decode (damaged or encrypted at
-//! rest), is refused before anything is written. Deferred field work
-//! finished on opening stays in memory until an admitted account logs in.
+//! locked here, or anything is where a save would make its new copy (an
+//! earlier save's leftover copy included, which is never removed: the user
+//! removes it). Its writes are refused and nothing reaches the disk. A file
+//! that is not a FileMaker Pro 12 file, or does not decode (damaged or
+//! encrypted at rest), is refused before anything is written. Deferred
+//! field work is finished and saved when an admitted account first logs in;
+//! when that save fails, or a save's outcome is unknown, the file is
+//! served read-only from then on, with its own reason ([`ReadOnly`]).
 //!
 //! The host belongs to its client: [`LocalHost::close`] (or dropping it)
 //! stops it, closes every connection it accepted (one stalled in its TLS
@@ -95,8 +98,21 @@ pub enum ReadOnly {
     /// programs' writes could not be kept out.
     NoLocks,
     /// Something is where a save would make its new copy
-    /// (`<file>.omsave`, left by an earlier save?).
+    /// (`<file>.omsave`: a copy an earlier save left when it stopped part
+    /// way, or anything else). It is never removed: the user removes it.
     CopyInTheWay,
+    /// It holds content OpenMaker cannot write back (found when it was
+    /// read).
+    Unwritable,
+    /// Its deferred field work, finished when an account it admits first
+    /// logged in, could not be saved, or cannot be done, or that work was
+    /// left part way: the file is served as its disk holds it, the work
+    /// pending.
+    DeferredWork,
+    /// A save of it was written but could not be confirmed on disk: it
+    /// takes no more changes until it is opened again
+    /// (docs/server-storage.md 5).
+    NoMoreChanges,
 }
 
 impl std::fmt::Display for ReadOnly {
@@ -107,7 +123,16 @@ impl std::fmt::Display for ReadOnly {
             ReadOnly::OtherNames => "it has other names (hard links) a save would not update",
             ReadOnly::NoLocks => "it cannot be locked here, so other programs could change it",
             ReadOnly::CopyInTheWay => {
-                "an earlier save's copy (.omsave) is beside it; remove that to save changes"
+                "something is beside it under its name with .omsave added, where saves write \
+                 their new copy (an earlier save's leftover?); remove that to save changes"
+            }
+            ReadOnly::Unwritable => "it holds content OpenMaker cannot write back",
+            ReadOnly::DeferredWork => {
+                "the field changes it was waiting to finish could not be saved; it is shown as \
+                 saved before them"
+            }
+            ReadOnly::NoMoreChanges => {
+                "a save could not be confirmed on disk; close and open it again to make changes"
             }
         })
     }
@@ -249,8 +274,16 @@ impl LocalHost {
             Locked::Lock(lock) => Some(lock),
             Locked::Unlocked(_) => None,
         };
+        if read_only == Some(ReadOnly::CopyInTheWay) {
+            warn!(
+                "{}: something is at {}, where its saves write their new copy; opening it \
+                 read-only until that is removed",
+                path.display(),
+                save_copy_path(&path).display()
+            );
+        }
         let engine = FileEngine::default();
-        let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some(), &engine)
+        let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some())
             .map_err(|e| LocalHostError::Undecodable(e.to_string()))?;
         drop(hbam);
 
@@ -343,12 +376,28 @@ impl LocalHost {
 
     /// Whether the file is served read-only.
     pub fn is_read_only(&self) -> bool {
-        self.read_only.is_some()
+        self.read_only().is_some()
     }
 
-    /// Why the file is served read-only, if it is.
+    /// Why the file is served read-only, if it is, as the file is now: the
+    /// reason it was opened read-only, or what made it so since (its
+    /// deferred work, finished at the first admitted login, could not be
+    /// saved or was left part way; a save's outcome was unknown, after
+    /// which it takes no more changes).
     pub fn read_only(&self) -> Option<ReadOnly> {
-        self.read_only
+        self.read_only.or_else(|| {
+            let (_, file) = self.served()?;
+            if file.writes_refused().is_some() {
+                return Some(ReadOnly::NoMoreChanges);
+            }
+            let cause = file.read_store().read_only_cause()?;
+            Some(match cause {
+                crate::store::ReadOnlyCause::Unwritable => ReadOnly::Unwritable,
+                crate::store::ReadOnlyCause::DeferredWork => ReadOnly::DeferredWork,
+                // Opened so: the reason it was opened with, which is set.
+                crate::store::ReadOnlyCause::Opened => ReadOnly::NotWritable,
+            })
+        })
     }
 
     /// The account the file names in its account catalog's header (`[23,
@@ -456,6 +505,19 @@ impl LocalHost {
     }
 
     /// The host's shared state and its one file, while it serves it.
+    /// Make every save of the file fail at `fault`, or work again with
+    /// `None`, as `ServerHandle::failing_saves` does for a hosted file:
+    /// whether the file is served. Only in debug builds, for tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn failing_saves(&self, fault: Option<crate::store::SaveFault>) -> bool {
+        let Some((_, file)) = self.served() else {
+            return false;
+        };
+        file.fail_saves(fault);
+        true
+    }
+
     fn served(&self) -> Option<(&Shared, Arc<crate::hosting::Hosted>)> {
         let shared = &self.handle.as_ref()?.shared;
         let file = shared.hosting.files().into_iter().next()?;

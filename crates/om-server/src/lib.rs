@@ -174,6 +174,9 @@ pub use schedules::{
 };
 pub use scripts::{AbortReason, RunningScript, DEFAULT_SCRIPT_LIMIT};
 pub use server::{Server, ServerHandle, StartError};
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use store::SaveFault;
 pub use tls::Identity;
 pub use writes::{MAX_LOCKS, MAX_QUEUED, MAX_QUEUED_BYTES};
 

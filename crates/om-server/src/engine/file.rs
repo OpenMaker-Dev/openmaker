@@ -5,11 +5,11 @@ use log::{info, warn};
 
 use super::transaction::{self, Hold, Locks, Transaction};
 use super::{
-    run, ChangeSchema, Credentials, Draft, Edited, Environment, FileNotSaved, HostEnvironment,
-    Operation, Outcome, Reply, StoreIndexes, WRITER,
+    not_run, run, ChangeSchema, Credentials, Draft, Edited, Environment, FileNotSaved,
+    HostEnvironment, Operation, Outcome, Reply, StorageError, StoreIndexes, WRITER,
 };
-use crate::hosting::{Hosted, StoreWriteGuard};
-use crate::store::{MemberKey, Store};
+use crate::hosting::{Hosted, Saving, StoreWriteGuard};
+use crate::store::{IndexId, MemberKey, SaveError, Store};
 
 /// The file engine. Its environment is the one operations read the clock
 /// and randomness from ([`Environment`]).
@@ -52,40 +52,40 @@ enum Needs {
     Transaction,
 }
 
-/// How the engine saves what an operation changed: as each request saved
-/// before the engine interface, which #673 step 1's follow-up makes one
-/// (every change saved before it is answered, a failed save reported).
+/// When the engine saves what an operation changed: as each request saved
+/// before the engine interface, so that with saves succeeding the file is
+/// written as often, and at the same points, as before. Every save is one
+/// ([`Hosted::save_change`]), and its result is read: what the operation
+/// changed is stored, taken back, or kept with the file taking no more
+/// changes ([`FileEngine::submit`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Save {
-    /// Nothing to save: lock-table edits only, a server script's op71,
+    /// Nothing to save: lock-table edits only, or a server script's op71,
     /// whose reservation its commit saves, or its end
-    /// ([`Save::Requested`]), or the deferred field work finished at
-    /// opening, whose save waits (`Hosted::commit_recovery`).
+    /// ([`Save::Requested`]). What it changed stays in memory, unsaved.
     Nothing,
-    /// The operation's commit (`Hosted::save_commit`): op70, an authoring
-    /// edit, a server script's commit and Set Next Serial Value. A failed
-    /// save takes it back.
+    /// The operation's commit, when it began one: op70, an authoring edit,
+    /// a server script's commit and Set Next Serial Value, the account
+    /// edits.
     Commit,
-    /// A window's saved found set: its commit saved by the store alone
-    /// (`Store::save_commit`), as the desktop always saved it, so a failed
-    /// save, which takes it back, raises no alert and logs only the
-    /// engine's warning.
+    /// A window's saved found set: its commit, saved as the desktop always
+    /// saved it, so a failed save raises no alert and logs only the
+    /// engine's warning (an unknown outcome is alerted all the same).
     QuietCommit,
     /// A client's op71: its reservation is saved before the ids are
-    /// answered (`Hosted::save_held`); a failed save takes it back.
+    /// answered (#927); on a read-only file the save fails.
     Reservation,
     /// op72, op13, op86's writes, a find's indexes, op87 and op88: the file
-    /// saved if it changed, and a failed save not reported, as
-    /// `Hosted::save` did and as op13 dropped the result of
-    /// `Hosted::save_held`.
-    Unchecked,
-    /// op73: [`Save::Unchecked`] when its work changed the file, which is
-    /// otherwise not saved.
-    UncheckedIfChanged,
-    /// op240's save: [`Save::Unchecked`] when the file may be written, the
-    /// reply then saying whether it holds changes the disk lacks
-    /// (`Store::has_unsaved_changes`), as op240 always answered it. A
-    /// server script's end saves the same way, as `Hosted::save` did, and
-    /// reads no reply.
+    /// is saved if it holds changes the disk lacks, unless it is hosted
+    /// read-only.
+    Always,
+    /// op73 and the deferred field work finished at opening:
+    /// [`Save::Always`] when the work changed the file, which is otherwise
+    /// not saved.
+    IfChanged,
+    /// op240's save, when the file may be written: the reply then says
+    /// whether the disk holds every change the file holds. A server
+    /// script's end submits it too.
     Requested,
 }
 
@@ -140,10 +140,43 @@ fn save(operation: &Operation) -> Save {
         | Operation::ChangeSchema(_)
         | Operation::StoreIndexes(_)
         | Operation::StoreContainerData(_)
-        | Operation::AdjustContainerCount(_) => Save::Unchecked,
-        Operation::UpdateTable(_) => Save::UncheckedIfChanged,
+        | Operation::AdjustContainerCount(_) => Save::Always,
+        Operation::UpdateTable(_) | Operation::FinishDeferredWork => Save::IfChanged,
         Operation::SaveFile => Save::Requested,
         _ => Save::Nothing,
+    }
+}
+
+/// Whether `operation` would change the file, as its value says before it
+/// runs: on a file that takes no more changes, only these are refused
+/// (docs/server-storage.md 5). op72 that neither replaces nor advances the
+/// serial (flags 0) and op87 with a delta of 0 read, and so does a find's
+/// draft with no index to store; every other operation that takes the store
+/// for writing may change it.
+fn changes_file(operation: &Operation) -> bool {
+    use om_protocol::write::{SERIAL_INCREMENT, SERIAL_REPLACE};
+    match operation {
+        Operation::AdvanceSerial(op) => op.request.flags & (SERIAL_REPLACE | SERIAL_INCREMENT) != 0,
+        Operation::AdjustContainerCount(op) => op.request.delta != 0,
+        Operation::StoreIndexes(op) => !op.indexes.is_empty(),
+        _ => true,
+    }
+}
+
+/// What a completed draft took of what reads left waiting: the member keys
+/// and indexes, small values, which wait again when the operation is not
+/// stored or its run is left by a panic.
+#[derive(Default)]
+struct Taken {
+    member_keys: Vec<MemberKey>,
+    indexes: Vec<IndexId>,
+}
+
+impl Taken {
+    /// Put it back among what waits in `store`.
+    fn put_back(self, store: &mut Store) {
+        store.put_back_member_keys(self.member_keys);
+        store.put_back_indexes(self.indexes);
     }
 }
 
@@ -152,10 +185,8 @@ fn save(operation: &Operation) -> Save {
 /// it, as the first write to hold the store took it before the engine
 /// interface, and only what the run will store. Writes refused on a
 /// read-only file take nothing, and member keys stay waiting on a
-/// read-only file. Also returns the member keys taken, which go back to
-/// waiting if the run is left by a panic before it writes them, as they
-/// stayed waiting before when storing the indexes panicked.
-fn complete(draft: Draft, store: &mut Store) -> (Operation, Vec<MemberKey>) {
+/// read-only file. Also returns what it took ([`Taken`]).
+fn complete(draft: Draft, store: &mut Store) -> (Operation, Taken) {
     match draft {
         Draft::ChangeSchema { writes } => {
             if store.is_read_only() && !writes.is_empty() {
@@ -164,7 +195,7 @@ fn complete(draft: Draft, store: &mut Store) -> (Operation, Vec<MemberKey>) {
                     member_keys: Vec::new(),
                     indexes: Vec::new(),
                 });
-                return (refused, Vec::new());
+                return (refused, Taken::default());
             }
             let indexes = store.take_indexes_on_demand();
             let member_keys = if store.is_read_only() {
@@ -172,7 +203,10 @@ fn complete(draft: Draft, store: &mut Store) -> (Operation, Vec<MemberKey>) {
             } else {
                 store.take_issued_member_keys()
             };
-            let taken = member_keys.clone();
+            let taken = Taken {
+                member_keys: member_keys.clone(),
+                indexes: indexes.clone(),
+            };
             let operation = if writes.is_empty() && member_keys.is_empty() {
                 Operation::StoreIndexes(StoreIndexes { indexes })
             } else {
@@ -186,21 +220,12 @@ fn complete(draft: Draft, store: &mut Store) -> (Operation, Vec<MemberKey>) {
         }
         Draft::StoreIndexes => {
             let indexes = store.take_indexes_on_demand();
-            (
-                Operation::StoreIndexes(StoreIndexes { indexes }),
-                Vec::new(),
-            )
+            let taken = Taken {
+                member_keys: Vec::new(),
+                indexes: indexes.clone(),
+            };
+            (Operation::StoreIndexes(StoreIndexes { indexes }), taken)
         }
-    }
-}
-
-/// Save the file if it changed, as `Hosted::save` did: not a read-only
-/// one, and a failed save is not reported.
-fn save_unchecked(file: &Hosted, store: &mut Store) {
-    // A failed save leaves the change in memory for the next one, and the
-    // reply does not say so (#673 step 1's follow-up reports it).
-    if !store.is_read_only() {
-        let _ = file.save_held(store);
     }
 }
 
@@ -233,12 +258,28 @@ impl FileEngine {
     /// encoded, the notices delivered. Operations on one file run one at a
     /// time under the store's write lock, or the lock table's mutex for
     /// those that only edit it (lock order: the module doc of
-    /// [`super`]). When what op70, a client's op71, an authoring edit, an
-    /// account edit or a saved found set changed cannot be saved, it is
-    /// taken back, locks it took included, and the outcome is the storage
-    /// error with no notices; the other
-    /// operations' failed saves are not reported yet ([`Save`]), op240's
-    /// save excepted, whose reply is whether the file was saved.
+    /// [`super`]). Each save has one of three outcomes
+    /// (docs/server-storage.md 2, rule 4; 5):
+    ///
+    /// - stored: the outcome as the operation gave it;
+    /// - not stored (the save stopped before its rename): everything the
+    ///   operation changed is taken back from its journal (the tree, the
+    ///   schema read from it, op73's basis), so are the locks it took and
+    ///   the member keys and indexes it took from what reads left waiting,
+    ///   the releases and the log lines that waited for it are dropped, and
+    ///   the outcome is its storage error with no notices
+    ///   ([`Outcome::not_stored`]);
+    /// - unknown (the folder flush after the rename failed): what it
+    ///   changed is kept, as the renamed file holds it, the outcome is its
+    ///   storage error saying so with no notices, and the file takes no
+    ///   more changes until it is hosted again: every later operation that
+    ///   would change it is refused unrun with the storage error, while
+    ///   reads and lock requests go on.
+    ///
+    /// An operation that changed nothing of the tree (a serial read, a
+    /// delta of 0) is answered as it was when the save it makes, of
+    /// changes others left waiting, fails; those changes wait on, and op240's
+    /// Save says whether the disk holds them.
     pub fn submit(&self, file: &Hosted, operation: Operation) -> Outcome {
         self.submit_with(file, operation, Credentials::None)
     }
@@ -286,7 +327,7 @@ impl FileEngine {
             }
             Needs::Transaction => {
                 self.submit_write(file, file.write_store(&WRITER), credentials, |_| {
-                    (operation, Vec::new())
+                    (operation, Taken::default())
                 })
             }
         }
@@ -302,7 +343,9 @@ impl FileEngine {
         match needs(&operation) {
             Needs::Transaction => {
                 let store = file.try_write_store(&WRITER)?;
-                Some(self.submit_write(file, store, Credentials::None, |_| (operation, Vec::new())))
+                Some(self.submit_write(file, store, Credentials::None, |_| {
+                    (operation, Taken::default())
+                }))
             }
             Needs::LockTable | Needs::View => Some(self.submit(file, operation)),
         }
@@ -323,17 +366,25 @@ impl FileEngine {
     }
 
     /// Run the operation `operation` gives for `store`, `file`'s, which
-    /// the caller took for writing, with the member keys it took from the
-    /// waiting ones ([`complete`]): if the run is left by a panic before it
-    /// writes them, they wait again.
+    /// the caller took for writing, with what it took of what reads left
+    /// waiting ([`complete`]), and store it ([`Self::submit`]). On a file
+    /// that takes no more changes the operation is refused unrun, and what
+    /// it took waits again. If the run is left by a panic, what it changed
+    /// is taken back and the member keys it took wait again.
     fn submit_write(
         &self,
         file: &Hosted,
         mut store: StoreWriteGuard<'_>,
         credentials: Credentials,
-        operation: impl FnOnce(&mut Store) -> (Operation, Vec<MemberKey>),
+        operation: impl FnOnce(&mut Store) -> (Operation, Taken),
     ) -> Outcome {
         let (operation, taken) = operation(&mut store);
+        if let Some(why) = store.writes_refused().filter(|_| changes_file(&operation)) {
+            let error = StorageError::refused(why);
+            taken.put_back(&mut store);
+            warn!("{:?}: not done: {error}", file.name);
+            return not_run(operation, &error);
+        }
         self.record(&operation);
         let save = save(&operation);
         let mut locks = Locks::new(file.locks(&WRITER));
@@ -351,107 +402,150 @@ impl FileEngine {
         let mut outcome = match ran {
             Ok(outcome) => outcome,
             Err(panic) => {
-                let wrote = tx.wrote_member_keys;
-                drop(tx);
-                if !wrote {
-                    store.put_back_member_keys(taken);
-                }
+                // What it changed is put back, member keys it wrote
+                // included, which wait again, as they did before the engine
+                // interface; the indexes it took do not (they had been
+                // taken then too).
+                let journal = tx.journal;
+                store.roll_back(journal);
+                store.put_back_member_keys(taken.member_keys);
                 std::panic::resume_unwind(panic)
             }
         };
         // An authoring edit's locks, released once the store is let go.
         let held = locks.after_stored();
         let Transaction {
-            journal,
-            reservation,
+            mut journal,
+            committing,
+            reserved,
             stored_lines,
             released_libraries,
             emptied_libraries,
             field_bases,
             ..
         } = tx;
-        if !released_libraries.is_empty() {
-            // A deleted table's library is gone: so are its thumbnails.
-            let mut thumbnails = file.thumbnails.lock().expect("thumbnail lock");
-            for library in &released_libraries {
-                thumbnails.forget_library(library);
+        let effects = journal.changed();
+        let lines = journal.take_lines();
+        let saves = match save {
+            Save::Nothing => false,
+            Save::Commit | Save::QuietCommit => committing,
+            Save::Reservation => reserved,
+            Save::Always => !store.is_read_only(),
+            Save::IfChanged => {
+                matches!(
+                    outcome.reply,
+                    Reply::UpdateTable(Ok(true)) | Reply::FinishDeferredWork(Ok(true))
+                ) && !store.is_read_only()
             }
-        }
-        let changed = matches!(outcome.reply, Reply::UpdateTable(Ok(true)));
-        let saved = match (journal, save) {
-            (Some(journal), Save::QuietCommit) => store.save_commit(&file.at, journal),
-            (Some(journal), _) => file.save_commit(&mut store, journal),
-            (None, Save::Reservation) if reservation.is_some() => file.save_held(&mut store),
-            (None, Save::Unchecked) => {
-                save_unchecked(file, &mut store);
-                Ok(())
-            }
-            (None, Save::UncheckedIfChanged) if changed => {
-                save_unchecked(file, &mut store);
-                Ok(())
-            }
-            (None, Save::Requested) if outcome.reply == Reply::SaveFile(Ok(())) => {
-                save_unchecked(file, &mut store);
-                if store.has_unsaved_changes() {
-                    outcome.reply = Reply::SaveFile(Err(FileNotSaved::Failed));
-                }
-                Ok(())
-            }
-            _ => Ok(()),
+            Save::Requested => outcome.reply == Reply::SaveFile(Ok(())),
+        };
+        let saved = if !saves {
+            // Kept in memory, unsaved: lock-table edits, what waits for a
+            // later save, what a read-only file holds in memory.
+            drop(journal);
+            Ok(())
+        } else if save == Save::Reservation && store.is_read_only() {
+            store.roll_back(journal);
+            Err(SaveError::NotWritten(std::io::Error::new(
+                std::io::ErrorKind::ReadOnlyFilesystem,
+                "the file is hosted read-only",
+            )))
+        } else {
+            let saving = match save {
+                Save::Commit => Saving::Commit,
+                Save::QuietCommit => Saving::QuietCommit,
+                _ => Saving::Change,
+            };
+            file.save_change(&mut store, journal, saving)
         };
         let outcome = match saved {
             Ok(()) => {
-                if !emptied_libraries.is_empty() {
-                    // Member ids start again in a new library: no cached
-                    // thumbnail of the old one may answer for them. Under
-                    // the store and the lock table, as a server script's
-                    // commit always forgot them.
-                    let mut thumbnails = file.thumbnails.lock().expect("thumbnail lock");
-                    for library in &emptied_libraries {
-                        thumbnails.forget_library(library);
-                    }
-                }
+                stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
                 for (table, field) in field_bases {
                     store.add_field_basis(&table, field);
                 }
-                for line in stored_lines {
+                for line in stored_lines.into_iter().chain(lines) {
                     info!("{line}");
                 }
                 outcome
             }
+            Err(error) if error.is_unknown() => {
+                // The renamed file holds the change: the tree keeps it, as
+                // what was derived from it does, and the file takes no
+                // more changes (`Hosted::save_change`).
+                stored(file, &released_libraries, &emptied_libraries);
+                locks.keep();
+                for (table, field) in field_bases {
+                    store.add_field_basis(&table, field);
+                }
+                for line in stored_lines.into_iter().chain(lines) {
+                    info!("{line} (not confirmed on disk)");
+                }
+                let error = StorageError::of(&error);
+                if effects || outcome.reply == Reply::SaveFile(Ok(())) {
+                    outcome.not_stored(&error)
+                } else {
+                    outcome
+                }
+            }
             Err(error) => {
-                locks.take_back();
-                if let Reply::EditDesign(Edited {
-                    not_stored: Some(not_stored),
-                    ..
-                }) = &outcome.reply
-                {
-                    warn!("{:?}: {}: {error}", file.name, not_stored.not_done);
+                let error = StorageError::of(&error);
+                if !effects {
+                    // Nothing of its own to take back: what others left
+                    // waiting waits on (`Hosted::save_change` alerted it),
+                    // and what it took waits again.
+                    taken.put_back(&mut store);
+                    locks.keep();
+                    if outcome.reply == Reply::SaveFile(Ok(())) {
+                        outcome.reply = Reply::SaveFile(Err(FileNotSaved::Failed(error)));
+                    }
+                    outcome
+                } else {
+                    // The journal was put back (`Store::save_commit`).
+                    locks.take_back();
+                    taken.put_back(&mut store);
+                    if let Reply::EditDesign(Edited {
+                        not_stored: Some(not_stored),
+                        ..
+                    }) = &outcome.reply
+                    {
+                        warn!("{:?}: {}: {error}", file.name, not_stored.not_done);
+                    }
+                    if outcome.reply == Reply::SaveFoundSet(true) {
+                        warn!(
+                            "{}: keeping the window's found set failed, taken back: {error}",
+                            file.name
+                        );
+                    }
+                    // The work list is back, and the file cannot hold the
+                    // work finished: served read-only, as when the work
+                    // cannot be done (`Store::recover`).
+                    if outcome.reply == Reply::FinishDeferredWork(Ok(true)) {
+                        store.set_read_only(crate::store::ReadOnlyCause::DeferredWork);
+                    }
+                    outcome.not_stored(&error)
                 }
-                if outcome.reply == Reply::SaveFoundSet(true) {
-                    warn!(
-                        "{}: keeping the window's found set failed, taken back: {error}",
-                        file.name
-                    );
-                }
-                if let Some(reservation) = reservation {
-                    store.take_back_record_ids(
-                        &reservation.table,
-                        reservation.before,
-                        reservation.dirty,
-                    );
-                    warn!(
-                        "{:?}: no record ids reserved in table {:02x?}: the file could not be \
-                         saved: {error}",
-                        file.name, reservation.table
-                    );
-                }
-                outcome.not_stored(&error)
             }
         };
         drop(store);
         transaction::release(file.locks(&WRITER), held);
         outcome
+    }
+}
+
+/// What follows from an operation's change once the file holds it (stored,
+/// or kept with an unknown outcome): the thumbnails of the libraries a
+/// deleted table took, forgotten under the store, and those of libraries a
+/// server script's commit emptied, whose member ids start again, forgotten
+/// under the store and the lock table, as a server script's commit always
+/// forgot them.
+fn stored(file: &Hosted, released: &[Vec<Vec<u8>>], emptied: &[Vec<Vec<u8>>]) {
+    if released.is_empty() && emptied.is_empty() {
+        return;
+    }
+    let mut thumbnails = file.thumbnails.lock().expect("thumbnail lock");
+    for library in released.iter().chain(emptied) {
+        thumbnails.forget_library(library);
     }
 }

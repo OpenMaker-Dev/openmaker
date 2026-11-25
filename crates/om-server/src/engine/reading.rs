@@ -115,6 +115,38 @@ impl Waiting {
         !self.on_demand.lock().expect("index lock").is_empty()
     }
 
+    /// The last member id and modification count issued for `catalog`
+    /// that wait to be written (`Store::member_keys_for_tests`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn issued_for(&self, catalog: &[Vec<u8>]) -> Option<(u64, u64)> {
+        self.issued().get(catalog).copied()
+    }
+
+    /// The indexes built on demand and the member keys issued that wait,
+    /// each in order (`Store::waiting_for_tests`).
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> (Vec<IndexId>, Vec<MemberKey>) {
+        let indexes = self
+            .on_demand
+            .lock()
+            .expect("index lock")
+            .iter()
+            .cloned()
+            .collect();
+        let mut keys: Vec<MemberKey> = self.issued().iter().map(|(c, k)| (c.clone(), *k)).collect();
+        keys.sort();
+        (indexes, keys)
+    }
+
+    /// Put `indexes`, taken by [`Self::take_indexes`] and not stored, back
+    /// among those waiting.
+    pub fn put_back_indexes(&mut self, indexes: Vec<IndexId>) {
+        self.on_demand
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(indexes);
+    }
+
     /// Take the indexes due to be stored: they are no longer waiting.
     pub fn take_indexes(&mut self) -> Vec<IndexId> {
         std::mem::take(self.on_demand.get_mut().expect("index lock"))
@@ -212,6 +244,9 @@ pub struct Read<'r> {
     pub derived: &'r Derived,
     pub waiting: &'r Waiting,
     pub read_only: bool,
+    /// Why the file takes no more changes, if it takes none (a save's
+    /// outcome was unknown, `Store::writes_refused`): the file's state.
+    pub writes_refused: Option<&'r str>,
 }
 
 impl FileEngine {
@@ -245,6 +280,7 @@ impl<'h> Reading<'h> {
             derived: &self.derived,
             waiting: self.view.store.waiting(),
             read_only: self.view.store.is_read_only(),
+            writes_refused: self.view.store.writes_refused(),
         }
     }
 

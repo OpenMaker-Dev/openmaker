@@ -369,6 +369,7 @@ mod tests {
                 derived: store.derived(),
                 waiting: store.waiting(),
                 read_only: false,
+                writes_refused: None,
             }
         }};
     }

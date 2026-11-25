@@ -33,7 +33,7 @@ use om_query::keys::{record_value_entries, value_keys, word_entries, Reading, Te
 
 use crate::engine::{Direction, ReadError, Version, View, Waiting, NO_LIMIT};
 use crate::modcount::{self, MOD_COUNT};
-use crate::store::keys;
+use crate::store::{keys, IssuedKeysAre};
 
 /// The file's locale record `[2, 0d]` (file-metadata.md 2), decoded with
 /// the shared decoder every host uses.
@@ -631,9 +631,22 @@ pub(crate) fn member_key_refusal(
     Ok((!refused.is_empty()).then(|| crate::store::describe(&refused)))
 }
 
-/// A member id and modification count GenerateMemberKey issued, as the key
-/// strings its reply carries (`[u8 length][serial key]`).
-pub(crate) type IssuedKey = (Vec<u8>, Vec<u8>);
+/// The last member id and modification count the index of the catalog at
+/// `path` holds (`[C, 01, 00]`, `[C, 01, fc]`; 0 when absent).
+pub(crate) fn stored_member_key(view: &dyn View, path: &[&[u8]]) -> Result<(u64, u64), ReadError> {
+    let index = [CATALOG_INDEX];
+    let stored = |key: u8| -> Result<u64, ReadError> {
+        let key = [key];
+        let mut at = path.to_vec();
+        at.extend([&index[..], &key[..]]);
+        Ok(view
+            .node(&at)?
+            .and_then(|head| head.value)
+            .and_then(|value| modcount::parse(&value))
+            .unwrap_or(0))
+    };
+    Ok((stored(LAST_MEMBER_ID)?, stored(MOD_COUNT)?))
+}
 
 /// GenerateMemberKey (schema-path.md 3.4): issue the catalog's next member
 /// id and modification count, one more than its last issued id
@@ -642,32 +655,45 @@ pub(crate) type IssuedKey = (Vec<u8>, Vec<u8>);
 /// here; `Store::write_member_keys` stores them. `None` for a catalog the
 /// tree cannot take them under as it is, and past the largest a serial key
 /// holds.
-pub(crate) fn generate_member_key(
+pub(crate) fn issue_member_key(
     view: &dyn View,
     waiting: &Waiting,
     name: &str,
     catalog: &[Vec<u8>],
-) -> Result<Option<IssuedKey>, ReadError> {
+) -> Result<Option<(u64, u64)>, ReadError> {
     let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
     if member_key_refusal(view, &path)?.is_some() {
         warn!("{name}: no member key for the catalog {path:02x?}, which the file cannot hold");
         return Ok(None);
     }
-    let index = [CATALOG_INDEX];
-    let stored = |key: u8| -> Result<u64, ReadError> {
-        let key = [key];
-        let mut at = path.clone();
-        at.extend([&index[..], &key[..]]);
-        Ok(view
-            .node(&at)?
-            .and_then(|head| head.value)
-            .and_then(|value| modcount::parse(&value))
-            .unwrap_or(0))
-    };
-    let stored = (stored(LAST_MEMBER_ID)?, stored(MOD_COUNT)?);
-    Ok(waiting
-        .issue_member_key(catalog, stored)
-        .map(|(id, count)| (modcount::key_string(id), modcount::key_string(count))))
+    let stored = stored_member_key(view, &path)?;
+    Ok(waiting.issue_member_key(catalog, stored))
+}
+
+/// What became of the member keys a request's GenerateMemberKey issued
+/// (each catalog with its id), asked once the request submitted its own
+/// write (docs/server-storage.md 5, "Keys a request issued"): the file
+/// takes no more changes, for `refused` (a save's outcome was unknown, the
+/// one that wrote them or a later one), one of them is not in its
+/// catalog's index (it waits, because a save failed and it waits again or
+/// because the file became read-only, or a write dropped it, its catalog
+/// no longer able to take it), or they are stored.
+pub(crate) fn issued_keys<'r>(
+    view: &dyn View,
+    refused: Option<&'r str>,
+    issued: &[(Vec<Vec<u8>>, u64)],
+) -> Result<IssuedKeysAre<'r>, ReadError> {
+    if let Some(why) = refused {
+        return Ok(IssuedKeysAre::Unknown(why));
+    }
+    for (catalog, id) in issued {
+        let path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
+        // The index records the last id issued: every id up to it is taken.
+        if stored_member_key(view, &path)?.0 < *id {
+            return Ok(IssuedKeysAre::NotStored);
+        }
+    }
+    Ok(IssuedKeysAre::Stored)
 }
 
 /// `f` of the catalogs a calculation of `table` reads, as a key tree

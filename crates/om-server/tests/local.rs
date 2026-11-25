@@ -577,6 +577,78 @@ fn deferred_work_recovered_on_opening_waits_for_an_admitted_login() {
     assert_eq!(folder.files(), [FILE]);
 }
 
+/// A compacted copy saved before any login is the file as its disk holds
+/// it, its deferred work list included, so the copy finishes the work when
+/// an account first logs in to it. When the first login's save of the work
+/// fails, the work is taken back, and the desktop is told from then on that
+/// the file is read-only, and why (docs/server-storage.md 5).
+#[cfg(target_os = "linux")]
+#[test]
+fn deferred_work_that_cannot_be_saved_leaves_the_file_read_only_and_says_why() {
+    use om_data::CopyKind;
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("recovery-failing");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let list = [uint_segment(TABLE), vec![3], vec![1], vec![0xfd]];
+    let list: Vec<&[u8]> = list.iter().map(Vec::as_slice).collect();
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(&list, OwnedNode::leaf(Vec::new(), Vec::new()));
+    });
+    let pending = |path: &Path| {
+        om_hbam::HbamFile::open(path)
+            .unwrap()
+            .subtree(&list)
+            .unwrap()
+            .is_some()
+    };
+    let before = std::fs::read(&path).unwrap();
+    let client = client();
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    let copy = folder.0.join("Compacted.fmp12");
+    host.save_copy(&copy, CopyKind::Compacted).unwrap();
+    assert!(pending(&copy), "the copy holds the work list");
+
+    // The save of the work fails: a folder stands where it makes its copy.
+    let blocked = folder.0.join(format!("{FILE}.omsave"));
+    std::fs::create_dir(&blocked).unwrap();
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert_eq!(host.read_only(), Some(ReadOnly::DeferredWork));
+    assert!(host.is_read_only());
+    assert!(host.close());
+    std::fs::remove_dir(&blocked).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // The copy finishes the work.
+    let host = LocalHost::open(&copy, &client.cert).unwrap();
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert!(host.close());
+    assert!(!pending(&copy));
+}
+
+/// A save whose outcome is unknown, here the first login's save of the
+/// deferred work (renamed over the file, its folder not flushed), leaves
+/// the file taking no more changes: the desktop is told it is read-only,
+/// with a reason of its own, from that login on (docs/server-storage.md 5).
+#[test]
+fn a_save_whose_outcome_is_unknown_leaves_a_local_file_read_only() {
+    let folder = Folder::new("unknown-outcome");
+    let list = [uint_segment(TABLE), vec![3], vec![1], vec![0xfd]];
+    let list: Vec<&[u8]> = list.iter().map(Vec::as_slice).collect();
+    let path = folder.tasks_with(FILE, |root| {
+        root.put(&list, OwnedNode::leaf(Vec::new(), Vec::new()));
+    });
+    let client = client();
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    assert!(host.failing_saves(Some(om_server::SaveFault::FolderFlush)));
+    assert_eq!(login(&host, &client, ACCOUNT, PASSWORD), 0);
+    assert!(host.failing_saves(None));
+    assert_eq!(host.read_only(), Some(ReadOnly::NoMoreChanges));
+    assert!(host.is_read_only());
+    assert!(host.close());
+}
+
 #[test]
 fn only_the_opening_clients_certificate_is_accepted() {
     let folder = Folder::new("pinned");
@@ -870,6 +942,27 @@ fn files_a_save_could_not_replace_safely_are_served_read_only() {
             .file_type()
             .is_symlink()
     );
+}
+
+/// A copy a save left beside a local file when it stopped part way is
+/// never removed: the file opens read-only, with the reason, and the copy
+/// is left as it is. Once the user removes it, the file opens writable
+/// (docs/server-storage.md 5).
+#[test]
+fn a_copy_a_save_left_keeps_a_local_file_read_only() {
+    let folder = Folder::new("leftover");
+    let path = folder.tasks(FILE);
+    let copy = folder.0.join(format!("{FILE}.omsave"));
+    std::fs::write(&copy, b"half a save").unwrap();
+    let client = client();
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), Some(ReadOnly::CopyInTheWay));
+    assert!(host.close());
+    assert_eq!(std::fs::read(&copy).unwrap(), b"half a save");
+    std::fs::remove_file(&copy).unwrap();
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+    assert_eq!(host.read_only(), None);
+    assert!(host.close());
 }
 
 #[test]
