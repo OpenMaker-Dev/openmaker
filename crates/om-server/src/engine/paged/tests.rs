@@ -1660,11 +1660,11 @@ fn filemakers_templates_through_the_store_engine() {
 /// the tree exported beside the file; `reads`, the same opened view's walk
 /// of the table's records and 1,000 record subtrees read at seeded places,
 /// twice (the first pass reads the pages, the second finds what the cache
-/// kept); `mem-reads`, the file imported into a store in memory first,
+/// kept), then the table's records listed; `mem-reads`, the file imported into a store in memory first,
 /// then the same reads twice, through `MemStore::new` (which checks each
 /// page's hash on its first read) or with `OM_PAGED_TRUSTING=1` through
 /// `MemStore::trusting` (which checks none); `file-reads`, the file
-/// engine's load and the same reads through its view; `file-export`, the
+/// engine's load and the same reads and listing through its view; `file-export`, the
 /// file engine's load and its written export of the same file.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1726,6 +1726,16 @@ fn paged_measurement() {
         }
         let scattered = started.elapsed().as_secs_f64() * 1e3;
         (walk, scattered, walked)
+    }
+    /// The table's records listed, a page of children at a time: how many,
+    /// and the milliseconds it took.
+    fn listing(view: &dyn View, table: &[&[u8]]) -> (usize, f64) {
+        let started = Instant::now();
+        let listed = view
+            .children(table, Bound::Unbounded, Direction::Forward)
+            .map(Result::unwrap)
+            .count();
+        (listed, started.elapsed().as_secs_f64() * 1e3)
     }
     std::fs::write("/proc/self/clear_refs", "5").unwrap();
     let base = status("VmRSS:");
@@ -1807,10 +1817,11 @@ fn paged_measurement() {
                     warm.iter().map(|r| r.0).sum::<f64>() / warm.len() as f64,
                     warm.iter().map(|r| r.1).sum::<f64>() / warm.len() as f64,
                 );
+                let (listed, listed_ms) = listing(&view, &table);
                 format!(
                     "cache {cache_mib} MiB: walk of the table {walk:.0} ms ({walked} nodes), 1,000 \
                      records {scattered:.1} ms; again ({} passes) {again:.0} ms and \
-                     {again_scattered:.1} ms",
+                     {again_scattered:.1} ms; {listed} records listed {listed_ms:.0} ms",
                     warm.len()
                 )
             }
@@ -1859,9 +1870,10 @@ fn paged_measurement() {
             let loaded = started.elapsed().as_secs_f64() * 1e3;
             if step == "file-reads" {
                 let (walk, scattered, walked) = reads(&store.tree_view(), &table);
+                let (listed, listed_ms) = listing(&store.tree_view(), &table);
                 format!(
                     "load {loaded:.0} ms; walk of the table {walk:.0} ms ({walked} nodes), 1,000 \
-                     records {scattered:.1} ms"
+                     records {scattered:.1} ms; {listed} records listed {listed_ms:.0} ms"
                 )
             } else {
                 let Source::Written { change_number } = store.compacted_source() else {
