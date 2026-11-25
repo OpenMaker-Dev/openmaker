@@ -182,7 +182,7 @@ impl Server {
                 connection_ids: Mutex::new(Default::default()),
                 recordings,
                 mailboxes: Default::default(),
-                engine,
+                engine: Arc::new(engine),
                 scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
                 refused_downloads: RwLock::new(Vec::new()),
                 omitted_list_paths: Default::default(),
@@ -965,6 +965,15 @@ impl ServerHandle {
     #[doc(hidden)]
     pub fn failing_next_backup_flush(&self) {
         self.schedules.backups().fail_next_flush();
+    }
+
+    /// Make the backup folders act as on a file system without hard links:
+    /// no copy is linked to an earlier backup's, and each is made under its
+    /// name. A test fixture, only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn backing_up_without_hard_links(&self) {
+        self.schedules.backups().refuse_hard_links();
     }
 
     /// Run `hook` each time a backup folder has been checked and is about

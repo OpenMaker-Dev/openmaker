@@ -833,15 +833,23 @@ than a second reader and writer.
   metadata beyond the permission bits are not carried over.
 - **Save a Copy as.** The host writes a copy of the current file or a
   compacted copy (3.3) to a new file only.
-  - *Contents.* A copy of the current file is the file's bytes as the last
-    save left them, read by position through a second descriptor of the
-    one the host holds locked, so the version copied is the one the host
-    has, whatever is renamed over the path meanwhile. A compacted copy is
-    the key tree written as a new packed file (hbam-writer.md 7.2). So is a
-    copy while changes a failed save left wait in memory, or of a file the
-    host could not lock. Before any login the tree is the file as its disk
-    holds it, deferred field work list included, so a compacted copy saved
-    then finishes that work when an account first logs in to it.
+  - *Contents.* Each copy is an export of the version the host holds
+    (docs/server-storage.md 5, "Exports"). A copy of the current file is
+    the file on disk when it holds that version: its bytes as the last
+    save left them, or as the file was opened when no save wrote it,
+    opened under the host's read lock (from its path, while that leads to
+    the file the host holds locked) and copied after it, checked against
+    what was read (its length). While changes a failed save left
+    wait in memory, or for a file the host could not lock, it is the key
+    tree written as a new packed file (hbam-writer.md 7.2), as the next
+    save would write it, under the read lock. A copy of a file opened
+    read-only for content OpenMaker cannot write, while changes its
+    refused saves left wait in memory, would lack them and is refused. A
+    compacted copy is the key tree written as a new packed file from the
+    change number the next save starts from, under the read lock.
+    Before any login the tree is the file as its disk holds it, deferred
+    field work list included, so a compacted copy saved then finishes that
+    work when an account first logs in to it.
   - *Destinations.* Linux only. The resolved path must lead through
     existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
     be owned by root or the effective user and either deny group and other
@@ -860,11 +868,14 @@ than a second reader and writer.
     that filesystem, with mode 0600. Linux's creation mode masks any
     inherited POSIX ACL grants to other accounts from the start. The host
     flushes the file, then links its descriptor to the final name using
-    the opened output directory. A file, directory or link already at
-    that name is left untouched. An interrupted or failed write closes
-    the unnamed file, which the kernel reclaims. There is no staging name
-    to remove, and the final name appears only after the bytes are written
-    and flushed. These are OpenMaker's choices [I].
+    the opened output directory, and flushes the directory. A file,
+    directory or link already at that name is left untouched. An
+    interrupted or failed write closes the unnamed file, which the kernel
+    reclaims. There is no staging name to remove, and the final name
+    appears only after the bytes are written and flushed. When the
+    directory cannot be flushed after the link, that is logged and the
+    copy kept. Exports share this publication (server-storage.md 5,
+    "Exports"). These are OpenMaker's choices [I].
   - *The desktop's step.* The step refuses clones, self-contained copies,
     an absent output path (the Save dialog is not built), "Automatically
     open file", "Create email", an open transaction, a hosted file and

@@ -226,7 +226,6 @@ impl View for FileView<'_> {
 
 /// A reader's hold on one version of a hosted file ([`FileEngine::read`]).
 pub struct Reading<'h> {
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     file: &'h Hosted,
     view: FileView<'h>,
     derived: Arc<Derived>,
@@ -307,6 +306,27 @@ impl<'h> Reading<'h> {
             return copies.serve_once(self, read);
         }
         read(self.read())
+    }
+
+    /// How an export writes this version (`super::export`): the file
+    /// engine's choice, `Store::export_source`. A file on disk is opened
+    /// here, under the store's read lock.
+    pub fn export_source(&self) -> std::io::Result<super::export::Source> {
+        self.view.store.export_source(&self.file.at)
+    }
+
+    /// How a compacted copy of this version is written
+    /// (`Store::compacted_source`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn compacted_source(&self) -> super::export::Source {
+        self.view.store.compacted_source()
+    }
+
+    /// The file on disk the store read or last saved, opened to read while
+    /// its path still leads to it, with what a copy needs
+    /// (`Store::on_disk`).
+    pub fn on_disk(&self) -> std::io::Result<super::export::OnDisk> {
+        self.view.store.on_disk(&self.file.at)
     }
 
     /// Whether [`Self::serve`] runs its read twice.

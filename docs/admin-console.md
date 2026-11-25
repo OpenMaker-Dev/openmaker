@@ -1019,7 +1019,16 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   renamed over the old one, never in place. So a run opens each file while it
   holds the file's store for reading, and lets go once the file is open. The
   open descriptor keeps reading that saved version whatever later saves
-  rename over it, so each copy is one saved version of the file.
+  rename over it, so each copy is one saved version of the file. The copy is
+  checked to be as long as the file was when it was opened. Where the
+  backup folder's file system makes unnamed files (Linux), it is written
+  without a name and linked to its name once complete; elsewhere, and where
+  the file system has no hard links, it is written under its name, as
+  before ([server-storage.md](server-storage.md) 5, "Exports"). A folder
+  flush that fails after a copy is named is logged, and the run's flush of
+  every folder before the backup is named decides, as before. A copy is
+  not read back to verify it, as before; FileMaker's Verify option would
+  add that (below).
 - **What clients see.** The store is held for one `open` call, never while
   the file is copied. Clients see nothing: a write waits at most for that
   call, and a save in progress delays the backup, not the client.
@@ -1234,8 +1243,9 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
 - **Backups.** These are not implemented, and the console shows them as not
   available:
   - FileMaker's Verify, Clone and Clone Only options
-    ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)),
-    progressive backups
+    ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)): a
+    backup's copy is not verified by reading it back, which is what Verify
+    would add; progressive backups
     ([#160](https://github.com/OpenMaker-Dev/openmaker/issues/160)),
     Parallel Backup and Keep Cancelled Backups. The schedules file refuses
     their keys.

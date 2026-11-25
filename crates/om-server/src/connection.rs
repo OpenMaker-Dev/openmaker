@@ -187,8 +187,9 @@ pub(crate) struct Shared {
     pub recordings: Option<Recordings>,
     /// Change notifications waiting for each connection.
     pub mailboxes: Mailboxes,
-    /// Runs the operations that change hosted files ([`crate::engine`]).
-    pub engine: FileEngine,
+    /// Runs the operations that change hosted files ([`crate::engine`]),
+    /// shared with what outlives a request (a desktop's prepared copy).
+    pub engine: Arc<FileEngine>,
     /// Perform Script on Server (script-runtime.md 11).
     pub scripts: ScriptEngine,
     /// Key paths no download may read after Login, with what is under them

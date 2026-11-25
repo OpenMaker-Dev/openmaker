@@ -46,7 +46,7 @@ use crate::derived::{
     self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
     LOCALE,
 };
-use crate::engine::{TreeView, Version, Waiting};
+use crate::engine::{OnDisk, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
@@ -146,9 +146,19 @@ pub struct Store {
     /// with ([`recalc`]); a table without one has every stored calculation
     /// recomputed by its next op73.
     basis: HashMap<Vec<u8>, TableBasis>,
-    /// The file's page 0, kept for writing the file back; its SCN advances
-    /// with each save.
-    superblock: Vec<u8>,
+    /// The change number (hbam-writer.md 5.1) the next save starts from:
+    /// the loaded page 0's, then the one each save left in its page 0. The
+    /// rest of the page is the loaded one, in derived state
+    /// ([`Derived::page_zero`]).
+    change_number: u64,
+    /// The change number the save that wrote the file on disk started from;
+    /// `None` before the first save. An export of the version that save
+    /// wrote starts from it, so that it is that file byte for byte
+    /// ([`Store::export_source`]).
+    saved_from: Option<u64>,
+    /// The file loaded with content the writer cannot write back: hosted
+    /// read-only, and exported as the bytes it was loaded from.
+    unwritable: bool,
     /// Whether the tree has changes the file on disk lacks.
     dirty: bool,
     /// How many saves wrote the file since it was loaded
@@ -217,22 +227,6 @@ pub enum ReadOnlyCause {
 
 /// An index: its table, field and kind (value 0, word 1).
 pub type IndexId = (Vec<u8>, Vec<u8>, u8);
-
-/// The file as a store last loaded or saved it ([`Store::saved_file`]),
-/// to read by position and nothing else: the descriptor inside is a clone
-/// of the store's own, which is open for writing, and no way to it or to
-/// a write leaves this type.
-#[cfg(target_os = "linux")]
-pub struct SavedFile(std::fs::File);
-
-#[cfg(target_os = "linux")]
-impl SavedFile {
-    /// Read into `buf` from byte `offset` of the file, leaving the offset
-    /// the descriptor shares alone (`pread`).
-    pub fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
-        std::os::unix::fs::FileExt::read_at(&self.0, buf, offset)
-    }
-}
 
 /// What became of the member keys a request issued
 /// ([`Store::issued_keys`]).
@@ -626,15 +620,19 @@ impl Store {
     pub fn load(file: &HbamFile, name: &str) -> om_hbam::Result<Self> {
         let root = file.key_tree()?.root.to_owned_node();
         let catalog = file.catalog()?;
-        let derived = Derived::new(&TreeView::new(&root, 0), catalog, name)
+        let mut derived = Derived::new(&TreeView::new(&root, 0), catalog, name)
             .expect("the file engine's tree never fails a read");
+        let page_zero = file.superblock().raw;
+        derived.set_page_zero(page_zero);
         let mut store = Self {
             root,
             version: 0,
             derived: Arc::new(derived),
             name: name.to_string(),
             basis: HashMap::new(),
-            superblock: file.superblock().raw.to_vec(),
+            change_number: om_hbam::writer::change_number(page_zero).unwrap_or(0),
+            saved_from: None,
+            unwritable: false,
             dirty: false,
             saves: 0,
             #[cfg(debug_assertions)]
@@ -662,6 +660,7 @@ impl Store {
                 describe(&unwritable)
             );
             store.read_only = Some(ReadOnlyCause::Unwritable);
+            store.unwritable = true;
         }
         // Tables with deferred work pending (the server stopped between a
         // client's op13 and its op73) get no basis: [`Store::recover`]
@@ -824,6 +823,14 @@ impl Store {
         self.read_only
     }
 
+    /// Serve the file as one that loaded with content the writer cannot
+    /// write back (tests: such a file cannot be written to make one).
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) fn set_unwritable_for_tests(&mut self) {
+        self.read_only = Some(ReadOnlyCause::Unwritable);
+        self.unwritable = true;
+    }
+
     /// Whether the file may not be written: [`Store::set_read_only`], or it
     /// loaded with content the writer cannot write back.
     pub fn is_read_only(&self) -> bool {
@@ -929,7 +936,7 @@ impl Store {
     /// The steps of [`Store::save`] up to and including the rename: an
     /// error is a save that did not write the file, which is as it was.
     /// After the rename the store holds the new file's identity, lock and
-    /// page 0. Returns the folder the rename was made in, to flush.
+    /// change number. Returns the folder the rename was made in, to flush.
     fn write_new_copy(
         &mut self,
         at: &FileAt,
@@ -985,7 +992,7 @@ impl Store {
                 (None, None) => None,
             },
         };
-        let bytes = om_hbam::writer::rebuild(&self.root, &self.superblock)
+        let bytes = om_hbam::writer::rebuild(&self.root, &self.page_zero_from(self.change_number))
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
         let temporary = save_copy_name(name);
         let shown = save_copy_path(at.place());
@@ -1061,38 +1068,93 @@ impl Store {
             // The old file is gone from the path: its lock guards nothing.
             self.lock = lock;
         }
-        self.superblock = bytes[..self.superblock.len()].to_vec();
+        // The change number the next save starts from is the one this one
+        // left in its page 0 (hbam-writer.md 5.1), and an export of the
+        // version it wrote starts from the one it started from.
+        self.saved_from = Some(self.change_number);
+        self.change_number = om_hbam::writer::change_number(&bytes).unwrap_or(self.change_number);
         Ok(folder)
     }
 
-    /// The file as the store last loaded or saved it, for a copy of it: a
-    /// new descriptor of the one the store holds locked, which names that
-    /// version whatever later saves rename over its path, to be read by
-    /// position so as not to move the offset the two share. It is a
-    /// [`SavedFile`], which only reads: the descriptor the store holds is
-    /// open for writing, and only the engine's save may write the file.
-    /// `None` while the tree has changes the file lacks (a failed save's)
-    /// or when the store holds no lock, where the file at the path could be
-    /// another program's: such a copy is built from the tree
-    /// ([`Store::compacted`]).
-    #[cfg(target_os = "linux")]
-    pub fn saved_file(&self) -> Option<std::io::Result<SavedFile>> {
-        if self.dirty {
-            return None;
-        }
-        self.lock
-            .as_ref()
-            .map(|lock| lock.file().try_clone().map(SavedFile))
+    /// The loaded page 0 with change number `scn`: what a writer of the
+    /// file starts from.
+    fn page_zero_from(&self, scn: u64) -> Vec<u8> {
+        om_hbam::writer::with_change_number(self.derived.page_zero(), scn)
     }
 
-    /// The tree as a complete new file, packed (`om_hbam::writer::rebuild`,
-    /// hbam-writer.md 7.2): the shape of FileMaker's compacted copies
-    /// (hbam-writer.md 9.3). A tree holding content the writer cannot write
-    /// is refused, as its saves are.
-    #[cfg(target_os = "linux")]
-    pub fn compacted(&self) -> std::io::Result<Vec<u8>> {
-        om_hbam::writer::rebuild(&self.root, &self.superblock)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    /// How an export writes the version the store holds now
+    /// (`engine::export`, the module doc). With nothing changed since the
+    /// last save or the load, the file on disk holds the version, and is
+    /// copied ([`Store::on_disk`]); so is the file of a store that loaded
+    /// content the writer cannot write, the bytes it was loaded from, also
+    /// with changes its refused saves left in memory. With changes the disk
+    /// lacks, the tree is written from the change number the next save
+    /// starts from: what that save would write. A store that cannot tell
+    /// that the file at `at` is the one it holds (no lock, no identity)
+    /// writes the tree too: a version a save wrote from the change number
+    /// that save started from, so that it is the saved file byte for byte,
+    /// and the file as loaded from the loaded change number, as its
+    /// compacted copy was.
+    pub(crate) fn export_source(&self, at: &FileAt) -> std::io::Result<Source> {
+        let on_disk = !self.dirty || self.unwritable;
+        if on_disk && (self.lock.is_some() || self.file.is_some()) {
+            return Ok(Source::OnDisk(self.on_disk(at)?));
+        }
+        let change_number = match (self.dirty, self.saved_from) {
+            (false, Some(saved_from)) => saved_from,
+            _ => self.change_number,
+        };
+        Ok(Source::Written { change_number })
+    }
+
+    /// How a compacted copy is written: the tree from the change number
+    /// the next save starts from (the shape of FileMaker's compacted
+    /// copies, hbam-writer.md 9.3), whatever the file on disk holds.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn compacted_source(&self) -> Source {
+        Source::Written {
+            change_number: self.change_number,
+        }
+    }
+
+    /// The file on disk, as [`Store::open_saved`] opens it, with its length
+    /// and permissions, how many saves wrote it since the load, and whether
+    /// the tree holds changes it lacks: what a copy of it needs, taken
+    /// while the store is held.
+    pub(crate) fn on_disk(&self, at: &FileAt) -> std::io::Result<OnDisk> {
+        let file = self.open_saved(at)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        Ok(OnDisk {
+            file,
+            len: metadata.len(),
+            permissions: metadata.permissions(),
+            saves: self.saves,
+            unsaved: self.dirty,
+        })
+    }
+
+    /// The file on disk the store was read from or last saved as, opened to
+    /// read: the entry at `at`, opened through its folder without following
+    /// a link, while it is the file this store holds locked or read or last
+    /// saved there (#468). A store with neither a lock nor an identity takes
+    /// the entry as it is, as backups always did.
+    pub(crate) fn open_saved(&self, at: &FileAt) -> std::io::Result<std::fs::File> {
+        let file = at.folder_now()?.open_regular(at.name())?;
+        let expected = match &self.lock {
+            Some(lock) => crate::anchored::file_identity(lock.file())?,
+            None => self.file,
+        };
+        if let Some(expected) = expected {
+            if crate::anchored::file_identity(&file)? != Some(expected) {
+                return Err(std::io::Error::other(
+                    "the path no longer leads to the file this server read or last saved",
+                ));
+            }
+        }
+        Ok(file)
     }
 
     /// Start a commit whose save must succeed for it to count
@@ -3563,7 +3625,9 @@ impl Store {
             derived: self.derived.clone(),
             name: self.name.clone(),
             basis: HashMap::new(),
-            superblock: Vec::new(),
+            change_number: 0,
+            saved_from: None,
+            unwritable: false,
             dirty: false,
             saves: 0,
             #[cfg(debug_assertions)]
@@ -4370,7 +4434,9 @@ mod tests {
             derived: Arc::new(derived),
             name: String::new(),
             basis: HashMap::new(),
-            superblock: Vec::new(),
+            change_number: 0,
+            saved_from: None,
+            unwritable: false,
             dirty: false,
             saves: 0,
             #[cfg(debug_assertions)]
@@ -4400,9 +4466,10 @@ mod tests {
             std::env::temp_dir().join(format!("om-store-save-modes-{}.fmp12", std::process::id()));
         let mode = |path: &Path| std::fs::symlink_metadata(path).map(|m| m.permissions().mode());
         let mut store = store_of(OwnedNode::default());
-        store.superblock = vec![0; 4096];
-        store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
-        store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        let mut page_zero = vec![0; 4096];
+        page_zero[0x0f..0x14].copy_from_slice(b"HBAM7");
+        page_zero[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        Arc::make_mut(&mut store.derived).set_page_zero(&page_zero);
         std::fs::write(&path, b"old").unwrap();
         let at = FileAt::open(&path).unwrap();
         let save = |store: &mut Store| {
@@ -4453,9 +4520,10 @@ mod tests {
         let mut store = store_of(OwnedNode::default());
         let read = std::fs::metadata(&path).unwrap();
         store.set_file(Some((read.dev(), read.ino())));
-        store.superblock = vec![0; 4096];
-        store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
-        store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        let mut page_zero = vec![0; 4096];
+        page_zero[0x0f..0x14].copy_from_slice(b"HBAM7");
+        page_zero[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        Arc::make_mut(&mut store.derived).set_page_zero(&page_zero);
         std::fs::rename(&databases, &moved).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &databases).unwrap();
         store.dirty = true;

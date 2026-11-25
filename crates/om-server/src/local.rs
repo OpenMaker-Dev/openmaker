@@ -54,6 +54,8 @@ use rustls::pki_types::CertificateDer;
 
 use crate::config::{ConnectionLimits, HostedFile, ServerConfig, ServerIdentity};
 use crate::connection::Shared;
+#[cfg(target_os = "linux")]
+use crate::engine::{export, ExportError, Progress};
 use crate::engine::{
     ChangePassword, Credentials, FileEngine, Operation, Password, Reply, SaveFoundSet,
 };
@@ -579,14 +581,19 @@ impl LocalHost {
     }
 
     /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file
-    /// as `kind` to `to`, a new file. A copy of the current file is the
-    /// file's bytes as its last save left them, read through the
-    /// descriptor the host holds locked ([`crate::store::Store::saved_file`]);
-    /// a compacted copy is the tree rewritten packed
-    /// ([`crate::store::Store::compacted`]), and so is a copy while changes
-    /// a failed save left wait in memory or when the file is not locked.
-    /// Clones and self-contained copies are refused with
-    /// [`io::ErrorKind::Unsupported`].
+    /// as `kind` to `to`, a new file, as an export of the version the host
+    /// holds (`crate::engine::export`). A copy of the current file is the
+    /// file on disk when it holds that version (its bytes as the last save
+    /// left them, or as it was opened when no save wrote it), opened under
+    /// the store's read lock and copied after it, checked against it. While
+    /// changes a failed save left wait in memory, it is the tree written as
+    /// the next save would write it, under the read lock. A copy of a file
+    /// opened read-only for content the writer cannot write, while its
+    /// refused saves left changes in memory, would lack them, and is
+    /// refused ([`io::ErrorKind::InvalidData`]). A compacted copy is the
+    /// tree written, under the read lock, from the change number the next
+    /// save starts from, as a compacted copy always was. Clones and
+    /// self-contained copies are refused with [`io::ErrorKind::Unsupported`].
     ///
     /// The destination is validated before reading the store. See
     /// [`Self::prepare_copy`] for its platform and pathname requirements.
@@ -615,31 +622,30 @@ impl LocalHost {
                 ));
             }
         };
-        let Some(file) = self
-            .handle
-            .as_ref()
-            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
-        else {
+        let Some((engine, file)) = self.handle.as_ref().and_then(|handle| {
+            let file = handle.shared.hosting.files().into_iter().next()?;
+            Some((Arc::clone(&handle.shared.engine), file))
+        }) else {
             return Err(io::Error::other("the file is closed"));
         };
         let mut destination = copy_destination::Destination::open(to)?;
         Ok(move || {
-            let contents = {
-                let store = file.read_store();
-                let saved = if compacted { None } else { store.saved_file() };
-                match saved {
-                    Some(saved) => Contents::File(saved?),
-                    None => Contents::Bytes(store.compacted()?),
-                }
+            let kind = if compacted {
+                export::Kind::Compacted
+            } else {
+                export::Kind::Current
             };
-            use std::io::Write;
-            match contents {
-                Contents::File(file) => {
-                    io::copy(&mut FromStart { file: &file, at: 0 }, &mut destination.file)?;
-                }
-                Contents::Bytes(bytes) => destination.file.write_all(&bytes)?,
+            let target = export::Target::File(destination.file_mut());
+            match engine.export(&file, kind, target, Progress::none()) {
+                Ok(_) => destination.publish(),
+                // Refused before anything was written.
+                Err(ExportError::Unsaved) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the copy would lack changes that could not be saved",
+                )),
+                Err(ExportError::Io(e) | ExportError::Source(e)) => Err(e),
+                Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
             }
-            destination.publish()
         })
     }
 
@@ -714,30 +720,6 @@ impl Drop for LocalHost {
 
 #[cfg(target_os = "linux")]
 mod copy_destination;
-
-/// What a saved copy holds: a version of the file, or new bytes.
-#[cfg(target_os = "linux")]
-enum Contents {
-    File(crate::store::SavedFile),
-    Bytes(Vec<u8>),
-}
-
-/// `file` read from its start by position (`pread`), leaving alone the
-/// offset it shares with the descriptor it was cloned from.
-#[cfg(target_os = "linux")]
-struct FromStart<'a> {
-    file: &'a crate::store::SavedFile,
-    at: u64,
-}
-
-#[cfg(target_os = "linux")]
-impl Read for FromStart<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.file.read_at(buf, self.at)?;
-        self.at += n as u64;
-        Ok(n)
-    }
-}
 
 /// Open and lock the file at `path` as it is now, and say whether (and why)
 /// it is to be read-only. The lock counts only while the descriptor it is

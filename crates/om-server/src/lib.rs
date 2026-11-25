@@ -136,6 +136,7 @@ mod schedules;
 mod scripts;
 mod security;
 mod server;
+mod staged;
 mod store;
 mod thumbnail;
 pub mod tls;

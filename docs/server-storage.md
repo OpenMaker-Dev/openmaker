@@ -12,10 +12,12 @@ it except the contract in section 2.
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them, and every save's outcome is reported
 (section 5). Views are built, and downloads, finds, logins, thumbnails
-and op88's check of a library read through them; the other readers still
-hold the file engine's store (section 5, "Moving the other readers"). Still to come: `export`, `import` and `capabilities`
-(section 5), the store engine and everything in sections 6 to 12, which
-are specified here and not built.
+and op88's check of a library read through them. `export` is built, and
+backups and the desktop's Save a Copy as make their copies with it. The
+other readers still hold the file engine's store (section 5, "Moving the
+other readers"). Still to come: `import` and `capabilities` (section 5),
+the store engine and everything in sections 6 to 12, which are specified
+here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -166,8 +168,9 @@ desktop's own Change Password and its saved found sets; and the deferred
 field work a file is opened with, with its save. Only the engine can take
 a file's store for writing or change its lock table (`engine::Writer`),
 and code elsewhere that tries does not compile; everyone else gets the
-lock table to read (`Hosted::lock_table`) and the saved file, for a copy,
-only to read (`store::SavedFile`). The exceptions:
+lock table to read (`Hosted::lock_table`), and a whole-file copy is an
+export (`engine::export`, below), which opens the file on disk only to
+read it (`Store::open_saved`). The exceptions:
 
 - the setup of a file no one can reach yet: `hosting::load_hosted` records
   the file's identity in its store before serving it;
@@ -181,16 +184,19 @@ only to read (`store::SavedFile`). The exceptions:
   for writing: `Hosted::path` is read for log lines, `Get ( FilePath )`,
   the file's size, the Documents folder of a server script and the
   folders backups resolve; `Hosted::at` (and `Slot::file_at`) is read by
-  backups, which look up the file's entry and open it read-only, and by
-  the engine's saves. Nothing outside the engine's saves writes through
-  either.
+  backups, which look up the file's entry, by exports, which open the file
+  read-only (`Store::open_saved`), and by the engine's saves. Nothing
+  outside the engine's saves writes through either.
 
 Views are built, with the file engine's behind them, and these readers
 read through them: downloads (op90, op15, op92), finds (op86), logins
 (op80), thumbnails (op96), and op88's check of the library it stores
-into, with the read-only check of every write request. The other readers
+into, with the read-only check of every write request. `export` is built
+("Exports", below): it copies the file on disk where that holds the
+version and walks a view otherwise, and backup schedules and the
+desktop's Save a Copy as make their copies with it. The other readers
 still hold the store; "Moving the other readers" below lists them and
-the plan for them. `export`, `import` and `capabilities` are not built.
+the plan for them. `import` and `capabilities` are not built.
 
 **Views.** A view (`engine::View`) is one fixed version of one file's
 tree. Nothing a view returned changes later. It answers:
@@ -614,16 +620,160 @@ capabilities()          -> clones, history, replication, point-in-time restore
 
 `submit` is `engine::FileEngine::submit(file, operation) -> Outcome`; the
 caller encodes the reply and delivers the notices only after it returns.
-`view` is `engine::FileEngine::read(file) -> Reading`, above. There is no
-engine trait while there is one engine. The other names are settled when
-they are built. A feature that needs a capability the running
-engine lacks answers a typed "unavailable".
+`view` is `engine::FileEngine::read(file) -> Reading`, above. `export` is
+`engine::FileEngine::export(file, kind, target, progress) -> Exported`,
+below. There is no engine trait while there is one engine. The other
+names are settled when they are built. A feature that needs a capability
+the running engine lacks answers a typed "unavailable".
+
+**Exports** (`engine::export`). An export writes one version of a file as
+an `.fmp12`, in one of two ways; the engine says which
+(`engine::Source`, from `Reading::export_source`):
+
+- **The file on disk**, when the disk holds the version. It is opened
+  under the store's read lock, which is let go at once, and copied after
+  it. On the file engine that is a version a save wrote, or the file as it
+  was loaded, with nothing changed since, opened where the store can tell
+  it is that file (the descriptor a desktop's host holds locked, or the
+  entry at the file's path while it is the one the server read or last
+  saved there,
+  [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). A file
+  hosted read-only for content the writer cannot write is always its file
+  on disk, the bytes it was loaded from (section 2, rule 2); while changes
+  its refused saves left wait in memory, an export of the version held is
+  refused before anything is written (`ExportError::Unsaved`), and a
+  backup copies the file on disk with a warning, as it always did. The
+  copy goes from descriptor to descriptor, by the kernel where the system
+  can (`copy_file_range`), as backups always copied, and is checked
+  to be as long as the file was when it was opened, the file not having
+  grown past that. It is not read back: that is what FileMaker Server's
+  Verify option of a backup schedule adds
+  ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)). No view
+  is read: the file is what a checked save wrote, or what the server
+  loaded.
+- **Written from the view**, when the disk lacks the version (changes in
+  memory that no save wrote) and for a compacted copy
+  (`engine::export::Kind::Compacted`): a depth-first walk of the view, in
+  key order, into `om_hbam::writer::NodeWriter`, every node with its kind
+  and value, empty lists included, and page 0 as the file was loaded
+  (derived state, below) with the clean-close flag set and the change
+  number counted on from the one the next save starts from
+  (hbam-writer.md 5.1), so that it is what that save would write. It is
+  read back with `om_hbam`'s streaming reader (`stream::NodeStream`) and
+  compared with a second walk of the view, node by node (path, kind and
+  value, a value over 1,000 bytes as the writer splits it) and page 0 as
+  written. A store that cannot tell its file on disk is the one it holds
+  (no lock, no identity) writes every version, a saved one from the
+  change number its save started from, so that it is the saved file byte
+  for byte.
+
+A difference, a file that does not read back, a file on disk that changed
+while it was copied, a read of the view that fails (`ReadError`) or a
+refusal of the writer is a typed error (`engine::ExportError`).
+
+**Where an export goes** (`crate::staged`, which the desktop's Save a Copy
+as shares). Into a folder, one of two ways:
+
+- **Unnamed, then linked.** On Linux with `/proc` mounted, on a file system
+  that makes unnamed files (`O_TMPFILE`: ext2, ext3, ext4, XFS, Btrfs,
+  tmpfs and others), the export is an unnamed file, written, given its
+  permissions, flushed, then linked to its name from its descriptor, which
+  fails when the name is taken. It is complete under its name or absent,
+  and never replaces an entry.
+- **Under its name**, everywhere else, as copies were made before exports:
+  the file is created under its final name, only where nothing is, and
+  written there. That covers other Unix systems (macOS), file systems
+  without unnamed files, and, for an export, a file system that refuses
+  the link because it has no hard links, where the complete unnamed file
+  is copied into the newly created name, a part at a time, stopping when
+  asked (a backup's cancel). A crash, a stop or a failure while it is
+  written can leave a partial file under its name, as before exports. The
+  desktop's copy is never made this way: a refused link is its error, and
+  nothing is under the name, as before exports.
+
+Nothing removes a name. After the name is given the folder is flushed;
+when that fails the export is complete under its name, the file stays,
+and the export says so (`ExportError::NotFlushed`): whether the name
+survives a crash is not established; if the file's length or identity
+cannot then be read, the export reports that instead, and the file stays
+complete under its name either way. A backup then goes on: it flushes
+every folder of the backup before naming the backup and fails if one
+cannot be, as it always did. The desktop logs it and keeps the copy, as
+it always did. What else a failure leaves:
+
+- before the name is given, on the unnamed way: nothing;
+- the name taken: the entry there, untouched, and nothing else;
+- on the way under its name: what was written of the file, under its
+  name, as before exports (a backup's run removes its unfinished backup
+  folder, with the file in it).
+
+A file that fails while the view is walked is dropped after the store's
+read lock is let go. An export can also fill a file its caller made
+(`engine::export::Target::File`, the desktop's): it must be empty, open
+for reading and writing at any position and not for appending (refused
+before anything is written on Unix: a walk writes its pages at offsets),
+and the caller's alone while it is filled. It is written from its first byte and
+checked to be as long as the export. Windows has no folder descriptors
+here: an export to a folder fails as unsupported, and backups are not
+made on Windows. Memory is what the kernel's copy takes, or what the
+writer and reader hold (a few pages and the open key path) and a page of
+the view's walk; never a part of the file.
+
+**The file engine's limit.** Its view holds the store's read lock for as
+long as the view lives, so a written export holds up every write to the
+file while the view is walked, written and checked: 740 ms for a file of
+105 MB and 3.5 s for one of 524 MB (medians of three,
+[performance/export.md](performance/export.md)). A copy holds it for an
+open (12 µs). That is why a version the disk holds is copied and never
+walked, and why backups copy the file on disk whatever memory holds. An
+engine whose views do not hold up writes will not have this limit. A
+change committed during an export is in it whole or not at all: a copy
+reads the file it opened, which a later save renames a new file over, and
+a walk holds the store, so the commit waits for it.
+
+Exports are made by backup schedules (`backups`: each file's copy is the
+file on disk as its last save left it, `FileEngine::stored` then
+`engine::export::copy`, as backups copied it before, with a check) and the
+desktop's Save a Copy as (`LocalHost::prepare_copy`, into its unnamed
+destination: the current version, or a compacted copy). Not yet: an export
+at any time from a running server, at a clean stop, and `om-server export`
+(section 6.10).
+
+**Limits of exports.**
+
+- A copy of the file on disk relies on the store's record that nothing
+  changed since the last save being exact. One case is not: a change whose
+  save fails before its rename is taken back, but a parent list it created
+  on its way (the first record of a table creates `[T, 05]`) stays in
+  memory, empty, while the store counts as unchanged; an export then copies
+  the file on disk, which lacks that empty list.
+  [#725](https://github.com/OpenMaker-Dev/openmaker/pull/725) takes such
+  parents back.
+- Another program that writes into the hosted file in place, keeping its
+  length, gives a copy that passes the length check: OpenMaker's saves never
+  write in place, but nothing stops another program, as before exports
+  ([#724](https://github.com/OpenMaker-Dev/openmaker/issues/724)).
+- Under the store's read lock, a copy opens the file's folder by its path,
+  the file in it without following a link, and reads the file's identity,
+  length and permissions: calls that can wait on a slow file system. The
+  server's store holds no descriptor of its file to clone instead; the
+  desktop's holds the locked one, which a copy could clone and read by
+  position, where it now opens the path again (a permissions change since
+  the file was opened fails that open).
+- What another holder of a caller's file writes while an export fills it
+  cannot be seen: it can be overwritten, or make the export wrong.
+- On systems other than Unix a caller's file open for appending is not
+  refused: a walk into it would put its pages in the wrong places. The
+  only caller, the desktop's Save a Copy as, is Linux-only and passes its
+  own unnamed file.
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
-file's locale and the order of its stored dates, and two facts not in the
+file's locale and the order of its stored dates, two facts not in the
 tree that compiling its calculations needs, the file's name and whether
-it is served to a desktop client. It is computed from a view
+it is served to a desktop client, and one an export needs, the file's
+page 0 as it was loaded (`Derived::page_zero`; its change number is the
+engine's, per version). It is computed from a view
 (`Derived::new`, `derived::read_catalog`, `derived::read_accounts`) and
 carries the version it was computed from. It is not part of an engine; an
 engine decides when to compute it. The file engine computes it when it
@@ -701,9 +851,9 @@ is named by nothing, and a server that stops between op13 and op73 never
 computes it
 ([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)).
 
-**Moving the other readers.** The readers below still hold the store
-(`Hosted::read_store`, or `Transaction::view() -> &Store` inside `run`),
-or read the accounts the store published without a view
+**Moving the other readers.** The readers below, but the one marked
+moved, still hold the store (`Hosted::read_store`, or
+`Transaction::view() -> &Store` inside `run`), or read the accounts the store published without a view
 (`Hosted::accounts`, `Hosted::account`). Each is listed with the `Store`
 helpers it reads through, what it reads (one node, a list a node's
 children make, or a subtree whole), and what it needs that views and
@@ -748,12 +898,11 @@ smaller first, each with the test view's runs of its tests:
    schema generation; once a session reads through a reading of its own,
    its account facts come from that reading's derived state, and the
    published accounts can go.
-3. Backups and exports. `backups::open_source` reads the store only for
-   the saved file it copies (`Store::saved_file`), and `LocalHost`'s
-   `prepare_copy` the same. Needs: `export(view, writer)`, a walk of a
-   whole version into an `.fmp12` (`om_hbam::writer` builds a file from a
-   whole tree today), so that a backup is taken from a view rather than
-   from the file the last save wrote.
+3. Backups and exports: moved ("Exports", above). A backup takes one
+   reading for one open of the file on disk (`FileEngine::stored`), as it
+   opened the file under the store before, and copies it after;
+   `LocalHost`'s `prepare_copy` is an export of the current version or a
+   compacted copy.
 4. Admin commands and the hosting state. `Hosted::is_read_only`,
    `Hosted::saved_file` (`Store::file`), `finish_close_if_drained` and
    `hosting::hosted_as` read the store's flags and the file's identity on
@@ -1562,10 +1711,11 @@ levels, then the root, to a file it can seek in, with memory bounded by
 the tree's depth and not its size. It writes page 0 as imported, with the
 clean-close flag set and the change number advanced as the writer does
 (hbam-writer.md 5.1). The result is checked by reading it back and
-comparing it with the view node by node, kinds included. Both the reader
-and the writer of `om-hbam` work on a whole file in memory today
-(`HbamFile::open`, `writer::rebuild`); the streaming forms are part of
-this work.
+comparing it with the view node by node, kinds included. `om-hbam` reads
+a file a page at a time (`stream::NodeStream`, which gives its nodes in
+key order, kinds included) and writes one a page at a time
+(`writer::NodeWriter`, which takes its nodes in key order, kinds included,
+and writes the bytes of `writer::rebuild`).
 
 Export is offered:
 
