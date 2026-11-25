@@ -1257,23 +1257,11 @@ impl Run {
             return;
         };
         let Some(store) = &self.store else { return };
-        let before = self.sim.events().len();
         let view = match store.restore_point(name) {
             Ok(view) => view,
-            Err(WriteError::Unreadable(why)) => {
-                // The restore point's meta stream did not read back. The
-                // page file's answer does not say why, so the device's own
-                // events say whether it failed a read of the pages.
-                let failed = self.sim.events().get(before..).is_some_and(|new| {
-                    new.iter().any(|e| {
-                        matches!(e, sim::Event::ReadFailed { path, .. } if path == pagefile::FILE)
-                    })
-                });
-                if failed {
-                    self.reached.damaged_reads += 1;
-                } else {
-                    self.read_failed(why);
-                }
+            Err(WriteError::Unreadable(e)) => {
+                // The restore point's table of roots did not read back.
+                self.read_failed(e.to_string());
                 return;
             }
             Err(e) => panic!("seed {}: restore point {name}: {e}", self.seed),

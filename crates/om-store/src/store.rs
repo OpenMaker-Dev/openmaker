@@ -71,8 +71,8 @@ use crate::entry::{entry_hash, Entry, Payload, PayloadError, ServerId, SessionEv
 use crate::log::{self, CutDone, DamageAccepted, Log, LogError, Recorded, UnreadableEnd};
 use crate::page::{Hash, StoreError, TreeName};
 use crate::pagefile::{
-    self, CheckpointError, Checkpointed, EntryId, PageFile, Pin, Purpose, Reclaimed, RestorePoint,
-    SpaceError,
+    self, CheckpointError, Checkpointed, EntryId, PageFile, Pin, PinError, Purpose, Reclaimed,
+    RestorePoint, SpaceError,
 };
 use crate::state::{SlotFault, State, StateError};
 use crate::sys::{self, ErrorKind, Fs, Random};
@@ -163,10 +163,11 @@ pub enum WriteError {
     Apply(apply::Error),
     /// The call breaks a rule; nothing changed.
     Rule(&'static str),
-    /// What a read needed could not be read back (a restore point's table
-    /// of roots, which the device failed to read or which does not check);
-    /// nothing changed, and the store goes on.
-    Unreadable(String),
+    /// A restore point's version could not be had: its table of roots the
+    /// device failed to read (`PinError::Meta` with a page whose fault is
+    /// `Fault::Io`) or whose bytes do not check. Nothing changed, and the
+    /// store goes on.
+    Unreadable(PinError),
     /// A failure after the entry's unit committed, or of a flush: the store
     /// has stopped (the reason). Its outcome is unknown to the caller:
     /// open the store again, and the durable log says.
@@ -186,7 +187,7 @@ impl fmt::Display for WriteError {
             WriteError::Log(e) => write!(f, "{e}"),
             WriteError::Apply(e) => write!(f, "{e}"),
             WriteError::Rule(why) => write!(f, "refused: {why}"),
-            WriteError::Unreadable(why) => write!(f, "{why}"),
+            WriteError::Unreadable(e) => write!(f, "the restore point's version: {e}"),
             WriteError::Failed(why) => write!(
                 f,
                 "the store stopped: {why}; what was not flushed has an unknown outcome, and \
@@ -576,17 +577,14 @@ enum PinOf {
 /// The pin of a version, and the entry it must be of. Every pin the store
 /// takes goes through here, so that how the page file hands out pins is
 /// one place. The store never names an entry whose unit has not committed.
-fn pin_version(pages: &PageFile, of: PinOf) -> Result<Pin, String> {
+fn pin_version(pages: &PageFile, of: PinOf) -> Result<Pin, PinError> {
     let (pin, entry) = match of {
-        PinOf::Newest(entry) => (pages.pin_newest(), entry),
-        PinOf::OnDisk(entry) => (pages.pin(entry), entry),
+        PinOf::Newest(entry) => (pages.pin_newest()?, entry),
+        PinOf::OnDisk(entry) => (pages.pin(entry)?, entry),
     };
-    let pin =
-        pin.map_err(|why| format!("the version of entry {entry} could not be pinned: {why}"))?;
     if pin.entry() != entry {
-        return Err(format!(
-            "a pin for entry {entry} holds entry {}'s version",
-            pin.entry()
+        return Err(PinError::Refused(
+            "the pin holds another entry's version than the one asked for",
         ));
     }
     Ok(pin)
@@ -961,7 +959,8 @@ impl Store {
             ));
         }
         // 5. The recovered version, pinned and published.
-        let pin = pin_version(&pages, PinOf::Newest(last.index)).map_err(OpenError::Disk)?;
+        let pin = pin_version(&pages, PinOf::Newest(last.index))
+            .map_err(|e| OpenError::Disk(format!("the recovered version: {e}")))?;
         let term = values.term.max(durable.term).max(1);
         let mut store = Store {
             fs,
@@ -1170,7 +1169,7 @@ impl Store {
         // The unit is committed: from here a failure stops the store.
         let pin = match pin_version(&self.pages, PinOf::Newest(index)) {
             Ok(pin) => pin,
-            Err(why) => return Err(self.stop(why)),
+            Err(e) => return Err(self.stop(format!("the version of entry {index}: {e}"))),
         };
         match self.log.append(term, kind, file, &bytes) {
             Ok(p) if p.index == index && p.hash == hash.0 => {}
