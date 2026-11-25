@@ -705,8 +705,8 @@ fn the_store_engine_refuses_an_entry_at_the_first_node_past_either_counter() {
 /// The file engine lends a find's index entry unchecked
 /// (`View::subtree_within`), so that one whose lists hold room past their
 /// length is given when its work fits, and its reader's count decides; and
-/// the test view over each engine gives the reader the same outcome at, and
-/// either side of, the entry's work.
+/// each engine, and in a debug build the test view over each, gives the
+/// reader the same outcome at, and either side of, the entry's work.
 #[test]
 fn the_file_engine_lends_an_entry_and_both_engines_answer_the_reader_alike() {
     use om_query::program::Size;
@@ -748,9 +748,15 @@ fn the_file_engine_lends_an_entry_and_both_engines_answer_the_reader_alike() {
         (at(0, usize::MAX), "refused"),
         (Size::default(), "refused"),
     ] {
-        let file = reader(&crate::engine::copies::Copies::new(&tree, &[]), work);
-        let store = reader(&crate::engine::copies::Copies::new(&paged, &[]), work);
+        let (file, store) = (reader(&tree, work), reader(&paged, work));
         assert_eq!((file, store), (outcome, outcome), "{work:?}");
+        // The test view exists in debug builds only (`engine::copies`).
+        #[cfg(debug_assertions)]
+        {
+            let file = reader(&crate::engine::copies::Copies::new(&tree, &[]), work);
+            let store = reader(&crate::engine::copies::Copies::new(&paged, &[]), work);
+            assert_eq!((file, store), (outcome, outcome), "test view, {work:?}");
+        }
     }
 }
 
