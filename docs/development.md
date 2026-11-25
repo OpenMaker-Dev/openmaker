@@ -1025,7 +1025,8 @@ line before Sentry reads it.
 Each request to Sentry, its name lookup included, ends after 5 seconds,
 and a program's end waits for room in Sentry's queue and then 2 seconds
 for what is queued, without waiting for Sentry's thread to finish: an
-endpoint that does not answer delays the end by about 7 seconds, not
+endpoint that does not answer delays the end by about 7 seconds (about 12
+when a panic's report is being flushed at the same time), not
 indefinitely, and reports still queued then are not sent.
 
 Limits: a value a log line gives unquoted and outside a list (an error
