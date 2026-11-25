@@ -293,6 +293,9 @@ pub struct Page {
     region_len: usize,
     refs: usize,
     slots: Vec<Slot>,
+    /// A leaf whose bytes prove each item's key below the next one's
+    /// ([`Page::keys_ordered`]).
+    ordered: bool,
 }
 
 impl fmt::Debug for Page {
@@ -417,12 +420,13 @@ impl Page {
         let mut refs = 0usize;
         let mut at = BODY_AT;
         let malformed = Fault::Malformed;
+        let mut ordered = h.kind == PageKind::Leaf;
         match h.kind {
             PageKind::Leaf => {
                 if h.level != 0 {
                     return Err(malformed("a leaf above level 0"));
                 }
-                let mut previous: Option<(usize, usize)> = None;
+                let mut previous: Option<(usize, usize, bool)> = None;
                 for _ in 0..h.count {
                     if at + ITEM_HEADER > end {
                         return Err(malformed("an item past the region"));
@@ -450,16 +454,17 @@ impl Page {
                     if !crate::tree::key::well_formed(&bytes[key_at..key_at + key_part], complete) {
                         return Err(malformed("a key that is not an encoded path"));
                     }
-                    if let Some((p_at, p_len)) = previous {
-                        if !in_order(
+                    if let Some((p_at, p_len, p_complete)) = previous {
+                        let (a, b) = (
                             &bytes[p_at..p_at + p_len],
                             &bytes[key_at..key_at + key_part],
-                            complete,
-                        ) {
+                        );
+                        if !in_order(a, b, complete) {
                             return Err(malformed("items out of order"));
                         }
+                        ordered &= known_in_order(a, p_complete, b);
                     }
-                    previous = Some((key_at, key_part));
+                    previous = Some((key_at, key_part, complete));
                     slots.push(slot(at, refs)?);
                     refs += n;
                     at = item_end;
@@ -551,7 +556,18 @@ impl Page {
             region_len: h.region_len,
             refs: h.refs,
             slots,
+            ordered,
         })
+    }
+
+    /// Whether the page is a leaf whose own bytes prove each item's key
+    /// below the next one's. False when two adjacent keys are known only as
+    /// far as a shared start, the rest of one in its overflow pages: the
+    /// page check ([`in_order`]) cannot order them, and nothing reads the
+    /// overflow pages to do it. A reader may take a leaf's last key as a
+    /// bound for every key in it only on such a leaf.
+    pub(crate) fn keys_ordered(&self) -> bool {
+        self.ordered
     }
 
     /// The page's number.
@@ -702,6 +718,29 @@ pub(crate) fn in_order(a: &[u8], b: &[u8], b_complete: bool) -> bool {
         std::cmp::Ordering::Greater => false,
         // `b` complete and a prefix of what is known of `a`: `a >= b`.
         std::cmp::Ordering::Equal => !(b_complete && b.len() <= a.len()),
+    }
+}
+
+/// Whether a key known as far as `a` (all of it when `a_complete`) sorts
+/// strictly before a key known as far as `b`, as the known parts prove:
+/// they differ, or `a` is all of a key and a proper start of `b`.
+pub(crate) fn known_in_order(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
+    let n = a.len().min(b.len());
+    match a[..n].cmp(&b[..n]) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => a_complete && a.len() < b.len(),
+    }
+}
+
+/// Whether a key known as far as `a` (all of it when `a_complete`) sorts
+/// at or before a key known as far as `b`, as the known parts prove.
+pub(crate) fn known_at_most(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
+    let n = a.len().min(b.len());
+    match a[..n].cmp(&b[..n]) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => a_complete && a.len() <= b.len(),
     }
 }
 
