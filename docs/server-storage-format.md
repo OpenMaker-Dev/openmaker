@@ -1457,7 +1457,7 @@ by these two edits:
 | `put(path, leaf)`: a record's cell, a last record id, a serial's next value, a modification count | put a value |
 | `put(path, subtree)`: a record, the record-id list `[T, 0d]`, a field catalog `[T, 03]`, an index `[T, 01, F, I]`, a container library, a catalog member op13 uploads | put the node, then each node under it in depth-first order (each put makes nothing the next one removes) |
 | `remove(path)`: a record, an index, a library, the deferred field list, a catalog member | delete |
-| `ensure(path)` alone | put a list at the path when it is missing or holds an empty value; put both, with its value, when the path holds a value that is not empty; nothing otherwise |
+| `ensure(path)` alone | put a list at the path when it is missing or is a leaf with an empty value; put both, with its value, when it is a leaf with a value that is not empty; nothing when it is a list, which keeps its children and its value, empty or not |
 | `ensure(path).set_child(leaf)`, `library::store` | put a value below the path (the put makes the ancestors) |
 | changes in place through `at_mut`: `modcount::bump` and `library::adjust` set a leaf with `set_child`, and `adjust` removes a member it takes to zero | put a value; delete |
 | children dropped in place (`children.retain`, `children = kept`: a record's cells, a table's global repetitions) | delete each one dropped |
@@ -1627,8 +1627,9 @@ listings visited and the most held at once.
   OpenMaker's choices, not measured against what FileMaker clients send.
 - An `OwnedNode` leaf without a value (`value: None`, as
   `OwnedNode::default` makes) is held as an empty value. Made an
-  ancestor, it becomes both with an empty value here, and a list without
-  a value in `OwnedNode`. The file engine makes leaves with a value.
+  ancestor, it becomes a list without a value, here and in `OwnedNode`,
+  as a leaf with an empty value does. The file engine makes leaves with a
+  value.
 - The decoder holds tree edits to the tree's bounds with the tree's own
   check (`tree::check_edits`), so the model, which shares the decoder,
   does not check those bounds a second time.

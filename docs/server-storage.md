@@ -7,8 +7,8 @@ OpenMaker's own design. FileMaker Server works differently inside
 ([hbam-writer.md](re/hbam-writer.md) 6.1), and nothing here is compared with
 it except the contract in section 2.
 
-**Status: design.** Only the file engine exists
-(`crates/om-server/src/store.rs`). Of the engine interface, the write
+**Status: design.** The file engine (`crates/om-server/src/store.rs`)
+hosts every file. Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them, and every save's outcome is reported
 (section 5). Views are built, and every reader outside server scripts
@@ -19,9 +19,14 @@ backups and the desktop's Save a Copy as make their copies with it. What
 the engine says of a file that is not a version's (whether it takes
 changes, its file on disk) it offers itself. Server scripts and the
 operations' own reads still hold the file engine's store (section 5,
-"Moving the other readers"). Still to come: `import` and `capabilities` (section 5),
-the store engine and everything in sections 6 to 12, which are specified
-here and not built.
+"Moving the other readers"). Still to come: `import` and `capabilities`
+(section 5). Of the store engine, `om-store` holds the `state` file
+(section 6.1), the entries and applying them to the state's trees (6.2,
+6.3), the page trees (6.4), the page file with its checkpoints, restore
+points and the open that chooses a checkpoint (6.7), and the simulator
+(12). Nothing in the server reaches it yet: the log's segments, the store
+behind the engine interface, groups, clones, replication and everything
+else in sections 6 to 12 are specified here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
