@@ -84,10 +84,14 @@ struct Flaky {
     /// The calls made, in order: each change when it is asked for, each
     /// flush once it returned, and each open of the incident journal.
     ops: Ops,
+    /// Writes under a path fail once `ops` holds an open of the incident
+    /// journal: an act that fails after its record.
+    fail_after_journal: Arc<std::sync::Mutex<Option<String>>>,
 }
 
-/// What [`Flaky`] saw: the call and its path.
-type Ops = Arc<std::sync::Mutex<Vec<(&'static str, String)>>>;
+/// What [`Flaky`] saw: the call, its path, and for a write to the journal
+/// the kind of the record it begins.
+type Ops = Arc<std::sync::Mutex<Vec<(&'static str, String, Option<u16>)>>>;
 
 struct FlakyFile {
     inner: Box<dyn sys::File>,
@@ -95,17 +99,18 @@ struct FlakyFile {
     bad: Arc<std::sync::Mutex<Option<(String, u64)>>>,
     fail_writes: Arc<std::sync::Mutex<Option<(String, u64, ErrorKind)>>>,
     ops: Ops,
+    fail_after_journal: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Flaky {
     fn op(&self, op: &'static str, path: &str) {
-        self.ops.lock().unwrap().push((op, path.to_owned()));
+        self.ops.lock().unwrap().push((op, path.to_owned(), None));
     }
 }
 
 impl FlakyFile {
     fn op(&self, op: &'static str) {
-        self.ops.lock().unwrap().push((op, self.path.clone()));
+        self.ops.lock().unwrap().push((op, self.path.clone(), None));
     }
 }
 
@@ -184,6 +189,7 @@ impl Flaky {
             fail_writes: Arc::new(std::sync::Mutex::new(None)),
             create_at_lock: Arc::new(std::sync::Mutex::new(None)),
             ops: Ops::default(),
+            fail_after_journal: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -194,6 +200,7 @@ impl Flaky {
             bad: self.bad.clone(),
             fail_writes: self.fail_writes.clone(),
             ops: self.ops.clone(),
+            fail_after_journal: self.fail_after_journal.clone(),
         })
     }
 }
@@ -224,7 +231,33 @@ impl sys::File for FlakyFile {
         if let Some(kind) = fail {
             return Err(sys::Error::new(kind, sys::Op::Write, &self.path));
         }
-        self.op("write");
+        let after_journal = self
+            .fail_after_journal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|prefix| self.path.starts_with(prefix.as_str()))
+            && self
+                .ops
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(op, path, _)| *op == "open" && path == incident::FILE);
+        if after_journal {
+            return Err(sys::Error::new(
+                ErrorKind::Write,
+                sys::Op::Write,
+                &self.path,
+            ));
+        }
+        let kind = [incident::FILE, incident::NEW_FILE]
+            .contains(&self.path.as_str())
+            .then(|| incident::kind_of(data))
+            .flatten();
+        self.ops
+            .lock()
+            .unwrap()
+            .push(("write", self.path.clone(), kind));
         self.inner.write_at(offset, data)
     }
     fn flush(&self) -> sys::Result<()> {
@@ -2948,6 +2981,8 @@ struct Shaped {
     /// Each tag's entry: its index, its segment (by place in `segments`)
     /// and the offset of its payload there.
     entries: BTreeMap<u8, (u64, usize, u64)>,
+    /// The first page of the newest checkpoint's meta stream.
+    meta: u64,
 }
 
 const SHAPE_PAYLOAD: usize = 6000;
@@ -2989,6 +3024,7 @@ impl Shaped {
         write(&mut store);
         store.checkpoint(None).unwrap();
         let start = store.checkpoints()[0].entry.index;
+        let meta = store.checkpoints()[0].meta.0;
         while store.log_segments().count < 4 {
             write(&mut store);
         }
@@ -3027,6 +3063,7 @@ impl Shaped {
             durable,
             segments,
             entries,
+            meta,
         }
     }
 
@@ -3810,6 +3847,42 @@ fn a_number_listed_again_is_not_taken_for_one_set_aside_earlier() {
     assert_eq!(fate.fate, log::Fate::Missing, "{again:?}");
 }
 
+/// Round 3 of #766 (answer 4): a record equal to one not acknowledged is
+/// not written again. The store records that the last batch may be lost,
+/// then its act fails (the settling open's write of `state`), at every
+/// start, more times than the journal holds records: the journal holds one
+/// record of it, and once the act can run the store opens.
+#[test]
+fn a_record_already_held_is_not_written_again() {
+    let s = Shaped::new();
+    s.damage_newest_state();
+    let last = *s.entries.keys().last().unwrap();
+    s.damage(last, 100, 4);
+    *s.flaky.fail_after_journal.lock().unwrap() = Some(crate::state::FILE.to_owned());
+    for round in 0..incident::MAX_RECORDS + 4 {
+        s.flaky.ops.lock().unwrap().clear();
+        s.sim.restart();
+        let failed = Store::open(s.fs(), SHAPE_CONFIG);
+        let Err(e) = &failed else {
+            panic!("round {round}: the act ran")
+        };
+        assert!(
+            matches!(peel(e), OpenError::Log(LogError::State(_))),
+            "round {round}: {e}"
+        );
+    }
+    *s.flaky.fail_after_journal.lock().unwrap() = None;
+    s.sim.restart();
+    let (_, opened) = Store::open(s.fs(), SHAPE_CONFIG).unwrap();
+    let batches: Vec<&Incident> = opened
+        .incidents
+        .iter()
+        .filter(|i| matches!(i.what, What::LastBatch { .. }))
+        .collect();
+    assert_eq!(batches.len(), 1, "{:?}", opened.incidents);
+    assert!(opened.last_batch_may_be_lost);
+}
+
 /// A give-up path to crash, built once: the disk as the call finds it (and
 /// a place of it the device keeps failing to read), what must not go
 /// missing without an incident (a restore point, by name and the checkpoint
@@ -3824,18 +3897,27 @@ struct GivingUp {
     /// The incident the path records: every open after a crash reports
     /// one of it.
     kind: fn(&What) -> bool,
-    /// The changes (call, path) the call makes only once a record is
-    /// durable, from its open of the journal on, and never while a record
-    /// is being written: the log, `state` and the page file; the log and
-    /// `state` where the page file's ordinary open comes first; for the
-    /// unreadable end, given up after an ordinary open (section 6.12), the
-    /// fence's new segment file.
-    guarded: fn(&str, &str) -> bool,
+    /// Its acts: each the kind of its record, and the changes (call, path)
+    /// it makes only once a record of that kind is durable, from the call's
+    /// open of the journal on, and never while a record is being written.
+    /// The log, `state` and the page file; the log and `state` where the
+    /// page file's ordinary open comes first; for the unreadable end, given
+    /// up after an ordinary open (section 6.12), the fence's new segment
+    /// file.
+    acts: Vec<(u16, Guard)>,
 }
+
+/// The changes (call, path) an act makes.
+type Guard = fn(&str, &str) -> bool;
 
 /// A change of the log, `state` or the page file.
 fn all_three(op: &str, path: &str) -> bool {
-    log_and_state(op, path) || (is_change(op) && path == pagefile::FILE)
+    log_and_state(op, path) || pages(op, path)
+}
+
+/// A change of the page file.
+fn pages(op: &str, path: &str) -> bool {
+    is_change(op) && path == pagefile::FILE
 }
 
 /// A change of the log or `state`.
@@ -3891,76 +3973,84 @@ impl GivingUp {
     }
 }
 
-/// Whether, from the first open of the journal in `ops`, nothing
-/// `guarded` was changed before a record was durable, nor while one was
-/// being written. A record appended is durable once the journal's file is
-/// flushed; a journal made, once `incidents.new` was flushed after its
-/// write, renamed to `incidents`, and the store folder flushed.
+/// Whether, from the first open of the journal in `ops`, each act's
+/// changes come after a record of its own kind was durable, and none while
+/// a record is being written. A record appended is durable once the
+/// journal's file is flushed; a journal made, once `incidents.new` was
+/// flushed after its write and before its rename to `incidents`, and the
+/// store folder flushed after that.
 fn recorded_before_acting(
-    ops: &[(&'static str, String)],
-    guarded: fn(&str, &str) -> bool,
+    ops: &[(&'static str, String, Option<u16>)],
+    acts: &[(u16, Guard)],
 ) -> Result<(), String> {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Record {
-        /// None being written.
-        Durable,
-        /// Written after what the journal holds, not flushed yet.
-        Appended,
-        /// Written under the new name; flushed or not; renamed or not.
-        Made { flushed: bool, renamed: bool },
+    /// The record being written, of its kind.
+    enum Pending {
+        Appended(u16),
+        Made {
+            kind: u16,
+            flushed: bool,
+            renamed: bool,
+        },
     }
     let Some(read) = ops
         .iter()
-        .position(|(op, path)| *op == "open" && path == incident::FILE)
+        .position(|(op, path, _)| *op == "open" && path == incident::FILE)
     else {
         return Ok(());
     };
-    let mut any = false;
-    let mut record = Record::Durable;
-    for (op, path) in &ops[read..] {
-        match (*op, path.as_str()) {
-            ("write", incident::FILE) => record = Record::Appended,
-            ("flush", incident::FILE) if record == Record::Appended => {
-                record = Record::Durable;
-                any = true;
+    let mut durable: Vec<u16> = Vec::new();
+    let mut pending: Option<Pending> = None;
+    for (op, path, kind) in &ops[read..] {
+        match (*op, path.as_str(), &mut pending) {
+            ("write", incident::FILE, _) => pending = kind.map(Pending::Appended),
+            ("flush", incident::FILE, Some(Pending::Appended(kind))) => {
+                durable.push(*kind);
+                pending = None;
             }
-            ("write", incident::NEW_FILE) => {
-                record = Record::Made {
+            ("write", incident::NEW_FILE, _) => {
+                pending = kind.map(|kind| Pending::Made {
+                    kind,
                     flushed: false,
                     renamed: false,
+                })
+            }
+            (
+                "flush",
+                incident::NEW_FILE,
+                Some(Pending::Made {
+                    flushed,
+                    renamed: false,
+                    ..
+                }),
+            ) => *flushed = true,
+            ("create", incident::FILE, Some(Pending::Made { renamed, .. })) => *renamed = true,
+            (
+                "flush_folder",
+                "",
+                Some(Pending::Made {
+                    kind,
+                    flushed: true,
+                    renamed: true,
+                }),
+            ) => {
+                durable.push(*kind);
+                pending = None;
+            }
+            (op, path, _) => {
+                for (kind, guarded) in acts {
+                    if !guarded(op, path) {
+                        continue;
+                    }
+                    if pending.is_some() {
+                        return Err(format!("{op} {path} while a record was being written"));
+                    }
+                    if !durable.contains(kind) {
+                        return Err(format!(
+                            "{op} {path} before its own record (kind {kind}) was durable"
+                        ));
+                    }
                 }
             }
-            ("flush", incident::NEW_FILE) => {
-                if let Record::Made { renamed, .. } = record {
-                    record = Record::Made {
-                        flushed: true,
-                        renamed,
-                    };
-                }
-            }
-            ("create", incident::FILE) => {
-                if let Record::Made { flushed, .. } = record {
-                    record = Record::Made {
-                        flushed,
-                        renamed: true,
-                    };
-                }
-            }
-            ("flush_folder", "") => {
-                if record
-                    == (Record::Made {
-                        flushed: true,
-                        renamed: true,
-                    })
-                {
-                    record = Record::Durable;
-                    any = true;
-                }
-            }
-            (op, path) if guarded(op, path) && (!any || record != Record::Durable) => {
-                return Err(format!("{op} {path} before the record was durable"));
-            }
-            _ => {}
         }
     }
     Ok(())
@@ -4022,7 +4112,7 @@ fn long_every_give_up_names_what_it_gave_up_after_a_crash_at_every_step() {
 
 fn give_ups_crashed_at_every_step(every_fate: bool) {
     type Build = fn() -> GivingUp;
-    let paths: [(&str, Build); 7] = [
+    let paths: [(&str, Build); 8] = [
         ("the page file's damage, by the store", || {
             let (sim, _, meta, number, acked) = with_a_point(72);
             sim.damage(pagefile::FILE, meta_place(meta), 8).unwrap();
@@ -4034,7 +4124,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: acked.index,
                 call: Box::new(|fs| Store::open(fs, CONFIG)),
                 kind: |w| matches!(w, What::Checkpoints { damaged: true, .. }),
-                guarded: all_three,
+                acts: vec![(incident::CHECKPOINTS, all_three)],
             }
         }),
         ("a read of the page file, by the administrator", || {
@@ -4062,7 +4152,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                         }
                     )
                 },
-                guarded: all_three,
+                acts: vec![(incident::CHECKPOINTS, all_three)],
             }
         }),
         ("the log's damage, accepted", || {
@@ -4079,7 +4169,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(move |fs| Store::accept_damage(fs, SHAPE_CONFIG, &plan)),
                 kind: |w| matches!(w, What::LogDamage { .. }),
-                guarded: log_and_state,
+                acts: vec![(incident::LOG_DAMAGE, log_and_state)],
             }
         }),
         ("the log's unreadable end", || {
@@ -4100,9 +4190,33 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(move |fs| Store::give_up_unreadable_end(fs, SHAPE_CONFIG, last)),
                 kind: |w| matches!(w, What::UnreadableEnd { .. }),
-                guarded: fence,
+                acts: vec![(incident::UNREADABLE_END, fence)],
             }
         }),
+        (
+            "the page file's damage and the last batch, two give-ups in one open",
+            || {
+                let s = Shaped::new();
+                s.damage_newest_state();
+                let last = *s.entries.keys().last().unwrap();
+                s.damage(last, 100, 4);
+                s.sim.damage(pagefile::FILE, meta_place(s.meta), 8).unwrap();
+                s.sim.restart();
+                GivingUp {
+                    image: s.sim.image(),
+                    bad: None,
+                    config: SHAPE_CONFIG,
+                    point: None,
+                    acked: s.durable.index,
+                    call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
+                    kind: |w| matches!(w, What::LastBatch { .. }),
+                    acts: vec![
+                        (incident::CHECKPOINTS, pages),
+                        (incident::LAST_BATCH, log_and_state),
+                    ],
+                }
+            },
+        ),
         ("the last batch after a passed-over copy of state", || {
             let s = Shaped::new();
             // The newest copy of `state` damaged: the marker read is one
@@ -4119,7 +4233,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
                 kind: |w| matches!(w, What::LastBatch { .. }),
-                guarded: log_and_state,
+                acts: vec![(incident::LAST_BATCH, log_and_state)],
             }
         }),
         (
@@ -4147,7 +4261,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                             }
                         )
                     },
-                    guarded: log_and_state,
+                    acts: vec![(incident::LOG_DAMAGE, log_and_state)],
                 }
             },
         ),
@@ -4164,7 +4278,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 acked: s.durable.index,
                 call: Box::new(|fs| Store::open(fs, SHAPE_CONFIG)),
                 kind: |w| *w == What::JournalLost,
-                guarded: all_three,
+                acts: vec![(incident::JOURNAL_LOST, all_three)],
             }
         }),
     ];
@@ -4195,7 +4309,7 @@ fn give_ups_crashed_at_every_step(every_fate: bool) {
                 let case = format!("{name}, step {step}, {fates:?}");
                 {
                     let ops = ops.lock().unwrap().clone();
-                    if let Err(e) = recorded_before_acting(&ops, g.guarded) {
+                    if let Err(e) = recorded_before_acting(&ops, &g.acts) {
                         panic!("{case}: {e}: {ops:?}");
                     }
                 }

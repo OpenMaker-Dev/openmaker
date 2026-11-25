@@ -559,7 +559,7 @@ pub struct Opened {
     /// when it did.
     pub passed_over_state: Option<SlotFault>,
     /// `state` marked a copy passed over (by this open or an earlier one)
-    /// and the log held no whole batch after the later of the marker and
+    /// and the open found no whole batch after the later of the marker and
     /// the checkpoint's entry: the marker can have been one advance behind,
     /// and whatever this server confirmed after that entry may be lost
     /// (section 6.12). This open recorded it as an incident
@@ -1051,9 +1051,13 @@ impl Store {
     /// Acknowledge, for the store in the folder, everything a read showed
     /// the administrator ([`Store::read_incidents`]): refused, with nothing
     /// written, unless the journal reads the same now; then it holds only a
-    /// base record carrying the next number (format section 7.5). With the
-    /// store folder's lock, so not while the store is open: then see
-    /// [`Store::acknowledge`]. Returns how many incidents were acknowledged.
+    /// base record carrying the next number (format section 7.5). What the
+    /// read could not see goes with it, unseen: a place the device failed
+    /// to read at both reads (a record there is discarded), and the bytes
+    /// past the read's limit (a change there that keeps the file's size
+    /// does not refuse the call). With the store folder's lock, so not
+    /// while the store is open: then see [`Store::acknowledge`]. Returns how
+    /// many incidents the read decoded and were acknowledged.
     pub fn acknowledge_incidents(
         fs: &Arc<dyn Fs>,
         shown: &incident::Shown,
@@ -1542,9 +1546,13 @@ impl Store {
 
     /// Acknowledge everything a read showed ([`Store::incidents`]): refused,
     /// with nothing written, unless the journal reads the same now (an
-    /// incident recorded since, or a place that changed, refuses it); then
-    /// the journal holds only a base record carrying the next number, and no
-    /// open reports those incidents again. Returns how many incidents were
+    /// incident recorded since, or a change the read can see, refuses it);
+    /// then the journal holds only a base record carrying the next number,
+    /// and no open reports those incidents again. What the read could not
+    /// see goes with it, unseen: a place the device failed to read at both
+    /// reads (a record there is discarded), and the bytes past the read's
+    /// limit (a change there that keeps the file's size does not refuse the
+    /// call). Returns how many incidents the read decoded and were
     /// acknowledged. A failed write or flush stops the store.
     pub fn acknowledge(&mut self, shown: &incident::Shown) -> Result<usize, WriteError> {
         self.usable()?;

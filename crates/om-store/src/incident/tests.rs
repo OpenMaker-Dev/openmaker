@@ -163,9 +163,16 @@ fn every_kind_reads_back_and_numbers_go_on_after_an_acknowledgement() {
     let mut journal = opened(&sim);
     assert_eq!(journal.incidents(), std::slice::from_ref(&next));
     assert!(journal.found().is_clean());
+    // A record that says the same as one held is that one: nothing written.
+    let size = fs.open(FILE, FileOptions::PLAIN).unwrap().size().unwrap();
+    assert_eq!(journal.record(&fs, What::JournalLost).unwrap(), next);
+    assert_eq!(
+        fs.open(FILE, FileOptions::PLAIN).unwrap().size().unwrap(),
+        size
+    );
     // What a read showed, with a record added since: refused.
     let stale = look(&fs).unwrap();
-    journal.record(&fs, What::JournalLost).unwrap();
+    journal.record(&fs, What::LastBatch { after: 1 }).unwrap();
     assert!(matches!(
         journal.acknowledge(&fs, &stale.shown),
         Err(JournalError::Refused(_))
@@ -403,7 +410,7 @@ fn numbers_never_come_again_and_are_checked() {
     let last = journal.record(&fs, What::JournalLost).unwrap();
     assert_eq!(last.number, (start + 1) * PER_START - 1);
     assert!(matches!(
-        journal.record(&fs, What::JournalLost),
+        journal.record(&fs, What::LastBatch { after: 1 }),
         Err(JournalError::NumbersSpent)
     ));
     assert!(matches!(
@@ -429,8 +436,8 @@ fn an_acknowledgement_is_refused_when_the_journal_changed_since_it_was_read() {
         fs.create_root().unwrap();
         let lock = fs.lock().unwrap();
         let mut journal = opened(&sim);
-        for _ in 0..RECORDS {
-            journal.record(&fs, What::JournalLost).unwrap();
+        for after in 0..RECORDS {
+            journal.record(&fs, What::LastBatch { after }).unwrap();
         }
         for n in 2..22 {
             sim.damage(FILE, n * ALIGN + 40, 4).unwrap();
@@ -741,14 +748,16 @@ fn whatever_the_store_is_asked_to_give_up_can_be_recorded() {
     // Plans of the most segment files, one fate: one row each, read back
     // as one row each.
     let missing = |number: u64| file(number, None, None, Fate::Missing);
-    let most = What::LogDamage {
-        plan: Box::new(
-            PlanRecord::of(&plan_of((1..=MAX_FILES as u64).map(missing).collect())).unwrap(),
-        ),
-        last_batch_after: None,
-    };
-    while journal.incidents().len() < MAX_RECORDS {
-        journal.record(&fs, most.clone()).unwrap();
+    let most = PlanRecord::of(&plan_of((1..=MAX_FILES as u64).map(missing).collect())).unwrap();
+    for after in 0.. {
+        if journal.incidents().len() == MAX_RECORDS {
+            break;
+        }
+        let what = What::LogDamage {
+            plan: Box::new(most.clone()),
+            last_batch_after: Some(after),
+        };
+        journal.record(&fs, what).unwrap();
     }
     // Fates that change at every file: refused, nothing written; more files
     // than a record holds: refused when made.
@@ -792,4 +801,38 @@ fn whatever_the_store_is_asked_to_give_up_can_be_recorded() {
     }
     assert_eq!(rows, MAX_RECORDS - 1);
     assert_eq!(files, (MAX_RECORDS as u64 - 1) * MAX_FILES as u64);
+}
+
+/// Round 3 of #766, Sol's first finding: a row runs from its number through
+/// its last member's. A plan that sets aside an unlisted file at the
+/// greatest segment number is recorded and read back.
+#[test]
+fn a_row_at_the_greatest_number_is_recorded() {
+    let sim = Sim::new(12);
+    let fs = sim.fs();
+    fs.create_root().unwrap();
+    let _lock = fs.lock().unwrap();
+    let mut journal = opened(&sim);
+    let mut plan = every_fate();
+    let not_listed = Fate::SetAside {
+        reason: SET_ASIDE_REASONS[7],
+    };
+    plan.files.push(file(u64::MAX, None, None, not_listed));
+    let what = What::LogDamage {
+        plan: Box::new(PlanRecord::of(&plan).unwrap()),
+        last_batch_after: None,
+    };
+    assert_eq!(journal.record(&fs, what.clone()).unwrap().what, what);
+    sim.restart();
+    let journal = opened(&sim);
+    let incident = &journal.incidents()[0];
+    let What::LogDamage { plan: read, .. } = &incident.what else {
+        panic!("{incident:?}")
+    };
+    let row = read.rows.last().unwrap();
+    assert_eq!((row.number, row.last_number()), (u64::MAX, Some(u64::MAX)));
+    assert_eq!(read.files().last().map(|f| f.number), Some(u64::MAX));
+    assert!(incident
+        .to_string()
+        .contains(&format!("segment {}", u64::MAX)));
 }

@@ -44,6 +44,7 @@
 //!   over [`FILE`], the store folder flushed).
 
 use std::fmt;
+use std::sync::Arc;
 
 use ring::digest;
 
@@ -143,12 +144,20 @@ const fn align_up(at: u64) -> u64 {
 }
 
 /// The record kinds (format section 7.2).
-const BASE: u16 = 0;
-const CHECKPOINTS: u16 = 1;
-const LOG_DAMAGE: u16 = 2;
-const UNREADABLE_END: u16 = 3;
-const LAST_BATCH: u16 = 4;
-const JOURNAL_LOST: u16 = 5;
+pub(crate) const BASE: u16 = 0;
+pub(crate) const CHECKPOINTS: u16 = 1;
+pub(crate) const LOG_DAMAGE: u16 = 2;
+pub(crate) const UNREADABLE_END: u16 = 3;
+pub(crate) const LAST_BATCH: u16 = 4;
+pub(crate) const JOURNAL_LOST: u16 = 5;
+
+/// The kind of the record `bytes` begin with, when they begin one: for a
+/// test that watches what is written to the journal.
+#[cfg(test)]
+pub(crate) fn kind_of(bytes: &[u8]) -> Option<u16> {
+    (bytes.len() >= HEADER && bytes[..8] == MAGIC)
+        .then(|| u16::from_le_bytes([bytes[10], bytes[11]]))
+}
 
 /// What the store was approved to give up and was about to: each is
 /// recorded, and flushed, before the store acts on it. A record says what
@@ -187,9 +196,10 @@ pub enum What {
         last: log::Position,
         end: UnreadableEnd,
     },
-    /// A copy of `state` was passed over and the log held no whole batch
-    /// after entry `after`, the later of the marker and the checkpoint's
-    /// entry: whatever this server confirmed after it may be lost. Recorded
+    /// A copy of `state` was passed over and the open's walk found no whole
+    /// batch after entry `after`, the later of the marker and the
+    /// checkpoint's entry (a read that failed there counts as not found):
+    /// whatever this server confirmed after it may be lost. Recorded
     /// before the open writes `state`; it covers whatever that open then
     /// finds after `after`.
     LastBatch { after: u64 },
@@ -283,6 +293,19 @@ pub struct Row {
     pub last: Option<u64>,
 }
 
+impl Row {
+    /// The number of the row's last segment; `None` for a row no record
+    /// holds (no segments, or past the last number).
+    pub fn last_number(&self) -> Option<u64> {
+        last_of(self.number, self.count)
+    }
+}
+
+/// The last of `count` segments from `number`, when there is one.
+fn last_of(number: u64, count: u32) -> Option<u64> {
+    number.checked_add(u64::from(count.checked_sub(1)?))
+}
+
 impl PlanRecord {
     /// The record of `plan`; refused when it names more than [`MAX_FILES`]
     /// files.
@@ -295,7 +318,7 @@ impl PlanRecord {
         for (i, file) in files.iter().enumerate() {
             if let Some(row) = rows.last_mut() {
                 let prev = &files[i - 1];
-                if file.number == prev.number + 1 && one_row(prev, file) {
+                if prev.number.checked_add(1) == Some(file.number) && one_row(prev, file) {
                     row.count += 1;
                     row.last = file.last;
                     continue;
@@ -329,11 +352,12 @@ impl PlanRecord {
     /// own.
     pub fn files(&self) -> impl Iterator<Item = FileFate> + '_ {
         self.rows.iter().flat_map(|row| {
-            let count = u64::from(row.count);
-            (0..count).map(move |i| FileFate {
-                number: row.number + i,
-                first: row.first.filter(|_| i == 0),
-                last: row.last.filter(|_| i + 1 == count),
+            let last = row.last_number();
+            let numbers = last.into_iter().flat_map(|last| row.number..=last);
+            numbers.map(move |number| FileFate {
+                number,
+                first: row.first.filter(|_| number == row.number),
+                last: row.last.filter(|_| Some(number) == last),
                 fate: row.fate.clone(),
             })
         })
@@ -358,14 +382,9 @@ fn one_row(a: &FileFate, b: &FileFate) -> bool {
 
 /// "segment n" or "segments n to m".
 fn segments_named(row: &Row) -> String {
-    if row.count == 1 {
-        format!("segment {}", row.number)
-    } else {
-        format!(
-            "segments {} to {}",
-            row.number,
-            row.number + u64::from(row.count) - 1
-        )
+    match row.last_number() {
+        Some(last) if last != row.number => format!("segments {} to {last}", row.number),
+        _ => format!("segment {}", row.number),
     }
 }
 
@@ -447,7 +466,7 @@ impl fmt::Display for Incident {
             ),
             What::LastBatch { after } => write!(
                 f,
-                "a copy of the state file was passed over and the log held no whole batch after \
+                "a copy of the state file was passed over and no whole batch was found after \
                  entry {after}: whatever this server confirmed after entry {after} may be lost"
             ),
             What::JournalLost => f.write_str(
@@ -803,6 +822,8 @@ impl Journal {
                 continue;
             };
             let Some(prefix) = &plan.prefix else { continue };
+            // Held once for the record, shared by its rows.
+            let prefix: Arc<str> = format!("{}/{prefix}", log::FOLDER).into();
             for row in &plan.rows {
                 if matches!(row.fate, Fate::SetAside { .. }) {
                     out.push(Earlier {
@@ -810,7 +831,7 @@ impl Journal {
                         count: u64::from(row.count),
                         first: row.first,
                         last: row.last,
-                        prefix: format!("{}/{prefix}", log::FOLDER),
+                        prefix: prefix.clone(),
                         run: plan.listed_before,
                         marker: plan.marker,
                         cut_count: plan.cut_count_before,
@@ -821,24 +842,21 @@ impl Journal {
         out
     }
 
-    /// Append `what` and make it durable: refused, with nothing written,
-    /// when the records not acknowledged are [`MAX_RECORDS`], the numbers
-    /// are spent, the record is too large, or the file would pass
-    /// [`MAX_FILE`]. A journal whose file is missing is made again under
-    /// [`NEW_FILE`], flushed and renamed into place, the store folder
-    /// flushed; otherwise the record goes after what the file holds and the
-    /// file is flushed. Only then does it return the incident (as it reads
-    /// back), and only then may the caller act. After a write or flush fails
-    /// every later call fails.
+    /// Append `what` and make it durable. A record not acknowledged that
+    /// says the same (number and start count apart) is returned instead,
+    /// with nothing written: the act goes on under it, so an act stopped
+    /// after its record, and tried again at every start, is recorded once.
+    /// Refused, with nothing written, when the records not acknowledged are
+    /// [`MAX_RECORDS`], the numbers are spent, the record is too large, or
+    /// the file would pass [`MAX_FILE`]. A journal whose file is missing is
+    /// made again under [`NEW_FILE`], flushed and renamed into place, the
+    /// store folder flushed; otherwise the record goes after what the file
+    /// holds and the file is flushed. Only then does it return the incident
+    /// (as it reads back), and only then may the caller act. After a write
+    /// or flush fails every later call fails.
     pub(crate) fn record(&mut self, fs: &dyn Fs, what: What) -> Result<Incident, JournalError> {
         if self.failed {
             return Err(JournalError::Failed);
-        }
-        if self.incidents.len() >= MAX_RECORDS {
-            return Err(JournalError::Full);
-        }
-        if self.next >= self.limit {
-            return Err(JournalError::NumbersSpent);
         }
         let incident = Incident {
             number: self.next,
@@ -850,6 +868,15 @@ impl Journal {
         let Ok(Decoded::Record(incident, _)) = decode_record(&bytes) else {
             return Err(JournalError::Refused("a record does not read back"));
         };
+        if let Some(held) = self.incidents.iter().find(|i| i.what == incident.what) {
+            return Ok(held.clone());
+        }
+        if self.incidents.len() >= MAX_RECORDS {
+            return Err(JournalError::Full);
+        }
+        if self.next >= self.limit {
+            return Err(JournalError::NumbersSpent);
+        }
         let made = self.file.is_none();
         let end = if made { 0 } else { self.end };
         if end + bytes.len() as u64 > MAX_FILE {
@@ -1253,7 +1280,7 @@ fn decode_plan(p: &mut In) -> Option<PlanRecord> {
         files += u64::from(count);
         if count == 0
             || files > MAX_FILES as u64
-            || number.checked_add(u64::from(count)).is_none()
+            || last_of(number, count).is_none()
             || (matches!(fate, Fate::MovedEarlier { .. }) && count != 1)
         {
             return None;

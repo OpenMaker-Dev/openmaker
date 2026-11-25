@@ -359,8 +359,8 @@ pub struct Earlier {
     pub count: u64,
     pub first: Option<u64>,
     pub last: Option<u64>,
-    /// The paths' start, in `log/`.
-    pub prefix: String,
+    /// The paths' start, in `log/`: one for all the rows of a record.
+    pub prefix: Arc<str>,
     pub run: Segments,
     pub marker: u64,
     pub cut_count: u64,
@@ -612,8 +612,8 @@ pub enum LogError {
     /// An acceptance was given a plan that a fresh plan no longer matches:
     /// refused, with nothing changed. Plan again.
     PlanChanged,
-    /// `state` marks a copy passed over and the log holds no whole batch
-    /// after entry `after`, the later of the marker and the start: whatever
+    /// `state` marks a copy passed over and the open's walk found no whole
+    /// batch after entry `after`, the later of the marker and the start: whatever
     /// this server confirmed after it may be lost. Nothing was written to
     /// `state`; the walk that found it may have written again bytes it had
     /// just read and checked, and nothing else. Record that durably, then
@@ -695,8 +695,8 @@ impl fmt::Display for LogError {
             ),
             LogError::LossNotRecorded { after } => write!(
                 f,
-                "a copy of the state file was passed over and the log holds no whole batch \
-                 after entry {after}: whatever this server confirmed after it may be lost; \
+                "a copy of the state file was passed over and no whole batch was found after \
+                 entry {after}: whatever this server confirmed after it may be lost; \
                  nothing was written to the state file until that is recorded"
             ),
             LogError::NotRecorded(why) => write!(
