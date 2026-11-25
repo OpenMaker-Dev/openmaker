@@ -9,11 +9,13 @@ rust-version.workspace = true
 description = "OpenMaker Server: hosts .fmp12 files over the RCFMP12 protocol"
 
 [features]
-default = ["admin-console"]
+default = ["admin-console", "sentry"]
 # The Admin Console (om-admin) in the om-server program. The desktop's
 # private hosts (om-provider) have no console, and leave it and its web
 # stack out.
 admin-console = ["dep:om-admin"]
+# Error and panic reports to Sentry when SENTRY_DSN is set (`reporting`).
+sentry = ["dep:sentry"]
 
 [dependencies]
 om-admin = { path = "../om-admin", optional = true }
@@ -37,7 +39,7 @@ om-transfer = { path = "../om-transfer" }
 om-url = { path = "../om-url" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 jiff = "0.2"
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 # The PDF worker executable's limiting allocator (om-server-pdf-worker; MIT OR Apache-2.0).
 cap = "0.1"
 md-5 = "0.10"
@@ -47,6 +49,7 @@ rcgen = "0.14"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pemfile = "2"
+sentry = { version = "0.49.6", default-features = false, features = ["backtrace", "contexts", "panic", "log", "logs", "ureq", "rustls"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Script file steps open paths beneath their folders' handles a name at a

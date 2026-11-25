@@ -47,12 +47,15 @@ quick-xml = "0.41"
 # (the version eframe uses; MIT OR Apache-2.0 OR Zlib).
 raw-window-handle = "0.6"
 # Diagnostics from the client and its event loop.
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 
 # Phone and tablet shells supply their own window and event loop.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 eframe = "0.37"
 winit = { version = "0.30", default-features = false }
+# The `om-gui` program's error reports (`om_server::reporting`, shared
+# with om-server); already in the workspace through om-provider.
+om-server = { path = "../om-server", default-features = false, features = ["sentry"] }
 
 [features]
 # Embedded web viewers: WebKitGTK through wry on Linux/X11 (through XWayland

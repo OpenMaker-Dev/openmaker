@@ -132,6 +132,8 @@ mod login_limits;
 mod modcount;
 mod recalc;
 mod record;
+#[cfg(feature = "sentry")]
+pub mod reporting;
 mod schedules;
 mod scripts;
 mod security;

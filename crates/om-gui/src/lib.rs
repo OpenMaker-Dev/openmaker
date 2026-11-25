@@ -145,6 +145,21 @@ pub fn prepare_web_viewers() {
     web_viewer::prepare_environment();
 }
 
+/// Install the logger [`run`] reads the error that ends its event loop
+/// with, passed through `wrap`, as the process's logger at `level`: for a
+/// program that reads the log too (the `om-gui` program's error reports),
+/// before `run`. `wrap` must pass every record on to the logger it is
+/// given. Whether that is now the process's logger: not when the process
+/// installed another first, and then the keypad's Enter is not told apart
+/// from Return (`keypad`).
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub fn install_logger<L: log::Log + 'static>(
+    wrap: impl FnOnce(Box<dyn log::Log>) -> L,
+    level: log::LevelFilter,
+) -> bool {
+    keypad::install_logger(wrap, level)
+}
+
 /// Open the OpenMaker window with `provider` and run until it is closed.
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub fn run(provider: Box<dyn DataProvider>) -> eframe::Result {

@@ -12,7 +12,8 @@
 //! as its connection cap needs and the hard limit allows, and SIGTERM or
 //! SIGINT stops it as an administrator's stop does. Backup schedules
 //! without a target of their own write to `--backup-folder`, by default
-//! `Backups` in the state folder.
+//! `Backups` in the state folder. With `SENTRY_DSN` set, errors and panics
+//! are reported to Sentry (`om_server::reporting`).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -176,6 +177,13 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                     numbered after the highest conn-NNN already there
                     (holds client license keys; keep it out of git)";
 
+/// The usage's environment variable for error reports (`reporting`).
+#[cfg(feature = "sentry")]
+const REPORTS_USAGE: &str = "
+  SENTRY_DSN        (environment) send error and panic reports to this
+                    Sentry project, in the environment SENTRY_ENVIRONMENT
+                    names. Without it nothing is sent";
+
 struct Args {
     bind: String,
     name: String,
@@ -326,7 +334,19 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let mut console =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    // Error reports read the log too, when SENTRY_DSN is set; the console
+    // shows what it showed.
+    #[cfg(feature = "sentry")]
+    {
+        let console = console.build();
+        let level = console.filter();
+        om_server::reporting::install_logger(console, level)
+            .expect("no logger is installed before main's");
+    }
+    #[cfg(not(feature = "sentry"))]
+    console.init();
     use_pdf_worker();
     let args = match parse_args() {
         Ok(args) => args,
@@ -335,6 +355,8 @@ fn main() -> ExitCode {
                 eprintln!("error: {e}");
             }
             eprintln!("{USAGE}");
+            #[cfg(feature = "sentry")]
+            eprintln!("{REPORTS_USAGE}");
             return ExitCode::from(64);
         }
     };
@@ -359,6 +381,27 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Read before the server starts any thread (it may change the
     // environment).
     let admin = admin_console_account(&args)?;
+    // Error reports, when SENTRY_DSN is set: their client starts threads,
+    // so only now.
+    #[cfg(feature = "sentry")]
+    {
+        let _reporting = om_server::reporting::init("om-server");
+        let hosted = host(args, admin);
+        if let Err(e) = &hosted {
+            om_server::reporting::report_failure(e);
+        }
+        hosted
+    }
+    #[cfg(not(feature = "sentry"))]
+    host(args, admin)
+}
+
+/// Host the files `args` names until the server is stopped, with the Admin
+/// Console when `admin` gives its account.
+fn host(
+    args: Args,
+    admin: Option<(String, AdminPassword, std::net::SocketAddr)>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let identity = tls_identity(&args)?;
     #[cfg(feature = "admin-console")]
     let console_identity = admin.as_ref().map(|_| identity.clone());
@@ -521,6 +564,8 @@ fn stop_on_signals(
                     });
                 if let Err(e) = stop {
                     log::error!("cannot stop: {e}; ending at once");
+                    #[cfg(feature = "sentry")]
+                    om_server::reporting::flush();
                     std::process::exit(1);
                 }
             }
