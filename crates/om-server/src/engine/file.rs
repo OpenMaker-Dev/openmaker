@@ -247,8 +247,9 @@ impl FileEngine {
 
     /// Check each operation's reads and writes through its transaction
     /// (`super::checking`, `Server::checking_reads`).
-    #[cfg(debug_assertions)]
+    /// Nothing in a release build, which has no check.
     pub(crate) fn check_writes(&self) {
+        #[cfg(debug_assertions)]
         self.checking_writes
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }

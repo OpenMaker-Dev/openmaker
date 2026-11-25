@@ -526,7 +526,7 @@ pub struct ReleaseLocks {
 
 /// op13: put an uploaded subtree, or a single value, at its destination in
 /// the file, replacing what was there (schema-path.md 3.3;
-/// `Store::put_subtree`). The caller checked the session's Full Access;
+/// `schema::upload_to_catalog`). The caller checked the session's Full Access;
 /// op13 takes and checks no lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UploadToCatalog {
@@ -543,7 +543,7 @@ pub struct UploadToCatalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeSchema {
     /// Its UploadMultiple and DeleteTable writes, in order
-    /// (`Store::apply`).
+    /// (`schema::change_schema`).
     pub writes: Vec<om_query::Write>,
     /// The member keys GenerateMemberKey issued that were waiting
     /// (`Store::take_issued_member_keys`).
@@ -1250,10 +1250,10 @@ pub fn run(
             Outcome::new(Reply::ReleaseLocks)
         }
         (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => Outcome::new(
-            Reply::UploadToCatalog(Ok(schema::upload_to_catalog(op, tx))),
+            Reply::UploadToCatalog(Ok(schema::upload_to_catalog(op, file, tx))),
         ),
         (Operation::ChangeSchema(op), Hold::Transaction(tx)) => Outcome::new(Reply::ChangeSchema(
-            schema::change_schema(op, tx).map_err(SchemaNotChanged::Refused),
+            schema::change_schema(op, file, tx).map_err(SchemaNotChanged::Refused),
         )),
         (Operation::StoreIndexes(op), Hold::Transaction(tx)) => {
             tx.store_indexes(op.indexes);

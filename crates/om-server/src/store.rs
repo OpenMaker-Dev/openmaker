@@ -29,6 +29,7 @@ use std::sync::Arc;
 use log::{error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
+use om_data::containers::{self, MemberInfo};
 use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::slot::{be_uint, uint_segment};
@@ -37,14 +38,9 @@ use om_hbam::writer::{
 };
 use om_hbam::{serial, Catalog, DataType, HbamFile, KeyTree, OwnedNode, RidList};
 use om_query::keys::{record_value_entries, word_entries, Reading, TextKeys};
-use om_query::Write;
-
-use om_data::containers::{self, MemberInfo};
 
 use crate::anchored::{FileAt, FileId, Folder};
-use crate::derived::{
-    self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
-};
+use crate::derived::{self, cell_text, counts_key, field_texts, Derived, ENGLISH};
 use crate::engine::{OnDisk, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
@@ -2220,7 +2216,7 @@ impl Store {
     }
 
     /// Issue the next member id and modification count of the catalog at
-    /// `catalog` ([`derived::issue_member_key`]); [`Store::write_member_keys`]
+    /// `catalog` ([`derived::issue_member_key`]); op86 (`engine::schema`)
     /// stores them.
     pub fn issue_member_key(&self, catalog: &[Vec<u8>]) -> Option<(u64, u64)> {
         derived::issue_member_key(&self.tree_view(), &self.waiting, &self.name, catalog)
@@ -2234,7 +2230,7 @@ impl Store {
 
     /// Take the member ids and modification counts GenerateMemberKey
     /// issued and nobody wrote yet, by catalog, for
-    /// [`Store::write_member_keys`]: they are no longer waiting.
+    /// op86 (`engine::schema`): they are no longer waiting.
     pub fn take_issued_member_keys(&mut self) -> Vec<MemberKey> {
         self.waiting.take_member_keys()
     }
@@ -2244,51 +2240,6 @@ impl Store {
     /// by a panic before it wrote them.
     pub fn put_back_member_keys(&mut self, keys: Vec<MemberKey>) {
         self.waiting.put_back_member_keys(keys);
-    }
-
-    /// Write member ids and modification counts GenerateMemberKey issued
-    /// ([`Store::take_issued_member_keys`]) into their catalogs' indexes, as
-    /// FileMaker Server does (schema-path.md 3.4). A value the index
-    /// already passed stays.
-    #[cfg(test)]
-    pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
-        let mut journal = self.begin_commit();
-        self.write_member_keys_in(&mut journal, keys);
-    }
-
-    /// [`Store::write_member_keys`] within `journal`, which keeps each
-    /// index key it advances.
-    pub fn write_member_keys_in(&mut self, journal: &mut Journal, keys: Vec<MemberKey>) {
-        for (catalog, (id, count)) in keys {
-            let mut path: Vec<&[u8]> = catalog.iter().map(Vec::as_slice).collect();
-            // Checked again here: the tree may have changed since the key
-            // was issued.
-            if let Some(reason) = self.member_key_refusal(&path) {
-                warn!(
-                    "{}: member keys issued for {path:02x?} are not written: {reason}",
-                    self.name
-                );
-                continue;
-            }
-            path.push(&[CATALOG_INDEX]);
-            // Each key the index has passed already stays; one that
-            // advances is kept in the journal, with the index it creates,
-            // as it is changed.
-            for (key, value) in [(LAST_MEMBER_ID, id), (MOD_COUNT, count)] {
-                let current = self.root.at(&path).and_then(|index| index.child(&[key]));
-                if modcount::serial_value(current) < value {
-                    let mut at: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-                    at.push(vec![key]);
-                    journal.save_path(&self.root, at);
-                    self.root
-                        .ensure(&path)
-                        .set_child(modcount::serial_leaf(key, value));
-                    // Changed only when a counter advances: keys a write
-                    // already passed change nothing to save.
-                    self.dirty = true;
-                }
-            }
-        }
     }
 
     /// Why putting `node` at `path` would change a value it does not name
@@ -2303,85 +2254,6 @@ impl Store {
         };
         let refused = put_refusals(&self.root, parents, &placed, 3);
         (!refused.is_empty()).then(|| describe(&refused))
-    }
-
-    /// Why `[catalog, 01, 00]` and `[catalog, 01, fc]` (a catalog's last
-    /// member id and count, schema-path.md 3.4) cannot be written in the
-    /// tree as it is (`put_refusals`), for a log line.
-    fn member_key_refusal(&self, catalog: &[&[u8]]) -> Option<String> {
-        derived::member_key_refusal(&self.tree_view(), catalog)
-            .expect("the file engine's tree never fails a read")
-    }
-
-    /// Apply the changes of an op86 program's schema instructions
-    /// (UploadMultiple, DeleteTable; schema-path.md 3.4) and re-read the
-    /// schema. Returns the libraries a deleted table took with it: its
-    /// container data goes with `[T]` (`[T, 1f]`, containers.md 1.1), every
-    /// member at once, so no reference is left to release; the caller
-    /// forgets what it derived from them (thumbnails).
-    #[cfg(test)]
-    pub fn apply(&mut self, writes: Vec<Write>) -> Vec<Vec<Vec<u8>>> {
-        let mut journal = self.begin_commit();
-        self.apply_in(&mut journal, writes)
-    }
-
-    /// [`Store::apply`] within `journal`, which keeps what each write
-    /// replaces or removes (moved, not copied) and the parents it creates,
-    /// and reads the schema again when it is taken back.
-    pub fn apply_in(&mut self, journal: &mut Journal, writes: Vec<Write>) -> Vec<Vec<Vec<u8>>> {
-        let mut released = Vec::new();
-        if writes.is_empty() {
-            return released;
-        }
-        journal.schema_from(&self.derived);
-        for write in writes {
-            match write {
-                Write::Put { path: owned, node } => {
-                    let path: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
-                    let Some((last, parents)) = path.split_last() else {
-                        warn!("{}: refusing a write over the whole file", self.name);
-                        continue;
-                    };
-                    let placed = OwnedNode {
-                        segment: last.to_vec(),
-                        ..node
-                    };
-                    let refused = put_refusals(&self.root, parents, &placed, 3);
-                    if !refused.is_empty() {
-                        // om-query refuses these before they get here.
-                        warn!(
-                            "{}: refusing a write to {path:02x?} the file cannot hold: {}",
-                            self.name,
-                            describe(&refused)
-                        );
-                        continue;
-                    }
-                    journal.replace(&mut self.root, owned, placed);
-                }
-                Write::Remove { path } => {
-                    let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-                    if let [table] = segments.as_slice() {
-                        let members = self
-                            .node(&[table, &[LIBRARY], &[containers::keys::MEMBERS]])
-                            .map_or(0, |m| m.children.len());
-                        if members > 0 {
-                            note(
-                                &self.name,
-                                Some(journal),
-                                format!(
-                                    "table {table:02x?} deleted with its {members} container \
-                                     library member(s)"
-                                ),
-                            );
-                        }
-                        released.push(vec![table.to_vec(), vec![LIBRARY]]);
-                    }
-                    journal.take(&mut self.root, path);
-                }
-            }
-        }
-        self.schema_changed();
-        released
     }
 
     /// Replace catalog members within a commit ([`Store::begin_commit`]):
@@ -2451,6 +2323,7 @@ impl Store {
         let Some(last) = path.last() else {
             return Err("a write at the root".into());
         };
+        let mut feeds = feeds_derived(path);
         match node {
             Some(node) => {
                 let placed = OwnedNode {
@@ -2460,6 +2333,13 @@ impl Store {
                 if let Some(reason) = self.replacement_refusal(path, &placed) {
                     return Err(reason);
                 }
+                // A put below what the derived state leaves out (a field's
+                // deferred work) still changes what it reads when it
+                // creates a parent, or turns one that holds a value into a
+                // list.
+                feeds |= self
+                    .changed_ancestor(path)
+                    .is_some_and(|depth| feeds_derived(&path[..depth]));
                 journal.replace(&mut self.root, path.to_vec(), placed);
             }
             None => {
@@ -2467,13 +2347,26 @@ impl Store {
             }
         }
         self.dirty = true;
-        let feeds = feeds_derived(path);
         if feeds {
             // Who read what the schema derives from reads it again: the
             // verified index marks and the accounts follow the count.
             self.generation += 1;
         }
         Ok(feeds)
+    }
+
+    /// The length of the shortest proper prefix of `path` whose node a put
+    /// at `path` creates or changes (`OwnedNode::put`: a missing parent is
+    /// created, one that holds a value becomes a list), if any.
+    fn changed_ancestor(&self, path: &[Vec<u8>]) -> Option<usize> {
+        let mut node = &self.root;
+        for (depth, segment) in path.iter().enumerate().take(path.len().saturating_sub(1)) {
+            match node.child(segment) {
+                Some(child) if child.value.is_none() => node = child,
+                _ => return Some(depth + 1),
+            }
+        }
+        None
     }
 
     /// The derived state read again after writes that reach it
@@ -2512,47 +2405,17 @@ impl Store {
         }
     }
 
-    /// op13: replace the subtree at `path` with `node` (schema-path.md 3.3),
-    /// creating missing parents, and re-read the schema. A subtree the file
-    /// cannot hold there (hbam-writer.md 2.2, 2.3) is refused and logged, as
-    /// op13 refuses an upload it cannot store, and the tree is unchanged.
-    /// Returns whether it was stored.
+    /// Put `node` at `path` as op13 does, for tests that set a tree up:
+    /// whether it was stored (`Self::write_in`).
+    #[cfg(test)]
     pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
         let mut journal = self.begin_commit();
-        self.put_subtree_in(&mut journal, path, node)
-    }
-
-    /// [`Store::put_subtree`] within `journal`, which keeps the subtree it
-    /// replaces (moved, not copied) and the parents it creates, and reads
-    /// the schema again when it is taken back.
-    pub fn put_subtree_in(
-        &mut self,
-        journal: &mut Journal,
-        path: &[Vec<u8>],
-        node: OwnedNode,
-    ) -> bool {
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let Some((last, parents)) = segments.split_last() else {
-            warn!("{}: refusing an upload over the whole file", self.name);
-            return false;
-        };
-        let placed = OwnedNode {
-            segment: last.to_vec(),
-            ..node
-        };
-        let refused = put_refusals(&self.root, parents, &placed, 3);
-        if !refused.is_empty() {
-            warn!(
-                "{}: refusing an upload to {segments:02x?} the file cannot hold: {}",
-                self.name,
-                describe(&refused)
-            );
-            return false;
+        let stored = self.write_in(&mut journal, path, Some(node)).is_ok();
+        if stored {
+            journal.schema_from(&self.derived);
+            self.schema_changed();
         }
-        journal.replace(&mut self.root, path.to_vec(), placed);
-        journal.schema_from(&self.derived);
-        self.schema_changed();
-        true
+        stored
     }
 
     /// Re-read the schema catalogs after the client changed them, so writes
@@ -4431,7 +4294,7 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The #137 fixture's `limited` set (FileMaker Pro 26.0.3, out of git):
@@ -4489,7 +4352,7 @@ mod tests {
     }
 
     /// A store holding `root`, with nothing unsaved and no lock.
-    fn store_of(root: OwnedNode) -> Store {
+    pub(crate) fn store_of(root: OwnedNode) -> Store {
         let derived = Derived::new(&TreeView::new(&root, 0), Catalog::default(), "")
             .expect("the file engine's tree never fails a read");
         Store {
@@ -4724,31 +4587,6 @@ mod tests {
     }
 
     #[test]
-    fn deleted_tables_take_their_libraries() {
-        // A table with a container library member, and another table.
-        let mut root = OwnedNode::default();
-        let member = [&[0x80, 0x02][..], &[LIBRARY], &[5], &[1], &[0x12]];
-        root.put(&member, OwnedNode::leaf(Vec::new(), vec![0, 0, 0, 1]));
-        root.put(
-            &[&[0x80, 0x03], &[0]],
-            OwnedNode::leaf(Vec::new(), vec![1, 1]),
-        );
-        let mut store = store_of(root);
-        // DeleteTable (schema-path.md 3.4): the library goes with [T].
-        let released = store.apply(vec![Write::Remove {
-            path: vec![vec![0x80, 0x02]],
-        }]);
-        assert_eq!(released, vec![vec![vec![0x80, 0x02], vec![LIBRARY]]]);
-        assert!(store.node(&member).is_none());
-        assert!(store.node(&[&[0x80, 0x03]]).is_some());
-        // Removing a catalog member is no table's deletion.
-        let released = store.apply(vec![Write::Remove {
-            path: vec![vec![3], vec![0x10], vec![5], vec![0x80, 0x02]],
-        }]);
-        assert!(released.is_empty());
-    }
-
-    #[test]
     fn member_keys_are_issued_from_the_catalog() {
         use om_query::Source;
         // live:s4: [4, 1, 00] = 01 04 and fc = 01 0d give 05/0e, then 06/0f;
@@ -4778,19 +4616,11 @@ mod tests {
             (vec![2, 0x80, 0x06], vec![1, 3])
         );
         assert_eq!(generate(&layouts), (vec![1, 7], vec![1, 0x10]));
-        // The issued values go into the indexes (live:s4 g_41_after, s5).
+        // Taken, they are no longer waiting (op86 writes them into the
+        // indexes: `engine::schema`'s test).
         assert!(store.has_issued_member_keys());
-        let issued = store.take_issued_member_keys();
-        store.write_member_keys(issued);
+        store.take_issued_member_keys();
         assert!(!store.has_issued_member_keys());
-        let value = |path: &[&[u8]]| store.node(path).unwrap().value.clone().unwrap();
-        assert_eq!(value(&[&[4], &[1], &[0]]), [1, 7]);
-        assert_eq!(value(&[&[4], &[1], &[0xfc]]), [1, 0x10]);
-        assert_eq!(value(&[&[3], &[0x10], &[1], &[0]]), [2, 0x80, 0x06]);
-        assert_eq!(
-            store.generate_member_key(&layouts).unwrap(),
-            (vec![1, 8], vec![1, 0x11])
-        );
         // A catalog whose last issued id is the largest has no next one.
         let scripts: [&[u8]; 3] = [&[0x11], &[1], &[0]];
         let largest = modcount::serial_leaf(0, u64::MAX);

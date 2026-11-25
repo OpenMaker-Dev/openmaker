@@ -15,7 +15,7 @@ use super::view::{Child, Direction, Head, ReadError, Step, Version, View};
 use crate::derived::Derived;
 use crate::library::{BinaryData, Stored};
 use crate::locks::{LockTable, LockUser};
-use crate::store::{IndexId, Journal, MemberKey, Store};
+use crate::store::{IndexId, Journal, Store};
 
 /// What the engine holds of a file for an operation: what the operation
 /// needs, and no more (`FileEngine::submit`).
@@ -70,7 +70,7 @@ pub struct Transaction<'a> {
     /// Log lines that say a change was made, written once it is stored.
     pub(super) stored_lines: Vec<String>,
     /// The container libraries deleted tables took with them
-    /// ([`Self::apply`]), whose thumbnails the engine forgets.
+    /// ([`Self::release_library`]), whose thumbnails the engine forgets.
     pub(super) released_libraries: Vec<Vec<Vec<u8>>>,
     /// The libraries of tables a server script's commit left without
     /// records ([`Self::drop_emptied_library`]), whose thumbnails the
@@ -80,7 +80,7 @@ pub struct Transaction<'a> {
     /// is stored ([`Self::add_field_basis_once_stored`]).
     pub(super) field_bases: Vec<(Vec<u8>, u64)>,
     /// Whether the run began writing member keys
-    /// ([`Self::write_member_keys`]).
+    /// ([`Self::wrote_member_keys`]).
     pub(super) wrote_member_keys: bool,
     /// Whether a write reached what the derived state reads, which is read
     /// again before the derived state is next used ([`Self::derived`]) or
@@ -216,6 +216,17 @@ impl<'a> Transaction<'a> {
         self.journal.refuse(reason);
     }
 
+    /// GenerateMemberKey's issued keys are being written (op86).
+    pub fn wrote_member_keys(&mut self) {
+        self.wrote_member_keys = true;
+    }
+
+    /// A deleted table took the library at `path` with it, whose thumbnails
+    /// the engine forgets once the change is stored.
+    pub fn release_library(&mut self, path: Vec<Vec<u8>>) {
+        self.released_libraries.push(path);
+    }
+
     /// The operation reserved record ids (op71), which the engine saves
     /// before they are answered, or takes back byte for byte when the save
     /// fails; a reservation is not a commit.
@@ -324,32 +335,11 @@ impl<'a> Transaction<'a> {
         self.stored_lines.push(line);
     }
 
-    /// op13: put `node` at `path` (`Store::put_subtree_in`); whether it was
-    /// stored.
-    pub fn put_subtree(&mut self, path: &[Vec<u8>], node: OwnedNode) -> bool {
-        self.by_store();
-        self.store.put_subtree_in(&mut self.journal, path, node)
-    }
-
-    /// op86's UploadMultiple and DeleteTable writes (`Store::apply_in`).
-    /// The libraries deleted tables took go with them, and so do their
-    /// thumbnails once the writes are stored ([`Self::released_libraries`]).
-    pub fn apply(&mut self, writes: Vec<om_query::Write>) {
-        self.by_store();
-        let released = self.store.apply_in(&mut self.journal, writes);
-        self.released_libraries.extend(released);
-    }
-
-    /// GenerateMemberKey's issued keys (`Store::write_member_keys_in`).
-    pub fn write_member_keys(&mut self, keys: Vec<MemberKey>) {
-        self.by_store();
-        self.wrote_member_keys = true;
-        self.store.write_member_keys_in(&mut self.journal, keys);
-    }
-
     /// Indexes finds built on demand (`Store::store_indexes_in`).
     pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
-        self.by_store();
+        if !indexes.is_empty() {
+            self.by_store();
+        }
         #[cfg(test)]
         if PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
             panic!("a test's panic while storing indexes");

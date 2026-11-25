@@ -2334,7 +2334,7 @@ mod tests {
 
     /// A password changed over the wire (#732's review: FileMaker Pro's
     /// Manage Security uploads the account's record with op13,
-    /// `Store::put_subtree`) counts from the next login on, and the old
+    /// `engine::schema::upload_to_catalog`) counts from the next login on, and the old
     /// one no more.
     #[test]
     fn logins_follow_the_security_catalog_as_the_store_holds_it() {

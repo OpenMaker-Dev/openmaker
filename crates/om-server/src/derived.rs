@@ -882,7 +882,7 @@ pub(crate) fn stored_member_key(view: &dyn View, path: &[&[u8]]) -> Result<(u64,
 /// id and modification count, one more than its last issued id
 /// `[C, 01, 00]` and count `[C, 01, fc]` (or than what `waiting` says was
 /// issued since), and note them there as issued. The tree is only read
-/// here; `Store::write_member_keys` stores them. `None` for a catalog the
+/// here; op86 writes them (`engine::schema`). `None` for a catalog the
 /// tree cannot take them under as it is, and past the largest a serial key
 /// holds.
 pub(crate) fn issue_member_key(
