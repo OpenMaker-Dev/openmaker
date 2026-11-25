@@ -1010,12 +1010,15 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   holds the file's store for reading, and lets go once the file is open. The
   open descriptor keeps reading that saved version whatever later saves
   rename over it, so each copy is one saved version of the file. The copy is
-  written into its folder of the backup without a name, checked to be as
-  long as the file was when it was opened, and only then given its name
-  ([server-storage.md](server-storage.md) 5, "Exports"), so a database
-  name of any length a file system allows is backed up. It is not read
-  back to verify it, as before; FileMaker's Verify option would add that
-  (below).
+  checked to be as long as the file was when it was opened. Where the
+  backup folder's file system makes unnamed files (Linux), it is written
+  without a name and linked to its name once complete; elsewhere, and where
+  the file system has no hard links, it is written under its name, as
+  before ([server-storage.md](server-storage.md) 5, "Exports"). A folder
+  flush that fails after a copy is named is logged, and the run's flush of
+  every folder before the backup is named decides, as before. A copy is
+  not read back to verify it, as before; FileMaker's Verify option would
+  add that (below).
 - **What clients see.** The store is held for one `open` call, never while
   the file is copied. Clients see nothing: a write waits at most for that
   call, and a save in progress delays the backup, not the client.

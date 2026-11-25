@@ -42,9 +42,10 @@
 //! names that version of the file whatever later saves rename over it, so
 //! the copy made from it is a snapshot of one save. The copy is an export
 //! of that file (`crate::engine::export::copy`): copied by the kernel where
-//! the system can, as before, into its folder of the backup without a name
-//! (`crate::staged`), checked to be as long as the file was when it was
-//! opened, then given its name. It is not read back: that is FileMaker's Verify option
+//! the system can, as before, checked to be as long as the file was when it
+//! was opened, without a name and then linked to it where the folder's
+//! file system can, else under its name as before (`crate::staged`). It is
+//! not read back: that is FileMaker's Verify option
 //! ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)), which
 //! OpenMaker does not have. The store is held only for that open call,
 //! never while the file is copied. Clients see no pause (FileMaker Server

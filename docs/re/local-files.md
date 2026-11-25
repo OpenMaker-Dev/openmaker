@@ -860,9 +860,9 @@ than a second reader and writer.
     interrupted or failed write closes the unnamed file, which the kernel
     reclaims. There is no staging name to remove, and the final name
     appears only after the bytes are written and flushed. When the
-    directory cannot be flushed after the link, the copy is removed again
-    and the step fails. Exports share this publication (server-storage.md
-    5, "Exports"). These are OpenMaker's choices [I].
+    directory cannot be flushed after the link, that is logged and the
+    copy kept. Exports share this publication (server-storage.md 5,
+    "Exports"). These are OpenMaker's choices [I].
   - *The desktop's step.* The step refuses clones, self-contained copies,
     an absent output path (the Save dialog is not built), "Automatically
     open file", "Create email", an open transaction, a hosted file and

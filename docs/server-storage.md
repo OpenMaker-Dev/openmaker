@@ -606,37 +606,47 @@ while it was copied, a read of the view that fails (`ReadError`) or a
 refusal of the writer is a typed error (`engine::ExportError`).
 
 **Where an export goes** (`crate::staged`, which the desktop's Save a Copy
-as shares). Into a folder, the export is made without a name and named
-only once it is complete. On Linux with `/proc` mounted, on a file system
-that makes unnamed files (`O_TMPFILE`: ext2, ext3, ext4, XFS, Btrfs, tmpfs
-and others), it is an unnamed file, flushed, then linked to its name from
-its descriptor, which fails when the name is taken: there is no temporary
-name to collide, to be too long for a long database name, to be swapped
-or to remove. Elsewhere (other Unix systems such as macOS, and file
-systems without unnamed files) it is made under a short temporary name of
-its own, `.omstage-<process>-<n>`, only where nothing is (an entry there
-is an error and is left), flushed, hard-linked to its name, which fails
-when the name is taken, and its temporary name removed; the link is made
-from the descriptor where `/proc/self/fd` exists, else from the temporary
-name. The folder is flushed after the link. What a failure leaves:
+as shares). Into a folder, one of two ways:
 
-- before the link (writing, the check, flushing the file): nothing under
-  the final name; an unnamed file is gone once closed, a temporary name is
-  removed while it is still the file made;
-- the link, when the name is taken: the entry there, untouched, and
-  nothing else;
-- the folder flush after the link: the final name is removed while it is
-  still the file made, and the export fails;
-- a removal or a folder flush after one that fails: logged; what could not
-  be removed stays where it was.
+- **Unnamed, then linked.** On Linux with `/proc` mounted, on a file system
+  that makes unnamed files (`O_TMPFILE`: ext2, ext3, ext4, XFS, Btrfs,
+  tmpfs and others), the export is an unnamed file, written, given its
+  permissions, flushed, then linked to its name from its descriptor, which
+  fails when the name is taken. It is complete under its name or absent,
+  and never replaces an entry.
+- **Under its name**, everywhere else, as copies were made before exports:
+  the file is created under its final name, only where nothing is, and
+  written there. That covers other Unix systems (macOS), file systems
+  without unnamed files, and a file system that refuses the link because
+  it has no hard links, where the complete unnamed file is copied into the
+  newly created name. A crash, or a failure while it is written, can leave
+  a partial file under its name, as before exports.
 
-An export can also fill an empty file its caller made
-(`engine::export::Target::File`, the desktop's), from its first byte
-whatever the descriptor's position, and is checked to be as long as the
-file. Windows has no folder descriptors here: an export to a folder fails
-as unsupported. Memory is what the kernel's copy takes, or what the writer
-and reader hold (a few pages and the open key path) and a page of the
-view's walk; never a part of the file.
+Nothing removes a name. After the name is given the folder is flushed;
+when that fails the export is complete under its name, the file stays,
+and the export says so (`ExportError::NotFlushed`): whether the name
+survives a crash is not established. A backup then goes on: it flushes
+every folder of the backup before naming the backup and fails if one
+cannot be, as it always did. The desktop logs it and keeps the copy, as
+it always did. What else a failure leaves:
+
+- before the name is given, on the unnamed way: nothing;
+- the name taken: the entry there, untouched, and nothing else;
+- on the way under its name: what was written of the file, under its
+  name, as before exports (a backup's run removes its unfinished backup
+  folder, with the file in it).
+
+A file that fails while the view is walked is dropped after the store's
+read lock is let go. An export can also fill a file its caller made
+(`engine::export::Target::File`, the desktop's): it must be empty, open
+for reading and writing at any position and not for appending (refused
+before anything is written: a walk writes its pages at offsets), and the
+caller's alone while it is filled. It is written from its first byte and
+checked to be as long as the export. Windows has no folder descriptors
+here: an export to a folder fails as unsupported, and backups are not
+made on Windows. Memory is what the kernel's copy takes, or what the
+writer and reader hold (a few pages and the open key path) and a page of
+the view's walk; never a part of the file.
 
 **The file engine's limit.** Its view holds the store's read lock for as
 long as the view lives, so a written export holds up every write to the
@@ -679,12 +689,8 @@ at any time from a running server, at a clean stop, and `om-server export`
   desktop's holds the locked one, which a copy could clone and read by
   position, where it now opens the path again (a permissions change since
   the file was opened fails that open).
-- Without unnamed files and without `/proc/self/fd` (macOS), the link is
-  made from the temporary name: an entry another program swaps in under it
-  between the two calls is what gets linked, and the export fails and
-  leaves it there, since it cannot show that it made it. A removal is a
-  look at the entry, then its removal: an entry swapped in between is what
-  is removed.
+- What another holder of a caller's file writes while an export fills it
+  cannot be seen: it can be overwritten, or make the export wrong.
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's locale and the
