@@ -8792,6 +8792,34 @@ mod tests {
         }
     }
 
+    /// While a script runs or pauses, Escape on the app's alert (a pause's
+    /// message, a waiting alert) dismisses the alert, as Return does: the
+    /// script's abort keys leave it for the alert (#859).
+    #[test]
+    fn escape_on_an_alert_during_a_script_dismisses_the_alert() {
+        for paused in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.script.running = true;
+            app.script.paused = paused.then_some(None);
+            app.error = Some("The layout menus of \"Peer\" could not be read.".into());
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
+            assert_eq!(app.error, None, "paused={paused}");
+            assert_eq!(app.script.paused, paused.then_some(None), "paused={paused}");
+        }
+    }
+
     /// Quit while File > Close waits on a close trigger, from the menu or
     /// the root close box, makes that close a Quit: the trigger's veto
     /// still keeps the file open, and its approval quits. While a script

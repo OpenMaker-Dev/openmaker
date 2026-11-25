@@ -2651,12 +2651,16 @@ impl OpenMakerApp {
 
     /// Esc / Cmd-period while a script runs; Esc in a pause cancels it.
     pub(super) fn abort_keys(&mut self, ctx: &egui::Context) {
-        // The host's message over the window, or its alert that a file was
-        // disconnected, takes Escape for itself.
+        // The host's message over the window, its alert that a file was
+        // disconnected, or the app's own alert (a pause's message, a
+        // waiting alert) takes Escape for itself: Escape dismisses the
+        // alert, as Return does, and the next one reaches the script
+        // (#859).
         if !self.script.running
             || self.script.prompt.is_some()
             || self.host_message_shown()
             || self.forced_alert_shown()
+            || self.error.is_some()
         {
             return;
         }
