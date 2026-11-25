@@ -1430,8 +1430,13 @@ captures cap:914-948 and the edit sequence), and the server's log of the
 first FileMaker Pro run against OpenMaker Server (on
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673)) has no
 `commit of record ... that was never uploaded`. FileMaker Pro committing a
-record it did not upload would show it wrong; the follow-up run looks for
-that in the flows that leave a record unchanged. It makes a commit whose
+record it did not upload would show it wrong. A capture of FileMaker Pro
+26.0.3 against FileMaker Server 26.0.3 then showed an op14 before every
+op70, over a field edit, New Record, Duplicate Record, Delete Record,
+Replace Field Contents, Import Records and a script's Set Field and Commit,
+and no op70 at all for a record entered and left unchanged
+([#829](https://github.com/OpenMaker-Dev/openmaker/issues/829#issuecomment-7177276993));
+a portal row was not covered. It makes a commit whose
 save failed, which took its staged records, fail again when it is sent
 again, where it answered done with nothing stored. op73 for a path that
 is not one table fails too; op73 refused for the session still answers

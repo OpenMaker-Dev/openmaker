@@ -1046,10 +1046,11 @@ fn refused_action(
 /// commit whose save failed, which took its staged records, fails again
 /// when it is sent again rather than answer done with nothing stored:
 /// FileMaker Pro uploads every record it commits new or changed, with op14
-/// before the op70 (write-path.md 0 and 1.1, captured), and the server's log
-/// of its first run against OpenMaker had no commit of a record never
-/// uploaded; a FileMaker Pro commit of a record it did not upload would show
-/// this wrong (docs/server-storage.md 5). Only an entry
+/// before the op70 (write-path.md 0 and 1.1, captured; again in a capture
+/// against FileMaker Server, #829 of github.com/OpenMaker-Dev/openmaker),
+/// and the server's log of its first run against OpenMaker had no commit of
+/// a record never uploaded; a FileMaker Pro commit of a record it did not
+/// upload would show this wrong (docs/server-storage.md 5). Only an entry
 /// marked new (`01`) creates a record, and only one whose id was issued and
 /// is free; an entry in the edit form for a record the file does not hold
 /// is refused, whatever its id (#840 of github.com/OpenMaker-Dev/openmaker:
