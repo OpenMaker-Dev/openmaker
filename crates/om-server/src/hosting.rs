@@ -1579,7 +1579,13 @@ pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadErr
         let decoded = (|| {
             let name = account.child(ACCOUNT_NAME)?.text()?.ok()?;
             let password = match account.child(ACCOUNT_PASSWORD).and_then(|n| n.assembled()) {
-                Some(bytes) => {
+                Some(std::borrow::Cow::Borrowed(bytes)) => {
+                    StoredPassword::parse(bytes).map_err(PasswordUnavailable::Unsupported)
+                }
+                // A verifier stored in pieces, assembled into a copy, which
+                // is wiped once parsed.
+                Some(std::borrow::Cow::Owned(bytes)) => {
+                    let bytes = zeroize::Zeroizing::new(bytes);
                     StoredPassword::parse(&bytes).map_err(PasswordUnavailable::Unsupported)
                 }
                 None => Err(PasswordUnavailable::Missing),
