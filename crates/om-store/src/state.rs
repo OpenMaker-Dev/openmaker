@@ -487,6 +487,12 @@ impl State {
         fs.owns(&self._lock)
     }
 
+    /// The store folder's lock this state holds, for the other files of the
+    /// store that check it is held when they are opened (the page file).
+    pub fn folder_lock(&self) -> &FolderLock {
+        &self._lock
+    }
+
     /// Change the values with `change` and make the result durable: a
     /// marker advance in one slot, anything else in both (module docs); a
     /// change that changes nothing writes nothing.

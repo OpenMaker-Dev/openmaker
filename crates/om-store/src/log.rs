@@ -213,6 +213,23 @@ pub enum CutWhy {
     Segments,
 }
 
+/// What accepting the loss after damage through the marker gave up
+/// ([`Log::accept_damage`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageAccepted {
+    /// The last entry the log still held whole and chained from the start:
+    /// the log ends there now, and the marker records it.
+    pub kept: Position,
+    /// The marker before: the entries after `kept` through it had been
+    /// confirmed, and are given up with whatever followed them.
+    pub marker: u64,
+    /// The cut count `state` recorded, raised by one.
+    pub cut_count: u64,
+    /// Listed segments `state` no longer lists; the open removes their
+    /// files.
+    pub dropped: u64,
+}
+
 /// A place after the durable entry the device failed to read, where an
 /// open ended the log: the segment, the offset of the read that failed, and
 /// the index the log expected there.
@@ -1038,6 +1055,211 @@ impl Log {
         })
     }
 
+    /// Accept the loss of everything the log can no longer produce, and
+    /// open it: the storage half of the administrator's "accept the loss"
+    /// on a single server, for a log that does not hold, whole, every entry
+    /// through its marker ([`LogError::Damaged`]; server-storage.md 6.12).
+    ///
+    /// The listed segments are opened in order up to the first that is
+    /// missing or has no valid header; the entries from `start` are walked
+    /// through those, each whole and chained, up to the first that is not
+    /// or that names another hash than the start or the marker names. The
+    /// last such entry, `kept` (`start` itself when none follows it), is
+    /// where the log ends now: one `state` update, written to both slots,
+    /// lowers the marker to it (its committed position with it, when that
+    /// was past), raises the cut count, and lists only the segments up to
+    /// the one that holds it (none when it is `start`: the run then begins
+    /// at the next unused number). Then the log is opened as
+    /// [`Log::open`] opens it, which removes the files no longer listed;
+    /// what lay after `kept` carries the older cut count and is never part
+    /// of the log again. Entries before `start` that a dropped segment held
+    /// are gone from the log with it: a checkpoint older than the one at
+    /// `start` can no longer be replayed.
+    ///
+    /// Refused, with nothing written, when the log holds every entry
+    /// through the later of the marker and `start` and every listed
+    /// segment opens: there is no loss to accept. A read the device fails
+    /// is reported as [`LogError::Unreadable`], with nothing written. It
+    /// needs no committed position: it is the administrator's decision,
+    /// which no committed position could make on a single server.
+    pub fn accept_damage(
+        fs: Arc<dyn Fs>,
+        mut state: State,
+        config: Config,
+        start: Position,
+    ) -> Result<(Log, Opened, DamageAccepted), Box<OpenFailed>> {
+        match Self::give_up_damaged(&*fs, &mut state, config, start) {
+            Ok(accepted) => {
+                Log::open(fs, state, config, start).map(|(log, opened)| (log, opened, accepted))
+            }
+            Err(error) => Err(Box::new(OpenFailed { error, state })),
+        }
+    }
+
+    /// The record of [`Log::accept_damage`].
+    fn give_up_damaged(
+        fs: &dyn Fs,
+        state: &mut State,
+        config: Config,
+        start: Position,
+    ) -> Result<DamageAccepted, LogError> {
+        config.check()?;
+        if !state.holds_lock_of(fs) {
+            return Err(LogError::Refused(
+                "the state's lock is not this store folder's, or is no longer held",
+            ));
+        }
+        let values = *state.values();
+        let (run, marker, store) = (values.segments, values.marker, values.server_id.0);
+        if start.index > MAX_INDEX || marker.index > MAX_INDEX {
+            return Err(LogError::Refused(
+                "the start or the marker is past the last index",
+            ));
+        }
+        let firm = marker.index.max(start.index);
+        // The listed segments that open, up to the first that does not.
+        let mut segs: Vec<Seg> = Vec::new();
+        for number in run.first..run.first.saturating_add(run.count) {
+            let file = match fs.open(&segment_path(number), FileOptions::SYNC) {
+                Ok(file) => file,
+                Err(e) if e.kind() == ErrorKind::NotFound => break,
+                Err(e) => return Err(LogError::Disk(e)),
+            };
+            let mut bytes = [0u8; SEGMENT_HEADER as usize];
+            let n = match read_exact(&*file, 0, &mut bytes) {
+                Ok(n) => n,
+                Err(error) if error.kind() == ErrorKind::Read => {
+                    return Err(LogError::Unreadable {
+                        segment: number,
+                        offset: 0,
+                        error,
+                    })
+                }
+                Err(e) => return Err(LogError::Disk(e)),
+            };
+            let header = match SegmentHeader::decode(&bytes[..n]) {
+                Ok(header) => header,
+                Err(HeaderFault::Newer(version)) => {
+                    return Err(LogError::NewerFormat {
+                        segment: number,
+                        version,
+                    })
+                }
+                Err(_) => break,
+            };
+            if header.store != store
+                || header.number != number
+                || file.size().map_err(LogError::Disk)? < header.size
+                || segs
+                    .last()
+                    .is_some_and(|prev| header.first < prev.header.first)
+            {
+                break;
+            }
+            segs.push(Seg {
+                number,
+                header,
+                file,
+            });
+        }
+        // The last entry held whole and chained from `start`, up to `firm`,
+        // and how many of the segments stay listed.
+        let fits = |p: &Position| {
+            !(p.index == start.index && p.hash != start.hash)
+                && !(p.index == marker.index && p.hash != marker.hash)
+        };
+        let mut kept = (start, 0usize);
+        // An empty log that needs to hold nothing has nothing to give up.
+        let mut reached = segs.is_empty() && run.count == 0 && marker.index <= start.index;
+        let after = start.index + 1;
+        if let Some(from) = segment_for(&segs, after).filter(|_| segs[0].header.first <= after) {
+            let header = segs[from].header;
+            let before = Position {
+                index: header.first - 1,
+                term: header.prev_term,
+                hash: header.prev_hash,
+            };
+            if fits(&before) {
+                let mut seen = (before, from);
+                if before.index < firm {
+                    let mut scanner = Scanner::new(&segs, from, Keep::Nothing);
+                    loop {
+                        match scanner.next_event() {
+                            Err(fault) => return Err(unreadable(&segs, fault)),
+                            Ok(Event::Entry(found)) => {
+                                let at = position(&found);
+                                if !fits(&at) {
+                                    break;
+                                }
+                                seen = (at, found.seg);
+                                if at.index >= firm {
+                                    break;
+                                }
+                            }
+                            Ok(Event::End { .. }) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                }
+                if seen.0.index >= start.index {
+                    kept = (seen.0, seen.1 + 1);
+                }
+                reached = seen.0.index >= firm;
+            }
+        }
+        let (last, keep) = kept;
+        let whole = reached;
+        if whole && segs.len() as u64 == run.count {
+            return Err(LogError::Refused(
+                "the log holds every entry through its marker: there is no loss to accept",
+            ));
+        }
+        // Reaching `firm`, every segment that opened stays listed: only
+        // those after the first that did not are dropped.
+        let keep = if whole { segs.len() } else { keep };
+        let listed = if keep == 0 {
+            Segments {
+                first: run
+                    .first
+                    .checked_add(run.count)
+                    .ok_or(LogError::Refused("the segment numbers are spent"))?,
+                count: 0,
+            }
+        } else {
+            Segments {
+                first: run.first,
+                count: keep as u64,
+            }
+        };
+        let cut_count = values
+            .cut_count
+            .checked_add(1)
+            .ok_or(LogError::Refused("the cut count is at its limit"))?;
+        let lowered = if whole {
+            marker
+        } else {
+            Marker {
+                index: last.index,
+                hash: last.hash,
+                committed: marker.committed.min(last.index),
+            }
+        };
+        drop(segs);
+        state
+            .update(|v| {
+                v.marker = lowered;
+                v.segments = listed;
+                v.cut_count = cut_count;
+            })
+            .map_err(LogError::State)?;
+        Ok(DamageAccepted {
+            kept: last,
+            marker: marker.index,
+            cut_count,
+            dropped: run.count - keep as u64,
+        })
+    }
+
     /// What `state` holds.
     pub fn state(&self) -> &State {
         &self.state
@@ -1232,11 +1454,11 @@ impl Log {
     /// Add an entry to the open batch, in memory, and return its place.
     /// Nothing is written until [`Log::flush_batch`]. Refused, with nothing
     /// added, when the log ends at a place it could not read
-    /// ([`LogError::EndUnreadable`]), when the payload is too large, the term is lower than the
-    /// last entry's, the index would pass [`MAX_INDEX`], the batch would
-    /// span more than two segments ([`LogError::BatchFull`]), or the entry
-    /// needs the next segment and the disk has no room for it
-    /// ([`LogError::NoSpace`]).
+    /// ([`LogError::EndUnreadable`]), when the payload is too large, the
+    /// term is lower than the last entry's, the index would pass
+    /// [`MAX_INDEX`], the batch would span more than two segments
+    /// ([`LogError::BatchFull`]), or the entry needs the next segment and
+    /// the disk has no room for it ([`LogError::NoSpace`]).
     pub fn append(
         &mut self,
         term: u64,
@@ -1244,37 +1466,9 @@ impl Log {
         file: u64,
         payload: &[u8],
     ) -> Result<Position, LogError> {
-        self.usable()?;
-        if let Some(unreadable) = self.unreadable {
-            return Err(LogError::EndUnreadable(unreadable.end));
-        }
-        if payload.len() > self.config.max_payload as usize {
-            return Err(LogError::TooLarge {
-                len: payload.len(),
-                max: self.config.max_payload,
-            });
-        }
-        if term < self.appended.term {
-            return Err(LogError::Refused(
-                "an entry's term is lower than the term of the entry before it",
-            ));
-        }
-        if self.appended.index >= MAX_INDEX {
-            return Err(LogError::Refused("the log is at its last index"));
-        }
+        let next_segment = self.admit(term, payload.len())?;
         let index = self.appended.index + 1;
         let size = ENTRY_OVERHEAD + payload.len() as u64;
-        let room = match (self.write, self.segs.last()) {
-            (Some(offset), Some(seg)) => seg.header.size - offset,
-            _ => 0,
-        };
-        let next_segment = self.there > 0 || BATCH_HEADER + self.here + size > room;
-        if next_segment {
-            if SEGMENT_HEADER + BATCH_HEADER + self.there + size > self.config.segment_size {
-                return Err(LogError::BatchFull);
-            }
-            self.prepare()?;
-        }
         let (bytes, hash) = encode_entry(&self.appended.hash, index, term, kind, file, payload);
         let position = Position { index, term, hash };
         if next_segment {
@@ -1289,6 +1483,52 @@ impl Log {
         });
         self.appended = position;
         Ok(position)
+    }
+
+    /// Whether [`Log::append`] would take an entry of `len` payload bytes
+    /// at `term` now, with every refusal of `append`, and the next segment
+    /// made when the entry would need it; nothing is added. A caller that
+    /// must not be refused once it has done other work for the entry (the
+    /// store applies an entry before it appends it) asks first: nothing
+    /// changes the answer before the `append` that follows, but a failure.
+    pub fn ready_for(&mut self, term: u64, len: usize) -> Result<(), LogError> {
+        self.admit(term, len).map(|_| ())
+    }
+
+    /// The checks of an append, and the next segment made when it is
+    /// needed: whether the entry goes to the next segment.
+    fn admit(&mut self, term: u64, len: usize) -> Result<bool, LogError> {
+        self.usable()?;
+        if let Some(unreadable) = self.unreadable {
+            return Err(LogError::EndUnreadable(unreadable.end));
+        }
+        if len > self.config.max_payload as usize {
+            return Err(LogError::TooLarge {
+                len,
+                max: self.config.max_payload,
+            });
+        }
+        if term < self.appended.term {
+            return Err(LogError::Refused(
+                "an entry's term is lower than the term of the entry before it",
+            ));
+        }
+        if self.appended.index >= MAX_INDEX {
+            return Err(LogError::Refused("the log is at its last index"));
+        }
+        let size = ENTRY_OVERHEAD + len as u64;
+        let room = match (self.write, self.segs.last()) {
+            (Some(offset), Some(seg)) => seg.header.size - offset,
+            _ => 0,
+        };
+        let next_segment = self.there > 0 || BATCH_HEADER + self.here + size > room;
+        if next_segment {
+            if SEGMENT_HEADER + BATCH_HEADER + self.there + size > self.config.segment_size {
+                return Err(LogError::BatchFull);
+            }
+            self.prepare()?;
+        }
+        Ok(next_segment)
     }
 
     /// Write the open batch and record the marker over it (format section
