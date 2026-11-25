@@ -944,15 +944,15 @@ impl OpenMakerApp {
         session.set_layouts_for(opened.layouts, doc.calcs.schema().map(AsRef::as_ref));
         // A catalog the provider could not read is said, as for a file
         // opened from Home (`Reply::Layouts`); the window still opens on
-        // its layout, with empty layout menus outside Layout mode.
+        // its layout, with empty layout menus outside Layout mode. The
+        // alert waits for any alert up: one script can open several files
+        // before the next frame.
         match opened.layout_menu {
             Ok(menu) => session.layout_menu = menu,
-            Err(err) => {
-                self.error = Some(format!(
-                    "The layout menus of \"{}\" could not be read. {}",
-                    session.target.file, err.message
-                ));
-            }
+            Err(err) => self.waiting_alerts.push_back(format!(
+                "The layout menus of \"{}\" could not be read. {}",
+                session.target.file, err.message
+            )),
         }
         // The page setup the file stores, as a file the user opens starts
         // with it (`accept_calc_schema`).

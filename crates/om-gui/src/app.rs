@@ -950,7 +950,8 @@ pub struct OpenMakerApp {
     /// Alerts that wait for the one up: each shows once no other is up, and
     /// stays until its own alert is dismissed, so an error that replaces it
     /// meanwhile does not lose it. A host Add to Hosts could not save as
-    /// its file opened, when the file's own errors may follow at once.
+    /// its file opened, when the file's own errors may follow at once; the
+    /// layout menus of a file a script opened that could not be read.
     waiting_alerts: std::collections::VecDeque<String>,
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
