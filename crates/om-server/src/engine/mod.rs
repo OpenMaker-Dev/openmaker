@@ -184,6 +184,7 @@
 mod copies;
 pub(crate) mod export;
 mod file;
+mod overlay;
 mod reading;
 mod schema;
 mod state;
@@ -215,13 +216,14 @@ use crate::writes::{self, Change, CommitError, Mailboxes, RecordWrite};
 
 pub(crate) use export::{Destination, ExportError, OnDisk, Progress, Source};
 pub(crate) use file::FileEngine;
+pub(crate) use overlay::{Cover, Overlay};
 pub(crate) use reading::{Read, Waiting};
 pub(crate) use transaction::{Hold, Locks, Transaction};
 /// For views written in tests outside the engine.
 #[cfg(test)]
 pub(crate) use view::Step;
 pub(crate) use view::{
-    wire, Child, Direction, Head, ReadError, TreeView, Version, View, Wiped, NO_LIMIT,
+    wire, Child, Direction, Head, Noted, ReadError, TreeView, Version, View, Wiped, NO_LIMIT,
 };
 
 /// A change the server makes to a hosted file: one request's work, as a

@@ -56,6 +56,8 @@ pub const DEFAULT_SCRIPT_LIMIT: usize = ScriptLimits::DEFAULT.concurrent;
 const FILE_MISSING: u16 = 100;
 const SCRIPT_MISSING: u16 = 104;
 const WINDOW_MISSING: u16 = 112;
+/// "Unable to open file": the session could not read the file's schema.
+const UNREADABLE: u16 = 802;
 const HOST_CAPACITY: u16 = 812;
 /// "File is being closed": a request while the server shuts down.
 const CLOSING: u16 = 820;
@@ -648,8 +650,13 @@ impl Drop for SessionId<'_> {
 
 /// `SMScriptRuntime::ExecuteScript` (11.3): 112 without a window, 104 for a
 /// missing script, else the script run to completion or until it is
-/// aborted.
+/// aborted. A session that could not read the file's schema runs nothing
+/// and ends with 802 (docs/server-storage.md 5, "A script session's
+/// reads").
 fn execute(host: &mut ServerHost, script: ScriptRef<'_>, parameter: &str, slot: &Slot) -> Outcome {
+    if host.unread() {
+        return Outcome::failed(UNREADABLE);
+    }
     if !host.has_window() {
         return Outcome::failed(WINDOW_MISSING);
     }
@@ -754,6 +761,8 @@ mod tests {
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
         let engine = crate::engine::FileEngine::default();
+        // Every read answered through both views (`engine::copies`).
+        engine.check_reads();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),
@@ -1519,6 +1528,342 @@ mod tests {
                 txn: 1
             }
         ));
+        host.close();
+    }
+
+    /// The finders of `criterion` on `field` of Tasks, a field of `data_type`.
+    fn finders(field: u64, data_type: om_hbam::DataType, criterion: &str) -> Vec<Vec<u8>> {
+        om_query::find::finders(
+            fixture::TABLE,
+            field,
+            data_type,
+            criterion,
+            om_collate::DateOrder::default(),
+        )
+        .unwrap_or_else(|e| panic!("{criterion}: {e:?}"))
+        .into_iter()
+        .map(|finder| finder.bytes)
+        .collect()
+    }
+
+    /// docs/server-storage.md 5, "The overlay view": a find inside a
+    /// script's transaction answers as it did before the overlay. The
+    /// transaction changes record 1, deletes record 2 and adds a record;
+    /// finds on Name, whose value index a find stored before the
+    /// transaction, and on Count, whose index each find builds, by word,
+    /// by value, by range, for any value and for duplicates, answer through
+    /// the overlay of the version as through the store that held the
+    /// transaction's records alone (`Store::scratch`, kept for this test as
+    /// the reference: `ServerHost::query_by_scratch`).
+    #[test]
+    fn a_find_in_a_transaction_answers_as_the_scratch_store_did() {
+        use om_hbam::DataType::{Number, Text};
+        use om_scripts::runtime::RecordMove::{First, Next};
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_tasks(&mut tree, 1..=6);
+        let file = TempFile::from_tree("overlay-find", &tree);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let table = uint_segment(fixture::TABLE);
+        let name = uint_segment(fixture::NAME);
+        // A find outside the transaction builds Name's index, which is
+        // stored.
+        let all = host
+            .find_for_tests(fixture::TABLE, &finders(fixture::NAME, Text, "Task"))
+            .unwrap();
+        assert_eq!(all.iter().collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6]);
+        let index = hosted(&shared)
+            .read_store()
+            .node(&[&table, &[1], &name])
+            .is_some();
+        assert!(index, "Name's index is stored");
+        host.begin_transaction(Default::default()).unwrap();
+        host.go_to_record(First, false).unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Changed one"))
+            .unwrap();
+        host.set_field(field(fixture::COUNT), Value::text("4"))
+            .unwrap();
+        host.go_to_record(Next, false).unwrap();
+        host.delete_record(false).unwrap();
+        host.new_record().unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Added task"))
+            .unwrap();
+        host.set_field(field(fixture::COUNT), Value::text("3"))
+            .unwrap();
+        host.commit_records(Default::default()).unwrap();
+        let cases = [
+            (fixture::NAME, Text, "Task"),
+            (fixture::NAME, Text, "Changed"),
+            (fixture::NAME, Text, "added"),
+            (fixture::NAME, Text, "one"),
+            (fixture::NAME, Text, "==Task 3"),
+            (fixture::NAME, Text, "*"),
+            (fixture::COUNT, Number, "3"),
+            (fixture::COUNT, Number, "2...4"),
+            (fixture::COUNT, Number, "!"),
+        ];
+        for (field, data_type, criterion) in cases {
+            let finders = finders(field, data_type, criterion);
+            assert_eq!(
+                host.find_for_tests(fixture::TABLE, &finders),
+                host.query_by_scratch(fixture::TABLE, &finders),
+                "{criterion}"
+            );
+        }
+        // What they found: the changed record by its new name, the added
+        // one, and never the deleted record 2.
+        let found = |field, data_type, criterion| {
+            let finders = finders(field, data_type, criterion);
+            let found = host.find_for_tests(fixture::TABLE, &finders).unwrap();
+            found.iter().collect::<Vec<_>>()
+        };
+        assert_eq!(found(fixture::NAME, Text, "Changed"), [1]);
+        assert_eq!(found(fixture::NAME, Text, "Task"), [3, 4, 5, 6, 7]);
+        assert_eq!(found(fixture::COUNT, Number, "4"), [1, 4]);
+        host.revert_transaction().unwrap();
+        host.close();
+    }
+
+    /// A session reads the file through a reading of its own taken for each
+    /// read, never across its own writes (docs/server-storage.md 5, "A
+    /// script session's reads"): a record it commits, a serial value it
+    /// sets and a record it deletes are what it reads next, through the
+    /// file, not through what it held.
+    #[test]
+    fn a_session_reads_what_it_committed() {
+        use om_hbam::DataType::Text;
+        use om_scripts::runtime::RecordMove::First;
+        let file = TempFile::new("reads-own-commit", &[], true);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        // A find before the commit reads the version before it.
+        let fresh = finders(fixture::NAME, Text, "Fresh");
+        assert!(host
+            .find_for_tests(fixture::TABLE, &fresh)
+            .unwrap()
+            .is_empty());
+        host.new_record().unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Fresh"))
+            .unwrap();
+        host.commit_records(Default::default()).unwrap();
+        let found = host.find_for_tests(fixture::TABLE, &fresh).unwrap();
+        assert_eq!(found.iter().collect::<Vec<_>>(), [3]);
+        // A field a calculation reads of the committed record.
+        let context = host.calc_context_for_test();
+        let count = CalcHost::get(&mut host, 19, &context).unwrap();
+        assert_eq!(text(&host, &count), "3", "TotalRecordCount");
+        host.go_to_record(First, false).unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Renamed"))
+            .unwrap();
+        host.commit_records(Default::default()).unwrap();
+        let renamed = finders(fixture::NAME, Text, "Renamed");
+        let found = host.find_for_tests(fixture::TABLE, &renamed).unwrap();
+        assert_eq!(found.iter().collect::<Vec<_>>(), [1]);
+        host.delete_record(false).unwrap();
+        let found = host.find_for_tests(fixture::TABLE, &renamed).unwrap();
+        assert!(found.is_empty(), "the deleted record is gone");
+        let context = host.calc_context_for_test();
+        let count = CalcHost::get(&mut host, 19, &context).unwrap();
+        assert_eq!(text(&host, &count), "2", "TotalRecordCount");
+        host.close();
+    }
+
+    /// docs/server-storage.md 5, "A script session's reads": a read of the
+    /// file that fails is 802, "Unable to open file", for each kind of
+    /// read, and the session changes nothing in the file meanwhile. Each
+    /// case fails one path in the test view (`FileEngine::fail_reads`) and
+    /// runs a script, or a step, that reads it.
+    #[test]
+    fn each_kind_of_read_that_fails_is_802() {
+        use om_scripts::runtime::Accounts as _;
+        const UNREADABLE: u16 = 802;
+        let t = uint_segment(fixture::TABLE);
+        let notes = uint_segment(fixture::NOTES);
+        // A script of one step reading `text`, run with `path` failing:
+        // its error.
+        use om_hbam::OwnedNode;
+        let run_reading =
+            |tag: &str, prepare: &dyn Fn(&mut OwnedNode), path: Vec<Vec<u8>>, text: &str| {
+                let script = fixture::script(1, "Read", vec![fixture::set_variable("$x", text)]);
+                let mut tree = fixture::tree(std::slice::from_ref(&script), true);
+                prepare(&mut tree);
+                let file = TempFile::from_tree(tag, &tree);
+                let shared = shared(&file);
+                shared.engine.fail_reads(fixture::FILE, path);
+                perform(&shared, request(&shared, 1, "", 0)).error
+            };
+        let nothing = |_: &mut OwnedNode| {};
+        let cases: Vec<(&str, u16)> = vec![
+            // The session's schema: its script catalog.
+            (
+                "schema",
+                run_reading("fail-schema", &nothing, vec![vec![17]], "1"),
+            ),
+            // A table's record-id list, which the session's window lists.
+            (
+                "a record-id list",
+                run_reading("fail-ids", &nothing, vec![t.clone(), vec![0x0d]], "1"),
+            ),
+            // A record a calculation reads.
+            (
+                "a record",
+                run_reading(
+                    "fail-record",
+                    &nothing,
+                    vec![t.clone(), vec![5], serial::encode(1)],
+                    "Tasks::Name",
+                ),
+            ),
+            // A global value.
+            (
+                "a global",
+                run_reading(
+                    "fail-global",
+                    &nothing,
+                    vec![t.clone(), vec![8]],
+                    "Tasks::Setting",
+                ),
+            ),
+            // The catalogs the Design functions read.
+            (
+                "the Design catalogs",
+                run_reading(
+                    "fail-design",
+                    &nothing,
+                    vec![vec![4]],
+                    "LayoutNames ( Get ( FileName ) )",
+                ),
+            ),
+            // The session's privilege set.
+            (
+                "the privilege set",
+                run_reading(
+                    "fail-privileges",
+                    &nothing,
+                    vec![vec![23], vec![1], vec![5]],
+                    "Get ( AccountPrivilegeSetName )",
+                ),
+            ),
+            // A container's data.
+            (
+                "a container",
+                run_reading(
+                    "fail-container",
+                    &|tree| fixture::add_photo(tree),
+                    vec![t.clone(), vec![0x1f], vec![5]],
+                    "Base64Encode ( GetField ( \"Tasks::Photo\" ) )",
+                ),
+            ),
+            // A related-record lookup through an index.
+            (
+                "an index lookup",
+                run_reading(
+                    "fail-lookup",
+                    &|tree| {
+                        fixture::add_relationship(
+                            tree,
+                            1,
+                            (fixture::OCCURRENCE, fixture::NAME),
+                            0,
+                            (fixture::NOTES_OCCURRENCE, fixture::BODY),
+                        )
+                    },
+                    vec![notes.clone(), vec![1]],
+                    "Count ( Notes::Body )",
+                ),
+            ),
+        ];
+        for (what, error) in cases {
+            assert_eq!(error, UNREADABLE, "{what}");
+        }
+
+        // A find.
+        let file = TempFile::new("fail-find", &[], true);
+        let finding = shared(&file);
+        let host = session(&finding);
+        finding
+            .engine
+            .fail_reads(fixture::FILE, vec![t.clone(), vec![1]]);
+        let finders = finders(fixture::NAME, om_hbam::DataType::Text, "Task");
+        assert_eq!(
+            host.find_for_tests(fixture::TABLE, &finders),
+            Err(find::FindError::Query(UNREADABLE)),
+            "a find"
+        );
+
+        // A unique field's check, which refuses the commit.
+        let mut tree = fixture::tree(&[], true);
+        fixture::set_field_options(&mut tree, fixture::TABLE, fixture::CODE, 0x8000_0000);
+        fixture::set_field_validation(&mut tree, fixture::TABLE, fixture::CODE, 0x410);
+        let file = TempFile::from_tree("fail-unique", &tree);
+        let checking = shared(&file);
+        let mut host = session(&checking);
+        host.set_field(field(fixture::CODE), Value::text("A"))
+            .unwrap();
+        checking
+            .engine
+            .fail_reads(fixture::FILE, vec![t.clone(), vec![1]]);
+        assert_eq!(
+            host.commit_records(Default::default()),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "a unique value's check"
+        );
+        assert_eq!(stored(&checking, 1, fixture::CODE), None, "nothing written");
+        host.close();
+
+        // The schema read again before a step, after another client
+        // changed it (an upload of a custom function's catalog): the step
+        // fails, and changes nothing.
+        let file = TempFile::new("fail-refresh", &[], true);
+        let refreshing = shared(&file);
+        let mut host = session(&refreshing);
+        let name = stored(&refreshing, 1, fixture::NAME);
+        let upload = crate::engine::UploadToCatalog {
+            path: vec![vec![16], vec![5], vec![1]],
+            node: om_scripts::text_node(&[16], "Uploaded"),
+        };
+        let uploaded = refreshing.engine.submit(
+            &hosted(&refreshing),
+            crate::engine::Operation::UploadToCatalog(upload),
+        );
+        assert_eq!(
+            uploaded.reply,
+            crate::engine::Reply::UploadToCatalog(Ok(true))
+        );
+        refreshing.engine.fail_reads(fixture::FILE, vec![vec![17]]);
+        om_scripts::runtime::ScriptHost::before_step(&mut host);
+        // Within the step, nothing is changed: a commit is refused.
+        assert_eq!(
+            host.set_field(field(fixture::NAME), Value::text("Unwritten"))
+                .and_then(|()| host.commit_records(Default::default())),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "nothing is changed while a read failed"
+        );
+        assert_eq!(
+            om_scripts::runtime::ScriptHost::take_step_error(&mut host),
+            Some(ErrorCode(i32::from(UNREADABLE))),
+            "the schema read again"
+        );
+        assert_eq!(
+            stored(&refreshing, 1, fixture::NAME),
+            name,
+            "nothing written"
+        );
+        host.close();
+
+        // The accounts Change Password checks.
+        let file = TempFile::new("fail-accounts", &[], true);
+        let changing = shared(&file);
+        let mut host = session(&changing);
+        host.set_account_key(&[2]);
+        changing
+            .engine
+            .fail_reads(fixture::FILE, vec![vec![23], vec![1], vec![5]]);
+        assert_eq!(
+            host.change_password(fixture::PASSWORD, "another", false),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "the accounts"
+        );
         host.close();
     }
 }

@@ -44,7 +44,6 @@ use om_data::containers::{self, MemberInfo};
 use crate::anchored::{FileAt, FileId, Folder};
 use crate::derived::{
     self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
-    LOCALE,
 };
 use crate::engine::{OnDisk, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
@@ -838,10 +837,7 @@ impl Store {
     /// not decode, rather than English, which would key a German file's `ä`
     /// as `a`.
     pub fn file_language(&self) -> Option<u32> {
-        if self.derived.decoded_locale().is_none() && self.node(&LOCALE).is_some() {
-            return None;
-        }
-        Some(u32::from(self.locale().language.id()))
+        self.derived.file_language()
     }
 
     /// The file's locale and formats: its record when it decodes, else
@@ -1576,15 +1572,7 @@ impl Store {
     /// Whether `cell` of a record of `table` is a container field's value
     /// (repetition n of field F is the cell `F * 256 + n`).
     pub fn container_cell(&self, table: &[u8], cell: &[u8]) -> bool {
-        let Some(id) = be_uint(cell) else {
-            return false;
-        };
-        let field = match self.field_type(table, cell) {
-            Some(_) => id,
-            None if id & 0xff >= 2 => id >> 8,
-            None => return false,
-        };
-        self.field_type(table, &uint_segment(field)) == Some(DataType::Container)
+        self.derived.container_cell(table, cell)
     }
 
     /// [`Store::serial_value`] replacing a field's next serial value within
@@ -2455,14 +2443,17 @@ impl Store {
     /// Replace catalog members within a commit ([`Store::begin_commit`]):
     /// each node's old version goes into `journal`, so a failed save puts
     /// it back ([`Store::save_commit`]). For catalogs the schema
-    /// ([`Store::catalog`]) does not hold, such as the scripts `[17]`;
-    /// server script sessions read them again
-    /// ([`Store::schema_generation`]).
+    /// ([`Store::catalog`]) does not hold, such as the scripts `[17]`,
+    /// which server script sessions read with it: the derived state is
+    /// computed again, as after any change of the schema, so that a session
+    /// keyed by its version reads them again, and the journal keeps the one
+    /// from before.
     pub fn replace_members_in(
         &mut self,
         journal: &mut Journal,
         members: Vec<(Vec<Vec<u8>>, OwnedNode)>,
     ) {
+        journal.schema_from(&self.derived);
         for (path, node) in members {
             if let Some(reason) = self.replacement_refusal(&path, &node) {
                 journal.refused.get_or_insert(reason);
@@ -2472,8 +2463,7 @@ impl Store {
             let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
             self.root.put(&segments, node);
         }
-        self.dirty = true;
-        self.generation += 1;
+        self.schema_changed();
     }
 
     /// Replace the schema catalog at `path`, such as a table's fields
@@ -2596,10 +2586,16 @@ impl Store {
     }
 
     fn reread_catalog(&mut self) {
-        match derived::read_catalog(&self.tree_view()) {
-            Ok(catalog) => {
-                self.derived = Arc::new(self.derived.with_catalog(self.version, catalog));
-            }
+        let view = self.tree_view();
+        let derived = derived::read_catalog(&view)
+            .map_err(|e| e.to_string())
+            .and_then(|catalog| {
+                self.derived
+                    .with_catalog(&view, catalog)
+                    .map_err(|e| e.to_string())
+            });
+        match derived {
+            Ok(derived) => self.derived = Arc::new(derived),
             Err(e) => warn!("re-reading the schema after a change: {e}"),
         }
     }
@@ -3708,7 +3704,10 @@ impl Store {
     /// A store holding only `records` of `table` (and the table's field
     /// definitions), for a query that must see records as a script's
     /// transaction left them: its indexes are built on demand from these
-    /// records alone.
+    /// records alone. What a script's find inside a transaction read before
+    /// the overlay view (`engine::Overlay`), kept as the reference its test
+    /// compares the overlay with (`ServerHost::query_by_scratch`).
+    #[cfg(test)]
     pub fn scratch(&self, table: &[u8], records: &[(u64, &OwnedNode)]) -> Store {
         let mut root = OwnedNode::default();
         if let Some(fields) = self.node(&[table, &[keys::FIELDS]]) {

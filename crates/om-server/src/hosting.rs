@@ -17,11 +17,9 @@ use crate::admin::FileStatus;
 use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
 use crate::connection::host_time_key_at;
-use crate::derived::Derived;
 use crate::engine::{
     AccountStamp, ChangePassword, DeleteAccount, Direction, EnableAccount, Environment, FileEngine,
-    Operation, Password, ReadError, Reply, ResetPassword, Transaction, Version, View, Writer,
-    NO_LIMIT,
+    Operation, Password, ReadError, Reply, ResetPassword, Transaction, View, Writer, NO_LIMIT,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -239,14 +237,6 @@ pub struct Hosted {
     pub thumbnails: Mutex<thumbnail::Cache>,
     /// `mInternalCreation` (`[2, 254]`), the second half of the Login nonce.
     pub internal_creation: u32,
-    /// The derived state of the version the last write left, published
-    /// with that version ([`Published`]): for the readers of the accounts
-    /// that do not take the store ([`Hosted::accounts`]), which may hold it
-    /// already, as a server script's calculation does when it asks for the
-    /// session's account (`Get ( AccountType )`), and must not take its
-    /// lock twice (#421). Every other reader of the accounts reads them
-    /// through a reading (`engine::Read::derived`).
-    published: RwLock<Published>,
     /// Where the deferred field work the file records as pending stands
     /// ([`Hosted::recover`]): finished and saved, a server's file's as it
     /// is loaded, a local file's when an account it admits first logs in,
@@ -273,26 +263,6 @@ enum Recovery {
     /// read-only) or unknown (the file taking no more changes); or found
     /// left by a panic and the file made read-only.
     Ended,
-}
-
-/// A version's derived state, published with the version
-/// ([`Hosted::published`]). It is published while the write that made the
-/// version still holds the store's write lock, after the write, its save
-/// or its roll-back, and its accounts ([`StoreWriteGuard`]'s drop), and
-/// before the lock is let go. So a reader that takes the store after a
-/// write finds the version that write published, and a reader of the
-/// published state gets the last version a write let go: while a write
-/// runs, the one before it, which every reader of the store had until
-/// then.
-#[derive(Clone)]
-pub(crate) struct Published {
-    /// The version the store held when the write let go of it
-    /// (`engine::View::version`); a reading checks that it is its own
-    /// (`FileEngine::read`, debug builds).
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    pub version: Version,
-    /// The derived state of that version, shared with every reading of it.
-    pub derived: Arc<Derived>,
 }
 
 /// The store of a [`Hosted`] file held for writing ([`Hosted::write_store`]).
@@ -330,16 +300,6 @@ impl Drop for StoreWriteGuard<'_> {
         if let Some(why) = self.store.writes_refused() {
             let _ = self.hosted.unknown.set(why.to_owned());
         }
-        let version = self.store.tree_view().version();
-        let mut published = self
-            .hosted
-            .published
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *published = Published {
-            version,
-            derived: self.store.derived().clone(),
-        };
     }
 }
 
@@ -408,10 +368,6 @@ impl Hosted {
                 store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
-        let published = RwLock::new(Published {
-            version: store.tree_view().version(),
-            derived: store.derived().clone(),
-        });
         Ok(Hosted {
             id,
             name: hosted.name.clone(),
@@ -422,7 +378,6 @@ impl Hosted {
             registrations: Mutex::new(Vec::new()),
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
-            published,
             recovery: Mutex::new(Recovery::Due),
             unknown: std::sync::OnceLock::new(),
             events: events.clone(),
@@ -573,21 +528,12 @@ impl Hosted {
         self.store.is_poisoned()
     }
 
-    /// The version the last write let go and its derived state
-    /// ([`Published`]), read without taking the store.
-    pub(crate) fn published(&self) -> Published {
-        self.published
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// The accounts in the file's security catalog in the version the last
-    /// write let go, read without taking the store ([`Hosted::published`]):
-    /// none when they could not be read, which on the file engine they
-    /// always can.
+    /// The accounts in the file's security catalog as the store holds
+    /// them, none when they could not be read: a test's. Every reader of
+    /// the accounts reads them through a reading (`engine::Read::derived`).
+    #[cfg(test)]
     pub fn accounts(&self) -> Arc<[Arc<FileAccount>]> {
-        match self.published().derived.accounts() {
+        match self.read_store().derived().accounts() {
             Ok(accounts) => accounts.clone(),
             Err(_) => Arc::new([]),
         }
@@ -688,8 +634,9 @@ impl Hosted {
         saved
     }
 
-    /// The file's account named `name` ([`account_named`]), read without
-    /// taking the store ([`Hosted::accounts`]).
+    /// The file's account named `name` ([`account_named`],
+    /// [`Hosted::accounts`]): a test's.
+    #[cfg(test)]
     pub fn account(&self, name: &str) -> Option<Arc<FileAccount>> {
         account_named(&self.accounts(), name)
     }

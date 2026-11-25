@@ -224,6 +224,30 @@ impl View for FileView<'_> {
     }
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// How many readings this thread holds ([`FileEngine::read`]).
+    static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Debug builds: panic when this thread holds a reading. A reading holds
+/// the store's read lock: a second one on the same thread, or a write,
+/// waits behind a writer queued meanwhile, which waits for the first
+/// (#421). Every reading and every submitted operation checks it, so a
+/// test that takes the store's lock twice on one thread fails at once
+/// rather than hang when a writer happens to queue.
+pub(crate) fn assert_no_reading_held(what: &str) {
+    #[cfg(debug_assertions)]
+    HELD.with(|held| {
+        assert!(
+            held.get() == 0,
+            "{what} while this thread holds a reading of the file"
+        );
+    });
+    #[cfg(not(debug_assertions))]
+    let _ = what;
+}
+
 /// A reader's hold on one version of a hosted file ([`FileEngine::read`]).
 pub struct Reading<'h> {
     file: &'h Hosted,
@@ -252,7 +276,10 @@ impl FileEngine {
     /// The version of `file` its store holds now, for reading: the store's
     /// read lock, held until the [`Reading`] is dropped.
     pub fn read<'h>(&self, file: &'h Hosted) -> Reading<'h> {
+        assert_no_reading_held("a reading taken");
         let store = file.read_store();
+        #[cfg(debug_assertions)]
+        HELD.with(|held| held.set(held.get() + 1));
         let derived = store.derived().clone();
         let view = FileView { store };
         // The derived state was computed from this version or an earlier
@@ -261,13 +288,6 @@ impl FileEngine {
             derived.version() == view.version()
                 || view.changed_since(&[], derived.version()) == Ok(true)
         );
-        // What the last write published for the readers that do not take
-        // the store is this version and its derived state: a write
-        // publishes before it lets go of the store (`hosting::Published`).
-        debug_assert!({
-            let published = file.published();
-            published.version == view.version() && Arc::ptr_eq(&published.derived, &derived)
-        });
         Reading {
             file,
             view,
@@ -275,6 +295,13 @@ impl FileEngine {
             #[cfg(debug_assertions)]
             copies: self.copies(),
         }
+    }
+}
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        HELD.with(|held| held.set(held.get().saturating_sub(1)));
     }
 }
 

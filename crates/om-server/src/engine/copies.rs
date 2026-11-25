@@ -394,7 +394,7 @@ impl Switch {
                     Ok(mine.clone())
                 } else {
                     catalog_of(reading, copies)
-                        .map(|catalog| Arc::new(mine.with_catalog(copies.version(), catalog)))
+                        .and_then(|catalog| Ok(Arc::new(mine.with_catalog(copies, catalog)?)))
                 }
             }
             // The first read of this load of the file (a file closed and

@@ -19,7 +19,9 @@
 //! set twice in one edit counts two changes); the counts are the same once
 //! committed.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use om_calc::eval::StoredContainer;
@@ -28,8 +30,76 @@ use om_data::containers::{self, MemberInfo};
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::OwnedNode;
 
-use super::{values, Change, ServerHost};
+use super::{read_file, values, Change, ServerHost};
+use crate::connection::Shared;
+use crate::engine::{ReadError, View, NO_LIMIT};
 use crate::library::{self, BinaryData};
+
+/// Member `member` of `table`'s library `[T, 1f, 05, M]`, read through
+/// `view`.
+fn library_member<'v>(
+    view: &'v dyn View,
+    table: u64,
+    member: &[u8],
+) -> Result<Option<Cow<'v, OwnedNode>>, ReadError> {
+    let t = uint_segment(table);
+    let path: [&[u8]; 4] = [&t, &[containers::LIBRARY], &[library::MEMBERS], member];
+    view.subtree(&path, NO_LIMIT)
+}
+
+/// A container field's value of `table` as calculations see it, from its
+/// stored text (`Store::container`), read through `view`: the file name of
+/// the library member it names, the member referenced for its data, which
+/// is read only when a function needs it; text that names no member of the
+/// library is the reference alone, without data.
+fn stored_container(view: &dyn View, table: u64, text: &str) -> Result<Container, ReadError> {
+    let named = match containers::reference(text) {
+        Some(member) => library_member(view, table, &member)?.map(|node| (member, node)),
+        None => None,
+    };
+    Ok(named
+        .and_then(|(member, node)| Some(MemberInfo::read(&node)?.value(table, &member)))
+        .unwrap_or_else(|| Container {
+            text: om_calc::Text::plain(text),
+            ..Default::default()
+        }))
+}
+
+/// A container's stored data as a reading gives it, compared as the test
+/// view compares two answers: its data, whether it is intact and whether
+/// it is stored outside the file.
+#[derive(Debug)]
+struct Loaded(StoredContainer);
+
+impl PartialEq for Loaded {
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (&self.0, &other.0);
+        a.data == b.data
+            && a.data.text == b.data.text
+            && a.data.streams == b.data.streams
+            && a.intact == b.intact
+            && a.external == b.external
+    }
+}
+
+/// Member `member` of `table`'s library when its MD5 is `md5`, its streams
+/// read with those stored outside the file (`containers::read_with`).
+fn load_member(
+    view: &dyn View,
+    hosted: &std::path::Path,
+    table: u64,
+    member: &[u8],
+    md5: Option<&[u8]>,
+) -> Result<Option<Loaded>, ReadError> {
+    let Some(node) = library_member(view, table, member)? else {
+        return Ok(None);
+    };
+    if md5.is_some_and(|md5| !MemberInfo::read(&node).is_some_and(|i| i.md5 == md5)) {
+        return Ok(None);
+    }
+    let folder = ContainerFolder { hosted };
+    Ok(containers::read_with(&node, &folder).map(Loaded))
+}
 
 /// Pending tokens: U+E001, the token's number, U+E000. A member reference
 /// is hexadecimal before U+E000, so the two never meet.
@@ -106,10 +176,14 @@ fn reference_path(_reference: &[u8]) -> Option<Vec<std::ffi::OsString>> {
 
 /// What a session's record rules read of container fields: data steps set
 /// for a write not yet stored, by its token, and members of the hosted
-/// file's libraries (read when a calculation asks; the rules run without
-/// the store's lock held).
+/// file's libraries, read when a calculation asks through a reading taken
+/// for that read (the rules run with no reading held). A read that fails
+/// reads as no container, and is noted in the session's `failed`, which
+/// refuses the write the rules run for ([`ServerHost::read`]).
 struct SessionContainers {
+    shared: Arc<Shared>,
     hosted: Arc<crate::hosting::Hosted>,
+    failed: Arc<AtomicBool>,
     pending: HashMap<String, Container>,
 }
 
@@ -118,22 +192,18 @@ impl om_data::rules::ContainerReader for SessionContainers {
         if let Some(pending) = self.pending.get(text) {
             return Some(pending.clone());
         }
-        let stored = self
-            .hosted
-            .read_store()
-            .container(&uint_segment(table), text);
+        let stored = read_file(&self.shared, &self.hosted, &self.failed, |read| {
+            stored_container(read.view, table, text)
+        })
+        .ok()?;
         stored.library.is_some().then_some(stored)
     }
 
     fn data(&self, table: u64, member: &[u8]) -> Option<StoredContainer> {
-        let store = self.hosted.read_store();
-        let node = store.library_member(&[&uint_segment(table), &[containers::LIBRARY]], member)?;
-        containers::read_with(
-            node,
-            &ContainerFolder {
-                hosted: &self.hosted.path,
-            },
-        )
+        let loaded = read_file(&self.shared, &self.hosted, &self.failed, |read| {
+            load_member(read.view, &self.hosted.path, table, member, None)
+        });
+        loaded.ok().flatten().map(|loaded| loaded.0)
     }
 }
 
@@ -155,7 +225,9 @@ impl ServerHost {
             })
             .collect();
         Arc::new(SessionContainers {
+            shared: Arc::clone(&self.shared),
             hosted: Arc::clone(&self.hosted),
+            failed: Arc::clone(&self.failed_read),
             pending,
         })
     }
@@ -170,23 +242,32 @@ impl ServerHost {
             return None;
         }
         if let Some(r) = &c.library {
-            let store = self.hosted.read_store();
-            let t = uint_segment(r.table);
-            let member = store.library_member(&[&t, &[containers::LIBRARY]], &r.member);
-            if let Some(member) = member {
-                if MemberInfo::read(member).is_some_and(|i| i.md5 == r.md5) {
-                    if r.table == table {
-                        // The same table's data: one more reference to its
-                        // member (containers.md 5.1).
-                        return Some(containers::reference_text(&r.member));
-                    }
-                    // Another table's: its tree as stored there.
-                    if let Some(data) = library::member_tree(member) {
-                        let stored = containers::read(member)?;
-                        drop(store);
+            // The member when it holds this data, read through a reading
+            // let go before the data is held: for the same table its
+            // presence alone, for another its tree as stored there. A read
+            // that fails reads as no member and fails the step
+            // ([`ServerHost::read`]).
+            let same = r.table == table;
+            let member = self.read(|read| {
+                let Some(node) = library_member(read.view, r.table, &r.member)? else {
+                    return Ok(None);
+                };
+                if !MemberInfo::read(&node).is_some_and(|i| i.md5 == r.md5) {
+                    return Ok(None);
+                }
+                Ok(Some((!same).then(|| node.into_owned())))
+            });
+            match member.ok().flatten() {
+                // The same table's data: one more reference to its member
+                // (containers.md 5.1).
+                Some(None) => return Some(containers::reference_text(&r.member)),
+                Some(Some(member)) => {
+                    if let Some(data) = library::member_tree(&member) {
+                        let stored = containers::read(&member)?;
                         return Some(self.pend(stored.data, data));
                     }
                 }
+                None => {}
             }
         }
         if c.streams.is_empty() {
@@ -237,21 +318,52 @@ impl ServerHost {
         if containers::reference(text).is_none() {
             return Value::text(text);
         }
-        Value::Container(
-            self.hosted
-                .read_store()
-                .container(&uint_segment(table), text),
-        )
+        // A read that fails reads as the reference alone and fails the
+        // step ([`ServerHost::read`]).
+        let stored = self.read(|read| stored_container(read.view, table, text));
+        Value::Container(stored.unwrap_or_else(|_| Container {
+            text: om_calc::Text::plain(text),
+            ..Default::default()
+        }))
+    }
+
+    /// The text form of a container field's value of `table` whose cell
+    /// holds `text`: the file name of the member it names (execute-sql.md
+    /// 8.1), or the text itself when it names none (`Store::container_name`).
+    /// A read that fails reads as the text and fails the step
+    /// ([`ServerHost::read`]).
+    pub(super) fn container_name(&self, table: u64, text: &str) -> String {
+        let name = self.read(|read| {
+            let named = match containers::reference(text) {
+                Some(member) => library_member(read.view, table, &member)?,
+                None => None,
+            };
+            Ok(match named {
+                Some(member) => MemberInfo::read(&member)
+                    .map(|i| i.name)
+                    .unwrap_or_default(),
+                None => text.to_string(),
+            })
+        });
+        name.unwrap_or_else(|_| text.to_string())
     }
 
     /// The container data the cells of a record of `table` hold for the
     /// commit to store, by cell.
     pub(super) fn uploads(&self, table: u64, node: &OwnedNode) -> Vec<(u64, BinaryData)> {
-        let store = self.hosted.read_store();
         let t = uint_segment(table);
-        node.children
-            .iter()
-            .filter(|cell| store.container_cell(&t, &cell.segment))
+        // Which cells are containers' is the file's schema as the engine
+        // holds it now (its derived state).
+        let containers: Vec<&OwnedNode> = {
+            let reading = self.shared.engine.read(&self.hosted);
+            let derived = reading.read().derived;
+            node.children
+                .iter()
+                .filter(|cell| derived.container_cell(&t, &cell.segment))
+                .collect()
+        };
+        containers
+            .into_iter()
             .filter_map(|cell| {
                 let pending = self.pending.get(&values::cell_text(cell)?)?;
                 Some((be_uint(&cell.segment)?, pending.data.clone()))
@@ -306,16 +418,23 @@ impl ServerHost {
     /// The data of a container a calculation holds by its library member
     /// (`CalcHost::container_data`): every stream and whether they match
     /// the stored MD5. A member the library no longer has is error 1225.
+    ///
+    /// A read that fails is 802 ([`ServerHost::read`]).
     pub(super) fn load_container(&self, c: &Container) -> Result<StoredContainer, CalcError> {
         let r = c.library.as_ref().ok_or(CalcError::NOT_SUPPORTED)?;
-        let store = self.hosted.read_store();
-        let member = store
-            .library_member(&[&uint_segment(r.table), &[containers::LIBRARY]], &r.member)
-            .filter(|m| MemberInfo::read(m).is_some_and(|i| i.md5 == r.md5))
-            .ok_or(CalcError::NOT_SUPPORTED)?;
-        let folder = ContainerFolder {
-            hosted: &self.hosted.path,
-        };
-        containers::read_with(member, &folder).ok_or(CalcError::NOT_SUPPORTED)
+        let loaded = self
+            .read(|read| {
+                load_member(
+                    read.view,
+                    &self.hosted.path,
+                    r.table,
+                    &r.member,
+                    Some(&r.md5),
+                )
+            })
+            .map_err(|_| CalcError::from_code(802).expect("nonzero"))?;
+        loaded
+            .map(|loaded| loaded.0)
+            .ok_or(CalcError::NOT_SUPPORTED)
     }
 }

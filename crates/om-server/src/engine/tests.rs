@@ -107,7 +107,10 @@ fn untouched(file: &Hosted, disk: &fixture::TempFile) -> Untouched {
         tree: store.node(&[]).unwrap().clone(),
         catalog: store.catalog().clone(),
         basis: store.basis_for_tests().clone(),
-        accounts: file.accounts().iter().map(|a| (**a).clone()).collect(),
+        accounts: match store.derived().accounts() {
+            Ok(accounts) => accounts.iter().map(|a| (**a).clone()).collect(),
+            Err(_) => Vec::new(),
+        },
         waiting: store.waiting_for_tests(),
         locks: file.lock_table().entries(),
         unsaved: store.has_unsaved_changes(),
@@ -5295,4 +5298,63 @@ fn an_upload_whose_outcome_is_unknown_is_not_said_to_be_unstored() {
         );
         assert_eq!(node_at(&file, &dest).is_some(), error.unknown, "{fault:?}");
     }
+}
+
+/// The calculation schema a server script's rules and calculations read is
+/// derived state (docs/server-storage.md 5, "Derived state"): an upload
+/// that adds a field to a table's field catalog replaces it with the rest
+/// of the derived state, and a save that fails before its rename puts back
+/// the derived state from before, the same one, its calculation schema
+/// with it.
+#[test]
+fn the_calculation_schema_follows_the_schema_and_is_put_back_with_it() {
+    const PRIORITY: u64 = 40;
+    let tree = fixture::tree(&[], true);
+    let (_disk, file) = host("engine-calc-schema", &tree);
+    let before = Arc::clone(file.read_store().derived());
+    let calc = before
+        .calc_catalogs()
+        .cloned()
+        .expect("a calculation schema");
+    assert!(calc.schema.field(fixture::OCCURRENCE, PRIORITY).is_none());
+    let t = uint_segment(fixture::TABLE);
+    let path = vec![t.clone(), vec![3], vec![5], uint_segment(PRIORITY)];
+    let mut added = tree.clone();
+    fixture::add_field(
+        &mut added,
+        fixture::TABLE,
+        PRIORITY,
+        "Priority",
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
+    let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+    let upload = Operation::UploadToCatalog(UploadToCatalog {
+        path: path.clone(),
+        node: added
+            .at(&segments)
+            .cloned()
+            .expect("the field's definition"),
+    });
+    let engine = engine();
+    file.fail_saves(Some(SaveFault::BeforeRename));
+    let failed = engine.submit(&file, upload.clone());
+    file.fail_saves(None);
+    assert!(is_storage_error(&failed.reply), "{:?}", failed.reply);
+    let after = Arc::clone(file.read_store().derived());
+    assert!(
+        Arc::ptr_eq(&after, &before),
+        "the derived state from before"
+    );
+    let stored = engine.submit(&file, upload);
+    assert_eq!(stored.reply, Reply::UploadToCatalog(Ok(true)));
+    let derived = Arc::clone(file.read_store().derived());
+    let calc = derived.calc_catalogs().expect("a calculation schema");
+    assert!(
+        calc.schema.field(fixture::OCCURRENCE, PRIORITY).is_some(),
+        "the new field"
+    );
 }

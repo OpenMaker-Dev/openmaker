@@ -98,7 +98,7 @@ pub struct Head<'v> {
 }
 
 impl Head<'_> {
-    fn of(node: &OwnedNode) -> Head<'_> {
+    pub(super) fn of(node: &OwnedNode) -> Head<'_> {
         Head {
             list: node.push || !node.children.is_empty(),
             value: node.value.as_deref().map(Cow::Borrowed),
@@ -256,6 +256,100 @@ pub trait View {
     /// Whether anything at or below `path` changed after version `since`.
     /// Never false when something did; it may be true when nothing did.
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError>;
+}
+
+/// A view over another that keeps the first of its reads that failed, for
+/// a reader that reads through an interface with no room for the view's
+/// error (a query's source, whose errors are the file's:
+/// `om_query::Source`), so that it can tell a failed read from what it
+/// read ([`Noted::failed`]).
+pub struct Noted<'v> {
+    inner: &'v dyn View,
+    failed: std::cell::RefCell<Option<ReadError>>,
+}
+
+impl<'v> Noted<'v> {
+    pub fn new(inner: &'v dyn View) -> Self {
+        Noted {
+            inner,
+            failed: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// The first read that failed, if one did.
+    pub fn failed(&self) -> Result<(), ReadError> {
+        match self.failed.borrow().as_ref() {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn note<T>(&self, read: Result<T, ReadError>) -> Result<T, ReadError> {
+        if let Err(error) = &read {
+            self.failed
+                .borrow_mut()
+                .get_or_insert_with(|| error.clone());
+        }
+        read
+    }
+}
+
+impl View for Noted<'_> {
+    fn version(&self) -> Version {
+        self.inner.version()
+    }
+
+    fn node(&self, path: &[&[u8]]) -> Result<Option<Head<'_>>, ReadError> {
+        self.note(self.inner.node(path))
+    }
+
+    fn subtree(
+        &self,
+        path: &[&[u8]],
+        limit: usize,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        self.note(self.inner.subtree(path, limit))
+    }
+
+    fn children_page<'a>(
+        &'a self,
+        path: &[&[u8]],
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Child<'a>>,
+    ) -> Result<bool, ReadError> {
+        self.note(self.inner.children_page(path, from, direction, max, out))
+    }
+
+    fn subtrees_page<'a>(
+        &'a self,
+        path: &[&[u8]],
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        limit: usize,
+        out: &mut Vec<Cow<'a, OwnedNode>>,
+    ) -> Result<bool, ReadError> {
+        self.note(
+            self.inner
+                .subtrees_page(path, from, direction, max, limit, out),
+        )
+    }
+
+    fn walk_page<'a>(
+        &'a self,
+        path: &[&[u8]],
+        after: Option<&[Vec<u8>]>,
+        max: usize,
+        out: &mut Vec<Step<'a>>,
+    ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+        self.note(self.inner.walk_page(path, after, max, out))
+    }
+
+    fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
+        self.note(self.inner.changed_since(path, since))
+    }
 }
 
 impl<'v> dyn View + 'v {
@@ -478,7 +572,7 @@ fn start(node: &OwnedNode, from: Bound<&[u8]>, direction: Direction) -> usize {
 
 /// Up to `max` of `node`'s children from `from` in `direction`, each given
 /// to `take`; whether more follow.
-fn page_of<'t>(
+pub(super) fn page_of<'t>(
     node: &'t OwnedNode,
     from: Bound<&[u8]>,
     direction: Direction,
@@ -505,7 +599,7 @@ fn page_of<'t>(
 }
 
 /// `node`, at `path`, if it takes at most `limit` as an owned tree.
-fn within(
+pub(super) fn within(
     node: &OwnedNode,
     path: impl FnOnce() -> Vec<Vec<u8>>,
     limit: usize,

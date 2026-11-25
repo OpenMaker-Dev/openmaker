@@ -1,8 +1,8 @@
 //! The Design functions and layout object functions of a server script
 //! session (calc-functions.md 5.8), answered as FileMaker Server's script
 //! engine answers them: from the file's whole schema with its layouts and
-//! scripts (`om_data::host` Design functions, read once per schema
-//! generation when a calculation first asks), the session's records for
+//! scripts (`om_data::host` Design functions, read once per version of the
+//! derived state when a calculation first asks), the session's records for
 //! value lists, the hosted file's next serial values, and the session's
 //! window for `WindowNames` and `GetLayoutObjectAttribute` (layout
 //! coordinates: the server's window has no toolbar).
@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use om_calc::eval::{default_call, Context, HostFunction};
-use om_calc::{CalcError, Ctx, Value};
+use om_calc::{CalcError, Ctx, Locale, Value};
 use om_data::host::layout_objects::{self, ObjectState, ObjectWindow};
 use om_data::host::{read_field, CalcSchema, FileCalc, LayoutEntry};
 use om_hbam::slot::uint_segment;
@@ -20,7 +20,7 @@ use om_scripts::runtime::Mode;
 
 use super::related::SessionSource;
 use super::ServerHost;
-use crate::store::Store;
+use crate::engine::{Read, ReadError, View, NO_LIMIT};
 
 /// Error 10, "Requested data is missing": `LayoutObjectUUID` outside a
 /// layout object's calculation.
@@ -30,32 +30,40 @@ const DATA_MISSING: u16 = 10;
 /// file's locale and options `[2]`, layouts `[4]` with their themes `[6]`
 /// and fonts `[25]` (a portal's borders place its fields), custom
 /// functions `[16]`, scripts `[17]`, external data sources `[32]` and
-/// value lists `[33]`, with `[3]` and every table's fields `[T, 3]`.
-fn design_catalogs(store: &Store) -> Option<Vec<u8>> {
-    let catalog = store.catalog();
-    let mut children: Vec<OwnedNode> = [2u8, 3, 4, 6, 16, 17, 25, 0x20, 0x21]
-        .iter()
-        .filter_map(|key| store.node(&[&[*key]]).cloned())
-        .collect();
-    for table in &catalog.tables {
+/// value lists `[33]`, with `[3]` and every table's fields `[T, 3]`, as
+/// one slot list, read through `read`.
+fn design_catalogs(read: Read<'_>) -> Result<Option<Vec<u8>>, ReadError> {
+    let mut children: Vec<OwnedNode> = Vec::new();
+    for key in [2u8, 3, 4, 6, 16, 17, 25, 0x20, 0x21] {
+        if let Some(node) = read.view.subtree(&[&[key]], NO_LIMIT)? {
+            children.push(node.into_owned());
+        }
+    }
+    for table in &read.derived.catalog().tables {
         let t = uint_segment(table.id);
-        if let Some(fields) = store.node(&[&t, &[3]]) {
-            children.push(OwnedNode::list(t, vec![fields.clone()]));
+        if let Some(fields) = read.view.subtree(&[&t, &[3]], NO_LIMIT)? {
+            children.push(OwnedNode::list(t, vec![fields.into_owned()]));
         }
     }
     children.sort_by(|a, b| a.segment.cmp(&b.segment));
-    OwnedNode::list(Vec::new(), children).to_wire()
+    Ok(OwnedNode::list(Vec::new(), children).to_wire())
 }
 
 /// The file's calculation schema with its layouts (objects, names), script
-/// list and data sources, for the Design functions.
-pub(super) fn design_schema(store: &Store, file: &str) -> Option<Arc<CalcSchema>> {
-    let wire = design_catalogs(store)?;
-    let tree = KeyTree::from_slots(SlotReader::new(&wire)).ok()?;
+/// list and data sources, for the Design functions, from the catalogs
+/// `wire` holds ([`design_catalogs`]).
+fn design_schema(
+    wire: &[u8],
+    catalog: &om_hbam::Catalog,
+    locale: Locale,
+    file_language: Option<u32>,
+    file: &str,
+) -> Option<Arc<CalcSchema>> {
+    let tree = KeyTree::from_slots(SlotReader::new(wire)).ok()?;
     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-    let mut schema = om_data::rules::schema::calc_schema(&tree, store.catalog(), stem);
-    schema.locale = store.locale();
-    schema.locale_unreadable = store.file_language().is_none();
+    let mut schema = om_data::rules::schema::calc_schema(&tree, catalog, stem);
+    schema.locale = locale;
+    schema.locale_unreadable = file_language.is_none();
     om_data::host::device::withhold_server_lacks(schema.names_mut());
     Some(Arc::new(schema))
 }
@@ -63,23 +71,38 @@ pub(super) fn design_schema(store: &Store, file: &str) -> Option<Arc<CalcSchema>
 /// The layout a session opens on: the file's "Switch to layout" when it is
 /// on (File Options, file-metadata.md 3), as FileMaker Server's sessions
 /// open on Contact Details in the Contacts template.
-pub(super) fn opening_layout(store: &Store) -> Option<u64> {
-    let prefs = store.node(&[&[2]])?.clone();
-    let wire = OwnedNode::list(Vec::new(), vec![prefs]).to_wire()?;
-    let tree = KeyTree::from_slots(SlotReader::new(&wire)).ok()?;
-    om_data::meta::file_options(&tree)?.default_layout()
+pub(super) fn opening_layout(view: &dyn View) -> Result<Option<u64>, ReadError> {
+    let Some(prefs) = view.subtree(&[&[2]], NO_LIMIT)? else {
+        return Ok(None);
+    };
+    let Some(wire) = OwnedNode::list(Vec::new(), vec![prefs.into_owned()]).to_wire() else {
+        return Ok(None);
+    };
+    let Ok(tree) = KeyTree::from_slots(SlotReader::new(&wire)) else {
+        return Ok(None);
+    };
+    Ok(om_data::meta::file_options(&tree).and_then(|options| options.default_layout()))
 }
 
 impl ServerHost {
-    /// The Design view of the file's schema, built when first needed.
+    /// The Design view of the file's schema, built when first needed from
+    /// the file as it is then. A read that fails builds none, and is read
+    /// again when next asked.
     pub(super) fn design(&self) -> Option<Arc<CalcSchema>> {
-        self.schema
-            .design
-            .get_or_init(|| {
-                let store = self.hosted.read_store();
-                design_schema(&store, &self.hosted.name)
-            })
-            .clone()
+        if let Some(design) = self.schema.design.get() {
+            return design.clone();
+        }
+        let wire = self.read(design_catalogs).ok()?;
+        let design = wire.and_then(|wire| {
+            design_schema(
+                &wire,
+                &self.schema.catalog,
+                self.locale.clone(),
+                self.file_language,
+                &self.hosted.name,
+            )
+        });
+        self.schema.design.get_or_init(|| design).clone()
     }
 
     /// The window's layout in the Design view.
@@ -216,11 +239,17 @@ impl ServerHost {
         if def.next_serial.is_none() {
             return Value::empty_text();
         }
-        let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table.id), uint_segment(def.id));
-        let live = store
-            .node(&[&t, &[3], &[5], &f, &[0x0c]])
-            .and_then(crate::scripts::values::cell_text);
+        let path: [&[u8]; 5] = [&t, &[3], &[5], &f, &[0x0c]];
+        // A read that fails reads the definition's value, and fails the
+        // step ([`ServerHost::read`]).
+        let live = self
+            .read(|read| {
+                let node = read.view.subtree(&path, NO_LIMIT)?;
+                Ok(node.and_then(|node| crate::scripts::values::cell_text(&node)))
+            })
+            .ok()
+            .flatten();
         Value::text(live.or_else(|| def.next_serial.clone()).unwrap_or_default())
     }
 

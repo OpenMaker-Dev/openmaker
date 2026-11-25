@@ -3,16 +3,19 @@
 //! ([`crate::engine::View`]) and kept by the version it was computed from.
 //!
 //! [`Derived`] holds the decoded schema catalog, the file's accounts, the
-//! file's locale and the order of its stored dates, two facts about the
-//! file that are not in its tree but that compiling its calculations
-//! needs, its name and whether it is served to a desktop client, and one
-//! that an export needs, the file's page 0 as it was loaded
-//! (`engine::export`). How each engine keeps it is its own: the file
-//! engine computes it when it loads a file, reads the catalog again after
-//! each change of the schema, as its store always did (`Store::load`,
-//! `Store::reread_catalog`), and decodes the accounts again when an
-//! operation moved the schema generation (`Store::follow_accounts`), and
-//! hands the same value to every reader until then.
+//! file's locale and the order of its stored dates, the calculation schema
+//! a server script's record rules and calculations read ([`CalcCatalogs`]),
+//! two facts about the file that are not in its tree but that compiling
+//! its calculations needs, its name and whether it is served to a desktop
+//! client, and one that an export needs, the file's page 0 as it was
+//! loaded (`engine::export`). How each engine keeps it is its own: the
+//! file engine computes it when it loads a file, reads the catalog and the
+//! calculation schema again after each change of the schema, as its store
+//! always read the catalog (`Store::load`, `Store::reread_catalog`), and
+//! decodes the accounts again when an operation moved the schema
+//! generation (`Store::follow_accounts`), and hands the same value to
+//! every reader until then. A roll-back puts back the state from before
+//! the change whole (`store::Journal::schema_from`).
 //!
 //! The functions below read a file through a view and derived state: the
 //! schema catalogs, the keys an index on demand holds, the next member key
@@ -87,6 +90,13 @@ pub struct Derived {
     accounts: Accounts,
     /// The file's locale and formats (`[2, 0d]`), when it decodes.
     locale: Option<Locale>,
+    /// The file has a locale record that does not decode: its language is
+    /// unknown ([`Derived::file_language`]).
+    locale_unreadable: bool,
+    /// The calculation schema of a server script's record rules and
+    /// calculations ([`CalcCatalogs`]); `None` when its catalogs cannot be
+    /// read into one.
+    calc: Option<Arc<CalcCatalogs>>,
     /// The order of the parts of the file's stored dates (om-collate).
     date_order: DateOrder,
     /// The file's name, as calculations see it (`Get ( FileName )`).
@@ -120,10 +130,12 @@ impl Derived {
         accounts: Accounts,
         name: &str,
     ) -> Result<Self, ReadError> {
-        let locale = view
-            .subtree(&LOCALE, NO_LIMIT)?
+        let record = view.subtree(&LOCALE, NO_LIMIT)?;
+        let locale = record
+            .as_ref()
             .and_then(|node| node.assembled().map(Cow::into_owned))
             .and_then(|record| Locale::from_record(&record));
+        let locale_unreadable = locale.is_none() && record.is_some();
         let date_order = match &locale {
             Some(locale) => locale.date_order,
             None => {
@@ -133,28 +145,36 @@ impl Derived {
         };
         // Each state computed here starts a load of its own.
         static LOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        Ok(Derived {
+        let mut derived = Derived {
             instance: LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             version: view.version(),
             catalog: Arc::new(catalog),
             accounts,
             locale,
+            locale_unreadable,
+            calc: None,
             date_order,
             name: name.to_string(),
             desktop: false,
             page_zero: Arc::from(&[][..]),
-        })
+        };
+        derived.calc = CalcCatalogs::read(view, &derived)?;
+        Ok(derived)
     }
 
-    /// This state after a change of the schema: `catalog`, read again at
-    /// `version`. The locale and date order stay the ones the file was
-    /// loaded with, as the store always kept them.
-    pub fn with_catalog(&self, version: Version, catalog: Catalog) -> Self {
-        Derived {
-            version,
+    /// This state after a change of the schema: `catalog`, read again
+    /// through `view`, and the calculation schema with it. The locale and
+    /// date order stay the ones the file was loaded with, as the store
+    /// always kept them; whether its record is there to read is read again.
+    pub fn with_catalog(&self, view: &dyn View, catalog: Catalog) -> Result<Self, ReadError> {
+        let mut derived = Derived {
+            version: view.version(),
             catalog: Arc::new(catalog),
+            locale_unreadable: self.locale.is_none() && view.node(&LOCALE)?.is_some(),
             ..self.clone()
-        }
+        };
+        derived.calc = CalcCatalogs::read(view, &derived)?;
+        Ok(derived)
     }
 
     /// This state with `accounts`, read again at `version`.
@@ -204,6 +224,23 @@ impl Derived {
         &self.catalog
     }
 
+    /// The file's schema, shared.
+    pub fn shared_catalog(&self) -> Arc<Catalog> {
+        Arc::clone(&self.catalog)
+    }
+
+    /// The calculation schema of a server script's record rules and
+    /// calculations; `None` when its catalogs could not be read into one.
+    pub fn calc_catalogs(&self) -> Option<&Arc<CalcCatalogs>> {
+        self.calc.as_ref()
+    }
+
+    /// The file's own language: its locale record's, en-US's for a file
+    /// without one; `None` when it has one that does not decode.
+    pub fn file_language(&self) -> Option<u32> {
+        (!self.locale_unreadable).then(|| u32::from(self.locale().language.id()))
+    }
+
     /// The file's accounts, or why they could not be read.
     pub fn accounts(&self) -> &Accounts {
         &self.accounts
@@ -225,11 +262,6 @@ impl Derived {
     /// Whether the file is served privately to a desktop client.
     pub fn desktop(&self) -> bool {
         self.desktop
-    }
-
-    /// The file's locale record, when it decodes.
-    pub fn decoded_locale(&self) -> Option<&Locale> {
-        self.locale.as_ref()
     }
 
     /// The file's locale and formats: its record when it decodes, else
@@ -274,6 +306,20 @@ impl Derived {
     pub fn field_type(&self, table: &[u8], field: &[u8]) -> Option<DataType> {
         let table = self.catalog.table(be_uint(table)?)?;
         Some(table.field(be_uint(field)?)?.data_type)
+    }
+
+    /// Whether `cell` of a record of `table` is a container field's value
+    /// (repetition n of field F is the cell `F * 256 + n`).
+    pub fn container_cell(&self, table: &[u8], cell: &[u8]) -> bool {
+        let Some(id) = be_uint(cell) else {
+            return false;
+        };
+        let field = match self.field_type(table, cell) {
+            Some(_) => id,
+            None if id & 0xff >= 2 => id >> 8,
+            None => return false,
+        };
+        self.field_type(table, &uint_segment(field)) == Some(DataType::Container)
     }
 
     /// How many repetitions `field` of `table` has (1 when unknown).
@@ -393,6 +439,8 @@ impl Derived {
         self.catalog == other.catalog
             && (!accounts || self.accounts == other.accounts)
             && self.locale == other.locale
+            && self.locale_unreadable == other.locale_unreadable
+            && self.calc == other.calc
             && self.date_order == other.date_order
             && self.name == other.name
             && self.desktop == other.desktop
@@ -405,6 +453,93 @@ impl Derived {
     #[cfg(debug_assertions)]
     pub(crate) fn shares_catalog(&self, other: &Derived) -> bool {
         Arc::ptr_eq(&self.catalog, &other.catalog)
+    }
+}
+
+/// The calculation schema of a server script's record rules and
+/// calculations (`scripts::host`): the catalogs they read, the schema `[3]`
+/// (occurrences, relationships), the custom functions `[16]`, the value
+/// lists `[21]` and each table's field catalog `[T, 03]` (without its
+/// deferred work and its fields' next serial values, which change without a
+/// change of the schema), as one slot list, and the schema compiled from
+/// them with the file's locale, without the
+/// functions FileMaker Server's engine lacks
+/// (`om_data::host::device::withhold_server_lacks`). Computed with the rest
+/// of the derived state and kept by its version, so every session of the
+/// version shares one, and a roll-back puts back the one before.
+pub struct CalcCatalogs {
+    /// The catalogs as one slot list, which a table's record rules decode
+    /// again (`om_data::rules::RecordPlan::from_file_schema`).
+    pub wire: Vec<u8>,
+    pub schema: Arc<om_data::host::CalcSchema>,
+}
+
+impl CalcCatalogs {
+    /// The calculation schema of the file `view` reads, whose state is
+    /// `derived` (its catalog and locale); `None` when its catalogs cannot
+    /// be written as a slot list or read back.
+    fn read(view: &dyn View, derived: &Derived) -> Result<Option<Arc<Self>>, ReadError> {
+        let mut children: Vec<OwnedNode> = Vec::new();
+        for key in [3u8, 16, 0x21] {
+            if let Some(node) = view.subtree(&[&[key]], NO_LIMIT)? {
+                children.push(node.into_owned());
+            }
+        }
+        for table in &derived.catalog.tables {
+            let t = uint_segment(table.id);
+            if let Some(fields) = view.subtree(&[&t, &[keys::FIELDS]], NO_LIMIT)? {
+                let mut fields = fields.into_owned();
+                // What changes without a change of the schema, and which
+                // neither the record rules nor the calculations read: the
+                // deferred field work (op73 finishes it) and each field's
+                // next serial value (op72 advances it; the Design
+                // functions read the stored one, `scripts::host::design`).
+                // Left out, the schema stays the same between changes of
+                // the schema, whenever it is computed.
+                fields.remove(&[&[CATALOG_INDEX], &[keys::DEFERRED]]);
+                if let Some(definitions) = fields.child_mut(&[keys::FIELD_DEFINITIONS]) {
+                    for definition in &mut definitions.children {
+                        definition.remove(&[&[keys::SERIAL_VALUE]]);
+                    }
+                }
+                children.push(OwnedNode::list(t, vec![fields]));
+            }
+        }
+        let Some(wire) = OwnedNode::list(Vec::new(), children).to_wire() else {
+            return Ok(None);
+        };
+        let Ok(tree) = KeyTree::from_slots(SlotReader::new(&wire)) else {
+            return Ok(None);
+        };
+        let name = derived.name();
+        let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        let mut schema = om_data::rules::schema::calc_schema(&tree, &derived.catalog, stem);
+        schema.locale = derived.locale();
+        // The record rules refuse a unique check in language 0 when the
+        // file's language is unknown.
+        schema.locale_unreadable = derived.locale_unreadable;
+        om_data::host::device::withhold_server_lacks(schema.names_mut());
+        drop(tree);
+        Ok(Some(Arc::new(CalcCatalogs {
+            wire,
+            schema: Arc::new(schema),
+        })))
+    }
+}
+
+/// Two are the same when their catalogs are: the schema is compiled from
+/// them alone, with the state that holds them.
+impl PartialEq for CalcCatalogs {
+    fn eq(&self, other: &Self) -> bool {
+        self.wire == other.wire
+    }
+}
+
+impl std::fmt::Debug for CalcCatalogs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CalcCatalogs")
+            .field("wire", &self.wire.len())
+            .finish_non_exhaustive()
     }
 }
 

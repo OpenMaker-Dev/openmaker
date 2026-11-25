@@ -294,6 +294,7 @@ impl FileEngine {
         operation: Operation,
         credentials: Credentials,
     ) -> Outcome {
+        super::reading::assert_no_reading_held("an operation submitted");
         let environment = &*self.environment;
         match needs(&operation) {
             Needs::LockTable => {
@@ -357,6 +358,7 @@ impl FileEngine {
     /// completed operation ([`Self::recording`]), which [`Self::submit`]
     /// replays.
     pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Outcome {
+        super::reading::assert_no_reading_held("an operation submitted");
         self.submit_write(
             file,
             file.write_store(&WRITER),

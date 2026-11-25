@@ -823,6 +823,15 @@ pub trait ScriptHost:
     /// server session's copy of a schema another client saved.
     fn before_step(&mut self) {}
 
+    /// An error the host met while the step that just ran was running,
+    /// which the step's own result does not report, taken: a server
+    /// session's read of its file that failed, read as missing where its
+    /// caller had no error to give. The step fails with it, unless it failed
+    /// with an error of its own.
+    fn take_step_error(&mut self) -> Option<ErrorCode> {
+        None
+    }
+
     /// Files held by active script frames or a transaction, for desktop close preflight.
     fn active_script_files(&mut self, _files: &[FileId]) {}
 
