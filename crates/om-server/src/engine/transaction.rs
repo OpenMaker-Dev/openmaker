@@ -129,6 +129,30 @@ pub(crate) fn written<T>(store: &mut Store, write: impl FnOnce(&mut Transaction<
     out
 }
 
+/// `write` run over a checked transaction of `store`, as [`written`] runs
+/// it, then taken back as a save that failed takes a change back, the
+/// roll-back checked too (`checking::Settled::after_roll_back`).
+#[cfg(test)]
+pub(crate) fn taken_back<T>(store: &mut Store, write: impl FnOnce(&mut Transaction<'_>) -> T) -> T {
+    let mut tx = Transaction::new(store);
+    #[cfg(debug_assertions)]
+    tx.checked(true);
+    let out = write(&mut tx);
+    tx.settle();
+    #[cfg(debug_assertions)]
+    let check = tx.check.take();
+    let journal = std::mem::replace(&mut tx.journal, tx.store.begin_commit());
+    drop(tx);
+    #[cfg(debug_assertions)]
+    let settled = check.map(|check| check.finish(store, &journal));
+    store.roll_back(journal);
+    #[cfg(debug_assertions)]
+    if let Some(settled) = settled {
+        settled.after_roll_back(store);
+    }
+    out
+}
+
 impl<'a> Transaction<'a> {
     pub(super) fn new(store: &'a mut Store) -> Self {
         let journal = store.begin_commit();

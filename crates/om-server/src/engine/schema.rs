@@ -294,6 +294,7 @@ mod tests {
     use om_query::{Source, Write};
 
     use super::{apply, write_member_keys};
+    use crate::engine::transaction::taken_back;
     use crate::engine::written;
     use crate::library::LIBRARY;
     use crate::store::tests::store_of;
@@ -315,8 +316,16 @@ mod tests {
         }
         // DeleteTable (schema-path.md 3.4): the library goes with [T], and
         // its basis with it (review of #811, round 1), so that a table made
-        // later at the same key starts without one.
+        // later at the same key starts without one. Taken back, as a save
+        // that failed takes it back, the table and its basis are as they
+        // were.
         let remove = |path: Vec<Vec<u8>>| vec![Write::Remove { path }];
+        taken_back(&mut store, |tx| {
+            apply(remove(vec![vec![0x80, 0x02]]), "", tx)
+        });
+        assert!(store.node(&member).is_some());
+        let bases: Vec<&Vec<u8>> = store.bases().keys().collect();
+        assert_eq!(bases, [&vec![0x80, 0x02], &vec![0x80, 0x03]]);
         let released = written(&mut store, |tx| {
             apply(remove(vec![vec![0x80, 0x02]]), "", tx);
             std::mem::take(&mut tx.released_libraries)
